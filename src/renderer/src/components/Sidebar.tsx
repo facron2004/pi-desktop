@@ -4,6 +4,7 @@ import {
   Loader2,
   MessageSquare,
   Pencil,
+  Pin,
   Plus,
   Search,
   Settings,
@@ -37,6 +38,16 @@ function groupByDay(sessions: SessionMeta[]): GroupEntry[] {
   return entries
 }
 
+/** True when a conversation matches the filter of the sidebar. */
+function matches(session: SessionMeta, needle: string): boolean {
+  if (!needle) return true
+  return (
+    (session.name ?? '').toLowerCase().includes(needle) ||
+    session.preview.toLowerCase().includes(needle) ||
+    session.cwd.toLowerCase().includes(needle)
+  )
+}
+
 export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const sessions = useAppStore((state) => state.sessions)
   const workspace = useAppStore((state) => state.workspace)
@@ -50,6 +61,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const removeWorkspace = useAppStore((state) => state.removeWorkspace)
   const renameSessionFile = useAppStore((state) => state.renameSessionFile)
   const deleteSession = useAppStore((state) => state.deleteSession)
+  const togglePin = useAppStore((state) => state.togglePin)
 
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -63,12 +75,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     const list = collectProjects(settings.workspaces, sessions)
     if (!needle) return list
     for (const project of list) {
-      project.sessions = project.sessions.filter(
-        (session) =>
-          (session.name ?? '').toLowerCase().includes(needle) ||
-          session.preview.toLowerCase().includes(needle) ||
-          session.cwd.toLowerCase().includes(needle)
-      )
+      project.sessions = project.sessions.filter((session) => matches(session, needle))
     }
     return list
   }, [settings.workspaces, sessions, needle])
@@ -78,18 +85,32 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     [projects, workspace?.path]
   )
 
+  const pinned = useMemo(
+    () => new Set(settings.pinnedSessions ?? []),
+    [settings.pinnedSessions]
+  )
+
   // Without a filter the list shows the conversations of the project that is
   // open. A filter looks everywhere, because a conversation the user cannot
-  // find is worth more than a tidy list.
+  // find is worth more than a tidy list. Pinned conversations have their own
+  // group and are left out of the project they belong to.
   const groups = useMemo(() => {
-    if (needle) {
-      return ordered
-        .filter((project) => project.sessions.length > 0)
-        .map((project) => ({ project, sessions: project.sessions }))
-    }
-    const active = ordered.find((project) => workspace && samePath(workspace.path, project.path))
-    return active ? [{ project: active, sessions: active.sessions }] : []
-  }, [ordered, needle, workspace?.path])
+    const visible = ordered
+      .map((project) => ({
+        project,
+        sessions: project.sessions.filter((session) => !pinned.has(session.file))
+      }))
+      .filter((group) => group.sessions.length > 0)
+    if (needle) return visible
+    const active = visible.find((group) => workspace && samePath(workspace.path, group.project.path))
+    return active ? [active] : []
+  }, [ordered, needle, pinned, workspace?.path])
+
+  // Pinned conversations float to the top, out of the project they belong to.
+  const pinnedSessions = useMemo(
+    () => sessions.filter((session) => pinned.has(session.file) && matches(session, needle)),
+    [sessions, pinned, needle]
+  )
 
   const openProject = async (project: Project) => {
     if (workspace && samePath(workspace.path, project.path)) return
@@ -122,6 +143,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           key={entry.key}
           session={entry.session}
           active={entry.session.file === activeSessionFile}
+          pinned={pinned.has(entry.session.file)}
           renaming={renaming === entry.session.file}
           draft={draft}
           onSelect={(file) => {
@@ -134,9 +156,34 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           onCommitRename={commitRename}
           onCancelRename={() => setRenaming(null)}
           onDelete={() => setPendingDelete(entry.session)}
+          onTogglePin={() => void togglePin(entry.session.file)}
         />
       )
     )
+
+  // The pinned group is small, so it does not need the day headings.
+  const renderPinned = (items: SessionMeta[]) =>
+    items.map((session) => (
+      <SessionRow
+        key={session.file}
+        session={session}
+        active={session.file === activeSessionFile}
+        pinned
+        renaming={renaming === session.file}
+        draft={draft}
+        onSelect={(file) => {
+          if (renaming !== file) void selectSession(session)
+        }}
+        onStartRename={() =>
+          startRename(session.file, session.name || session.preview || '')
+        }
+        onRenameDraft={setDraft}
+        onCommitRename={commitRename}
+        onCancelRename={() => setRenaming(null)}
+        onDelete={() => setPendingDelete(session)}
+        onTogglePin={() => void togglePin(session.file)}
+      />
+    ))
 
   return (
     <aside className="sidebar">
@@ -224,6 +271,18 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           </div>
         ) : null}
 
+        {pinnedSessions.length > 0 ? (
+          <div className="sidebar__section">
+            <div className="sidebar__section-head">
+              <span>Pinned</span>
+              <span style={{ textTransform: 'none', letterSpacing: 0 }}>
+                {pinnedSessions.length}
+              </span>
+            </div>
+            <div className="session-list">{renderPinned(pinnedSessions)}</div>
+          </div>
+        ) : null}
+
         {groups.length > 0 ? (
           <div className="sidebar__section">
             {needle ? (
@@ -243,7 +302,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           </div>
         ) : null}
 
-        {sessions.length > 0 && needle && groups.length === 0 ? (
+        {sessions.length > 0 && needle && groups.length === 0 && pinnedSessions.length === 0 ? (
           <div className="sidebar__section">
             <div className="sidebar__empty">No conversation matches “{query}”.</div>
           </div>
@@ -306,6 +365,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 interface SessionRowProps {
   session: SessionMeta
   active: boolean
+  pinned: boolean
   renaming: boolean
   draft: string
   onSelect: (file: string) => void
@@ -314,11 +374,13 @@ interface SessionRowProps {
   onCommitRename: (file: string) => void
   onCancelRename: () => void
   onDelete: () => void
+  onTogglePin: () => void
 }
 
 function SessionRow({
   session,
   active,
+  pinned,
   renaming,
   draft,
   onSelect,
@@ -326,7 +388,8 @@ function SessionRow({
   onRenameDraft,
   onCommitRename,
   onCancelRename,
-  onDelete
+  onDelete,
+  onTogglePin
 }: SessionRowProps) {
   return (
     <div
@@ -368,6 +431,17 @@ function SessionRow({
           </>
         )}
       </span>
+      <button
+        className="session-item__rename"
+        data-on={pinned}
+        title={pinned ? 'Unpin conversation' : 'Pin conversation to the top'}
+        onClick={(event) => {
+          event.stopPropagation()
+          onTogglePin()
+        }}
+      >
+        <Pin size={11} />
+      </button>
       <button
         className="session-item__rename"
         title="Rename conversation"

@@ -5,6 +5,7 @@ import type { AppSettings, Workspace } from '@shared/types'
 
 const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
+  pinnedSessions: [],
   theme: 'dark',
   fontScale: 1,
   diffSplit: false,
@@ -36,7 +37,8 @@ export class SettingsStore {
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
-        workspaces: Array.isArray(parsed.workspaces) ? parsed.workspaces : []
+        workspaces: Array.isArray(parsed.workspaces) ? parsed.workspaces : [],
+        pinnedSessions: Array.isArray(parsed.pinnedSessions) ? parsed.pinnedSessions : []
       }
     } catch {
       return { ...DEFAULT_SETTINGS }

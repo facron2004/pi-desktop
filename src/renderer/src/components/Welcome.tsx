@@ -31,17 +31,26 @@ export function Welcome({ onPick }: { onPick: () => void }) {
   const send = useAppStore((state) => state.send)
   const model = useAppStore((state) => state.piState?.model)
   const sessions = useAppStore((state) => state.sessions)
+  const settings = useAppStore((state) => state.settings)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const selectSession = useAppStore((state) => state.selectSession)
 
   // The conversations of this project, most recent first. Resuming one from
-  // here saves a trip through the sidebar.
+  // here saves a trip through the sidebar. A pinned conversation comes
+  // first, because the user marked it as worth returning to.
   const recent = useMemo(() => {
     if (!workspace) return []
+    const pinned = new Set(settings.pinnedSessions ?? [])
     return sessions
       .filter((session) => session.cwd === workspace.path && session.file !== activeSessionFile)
+      .sort((a, b) => {
+        const left = pinned.has(a.file) ? 1 : 0
+        const right = pinned.has(b.file) ? 1 : 0
+        if (left !== right) return right - left
+        return b.updatedAt - a.updatedAt
+      })
       .slice(0, RECENT_LIMIT)
-  }, [sessions, workspace, activeSessionFile])
+  }, [sessions, workspace, activeSessionFile, settings.pinnedSessions])
 
   return (
     <div className="welcome">

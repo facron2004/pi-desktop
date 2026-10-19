@@ -97,6 +97,8 @@ export interface AppStore {
   /** Run one of the commands the app itself provides. */
   runAppCommand: (name: string) => Promise<void>
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>
+  /** Pin a conversation to the top of the sidebar, or unpin it. */
+  togglePin: (file: string) => Promise<void>
   dismissError: () => void
   showToast: (message: string, level?: 'info' | 'warning' | 'error') => void
   clearToast: () => void
@@ -112,6 +114,7 @@ export interface AppStore {
 
 const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
+  pinnedSessions: [],
   theme: 'dark',
   fontScale: 1,
   diffSplit: false,
@@ -593,6 +596,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   clearToast() {
     set({ toast: undefined })
+  },
+
+  async togglePin(file) {
+    const pinned = get().settings.pinnedSessions ?? []
+    const next = pinned.includes(file)
+      ? pinned.filter((entry) => entry !== file)
+      : [...pinned, file]
+    const settings = await window.pi.settings.patch({ pinnedSessions: next })
+    set({ settings })
   },
 
   async respondUi(response) {

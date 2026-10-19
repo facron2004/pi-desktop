@@ -259,6 +259,8 @@ export type ThemePreference = 'dark' | 'light' | 'system'
 export interface AppSettings {
   workspaces: Workspace[]
   activeWorkspaceId?: string
+  /** Session files the user pinned to the top of the sidebar. */
+  pinnedSessions?: string[]
   /** Absolute path to a custom `pi` executable or CLI script. */
   piPath?: string
   model?: string

@@ -432,9 +432,20 @@
   opacity: 1;
 }
 
+/* A pinned conversation keeps its pin visible, so the group at the top of
+   the sidebar shows why it is there. */
+.session-item__rename[data-on='true'] {
+  opacity: 1;
+  color: var(--accent);
+}
+
 .session-item__rename:hover {
   background: var(--bg-active);
   color: var(--text);
+}
+
+.session-item__rename[data-on='true']:hover {
+  color: var(--accent);
 }
 
 .session-item__rename--danger:hover {
