@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Brain,
   Check,
@@ -77,12 +77,28 @@ export function AssistantText({ text, streaming }: { text: string; streaming?: b
   )
 }
 
-export function ThinkingBlock({ text }: { text: string }) {
+export function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean }) {
   const [open, setOpen] = useState(false)
+  // A click wins over the automatic behaviour for good.
+  const [touched, setTouched] = useState(false)
+
+  // While the model is still reasoning, that text is the only thing that is
+  // happening, so it is shown. It folds away once the answer arrives.
+  useEffect(() => {
+    if (touched) return
+    setOpen(streaming === true)
+  }, [streaming, touched])
+
   if (!text.trim()) return null
   return (
     <div className="thinking" data-open={open}>
-      <button className="thinking__head" onClick={() => setOpen((value) => !value)}>
+      <button
+        className="thinking__head"
+        onClick={() => {
+          setTouched(true)
+          setOpen((value) => !value)
+        }}
+      >
         <ChevronRight size={13} className="caret" data-open={open} />
         <Brain size={13} />
         <span className="thinking__title">Thinking</span>

@@ -13,7 +13,9 @@ Claude Desktop.
 - **Chat with Pi in a real project folder.** Pick a workspace, and Pi runs there with
   your own permissions — reading files, running commands, editing code.
 - **Streaming conversation.** Assistant text, reasoning ("thinking") blocks, tool calls
-  and tool output all stream in live, with a caret marking the end of the reply.
+  and tool output all stream in live, with a caret marking the end of the reply. The
+  reasoning opens itself while the model is still thinking and folds away when the
+  answer arrives.
 - **Tool cards with diffs.** Every tool call is a collapsible card. File edits render
   as a line diff, so you can see exactly what changed. Long stretches of untouched
   lines collapse into a single row you can open, a run of the same call folds into one

@@ -473,7 +473,13 @@ function renderTurn(turn: Turn, toolMap: Map<string, ToolItem>): ReactNode[] {
       }
       if (block.type === 'thinking') {
         flush()
-        nodes.push(<ThinkingBlock key={`${assistant.id}-${index}`} text={block.text} />)
+        nodes.push(
+          <ThinkingBlock
+            key={`${assistant.id}-${index}`}
+            text={block.text}
+            streaming={assistant.streaming}
+          />
+        )
         return
       }
       const tool = toolMap.get(block.id)
