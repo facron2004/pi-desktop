@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { FolderOpen, GitBranch, Keyboard, MessageSquare, Terminal, Wand2 } from 'lucide-react'
 import { formatRelativeTime } from '../lib/format'
 import { useAppStore } from '../store/useAppStore'
@@ -23,6 +23,41 @@ const STARTERS = [
 
 /** How many past conversations the empty state offers to resume. */
 const RECENT_LIMIT = 4
+
+/**
+ * The kind of project the folder holds, so the empty state can offer
+ * something that fits it.
+ */
+type ProjectKind = 'node' | 'python' | 'rust' | 'go' | 'unknown'
+
+/**
+ * Look at the files that say what a project is built with.
+ *
+ * The read is cheap and the answer is worth it: a project with a test script
+ * can be offered the test suite, and a Rust project a cargo build.
+ */
+async function detectKind(root: string): Promise<ProjectKind> {
+  const has = async (name: string) => Boolean(await window.pi.fs.read(`${root}/${name}`))
+  if (await has('package.json')) return 'node'
+  if (await has('pyproject.toml') || (await has('requirements.txt'))) return 'python'
+  if (await has('Cargo.toml')) return 'rust'
+  if (await has('go.mod')) return 'go'
+  return 'unknown'
+}
+
+/** The starter that fits the project, and the one it pushes down. */
+function startersFor(kind: ProjectKind): typeof STARTERS {
+  if (kind === 'unknown') return STARTERS
+  return [
+    {
+      icon: Terminal,
+      title: 'Run the tests',
+      body: 'Run the test suite of this project and tell me what fails.'
+    },
+    STARTERS[0],
+    STARTERS[1]
+  ]
+}
 
 export function Welcome({ onPick }: { onPick: () => void }) {
   const workspace = useAppStore((state) => state.workspace)
@@ -52,6 +87,20 @@ export function Welcome({ onPick }: { onPick: () => void }) {
       .slice(0, RECENT_LIMIT)
   }, [sessions, workspace, activeSessionFile, settings.pinnedSessions])
 
+  // The starters that fit the project the user opened.
+  const [kind, setKind] = useState<ProjectKind>('unknown')
+  useEffect(() => {
+    if (!workspace) return
+    let cancelled = false
+    void detectKind(workspace.path).then((found) => {
+      if (!cancelled) setKind(found)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [workspace])
+  const starters = useMemo(() => startersFor(kind), [kind])
+
   return (
     <div className="welcome">
       <div className="welcome__inner">
@@ -75,7 +124,7 @@ export function Welcome({ onPick }: { onPick: () => void }) {
 
         {workspace ? (
           <div className="welcome__cards">
-            {STARTERS.map((starter) => (
+            {starters.map((starter) => (
               <button
                 className="welcome__card"
                 key={starter.title}
