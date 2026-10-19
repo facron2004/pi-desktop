@@ -66,7 +66,8 @@ Claude Desktop.
   `Ctrl+P` and `Ctrl+T` walk through Pi's own list of models and reasoning levels, the
   way they do in Pi's terminal. The context meter in the top bar opens a session panel
   with the token breakdown, the cost so far and the message counts, and it can compact
-  the context — with or without instructions for the summary.
+  the context — with or without instructions for the summary. The same panel says how
+  steering and follow-up messages are delivered.
 - **Steering.** While Pi is working you can steer it ("stop and do this instead") or
   queue a follow-up for when it finishes.
 - **Retries you can see.** When a request fails with a transient error, Pi retries it on its

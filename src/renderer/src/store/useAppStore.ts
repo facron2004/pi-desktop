@@ -102,6 +102,10 @@ export interface AppStore {
   /** Compact the context, optionally with instructions for the summary. */
   compact: (instructions?: string) => Promise<void>
   setAutoCompaction: (enabled: boolean) => Promise<void>
+  /** How steering messages are delivered: one at a time or all at once. */
+  setSteeringMode: (mode: 'all' | 'one-at-a-time') => Promise<void>
+  /** How follow-up messages are delivered: one at a time or all at once. */
+  setFollowUpMode: (mode: 'all' | 'one-at-a-time') => Promise<void>
   refreshState: () => Promise<void>
   /** Remember the conversation that is open in the current project. */
   rememberSession: (file: string) => Promise<void>
@@ -536,6 +540,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async setAutoCompaction(enabled) {
     try {
       await window.pi.runtime.request('set_auto_compaction', { enabled })
+      await get().refreshState()
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
+  async setSteeringMode(mode) {
+    try {
+      await window.pi.runtime.request('set_steering_mode', { mode })
+      await get().refreshState()
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
+  async setFollowUpMode(mode) {
+    try {
+      await window.pi.runtime.request('set_follow_up_mode', { mode })
       await get().refreshState()
     } catch (error) {
       set({ error: messageOf(error) })

@@ -15,6 +15,8 @@ export function ContextPanel({ close }: { close: () => void }) {
   const piState = useAppStore((state) => state.piState)
   const compact = useAppStore((state) => state.compact)
   const setAutoCompaction = useAppStore((state) => state.setAutoCompaction)
+  const setSteeringMode = useAppStore((state) => state.setSteeringMode)
+  const setFollowUpMode = useAppStore((state) => state.setFollowUpMode)
   const ready = useAppStore((state) => state.status.phase === 'ready')
 
   const [instructions, setInstructions] = useState('')
@@ -95,6 +97,48 @@ export function ContextPanel({ close }: { close: () => void }) {
         <div className="ctx__row">
           <span>Tool calls</span>
           <span>{stats?.toolCalls ?? 0}</span>
+        </div>
+      </div>
+
+      <div className="popover__label ctx__section">Queued messages</div>
+      <div className="ctx__rows">
+        <div className="ctx__row">
+          <span>Steering</span>
+          <div className="segmented segmented--tight">
+            <button
+              data-active={piState?.steeringMode !== 'all'}
+              onClick={() => void setSteeringMode('one-at-a-time')}
+              title="Deliver one steering message per turn"
+            >
+              One by one
+            </button>
+            <button
+              data-active={piState?.steeringMode === 'all'}
+              onClick={() => void setSteeringMode('all')}
+              title="Deliver every steering message at once"
+            >
+              All at once
+            </button>
+          </div>
+        </div>
+        <div className="ctx__row">
+          <span>Follow-up</span>
+          <div className="segmented segmented--tight">
+            <button
+              data-active={piState?.followUpMode !== 'all'}
+              onClick={() => void setFollowUpMode('one-at-a-time')}
+              title="Deliver one follow-up message per run"
+            >
+              One by one
+            </button>
+            <button
+              data-active={piState?.followUpMode === 'all'}
+              onClick={() => void setFollowUpMode('all')}
+              title="Deliver every follow-up message at once"
+            >
+              All at once
+            </button>
+          </div>
         </div>
       </div>
 
