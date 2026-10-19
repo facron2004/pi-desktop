@@ -10,6 +10,12 @@ import type { PiCommand } from '@shared/types'
  */
 export const APP_COMMANDS: PiCommand[] = [
   {
+    name: 'name',
+    description: 'Rename this conversation — follow it with the new name',
+    source: 'app',
+    takesArgument: true
+  },
+  {
     name: 'export',
     description: 'Export this conversation as HTML',
     source: 'app'

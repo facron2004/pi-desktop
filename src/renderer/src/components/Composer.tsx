@@ -140,8 +140,8 @@ export function Composer() {
   const insertCommand = useCallback(
     (command: PiCommand) => {
       // The app's own commands run right away; Pi's are text that is sent
-      // to the agent.
-      if (command.source === 'app') {
+      // to the agent. A command that needs an argument is typed instead.
+      if (command.source === 'app' && !command.takesArgument) {
         setSlash(null)
         if (slash) {
           // The typed command is consumed by the app.

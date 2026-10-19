@@ -105,6 +105,8 @@ export interface PiCommand {
   description?: string
   /** `app` covers the commands the desktop app itself provides. */
   source: 'extension' | 'prompt' | 'skill' | 'app'
+  /** The command needs an argument, so it is typed rather than run. */
+  takesArgument?: boolean
   sourceInfo?: {
     path?: string
     source?: string

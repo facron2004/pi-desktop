@@ -372,6 +372,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async send(text, images, kind = 'steer') {
     const trimmed = text.trim()
     if (!trimmed && !images.length) return
+    // `/name <text>` renames the conversation instead of reaching the agent.
+    if (trimmed === '/name' && !images.length) {
+      get().showToast('Type the new name after /name', 'warning')
+      return
+    }
+    const rename = /^\/name\s+([\s\S]+)$/.exec(trimmed)
+    if (rename && !images.length) {
+      await get().renameSession(rename[1].trim())
+      return
+    }
     try {
       const payload: Record<string, unknown> = { message: trimmed }
       if (images.length) payload.images = images
