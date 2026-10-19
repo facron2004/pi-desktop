@@ -1377,6 +1377,18 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* What the agent is working on right now. */
+.assistant__activity {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* thinking block */
 
 .thinking {

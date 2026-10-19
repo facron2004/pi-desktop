@@ -111,6 +111,29 @@ export function Thread() {
   const hits: SearchHit[] = useMemo(() => findMatches(chunks, query), [chunks, query])
   const forkByUserId = useMemo(() => pairForkTargets(items, forkTargets), [items, forkTargets])
 
+  /**
+   * What Pi is doing right now.
+   *
+   * The reader may have scrolled up, so the footer says what the agent is
+   * working on as well.
+   */
+  const activity = useMemo(() => {
+    const last = turns[turns.length - 1]
+    if (!last) return ''
+    let tool: ToolItem | undefined
+    for (let index = last.tools.length - 1; index >= 0; index -= 1) {
+      if (last.tools[index].status === 'running') {
+        tool = last.tools[index]
+        break
+      }
+    }
+    if (!tool) tool = last.tools[last.tools.length - 1]
+    if (!tool) return ''
+    const descriptor = describeTool(tool.toolName)
+    const summary = descriptor.summary(tool.args ?? {}, workspace?.path)
+    return summary ? `${descriptor.label} ${summary}` : descriptor.label
+  }, [turns, workspace?.path])
+
   useLayoutEffect(() => {
     const node = scrollRef.current
     if (!node || !stickRef.current) return
@@ -369,6 +392,7 @@ export function Thread() {
                       <div className="assistant__footer">
                         <span className="spinner" />
                         <span>Working…</span>
+                        {activity ? <span className="assistant__activity">{activity}</span> : null}
                         {runStartedAt ? <Elapsed since={runStartedAt} /> : null}
                       </div>
                     ) : null}
