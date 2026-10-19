@@ -52,10 +52,19 @@ const extensionDir = path.join(workspace, '.pi', 'extensions')
 mkdirSync(extensionDir, { recursive: true })
 writeFileSync(path.join(extensionDir, 'uismoke.ts'), EXTENSION, 'utf8')
 
-const child = spawn(process.execPath, [cli, '--mode', 'rpc', '--approve'], {
-  cwd: workspace,
-  stdio: ['pipe', 'pipe', 'pipe']
-})
+// Pi writes its session into the user's real session store by default. The
+// smoke run would then leave a throwaway project behind in the sidebar.
+const sessionDir = path.join(workspace, '.smoke-sessions')
+mkdirSync(sessionDir, { recursive: true })
+
+const child = spawn(
+  process.execPath,
+  [cli, '--mode', 'rpc', '--approve', '--session-dir', sessionDir],
+  {
+    cwd: workspace,
+    stdio: ['pipe', 'pipe', 'pipe']
+  }
+)
 
 let buffer = ''
 const pending = new Map()

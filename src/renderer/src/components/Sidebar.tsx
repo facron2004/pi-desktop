@@ -1,14 +1,37 @@
 import { useMemo, useState } from 'react'
-import { FolderOpen, MessageSquare, Pencil, Plus, Search, Settings, Trash2, X } from 'lucide-react'
+import {
+  FolderOpen,
+  Loader2,
+  MessageSquare,
+  Pencil,
+  Plus,
+  Search,
+  Settings,
+  Trash2,
+  X
+} from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { SessionMeta } from '@shared/types'
 import { formatDayBucket, formatRelativeTime } from '../lib/format'
+import { basename, samePath } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
 
 /** A session in the list, or the heading that separates a run of them. */
 type GroupEntry =
   | { kind: 'heading'; label: string; key: string }
   | { kind: 'session'; session: SessionMeta; key: string }
+
+/** A project in the sidebar: a folder Pi can run in. */
+interface Project {
+  path: string
+  name: string
+  /** The settings id, when the project is registered. */
+  id?: string
+  /** True when the project is in the settings and can be removed from there. */
+  registered: boolean
+  lastOpenedAt: number
+  sessions: SessionMeta[]
+}
 
 /** Split the sessions of a project into buckets by when they happened. */
 function groupByDay(sessions: SessionMeta[]): GroupEntry[] {
@@ -30,7 +53,9 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const status = useAppStore((state) => state.status)
+  const settings = useAppStore((state) => state.settings)
   const pickWorkspace = useAppStore((state) => state.pickWorkspace)
+  const switchProject = useAppStore((state) => state.switchProject)
   const selectSession = useAppStore((state) => state.selectSession)
   const newChat = useAppStore((state) => state.newChat)
   const removeWorkspace = useAppStore((state) => state.removeWorkspace)
@@ -41,39 +66,85 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    if (!needle) return sessions
-    return sessions.filter(
-      (session) =>
-        session.name?.toLowerCase().includes(needle) ||
-        session.preview.toLowerCase().includes(needle) ||
-        session.cwd.toLowerCase().includes(needle)
-    )
-  }, [sessions, query])
+  const needle = query.trim().toLowerCase()
 
-  const groups = useMemo(() => {
-    const map = new Map<string, { name: string; cwd: string; items: typeof sessions }>()
-    for (const session of filtered) {
-      const key = session.cwd || 'unknown'
-      let group = map.get(key)
-      if (!group) {
-        group = {
-          name: key ? (key.split(/[\\/]/).filter(Boolean).pop() ?? key) : 'Unknown',
-          cwd: key,
-          items: []
-        }
-        map.set(key, group)
-      }
-      group.items.push(session)
+  const projects = useMemo(() => {
+    const map = new Map<string, Project>()
+    for (const item of settings.workspaces) {
+      map.set(item.path.toLowerCase(), {
+        path: item.path,
+        name: item.name,
+        id: item.id,
+        registered: true,
+        lastOpenedAt: item.lastOpenedAt,
+        sessions: []
+      })
     }
-    return Array.from(map.values()).sort((a, b) => {
-      if (a.cwd === workspace?.path) return -1
-      if (b.cwd === workspace?.path) return 1
-      return (b.items[0]?.updatedAt ?? 0) - (a.items[0]?.updatedAt ?? 0)
+    for (const session of sessions) {
+      const key = session.cwd.toLowerCase()
+      let project = map.get(key)
+      if (!project) {
+        project = {
+          path: session.cwd,
+          name: session.cwd ? basename(session.cwd) : 'Unknown project',
+          registered: false,
+          lastOpenedAt: 0,
+          sessions: []
+        }
+        map.set(key, project)
+      }
+      project.sessions.push(session)
+    }
+
+    const list = Array.from(map.values())
+    if (needle) {
+      for (const project of list) {
+        project.sessions = project.sessions.filter(
+          (session) =>
+            (session.name ?? '').toLowerCase().includes(needle) ||
+            session.preview.toLowerCase().includes(needle) ||
+            session.cwd.toLowerCase().includes(needle)
+        )
+      }
+    }
+    return list
+  }, [settings.workspaces, sessions, needle])
+
+  const ordered = useMemo(() => {
+    const active = workspace?.path
+    return [...projects].sort((a, b) => {
+      if (a.path === active) return -1
+      if (b.path === active) return 1
+      const left = Math.max(a.lastOpenedAt, a.sessions[0]?.updatedAt ?? 0)
+      const right = Math.max(b.lastOpenedAt, b.sessions[0]?.updatedAt ?? 0)
+      return right - left
     })
-  }, [filtered, workspace?.path])
+  }, [projects, workspace?.path])
+
+  // Without a filter the list shows the conversations of the project that is
+  // open. A filter looks everywhere, because a conversation the user cannot
+  // find is worth more than a tidy list.
+  const groups = useMemo(() => {
+    if (needle) {
+      return ordered
+        .filter((project) => project.sessions.length > 0)
+        .map((project) => ({ project, sessions: project.sessions }))
+    }
+    const active = ordered.find((project) => workspace && samePath(workspace.path, project.path))
+    return active ? [{ project: active, sessions: active.sessions }] : []
+  }, [ordered, needle, workspace?.path])
+
+  const openProject = async (project: Project) => {
+    if (workspace && samePath(workspace.path, project.path)) return
+    setBusy(project.path)
+    try {
+      await switchProject(project.path)
+    } finally {
+      setBusy(null)
+    }
+  }
 
   const startRename = (file: string, current: string) => {
     setRenaming(file)
@@ -84,6 +155,33 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
     setRenaming(null)
     void renameSessionFile(file, draft)
   }
+
+  const renderSessions = (items: SessionMeta[]) =>
+    groupByDay(items).map((entry) =>
+      entry.kind === 'heading' ? (
+        <div className="session-list__heading" key={entry.key}>
+          {entry.label}
+        </div>
+      ) : (
+        <SessionRow
+          key={entry.key}
+          session={entry.session}
+          active={entry.session.file === activeSessionFile}
+          renaming={renaming === entry.session.file}
+          draft={draft}
+          onSelect={(file) => {
+            if (renaming !== file) void selectSession(entry.session)
+          }}
+          onStartRename={() =>
+            startRename(entry.session.file, entry.session.name || entry.session.preview || '')
+          }
+          onRenameDraft={setDraft}
+          onCommitRename={commitRename}
+          onCancelRename={() => setRenaming(null)}
+          onDelete={() => setPendingDelete(entry.session)}
+        />
+      )
+    )
 
   return (
     <aside className="sidebar">
@@ -102,32 +200,56 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
         <div className="sidebar__section">
           <div className="sidebar__section-head">
-            <span>Project</span>
+            <span>Projects</span>
             <button title="Open a folder" onClick={() => void pickWorkspace()}>
               <FolderOpen size={13} />
             </button>
           </div>
 
-          {workspace ? (
-            <div className="workspace" title={workspace.path}>
-              <span className="workspace__icon">
-                <FolderOpen size={14} />
-              </span>
-              <span className="workspace__text">
-                <span className="workspace__name">{workspace.name}</span>
-                <span className="workspace__path">{workspace.path}</span>
-              </span>
-              <button
-                className="icon-btn"
-                style={{ width: 22, height: 22 }}
-                title="Remove project"
-                onClick={() => void removeWorkspace(workspace.id)}
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ) : (
+          {ordered.length === 0 ? (
             <div className="sidebar__empty">No project selected yet.</div>
+          ) : (
+            <div className="project-tree">
+              {ordered.map((project) => {
+                const active = Boolean(workspace && samePath(workspace.path, project.path))
+                const projectId = project.id
+                return (
+                  <div className="project" key={project.path || 'unknown'} data-active={active}>
+                    <div className="project__row">
+                      <button
+                        className="project__main"
+                        title={active ? project.path : `Open ${project.path}`}
+                        onClick={() => void openProject(project)}
+                      >
+                        <span className="project__icon">
+                          {busy === project.path ? (
+                            <Loader2 size={13} className="spin" />
+                          ) : (
+                            <FolderOpen size={14} />
+                          )}
+                        </span>
+                        <span className="project__text">
+                          <span className="project__name">{project.name}</span>
+                          <span className="project__path">{project.path || 'Unknown location'}</span>
+                        </span>
+                        {project.sessions.length > 0 ? (
+                          <span className="project__count">{project.sessions.length}</span>
+                        ) : null}
+                      </button>
+                      {project.registered && projectId ? (
+                        <button
+                          className="project__remove"
+                          title="Remove project"
+                          onClick={() => void removeWorkspace(projectId)}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           )}
         </div>
 
@@ -147,45 +269,36 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           </div>
         ) : null}
 
-        {groups.map((group) => (
-          <div className="sidebar__section" key={group.cwd}>
-            <div className="sidebar__section-head">
-              <span>{group.cwd === workspace?.path ? 'Conversations' : group.name}</span>
-              <span style={{ textTransform: 'none', letterSpacing: 0 }}>{group.items.length}</span>
-            </div>
-            <div className="session-list">
-              {groupByDay(group.items).map((entry) =>
-                entry.kind === 'heading' ? (
-                  <div className="session-list__heading" key={entry.key}>
-                    {entry.label}
+        {groups.length > 0 ? (
+          <div className="sidebar__section">
+            {needle ? (
+              groups.map((group) => (
+                <div className="session-group" key={group.project.path || 'unknown'}>
+                  <div className="session-group__head">
+                    <FolderOpen size={11} />
+                    <span>{group.project.name}</span>
+                    <span className="session-group__count">{group.sessions.length}</span>
                   </div>
-                ) : (
-                  <SessionRow
-                    key={entry.key}
-                    session={entry.session}
-                    active={entry.session.file === activeSessionFile}
-                    renaming={renaming === entry.session.file}
-                    draft={draft}
-                    onSelect={(file) => {
-                      if (renaming !== file) void selectSession(entry.session)
-                    }}
-                    onStartRename={() =>
-                      startRename(entry.session.file, entry.session.name || entry.session.preview || '')
-                    }
-                    onRenameDraft={setDraft}
-                    onCommitRename={commitRename}
-                    onCancelRename={() => setRenaming(null)}
-                    onDelete={() => setPendingDelete(entry.session)}
-                  />
-                )
-              )}
-            </div>
+                  <div className="session-list">{renderSessions(group.sessions)}</div>
+                </div>
+              ))
+            ) : (
+              <div className="session-list">{renderSessions(groups[0].sessions)}</div>
+            )}
           </div>
-        ))}
+        ) : null}
 
-        {sessions.length > 0 && filtered.length === 0 ? (
+        {sessions.length > 0 && needle && groups.length === 0 ? (
           <div className="sidebar__section">
             <div className="sidebar__empty">No conversation matches “{query}”.</div>
+          </div>
+        ) : null}
+
+        {sessions.length > 0 && !needle && groups.length === 0 && workspace ? (
+          <div className="sidebar__section">
+            <div className="sidebar__empty">
+              No conversation in this project yet. Start one and it will show up here.
+            </div>
           </div>
         ) : null}
 

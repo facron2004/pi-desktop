@@ -34,7 +34,9 @@ const bridge: PiDesktopBridge = {
   },
   workspaces: {
     pick: (): Promise<Workspace | null> => ipcRenderer.invoke('workspaces:pick'),
-    remove: (id: string): Promise<AppSettings> => ipcRenderer.invoke('workspaces:remove', id)
+    remove: (id: string): Promise<AppSettings> => ipcRenderer.invoke('workspaces:remove', id),
+    add: (path: string): Promise<{ workspace: Workspace; settings: AppSettings }> =>
+      ipcRenderer.invoke('workspaces:add', path)
   },
   sessions: {
     list: (cwd?: string): Promise<SessionMeta[]> => ipcRenderer.invoke('sessions:list', cwd),

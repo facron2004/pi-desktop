@@ -320,6 +320,8 @@ export interface PiDesktopBridge {
   workspaces: {
     pick(): Promise<Workspace | null>
     remove(id: string): Promise<AppSettings>
+    /** Register a project by path and make it the active one. */
+    add(path: string): Promise<{ workspace: Workspace; settings: AppSettings }>
   }
   sessions: {
     list(cwd?: string): Promise<SessionMeta[]>

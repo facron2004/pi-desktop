@@ -3,7 +3,7 @@
  * Run with: node scripts/rpc-smoke.mjs [cwd]
  */
 import { spawn } from 'node:child_process'
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -86,17 +86,32 @@ function request(payload, timeout = 20000) {
   })
 }
 
+/** The directory Pi keeps the sessions of the workspace under test in. */
+function encodedSessionDir() {
+  const root = path.join(os.homedir(), '.pi', 'agent', 'sessions')
+  const encoded = `--${path.resolve(cwd).replace(/^[/\\]+/, '').replace(/[/\\:]/g, '-')}--`
+  return path.join(root, encoded)
+}
+
+/** The session files that are on disk for the workspace under test. */
+function sessionFiles() {
+  const dir = encodedSessionDir()
+  if (!existsSync(dir)) return []
+  return readdirSync(dir).filter((file) => file.endsWith('.jsonl'))
+}
+
+// The test needs a populated session to work with, so it reads the real
+// session store. The sessions it creates itself are removed again, otherwise
+// every run leaves a throwaway conversation in the user's sidebar.
+const sessionsBefore = new Set(sessionFiles())
+
 /** Find the biggest session file for the workspace under test. */
 function findPopulatedSession() {
-  const root = path.join(os.homedir(), '.pi', 'agent', 'sessions')
-  if (!existsSync(root)) return null
-  const encoded = `--${path.resolve(cwd).replace(/^[/\\]+/, '').replace(/[/\\:]/g, '-')}--`
-  const dir = path.join(root, encoded)
+  const dir = encodedSessionDir()
   if (!existsSync(dir)) return null
   let best = null
   let bestSize = 0
-  for (const file of readdirSync(dir)) {
-    if (!file.endsWith('.jsonl')) continue
+  for (const file of sessionFiles()) {
     const full = path.join(dir, file)
     const size = statSync(full).size
     if (size > bestSize) {
@@ -190,4 +205,16 @@ try {
 } finally {
   child.stdin.end()
   setTimeout(() => child.kill(), 1500)
+  // Drop the sessions this run produced; the ones that were already there
+  // belong to the user.
+  const dir = encodedSessionDir()
+  for (const file of sessionFiles()) {
+    if (sessionsBefore.has(file)) continue
+    try {
+      rmSync(path.join(dir, file), { force: true })
+      console.log('removed test session:', file)
+    } catch {
+      // A leftover session file is not worth failing the run over.
+    }
+  }
 }

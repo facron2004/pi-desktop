@@ -71,6 +71,8 @@ export interface AppStore {
   bootstrap: () => Promise<void>
   openWorkspace: (workspace: Workspace, sessionFile?: string) => Promise<void>
   pickWorkspace: () => Promise<void>
+  /** Make the project at `path` the active one and run Pi there. */
+  switchProject: (path: string) => Promise<void>
   removeWorkspace: (id: string) => Promise<void>
   refreshSessions: () => Promise<void>
   selectSession: (session: SessionMeta) => Promise<void>
@@ -161,13 +163,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async pickWorkspace() {
     const workspace = await window.pi.workspaces.pick()
     if (!workspace) return
-    const settings = await window.pi.settings.patch({
-      workspaces: [workspace, ...get().settings.workspaces.filter((w) => w.path !== workspace.path)],
+    await get().switchProject(workspace.path)
+  },
+
+  async switchProject(path) {
+    const current = get().workspace
+    if (current && samePath(current.path, path)) return
+    const { workspace, settings } = await window.pi.workspaces.add(path)
+    const now = Date.now()
+    const workspaces = settings.workspaces.map((item) =>
+      samePath(item.path, path) ? { ...item, lastOpenedAt: now } : item
+    )
+    const next = await window.pi.settings.patch({
+      workspaces,
       activeWorkspaceId: workspace.id
     })
-    set({ settings })
-    applyAppearance(settings, get().info?.forcedTheme)
-    await get().openWorkspace(workspace)
+    set({ settings: next })
+    applyAppearance(next, get().info?.forcedTheme)
+    await get().openWorkspace({ ...workspace, lastOpenedAt: now })
   },
 
   async openWorkspace(workspace, sessionFile) {
@@ -209,9 +222,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async removeWorkspace(id) {
+    const current = get().workspace
+    const target = get().settings.workspaces.find((item) => item.id === id)
+    // Removing a project that is not the active one must not move the user
+    // somewhere else; only the project that goes away needs a replacement.
+    const wasActive = Boolean(current && target && samePath(current.path, target.path))
     const settings = await window.pi.workspaces.remove(id)
     set({ settings })
     applyAppearance(settings, get().info?.forcedTheme)
+    if (!wasActive) return
     const next = settings.workspaces[0]
     if (next) {
       await get().openWorkspace(next)

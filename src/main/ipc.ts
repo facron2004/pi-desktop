@@ -214,6 +214,28 @@ export function registerIpc(context: IpcContext): void {
     return settings.removeWorkspace(id)
   })
 
+  // Register a project that the user picked from a conversation. The path is
+  // the only thing the renderer knows, so the id and the display name are
+  // decided here where the file system is reachable.
+  ipcMain.handle(
+    'workspaces:add',
+    (_event, rawPath: string): { workspace: Workspace; settings: AppSettings } => {
+      const dir = path.resolve(rawPath)
+      const current = settings.get()
+      const existing = current.workspaces.find(
+        (item) => path.resolve(item.path).toLowerCase() === dir.toLowerCase()
+      )
+      if (existing) return { workspace: existing, settings: current }
+      const workspace: Workspace = {
+        id: randomUUID(),
+        path: dir,
+        name: workspaceName(dir),
+        lastOpenedAt: Date.now()
+      }
+      return { workspace, settings: settings.addWorkspace(workspace) }
+    }
+  )
+
   ipcMain.handle('sessions:list', (_event, cwd?: string) => listSessions(cwd))
 
   ipcMain.handle('sessions:reveal', async (_event, file: string) => {
