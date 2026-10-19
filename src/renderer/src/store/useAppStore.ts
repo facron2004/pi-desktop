@@ -532,6 +532,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (instructions?.trim()) payload.customInstructions = instructions.trim()
       await window.pi.runtime.request('compact', payload, 180_000)
       await get().refreshState()
+      // The summary Pi wrote is an entry of the session, so the thread has
+      // to read it again — otherwise the conversation on screen still shows
+      // the messages that were just folded away.
+      await get().reloadMessages()
+      get().showToast('The conversation was summarised')
     } catch (error) {
       set({ error: messageOf(error) })
     }
