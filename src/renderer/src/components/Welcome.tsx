@@ -1,4 +1,6 @@
-import { FolderOpen, GitBranch, Keyboard, Terminal, Wand2 } from 'lucide-react'
+import { useMemo } from 'react'
+import { FolderOpen, GitBranch, Keyboard, MessageSquare, Terminal, Wand2 } from 'lucide-react'
+import { formatRelativeTime } from '../lib/format'
 import { useAppStore } from '../store/useAppStore'
 
 const STARTERS = [
@@ -19,12 +21,27 @@ const STARTERS = [
   }
 ]
 
+/** How many past conversations the empty state offers to resume. */
+const RECENT_LIMIT = 4
+
 export function Welcome({ onPick }: { onPick: () => void }) {
   const workspace = useAppStore((state) => state.workspace)
   const status = useAppStore((state) => state.status.phase)
   const error = useAppStore((state) => state.error)
   const send = useAppStore((state) => state.send)
   const model = useAppStore((state) => state.piState?.model)
+  const sessions = useAppStore((state) => state.sessions)
+  const activeSessionFile = useAppStore((state) => state.activeSessionFile)
+  const selectSession = useAppStore((state) => state.selectSession)
+
+  // The conversations of this project, most recent first. Resuming one from
+  // here saves a trip through the sidebar.
+  const recent = useMemo(() => {
+    if (!workspace) return []
+    return sessions
+      .filter((session) => session.cwd === workspace.path && session.file !== activeSessionFile)
+      .slice(0, RECENT_LIMIT)
+  }, [sessions, workspace, activeSessionFile])
 
   return (
     <div className="welcome">
@@ -75,6 +92,33 @@ export function Welcome({ onPick }: { onPick: () => void }) {
             <strong>Pi could not start.</strong>
             <br />
             {error}
+          </div>
+        ) : null}
+
+        {recent.length > 0 ? (
+          <div className="welcome__recent">
+            <div className="welcome__recent-head">
+              <span>Recent conversations</span>
+            </div>
+            <div className="welcome__recent-list">
+              {recent.map((session) => (
+                <button
+                  className="welcome__recent-item"
+                  key={session.file}
+                  onClick={() => void selectSession(session)}
+                  title={session.name || session.preview || session.file}
+                >
+                  <MessageSquare size={13} />
+                  <span className="welcome__recent-title">
+                    {session.name || session.preview || 'Untitled session'}
+                  </span>
+                  <span className="welcome__recent-meta">
+                    {formatRelativeTime(session.updatedAt)}
+                    {session.messageCount ? ` · ${session.messageCount} msgs` : ''}
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
         ) : null}
 

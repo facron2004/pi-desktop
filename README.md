@@ -30,7 +30,9 @@ Claude Desktop.
   type a value, edit a block of text — the desktop app shows the dialog and answers Pi
   for you. Extensions can also push status lines, widgets and notifications.
 - **Session history.** Pi persists every conversation to disk; the sidebar lists them
-  per project, filters them, renames them and exports them as HTML.
+  per project, filters them, renames them and exports them as HTML. The empty state
+  offers the last conversations of the project, so a run can be picked up again
+  without walking through the sidebar.
 - **Branch from any prompt.** Every message you sent is a branch point. "Branch" opens a
   new conversation that keeps the earlier history and hands the prompt back to the
   composer, so you can try a different approach without losing the run-up. The copy
