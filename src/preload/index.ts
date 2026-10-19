@@ -58,3 +58,15 @@ const bridge: PiDesktopBridge = {
 }
 
 contextBridge.exposeInMainWorld('pi', bridge)
+
+// Development aid: the main process can prefill the composer so screenshots
+// can capture transient UI such as the command palette. The flag only exists
+// when PI_DESKTOP_PREFILL is set.
+const prefillArg = process.argv.find((argument) =>
+  argument.startsWith('--pi-desktop-prefill=')
+)
+if (prefillArg) {
+  contextBridge.exposeInMainWorld('__piDesktopDev', {
+    prefill: prefillArg.slice('--pi-desktop-prefill='.length)
+  })
+}

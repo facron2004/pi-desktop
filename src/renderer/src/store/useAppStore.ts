@@ -4,6 +4,7 @@ import type {
   AppInfo,
   AppSettings,
   ModelInfo,
+  PiCommand,
   PiEvent,
   PiState,
   RuntimeStatus,
@@ -25,6 +26,7 @@ export interface AppStore {
   piState?: PiState
   models: ModelInfo[]
   thinkingLevels: string[]
+  commands: PiCommand[]
   stats?: SessionStats
   items: ThreadItem[]
   queue: { steering: string[]; followUp: string[] }
@@ -39,6 +41,7 @@ export interface AppStore {
   removeWorkspace: (id: string) => Promise<void>
   refreshSessions: () => Promise<void>
   selectSession: (session: SessionMeta) => Promise<void>
+  renameSession: (name: string) => Promise<void>
   newChat: () => Promise<void>
   send: (text: string, images: { data: string; mimeType: string }[], kind?: QueueKind) => Promise<void>
   stop: () => Promise<void>
@@ -47,6 +50,7 @@ export interface AppStore {
   compact: () => Promise<void>
   refreshState: () => Promise<void>
   reloadMessages: () => Promise<void>
+  refreshCommands: () => Promise<void>
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>
   dismissError: () => void
   showToast: (message: string) => void
@@ -69,6 +73,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isStreaming: false,
   models: [],
   thinkingLevels: [],
+  commands: [],
   items: [],
   queue: { steering: [], followUp: [] },
   busy: false,
@@ -85,6 +90,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     window.pi.runtime.onStatus((status) => {
       set({ status })
       if (status.phase === 'error' && status.error) set({ error: status.error })
+      if (status.phase === 'ready') void get().refreshCommands()
     })
 
     await get().refreshSessions()
@@ -181,6 +187,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await window.pi.runtime.request('switch_session', { sessionPath: session.file })
       await get().refreshState()
       await get().reloadMessages()
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
+  async renameSession(name: string) {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    try {
+      await window.pi.runtime.request('set_session_name', { name: trimmed })
+      const activeFile = get().activeSessionFile
+      set((state) => ({
+        sessions: state.sessions.map((session) =>
+          session.file === activeFile ? { ...session, name: trimmed } : session
+        ),
+        piState: state.piState ? { ...state.piState, sessionName: trimmed } : state.piState
+      }))
+      await get().refreshSessions()
     } catch (error) {
       set({ error: messageOf(error) })
     }
@@ -284,6 +308,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ items: itemsFromMessages(data?.messages ?? []) })
     } catch (error) {
       set({ error: messageOf(error) })
+    }
+  },
+
+  async refreshCommands() {
+    try {
+      const data = await window.pi.runtime.request<{ commands: PiCommand[] }>('get_commands')
+      set({ commands: data?.commands ?? [] })
+    } catch {
+      set({ commands: [] })
     }
   },
 

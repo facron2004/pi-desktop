@@ -1,10 +1,21 @@
 import { memo, useEffect, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { Check, Copy } from 'lucide-react'
 import { highlightCode } from '../lib/highlight'
 
 function useIsDark(): boolean {
-  return document.documentElement.dataset.theme !== 'light'
+  const [dark, setDark] = useState(() => document.documentElement.dataset.theme !== 'light')
+
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setDark(document.documentElement.dataset.theme !== 'light')
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
+
+  return dark
 }
 
 interface CodeBlockProps {
@@ -14,6 +25,7 @@ interface CodeBlockProps {
 
 const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
   const [html, setHtml] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const isDark = useIsDark()
 
   useEffect(() => {
@@ -30,6 +42,16 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
     }
   }, [code, language, isDark])
 
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1600)
+    } catch {
+      /* clipboard may be unavailable */
+    }
+  }
+
   if (!html) {
     return (
       <pre>
@@ -38,7 +60,15 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
     )
   }
 
-  return <div className="shiki-host" dangerouslySetInnerHTML={{ __html: html }} />
+  return (
+    <div className="code-block">
+      <button className="code-block__copy" onClick={() => void copy()} title="Copy code">
+        {copied ? <Check size={11} /> : <Copy size={11} />}
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      <div className="shiki-host" dangerouslySetInnerHTML={{ __html: html }} />
+    </div>
+  )
 })
 
 export const Markdown = memo(function Markdown({ children }: { children: string }) {

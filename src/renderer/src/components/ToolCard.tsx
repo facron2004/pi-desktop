@@ -24,9 +24,13 @@ const ICONS: Record<ToolTone | 'error', typeof FileText> = {
   error: CircleAlert
 }
 
+/** Results longer than this are collapsed behind a "show more" control. */
+const RESULT_PREVIEW = 1200
+
 export function ToolCard({ item }: { item: ToolItem }) {
   // Edits are the interesting part, so their diff starts expanded.
   const [open, setOpen] = useState(item.toolName === 'edit')
+  const [full, setFull] = useState(false)
   const descriptor = describeTool(item.toolName)
   const tone = item.status === 'error' ? 'error' : descriptor.tone
   const Icon = ICONS[tone]
@@ -37,6 +41,9 @@ export function ToolCard({ item }: { item: ToolItem }) {
   }, [item.args, item.toolName])
 
   const summary = descriptor.summary(item.args ?? {})
+  const result = item.result ?? ''
+  const truncated = result.length > RESULT_PREVIEW
+  const visibleResult = truncated && !full ? result.slice(0, RESULT_PREVIEW) : result
 
   return (
     <div className="tool" data-tone={tone}>
@@ -59,9 +66,7 @@ export function ToolCard({ item }: { item: ToolItem }) {
 
       {open ? (
         <div className="tool__body">
-          {diffs.length > 0 ? (
-            <DiffView diffs={diffs} />
-          ) : null}
+          {diffs.length > 0 ? <DiffView diffs={diffs} /> : null}
 
           {item.toolName === 'write' ? (
             <pre className="tool__pre">{String(item.args?.content ?? '')}</pre>
@@ -71,13 +76,21 @@ export function ToolCard({ item }: { item: ToolItem }) {
             <pre className="tool__pre">{String(item.args?.command ?? '')}</pre>
           ) : null}
 
-          {item.result ? (
+          {visibleResult ? (
             <pre className={`tool__pre${item.status === 'error' ? ' tool__error' : ''}`}>
-              {item.result}
+              {visibleResult}
             </pre>
           ) : null}
 
-          {!diffs.length && !item.result && item.toolName !== 'write' ? (
+          {truncated ? (
+            <button className="tool__more" onClick={() => setFull((value) => !value)}>
+              {full
+                ? 'Show less'
+                : `Show ${(result.length - RESULT_PREVIEW).toLocaleString()} more characters`}
+            </button>
+          ) : null}
+
+          {!diffs.length && !visibleResult && item.toolName !== 'write' ? (
             <pre className="tool__pre">{JSON.stringify(item.args ?? {}, null, 2)}</pre>
           ) : null}
         </div>

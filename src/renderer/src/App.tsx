@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { PanelLeft, RefreshCw, X } from 'lucide-react'
+import { PanelLeft, Pencil, RefreshCw, X } from 'lucide-react'
 import { useAppStore } from './store/useAppStore'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
@@ -20,10 +20,13 @@ export default function App() {
   const pickWorkspace = useAppStore((state) => state.pickWorkspace)
   const newChat = useAppStore((state) => state.newChat)
   const openWorkspace = useAppStore((state) => state.openWorkspace)
+  const renameSession = useAppStore((state) => state.renameSession)
   const workspace = useAppStore((state) => state.workspace)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [renaming, setRenaming] = useState(false)
+  const [draft, setDraft] = useState('')
 
   useEffect(() => {
     void bootstrap()
@@ -37,9 +40,20 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') {
+      const mod = event.ctrlKey || event.metaKey
+      if (mod && event.key.toLowerCase() === 'n') {
         event.preventDefault()
         void newChat()
+        return
+      }
+      if (mod && event.key.toLowerCase() === 'b') {
+        event.preventDefault()
+        setSidebarOpen((value) => !value)
+        return
+      }
+      if (mod && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        window.dispatchEvent(new CustomEvent('pi:focus-composer'))
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -61,7 +75,43 @@ export default function App() {
           >
             <PanelLeft size={15} />
           </button>
-          <span className="titlebar__title">{title}</span>
+          {renaming ? (
+            <input
+              className="titlebar__rename"
+              value={draft}
+              autoFocus
+              onChange={(event) => setDraft(event.target.value)}
+              onBlur={() => {
+                setRenaming(false)
+                void renameSession(draft)
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  setRenaming(false)
+                  void renameSession(draft)
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setRenaming(false)
+                }
+              }}
+            />
+          ) : (
+            <>
+              <span className="titlebar__title">{title}</span>
+              <button
+                className="icon-btn no-drag"
+                title="Rename this conversation"
+                onClick={() => {
+                  setDraft(piState?.sessionName ?? '')
+                  setRenaming(true)
+                }}
+              >
+                <Pencil size={12} />
+              </button>
+            </>
+          )}
           <span className="titlebar__spacer" />
           <div className="titlebar__actions no-drag">
             <button

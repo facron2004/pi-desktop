@@ -36,7 +36,10 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      spellcheck: true
+      spellcheck: true,
+      additionalArguments: process.env.PI_DESKTOP_PREFILL
+        ? [`--pi-desktop-prefill=${process.env.PI_DESKTOP_PREFILL}`]
+        : []
     }
   })
 

@@ -1,11 +1,17 @@
 import { useState } from 'react'
-import { Brain, ChevronRight, CircleAlert, CircleCheck, Info, TriangleAlert } from 'lucide-react'
-import type { AssistantItem, NoticeItem, ToolItem, UserItem } from '../lib/thread'
-import { formatCost, formatTokens } from '../lib/format'
+import { Brain, Check, ChevronRight, Copy, CircleAlert, CircleCheck, Info, TriangleAlert } from 'lucide-react'
+import type { NoticeItem, UserItem } from '../lib/thread'
 import { Markdown } from './Markdown'
-import { ToolCard } from './ToolCard'
 
-export function UserMessage({ item }: { item: UserItem }) {
+export function UserMessage({
+  item,
+  onCopy,
+  copied
+}: {
+  item: UserItem
+  onCopy: (id: string, text: string) => void
+  copied: string | null
+}) {
   return (
     <div className="user-msg">
       <div className="user-msg__bubble">
@@ -17,71 +23,37 @@ export function UserMessage({ item }: { item: UserItem }) {
           </div>
         ) : null}
         {item.text ? <Markdown>{item.text}</Markdown> : null}
+        <div className="user-msg__actions">
+          <button
+            className="ghost-btn"
+            onClick={() => onCopy(item.id, item.text)}
+            title="Copy your message"
+          >
+            {copied === item.id ? <Check size={12} /> : <Copy size={12} />}
+            {copied === item.id ? 'Copied' : 'Copy'}
+          </button>
+        </div>
       </div>
     </div>
   )
 }
 
-function ThinkingBlock({ text }: { text: string }) {
+export function AssistantText({ text }: { text: string }) {
+  return <Markdown>{text}</Markdown>
+}
+
+export function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
   if (!text.trim()) return null
   return (
-    <div className="thinking">
+    <div className="thinking" data-open={open}>
       <button className="thinking__head" onClick={() => setOpen((value) => !value)}>
         <ChevronRight size={13} className="caret" data-open={open} />
         <Brain size={13} />
         <span className="thinking__title">Thinking</span>
+        <span className="thinking__hint">{open ? 'hide' : 'show'}</span>
       </button>
       {open ? <div className="thinking__body">{text}</div> : null}
-    </div>
-  )
-}
-
-export function AssistantMessage({
-  item,
-  tools
-}: {
-  item: AssistantItem
-  tools: Map<string, ToolItem>
-}) {
-  return (
-    <div className="assistant">
-      <div className="assistant__avatar">π</div>
-      <div className="assistant__body">
-        {item.blocks.map((block, index) => {
-          if (block.type === 'text') {
-            if (!block.text.trim()) return null
-            return <Markdown key={index}>{block.text}</Markdown>
-          }
-          if (block.type === 'thinking') {
-            return <ThinkingBlock key={index} text={block.text} />
-          }
-          const tool = tools.get(block.id)
-          return tool ? <ToolCard key={index} item={tool} /> : null
-        })}
-
-        {item.streaming ? (
-          <div className="assistant__footer">
-            <span className="spinner" />
-            <span>Working…</span>
-          </div>
-        ) : null}
-
-        {!item.streaming && (item.usage || item.model) ? (
-          <div className="assistant__footer">
-            {item.model ? <span>{item.model}</span> : null}
-            {item.usage ? (
-              <>
-                <span>{formatTokens(item.usage.totalTokens)} tokens</span>
-                {item.usage.cost ? <span>{formatCost(item.usage.cost.total)}</span> : null}
-              </>
-            ) : null}
-            {item.stopReason === 'error' ? (
-              <span style={{ color: 'var(--red)' }}>{item.error ?? 'error'}</span>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
     </div>
   )
 }

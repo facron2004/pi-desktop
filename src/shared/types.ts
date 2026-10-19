@@ -100,6 +100,19 @@ export interface ModelInfo {
   cost?: Record<string, number>
 }
 
+export interface PiCommand {
+  name: string
+  description?: string
+  source: 'extension' | 'prompt' | 'skill'
+  sourceInfo?: {
+    path?: string
+    source?: string
+    scope?: string
+    origin?: string
+    baseDir?: string
+  }
+}
+
 export interface PiState {
   model?: ModelInfo
   thinkingLevel?: string
