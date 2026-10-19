@@ -3,6 +3,26 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Check, Copy } from 'lucide-react'
 import { highlightCode } from '../lib/highlight'
+import { useSearchQuery } from '../lib/search-context'
+
+/** Wrap every occurrence of the search query in a `<mark>`. */
+function Highlight({ children, query }: { children?: ReactNode; query: string }) {
+  if (!query || typeof children !== 'string') return <>{children}</>
+  const needle = query.toLowerCase()
+  const parts = children.split(new RegExp(`(${escapeRegExp(query)})`, 'ig'))
+  if (parts.length === 1) return <>{children}</>
+  return (
+    <>
+      {parts.map((part, index) =>
+        part.toLowerCase() === needle ? <mark key={index}>{part}</mark> : part
+      )}
+    </>
+  )
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 
 function useIsDark(): boolean {
   const [dark, setDark] = useState(() => document.documentElement.dataset.theme !== 'light')
@@ -72,6 +92,9 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
 })
 
 export const Markdown = memo(function Markdown({ children }: { children: string }) {
+  const query = useSearchQuery()
+  const marked = (label: ReactNode) => <Highlight query={query}>{label}</Highlight>
+
   return (
     <div className="md">
       <ReactMarkdown
@@ -88,6 +111,30 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
                 {content}
               </code>
             )
+          },
+          p({ children: content, ...rest }) {
+            return <p {...rest}>{marked(content)}</p>
+          },
+          li({ children: content, ...rest }) {
+            return <li {...rest}>{marked(content)}</li>
+          },
+          h1({ children: content, ...rest }) {
+            return <h1 {...rest}>{marked(content)}</h1>
+          },
+          h2({ children: content, ...rest }) {
+            return <h2 {...rest}>{marked(content)}</h2>
+          },
+          h3({ children: content, ...rest }) {
+            return <h3 {...rest}>{marked(content)}</h3>
+          },
+          h4({ children: content, ...rest }) {
+            return <h4 {...rest}>{marked(content)}</h4>
+          },
+          strong({ children: content, ...rest }) {
+            return <strong {...rest}>{marked(content)}</strong>
+          },
+          em({ children: content, ...rest }) {
+            return <em {...rest}>{marked(content)}</em>
           },
           a({ children: label, href, ...rest }) {
             return (

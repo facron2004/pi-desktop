@@ -24,6 +24,8 @@ Claude Desktop.
   for you. Extensions can also push status lines, widgets and notifications.
 - **Session history.** Pi persists every conversation to disk; the sidebar lists them
   per project, filters them, renames them and exports them as HTML.
+- **Search the conversation.** `Ctrl+F` finds every mention of a word in the thread and
+  walks through the hits.
 - **Command palette.** Type `/` in the composer to reach Pi's own commands — skills,
   prompt templates and extension commands.
 - **Model and effort control.** Switch model and reasoning level mid-conversation, and
@@ -31,7 +33,8 @@ Claude Desktop.
 - **Steering.** While Pi is working you can steer it ("stop and do this instead") or
   queue a follow-up for when it finishes.
 - **Keyboard-first.** `Ctrl+N` new chat, `Ctrl+B` sidebar, `Ctrl+K` focus the composer,
-  `↑` recalls earlier prompts, `Esc` stops a run. `Ctrl+/` lists every shortcut.
+  `Ctrl+F` search the conversation, `↑` recalls earlier prompts, `Esc` stops a run.
+  `Ctrl+/` lists every shortcut.
 
 ## How it talks to Pi
 
@@ -127,6 +130,7 @@ src/
     ├── components/       thread, tool cards, diffs, composer, settings, panels
     ├── lib/thread.ts     Pi session event → UI thread reducer
     ├── lib/changes.ts    tool calls → changed-files review
+    ├── lib/search.ts     in-conversation search
     ├── lib/highlight.ts  syntax highlighting, grammars loaded on demand
     └── store/            zustand store
 ```

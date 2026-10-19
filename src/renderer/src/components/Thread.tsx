@@ -4,6 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../lib/thread'
 import { formatClock, formatCost, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
+import { SearchContext } from '../lib/search-context'
 import { AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard } from './ToolCard'
 
@@ -257,7 +258,8 @@ export function Thread() {
       ) : null}
 
       <div className="thread__inner">
-        {turns.map((turn) => {
+        <SearchContext.Provider value={query}>
+          {turns.map((turn) => {
           const toolMap = new Map(turn.tools.map((tool) => [tool.toolCallId, tool]))
           const referenced = new Set<string>()
           for (const assistant of turn.assistants) {
@@ -338,7 +340,8 @@ export function Thread() {
               ) : null}
             </section>
           )
-        })}
+          })}
+        </SearchContext.Provider>
 
         {isStreaming && items.length === 0 ? (
           <div className="assistant">

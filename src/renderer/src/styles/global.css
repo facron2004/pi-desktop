@@ -780,6 +780,15 @@
   padding: 0 1px;
 }
 
+/* A match inside the conversation itself. */
+.md mark {
+  background: var(--accent-soft);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+  box-shadow: 0 0 0 1px var(--accent-line);
+}
+
 .turn--flash {
   animation: turn-flash 1.2s var(--ease);
 }
