@@ -2,8 +2,28 @@ import { useMemo, useState } from 'react'
 import { FolderOpen, MessageSquare, Pencil, Plus, Search, Settings, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { SessionMeta } from '@shared/types'
-import { formatRelativeTime } from '../lib/format'
+import { formatDayBucket, formatRelativeTime } from '../lib/format'
 import { ConfirmDialog } from './ConfirmDialog'
+
+/** A session in the list, or the heading that separates a run of them. */
+type GroupEntry =
+  | { kind: 'heading'; label: string; key: string }
+  | { kind: 'session'; session: SessionMeta; key: string }
+
+/** Split the sessions of a project into buckets by when they happened. */
+function groupByDay(sessions: SessionMeta[]): GroupEntry[] {
+  const entries: GroupEntry[] = []
+  let previous = ''
+  for (const session of sessions) {
+    const bucket = formatDayBucket(session.updatedAt)
+    if (bucket !== previous) {
+      entries.push({ kind: 'heading', label: bucket, key: `heading-${bucket}` })
+      previous = bucket
+    }
+    entries.push({ kind: 'session', session, key: session.file })
+  }
+  return entries
+}
 
 export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const sessions = useAppStore((state) => state.sessions)
@@ -134,71 +154,31 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
               <span style={{ textTransform: 'none', letterSpacing: 0 }}>{group.items.length}</span>
             </div>
             <div className="session-list">
-              {group.items.map((session) => (
-                <div
-                  className="session-item"
-                  key={session.file}
-                  data-active={session.file === activeSessionFile}
-                  onClick={() => {
-                    if (renaming !== session.file) void selectSession(session)
-                  }}
-                  title={session.name || session.preview || session.file}
-                >
-                  <MessageSquare size={13} className="session-item__icon" />
-                  <span className="session-item__text">
-                    {renaming === session.file ? (
-                      <input
-                        className="session-item__input"
-                        value={draft}
-                        autoFocus
-                        onChange={(event) => setDraft(event.target.value)}
-                        onBlur={() => commitRename(session.file)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault()
-                            commitRename(session.file)
-                          }
-                          if (event.key === 'Escape') {
-                            event.preventDefault()
-                            setRenaming(null)
-                          }
-                        }}
-                        onClick={(event) => event.stopPropagation()}
-                      />
-                    ) : (
-                      <>
-                        <span className="session-item__title">
-                          {session.name || session.preview || 'Untitled session'}
-                        </span>
-                        <span className="session-item__meta">
-                          <span>{formatRelativeTime(session.updatedAt)}</span>
-                          {session.messageCount ? <span>· {session.messageCount} msgs</span> : null}
-                        </span>
-                      </>
-                    )}
-                  </span>
-                  <button
-                    className="session-item__rename"
-                    title="Rename conversation"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      startRename(session.file, session.name || session.preview || '')
+              {groupByDay(group.items).map((entry) =>
+                entry.kind === 'heading' ? (
+                  <div className="session-list__heading" key={entry.key}>
+                    {entry.label}
+                  </div>
+                ) : (
+                  <SessionRow
+                    key={entry.key}
+                    session={entry.session}
+                    active={entry.session.file === activeSessionFile}
+                    renaming={renaming === entry.session.file}
+                    draft={draft}
+                    onSelect={(file) => {
+                      if (renaming !== file) void selectSession(entry.session)
                     }}
-                  >
-                    <Pencil size={11} />
-                  </button>
-                  <button
-                    className="session-item__rename session-item__rename--danger"
-                    title="Delete conversation"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      setPendingDelete(session)
-                    }}
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                </div>
-              ))}
+                    onStartRename={() =>
+                      startRename(entry.session.file, entry.session.name || entry.session.preview || '')
+                    }
+                    onRenameDraft={setDraft}
+                    onCommitRename={commitRename}
+                    onCancelRename={() => setRenaming(null)}
+                    onDelete={() => setPendingDelete(entry.session)}
+                  />
+                )
+              )}
             </div>
           </div>
         ))}
@@ -252,5 +232,94 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
         />
       ) : null}
     </aside>
+  )
+}
+
+interface SessionRowProps {
+  session: SessionMeta
+  active: boolean
+  renaming: boolean
+  draft: string
+  onSelect: (file: string) => void
+  onStartRename: () => void
+  onRenameDraft: (value: string) => void
+  onCommitRename: (file: string) => void
+  onCancelRename: () => void
+  onDelete: () => void
+}
+
+function SessionRow({
+  session,
+  active,
+  renaming,
+  draft,
+  onSelect,
+  onStartRename,
+  onRenameDraft,
+  onCommitRename,
+  onCancelRename,
+  onDelete
+}: SessionRowProps) {
+  return (
+    <div
+      className="session-item"
+      data-active={active}
+      onClick={() => onSelect(session.file)}
+      title={session.name || session.preview || session.file}
+    >
+      <MessageSquare size={13} className="session-item__icon" />
+      <span className="session-item__text">
+        {renaming ? (
+          <input
+            className="session-item__input"
+            value={draft}
+            autoFocus
+            onChange={(event) => onRenameDraft(event.target.value)}
+            onBlur={() => onCommitRename(session.file)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                onCommitRename(session.file)
+              }
+              if (event.key === 'Escape') {
+                event.preventDefault()
+                onCancelRename()
+              }
+            }}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ) : (
+          <>
+            <span className="session-item__title">
+              {session.name || session.preview || 'Untitled session'}
+            </span>
+            <span className="session-item__meta">
+              <span>{formatRelativeTime(session.updatedAt)}</span>
+              {session.messageCount ? <span>· {session.messageCount} msgs</span> : null}
+            </span>
+          </>
+        )}
+      </span>
+      <button
+        className="session-item__rename"
+        title="Rename conversation"
+        onClick={(event) => {
+          event.stopPropagation()
+          onStartRename()
+        }}
+      >
+        <Pencil size={11} />
+      </button>
+      <button
+        className="session-item__rename session-item__rename--danger"
+        title="Delete conversation"
+        onClick={(event) => {
+          event.stopPropagation()
+          onDelete()
+        }}
+      >
+        <Trash2 size={11} />
+      </button>
+    </div>
   )
 }

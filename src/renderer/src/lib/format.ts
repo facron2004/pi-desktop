@@ -33,6 +33,20 @@ export function formatRelativeTime(timestamp: number | undefined): string {
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
+/** A coarse bucket for grouping conversations by when they happened. */
+export function formatDayBucket(timestamp: number | undefined): string {
+  if (!timestamp) return 'Earlier'
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const day = 86_400_000
+  const age = startOfToday - new Date(timestamp).getTime()
+  if (age < day) return 'Today'
+  if (age < day * 2) return 'Yesterday'
+  if (age < day * 7) return 'Earlier this week'
+  if (age < day * 30) return 'Earlier this month'
+  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+}
+
 export function formatDuration(ms: number | undefined): string {
   if (ms === undefined) return ''
   if (ms < 1000) return `${ms}ms`

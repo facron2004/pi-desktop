@@ -91,6 +91,10 @@ export function Welcome({ onPick }: { onPick: () => void }) {
           </span>
           <span>
             <kbd>Ctrl</kbd>
+            <kbd>F</kbd> search chat
+          </span>
+          <span>
+            <kbd>Ctrl</kbd>
             <kbd>K</kbd> focus composer
           </span>
           <button
