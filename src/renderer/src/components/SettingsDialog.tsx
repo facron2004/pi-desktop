@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Check, RefreshCw, X } from 'lucide-react'
+import { Check, FolderOpen, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { Switch } from './Switch'
 import type { AuthStatus } from '@shared/types'
@@ -9,6 +9,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const info = useAppStore((state) => state.info)
   const updateSettings = useAppStore((state) => state.updateSettings)
   const showToast = useAppStore((state) => state.showToast)
+  const pickWorkspace = useAppStore((state) => state.pickWorkspace)
 
   const [piPath, setPiPath] = useState(settings.piPath ?? '')
   const [provider, setProvider] = useState(settings.provider ?? '')
@@ -52,6 +53,20 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="modal__body">
+          <div className="field">
+            <label className="field__label">Projects</label>
+            <div className="field__row">
+              <button className="btn" onClick={() => void pickWorkspace()}>
+                <FolderOpen size={13} />
+                Open a folder
+              </button>
+              <span className="field__hint" style={{ flex: 1 }}>
+                Every folder you open is listed in the sidebar, and you can jump to it with{' '}
+                <code>Ctrl</code> <code>1</code> … <code>9</code>.
+              </span>
+            </div>
+          </div>
+
           <div className="field">
             <label className="field__label" htmlFor="pi-path">
               Pi CLI path
@@ -204,7 +219,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             Close
           </button>
           <button className="btn btn--primary" onClick={() => void save()}>
-            <RefreshCw size={13} />
+            <Check size={13} />
             Save
           </button>
         </div>

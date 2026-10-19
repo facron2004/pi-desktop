@@ -36,6 +36,31 @@ export function InspectorPanel({
   const diffSplit = settings.diffSplit === true
   const changes = useMemo(() => collectChanges(items), [items])
 
+  // The lines that were added and removed over all the files, for the head of
+  // the panel. The same numbers are shown per file.
+  const stats = useMemo(
+    () =>
+      changes.map((change) => {
+        const total = change.diffs.reduce(
+          (acc, block) => {
+            const one = diffStats(block)
+            return { added: acc.added + one.added, removed: acc.removed + one.removed }
+          },
+          { added: 0, removed: 0 }
+        )
+        return { path: change.path, ...total }
+      }),
+    [changes]
+  )
+  const totals = useMemo(
+    () =>
+      stats.reduce(
+        (acc, one) => ({ added: acc.added + one.added, removed: acc.removed + one.removed }),
+        { added: 0, removed: 0 }
+      ),
+    [stats]
+  )
+
   const [tab, setTab] = useState<Tab>(initialTab)
 
   // The open file lives in the app shell, so a diff in the thread can send
@@ -126,6 +151,12 @@ export function InspectorPanel({
           </button>
         </div>
         <span style={{ flex: 1 }} />
+        {changes.length > 0 && (totals.added || totals.removed) ? (
+          <span className="drawer__stats" title="Lines added and removed over all files">
+            {totals.added ? <span data-kind="add">+{totals.added}</span> : null}
+            {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
+          </span>
+        ) : null}
         {tab === 'changes' && changes.length > 0 ? (
           <div className="segmented segmented--tight" title="Diff layout">
             <button
@@ -149,87 +180,91 @@ export function InspectorPanel({
         </button>
       </header>
 
-      {openFile ? (
-        <div className="drawer__body drawer__body--flush">
-          <div className="viewer__back">
-            <button className="ghost-btn" onClick={() => setOpenFile(null)}>
-              <ArrowLeft size={12} />
-              Back
-            </button>
-          </div>
-          <FileViewer file={openFile.path} root={workspace?.path} line={openFile.line} />
-        </div>
-      ) : tab === 'files' ? (
-        <div className="drawer__body drawer__body--flush">
+      {/* The panes stay mounted, so the file tree keeps the folders the user
+          opened while a file is on screen. */}
+      <div className="drawer__stack">
+        <div className="drawer__pane" data-active={!openFile && tab === 'files'}>
           <FileTree root={workspace?.path ?? ''} onOpen={(path) => setOpenFile({ path })} />
         </div>
-      ) : changes.length === 0 ? (
-        <div className="drawer__empty">
-          No files have been changed yet.
-          <br />
-          Edits and new files show up here as Pi works.
+
+        <div className="drawer__pane" data-active={!openFile && tab !== 'files'}>
+          {changes.length === 0 ? (
+            <div className="drawer__empty">
+              No files have been changed yet.
+              <br />
+              Edits and new files show up here as Pi works.
+            </div>
+          ) : (
+            <div className="drawer__body">
+              {changes.map((change, index) => {
+                const one = stats[index]
+                return (
+                  <section className="change" key={change.path}>
+                    <header className="change__head">
+                      <span className="change__icon" data-kind={change.kind}>
+                        {change.kind === 'edit' ? <Pencil size={12} /> : <FilePlus size={12} />}
+                      </span>
+                      <button
+                        className="change__path"
+                        title={`Open ${change.path}`}
+                        onClick={() => setOpenFile({ path: change.path })}
+                      >
+                        {relativePath(workspace?.path ?? '', change.path)}
+                      </button>
+                      {one.added || one.removed ? (
+                        <span className="change__stats">
+                          {one.added ? <span data-kind="add">+{one.added}</span> : null}
+                          {one.removed ? <span data-kind="del">−{one.removed}</span> : null}
+                        </span>
+                      ) : null}
+                      {change.edits > 1 ? (
+                        <span className="change__badge">{change.edits} edits</span>
+                      ) : null}
+                      <button
+                        className="change__reveal"
+                        title="Reveal in the file manager"
+                        onClick={() => void window.pi.fs.reveal(change.path)}
+                      >
+                        <ExternalLink size={12} />
+                      </button>
+                    </header>
+
+                    {change.diffs.length > 0 ? (
+                      <DiffView
+                        diffs={change.diffs}
+                        mode={diffSplit ? 'split' : 'unified'}
+                        onOpenLine={(line) => setOpenFile({ path: change.path, line })}
+                      />
+                    ) : null}
+
+                    {!change.diffs.length && change.content ? (
+                      <pre className="tool__pre">{change.content}</pre>
+                    ) : null}
+
+                    {!change.diffs.length && !change.content ? (
+                      <pre className="tool__pre">Written to disk.</pre>
+                    ) : null}
+                  </section>
+                )
+              })}
+            </div>
+          )}
         </div>
-      ) : (
-        <div className="drawer__body">
-          {changes.map((change) => {
-            const stats = change.diffs.reduce(
-              (acc, block) => {
-                const one = diffStats(block)
-                return { added: acc.added + one.added, removed: acc.removed + one.removed }
-              },
-              { added: 0, removed: 0 }
-            )
-            return (
-              <section className="change" key={change.path}>
-                <header className="change__head">
-                  <span className="change__icon" data-kind={change.kind}>
-                    {change.kind === 'edit' ? <Pencil size={12} /> : <FilePlus size={12} />}
-                  </span>
-                  <button
-                    className="change__path"
-                    title={`Open ${change.path}`}
-                    onClick={() => setOpenFile({ path: change.path })}
-                  >
-                    {relativePath(workspace?.path ?? '', change.path)}
-                  </button>
-                  {stats.added || stats.removed ? (
-                    <span className="change__stats">
-                      {stats.added ? <span data-kind="add">+{stats.added}</span> : null}
-                      {stats.removed ? <span data-kind="del">−{stats.removed}</span> : null}
-                    </span>
-                  ) : null}
-                  {change.edits > 1 ? (
-                    <span className="change__badge">{change.edits} edits</span>
-                  ) : null}
-                  <button
-                    className="change__reveal"
-                    title="Reveal in the file manager"
-                    onClick={() => void window.pi.fs.reveal(change.path)}
-                  >
-                    <ExternalLink size={12} />
-                  </button>
-                </header>
 
-                {change.diffs.length > 0 ? (
-                  <DiffView
-                    diffs={change.diffs}
-                    mode={diffSplit ? 'split' : 'unified'}
-                    onOpenLine={(line) => setOpenFile({ path: change.path, line })}
-                  />
-                ) : null}
-
-                {!change.diffs.length && change.content ? (
-                  <pre className="tool__pre">{change.content}</pre>
-                ) : null}
-
-                {!change.diffs.length && !change.content ? (
-                  <pre className="tool__pre">Written to disk.</pre>
-                ) : null}
-              </section>
-            )
-          })}
+        <div className="drawer__pane" data-active={Boolean(openFile)}>
+          {openFile ? (
+            <div className="drawer__body drawer__body--flush">
+              <div className="viewer__back">
+                <button className="ghost-btn" onClick={() => setOpenFile(null)}>
+                  <ArrowLeft size={12} />
+                  Back
+                </button>
+              </div>
+              <FileViewer file={openFile.path} root={workspace?.path} line={openFile.line} />
+            </div>
+          ) : null}
         </div>
-      )}
+      </div>
     </aside>
   )
 }

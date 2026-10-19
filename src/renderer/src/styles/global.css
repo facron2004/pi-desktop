@@ -381,6 +381,14 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.session-item__meta span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar__search {
@@ -3417,6 +3425,23 @@ body.is-resizing {
   background: var(--bg-active);
 }
 
+.drawer__stats {
+  display: inline-flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: -0.01em;
+  margin-right: 8px;
+}
+
+.drawer__stats span[data-kind='add'] {
+  color: var(--green);
+}
+
+.drawer__stats span[data-kind='del'] {
+  color: var(--red);
+}
+
 .drawer__body {
   flex: 1 1 auto;
   min-height: 0;
@@ -3425,6 +3450,26 @@ body.is-resizing {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* The panes of the inspector share the space; only the active one is shown.
+   They stay mounted so that the file tree keeps its state. */
+.drawer__stack {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer__pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer__pane[data-active='false'] {
+  display: none;
 }
 
 .drawer__empty {

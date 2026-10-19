@@ -16,6 +16,7 @@ import type { SessionMeta } from '@shared/types'
 import { formatDayBucket, formatRelativeTime } from '../lib/format'
 import { samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
+import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
 
 /** A session in the list, or the heading that separates a run of them. */
@@ -161,7 +162,8 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
       )
     )
 
-  // The pinned group is small, so it does not need the day headings.
+  // The pinned group is small, so it does not need the day headings. A
+  // pinned conversation can belong to another project, which the row says.
   const renderPinned = (items: SessionMeta[]) =>
     items.map((session) => (
       <SessionRow
@@ -171,6 +173,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
         pinned
         renaming={renaming === session.file}
         draft={draft}
+        project={session.cwd ? basename(session.cwd) : undefined}
         onSelect={(file) => {
           if (renaming !== file) void selectSession(session)
         }}
@@ -368,6 +371,8 @@ interface SessionRowProps {
   pinned: boolean
   renaming: boolean
   draft: string
+  /** The project the conversation belongs to, when it is not the open one. */
+  project?: string
   onSelect: (file: string) => void
   onStartRename: () => void
   onRenameDraft: (value: string) => void
@@ -383,6 +388,7 @@ function SessionRow({
   pinned,
   renaming,
   draft,
+  project,
   onSelect,
   onStartRename,
   onRenameDraft,
@@ -426,7 +432,11 @@ function SessionRow({
             </span>
             <span className="session-item__meta">
               <span>{formatRelativeTime(session.updatedAt)}</span>
-              {session.messageCount ? <span>· {session.messageCount} msgs</span> : null}
+              {project ? (
+                <span>· {project}</span>
+              ) : session.messageCount ? (
+                <span>· {session.messageCount} msgs</span>
+              ) : null}
             </span>
           </>
         )}
