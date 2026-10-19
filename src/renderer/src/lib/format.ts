@@ -55,15 +55,3 @@ export function formatDuration(ms: number | undefined): string {
   const seconds = Math.round((ms % 60_000) / 1000)
   return `${minutes}m ${seconds}s`
 }
-
-export function formatBytes(value: number | undefined): string {
-  if (!value) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let size = value
-  let unit = 0
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024
-    unit += 1
-  }
-  return `${size.toFixed(size < 10 && unit > 0 ? 1 : 0)} ${units[unit]}`
-}

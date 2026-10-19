@@ -55,7 +55,6 @@ export interface AppStore {
   forking: boolean
   error?: string
   toast?: { text: string; level: 'info' | 'warning' | 'error' }
-  busy: boolean
 
   /** A blocking extension dialog waiting for an answer. */
   uiRequest?: ExtensionUiRequest
@@ -131,7 +130,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
   queue: { steering: [], followUp: [] },
   forkTargets: [],
   forking: false,
-  busy: false,
   uiStatuses: [],
   uiWidgets: [],
 
