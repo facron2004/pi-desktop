@@ -44,12 +44,15 @@ export function scheduleCapture(context: CaptureContext): void {
   const waitForReady = async () => {
     if (context.runtime.currentStatus.phase === 'ready') {
       if (prompt) {
-        try {
-          await context.runtime.request('prompt', { message: prompt })
-          console.log('[pi-desktop] prompt sent')
-        } catch (error) {
-          console.error('[pi-desktop] prompt failed:', error)
-        }
+        // Not awaited: a prompt that opens a dialog (an extension asking for
+        // input) never resolves until the user answers, and the capture delay
+        // has to run alongside it.
+        void context.runtime
+          .request('prompt', { message: prompt })
+          .then(() => console.log('[pi-desktop] prompt accepted'))
+          .catch((error: unknown) => {
+            console.error('[pi-desktop] prompt failed:', error)
+          })
       }
       setTimeout(() => void capture(), delay)
       return

@@ -9,6 +9,7 @@ import { Welcome } from './components/Welcome'
 import { SettingsDialog } from './components/SettingsDialog'
 import { InspectorPanel } from './components/InspectorPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
+import { ExtensionDialog } from './components/ExtensionDialog'
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
@@ -26,6 +27,9 @@ export default function App() {
   const renameSession = useAppStore((state) => state.renameSession)
   const exportSession = useAppStore((state) => state.exportSession)
   const workspace = useAppStore((state) => state.workspace)
+  const uiStatuses = useAppStore((state) => state.uiStatuses)
+  const uiWidgets = useAppStore((state) => state.uiWidgets)
+  const uiTitle = useAppStore((state) => state.uiTitle)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -103,6 +107,14 @@ export default function App() {
   }, [newChat])
 
   const title = piState?.sessionName || workspace?.name || 'Pi Desktop'
+
+  // An extension can rename the session window through `setTitle`.
+  useEffect(() => {
+    document.title = uiTitle ? `${uiTitle} — Pi Desktop` : 'Pi Desktop'
+  }, [uiTitle])
+
+  const widgetsAbove = uiWidgets.filter((widget) => widget.placement === 'aboveEditor')
+  const widgetsBelow = uiWidgets.filter((widget) => widget.placement === 'belowEditor')
 
   return (
     <div
@@ -206,7 +218,34 @@ export default function App() {
           <Thread />
         )}
 
+        {uiStatuses.length > 0 ? (
+          <div className="status-strip">
+            {uiStatuses.map((entry) => (
+              <span className="status-strip__item" key={entry.key}>
+                <span className="status-strip__dot" />
+                {entry.text}
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        {widgetsAbove.map((widget) => (
+          <div className="widget" key={widget.key}>
+            {widget.lines.map((line, index) => (
+              <span key={index}>{line}</span>
+            ))}
+          </div>
+        ))}
+
         <Composer />
+
+        {widgetsBelow.map((widget) => (
+          <div className="widget widget--below" key={widget.key}>
+            {widget.lines.map((line, index) => (
+              <span key={index}>{line}</span>
+            ))}
+          </div>
+        ))}
 
         {error ? (
           <div className="modal-layer" style={{ alignItems: 'flex-end' }} onMouseDown={dismissError}>
@@ -224,11 +263,16 @@ export default function App() {
           </div>
         ) : null}
 
-        {toast ? <div className="toast">{toast}</div> : null}
+        {toast ? (
+          <div className="toast" data-level={toast.level}>
+            {toast.text}
+          </div>
+        ) : null}
       </main>
 
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
       {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
+      <ExtensionDialog />
       {changesOpen ? (
         <InspectorPanel
           initialTab={inspectorTab}

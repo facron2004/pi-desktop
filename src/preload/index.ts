@@ -3,6 +3,7 @@ import type {
   AppInfo,
   AppSettings,
   AuthStatus,
+  ExtensionUiResponse,
   FileContent,
   FileEntry,
   PiDesktopBridge,
@@ -50,7 +51,9 @@ const bridge: PiDesktopBridge = {
     ): Promise<T> => ipcRenderer.invoke('runtime:request', command, payload ?? {}, timeoutMs),
     onEvent: (handler: (event: PiEvent) => void) => subscribe<PiEvent>('runtime:event', handler),
     onStatus: (handler: (status: RuntimeStatus) => void) =>
-      subscribe<RuntimeStatus>('runtime:status', handler)
+      subscribe<RuntimeStatus>('runtime:status', handler),
+    respondUi: (id: string, response: ExtensionUiResponse): Promise<void> =>
+      ipcRenderer.invoke('runtime:respondUi', id, response)
   },
   auth: {
     check: (provider?: string): Promise<AuthStatus> => ipcRenderer.invoke('auth:check', provider)

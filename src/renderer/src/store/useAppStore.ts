@@ -3,6 +3,8 @@ import type {
   AgentMessage,
   AppInfo,
   AppSettings,
+  ExtensionUiRequest,
+  ExtensionUiResponse,
   ModelInfo,
   PiCommand,
   PiEvent,
@@ -16,6 +18,19 @@ import { applyEvent, itemsFromMessages, type ThreadItem } from '../lib/thread'
 import { basename, resolveAgainst } from '../lib/path'
 
 export type QueueKind = 'steer' | 'followUp'
+
+/** A status line published by an extension through `setStatus`. */
+export interface UiStatusEntry {
+  key: string
+  text: string
+}
+
+/** A block of text published by an extension through `setWidget`. */
+export interface UiWidgetEntry {
+  key: string
+  lines: string[]
+  placement: 'aboveEditor' | 'belowEditor'
+}
 
 export interface AppStore {
   info?: AppInfo
@@ -33,8 +48,17 @@ export interface AppStore {
   queue: { steering: string[]; followUp: string[] }
   activeSessionFile?: string
   error?: string
-  toast?: string
+  toast?: { text: string; level: 'info' | 'warning' | 'error' }
   busy: boolean
+
+  /** A blocking extension dialog waiting for an answer. */
+  uiRequest?: ExtensionUiRequest
+  uiStatuses: UiStatusEntry[]
+  uiWidgets: UiWidgetEntry[]
+  /** Title published by an extension through `setTitle`. */
+  uiTitle?: string
+  /** Text pushed into the composer through `set_editor_text`. */
+  composerText?: string
 
   bootstrap: () => Promise<void>
   openWorkspace: (workspace: Workspace, sessionFile?: string) => Promise<void>
@@ -56,8 +80,11 @@ export interface AppStore {
   refreshCommands: () => Promise<void>
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>
   dismissError: () => void
-  showToast: (message: string) => void
+  showToast: (message: string, level?: 'info' | 'warning' | 'error') => void
   clearToast: () => void
+  respondUi: (response: ExtensionUiResponse) => Promise<void>
+  dismissUi: () => Promise<void>
+  clearComposerText: () => void
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -80,6 +107,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   items: [],
   queue: { steering: [], followUp: [] },
   busy: false,
+  uiStatuses: [],
+  uiWidgets: [],
 
   async bootstrap() {
     const [info, settings] = await Promise.all([
@@ -124,7 +153,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
       activeSessionFile: sessionFile,
       error: undefined,
       isStreaming: false,
-      stats: undefined
+      stats: undefined,
+      // A pending dialog belongs to the previous Pi process, which is about
+      // to be replaced; its answer would never reach anybody.
+      uiRequest: undefined,
+      uiStatuses: [],
+      uiWidgets: [],
+      uiTitle: undefined,
+      composerText: undefined
     })
 
     const settings = get().settings
@@ -271,7 +307,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const payload: Record<string, unknown> = { message: trimmed }
       if (images.length) payload.images = images
       if (get().isStreaming) payload.streamingBehavior = kind
-      await window.pi.runtime.request('prompt', payload)
+      // An extension command can block on a dialog, and Pi only answers the
+      // prompt once the command is done. The deadline has to outlast that.
+      const result = await window.pi.runtime.request<{ disposition?: string }>(
+        'prompt',
+        payload,
+        900_000
+      )
+      if (result?.disposition === 'handled') {
+        // The command was consumed by Pi itself, so no model turn follows.
+        set((state) => ({
+          items: applyEvent(state.items, {
+            type: 'client_notice',
+            level: 'info',
+            text: `Pi handled ${trimmed} directly — no model turn was needed`
+          })
+        }))
+      }
     } catch (error) {
       set({ error: messageOf(error) })
     }
@@ -371,14 +423,33 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ error: undefined })
   },
 
-  showToast(message) {
-    set({ toast: message })
+  showToast(message, level = 'info') {
+    set({ toast: { text: message, level } })
     if (toastTimer) clearTimeout(toastTimer)
     toastTimer = setTimeout(() => set({ toast: undefined }), 3200)
   },
 
   clearToast() {
     set({ toast: undefined })
+  },
+
+  async respondUi(response) {
+    const request = get().uiRequest
+    if (!request) return
+    set({ uiRequest: undefined })
+    try {
+      await window.pi.runtime.respondUi(request.id, response)
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
+  async dismissUi() {
+    await get().respondUi({ cancelled: true })
+  },
+
+  clearComposerText() {
+    set({ composerText: undefined })
   }
 }))
 
@@ -405,6 +476,9 @@ function handleEvent(set: SetState, get: GetState, event: PiEvent): void {
       break
     case 'agent_settled':
       set({ isStreaming: false })
+      // Pi resolves a dialog on its own when its timeout expires. The client
+      // is not told, so the dialog is closed when the agent moves on.
+      if (get().uiRequest) set({ uiRequest: undefined })
       void get().refreshState()
       void get().refreshSessions()
       break
@@ -445,6 +519,74 @@ function handleEvent(set: SetState, get: GetState, event: PiEvent): void {
     case 'extension_error':
     case 'client_notice': {
       set((state) => ({ items: applyEvent(state.items, event) }))
+      break
+    }
+    case 'extension_ui_request': {
+      handleExtensionUi(set, get, event as unknown as ExtensionUiRequest)
+      break
+    }
+    default:
+      break
+  }
+}
+
+/**
+ * Apply one `extension_ui_request`.
+ *
+ * Dialog methods block the agent until an answer arrives, so they become a
+ * modal in the renderer. The rest are fire-and-forget decorations.
+ */
+function handleExtensionUi(
+  set: SetState,
+  get: GetState,
+  request: ExtensionUiRequest
+): void {
+  switch (request.method) {
+    case 'select':
+    case 'confirm':
+    case 'input':
+    case 'editor': {
+      // A new request supersedes any dialog that is still open.
+      set({ uiRequest: request })
+      break
+    }
+    case 'notify': {
+      get().showToast(request.message ?? '', request.notifyType ?? 'info')
+      break
+    }
+    case 'setStatus': {
+      const key = request.statusKey
+      if (!key) break
+      set((state) => ({
+        uiStatuses: request.statusText
+          ? [...state.uiStatuses.filter((entry) => entry.key !== key), { key, text: request.statusText! }]
+          : state.uiStatuses.filter((entry) => entry.key !== key)
+      }))
+      break
+    }
+    case 'setWidget': {
+      const key = request.widgetKey
+      if (!key) break
+      set((state) => ({
+        uiWidgets: request.widgetLines
+          ? [
+              ...state.uiWidgets.filter((entry) => entry.key !== key),
+              {
+                key,
+                lines: request.widgetLines!,
+                placement: request.widgetPlacement ?? 'aboveEditor'
+              }
+            ]
+          : state.uiWidgets.filter((entry) => entry.key !== key)
+      }))
+      break
+    }
+    case 'setTitle': {
+      set({ uiTitle: request.title })
+      break
+    }
+    case 'set_editor_text': {
+      set({ composerText: request.text ?? '' })
       break
     }
     default:

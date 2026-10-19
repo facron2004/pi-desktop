@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Check, RefreshCw, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
+import { Switch } from './Switch'
 import type { AuthStatus } from '@shared/types'
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
@@ -143,6 +144,22 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 Runs <code>pi auth check</code> to confirm the provider can be used.
               </span>
             )}
+          </div>
+
+          <div className="field">
+            <label className="field__label">Project resources</label>
+            <div className="field__row">
+              <Switch
+                checked={settings.trustProject !== false}
+                onChange={(value) => void updateSettings({ trustProject: value })}
+                label="Trust project-local extensions and settings"
+              />
+              <span className="field__hint" style={{ flex: 1 }}>
+                Allow this project&apos;s <code>.pi/extensions</code>, <code>.pi/skills</code> and{' '}
+                <code>.pi/settings.json</code> to load. Turn this off for projects you do not
+                trust.
+              </span>
+            </div>
           </div>
 
           <div className="field">

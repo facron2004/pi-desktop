@@ -27,6 +27,8 @@ export function Composer() {
   const status = useAppStore((state) => state.status)
   const workspace = useAppStore((state) => state.workspace)
   const commands = useAppStore((state) => state.commands)
+  const composerText = useAppStore((state) => state.composerText)
+  const clearComposerText = useAppStore((state) => state.clearComposerText)
 
   const [text, setText] = useState('')
   const [images, setImages] = useState<{ data: string; mimeType: string }[]>([])
@@ -70,11 +72,24 @@ export function Composer() {
     })
   }, [])
 
+  // An extension can prefill the editor through `set_editor_text`.
+  useEffect(() => {
+    if (composerText === undefined) return
+    setText(composerText)
+    clearComposerText()
+    requestAnimationFrame(() => {
+      const node = textareaRef.current
+      if (!node) return
+      const cursor = composerText.length
+      node.focus()
+      node.setSelectionRange(cursor, cursor)
+    })
+  }, [composerText, clearComposerText])
+
   const matching = useMemo(
     () => (slash ? filterCommands(commands, slash.query) : []),
     [commands, slash]
   )
-
   useEffect(() => {
     const node = textareaRef.current
     if (!node) return

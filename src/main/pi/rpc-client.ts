@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { StringDecoder } from 'node:string_decoder'
-import type { PiEvent, RpcResponse } from '@shared/types'
+import type { ExtensionUiResponse, PiEvent, RpcResponse } from '@shared/types'
 
 export interface RpcRequest {
   type: string
@@ -154,6 +154,17 @@ export class PiRpcClient extends EventEmitter {
   /** Fire-and-forget command (no response expected). */
   notify(request: RpcRequest): void {
     this.write(request)
+  }
+
+  /**
+   * Answer a blocking extension dialog.
+   *
+   * The record has to carry Pi's own request id, so it is written verbatim
+   * instead of going through `request`, which would mint a new id and wait
+   * for a response that never comes.
+   */
+  respondUi(id: string, response: ExtensionUiResponse): void {
+    this.write({ type: 'extension_ui_response', id, ...response })
   }
 
   private write(request: RpcRequest): void {

@@ -5,6 +5,7 @@ import path from 'node:path'
 import type {
   AppInfo,
   AppSettings,
+  ExtensionUiResponse,
   PiEvent,
   RuntimeStartOptions,
   RuntimeStatus,
@@ -254,6 +255,13 @@ export function registerIpc(context: IpcContext): void {
       timeoutMs?: number
     ) => {
       return runtime.request(command, payload, timeoutMs)
+    }
+  )
+
+  ipcMain.handle(
+    'runtime:respondUi',
+    async (_event, id: string, response: ExtensionUiResponse) => {
+      runtime.respondUi(id, response)
     }
   )
 

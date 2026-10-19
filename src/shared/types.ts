@@ -146,6 +146,55 @@ export interface SessionStats {
 }
 
 /* ------------------------------------------------------------------ *
+ * Extension UI sub-protocol
+ * ------------------------------------------------------------------ */
+
+/**
+ * A user-interaction request raised by a Pi extension.
+ *
+ * Dialog methods (`select`, `confirm`, `input`, `editor`) block the agent
+ * until the client answers with an `extension_ui_response` carrying the
+ * same `id`. The remaining methods are fire-and-forget.
+ */
+export interface ExtensionUiRequest {
+  type: 'extension_ui_request'
+  id: string
+  method: ExtensionUiMethod
+  title?: string
+  message?: string
+  placeholder?: string
+  prefill?: string
+  options?: string[]
+  /** Milliseconds before the agent resolves the request on its own. */
+  timeout?: number
+  notifyType?: 'info' | 'warning' | 'error'
+  statusKey?: string
+  statusText?: string
+  widgetKey?: string
+  widgetLines?: string[]
+  widgetPlacement?: 'aboveEditor' | 'belowEditor'
+  text?: string
+}
+
+export type ExtensionUiMethod =
+  | 'select'
+  | 'confirm'
+  | 'input'
+  | 'editor'
+  | 'notify'
+  | 'setStatus'
+  | 'setWidget'
+  | 'setTitle'
+  | 'set_editor_text'
+
+/** The answer sent back to the agent for a blocking dialog. */
+export interface ExtensionUiResponse {
+  value?: string
+  confirmed?: boolean
+  cancelled?: boolean
+}
+
+/* ------------------------------------------------------------------ *
  * App domain
  * ------------------------------------------------------------------ */
 
@@ -245,6 +294,8 @@ export interface PiDesktopBridge {
       payload?: Record<string, unknown>,
       timeoutMs?: number
     ): Promise<T>
+    /** Answer a blocking extension dialog so the agent can continue. */
+    respondUi(id: string, response: ExtensionUiResponse): Promise<void>
     onEvent(handler: (event: PiEvent) => void): () => void
     onStatus(handler: (status: RuntimeStatus) => void): () => void
   }

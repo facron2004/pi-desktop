@@ -1,5 +1,11 @@
 import { EventEmitter } from 'node:events'
-import type { PiEvent, PiState, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
+import type {
+  ExtensionUiResponse,
+  PiEvent,
+  PiState,
+  RuntimeStartOptions,
+  RuntimeStatus
+} from '@shared/types'
 import { resolvePiLaunch } from './locate'
 import { PiRpcClient } from './rpc-client'
 
@@ -43,7 +49,7 @@ export class PiRuntime extends EventEmitter {
       return { ok: false, error }
     }
 
-    const args = [...launch.prefixArgs, ...buildRpcArgs(options)]
+    const args = [...launch.prefixArgs, ...buildRpcArgs(options, this.options.trustProject)]
 
     this.setStatus({ phase: 'starting', cwd: options.cwd })
 
@@ -107,6 +113,14 @@ export class PiRuntime extends EventEmitter {
     return this.client.request<T>({ type: command, ...payload }, timeoutMs)
   }
 
+  /**
+   * Answer a blocking extension dialog so the agent can continue.
+   * Silently ignored when the runtime is already gone.
+   */
+  respondUi(id: string, response: ExtensionUiResponse): void {
+    this.client?.respondUi(id, response)
+  }
+
   async stop(): Promise<void> {
     const client = this.client
     this.client = null
@@ -128,7 +142,7 @@ export class PiRuntime extends EventEmitter {
 }
 
 /** CLI flags for RPC mode, derived from the requested start options. */
-export function buildRpcArgs(options: RuntimeStartOptions): string[] {
+export function buildRpcArgs(options: RuntimeStartOptions, trustProject = true): string[] {
   const args = ['--mode', 'rpc']
   if (options.sessionFile) {
     args.push('--session', options.sessionFile)
@@ -139,5 +153,8 @@ export function buildRpcArgs(options: RuntimeStartOptions): string[] {
   if (options.thinkingLevel) {
     args.push('--thinking', options.thinkingLevel)
   }
+  // Project-local extensions, skills and settings are trust-gated. RPC mode
+  // has nobody to ask, so the choice has to be made up front.
+  args.push(trustProject ? '--approve' : '--no-approve')
   return args
 }
