@@ -3,6 +3,7 @@ import { ArrowLeft, Columns2, FileDiff, FilePlus, Files, Pencil, Rows3, X } from
 import { collectChanges } from '../lib/changes'
 import { relativePath, resolveAgainst } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
+import { diffStats } from '../lib/diff-fold'
 import { DiffView } from './DiffView'
 import { FileTree } from './FileTree'
 import { FileViewer } from './FileViewer'
@@ -162,33 +163,48 @@ export function InspectorPanel({
         </div>
       ) : (
         <div className="drawer__body">
-          {changes.map((change) => (
-            <section className="change" key={change.path}>
-              <header className="change__head">
-                <span className="change__icon" data-kind={change.kind}>
-                  {change.kind === 'edit' ? <Pencil size={12} /> : <FilePlus size={12} />}
-                </span>
-                <span className="change__path" title={change.path}>
-                  {relativePath(workspace?.path ?? '', change.path)}
-                </span>
-                {change.edits > 1 ? (
-                  <span className="change__badge">{change.edits} edits</span>
+          {changes.map((change) => {
+            const stats = change.diffs.reduce(
+              (acc, block) => {
+                const one = diffStats(block)
+                return { added: acc.added + one.added, removed: acc.removed + one.removed }
+              },
+              { added: 0, removed: 0 }
+            )
+            return (
+              <section className="change" key={change.path}>
+                <header className="change__head">
+                  <span className="change__icon" data-kind={change.kind}>
+                    {change.kind === 'edit' ? <Pencil size={12} /> : <FilePlus size={12} />}
+                  </span>
+                  <span className="change__path" title={change.path}>
+                    {relativePath(workspace?.path ?? '', change.path)}
+                  </span>
+                  {stats.added || stats.removed ? (
+                    <span className="change__stats">
+                      {stats.added ? <span data-kind="add">+{stats.added}</span> : null}
+                      {stats.removed ? <span data-kind="del">−{stats.removed}</span> : null}
+                    </span>
+                  ) : null}
+                  {change.edits > 1 ? (
+                    <span className="change__badge">{change.edits} edits</span>
+                  ) : null}
+                </header>
+
+                {change.diffs.length > 0 ? (
+                  <DiffView diffs={change.diffs} mode={diffSplit ? 'split' : 'unified'} />
                 ) : null}
-              </header>
 
-              {change.diffs.length > 0 ? (
-                <DiffView diffs={change.diffs} mode={diffSplit ? 'split' : 'unified'} />
-              ) : null}
+                {!change.diffs.length && change.content ? (
+                  <pre className="tool__pre">{change.content}</pre>
+                ) : null}
 
-              {!change.diffs.length && change.content ? (
-                <pre className="tool__pre">{change.content}</pre>
-              ) : null}
-
-              {!change.diffs.length && !change.content ? (
-                <pre className="tool__pre">Written to disk.</pre>
-              ) : null}
-            </section>
-          ))}
+                {!change.diffs.length && !change.content ? (
+                  <pre className="tool__pre">Written to disk.</pre>
+                ) : null}
+              </section>
+            )
+          })}
         </div>
       )}
     </aside>

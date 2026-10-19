@@ -15,15 +15,17 @@ Claude Desktop.
 - **Streaming conversation.** Assistant text, reasoning ("thinking") blocks, tool calls
   and tool output all stream in live, with a caret marking the end of the reply.
 - **Tool cards with diffs.** Every tool call is a collapsible card. File edits render
-  as a line diff, so you can see exactly what changed. A run of the same call folds
-  into one card, and a command or a path can be handed back to the composer.
+  as a line diff, so you can see exactly what changed. Long stretches of untouched
+  lines collapse into a single row you can open, a run of the same call folds into one
+  card, and a command or a path can be handed back to the composer.
 - **Code blocks that answer back.** A snippet gets a header with its language, a copy
   button and an "Ask" button that drops the snippet into the composer, ready for a
   question about it.
 - **Project inspector.** A docked panel with two tabs: **Changes** lists every file the
-  agent edited or created in this session, and **Files** is a project tree you can search
-  by name and read in place, with syntax highlighting. Diffs can be shown unified or side
-  by side, and the panel can be dragged to any width.
+  agent edited or created in this session, with the line counts of each change, and
+  **Files** is a project tree you can search by name and read in place, with syntax
+  highlighting. Diffs can be shown unified or side by side, and the panel can be dragged
+  to any width.
 - **Extension dialogs.** When a Pi extension asks you a question — pick one, confirm,
   type a value, edit a block of text — the desktop app shows the dialog and answers Pi
   for you. Extensions can also push status lines, widgets and notifications.
@@ -148,6 +150,7 @@ src/
     ├── components/       thread, tool cards, diffs, composer, settings, panels
     ├── lib/thread.ts     Pi session event → UI thread reducer
     ├── lib/changes.ts    tool calls → changed-files review
+    ├── lib/diff-fold.ts  line diff → folded, expandable diff rows
     ├── lib/search.ts     in-conversation search
     ├── lib/highlight.ts  syntax highlighting, grammars loaded on demand
     └── store/            zustand store

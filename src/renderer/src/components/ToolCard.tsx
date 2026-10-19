@@ -15,7 +15,8 @@ import { describeTool, editPairs, type ToolTone } from '../lib/tools'
 import { formatDuration } from '../lib/format'
 import { relativePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
-import { buildDiff, DiffView } from './DiffView'
+import { buildDiff } from '../lib/diff-fold'
+import { DiffView } from './DiffView'
 
 export const TOOL_ICONS: Record<ToolTone | 'error', typeof FileText> = {
   read: FileText,

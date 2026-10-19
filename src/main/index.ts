@@ -1,4 +1,5 @@
 import { app, BrowserWindow, shell } from 'electron'
+import { createHash } from 'node:crypto'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { bridgeRuntime, registerIpc } from './ipc'
@@ -130,7 +131,9 @@ app.whenReady().then(() => {
     const workspaces = settings.get().workspaces
     const existing = workspaces.find((item) => item.path === forcedWorkspace)
     const workspace = existing ?? {
-      id: `env-${Buffer.from(forcedWorkspace).toString('hex').slice(0, 12)}`,
+      // The whole path has to go into the hash: sibling folders share a long
+      // prefix and a truncated one would give them the same id.
+      id: `env-${createHash('sha256').update(forcedWorkspace).digest('hex').slice(0, 12)}`,
       path: forcedWorkspace,
       name: path.basename(forcedWorkspace) || forcedWorkspace,
       lastOpenedAt: Date.now()

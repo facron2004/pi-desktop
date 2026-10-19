@@ -1,5 +1,5 @@
 import type { ThreadItem } from './thread'
-import { buildDiff, type DiffBlock } from '../components/DiffView'
+import { buildDiff, type DiffBlock } from './diff-fold'
 
 export interface FileChange {
   path: string
