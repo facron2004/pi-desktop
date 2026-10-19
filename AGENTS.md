@@ -82,6 +82,14 @@ messages on screen in `src/renderer/src/lib/thread.ts`.
 Pi can only name the session that is open (`set_session_name`), so naming a
 conversation that is not active means opening it, naming it and closing it again.
 
+## Bash
+
+`abort_bash` only aborts a command that the client started with the RPC `bash`
+command. The bash **tool** the agent calls runs on its own path, so `abort_bash`
+does not touch it — the only way to stop it is `abort`, which ends the whole run.
+Do not build a "stop this command" button on top of `abort_bash` and expect it
+to work for the agent's own commands.
+
 ## Style
 
 - TypeScript everywhere, `strict` on. No `any` in the IPC boundary.
