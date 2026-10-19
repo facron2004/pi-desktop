@@ -14,9 +14,11 @@ import type { InspectorRequest } from '@shared/types'
 import type { BashItem, ToolItem } from '../lib/thread'
 import { describeTool, editPairs, type ToolTone } from '../lib/tools'
 import { formatDuration } from '../lib/format'
-import { relativePath } from '../lib/path'
-import { useAppStore } from '../store/useAppStore'
 import { buildDiff } from '../lib/diff-fold'
+import { languageOf } from '../lib/files'
+import { basename, relativePath } from '../lib/path'
+import { useAppStore } from '../store/useAppStore'
+import { CodeSnippet } from './CodeSnippet'
 import { DiffView } from './DiffView'
 
 export const TOOL_ICONS: Record<ToolTone | 'error', typeof FileText> = {
@@ -133,6 +135,10 @@ export function ToolCard({ item }: { item: ToolItem }) {
     )
   }
 
+  // The file a card is about, so its content can be highlighted as code.
+  const fileName = basename(String(item.args?.path ?? ''))
+  const language = languageOf(fileName)
+
   return (
     <div className="tool" data-tone={tone}>
       <div className="tool__head">
@@ -183,7 +189,7 @@ export function ToolCard({ item }: { item: ToolItem }) {
           ) : null}
 
           {item.toolName === 'write' ? (
-            <pre className="tool__pre">{String(item.args?.content ?? '')}</pre>
+            <CodeSnippet code={String(item.args?.content ?? '')} language={language} />
           ) : null}
 
           {item.toolName === 'bash' || item.toolName === 'powershell' ? (
@@ -191,9 +197,13 @@ export function ToolCard({ item }: { item: ToolItem }) {
           ) : null}
 
           {visibleResult ? (
-            <pre className={`tool__pre${item.status === 'error' ? ' tool__error' : ''}`}>
-              {visibleResult}
-            </pre>
+            item.toolName === 'read' && item.status !== 'error' ? (
+              <CodeSnippet code={visibleResult} language={language} />
+            ) : (
+              <pre className={`tool__pre${item.status === 'error' ? ' tool__error' : ''}`}>
+                {visibleResult}
+              </pre>
+            )
           ) : null}
 
           {truncated ? (

@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Copy, ExternalLink, File as FileIcon } from 'lucide-react'
 import type { FileContent } from '@shared/types'
-import { highlightCode } from '../lib/highlight'
 import { fileTone } from '../lib/files'
 import { basename, relativePath } from '../lib/path'
-import { useIsDark } from '../lib/theme'
+import { CodeSnippet } from './CodeSnippet'
 
 interface FileViewerProps {
   file: string
@@ -15,33 +14,25 @@ interface FileViewerProps {
 
 export function FileViewer({ file, root, line }: FileViewerProps) {
   const [content, setContent] = useState<FileContent | null>(null)
-  const [html, setHtml] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState(false)
-  const isDark = useIsDark()
   const codeRef = useRef<HTMLElement | null>(null)
+  const lineRef = useRef(line)
+  lineRef.current = line
 
   useEffect(() => {
     let cancelled = false
     setContent(null)
-    setHtml(null)
     setError(false)
     window.pi.fs
       .read(file)
-      .then(async (result) => {
+      .then((result) => {
         if (cancelled) return
         if (!result) {
           setError(true)
           return
         }
         setContent(result)
-        try {
-          const rendered = await highlightCode(result.content, result.language, isDark)
-          if (!cancelled) setHtml(rendered)
-        } catch (error) {
-          console.error('[pi-desktop] highlighting failed:', error)
-          if (!cancelled) setHtml(null)
-        }
       })
       .catch(() => {
         if (!cancelled) setError(true)
@@ -49,21 +40,21 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     return () => {
       cancelled = true
     }
-  }, [file, isDark])
+  }, [file])
 
-  // Bring the line the reader came from into view and mark it.
-  useEffect(() => {
-    if (!line || !html) return
-    const host = codeRef.current
-    if (!host) return
-    const lines = host.querySelectorAll<HTMLElement>('.line')
-    const target = lines[line - 1]
+  // Bring the line the reader came from into view and mark it. The code is
+  // highlighted after it is shown, so this runs again once the highlighted
+  // version is in place.
+  const jumpToLine = useCallback(() => {
+    const wanted = lineRef.current
+    if (!wanted) return
+    const lines = codeRef.current?.querySelectorAll<HTMLElement>('.line')
+    const target = lines?.[wanted - 1]
     if (!target) return
     target.scrollIntoView({ block: 'center' })
     target.setAttribute('data-marked', 'true')
-    const timer = window.setTimeout(() => target.removeAttribute('data-marked'), 2400)
-    return () => window.clearTimeout(timer)
-  }, [html, line, content])
+    window.setTimeout(() => target.removeAttribute('data-marked'), 2400)
+  }, [])
 
   const copy = async () => {
     if (!content) return
@@ -113,31 +104,15 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
         </button>
       </div>
 
-      {html ? (
-        <div
-          className="viewer__code shiki-host"
-          ref={(node) => {
-            codeRef.current = node
-          }}
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      ) : (
-        // Without a grammar the file still needs line numbers, so the lines
-        // are wrapped by hand.
-        <pre
-          className="tool__pre viewer__code viewer__code--plain"
-          ref={(node) => {
-            codeRef.current = node
-          }}
-        >
-          {content.content.split('\n').map((text, index) => (
-            <span className="line" key={index}>
-              {text}
-              {'\n'}
-            </span>
-          ))}
-        </pre>
-      )}
+      <CodeSnippet
+        code={content.content}
+        language={content.language}
+        className="viewer__code"
+        onHost={(node) => {
+          codeRef.current = node
+        }}
+        onReady={jumpToLine}
+      />
     </div>
   )
 }

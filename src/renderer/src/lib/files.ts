@@ -53,3 +53,55 @@ export function fileTone(name: string): FileTone {
   if (dot === -1) return 'plain'
   return BY_EXTENSION[lower.slice(dot + 1)] ?? 'plain'
 }
+
+/** The grammar a file is highlighted with, guessed from its name. */
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  ts: 'typescript',
+  tsx: 'tsx',
+  mts: 'typescript',
+  cts: 'typescript',
+  js: 'javascript',
+  jsx: 'jsx',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  json: 'json',
+  jsonc: 'json',
+  md: 'markdown',
+  markdown: 'markdown',
+  mdx: 'markdown',
+  css: 'css',
+  scss: 'scss',
+  html: 'html',
+  vue: 'vue',
+  svelte: 'svelte',
+  xml: 'xml',
+  py: 'python',
+  rb: 'ruby',
+  go: 'go',
+  rs: 'rust',
+  java: 'java',
+  kt: 'kotlin',
+  swift: 'swift',
+  php: 'php',
+  cs: 'csharp',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  ps1: 'powershell',
+  yml: 'yaml',
+  yaml: 'yaml',
+  toml: 'toml',
+  ini: 'ini',
+  sql: 'sql',
+  lua: 'lua',
+  dockerfile: 'dockerfile'
+}
+
+/** The grammar for a file, or an empty string when there is none. */
+export function languageOf(name: string): string {
+  const lower = name.toLowerCase()
+  if (lower === 'dockerfile') return 'dockerfile'
+  const dot = lower.lastIndexOf('.')
+  if (dot === -1) return ''
+  return LANGUAGE_BY_EXTENSION[lower.slice(dot + 1)] ?? ''
+}

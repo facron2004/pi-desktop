@@ -17,7 +17,8 @@ Claude Desktop.
 - **Tool cards with diffs.** Every tool call is a collapsible card. File edits render
   as a line diff, so you can see exactly what changed. Long stretches of untouched
   lines collapse into a single row you can open, a run of the same call folds into one
-  card, and a command or a path can be handed back to the composer.
+  card, and a command or a path can be handed back to the composer. The file a card
+  read or wrote is shown as highlighted code with line numbers.
 - **Code blocks that answer back.** A snippet gets a header with its language, a copy
   button and an "Ask" button that drops the snippet into the composer, ready for a
   question about it.
