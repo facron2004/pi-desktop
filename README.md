@@ -53,7 +53,8 @@ Claude Desktop.
   queue a follow-up for when it finishes.
 - **Keyboard-first.** `Ctrl+N` new chat, `Ctrl+B` sidebar, `Ctrl+K` focus the composer,
   `Ctrl+F` search the conversation, `Alt+↑`/`Alt+↓` walk the turns, `↑` recalls earlier
-  prompts, `Esc` stops a run. `Ctrl+/` lists every shortcut.
+  prompts, `Esc` stops a run. `Ctrl+/` lists every shortcut. The app also follows the
+  system's "reduce motion" setting.
 
 ## How it talks to Pi
 

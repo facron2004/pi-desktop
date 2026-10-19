@@ -3482,3 +3482,29 @@ body.is-resizing {
 .widget--below {
   margin: 8px auto 12px;
 }
+
+/* ------------------------------------------------------------------ *
+ * Reduced motion
+ * ------------------------------------------------------------------ */
+
+/* Everything that moves in the app is decoration, so it goes when the
+   system asks for less of it. The spinners stay: they say that something
+   is happening, and a still one would say nothing. */
+@media (prefers-reduced-motion: reduce) {
+  .popover,
+  .turn,
+  .scroll-bottom,
+  .palette,
+  .modal,
+  .modal-layer,
+  .drawer,
+  .toast,
+  .caret-blink {
+    animation: none !important;
+  }
+
+  /* The jump still leaves a mark, it just does not flash. */
+  .turn--flash {
+    background: var(--accent-soft);
+  }
+}

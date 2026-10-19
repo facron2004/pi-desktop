@@ -6,6 +6,7 @@ import { formatClock, formatCost, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
 import { pairForkTargets } from '../lib/thread'
 import { describeTool } from '../lib/tools'
+import { scrollBehavior } from '../lib/motion'
 import { SearchContext } from '../lib/search-context'
 import { AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
@@ -161,11 +162,12 @@ export function Thread() {
     const node = scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${hit.turnId}"]`)
     if (!node) return
     stickRef.current = false
-    node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    node.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
     node.classList.remove('turn--flash')
     // Force a reflow so the animation can run again on the same turn.
     void node.offsetWidth
     node.classList.add('turn--flash')
+    window.setTimeout(() => node.classList.remove('turn--flash'), 1400)
   }, [])
 
   const stepHit = useCallback(
@@ -200,11 +202,12 @@ export function Thread() {
     if (!entry) return
 
     stickRef.current = false
-    container.scrollTo({ top: entry.offset - 8, behavior: 'smooth' })
+    container.scrollTo({ top: entry.offset - 8, behavior: scrollBehavior() })
     entry.turn.classList.remove('turn--flash')
     // Force a reflow so the animation can run again on the same turn.
     void entry.turn.offsetWidth
     entry.turn.classList.add('turn--flash')
+    window.setTimeout(() => entry.turn.classList.remove('turn--flash'), 1400)
   }, [])
 
   useEffect(() => {
@@ -228,7 +231,7 @@ export function Thread() {
     if (!node) return
     stickRef.current = true
     setAtBottom(true)
-    node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' })
+    node.scrollTo({ top: node.scrollHeight, behavior: scrollBehavior() })
   }
 
   return (
