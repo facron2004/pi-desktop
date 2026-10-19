@@ -1139,10 +1139,9 @@
 .tool__head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 2px;
   width: 100%;
-  padding: 8px 11px;
-  text-align: left;
+  padding: 6px 7px 6px 11px;
   color: var(--text-muted);
   font-size: 12.5px;
   transition: background 0.12s var(--ease);
@@ -1150,6 +1149,66 @@
 
 .tool__head:hover {
   background: var(--bg-hover);
+}
+
+/* The head is a row of buttons, so the clickable region is split:
+   the label toggles the body, the two trailing icons are actions. */
+.tool__head-main {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.tool__head-main:focus-visible,
+.tool__reuse-icon:focus-visible,
+.tool__caret:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tool__reuse-icon,
+.tool__caret {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 0.12s var(--ease), color 0.12s var(--ease), opacity 0.12s var(--ease);
+}
+
+.tool__reuse-icon {
+  margin-left: auto;
+  opacity: 0.5;
+}
+
+.tool:hover .tool__reuse-icon,
+.tool__reuse-icon:focus-visible {
+  opacity: 1;
+}
+
+.tool__reuse-icon:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tool__caret:hover {
+  background: var(--bg-active);
+  color: var(--text);
 }
 
 .tool__icon {

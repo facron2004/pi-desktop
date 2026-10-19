@@ -178,6 +178,51 @@ export function Thread() {
     [hits, hitIndex, jumpToHit]
   )
 
+  // `Alt+↑` / `Alt+↓` walk through the turns, which is faster than scrolling
+  // a long conversation by hand.
+  const jumpTurn = useCallback((direction: -1 | 1) => {
+    const container = scrollRef.current
+    if (!container) return
+    const turns = Array.from(container.querySelectorAll<HTMLElement>('[data-turn]'))
+    if (turns.length === 0) return
+
+    const containerTop = container.getBoundingClientRect().top
+    const scrollTop = container.scrollTop
+    const offsets = turns.map((turn) => {
+      const rect = turn.getBoundingClientRect()
+      return { turn, offset: rect.top - containerTop + scrollTop }
+    })
+
+    const entry =
+      direction === -1
+        ? [...offsets].reverse().find((item) => item.offset < scrollTop - 8)
+        : offsets.find((item) => item.offset > scrollTop + 8)
+    if (!entry) return
+
+    stickRef.current = false
+    container.scrollTo({ top: entry.offset - 8, behavior: 'smooth' })
+    entry.turn.classList.remove('turn--flash')
+    // Force a reflow so the animation can run again on the same turn.
+    void entry.turn.offsetWidth
+    entry.turn.classList.add('turn--flash')
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey) return
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        jumpTurn(-1)
+      }
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        jumpTurn(1)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [jumpTurn])
+
   const scrollToBottom = () => {
     const node = scrollRef.current
     if (!node) return

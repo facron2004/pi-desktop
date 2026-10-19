@@ -95,3 +95,7 @@ Other flags, all off by default: `PI_DESKTOP_PREFILL` fills the composer,
 resumes a session file, `PI_DESKTOP_SETTINGS` opens the settings dialog,
 `PI_DESKTOP_EXPORT` exports the session, and `PI_DESKTOP_CLOSE_AFTER_MS`
 closes the window on purpose to reproduce the destroyed-window case.
+
+`PI_DESKTOP_EVAL` runs a JS snippet in the renderer just before the capture
+and `PI_DESKTOP_EVAL_DELAY` (default 400ms) is the settle time afterwards.
+That is how transient UI — a clicked button, a flashed turn — gets captured.

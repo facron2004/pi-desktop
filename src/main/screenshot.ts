@@ -18,6 +18,9 @@ export interface CaptureContext {
  *   PI_DESKTOP_SCREENSHOT        target PNG path
  *   PI_DESKTOP_SCREENSHOT_DELAY  ms to wait before the capture (default 4000)
  *   PI_DESKTOP_PROMPT            optional prompt to send once Pi is ready
+ *   PI_DESKTOP_EVAL              JS to run in the renderer just before the
+ *                                capture, used to drive transient UI
+ *   PI_DESKTOP_EVAL_DELAY        ms to wait after the eval (default 400)
  */
 export function scheduleCapture(context: CaptureContext): void {
   const target = process.env.PI_DESKTOP_SCREENSHOT
@@ -25,12 +28,24 @@ export function scheduleCapture(context: CaptureContext): void {
 
   const delay = Number(process.env.PI_DESKTOP_SCREENSHOT_DELAY ?? 4000)
   const prompt = process.env.PI_DESKTOP_PROMPT
+  const evalScript = process.env.PI_DESKTOP_EVAL
+  const evalDelay = Number(process.env.PI_DESKTOP_EVAL_DELAY ?? 400)
 
   const capture = async () => {
     try {
       if (!context.window.isVisible()) context.window.show()
       context.window.focus()
       await new Promise((resolve) => setTimeout(resolve, 400))
+      if (evalScript) {
+        try {
+          const result = await context.window.webContents.executeJavaScript(evalScript, true)
+          console.log('[pi-desktop] eval result:', JSON.stringify(result))
+        } catch (error) {
+          console.error('[pi-desktop] eval failed:', error)
+        }
+        // Give React a frame to settle before the pixels are read.
+        await new Promise((resolve) => setTimeout(resolve, evalDelay))
+      }
       const image = await context.window.webContents.capturePage()
       mkdirSync(path.dirname(path.resolve(target)), { recursive: true })
       writeFileSync(path.resolve(target), image.toPNG())

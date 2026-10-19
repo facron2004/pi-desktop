@@ -29,6 +29,7 @@ export function Composer() {
   const commands = useAppStore((state) => state.commands)
   const composerText = useAppStore((state) => state.composerText)
   const clearComposerText = useAppStore((state) => state.clearComposerText)
+  const composerInsert = useAppStore((state) => state.composerInsert)
 
   const [text, setText] = useState('')
   const [images, setImages] = useState<{ data: string; mimeType: string }[]>([])
@@ -85,6 +86,22 @@ export function Composer() {
       node.setSelectionRange(cursor, cursor)
     })
   }, [composerText, clearComposerText])
+
+  // A tool card can hand a command or a path back to the composer.
+  const insertSeq = useRef(0)
+  useEffect(() => {
+    if (!composerInsert || composerInsert.seq === insertSeq.current) return
+    insertSeq.current = composerInsert.seq
+    const addition = composerInsert.text
+    setText((current) => (current.trim() ? `${current.trimEnd()}\n${addition}` : addition))
+    requestAnimationFrame(() => {
+      const node = textareaRef.current
+      if (!node) return
+      const cursor = node.value.length
+      node.focus()
+      node.setSelectionRange(cursor, cursor)
+    })
+  }, [composerInsert])
 
   const matching = useMemo(
     () => (slash ? filterCommands(commands, slash.query) : []),

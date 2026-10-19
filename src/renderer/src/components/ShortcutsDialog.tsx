@@ -14,6 +14,8 @@ const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
   { keys: ['Esc'], label: 'Stop the running turn', group: 'Composing' },
   { keys: ['↑', '↓'], label: 'Move through the command list', group: 'Command palette' },
   { keys: ['Tab'], label: 'Insert the highlighted command', group: 'Command palette' },
+  { keys: ['Alt', '↑'], label: 'Jump to the previous turn', group: 'Reading' },
+  { keys: ['Alt', '↓'], label: 'Jump to the next turn', group: 'Reading' },
   { keys: ['Enter'], label: 'Go to the next search hit', group: 'Search' },
   { keys: ['Shift', 'Enter'], label: 'Go to the previous search hit', group: 'Search' },
   { keys: ['Esc'], label: 'Close the search bar', group: 'Search' }

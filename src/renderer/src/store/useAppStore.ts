@@ -59,6 +59,8 @@ export interface AppStore {
   uiTitle?: string
   /** Text pushed into the composer through `set_editor_text`. */
   composerText?: string
+  /** Text to append to the composer, e.g. a command the user wants to reuse. */
+  composerInsert?: { text: string; seq: number }
 
   bootstrap: () => Promise<void>
   openWorkspace: (workspace: Workspace, sessionFile?: string) => Promise<void>
@@ -85,6 +87,8 @@ export interface AppStore {
   respondUi: (response: ExtensionUiResponse) => Promise<void>
   dismissUi: () => Promise<void>
   clearComposerText: () => void
+  /** Append text to the composer and focus it. */
+  insertIntoComposer: (text: string) => void
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -456,6 +460,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   clearComposerText() {
     set({ composerText: undefined })
+  },
+
+  insertIntoComposer(text) {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    set((state) => ({
+      composerInsert: { text: trimmed, seq: (state.composerInsert?.seq ?? 0) + 1 }
+    }))
   }
 }))
 
