@@ -220,6 +220,8 @@ export interface AuthStatus {
 export interface PiDesktopBridge {
   app: {
     info(): Promise<AppInfo>
+    /** Sync the native window controls with the current theme. */
+    setTheme(theme: 'dark' | 'light'): Promise<void>
   }
   settings: {
     get(): Promise<AppSettings>

@@ -21,7 +21,8 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
 
 const bridge: PiDesktopBridge = {
   app: {
-    info: (): Promise<AppInfo> => ipcRenderer.invoke('app:info')
+    info: (): Promise<AppInfo> => ipcRenderer.invoke('app:info'),
+    setTheme: (theme: 'dark' | 'light'): Promise<void> => ipcRenderer.invoke('app:setTheme', theme)
   },
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),

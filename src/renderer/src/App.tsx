@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { PanelLeft, Pencil, RefreshCw, X } from 'lucide-react'
+import { Keyboard, PanelLeft, Pencil, RefreshCw, X } from 'lucide-react'
 import { useAppStore } from './store/useAppStore'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
@@ -8,6 +8,7 @@ import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
 import { SettingsDialog } from './components/SettingsDialog'
 import { ChangesPanel } from './components/ChangesPanel'
+import { ShortcutsDialog } from './components/ShortcutsDialog'
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
@@ -25,6 +26,7 @@ export default function App() {
   const workspace = useAppStore((state) => state.workspace)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [changesOpen, setChangesOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
@@ -64,10 +66,20 @@ export default function App() {
       if (mod && event.key.toLowerCase() === 'k') {
         event.preventDefault()
         window.dispatchEvent(new CustomEvent('pi:focus-composer'))
+        return
+      }
+      if (mod && event.key === '/') {
+        event.preventDefault()
+        setShortcutsOpen((value) => !value)
       }
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    const onShowShortcuts = () => setShortcutsOpen(true)
+    window.addEventListener('pi:show-shortcuts', onShowShortcuts)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
+    }
   }, [newChat])
 
   const title = piState?.sessionName || workspace?.name || 'Pi Desktop'
@@ -130,6 +142,13 @@ export default function App() {
           <div className="titlebar__actions no-drag">
             <button
               className="icon-btn"
+              title="Keyboard shortcuts"
+              onClick={() => setShortcutsOpen(true)}
+            >
+              <Keyboard size={14} />
+            </button>
+            <button
+              className="icon-btn"
               title="Restart the Pi runtime"
               onClick={() => {
                 if (workspace) void openWorkspace(workspace)
@@ -170,6 +189,7 @@ export default function App() {
       </main>
 
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
+      {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
       {changesOpen ? <ChangesPanel onClose={() => setChangesOpen(false)} /> : null}
     </div>
   )

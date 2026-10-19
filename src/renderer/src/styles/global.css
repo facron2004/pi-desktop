@@ -1569,6 +1569,65 @@ kbd {
   font-weight: 800;
   font-size: 26px;
   font-family: var(--font-mono);
+  box-shadow: 0 10px 30px -8px var(--accent-line), 0 0 0 8px var(--accent-soft);
+  margin-bottom: 10px;
+}
+
+.welcome__model {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 2px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.welcome__model-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.welcome__hints {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 22px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.welcome__hints span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.welcome__pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.welcome__logo {
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, var(--accent), #d2762f);
+  color: #1a1206;
+  font-weight: 800;
+  font-size: 26px;
+  font-family: var(--font-mono);
   box-shadow: 0 10px 30px -8px var(--accent-line);
   margin-bottom: 6px;
 }
@@ -1963,6 +2022,45 @@ kbd {
 .segmented button[data-active='true'] {
   background: var(--bg-active);
   color: var(--text);
+}
+
+.modal--narrow {
+  width: min(480px, 100%);
+}
+
+.shortcut-group + .shortcut-group {
+  margin-top: 4px;
+}
+
+.shortcut-group__title {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 0 0 6px;
+}
+
+.shortcut {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.shortcut:last-child {
+  border-bottom: none;
+}
+
+.shortcut__keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
 }
 
 .kv {

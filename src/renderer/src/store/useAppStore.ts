@@ -351,6 +351,7 @@ function applyAppearance(settings: AppSettings): void {
   const dark = settings.theme === 'dark' || (settings.theme === 'system' && prefersDark)
   root.dataset.theme = dark ? 'dark' : 'light'
   root.style.setProperty('--font-scale', String(settings.fontScale ?? 1))
+  void window.pi.app.setTheme(dark ? 'dark' : 'light')
 }
 
 type SetState = (partial: Partial<AppStore> | ((state: AppStore) => Partial<AppStore>)) => void
