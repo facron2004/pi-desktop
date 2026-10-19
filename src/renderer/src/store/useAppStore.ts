@@ -159,7 +159,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ items: [], activeSessionFile: session.file, error: undefined })
     try {
       if (session.cwd && session.cwd !== workspace.path) {
-        await get().openWorkspace({ ...workspace, path: session.cwd }, session.file)
+        // The session belongs to another project: make sure that project is
+        // registered, then run Pi there instead of here.
+        const known = get().settings.workspaces.find((item) => item.path === session.cwd)
+        const target: Workspace = known ?? {
+          id: `session-${session.id.slice(0, 8)}`,
+          path: session.cwd,
+          name: session.cwd.split(/[\\/]/).filter(Boolean).pop() ?? session.cwd,
+          lastOpenedAt: Date.now()
+        }
+        if (!known) {
+          const settings = await window.pi.settings.patch({
+            workspaces: [target, ...get().settings.workspaces],
+            activeWorkspaceId: target.id
+          })
+          set({ settings })
+        }
+        await get().openWorkspace(target, session.file)
         return
       }
       await window.pi.runtime.request('switch_session', { sessionPath: session.file })

@@ -102,6 +102,20 @@ try {
 
   const stats = await request({ type: 'get_session_stats' })
   console.log('stats ok =', stats.success, JSON.stringify(stats.data ?? {}).slice(0, 300))
+
+  // Session management: the desktop app relies on these to browse history.
+  const sessionFile = state.data?.sessionFile
+  const switched = await request({ type: 'switch_session', sessionPath: sessionFile })
+  console.log('switch_session ok =', switched.success, JSON.stringify(switched.data ?? {}))
+
+  const forked = await request({ type: 'get_fork_messages' })
+  console.log('get_fork_messages ok =', forked.success)
+
+  const fresh = await request({ type: 'new_session' })
+  console.log('new_session ok =', fresh.success, JSON.stringify(fresh.data ?? {}))
+
+  const after = await request({ type: 'get_state' })
+  console.log('new session id =', after.data?.sessionId, '| file =', after.data?.sessionFile)
 } catch (error) {
   console.error('SMOKE FAILED:', error.message)
   process.exitCode = 1

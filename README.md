@@ -4,7 +4,9 @@ A native desktop GUI for the [Pi coding agent](https://github.com/earendil-works
 the same agent that powers the `pi` CLI, wrapped in a window that feels like Codex or
 Claude Desktop.
 
-![Pi Desktop](docs/shots/01-welcome.png)
+![Pi Desktop](docs/shots/02-conversation.png)
+
+*Real run: Pi reads a file, edits it, and the diff renders inline.*
 
 ## What it does
 
@@ -67,6 +69,7 @@ npm install
 npm run dev        # run with hot reload
 npm run build      # type-safe production build into out/
 npm run typecheck  # tsc for main, preload and renderer
+npm run icon       # regenerate build/icon.png
 npm run dist       # package installers into release/
 ```
 
@@ -75,6 +78,9 @@ A protocol smoke test that spawns the bundled CLI and exercises the RPC commands
 ```bash
 node scripts/rpc-smoke.mjs "C:/path/to/project"
 ```
+
+Screenshots live in [`docs/shots/`](docs/shots): the welcome screen, a real
+conversation with an inline diff, the light theme, and the app mid-run.
 
 ## Architecture
 
