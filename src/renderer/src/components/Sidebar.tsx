@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
   FolderOpen,
   Loader2,
@@ -18,6 +18,9 @@ import { samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
+
+const MIN_WIDTH = 200
+const MAX_WIDTH = 460
 
 /** A session in the list, or the heading that separates a run of them. */
 type GroupEntry =
@@ -49,7 +52,15 @@ function matches(session: SessionMeta, needle: string): boolean {
   )
 }
 
-export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function Sidebar({
+  onOpenSettings,
+  onResize,
+  onResizeEnd
+}: {
+  onOpenSettings: () => void
+  onResize?: (width: number) => void
+  onResizeEnd?: (width: number) => void
+}) {
   const sessions = useAppStore((state) => state.sessions)
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
@@ -69,6 +80,41 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [draft, setDraft] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+
+  // Drag the right edge to make the sidebar wider or narrower.
+  const widthRef = useRef(0)
+  const startResize = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!onResize) return
+      event.preventDefault()
+      const handle = event.currentTarget
+      const panel = handle.parentElement
+      const startX = event.clientX
+      const startWidth = panel?.getBoundingClientRect().width ?? 272
+      widthRef.current = startWidth
+
+      const move = (moveEvent: PointerEvent) => {
+        const width = Math.max(
+          MIN_WIDTH,
+          Math.min(MAX_WIDTH, startWidth + (moveEvent.clientX - startX))
+        )
+        widthRef.current = width
+        onResize(width)
+      }
+      const up = () => {
+        handle.removeEventListener('pointermove', move)
+        handle.removeEventListener('pointerup', up)
+        document.body.classList.remove('is-resizing')
+        onResizeEnd?.(widthRef.current)
+      }
+
+      handle.setPointerCapture(event.pointerId)
+      handle.addEventListener('pointermove', move)
+      handle.addEventListener('pointerup', up)
+      document.body.classList.add('is-resizing')
+    },
+    [onResize, onResizeEnd]
+  )
 
   const needle = query.trim().toLowerCase()
 
@@ -190,6 +236,13 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   return (
     <aside className="sidebar">
+      <div
+        className="sidebar__resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the sidebar"
+        onPointerDown={startResize}
+      />
       <div className="sidebar__head drag-region">
         <div className="sidebar__brand">
           <span className="sidebar__logo">π</span>

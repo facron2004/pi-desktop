@@ -272,6 +272,8 @@ export interface AppSettings {
   diffSplit: boolean
   /** Width of the inspector panel in pixels. */
   drawerWidth: number
+  /** Width of the sidebar in pixels. */
+  sidebarWidth?: number
   /** Automatically accept the working directory of new workspaces. */
   trustProject: boolean
 }

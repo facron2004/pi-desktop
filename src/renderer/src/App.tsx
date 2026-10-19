@@ -54,6 +54,8 @@ export default function App() {
   // once the drag ends.
   const [draggedWidth, setDraggedWidth] = useState<number | null>(null)
   const drawerWidth = draggedWidth ?? settings.drawerWidth ?? 420
+  const [draggedSidebar, setDraggedSidebar] = useState<number | null>(null)
+  const sidebarWidth = draggedSidebar ?? settings.sidebarWidth ?? 272
 
   useEffect(() => {
     void bootstrap()
@@ -196,9 +198,23 @@ export default function App() {
       className="app"
       data-sidebar={sidebarOpen ? 'open' : 'collapsed'}
       data-drawer={changesOpen ? 'open' : 'closed'}
-      style={{ '--drawer-w': `${drawerWidth}px` } as React.CSSProperties}
+      style={
+        {
+          '--drawer-w': `${drawerWidth}px`,
+          '--sidebar-w': `${sidebarWidth}px`
+        } as React.CSSProperties
+      }
     >
-      {sidebarOpen ? <Sidebar onOpenSettings={() => setSettingsOpen(true)} /> : null}
+      {sidebarOpen ? (
+        <Sidebar
+          onOpenSettings={() => setSettingsOpen(true)}
+          onResize={setDraggedSidebar}
+          onResizeEnd={(width) => {
+            setDraggedSidebar(null)
+            void updateSettings({ sidebarWidth: width })
+          }}
+        />
+      ) : null}
 
       <main className="main">
         <div className="titlebar drag-region">
