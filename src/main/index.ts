@@ -57,7 +57,10 @@ function createWindow(): BrowserWindow {
           ? [`--pi-desktop-session=${process.env.PI_DESKTOP_SESSION}`]
           : []),
         ...(process.env.PI_DESKTOP_SETTINGS ? ['--pi-desktop-settings'] : []),
-        ...(process.env.PI_DESKTOP_EXPORT ? ['--pi-desktop-export'] : [])
+        ...(process.env.PI_DESKTOP_EXPORT ? ['--pi-desktop-export'] : []),
+        // The screenshot harness wants the renderer to expose its store, so
+        // that a state that is hard to produce can be reached.
+        ...(process.env.PI_DESKTOP_SCREENSHOT ? ['--pi-desktop-dev'] : [])
       ]
     }
   })

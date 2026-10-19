@@ -38,6 +38,8 @@ export default function App() {
   const sessions = useAppStore((state) => state.sessions)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const switchProject = useAppStore((state) => state.switchProject)
+  const retry = useAppStore((state) => state.retry)
+  const abortRetry = useAppStore((state) => state.abortRetry)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -306,6 +308,24 @@ export default function App() {
         ) : (
           <Thread />
         )}
+
+        {retry ? (
+          <div className="retry-wrap">
+            <div className="retry" role="status">
+              <RefreshCw size={13} className="spin" />
+              <span className="retry__text">
+                Pi is retrying
+                {retry.maxAttempts
+                  ? ` (attempt ${retry.attempt} of ${retry.maxAttempts})`
+                  : ` (attempt ${retry.attempt})`}
+                {retry.errorMessage ? ` — ${retry.errorMessage}` : ''}
+              </span>
+              <button className="ghost-btn" onClick={() => void abortRetry()}>
+                Stop retrying
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {uiStatuses.length > 0 ? (
           <div className="status-strip">

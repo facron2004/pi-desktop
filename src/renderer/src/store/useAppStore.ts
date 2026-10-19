@@ -54,6 +54,13 @@ export interface AppStore {
   forkTargets: ForkTarget[]
   /** True while a fork is in flight, so the button cannot be pressed twice. */
   forking: boolean
+  /** Set while Pi is retrying a failed request on its own. */
+  retry?: {
+    attempt: number
+    maxAttempts: number
+    delayMs: number
+    errorMessage?: string
+  }
   error?: string
   toast?: { text: string; level: 'info' | 'warning' | 'error' }
 
@@ -110,6 +117,8 @@ export interface AppStore {
   refreshForkTargets: () => Promise<void>
   /** Start a new branch that keeps the history before `entryId`. */
   forkFrom: (entryId: string) => Promise<void>
+  /** Stop Pi from retrying a failed request. */
+  abortRetry: () => Promise<void>
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -712,8 +721,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } finally {
       set({ forking: false })
     }
+  },
+
+  async abortRetry() {
+    try {
+      await window.pi.runtime.request('abort_retry')
+      set({ retry: undefined })
+      get().showToast('Pi stopped retrying')
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
   }
 }))
+
+// Development aid: the screenshot harness drives the store to reach states
+// that are hard to produce on purpose, such as a retry in progress.
+if (typeof window !== 'undefined' && (window as { __piDesktopDev?: unknown }).__piDesktopDev) {
+  ;(window as unknown as { __piDesktopStore?: typeof useAppStore }).__piDesktopStore = useAppStore
+}
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -777,6 +802,23 @@ function handleEvent(set: SetState, get: GetState, event: PiEvent): void {
       })
       break
     }
+    case 'auto_retry_start': {
+      // Pi retries a transient failure on its own. The notice keeps the
+      // history; the state behind it is what the banner and its button use.
+      set((state) => ({
+        items: applyEvent(state.items, event),
+        retry: {
+          attempt: Number(event.attempt ?? 1),
+          maxAttempts: Number(event.maxAttempts ?? 0),
+          delayMs: Number(event.delayMs ?? 0),
+          errorMessage: typeof event.errorMessage === 'string' ? event.errorMessage : undefined
+        }
+      }))
+      break
+    }
+    case 'auto_retry_end':
+      set((state) => ({ items: applyEvent(state.items, event), retry: undefined }))
+      break
     case 'message_start': {
       set((state) => ({ items: applyEvent(state.items, event) }))
       // A new prompt is a new place the branch can be forked from.
@@ -792,8 +834,6 @@ function handleEvent(set: SetState, get: GetState, event: PiEvent): void {
     case 'bash_execution_update':
     case 'compaction_start':
     case 'compaction_end':
-    case 'auto_retry_start':
-    case 'auto_retry_end':
     case 'extension_error':
     case 'client_notice': {
       set((state) => ({ items: applyEvent(state.items, event) }))

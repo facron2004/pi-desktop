@@ -92,7 +92,11 @@ const openFileArg = process.argv.find((argument) =>
 const searchArg = process.argv.find((argument) => argument.startsWith('--pi-desktop-search='))
 const sessionArg = process.argv.find((argument) => argument.startsWith('--pi-desktop-session='))
 const settingsArg = process.argv.includes('--pi-desktop-settings')
+// The screenshot harness sets this, so the renderer exposes its store even
+// when no other flag was used.
+const devArg = process.argv.includes('--pi-desktop-dev')
 if (
+  devArg ||
   prefillArg ||
   openChanges ||
   openFiles ||

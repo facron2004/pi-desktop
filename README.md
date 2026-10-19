@@ -57,6 +57,9 @@ Claude Desktop.
   instructions for the summary.
 - **Steering.** While Pi is working you can steer it ("stop and do this instead") or
   queue a follow-up for when it finishes.
+- **Retries you can see.** When a request fails with a transient error, Pi retries it on its
+  own. The app says so — with the attempt, the reason and a button that stops the retry
+  instead of waiting it out.
 - **Keyboard-first.** `Ctrl+N` new chat, `Ctrl+B` sidebar, `Ctrl+K` focus the composer,
   `Ctrl+F` search the conversation, `Ctrl+1`…`Ctrl+9` switch project, `Alt+↑`/`Alt+↓` walk
   the turns, `↑` recalls earlier prompts, `Esc` stops a run. `Ctrl+/` lists every

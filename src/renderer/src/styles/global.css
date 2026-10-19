@@ -1102,6 +1102,34 @@
   }
 }
 
+/* A retry that Pi started on its own. It can be stopped from here. */
+.retry-wrap {
+  flex: 0 0 auto;
+  padding: 0 28px 10px;
+}
+
+.retry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.retry__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* user message */
 
 .user-msg {
