@@ -259,18 +259,6 @@
   color: var(--red);
 }
 
-.project__children {
-  margin: 1px 0 4px 10px;
-  padding-left: 9px;
-  border-left: 1px solid var(--border-soft);
-}
-
-.project__empty {
-  padding: 4px 8px 6px;
-  font-size: 11px;
-  color: var(--text-faint);
-}
-
 .session-group + .session-group {
   margin-top: 10px;
 }
@@ -883,12 +871,6 @@
  * Popover
  * ------------------------------------------------------------------ */
 
-.popover-layer {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-}
-
 .popover-wrap {
   position: relative;
   display: inline-flex;
@@ -958,12 +940,6 @@
 .popover__item-sub {
   font-size: 10.5px;
   color: var(--text-faint);
-}
-
-.popover__sep {
-  height: 1px;
-  background: var(--border);
-  margin: 5px 2px;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1124,23 +1100,6 @@
     opacity: 0;
     transform: translateY(6px);
   }
-}
-
-.turn__divider {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--text-faint);
-  font-size: 11px;
-  letter-spacing: 0.04em;
-}
-
-.turn__divider::before,
-.turn__divider::after {
-  content: '';
-  flex: 1 1 auto;
-  height: 1px;
-  background: var(--border-soft);
 }
 
 /* user message */
@@ -2178,22 +2137,6 @@ kbd {
   background: rgba(255, 125, 125, 0.18);
   color: var(--red);
   border-color: rgba(255, 125, 125, 0.5);
-}
-
-.btn--ghost {
-  border-color: transparent;
-  background: transparent;
-}
-
-.btn--ghost:hover {
-  background: var(--bg-hover);
-  border-color: var(--border);
-}
-
-.btn--icon {
-  width: 30px;
-  padding: 0;
-  justify-content: center;
 }
 
 .btn--sm {
@@ -3236,19 +3179,6 @@ kbd {
   flex: 0 0 auto;
 }
 
-.viewer__path {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  direction: rtl;
-  text-align: left;
-}
-
 .viewer__crumb {
   display: flex;
   align-items: center;
@@ -3413,11 +3343,6 @@ body.is-resizing {
 
 .app[data-platform='win32'] .drawer__head {
   padding-right: 146px;
-}
-
-.drawer__title {
-  font-size: 13px;
-  font-weight: 620;
 }
 
 .drawer__count {
