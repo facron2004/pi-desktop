@@ -9,15 +9,6 @@ const SOURCE_META = {
   app: { label: 'App', Icon: AppWindow, className: 'palette__badge--app' }
 } as const
 
-export function filterCommands(commands: PiCommand[], query: string): PiCommand[] {
-  const needle = query.trim().toLowerCase()
-  if (!needle) return commands
-  return commands.filter((command) => {
-    if (command.name.toLowerCase().includes(needle)) return true
-    return command.description?.toLowerCase().includes(needle) ?? false
-  })
-}
-
 interface CommandPaletteProps {
   commands: PiCommand[]
   query: string

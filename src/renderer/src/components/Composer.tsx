@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, Paperclip, Square, Terminal, X } from 'lucide-react'
 import { useAppStore, type QueueKind } from '../store/useAppStore'
 import type { PiCommand } from '@shared/types'
-import { CommandPalette, filterCommands } from './CommandPalette'
+import { filterCommands } from '../lib/commands'
+import { CommandPalette } from './CommandPalette'
 
 interface SlashMatch {
   query: string

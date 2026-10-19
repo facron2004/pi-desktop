@@ -1551,6 +1551,13 @@
 
 /* Collapsed context */
 
+/* A file that was edited more than once has one diff per edit. */
+.diff__block + .diff__block {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+
 .diff__row--gap {
   background: var(--bg-hover);
 }

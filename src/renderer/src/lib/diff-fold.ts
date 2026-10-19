@@ -4,7 +4,7 @@ import { diffLines } from 'diff'
 export const CONTEXT_LINES = 3
 
 /** A collapsed run has to hide at least this many lines to be worth a click. */
-export const MIN_GAP_LINES = 3
+const MIN_GAP_LINES = 3
 
 export type DiffRow =
   | {

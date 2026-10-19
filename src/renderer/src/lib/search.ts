@@ -49,7 +49,7 @@ export function findMatches(
 }
 
 /** A window of text around a match, with the whitespace collapsed. */
-export function snippetAround(text: string, index: number, length: number): string {
+function snippetAround(text: string, index: number, length: number): string {
   const start = Math.max(0, index - 32)
   const end = Math.min(text.length, index + length + 48)
   const body = text.slice(start, end).replace(/\s+/g, ' ').trim()

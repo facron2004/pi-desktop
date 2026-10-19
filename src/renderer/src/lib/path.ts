@@ -1,7 +1,7 @@
 /** Path helpers that work without Node in the renderer. */
 
 /** True when the value is already absolute (POSIX root or Windows drive). */
-export function isAbsolutePath(value: string): boolean {
+function isAbsolutePath(value: string): boolean {
   return /^([a-zA-Z]:[\\/]|[\\/])/.test(value)
 }
 

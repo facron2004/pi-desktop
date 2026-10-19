@@ -148,7 +148,7 @@ export function DiffView({
     return (
       <div className="diff diff--split">
         {folded.map((rows, blockIndex) => (
-          <div key={blockIndex}>
+          <div className="diff__block" key={blockIndex}>
             {buildSplitDiff(displayRows(rows, opened)).map((row, rowIndex) =>
               row.gap ? (
                 <div className="diff__split" data-gap="true" key={rowIndex}>
@@ -184,7 +184,7 @@ export function DiffView({
   return (
     <div className="diff">
       {folded.map((rows, blockIndex) => (
-        <div key={blockIndex}>
+        <div className="diff__block" key={blockIndex}>
           {displayRows(rows, opened).map((row, rowIndex) =>
             row.kind === 'gap' ? (
               <div className="diff__row diff__row--gap" key={rowIndex}>

@@ -118,7 +118,7 @@ function getHighlighter(): Promise<Highlighter> {
   return highlighterPromise
 }
 
-export function themeName(isDark: boolean): Theme {
+function themeName(isDark: boolean): Theme {
   return isDark ? DARK : LIGHT
 }
 
