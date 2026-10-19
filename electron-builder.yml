@@ -13,7 +13,11 @@ files:
   - '!**/node_modules/*/{test,tests,__tests__,example,examples,docs,doc}/**'
 
 asarUnpack:
+  # Pi runs as a plain Node child process, so the modules it resolves at
+  # runtime have to exist as real files and not inside the archive.
   - node_modules/@earendil-works/pi-coding-agent/**/*
+  - node_modules/jiti/**/*
+  - node_modules/quickjs-wasi/**/*
 
 win:
   target:

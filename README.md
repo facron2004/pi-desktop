@@ -16,8 +16,12 @@ Claude Desktop.
   and tool output all stream in live, with a caret marking the end of the reply.
 - **Tool cards with diffs.** Every tool call is a collapsible card. File edits render
   as a line diff, so you can see exactly what changed.
-- **Changed-files review.** A docked panel lists every file the agent edited or created
-  in this session, with the diff for each one.
+- **Project inspector.** A docked panel with two tabs: **Changes** lists every file the
+  agent edited or created in this session, and **Files** is a project tree you can search
+  by name and read in place, with syntax highlighting.
+- **Extension dialogs.** When a Pi extension asks you a question — pick one, confirm,
+  type a value, edit a block of text — the desktop app shows the dialog and answers Pi
+  for you. Extensions can also push status lines, widgets and notifications.
 - **Session history.** Pi persists every conversation to disk; the sidebar lists them
   per project, filters them, renames them and exports them as HTML.
 - **Command palette.** Type `/` in the composer to reach Pi's own commands — skills,
@@ -45,6 +49,14 @@ stdin/stdout.
 The desktop app is a protocol client, not a re-implementation of the agent. That
 means every Pi feature — providers, models, thinking levels, compaction, steering,
 sessions, skills, prompt templates — works the same way it does in the terminal.
+
+Pi can also ask the client for interaction through its
+[extension UI protocol](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc-extension-ui.md).
+`select`, `confirm`, `input` and `editor` pause the agent until the user answers, so
+the app renders them as dialogs and replies with an `extension_ui_response` carrying
+Pi's own request id. `notify`, `setStatus`, `setWidget`, `setTitle` and
+`set_editor_text` are fire-and-forget and become a status strip, a widget above the
+composer, a window title or a prefilled prompt.
 
 The protocol implementation lives in [`src/main/pi/rpc-client.ts`](src/main/pi/rpc-client.ts).
 It follows the framing rules from Pi's docs exactly:
@@ -85,6 +97,13 @@ A protocol smoke test that spawns the bundled CLI and exercises the RPC commands
 node scripts/rpc-smoke.mjs "C:/path/to/project"
 ```
 
+And one that checks the extension UI round trip — a temporary extension asks for every
+kind of dialog, and the answers have to reach it:
+
+```bash
+node scripts/rpc-ui-smoke.mjs
+```
+
 Screenshots live in [`docs/shots/`](docs/shots): the welcome screen, a real
 conversation with an inline diff, the light theme, and the app mid-run.
 
@@ -108,6 +127,7 @@ src/
     ├── components/       thread, tool cards, diffs, composer, settings, panels
     ├── lib/thread.ts     Pi session event → UI thread reducer
     ├── lib/changes.ts    tool calls → changed-files review
+    ├── lib/highlight.ts  syntax highlighting, grammars loaded on demand
     └── store/            zustand store
 ```
 

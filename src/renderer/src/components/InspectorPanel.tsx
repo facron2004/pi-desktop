@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, FileDiff, FilePlus, Files, Pencil, X } from 'lucide-react'
-import { collectChanges, shortPath } from '../lib/changes'
+import { collectChanges } from '../lib/changes'
+import { relativePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { DiffView } from './DiffView'
 import { FileTree } from './FileTree'
@@ -99,7 +100,7 @@ export function InspectorPanel({
                   {change.kind === 'edit' ? <Pencil size={12} /> : <FilePlus size={12} />}
                 </span>
                 <span className="change__path" title={change.path}>
-                  {shortPath(change.path)}
+                  {relativePath(workspace?.path ?? '', change.path)}
                 </span>
                 {change.edits > 1 ? (
                   <span className="change__badge">{change.edits} edits</span>

@@ -79,7 +79,7 @@ export class PiRuntime extends EventEmitter {
         error:
           code === 0 || signal === null
             ? undefined
-            : `pi stopped unexpectedly (code ${code}, signal ${signal})`
+            : describeExit(client.stderrTail, code, signal)
       })
     })
 
@@ -97,8 +97,17 @@ export class PiRuntime extends EventEmitter {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       await this.stop()
-      this.setStatus({ phase: 'error', cwd: options.cwd, error: message })
-      return { ok: false, error: message }
+      // Pi usually explains itself on stderr before it gives up.
+      const tail = client.stderrTail
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-2)
+      this.setStatus({
+        phase: 'error',
+        cwd: options.cwd,
+        error: tail.length > 0 ? `${message}: ${tail.join(' ')}` : message
+      })
+      return { ok: false, error: this.status.error }
     }
   }
 
@@ -139,6 +148,21 @@ export class PiRuntime extends EventEmitter {
     this.status = status
     this.emit('status', status)
   }
+}
+
+/**
+ * Explain why Pi stopped.
+ *
+ * The exit code alone is useless; the diagnostics Pi wrote to stderr say what
+ * actually went wrong, so the last few lines are passed on to the UI.
+ */
+function describeExit(stderr: string[], code: number | null, signal: string | null): string {
+  const tail = stderr
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-3)
+  const reason = `pi stopped unexpectedly (code ${code}, signal ${signal})`
+  return tail.length > 0 ? `${reason}: ${tail.join(' ')}` : reason
 }
 
 /** CLI flags for RPC mode, derived from the requested start options. */

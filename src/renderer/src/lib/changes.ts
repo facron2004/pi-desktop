@@ -60,10 +60,3 @@ export function collectChanges(items: ThreadItem[]): FileChange[] {
 
   return Array.from(changes.values()).sort((a, b) => a.at - b.at)
 }
-
-/** Shorten a path for display: keep the tail, which is the useful part. */
-export function shortPath(path: string, segments = 3): string {
-  const parts = path.split(/[\\/]/).filter(Boolean)
-  if (parts.length <= segments) return path
-  return `…/${parts.slice(-segments).join('/')}`
-}

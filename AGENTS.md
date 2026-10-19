@@ -27,6 +27,10 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
    `window.webContents` on a closed window hangs or throws "Object has been
    destroyed" and kills the main process. Always check `isDestroyed()` first —
    use the `sendToWindow` helper in `src/main/ipc.ts` instead of sending directly.
+7. **Answer extension dialogs.** `select`, `confirm`, `input` and `editor` block the
+   agent until the client replies with an `extension_ui_response` carrying Pi's own
+   request id — mint a new id and Pi waits forever. The answer goes out through
+   `runtime:respondUi`; never through `runtime:request`.
 
 ## Layout
 
@@ -38,6 +42,7 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
 | `src/renderer/` | React UI |
 | `src/shared/types.ts` | Protocol and domain types shared by every layer |
 | `scripts/rpc-smoke.mjs` | Spawns the bundled CLI and exercises the RPC commands |
+| `scripts/rpc-ui-smoke.mjs` | Round-trips the extension UI dialogs over the wire |
 
 ## Commands
 
@@ -47,6 +52,7 @@ npm run build       # production build into out/
 npm run typecheck   # must pass before committing
 npm run dist        # installers into release/
 node scripts/rpc-smoke.mjs "C:/some/project"   # protocol smoke test
+node scripts/rpc-ui-smoke.mjs                  # extension UI smoke test
 ```
 
 ## Adding a Pi capability
@@ -81,3 +87,9 @@ npm run build && npx electron .
 ```
 
 `PI_DESKTOP_THEME=light|dark|system` overrides the theme for the run.
+
+Other flags, all off by default: `PI_DESKTOP_PREFILL` fills the composer,
+`PI_DESKTOP_OPEN_CHANGES` and `PI_DESKTOP_OPEN_FILES` open an inspector tab,
+`PI_DESKTOP_FILE_SEARCH` and `PI_DESKTOP_OPEN_FILE` drive the file panel,
+`PI_DESKTOP_EXPORT` exports the session, and `PI_DESKTOP_CLOSE_AFTER_MS`
+closes the window on purpose to reproduce the destroyed-window case.
