@@ -13,15 +13,21 @@ Claude Desktop.
 - **Chat with Pi in a real project folder.** Pick a workspace, and Pi runs there with
   your own permissions — reading files, running commands, editing code.
 - **Streaming conversation.** Assistant text, reasoning ("thinking") blocks, tool calls
-  and tool output all stream in live.
+  and tool output all stream in live, with a caret marking the end of the reply.
 - **Tool cards with diffs.** Every tool call is a collapsible card. File edits render
   as a line diff, so you can see exactly what changed.
+- **Changed-files review.** A docked panel lists every file the agent edited or created
+  in this session, with the diff for each one.
 - **Session history.** Pi persists every conversation to disk; the sidebar lists them
-  per project and you can jump back in at any time.
+  per project, filters them, renames them and exports them as HTML.
+- **Command palette.** Type `/` in the composer to reach Pi's own commands — skills,
+  prompt templates and extension commands.
 - **Model and effort control.** Switch model and reasoning level mid-conversation, and
   watch the context window fill up.
 - **Steering.** While Pi is working you can steer it ("stop and do this instead") or
   queue a follow-up for when it finishes.
+- **Keyboard-first.** `Ctrl+N` new chat, `Ctrl+B` sidebar, `Ctrl+K` focus the composer,
+  `↑` recalls earlier prompts, `Esc` stops a run. `Ctrl+/` lists every shortcut.
 
 ## How it talks to Pi
 
@@ -99,8 +105,9 @@ src/
 ├── preload/index.ts      contextBridge API (contextIsolation, no nodeIntegration)
 ├── shared/types.ts       protocol and domain types shared by all three layers
 └── renderer/src/         React UI
-    ├── components/       thread, tool cards, diffs, composer, settings
+    ├── components/       thread, tool cards, diffs, composer, settings, panels
     ├── lib/thread.ts     Pi session event → UI thread reducer
+    ├── lib/changes.ts    tool calls → changed-files review
     └── store/            zustand store
 ```
 

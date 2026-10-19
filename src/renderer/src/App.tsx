@@ -7,7 +7,7 @@ import { Thread } from './components/Thread'
 import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
 import { SettingsDialog } from './components/SettingsDialog'
-import { ChangesPanel } from './components/ChangesPanel'
+import { InspectorPanel } from './components/InspectorPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 
 export default function App() {
@@ -31,6 +31,7 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [changesOpen, setChangesOpen] = useState(false)
+  const [inspectorTab, setInspectorTab] = useState<'changes' | 'files'>('changes')
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
   const exportedRef = useRef(false)
@@ -48,8 +49,13 @@ export default function App() {
   // Development aid: open the changes drawer for screenshots.
   useEffect(() => {
     const dev = (
-      window as unknown as { __piDesktopDev?: { openChanges?: boolean } }
+      window as unknown as { __piDesktopDev?: { openChanges?: boolean; openFiles?: boolean } }
     ).__piDesktopDev
+    if (dev?.openFiles) {
+      setInspectorTab('files')
+      setChangesOpen(true)
+      return
+    }
     if (dev?.openChanges) setChangesOpen(true)
   }, [])
 
@@ -181,7 +187,18 @@ export default function App() {
           </div>
         </div>
 
-        {status.phase === 'ready' ? <TopBar onOpenChanges={() => setChangesOpen(true)} /> : null}
+        {status.phase === 'ready' ? (
+          <TopBar
+            onOpenChanges={() => {
+              setInspectorTab('changes')
+              setChangesOpen(true)
+            }}
+            onOpenFiles={() => {
+              setInspectorTab('files')
+              setChangesOpen(true)
+            }}
+          />
+        ) : null}
 
         {items.length === 0 ? (
           <Welcome onPick={() => void pickWorkspace()} />
@@ -212,7 +229,12 @@ export default function App() {
 
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
       {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
-      {changesOpen ? <ChangesPanel onClose={() => setChangesOpen(false)} /> : null}
+      {changesOpen ? (
+        <InspectorPanel
+          initialTab={inspectorTab}
+          onClose={() => setChangesOpen(false)}
+        />
+      ) : null}
     </div>
   )
 }

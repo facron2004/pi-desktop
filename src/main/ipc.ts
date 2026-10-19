@@ -1,5 +1,6 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import type {
   AppInfo,
@@ -19,6 +20,75 @@ export interface IpcContext {
   runtime: PiRuntime
   settings: SettingsStore
   getWindow: () => BrowserWindow | null
+}
+
+export interface FileEntry {
+  name: string
+  path: string
+  kind: 'file' | 'directory'
+  size?: number
+}
+
+export interface FileContent {
+  path: string
+  content: string
+  truncated: boolean
+  language: string
+}
+
+const MAX_FILE_BYTES = 512 * 1024
+const LANGUAGE_BY_EXT: Record<string, string> = {
+  ts: 'typescript',
+  tsx: 'tsx',
+  js: 'javascript',
+  jsx: 'jsx',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  json: 'json',
+  md: 'markdown',
+  markdown: 'markdown',
+  css: 'css',
+  scss: 'scss',
+  html: 'html',
+  py: 'python',
+  rb: 'ruby',
+  go: 'go',
+  rs: 'rust',
+  java: 'java',
+  kt: 'kotlin',
+  swift: 'swift',
+  php: 'php',
+  cs: 'csharp',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  ps1: 'powershell',
+  yml: 'yaml',
+  yaml: 'yaml',
+  toml: 'toml',
+  ini: 'ini',
+  sql: 'sql',
+  lua: 'lua',
+  vue: 'vue',
+  svelte: 'svelte',
+  xml: 'xml',
+  dockerfile: 'dockerfile'
+}
+
+/** The working directory Pi is currently running in. */
+function workspaceRoot(context: IpcContext): string {
+  const cwd = context.runtime.currentStatus.cwd
+  if (cwd) return cwd
+  const settings = context.settings.get()
+  const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
+  return active?.path ?? settings.workspaces[0]?.path ?? ''
+}
+
+/** Keep file access inside the open workspace. */
+function isInside(root: string, target: string): boolean {
+  if (!root) return false
+  const relative = path.relative(path.resolve(root), path.resolve(target))
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
 function workspaceName(dir: string): string {
@@ -98,6 +168,62 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('sessions:reveal', async (_event, file: string) => {
     shell.showItemInFolder(file)
+  })
+
+  ipcMain.handle('fs:list', (_event, dir: string): FileEntry[] => {
+    const root = workspaceRoot(context)
+    const target = path.resolve(dir)
+    if (!isInside(root, target)) return []
+    try {
+      return readdirSync(target, { withFileTypes: true })
+        .filter((entry) => !entry.name.startsWith('.'))
+        .map((entry) => {
+          const full = path.join(target, entry.name)
+          let size: number | undefined
+          if (entry.isFile()) {
+            try {
+              size = statSync(full).size
+            } catch {
+              size = undefined
+            }
+          }
+          return {
+            name: entry.name,
+            path: full,
+            kind: entry.isDirectory() ? ('directory' as const) : ('file' as const),
+            size
+          }
+        })
+        .sort((a, b) => {
+          if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1
+          return a.name.localeCompare(b.name)
+        })
+    } catch {
+      return []
+    }
+  })
+
+  ipcMain.handle('fs:read', (_event, file: string): FileContent | null => {
+    const root = workspaceRoot(context)
+    const target = path.resolve(file)
+    if (!isInside(root, target)) return null
+    try {
+      const stats = statSync(target)
+      if (!stats.isFile()) return null
+      const truncated = stats.size > MAX_FILE_BYTES
+      const content = truncated
+        ? readFileSync(target, { encoding: 'utf8' }).slice(0, MAX_FILE_BYTES)
+        : readFileSync(target, 'utf8')
+      const ext = path.extname(target).slice(1).toLowerCase()
+      return {
+        path: target,
+        content,
+        truncated,
+        language: LANGUAGE_BY_EXT[ext] ?? 'text'
+      }
+    } catch {
+      return null
+    }
   })
 
   ipcMain.handle('sessions:remove', async (_event, file: string): Promise<boolean> => {

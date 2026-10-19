@@ -1,11 +1,17 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, Cpu, FileDiff, Gauge, Minimize2, Search, Sparkles } from 'lucide-react'
+import { ChevronDown, Cpu, FileDiff, Files, Gauge, Minimize2, Search, Sparkles } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { collectChanges } from '../lib/changes'
 import { formatTokens } from '../lib/format'
 import { Popover } from './Popover'
 
-export function TopBar({ onOpenChanges }: { onOpenChanges: () => void }) {
+export function TopBar({
+  onOpenChanges,
+  onOpenFiles
+}: {
+  onOpenChanges: () => void
+  onOpenFiles: () => void
+}) {
   const models = useAppStore((state) => state.models)
   const piState = useAppStore((state) => state.piState)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
@@ -161,6 +167,11 @@ export function TopBar({ onOpenChanges }: { onOpenChanges: () => void }) {
           </span>
         </button>
       ) : null}
+
+      <button className="pill" onClick={onOpenFiles} title="Browse the project files">
+        <Files size={13} />
+        <span>Files</span>
+      </button>
 
       <button className="btn btn--ghost btn--sm" onClick={() => void compact()} disabled={!ready}>
         <Minimize2 size={13} />

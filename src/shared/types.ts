@@ -255,6 +255,26 @@ export interface PiDesktopBridge {
     openPath(target: string): Promise<string>
     openExternal(url: string): Promise<void>
   }
+  fs: {
+    /** List a directory inside the open workspace. */
+    list(dir: string): Promise<FileEntry[]>
+    /** Read a text file inside the open workspace. */
+    read(file: string): Promise<FileContent | null>
+  }
+}
+
+export interface FileEntry {
+  name: string
+  path: string
+  kind: 'file' | 'directory'
+  size?: number
+}
+
+export interface FileContent {
+  path: string
+  content: string
+  truncated: boolean
+  language: string
 }
 
 export interface RuntimeStartOptions {

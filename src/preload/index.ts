@@ -3,6 +3,8 @@ import type {
   AppInfo,
   AppSettings,
   AuthStatus,
+  FileContent,
+  FileEntry,
   PiDesktopBridge,
   PiEvent,
   RuntimeStartOptions,
@@ -56,6 +58,10 @@ const bridge: PiDesktopBridge = {
   shell: {
     openPath: (target: string): Promise<string> => ipcRenderer.invoke('shell:openPath', target),
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:openExternal', url)
+  },
+  fs: {
+    list: (dir: string): Promise<FileEntry[]> => ipcRenderer.invoke('fs:list', dir),
+    read: (file: string): Promise<FileContent | null> => ipcRenderer.invoke('fs:read', file)
   }
 }
 
@@ -68,11 +74,13 @@ const prefillArg = process.argv.find((argument) =>
   argument.startsWith('--pi-desktop-prefill=')
 )
 const openChanges = process.argv.includes('--pi-desktop-open-changes')
+const openFiles = process.argv.includes('--pi-desktop-open-files')
 const exportFlag = process.argv.includes('--pi-desktop-export')
-if (prefillArg || openChanges || exportFlag) {
+if (prefillArg || openChanges || openFiles || exportFlag) {
   contextBridge.exposeInMainWorld('__piDesktopDev', {
     prefill: prefillArg ? prefillArg.slice('--pi-desktop-prefill='.length) : undefined,
     openChanges,
+    openFiles,
     export: exportFlag
   })
 }

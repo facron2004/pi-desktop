@@ -42,6 +42,7 @@ function createWindow(): BrowserWindow {
           ? [`--pi-desktop-prefill=${process.env.PI_DESKTOP_PREFILL}`]
           : []),
         ...(process.env.PI_DESKTOP_OPEN_CHANGES ? ['--pi-desktop-open-changes'] : []),
+        ...(process.env.PI_DESKTOP_OPEN_FILES ? ['--pi-desktop-open-files'] : []),
         ...(process.env.PI_DESKTOP_EXPORT ? ['--pi-desktop-export'] : [])
       ]
     }
