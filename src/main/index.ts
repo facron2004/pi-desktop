@@ -6,6 +6,7 @@ import { bridgeRuntime, registerIpc } from './ipc'
 import { PiRuntime } from './pi/runtime'
 import { scheduleCapture, scheduleWindowClose } from './screenshot'
 import { SettingsStore } from './settings'
+import { initialBounds, wasMaximized, watchWindowState } from './window-state'
 
 const isMac = process.platform === 'darwin'
 
@@ -14,9 +15,11 @@ let settings: SettingsStore | null = null
 let runtime: PiRuntime | null = null
 
 function createWindow(): BrowserWindow {
+  const bounds = initialBounds()
   const window = new BrowserWindow({
-    width: 1480,
-    height: 940,
+    width: bounds.width,
+    height: bounds.height,
+    ...(bounds.x !== undefined && bounds.y !== undefined ? { x: bounds.x, y: bounds.y } : {}),
     minWidth: 1080,
     minHeight: 680,
     show: false,
@@ -66,6 +69,10 @@ function createWindow(): BrowserWindow {
   })
 
   window.once('ready-to-show', () => window.show())
+
+  // The size and place the user left the window in are kept for the next run.
+  if (wasMaximized()) window.maximize()
+  watchWindowState(window)
 
   // The window can be closed while Pi is still shutting down; drop the
   // reference so nothing tries to push events into a destroyed renderer.
