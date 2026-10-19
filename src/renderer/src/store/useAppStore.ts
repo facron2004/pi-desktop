@@ -16,7 +16,7 @@ import type {
   Workspace
 } from '@shared/types'
 import { applyEvent, itemsFromMessages, type ThreadItem } from '../lib/thread'
-import { basename, resolveAgainst } from '../lib/path'
+import { basename, resolveAgainst, samePath } from '../lib/path'
 
 export type QueueKind = 'steer' | 'followUp'
 
@@ -74,6 +74,8 @@ export interface AppStore {
   refreshSessions: () => Promise<void>
   selectSession: (session: SessionMeta) => Promise<void>
   renameSession: (name: string) => Promise<void>
+  /** Name a conversation from the list, active or not. */
+  renameSessionFile: (file: string, name: string) => Promise<void>
   exportSession: () => Promise<void>
   deleteSession: (file: string) => Promise<void>
   newChat: () => Promise<void>
@@ -268,6 +270,46 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await get().refreshSessions()
     } catch (error) {
       set({ error: messageOf(error) })
+    }
+  },
+
+  /**
+   * Name a conversation from the list.
+   *
+   * Pi can only name the session that is open, so a conversation that is not
+   * active is opened, named and closed again.
+   */
+  async renameSessionFile(file: string, name: string) {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    if (file === get().activeSessionFile) {
+      await get().renameSession(trimmed)
+      return
+    }
+
+    const session = get().sessions.find((entry) => entry.file === file)
+    const workspacePath = get().workspace?.path ?? ''
+    if (session && session.cwd && !samePath(session.cwd, workspacePath)) {
+      get().showToast('Open that project to rename the conversation', 'warning')
+      return
+    }
+
+    const previous = get().activeSessionFile
+    try {
+      await window.pi.runtime.request('switch_session', { sessionPath: file })
+      await window.pi.runtime.request('set_session_name', { name: trimmed })
+    } catch (error) {
+      set({ error: messageOf(error) })
+    } finally {
+      if (previous) {
+        try {
+          await window.pi.runtime.request('switch_session', { sessionPath: previous })
+        } catch {
+          /* the previous session may have been removed in the meantime */
+        }
+      }
+      await get().refreshState()
+      await get().refreshSessions()
     }
   },
 

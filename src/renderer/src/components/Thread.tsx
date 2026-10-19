@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowDown, Check, Copy, Search, SquareTerminal, X } from 'lucide-react'
+import { ArrowDown, Check, Copy, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../lib/thread'
 import { formatClock, formatCost, formatTokens } from '../lib/format'
@@ -7,7 +7,7 @@ import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from 
 import { pairForkTargets } from '../lib/thread'
 import { SearchContext } from '../lib/search-context'
 import { AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
-import { ToolCard } from './ToolCard'
+import { ToolCard, BashCard } from './ToolCard'
 import { ToolGroup } from './ToolGroup'
 
 interface Turn {
@@ -357,15 +357,7 @@ export function Thread() {
                     ))}
 
                     {turn.bash.map((item) => (
-                      <div className="tool" data-tone="exec" key={item.id}>
-                        <div className="tool__head">
-                          <span className="tool__icon">
-                            <SquareTerminal size={12} />
-                          </span>
-                          <span className="tool__name">bash</span>
-                          <span className="tool__summary">{item.command}</span>
-                        </div>
-                      </div>
+                      <BashCard key={item.id} item={item} />
                     ))}
 
                     {orphanTools.map((tool) => (

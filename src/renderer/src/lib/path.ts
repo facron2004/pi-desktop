@@ -21,6 +21,13 @@ export function basename(value: string): string {
   return parts[parts.length - 1] ?? value
 }
 
+/** True when two paths point at the same directory. */
+export function samePath(left: string, right: string): boolean {
+  const normalise = (value: string) =>
+    value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  return normalise(left) === normalise(right)
+}
+
 /**
  * The path of `target` relative to `root`, for display.
  * Falls back to the full path when the two are unrelated.

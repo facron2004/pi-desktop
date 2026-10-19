@@ -10,7 +10,7 @@ import {
   SquareTerminal,
   Wrench
 } from 'lucide-react'
-import type { ToolItem } from '../lib/thread'
+import type { BashItem, ToolItem } from '../lib/thread'
 import { describeTool, editPairs, type ToolTone } from '../lib/tools'
 import { formatDuration } from '../lib/format'
 import { relativePath } from '../lib/path'
@@ -29,6 +29,51 @@ export const TOOL_ICONS: Record<ToolTone | 'error', typeof FileText> = {
 
 /** Results longer than this are collapsed behind a "show more" control. */
 const RESULT_PREVIEW = 1200
+
+/**
+ * A command Pi ran itself, rather than through a tool call.
+ *
+ * The output arrives in chunks while the command runs, so the card keeps the
+ * body closed until it is asked for.
+ */
+export function BashCard({ item }: { item: BashItem }) {
+  const [open, setOpen] = useState(false)
+  const failed = item.exitCode !== undefined && item.exitCode !== 0
+
+  return (
+    <div className="tool" data-tone={failed ? 'error' : 'exec'}>
+      <div className="tool__head">
+        <button className="tool__head-main" onClick={() => setOpen((value) => !value)}>
+          <span className="tool__icon">
+            <SquareTerminal size={12} strokeWidth={2.2} />
+          </span>
+          <span className="tool__name">bash</span>
+          <span className="tool__summary">{item.command || 'running…'}</span>
+          {item.exitCode !== undefined ? (
+            <span className="tool__status">{failed ? `exit ${item.exitCode}` : 'ok'}</span>
+          ) : null}
+        </button>
+        <button
+          className="tool__caret"
+          onClick={() => setOpen((value) => !value)}
+          aria-label={open ? 'Collapse' : 'Expand'}
+        >
+          <ChevronRight size={13} className="caret" data-open={open} />
+        </button>
+      </div>
+
+      {open ? (
+        <div className="tool__body">
+          {item.output ? (
+            <pre className={`tool__pre${failed ? ' tool__error' : ''}`}>{item.output}</pre>
+          ) : (
+            <pre className="tool__pre">No output.</pre>
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
 export function ToolCard({ item }: { item: ToolItem }) {
   // Edits are the interesting part, so their diff starts expanded.

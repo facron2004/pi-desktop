@@ -34,7 +34,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const selectSession = useAppStore((state) => state.selectSession)
   const newChat = useAppStore((state) => state.newChat)
   const removeWorkspace = useAppStore((state) => state.removeWorkspace)
-  const renameSession = useAppStore((state) => state.renameSession)
+  const renameSessionFile = useAppStore((state) => state.renameSessionFile)
   const deleteSession = useAppStore((state) => state.deleteSession)
 
   const [query, setQuery] = useState('')
@@ -82,7 +82,7 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
 
   const commitRename = (file: string) => {
     setRenaming(null)
-    if (file === activeSessionFile) void renameSession(draft)
+    void renameSessionFile(file, draft)
   }
 
   return (
