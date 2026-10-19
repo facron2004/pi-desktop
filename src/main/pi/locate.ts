@@ -45,9 +45,11 @@ function unpackedPath(): string {
 }
 
 export function findBundledCli(): string | null {
+  // Inside a packaged app the CLI lives in the unpacked asar directory: files
+  // inside the archive cannot be executed, so the unpacked copy wins.
   const candidates = [
-    path.join(app.getAppPath(), CLI_RELATIVE),
-    path.join(unpackedPath(), CLI_RELATIVE)
+    path.join(unpackedPath(), CLI_RELATIVE),
+    path.join(app.getAppPath(), CLI_RELATIVE)
   ]
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate
