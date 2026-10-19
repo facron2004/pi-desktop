@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Copy, ExternalLink, File as FileIcon } from 'lucide-react'
 import type { FileContent } from '@shared/types'
 import { fileTone } from '../lib/files'
+import { formatBytes } from '../lib/format'
 import { basename, relativePath } from '../lib/path'
 import { CodeSnippet } from './CodeSnippet'
 
@@ -78,6 +79,8 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     )
   }
 
+  const lineCount = content.content ? content.content.split('\n').length : 0
+
   return (
     <div className="viewer">
       <div className="viewer__bar">
@@ -92,13 +95,17 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
         </span>
         {content.truncated ? <span className="change__badge">truncated</span> : null}
         {line ? <span className="change__badge">line {line}</span> : null}
+        <span className="viewer__meta">
+          {lineCount} {lineCount === 1 ? 'line' : 'lines'}
+          {content.size ? ` · ${formatBytes(content.size)}` : ''}
+        </span>
         <button className="ghost-btn" onClick={() => void copy()} title="Copy the file">
           {copied ? <Check size={12} /> : <Copy size={12} />}
         </button>
         <button
           className="ghost-btn"
           title="Reveal in the file manager"
-          onClick={() => void window.pi.sessions.reveal(content.path)}
+          onClick={() => void window.pi.fs.reveal(content.path)}
         >
           <ExternalLink size={12} />
         </button>

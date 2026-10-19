@@ -325,7 +325,6 @@ export interface PiDesktopBridge {
   }
   sessions: {
     list(cwd?: string): Promise<SessionMeta[]>
-    reveal(file: string): Promise<void>
     /** Move a session file to the OS trash. Returns false when it fails. */
     remove(file: string): Promise<boolean>
   }
@@ -356,6 +355,8 @@ export interface PiDesktopBridge {
     read(file: string): Promise<FileContent | null>
     /** Find files inside the open workspace whose name contains the query. */
     search(query: string, limit?: number): Promise<FileEntry[]>
+    /** Show a file in the file manager of the operating system. */
+    reveal(file: string): Promise<void>
   }
 }
 
@@ -370,6 +371,8 @@ export interface FileContent {
   path: string
   content: string
   truncated: boolean
+  /** Size of the file on disk, in bytes. */
+  size?: number
   language: string
 }
 

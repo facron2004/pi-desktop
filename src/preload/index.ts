@@ -40,7 +40,6 @@ const bridge: PiDesktopBridge = {
   },
   sessions: {
     list: (cwd?: string): Promise<SessionMeta[]> => ipcRenderer.invoke('sessions:list', cwd),
-    reveal: (file: string): Promise<void> => ipcRenderer.invoke('sessions:reveal', file),
     remove: (file: string): Promise<boolean> => ipcRenderer.invoke('sessions:remove', file)
   },
   runtime: {
@@ -68,7 +67,8 @@ const bridge: PiDesktopBridge = {
     list: (dir: string): Promise<FileEntry[]> => ipcRenderer.invoke('fs:list', dir),
     read: (file: string): Promise<FileContent | null> => ipcRenderer.invoke('fs:read', file),
     search: (query: string, limit?: number): Promise<FileEntry[]> =>
-      ipcRenderer.invoke('fs:search', query, limit)
+      ipcRenderer.invoke('fs:search', query, limit),
+    reveal: (file: string): Promise<void> => ipcRenderer.invoke('fs:reveal', file)
   }
 }
 

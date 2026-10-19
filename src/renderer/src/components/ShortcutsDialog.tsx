@@ -5,6 +5,7 @@ const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
   { keys: ['Ctrl', 'B'], label: 'Show or hide the sidebar', group: 'Workspace' },
   { keys: ['Ctrl', 'K'], label: 'Focus the composer', group: 'Workspace' },
   { keys: ['Ctrl', 'F'], label: 'Search the conversation', group: 'Workspace' },
+  { keys: ['Ctrl', '1…9'], label: 'Switch to another project', group: 'Workspace' },
   { keys: ['Ctrl', '/'], label: 'Show this shortcut list', group: 'Workspace' },
   { keys: ['Enter'], label: 'Send the message', group: 'Composing' },
   { keys: ['Shift', 'Enter'], label: 'Insert a line break', group: 'Composing' },

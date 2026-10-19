@@ -2,10 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowDown, Check, Copy, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../lib/thread'
+import type { ModelInfo } from '@shared/types'
 import { formatClock, formatCost, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
 import { pairForkTargets } from '../lib/thread'
 import { describeTool } from '../lib/tools'
+import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
 import { SearchContext } from '../lib/search-context'
 import { AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
@@ -90,6 +92,7 @@ export function Thread() {
   const items = useAppStore((state) => state.items)
   const isStreaming = useAppStore((state) => state.isStreaming)
   const workspace = useAppStore((state) => state.workspace)
+  const models = useAppStore((state) => state.models)
   const forkTargets = useAppStore((state) => state.forkTargets)
   const forkFrom = useAppStore((state) => state.forkFrom)
   const forking = useAppStore((state) => state.forking)
@@ -348,7 +351,7 @@ export function Thread() {
                 <div className="assistant">
                   <div className="assistant__avatar">π</div>
                   <div className="assistant__body">
-                    {renderTurn(turn, toolMap)}
+                    {renderTurn(turn, toolMap, models)}
 
                     {turn.bash.map((item) => (
                       <BashCard key={item.id} item={item} />
@@ -436,7 +439,7 @@ function Elapsed({ since }: { since: number }) {
  * card. The agent usually reads one file after the other, and each of those
  * is a reply of its own — grouping inside a reply would not catch them.
  */
-function renderTurn(turn: Turn, toolMap: Map<string, ToolItem>): ReactNode[] {
+function renderTurn(turn: Turn, toolMap: Map<string, ToolItem>, models: ModelInfo[]): ReactNode[] {
   const nodes: ReactNode[] = []
   let group: ToolItem[] = []
   let lastAssistant: AssistantItem | undefined
@@ -493,7 +496,7 @@ function renderTurn(turn: Turn, toolMap: Map<string, ToolItem>): ReactNode[] {
   if (lastAssistant && !lastAssistant.streaming && (lastAssistant.usage || lastAssistant.model)) {
     nodes.push(
       <div className="assistant__footer" key="turn-footer">
-        {lastAssistant.model ? <span>{lastAssistant.model}</span> : null}
+        {lastAssistant.model ? <span>{modelName(models, lastAssistant.model)}</span> : null}
         {lastAssistant.usage ? (
           <>
             <span>{formatTokens(lastAssistant.usage.totalTokens)} tokens</span>

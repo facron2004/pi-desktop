@@ -553,6 +553,18 @@
   min-width: 0;
 }
 
+.titlebar__project {
+  flex: 0 1 auto;
+  font-size: 12px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--border-soft);
+}
+
 .titlebar__rename {
   width: 260px;
   height: 26px;
@@ -3193,6 +3205,14 @@ kbd {
   flex: 0 0 auto;
 }
 
+.viewer__meta {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
 .viewer__path {
   flex: 1 1 auto;
   min-width: 0;
@@ -3464,6 +3484,27 @@ body.is-resizing {
   border-radius: 4px;
   background: var(--bg-active);
   color: var(--text-faint);
+}
+
+.change__reveal {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 0.14s var(--ease), background 0.12s var(--ease), color 0.12s var(--ease);
+}
+
+.change__head:hover .change__reveal {
+  opacity: 1;
+}
+
+.change__reveal:hover {
+  background: var(--bg-active);
+  color: var(--text);
 }
 
 .change__stats {

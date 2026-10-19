@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Columns2, FileDiff, FilePlus, Files, Pencil, Rows3, X } from 'lucide-react'
+import { ArrowLeft, Columns2, ExternalLink, FileDiff, FilePlus, Files, Pencil, Rows3, X } from 'lucide-react'
 import { collectChanges } from '../lib/changes'
 import { relativePath, resolveAgainst } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
@@ -201,6 +201,13 @@ export function InspectorPanel({
                   {change.edits > 1 ? (
                     <span className="change__badge">{change.edits} edits</span>
                   ) : null}
+                  <button
+                    className="change__reveal"
+                    title="Reveal in the file manager"
+                    onClick={() => void window.pi.fs.reveal(change.path)}
+                  >
+                    <ExternalLink size={12} />
+                  </button>
                 </header>
 
                 {change.diffs.length > 0 ? (

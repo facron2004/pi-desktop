@@ -13,25 +13,14 @@ import {
 import { useAppStore } from '../store/useAppStore'
 import type { SessionMeta } from '@shared/types'
 import { formatDayBucket, formatRelativeTime } from '../lib/format'
-import { basename, samePath } from '../lib/path'
+import { samePath } from '../lib/path'
+import { collectProjects, sortProjects, type Project } from '../lib/projects'
 import { ConfirmDialog } from './ConfirmDialog'
 
 /** A session in the list, or the heading that separates a run of them. */
 type GroupEntry =
   | { kind: 'heading'; label: string; key: string }
   | { kind: 'session'; session: SessionMeta; key: string }
-
-/** A project in the sidebar: a folder Pi can run in. */
-interface Project {
-  path: string
-  name: string
-  /** The settings id, when the project is registered. */
-  id?: string
-  /** True when the project is in the settings and can be removed from there. */
-  registered: boolean
-  lastOpenedAt: number
-  sessions: SessionMeta[]
-}
 
 /** Split the sessions of a project into buckets by when they happened. */
 function groupByDay(sessions: SessionMeta[]): GroupEntry[] {
@@ -71,57 +60,23 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const needle = query.trim().toLowerCase()
 
   const projects = useMemo(() => {
-    const map = new Map<string, Project>()
-    for (const item of settings.workspaces) {
-      map.set(item.path.toLowerCase(), {
-        path: item.path,
-        name: item.name,
-        id: item.id,
-        registered: true,
-        lastOpenedAt: item.lastOpenedAt,
-        sessions: []
-      })
-    }
-    for (const session of sessions) {
-      const key = session.cwd.toLowerCase()
-      let project = map.get(key)
-      if (!project) {
-        project = {
-          path: session.cwd,
-          name: session.cwd ? basename(session.cwd) : 'Unknown project',
-          registered: false,
-          lastOpenedAt: 0,
-          sessions: []
-        }
-        map.set(key, project)
-      }
-      project.sessions.push(session)
-    }
-
-    const list = Array.from(map.values())
-    if (needle) {
-      for (const project of list) {
-        project.sessions = project.sessions.filter(
-          (session) =>
-            (session.name ?? '').toLowerCase().includes(needle) ||
-            session.preview.toLowerCase().includes(needle) ||
-            session.cwd.toLowerCase().includes(needle)
-        )
-      }
+    const list = collectProjects(settings.workspaces, sessions)
+    if (!needle) return list
+    for (const project of list) {
+      project.sessions = project.sessions.filter(
+        (session) =>
+          (session.name ?? '').toLowerCase().includes(needle) ||
+          session.preview.toLowerCase().includes(needle) ||
+          session.cwd.toLowerCase().includes(needle)
+      )
     }
     return list
   }, [settings.workspaces, sessions, needle])
 
-  const ordered = useMemo(() => {
-    const active = workspace?.path
-    return [...projects].sort((a, b) => {
-      if (a.path === active) return -1
-      if (b.path === active) return 1
-      const left = Math.max(a.lastOpenedAt, a.sessions[0]?.updatedAt ?? 0)
-      const right = Math.max(b.lastOpenedAt, b.sessions[0]?.updatedAt ?? 0)
-      return right - left
-    })
-  }, [projects, workspace?.path])
+  const ordered = useMemo(
+    () => sortProjects(projects, workspace?.path),
+    [projects, workspace?.path]
+  )
 
   // Without a filter the list shows the conversations of the project that is
   // open. A filter looks everywhere, because a conversation the user cannot

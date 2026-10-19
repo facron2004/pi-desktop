@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CopyPlus, FileDown, Keyboard, PanelLeft, Pencil, RefreshCw, X } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { useAppStore } from './store/useAppStore'
+import { collectProjects, sortProjects } from './lib/projects'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { Thread } from './components/Thread'
@@ -34,6 +35,9 @@ export default function App() {
   const uiTitle = useAppStore((state) => state.uiTitle)
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
+  const sessions = useAppStore((state) => state.sessions)
+  const activeSessionFile = useAppStore((state) => state.activeSessionFile)
+  const switchProject = useAppStore((state) => state.switchProject)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -129,6 +133,19 @@ export default function App() {
       if (mod && event.key === '/') {
         event.preventDefault()
         setShortcutsOpen((value) => !value)
+        return
+      }
+      // `Ctrl+1` … `Ctrl+9` jump to the n-th project of the sidebar.
+      if (mod && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
+        const index = Number(event.key) - 1
+        const projects = sortProjects(
+          collectProjects(settings.workspaces, sessions),
+          workspace?.path
+        )
+        const target = projects[index]
+        if (!target) return
+        event.preventDefault()
+        void switchProject(target.path)
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -147,9 +164,22 @@ export default function App() {
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
       window.removeEventListener('pi:open-inspector', onOpenInspector)
     }
-  }, [newChat])
+  }, [newChat, settings.workspaces, sessions, workspace?.path, switchProject])
 
-  const title = piState?.sessionName || workspace?.name || 'Pi Desktop'
+  // The title of a conversation is its name, and the first line of it when
+  // it was never named. The project is shown next to it, so two conversations
+  // of the same project do not look alike.
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.file === activeSessionFile),
+    [sessions, activeSessionFile]
+  )
+  const title =
+    piState?.sessionName ||
+    activeSession?.name ||
+    activeSession?.preview ||
+    workspace?.name ||
+    'Pi Desktop'
+  const showProject = Boolean(workspace && title !== workspace.name)
 
   // An extension can rename the session window through `setTitle`.
   useEffect(() => {
@@ -202,6 +232,11 @@ export default function App() {
           ) : (
             <>
               <span className="titlebar__title">{title}</span>
+              {showProject && workspace ? (
+                <span className="titlebar__project" title={workspace.path}>
+                  {workspace.name}
+                </span>
+              ) : null}
               <button
                 className="icon-btn no-drag"
                 title="Rename this conversation"

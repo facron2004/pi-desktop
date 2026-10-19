@@ -6,6 +6,8 @@ import type {
   AppInfo,
   AppSettings,
   ExtensionUiResponse,
+  FileContent,
+  FileEntry,
   PiEvent,
   RuntimeStartOptions,
   RuntimeStatus,
@@ -21,20 +23,6 @@ export interface IpcContext {
   runtime: PiRuntime
   settings: SettingsStore
   getWindow: () => BrowserWindow | null
-}
-
-export interface FileEntry {
-  name: string
-  path: string
-  kind: 'file' | 'directory'
-  size?: number
-}
-
-export interface FileContent {
-  path: string
-  content: string
-  truncated: boolean
-  language: string
 }
 
 const MAX_FILE_BYTES = 512 * 1024
@@ -238,10 +226,6 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('sessions:list', (_event, cwd?: string) => listSessions(cwd))
 
-  ipcMain.handle('sessions:reveal', async (_event, file: string) => {
-    shell.showItemInFolder(file)
-  })
-
   ipcMain.handle('fs:list', (_event, dir: string): FileEntry[] => {
     const root = workspaceRoot(context)
     // A relative path is taken from the project root, not from wherever the
@@ -293,6 +277,7 @@ export function registerIpc(context: IpcContext): void {
         path: target,
         content,
         truncated,
+        size: stats.size,
         language: LANGUAGE_BY_EXT[ext] ?? 'text'
       }
     } catch {
@@ -354,6 +339,10 @@ export function registerIpc(context: IpcContext): void {
       console.error('[pi-desktop] could not trash the session file:', error)
       return false
     }
+  })
+
+  ipcMain.handle('fs:reveal', async (_event, file: string) => {
+    shell.showItemInFolder(file)
   })
 
   ipcMain.handle('runtime:start', async (_event, options: RuntimeStartOptions) => {
