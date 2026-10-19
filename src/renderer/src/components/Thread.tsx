@@ -5,6 +5,7 @@ import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '
 import { formatClock, formatCost, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
 import { pairForkTargets } from '../lib/thread'
+import { describeTool } from '../lib/tools'
 import { SearchContext } from '../lib/search-context'
 import { AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
@@ -44,7 +45,7 @@ function buildTurns(items: ThreadItem[]): Turn[] {
 }
 
 /** The text of a turn that the search bar looks through. */
-function searchableChunks(turns: Turn[]): SearchableChunk[] {
+function searchableChunks(turns: Turn[], root?: string): SearchableChunk[] {
   const chunks: SearchableChunk[] = []
   for (const turn of turns) {
     if (turn.user?.text.trim()) {
@@ -58,22 +59,14 @@ function searchableChunks(turns: Turn[]): SearchableChunk[] {
       }
     }
     for (const tool of turn.tools) {
-      chunks.push({ turnId: turn.id, source: 'Tool', text: `${tool.toolName} ${summarise(tool.args)}` })
+      // The arguments of a tool carry whole files, so only the one-line
+      // summary of the call goes into the index. Otherwise every word of
+      // every edited file turns into a search hit.
+      const label = describeTool(tool.toolName).summary(tool.args ?? {}, root)
+      chunks.push({ turnId: turn.id, source: 'Tool', text: `${tool.toolName} ${label}` })
     }
   }
   return chunks
-}
-
-/** A short, single-line summary of a tool call's arguments. */
-function summarise(args: Record<string, unknown>): string {
-  const parts: string[] = []
-  for (const [key, value] of Object.entries(args)) {
-    if (value === undefined || value === null) continue
-    const text = typeof value === 'string' ? value : JSON.stringify(value)
-    parts.push(`${key}: ${text}`)
-    if (parts.length >= 3) break
-  }
-  return parts.join(' · ')
 }
 
 function useCopy() {
@@ -95,6 +88,7 @@ function useCopy() {
 export function Thread() {
   const items = useAppStore((state) => state.items)
   const isStreaming = useAppStore((state) => state.isStreaming)
+  const workspace = useAppStore((state) => state.workspace)
   const forkTargets = useAppStore((state) => state.forkTargets)
   const forkFrom = useAppStore((state) => state.forkFrom)
   const forking = useAppStore((state) => state.forking)
@@ -109,7 +103,7 @@ export function Thread() {
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   const turns = useMemo(() => buildTurns(items), [items])
-  const chunks = useMemo(() => searchableChunks(turns), [turns])
+  const chunks = useMemo(() => searchableChunks(turns, workspace?.path), [turns, workspace?.path])
   const hits: SearchHit[] = useMemo(() => findMatches(chunks, query), [chunks, query])
   const forkByUserId = useMemo(() => pairForkTargets(items, forkTargets), [items, forkTargets])
 

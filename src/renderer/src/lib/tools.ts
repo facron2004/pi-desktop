@@ -24,6 +24,21 @@ function shortenPath(value: string, max = 68): string {
 }
 
 /**
+ * A value as it should appear in a one-line summary.
+ *
+ * Tool arguments carry whole files, so anything long is cut off: a summary
+ * is a label, not a copy of the payload.
+ */
+function brief(value: unknown, max = 60): string {
+  if (value === undefined || value === null) return ''
+  const text = typeof value === 'string' ? value : JSON.stringify(value)
+  if (!text) return ''
+  const single = text.replace(/\s+/g, ' ').trim()
+  if (single.length <= max) return single
+  return `${single.slice(0, max - 1)}…`
+}
+
+/**
  * A path as it should be shown: relative to the project when it is inside
  * it, because the full path is mostly noise.
  */
@@ -64,20 +79,20 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     label: 'Bash',
     plural: 'bash commands',
     tone: 'exec',
-    summary: (args) => str(args.command).split('\n')[0] ?? ''
+    summary: (args) => brief(str(args.command).split('\n')[0])
   },
   powershell: {
     label: 'PowerShell',
     plural: 'PowerShell commands',
     tone: 'exec',
-    summary: (args) => str(args.command).split('\n')[0] ?? ''
+    summary: (args) => brief(str(args.command).split('\n')[0])
   },
   grep: {
     label: 'Grep',
     plural: 'searches',
     tone: 'search',
     summary: (args) => {
-      const pattern = str(args.pattern)
+      const pattern = brief(str(args.pattern))
       const path = str(args.path)
       return path ? `${pattern} in ${shortenPath(path)}` : pattern
     }
@@ -87,7 +102,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     plural: 'searches',
     tone: 'search',
     summary: (args) => {
-      const pattern = str(args.pattern)
+      const pattern = brief(str(args.pattern))
       const path = str(args.path)
       return path ? `${pattern} in ${shortenPath(path)}` : pattern
     }
