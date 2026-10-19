@@ -3830,7 +3830,10 @@ body.is-resizing {
 }
 
 .launcher__name {
-  flex: 0 1 auto;
+  /* The name is the point of the row, so it is the last thing that gives
+     way — the description beside it shrinks first. */
+  flex: 0 0 auto;
+  max-width: 62%;
   min-width: 0;
   font-size: 13px;
   font-weight: 550;
@@ -3841,7 +3844,7 @@ body.is-resizing {
 }
 
 .launcher__hint {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 11.5px;
   color: var(--text-faint);
@@ -3849,6 +3852,14 @@ body.is-resizing {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* A command of Pi is typed into the composer, so it looks like the command
+   list of the composer. */
+.launcher__item[data-kind='command'] .launcher__name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 550;
 }
 
 /* The launcher sits under the top of the screen, the way a command palette

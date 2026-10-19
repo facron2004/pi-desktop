@@ -24,6 +24,7 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
+import { COMMAND_SOURCE } from '../lib/command-source'
 import { transcriptOf } from '../lib/thread'
 
 /** One thing the user can do from the launcher. */
@@ -306,15 +307,44 @@ export function Launcher({
   const [index, setIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const commands = useAppStore((state) => state.commands)
+  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
+
+  /**
+   * Pi's own commands join the search as soon as there is something to
+   * search for.
+   *
+   * There are dozens of them — skills, prompt templates, extension commands
+   * — and without a query they would bury the actions of the app.
+   */
+  const piCommands = useMemo(
+    () => commands.filter((command) => command.source !== 'app'),
+    [commands]
+  )
 
   const visible = useMemo(() => {
     const tokens = query.toLowerCase().split(/\s+/).filter(Boolean)
-    const scored = actions
+    const list: LauncherAction[] = [...actions]
+    if (tokens.length) {
+      for (const command of piCommands) {
+        list.push({
+          id: `pi:${command.source}:${command.name}`,
+          title: `/${command.name}`,
+          hint: command.description,
+          group: 'Pi',
+          icon: COMMAND_SOURCE[command.source].Icon,
+          // A command of Pi is text that goes to the agent, so it is typed
+          // into the composer rather than run right away.
+          run: () => insertIntoComposer(`/${command.name} `)
+        })
+      }
+    }
+    const scored = list
       .map((action) => ({ action, score: tokens.length ? scoreAction(action, tokens) : 0 }))
       .filter((entry): entry is { action: LauncherAction; score: number } => entry.score !== null)
       .sort((a, b) => b.score - a.score)
     return scored.map((entry, position) => ({ ...entry, position }))
-  }, [actions, query])
+  }, [actions, piCommands, query, insertIntoComposer])
 
   const groups = useMemo(() => {
     const map = new Map<string, typeof visible>()
@@ -389,7 +419,7 @@ export function Launcher({
           <input
             ref={inputRef}
             value={query}
-            placeholder="Search for an action or a project"
+            placeholder="Search for an action, a command or a project"
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onKeyDown}
           />
@@ -400,7 +430,7 @@ export function Launcher({
             <div className="palette__empty">
               Nothing matches “{query}”.
               <br />
-              Try “new”, “model”, “files” or the name of a project.
+              Try “new”, “model”, “files”, a skill or the name of a project.
             </div>
           ) : (
             groups.map((group) => (
@@ -413,6 +443,7 @@ export function Launcher({
                       key={entry.action.id}
                       className="launcher__item"
                       data-active={entry.position === index}
+                      data-kind={entry.action.group === 'Pi' ? 'command' : undefined}
                       onMouseEnter={() => setIndex(entry.position)}
                       onClick={() => run(entry)}
                     >

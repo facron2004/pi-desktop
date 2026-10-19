@@ -1,13 +1,7 @@
 import { useEffect, useRef } from 'react'
-import { AppWindow, Command as CommandIcon, FileText, Sparkles, Wrench } from 'lucide-react'
+import { Command as CommandIcon } from 'lucide-react'
 import type { PiCommand } from '@shared/types'
-
-const SOURCE_META = {
-  skill: { label: 'Skill', Icon: Sparkles, className: 'palette__badge--skill' },
-  prompt: { label: 'Prompt', Icon: FileText, className: 'palette__badge--prompt' },
-  extension: { label: 'Extension', Icon: Wrench, className: 'palette__badge--extension' },
-  app: { label: 'App', Icon: AppWindow, className: 'palette__badge--app' }
-} as const
+import { COMMAND_SOURCE } from '../lib/command-source'
 
 interface CommandPaletteProps {
   commands: PiCommand[]
@@ -56,7 +50,7 @@ export function CommandPalette({
       ) : (
         <div className="palette__list">
           {commands.map((command, index) => {
-            const meta = SOURCE_META[command.source] ?? SOURCE_META.extension
+            const meta = COMMAND_SOURCE[command.source] ?? COMMAND_SOURCE.extension
             const Icon = meta.Icon
             return (
               <button

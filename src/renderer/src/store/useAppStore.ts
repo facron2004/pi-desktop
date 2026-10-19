@@ -741,9 +741,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
   insertIntoComposer(text, mode = 'append') {
     const trimmed = text.trim()
     if (!trimmed) return
+    // A trailing space is kept when there is one, so the user can go on
+    // typing right after the text that was put in.
+    const addition = text.endsWith(' ') ? `${trimmed} ` : trimmed
     set((state) => ({
       composerInsert: {
-        text: trimmed,
+        text: addition,
         seq: (state.composerInsert?.seq ?? 0) + 1,
         mode
       }
