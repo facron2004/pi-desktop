@@ -234,6 +234,8 @@ export interface AppSettings {
   thinkingLevel?: string
   theme: ThemePreference
   fontScale: number
+  /** Show diffs side by side instead of unified. */
+  diffSplit: boolean
   /** Automatically accept the working directory of new workspaces. */
   trustProject: boolean
 }

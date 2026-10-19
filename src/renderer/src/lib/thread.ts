@@ -137,6 +137,19 @@ function notice(level: NoticeItem['level'], text: string): NoticeItem {
 /** Build a thread from a full message list (session hydration). */
 export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
   const items: ThreadItem[] = []
+
+  // The arguments of a tool call live on the assistant message, not on the
+  // result. Collect them first so a resumed session still knows which file
+  // was edited and which command was run.
+  const calls = new Map<string, { name: string; args: Record<string, unknown> }>()
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue
+    for (const block of blocksFromContent(message.content)) {
+      if (block.type !== 'toolCall') continue
+      calls.set(block.id, { name: block.name, args: block.args ?? {} })
+    }
+  }
+
   for (const message of messages) {
     switch (message.role) {
       case 'user': {
@@ -164,12 +177,13 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
         break
       }
       case 'toolResult': {
+        const call = calls.get(message.toolCallId ?? '')
         items.push({
           id: nextId('tool'),
           kind: 'tool',
           toolCallId: message.toolCallId ?? '',
-          toolName: message.toolName ?? 'tool',
-          args: {},
+          toolName: message.toolName ?? call?.name ?? 'tool',
+          args: call?.args ?? {},
           status: message.isError ? 'error' : 'ok',
           result: textOf(message.content),
           isError: message.isError,

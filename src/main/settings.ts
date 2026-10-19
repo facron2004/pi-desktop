@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
   theme: 'dark',
   fontScale: 1,
+  diffSplit: false,
   trustProject: true
 }
 
@@ -27,7 +28,10 @@ export class SettingsStore {
     try {
       if (!existsSync(this.file)) return { ...DEFAULT_SETTINGS }
       const raw = readFileSync(this.file, 'utf8')
-      const parsed = JSON.parse(raw) as Partial<AppSettings>
+      // Windows editors happily add a byte order mark, and JSON.parse
+      // rejects it. Without this the whole file would be discarded and the
+      // user would lose every workspace they had opened.
+      const parsed = JSON.parse(raw.replace(/^\uFEFF/, '')) as Partial<AppSettings>
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,

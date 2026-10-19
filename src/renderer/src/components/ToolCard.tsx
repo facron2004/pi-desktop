@@ -12,6 +12,7 @@ import {
 import type { ToolItem } from '../lib/thread'
 import { describeTool, editPairs, type ToolTone } from '../lib/tools'
 import { formatDuration } from '../lib/format'
+import { useAppStore } from '../store/useAppStore'
 import { buildDiff, DiffView } from './DiffView'
 
 const ICONS: Record<ToolTone | 'error', typeof FileText> = {
@@ -31,6 +32,7 @@ export function ToolCard({ item }: { item: ToolItem }) {
   // Edits are the interesting part, so their diff starts expanded.
   const [open, setOpen] = useState(item.toolName === 'edit')
   const [full, setFull] = useState(false)
+  const diffSplit = useAppStore((state) => state.settings.diffSplit === true)
   const descriptor = describeTool(item.toolName)
   const tone = item.status === 'error' ? 'error' : descriptor.tone
   const Icon = ICONS[tone]
@@ -66,7 +68,7 @@ export function ToolCard({ item }: { item: ToolItem }) {
 
       {open ? (
         <div className="tool__body">
-          {diffs.length > 0 ? <DiffView diffs={diffs} /> : null}
+          {diffs.length > 0 ? <DiffView diffs={diffs} mode={diffSplit ? 'split' : 'unified'} /> : null}
 
           {item.toolName === 'write' ? (
             <pre className="tool__pre">{String(item.args?.content ?? '')}</pre>

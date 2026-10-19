@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, FileDiff, FilePlus, Files, Pencil, X } from 'lucide-react'
+import { ArrowLeft, Columns2, FileDiff, FilePlus, Files, Pencil, Rows3, X } from 'lucide-react'
 import { collectChanges } from '../lib/changes'
 import { relativePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
@@ -18,6 +18,9 @@ export function InspectorPanel({
 }) {
   const items = useAppStore((state) => state.items)
   const workspace = useAppStore((state) => state.workspace)
+  const settings = useAppStore((state) => state.settings)
+  const updateSettings = useAppStore((state) => state.updateSettings)
+  const diffSplit = settings.diffSplit === true
   const changes = useMemo(() => collectChanges(items), [items])
 
   const [tab, setTab] = useState<Tab>(initialTab)
@@ -66,6 +69,24 @@ export function InspectorPanel({
           </button>
         </div>
         <span style={{ flex: 1 }} />
+        {tab === 'changes' && changes.length > 0 ? (
+          <div className="segmented segmented--tight" title="Diff layout">
+            <button
+              data-active={!diffSplit}
+              onClick={() => void updateSettings({ diffSplit: false })}
+              title="Unified diff"
+            >
+              <Rows3 size={12} />
+            </button>
+            <button
+              data-active={diffSplit}
+              onClick={() => void updateSettings({ diffSplit: true })}
+              title="Side-by-side diff"
+            >
+              <Columns2 size={12} />
+            </button>
+          </div>
+        ) : null}
         <button className="icon-btn" onClick={onClose} title="Close">
           <X size={15} />
         </button>
@@ -108,7 +129,7 @@ export function InspectorPanel({
               </header>
 
               {change.diffs.length > 0 ? (
-                <DiffView diffs={change.diffs} />
+                <DiffView diffs={change.diffs} mode={diffSplit ? 'split' : 'unified'} />
               ) : null}
 
               {!change.diffs.length && change.content ? (

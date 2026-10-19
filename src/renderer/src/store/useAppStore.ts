@@ -91,6 +91,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
   theme: 'dark',
   fontScale: 1,
+  diffSplit: false,
   trustProject: true
 }
 

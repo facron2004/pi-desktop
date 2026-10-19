@@ -147,6 +147,26 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           </div>
 
           <div className="field">
+            <label className="field__label">Diff layout</label>
+            <div className="field__row">
+              <div className="segmented">
+                <button
+                  data-active={!settings.diffSplit}
+                  onClick={() => void updateSettings({ diffSplit: false })}
+                >
+                  Unified
+                </button>
+                <button
+                  data-active={settings.diffSplit === true}
+                  onClick={() => void updateSettings({ diffSplit: true })}
+                >
+                  Side by side
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="field">
             <label className="field__label">Project resources</label>
             <div className="field__row">
               <Switch
