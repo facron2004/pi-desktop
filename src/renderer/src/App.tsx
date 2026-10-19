@@ -65,9 +65,14 @@ export default function App() {
           openFiles?: boolean
           openFile?: string
           session?: string
+          settings?: boolean
         }
       }
     ).__piDesktopDev
+    if (dev?.settings) {
+      setSettingsOpen(true)
+      return
+    }
     if (dev?.openFile) {
       setInspectorTab('files')
       setChangesOpen(true)

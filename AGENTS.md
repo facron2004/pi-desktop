@@ -91,5 +91,7 @@ npm run build && npx electron .
 Other flags, all off by default: `PI_DESKTOP_PREFILL` fills the composer,
 `PI_DESKTOP_OPEN_CHANGES` and `PI_DESKTOP_OPEN_FILES` open an inspector tab,
 `PI_DESKTOP_FILE_SEARCH` and `PI_DESKTOP_OPEN_FILE` drive the file panel,
+`PI_DESKTOP_SEARCH` opens the in-conversation search, `PI_DESKTOP_SESSION`
+resumes a session file, `PI_DESKTOP_SETTINGS` opens the settings dialog,
 `PI_DESKTOP_EXPORT` exports the session, and `PI_DESKTOP_CLOSE_AFTER_MS`
 closes the window on purpose to reproduce the destroyed-window case.

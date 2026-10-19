@@ -55,6 +55,7 @@ function createWindow(): BrowserWindow {
         ...(process.env.PI_DESKTOP_SESSION
           ? [`--pi-desktop-session=${process.env.PI_DESKTOP_SESSION}`]
           : []),
+        ...(process.env.PI_DESKTOP_SETTINGS ? ['--pi-desktop-settings'] : []),
         ...(process.env.PI_DESKTOP_EXPORT ? ['--pi-desktop-export'] : [])
       ]
     }

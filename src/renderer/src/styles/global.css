@@ -2793,9 +2793,9 @@ kbd {
 .drawer__resizer {
   position: absolute;
   top: 0;
-  left: -3px;
+  left: 0;
   bottom: 0;
-  width: 7px;
+  width: 8px;
   cursor: col-resize;
   z-index: 4;
 }
@@ -2803,7 +2803,10 @@ kbd {
 .drawer__resizer::after {
   content: '';
   position: absolute;
-  inset: 0 3px;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
   background: transparent;
   transition: background 0.14s var(--ease);
 }

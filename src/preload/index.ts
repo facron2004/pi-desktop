@@ -89,6 +89,7 @@ const openFileArg = process.argv.find((argument) =>
 )
 const searchArg = process.argv.find((argument) => argument.startsWith('--pi-desktop-search='))
 const sessionArg = process.argv.find((argument) => argument.startsWith('--pi-desktop-session='))
+const settingsArg = process.argv.includes('--pi-desktop-settings')
 if (
   prefillArg ||
   openChanges ||
@@ -97,7 +98,8 @@ if (
   fileSearchArg ||
   openFileArg ||
   searchArg ||
-  sessionArg
+  sessionArg ||
+  settingsArg
 ) {
   contextBridge.exposeInMainWorld('__piDesktopDev', {
     prefill: prefillArg ? prefillArg.slice('--pi-desktop-prefill='.length) : undefined,
@@ -107,6 +109,7 @@ if (
     fileSearch: fileSearchArg ? fileSearchArg.slice('--pi-desktop-file-search='.length) : undefined,
     openFile: openFileArg ? openFileArg.slice('--pi-desktop-open-file='.length) : undefined,
     search: searchArg ? searchArg.slice('--pi-desktop-search='.length) : undefined,
-    session: sessionArg ? sessionArg.slice('--pi-desktop-session='.length) : undefined
+    session: sessionArg ? sessionArg.slice('--pi-desktop-session='.length) : undefined,
+    settings: settingsArg
   })
 }
