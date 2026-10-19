@@ -4,6 +4,7 @@ import type { FileContent } from '@shared/types'
 import { highlightCode } from '../lib/highlight'
 import { fileTone } from '../lib/files'
 import { basename, relativePath } from '../lib/path'
+import { useIsDark } from '../lib/theme'
 
 interface FileViewerProps {
   file: string
@@ -15,6 +16,7 @@ export function FileViewer({ file, root }: FileViewerProps) {
   const [html, setHtml] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState(false)
+  const isDark = useIsDark()
 
   useEffect(() => {
     let cancelled = false
@@ -31,7 +33,7 @@ export function FileViewer({ file, root }: FileViewerProps) {
         }
         setContent(result)
         try {
-          const rendered = await highlightCode(result.content, result.language, true)
+          const rendered = await highlightCode(result.content, result.language, isDark)
           if (!cancelled) setHtml(rendered)
         } catch (error) {
           console.error('[pi-desktop] highlighting failed:', error)
@@ -44,7 +46,7 @@ export function FileViewer({ file, root }: FileViewerProps) {
     return () => {
       cancelled = true
     }
-  }, [file])
+  }, [file, isDark])
 
   const copy = async () => {
     if (!content) return

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Columns2, FileDiff, FilePlus, Files, Pencil, Rows3, X } from 'lucide-react'
 import { collectChanges } from '../lib/changes'
-import { relativePath } from '../lib/path'
+import { relativePath, resolveAgainst } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { DiffView } from './DiffView'
 import { FileTree } from './FileTree'
@@ -39,12 +39,14 @@ export function InspectorPanel({
   }, [initialTab])
 
   // Development aid: open a file straight away so screenshots can show the
-  // viewer. Set by the main process via PI_DESKTOP_OPEN_FILE.
+  // viewer. Set by the main process via PI_DESKTOP_OPEN_FILE. A relative
+  // path is taken from the project root.
   useEffect(() => {
     const dev = (window as unknown as { __piDesktopDev?: { openFile?: string } }).__piDesktopDev
     if (!dev?.openFile) return
     setTab('files')
-    setOpenFile(dev.openFile)
+    const root = useAppStore.getState().workspace?.path
+    setOpenFile(root ? resolveAgainst(root, dev.openFile) : dev.openFile)
   }, [])
 
   // Drag the left edge to make the panel wider or narrower.

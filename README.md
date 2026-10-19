@@ -15,7 +15,11 @@ Claude Desktop.
 - **Streaming conversation.** Assistant text, reasoning ("thinking") blocks, tool calls
   and tool output all stream in live, with a caret marking the end of the reply.
 - **Tool cards with diffs.** Every tool call is a collapsible card. File edits render
-  as a line diff, so you can see exactly what changed.
+  as a line diff, so you can see exactly what changed. A run of the same call folds
+  into one card, and a command or a path can be handed back to the composer.
+- **Code blocks that answer back.** A snippet gets a header with its language, a copy
+  button and an "Ask" button that drops the snippet into the composer, ready for a
+  question about it.
 - **Project inspector.** A docked panel with two tabs: **Changes** lists every file the
   agent edited or created in this session, and **Files** is a project tree you can search
   by name and read in place, with syntax highlighting. Diffs can be shown unified or side
@@ -29,7 +33,8 @@ Claude Desktop.
   new conversation that keeps the earlier history and hands the prompt back to the
   composer, so you can try a different approach without losing the run-up.
 - **Search the conversation.** `Ctrl+F` finds every mention of a word in the thread and
-  walks through the hits.
+  walks through the hits. `Alt+↑` and `Alt+↓` walk the turns themselves, and a running
+  turn counts its own seconds.
 - **Command palette.** Type `/` in the composer to reach Pi's own commands — skills,
   prompt templates and extension commands.
 - **Model and effort control.** Switch model and reasoning level mid-conversation. The
@@ -79,6 +84,11 @@ It follows the framing rules from Pi's docs exactly:
 
 Commands are correlated by `id`, and session events are folded into a normalised
 thread model in [`src/renderer/src/lib/thread.ts`](src/renderer/src/lib/thread.ts).
+
+Pi keeps a session as a tree: a conversation can branch, and a branch keeps the
+history that came before it. The app drives that through `get_fork_messages` and
+`fork`, so a prompt can become the start of a new conversation without the earlier
+turns being lost.
 
 ## Requirements
 

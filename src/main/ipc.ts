@@ -201,7 +201,9 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('fs:list', (_event, dir: string): FileEntry[] => {
     const root = workspaceRoot(context)
-    const target = path.resolve(dir)
+    // A relative path is taken from the project root, not from wherever the
+    // app happens to be started.
+    const target = path.resolve(root, dir)
     if (!isInside(root, target)) return []
     try {
       return readdirSync(target, { withFileTypes: true })
@@ -234,7 +236,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('fs:read', (_event, file: string): FileContent | null => {
     const root = workspaceRoot(context)
-    const target = path.resolve(file)
+    const target = path.resolve(root, file)
     if (!isInside(root, target)) return null
     try {
       const stats = statSync(target)
