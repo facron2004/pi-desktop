@@ -10,7 +10,7 @@ import { describeTool } from '../lib/tools'
 import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
 import { SearchContext } from '../lib/search-context'
-import { AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
+import { AssistantImage, AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
 import { ToolGroup } from './ToolGroup'
 
@@ -481,6 +481,17 @@ function renderTurn(turn: Turn, toolMap: Map<string, ToolItem>, models: ModelInf
             key={`${assistant.id}-${index}`}
             text={block.text}
             streaming={assistant.streaming}
+          />
+        )
+        return
+      }
+      if (block.type === 'image') {
+        flush()
+        nodes.push(
+          <AssistantImage
+            key={`${assistant.id}-${index}`}
+            data={block.data}
+            mimeType={block.mimeType}
           />
         )
         return

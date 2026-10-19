@@ -1,6 +1,6 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { readdirSync, readFileSync, statSync, type Dirent } from 'node:fs'
+import { readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from 'node:fs'
 import path from 'node:path'
 import type {
   AppInfo,
@@ -344,6 +344,39 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('fs:reveal', async (_event, file: string) => {
     shell.showItemInFolder(file)
   })
+
+  // A picture the model produced. It arrives as base64, so it is written
+  // from here rather than fetched from somewhere.
+  ipcMain.handle(
+    'fs:saveImage',
+    async (_event, data: string, mimeType: string): Promise<string | null> => {
+      const extension = mimeType.includes('png')
+        ? 'png'
+        : mimeType.includes('webp')
+          ? 'webp'
+          : mimeType.includes('gif')
+            ? 'gif'
+            : 'jpg'
+      const window = getWindow()
+      const result = window
+        ? await dialog.showSaveDialog(window, {
+            title: 'Save the picture',
+            defaultPath: `pi-picture-${Date.now()}.${extension}`,
+            filters: [{ name: 'Image', extensions: [extension] }]
+          })
+        : await dialog.showSaveDialog({
+            defaultPath: `pi-picture-${Date.now()}.${extension}`
+          })
+      if (result.canceled || !result.filePath) return null
+      try {
+        writeFileSync(result.filePath, Buffer.from(data, 'base64'))
+        return result.filePath
+      } catch (error) {
+        console.error('[pi-desktop] could not save the picture:', error)
+        return null
+      }
+    }
+  )
 
   ipcMain.handle('runtime:start', async (_event, options: RuntimeStartOptions) => {
     return runtime.start(options)

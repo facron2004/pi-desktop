@@ -1157,6 +1157,29 @@
   white-space: nowrap;
 }
 
+/* A picture the model produced. */
+.assistant__image {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.assistant__image img {
+  max-width: 100%;
+  max-height: 520px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-deep);
+  display: block;
+}
+
+.assistant__image figcaption {
+  display: flex;
+  gap: 6px;
+}
+
 /* user message */
 
 .user-msg {

@@ -6,6 +6,7 @@ import {
   Copy,
   CircleAlert,
   CircleCheck,
+  Download,
   GitBranch,
   Info,
   TriangleAlert
@@ -74,6 +75,39 @@ export function AssistantText({ text, streaming }: { text: string; streaming?: b
       <Markdown>{text}</Markdown>
       {streaming ? <span className="caret-blink" aria-hidden="true" /> : null}
     </div>
+  )
+}
+
+/**
+ * A picture the model produced.
+ *
+ * Some models answer with an image instead of text. It arrives as base64 in
+ * the message, so it can be shown and written to disk without a round trip.
+ */
+export function AssistantImage({ data, mimeType }: { data: string; mimeType: string }) {
+  const [saved, setSaved] = useState(false)
+
+  const save = async () => {
+    try {
+      const path = await window.pi.fs.saveImage(data, mimeType)
+      if (!path) return
+      setSaved(true)
+      window.setTimeout(() => setSaved(false), 1600)
+    } catch {
+      /* the user may have cancelled the dialog */
+    }
+  }
+
+  return (
+    <figure className="assistant__image">
+      <img src={`data:${mimeType};base64,${data}`} alt="The picture the model produced" />
+      <figcaption>
+        <button className="ghost-btn" onClick={() => void save()}>
+          {saved ? <Check size={12} /> : <Download size={12} />}
+          {saved ? 'Saved' : 'Save'}
+        </button>
+      </figcaption>
+    </figure>
   )
 }
 

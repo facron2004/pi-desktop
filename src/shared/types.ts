@@ -363,6 +363,8 @@ export interface PiDesktopBridge {
     search(query: string, limit?: number): Promise<FileEntry[]>
     /** Show a file in the file manager of the operating system. */
     reveal(file: string): Promise<void>
+    /** Write a picture the model produced to a file the user picks. */
+    saveImage(data: string, mimeType: string): Promise<string | null>
   }
 }
 

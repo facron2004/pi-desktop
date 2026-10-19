@@ -3,6 +3,7 @@ import type { AgentMessage, ContentBlock, ForkTarget, PiEvent, Usage } from '@sh
 export type AssistantBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }
+  | { type: 'image'; data: string; mimeType: string }
   | { type: 'toolCall'; id: string; name: string; argsText: string; args?: Record<string, unknown> }
 
 export interface UserItem {
@@ -97,6 +98,9 @@ function blocksFromContent(content: unknown): AssistantBlock[] {
       blocks.push({ type: 'text', text: block.text ?? '' })
     } else if (block.type === 'thinking') {
       blocks.push({ type: 'thinking', text: block.thinking ?? '' })
+    } else if (block.type === 'image') {
+      // A model that can draw hands the picture back as an image block.
+      blocks.push({ type: 'image', data: block.data ?? '', mimeType: block.mimeType ?? 'image/png' })
     } else if (block.type === 'toolCall') {
       blocks.push({
         type: 'toolCall',
