@@ -147,7 +147,17 @@ export interface SessionStats {
   toolCalls: number
   toolResults: number
   totalMessages: number
-  tokens: Usage
+  /**
+   * Token totals for the whole session. This is not the `Usage` shape an
+   * assistant message carries — Pi reports the sum under `total`.
+   */
+  tokens: {
+    input: number
+    output: number
+    cacheRead: number
+    cacheWrite: number
+    total: number
+  }
   cost: number
   contextUsage?: {
     tokens: number | null

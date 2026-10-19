@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 interface PopoverProps {
+  /**
+   * The trigger element. It has to call `toggle` when it is clicked —
+   * without it the popover never opens.
+   */
   renderTrigger: (state: { open: boolean; toggle: () => void }) => ReactNode
   children: (close: () => void) => ReactNode
   align?: 'left' | 'right'

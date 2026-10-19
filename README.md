@@ -32,8 +32,10 @@ Claude Desktop.
   walks through the hits.
 - **Command palette.** Type `/` in the composer to reach Pi's own commands — skills,
   prompt templates and extension commands.
-- **Model and effort control.** Switch model and reasoning level mid-conversation, and
-  watch the context window fill up.
+- **Model and effort control.** Switch model and reasoning level mid-conversation. The
+  context meter in the top bar opens a session panel with the token breakdown, the cost
+  so far and the message counts, and it can compact the context — with or without
+  instructions for the summary.
 - **Steering.** While Pi is working you can steer it ("stop and do this instead") or
   queue a follow-up for when it finishes.
 - **Keyboard-first.** `Ctrl+N` new chat, `Ctrl+B` sidebar, `Ctrl+K` focus the composer,

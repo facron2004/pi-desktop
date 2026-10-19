@@ -4,6 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import { collectChanges } from '../lib/changes'
 import { formatTokens } from '../lib/format'
 import { Popover } from './Popover'
+import { ContextPanel } from './ContextPanel'
 
 export function TopBar({
   onOpenChanges,
@@ -51,8 +52,8 @@ export function TopBar({
       <div className="topbar__group">
         <Popover
           width={290}
-          renderTrigger={({ open }) => (
-            <button className="pill" data-active={open} disabled={!ready}>
+          renderTrigger={({ open, toggle }) => (
+            <button className="pill" data-active={open} onClick={toggle} disabled={!ready}>
               <Cpu size={13} />
               <span>{currentModel?.name ?? currentModel?.id ?? 'Select model'}</span>
               <ChevronDown size={12} className="pill__caret" />
@@ -112,8 +113,13 @@ export function TopBar({
 
         <Popover
           width={190}
-          renderTrigger={({ open }) => (
-            <button className="pill" data-active={open} disabled={!ready || !thinkingLevels.length}>
+          renderTrigger={({ open, toggle }) => (
+            <button
+              className="pill"
+              data-active={open}
+              onClick={toggle}
+              disabled={!ready || !thinkingLevels.length}
+            >
               <Sparkles size={13} />
               <span>{currentLevel ? `Thinking: ${currentLevel}` : 'Thinking'}</span>
               <ChevronDown size={12} className="pill__caret" />
@@ -143,19 +149,26 @@ export function TopBar({
         </Popover>
 
         {context ? (
-          <div className="context-meter" title="Context window usage">
-            <Gauge size={13} />
-            <span>
-              {formatTokens(context.tokens ?? 0)} / {formatTokens(context.contextWindow)}
-            </span>
-            <span className="context-meter__bar">
-              <span
-                className="context-meter__fill"
-                data-level={level}
-                style={{ width: `${Math.min(100, percent)}%` }}
-              />
-            </span>
-          </div>
+          <Popover
+            width={290}
+            renderTrigger={({ open, toggle }) => (
+              <button className="context-meter" data-active={open} onClick={toggle} title="Session details">
+                <Gauge size={13} />
+                <span>
+                  {formatTokens(context.tokens ?? 0)} / {formatTokens(context.contextWindow)}
+                </span>
+                <span className="context-meter__bar">
+                  <span
+                    className="context-meter__fill"
+                    data-level={level}
+                    style={{ width: `${Math.min(100, percent)}%` }}
+                  />
+                </span>
+              </button>
+            )}
+          >
+            {(close) => <ContextPanel close={close} />}
+          </Popover>
         ) : null}
       </div>
 

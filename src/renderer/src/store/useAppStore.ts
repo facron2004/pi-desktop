@@ -81,7 +81,9 @@ export interface AppStore {
   stop: () => Promise<void>
   setModel: (model: ModelInfo) => Promise<void>
   setThinkingLevel: (level: string) => Promise<void>
-  compact: () => Promise<void>
+  /** Compact the context, optionally with instructions for the summary. */
+  compact: (instructions?: string) => Promise<void>
+  setAutoCompaction: (enabled: boolean) => Promise<void>
   refreshState: () => Promise<void>
   reloadMessages: () => Promise<void>
   refreshCommands: () => Promise<void>
@@ -382,9 +384,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  async compact() {
+  async compact(instructions) {
     try {
-      await window.pi.runtime.request('compact', {}, 180_000)
+      const payload: Record<string, unknown> = {}
+      if (instructions?.trim()) payload.customInstructions = instructions.trim()
+      await window.pi.runtime.request('compact', payload, 180_000)
+      await get().refreshState()
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
+  async setAutoCompaction(enabled) {
+    try {
+      await window.pi.runtime.request('set_auto_compaction', { enabled })
       await get().refreshState()
     } catch (error) {
       set({ error: messageOf(error) })
