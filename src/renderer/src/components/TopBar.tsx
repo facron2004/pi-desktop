@@ -1,5 +1,5 @@
-import { useMemo } from 'react'
-import { ChevronDown, Cpu, FileDiff, Gauge, Minimize2, Sparkles } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { ChevronDown, Cpu, FileDiff, Gauge, Minimize2, Search, Sparkles } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { collectChanges } from '../lib/changes'
 import { formatTokens } from '../lib/format'
@@ -16,6 +16,7 @@ export function TopBar({ onOpenChanges }: { onOpenChanges: () => void }) {
   const compact = useAppStore((state) => state.compact)
   const ready = useAppStore((state) => state.status.phase === 'ready')
 
+  const [modelQuery, setModelQuery] = useState('')
   const changes = useMemo(() => collectChanges(items), [items])
 
   const currentModel = piState?.model
@@ -24,7 +25,20 @@ export function TopBar({ onOpenChanges }: { onOpenChanges: () => void }) {
   const percent = context?.percent ?? 0
   const level = percent >= 80 ? 'high' : percent >= 50 ? 'mid' : 'low'
 
-  const providers = Array.from(new Set(models.map((model) => model.provider)))
+  const needle = modelQuery.trim().toLowerCase()
+  const visibleModels = useMemo(
+    () =>
+      needle
+        ? models.filter(
+            (model) =>
+              model.name.toLowerCase().includes(needle) ||
+              model.id.toLowerCase().includes(needle) ||
+              model.provider.toLowerCase().includes(needle)
+          )
+        : models,
+    [models, needle]
+  )
+  const providers = Array.from(new Set(visibleModels.map((model) => model.provider)))
 
   return (
     <div className="topbar">
@@ -40,10 +54,22 @@ export function TopBar({ onOpenChanges }: { onOpenChanges: () => void }) {
       >
         {(close) => (
           <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+            {models.length > 6 ? (
+              <div className="palette__search">
+                <Search size={12} />
+                <input
+                  value={modelQuery}
+                  placeholder="Filter models"
+                  autoFocus
+                  onChange={(event) => setModelQuery(event.target.value)}
+                />
+              </div>
+            ) : null}
+
             <div className="popover__label">Models</div>
-            {models.length === 0 ? (
+            {visibleModels.length === 0 ? (
               <div className="popover__item" style={{ color: 'var(--text-faint)' }}>
-                No models available
+                No model matches “{modelQuery}”
               </div>
             ) : null}
             {providers.map((provider) => (
@@ -51,7 +77,7 @@ export function TopBar({ onOpenChanges }: { onOpenChanges: () => void }) {
                 <div className="popover__label" style={{ paddingTop: 10 }}>
                   {provider}
                 </div>
-                {models
+                {visibleModels
                   .filter((model) => model.provider === provider)
                   .map((model) => (
                     <button
