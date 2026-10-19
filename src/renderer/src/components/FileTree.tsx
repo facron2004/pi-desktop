@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ChevronRight, File, Folder, FolderOpen, Loader2, Search, X } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import { fileTone } from '../lib/files'
+import { formatBytes } from '../lib/format'
 import { relativePath } from '../lib/path'
 
 interface FileTreeProps {
@@ -217,6 +218,9 @@ function TreeLevel({
                 </>
               )}
               <span className="tree__name">{entry.name}</span>
+              {entry.kind === 'file' && entry.size !== undefined ? (
+                <span className="tree__size">{formatBytes(entry.size)}</span>
+              ) : null}
             </button>
             {entry.kind === 'directory' && isOpen ? (
               <TreeLevel

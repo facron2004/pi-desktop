@@ -2957,6 +2957,15 @@ kbd {
   text-overflow: ellipsis;
 }
 
+.tree__size {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .tree__empty,
 .tree__loading {
   padding: 2px 0 4px;

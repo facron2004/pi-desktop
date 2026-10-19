@@ -55,3 +55,11 @@ export function formatDuration(ms: number | undefined): string {
   const seconds = Math.round((ms % 60_000) / 1000)
   return `${minutes}m ${seconds}s`
 }
+
+/** A file size, short enough for a tree. */
+export function formatBytes(bytes: number | undefined): string {
+  if (bytes === undefined) return ''
+  if (bytes < 1000) return `${bytes} B`
+  if (bytes < 1000_000) return `${Math.round(bytes / 1000)} kB`
+  return `${(bytes / 1000_000).toFixed(1)} MB`
+}

@@ -59,6 +59,26 @@ const SEARCH_SKIP_DIRS = new Set([
   '.idea',
   '.vscode'
 ])
+/**
+ * Directories the file tree does not walk into.
+ *
+ * They are either huge or of no use to read, and the tree is the one
+ * place where a mistake costs a lot: everything else in a project is
+ * worth seeing, dot folders included.
+ */
+const TREE_SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.hg',
+  '.svn',
+  '.venv',
+  'venv',
+  '__pycache__',
+  '.cache',
+  '.next',
+  '.nuxt',
+  'target'
+])
 const LANGUAGE_BY_EXT: Record<string, string> = {
   ts: 'typescript',
   tsx: 'tsx',
@@ -207,7 +227,7 @@ export function registerIpc(context: IpcContext): void {
     if (!isInside(root, target)) return []
     try {
       return readdirSync(target, { withFileTypes: true })
-        .filter((entry) => !entry.name.startsWith('.'))
+        .filter((entry) => !(entry.isDirectory() && TREE_SKIP_DIRS.has(entry.name)))
         .map((entry) => {
           const full = path.join(target, entry.name)
           let size: number | undefined
