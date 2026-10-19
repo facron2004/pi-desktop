@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Columns2, FileDiff, FilePlus, Files, Pencil, Rows3, X } from 'lucide-react'
 import { collectChanges } from '../lib/changes'
 import { relativePath } from '../lib/path'
@@ -9,12 +9,19 @@ import { FileViewer } from './FileViewer'
 
 type Tab = 'changes' | 'files'
 
+const MIN_WIDTH = 300
+const MAX_WIDTH = 920
+
 export function InspectorPanel({
   onClose,
-  initialTab = 'changes'
+  initialTab = 'changes',
+  onResize,
+  onResizeEnd
 }: {
   onClose: () => void
   initialTab?: Tab
+  onResize?: (width: number) => void
+  onResizeEnd?: (width: number) => void
 }) {
   const items = useAppStore((state) => state.items)
   const workspace = useAppStore((state) => state.workspace)
@@ -40,8 +47,47 @@ export function InspectorPanel({
     setOpenFile(dev.openFile)
   }, [])
 
+  // Drag the left edge to make the panel wider or narrower.
+  const widthRef = useRef(0)
+  const startResize = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (!onResize) return
+      event.preventDefault()
+      const handle = event.currentTarget
+      const panel = handle.parentElement
+      const startX = event.clientX
+      const startWidth = panel?.getBoundingClientRect().width ?? 420
+      widthRef.current = startWidth
+
+      const move = (moveEvent: PointerEvent) => {
+        const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startWidth - (moveEvent.clientX - startX)))
+        widthRef.current = width
+        onResize(width)
+      }
+      const up = () => {
+        handle.removeEventListener('pointermove', move)
+        handle.removeEventListener('pointerup', up)
+        document.body.classList.remove('is-resizing')
+        onResizeEnd?.(widthRef.current)
+      }
+
+      handle.setPointerCapture(event.pointerId)
+      handle.addEventListener('pointermove', move)
+      handle.addEventListener('pointerup', up)
+      document.body.classList.add('is-resizing')
+    },
+    [onResize, onResizeEnd]
+  )
+
   return (
     <aside className="drawer" aria-label="Project inspector">
+      <div
+        className="drawer__resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the panel"
+        onPointerDown={startResize}
+      />
       <header className="drawer__head">
         <div className="drawer__tabs">
           <button

@@ -236,6 +236,8 @@ export interface AppSettings {
   fontScale: number
   /** Show diffs side by side instead of unified. */
   diffSplit: boolean
+  /** Width of the inspector panel in pixels. */
+  drawerWidth: number
   /** Automatically accept the working directory of new workspaces. */
   trustProject: boolean
 }

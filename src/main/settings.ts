@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
   fontScale: 1,
   diffSplit: false,
+  drawerWidth: 420,
   trustProject: true
 }
 

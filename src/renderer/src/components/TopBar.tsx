@@ -48,135 +48,137 @@ export function TopBar({
 
   return (
     <div className="topbar">
-      <Popover
-        width={290}
-        renderTrigger={({ open }) => (
-          <button className="pill" data-active={open} disabled={!ready}>
-            <Cpu size={13} />
-            <span>{currentModel?.name ?? currentModel?.id ?? 'Select model'}</span>
-            <ChevronDown size={12} className="pill__caret" />
-          </button>
-        )}
-      >
-        {(close) => (
-          <div style={{ maxHeight: 380, overflowY: 'auto' }}>
-            {models.length > 6 ? (
-              <div className="palette__search">
-                <Search size={12} />
-                <input
-                  value={modelQuery}
-                  placeholder="Filter models"
-                  autoFocus
-                  onChange={(event) => setModelQuery(event.target.value)}
-                />
-              </div>
-            ) : null}
-
-            <div className="popover__label">Models</div>
-            {visibleModels.length === 0 ? (
-              <div className="popover__item" style={{ color: 'var(--text-faint)' }}>
-                No model matches “{modelQuery}”
-              </div>
-            ) : null}
-            {providers.map((provider) => (
-              <div key={provider}>
-                <div className="popover__label" style={{ paddingTop: 10 }}>
-                  {provider}
+      <div className="topbar__group">
+        <Popover
+          width={290}
+          renderTrigger={({ open }) => (
+            <button className="pill" data-active={open} disabled={!ready}>
+              <Cpu size={13} />
+              <span>{currentModel?.name ?? currentModel?.id ?? 'Select model'}</span>
+              <ChevronDown size={12} className="pill__caret" />
+            </button>
+          )}
+        >
+          {(close) => (
+            <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+              {models.length > 6 ? (
+                <div className="palette__search">
+                  <Search size={12} />
+                  <input
+                    value={modelQuery}
+                    placeholder="Filter models"
+                    autoFocus
+                    onChange={(event) => setModelQuery(event.target.value)}
+                  />
                 </div>
-                {visibleModels
-                  .filter((model) => model.provider === provider)
-                  .map((model) => (
-                    <button
-                      key={`${model.provider}/${model.id}`}
-                      className="popover__item"
-                      data-selected={currentModel?.id === model.id}
-                      onClick={() => {
-                        void setModel(model)
-                        close()
-                      }}
-                    >
-                      <span className="popover__item-text">{model.name || model.id}</span>
-                      {model.reasoning ? (
-                        <span className="popover__item-sub">
-                          {formatTokens(model.contextWindow)} ctx
-                        </span>
-                      ) : null}
-                    </button>
-                  ))}
-              </div>
-            ))}
-          </div>
-        )}
-      </Popover>
+              ) : null}
 
-      <Popover
-        width={190}
-        renderTrigger={({ open }) => (
-          <button className="pill" data-active={open} disabled={!ready || !thinkingLevels.length}>
-            <Sparkles size={13} />
-            <span>{currentLevel ? `Thinking: ${currentLevel}` : 'Thinking'}</span>
-            <ChevronDown size={12} className="pill__caret" />
+              <div className="popover__label">Models</div>
+              {visibleModels.length === 0 ? (
+                <div className="popover__item" style={{ color: 'var(--text-faint)' }}>
+                  No model matches “{modelQuery}”
+                </div>
+              ) : null}
+              {providers.map((provider) => (
+                <div key={provider}>
+                  <div className="popover__label" style={{ paddingTop: 10 }}>
+                    {provider}
+                  </div>
+                  {visibleModels
+                    .filter((model) => model.provider === provider)
+                    .map((model) => (
+                      <button
+                        key={`${model.provider}/${model.id}`}
+                        className="popover__item"
+                        data-selected={currentModel?.id === model.id}
+                        onClick={() => {
+                          void setModel(model)
+                          close()
+                        }}
+                      >
+                        <span className="popover__item-text">{model.name || model.id}</span>
+                        {model.reasoning ? (
+                          <span className="popover__item-sub">
+                            {formatTokens(model.contextWindow)} ctx
+                          </span>
+                        ) : null}
+                      </button>
+                    ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </Popover>
+
+        <Popover
+          width={190}
+          renderTrigger={({ open }) => (
+            <button className="pill" data-active={open} disabled={!ready || !thinkingLevels.length}>
+              <Sparkles size={13} />
+              <span>{currentLevel ? `Thinking: ${currentLevel}` : 'Thinking'}</span>
+              <ChevronDown size={12} className="pill__caret" />
+            </button>
+          )}
+        >
+          {(close) => (
+            <div>
+              <div className="popover__label">Reasoning effort</div>
+              {thinkingLevels.map((levelName) => (
+                <button
+                  key={levelName}
+                  className="popover__item"
+                  data-selected={currentLevel === levelName}
+                  onClick={() => {
+                    void setThinkingLevel(levelName)
+                    close()
+                  }}
+                >
+                  <span className="popover__item-text" style={{ textTransform: 'capitalize' }}>
+                    {levelName}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </Popover>
+
+        {context ? (
+          <div className="context-meter" title="Context window usage">
+            <Gauge size={13} />
+            <span>
+              {formatTokens(context.tokens ?? 0)} / {formatTokens(context.contextWindow)}
+            </span>
+            <span className="context-meter__bar">
+              <span
+                className="context-meter__fill"
+                data-level={level}
+                style={{ width: `${Math.min(100, percent)}%` }}
+              />
+            </span>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="topbar__group topbar__group--end">
+        {changes.length > 0 ? (
+          <button className="pill" onClick={onOpenChanges} title="Review the files Pi changed">
+            <FileDiff size={13} />
+            <span>
+              {changes.length} changed {changes.length === 1 ? 'file' : 'files'}
+            </span>
           </button>
-        )}
-      >
-        {(close) => (
-          <div>
-            <div className="popover__label">Reasoning effort</div>
-            {thinkingLevels.map((levelName) => (
-              <button
-                key={levelName}
-                className="popover__item"
-                data-selected={currentLevel === levelName}
-                onClick={() => {
-                  void setThinkingLevel(levelName)
-                  close()
-                }}
-              >
-                <span className="popover__item-text" style={{ textTransform: 'capitalize' }}>
-                  {levelName}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-      </Popover>
+        ) : null}
 
-      {context ? (
-        <div className="context-meter" title="Context window usage">
-          <Gauge size={13} />
-          <span>
-            {formatTokens(context.tokens ?? 0)} / {formatTokens(context.contextWindow)}
-          </span>
-          <span className="context-meter__bar">
-            <span
-              className="context-meter__fill"
-              data-level={level}
-              style={{ width: `${Math.min(100, percent)}%` }}
-            />
-          </span>
-        </div>
-      ) : null}
-
-      <div style={{ flex: 1 }} />
-
-      {changes.length > 0 ? (
-        <button className="pill" onClick={onOpenChanges} title="Review the files Pi changed">
-          <FileDiff size={13} />
-          <span>
-            {changes.length} changed {changes.length === 1 ? 'file' : 'files'}
-          </span>
+        <button className="pill" onClick={onOpenFiles} title="Browse the project files">
+          <Files size={13} />
+          <span>Files</span>
         </button>
-      ) : null}
 
-      <button className="pill" onClick={onOpenFiles} title="Browse the project files">
-        <Files size={13} />
-        <span>Files</span>
-      </button>
-
-      <button className="btn btn--ghost btn--sm" onClick={() => void compact()} disabled={!ready}>
-        <Minimize2 size={13} />
-        Compact
-      </button>
+        <button className="btn btn--ghost btn--sm" onClick={() => void compact()} disabled={!ready}>
+          <Minimize2 size={13} />
+          Compact
+        </button>
+      </div>
     </div>
   )
 }

@@ -30,6 +30,8 @@ export default function App() {
   const uiStatuses = useAppStore((state) => state.uiStatuses)
   const uiWidgets = useAppStore((state) => state.uiWidgets)
   const uiTitle = useAppStore((state) => state.uiTitle)
+  const settings = useAppStore((state) => state.settings)
+  const updateSettings = useAppStore((state) => state.updateSettings)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -39,6 +41,10 @@ export default function App() {
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
   const exportedRef = useRef(false)
+  // Null while the panel is being dragged; the stored width takes over again
+  // once the drag ends.
+  const [draggedWidth, setDraggedWidth] = useState<number | null>(null)
+  const drawerWidth = draggedWidth ?? settings.drawerWidth ?? 420
 
   useEffect(() => {
     void bootstrap()
@@ -141,6 +147,7 @@ export default function App() {
       className="app"
       data-sidebar={sidebarOpen ? 'open' : 'collapsed'}
       data-drawer={changesOpen ? 'open' : 'closed'}
+      style={{ '--drawer-w': `${drawerWidth}px` } as React.CSSProperties}
     >
       {sidebarOpen ? <Sidebar onOpenSettings={() => setSettingsOpen(true)} /> : null}
 
@@ -297,6 +304,11 @@ export default function App() {
         <InspectorPanel
           initialTab={inspectorTab}
           onClose={() => setChangesOpen(false)}
+          onResize={setDraggedWidth}
+          onResizeEnd={(width) => {
+            setDraggedWidth(null)
+            void updateSettings({ drawerWidth: width })
+          }}
         />
       ) : null}
     </div>
