@@ -38,7 +38,9 @@ Claude Desktop.
   per project, filters them, renames them and exports them as HTML. The empty state
   offers the last conversations of the project, so a run can be picked up again
   without walking through the sidebar. A conversation can be pinned, and pinned ones
-  float to the top of the sidebar no matter which project they belong to.
+  float to the top of the sidebar no matter which project they belong to. The app
+  also reopens the conversation that was open last, so a restart does not lose the
+  thread of the work.
 - **Several projects at once.** The sidebar lists every project that was opened. Clicking
   one runs Pi there, `Ctrl+1` … `Ctrl+9` jump to the n-th project, and the title bar
   says which project the open conversation belongs to.

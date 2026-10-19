@@ -54,6 +54,21 @@
   z-index: 5;
 }
 
+.sidebar__resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 0.14s var(--ease);
+}
+
+.sidebar__resizer:hover::after {
+  background: var(--accent-line);
+}
+
 .sidebar__head {
   height: var(--titlebar-h);
   display: flex;
