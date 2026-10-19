@@ -36,7 +36,11 @@ Claude Desktop.
 - **Session history.** Pi persists every conversation to disk; the sidebar lists them
   per project, filters them, renames them and exports them as HTML. The empty state
   offers the last conversations of the project, so a run can be picked up again
-  without walking through the sidebar.
+  without walking through the sidebar. A conversation can be pinned, and pinned ones
+  float to the top of the sidebar no matter which project they belong to.
+- **Several projects at once.** The sidebar lists every project that was opened. Clicking
+  one runs Pi there, `Ctrl+1` … `Ctrl+9` jump to the n-th project, and the title bar
+  says which project the open conversation belongs to.
 - **Branch from any prompt.** Every message you sent is a branch point. "Branch" opens a
   new conversation that keeps the earlier history and hands the prompt back to the
   composer, so you can try a different approach without losing the run-up. The copy
@@ -54,9 +58,9 @@ Claude Desktop.
 - **Steering.** While Pi is working you can steer it ("stop and do this instead") or
   queue a follow-up for when it finishes.
 - **Keyboard-first.** `Ctrl+N` new chat, `Ctrl+B` sidebar, `Ctrl+K` focus the composer,
-  `Ctrl+F` search the conversation, `Alt+↑`/`Alt+↓` walk the turns, `↑` recalls earlier
-  prompts, `Esc` stops a run. `Ctrl+/` lists every shortcut. The app also follows the
-  system's "reduce motion" setting.
+  `Ctrl+F` search the conversation, `Ctrl+1`…`Ctrl+9` switch project, `Alt+↑`/`Alt+↓` walk
+  the turns, `↑` recalls earlier prompts, `Esc` stops a run. `Ctrl+/` lists every
+  shortcut. The app also follows the system's "reduce motion" setting.
 
 ## How it talks to Pi
 
@@ -158,6 +162,7 @@ src/
     ├── lib/thread.ts     Pi session event → UI thread reducer
     ├── lib/changes.ts    tool calls → changed-files review
     ├── lib/diff-fold.ts  line diff → folded, expandable diff rows
+    ├── lib/projects.ts   registered projects + the conversations of each
     ├── lib/search.ts     in-conversation search
     ├── lib/highlight.ts  syntax highlighting, grammars loaded on demand
     └── store/            zustand store

@@ -2849,6 +2849,10 @@ kbd {
   overflow-y: auto;
 }
 
+.modal__options:focus-visible {
+  outline: none;
+}
+
 .modal__option {
   display: flex;
   align-items: center;

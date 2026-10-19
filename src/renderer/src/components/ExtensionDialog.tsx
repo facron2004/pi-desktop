@@ -17,12 +17,19 @@ export function ExtensionDialog() {
   const [selected, setSelected] = useState<string | null>(null)
   const [remaining, setRemaining] = useState<number | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement>(null)
+  const optionsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!request) return
     setValue(request.method === 'editor' ? (request.prefill ?? '') : '')
     setSelected(request.options?.length ? request.options[0] : null)
-    requestAnimationFrame(() => inputRef.current?.focus())
+    requestAnimationFrame(() => {
+      if (request.method === 'select') {
+        optionsRef.current?.focus()
+        return
+      }
+      inputRef.current?.focus()
+    })
   }, [request])
 
   // Pi resolves the request on its own once the timeout expires, so the
@@ -90,7 +97,30 @@ export function ExtensionDialog() {
         </header>
 
         {request.method === 'select' ? (
-          <div className="modal__options" role="listbox" aria-label={title}>
+          <div
+            className="modal__options"
+            role="listbox"
+            aria-label={title}
+            tabIndex={0}
+            ref={optionsRef}
+            onKeyDown={(event) => {
+              const options = request.options ?? []
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault()
+                const index = options.indexOf(selected ?? '')
+                const next =
+                  event.key === 'ArrowDown'
+                    ? Math.min(options.length - 1, index + 1)
+                    : Math.max(0, index - 1)
+                setSelected(options[next])
+                return
+              }
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                submit()
+              }
+            }}
+          >
             {(request.options ?? []).map((option) => (
               <button
                 key={option}
