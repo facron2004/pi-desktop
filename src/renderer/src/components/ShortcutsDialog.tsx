@@ -4,6 +4,7 @@ const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
   { keys: ['Ctrl', 'N'], label: 'Start a new conversation', group: 'Workspace' },
   { keys: ['Ctrl', 'B'], label: 'Show or hide the sidebar', group: 'Workspace' },
   { keys: ['Ctrl', 'K'], label: 'Focus the composer', group: 'Workspace' },
+  { keys: ['Ctrl', 'F'], label: 'Search the conversation', group: 'Workspace' },
   { keys: ['Ctrl', '/'], label: 'Show this shortcut list', group: 'Workspace' },
   { keys: ['Enter'], label: 'Send the message', group: 'Composing' },
   { keys: ['Shift', 'Enter'], label: 'Insert a line break', group: 'Composing' },
@@ -12,7 +13,10 @@ const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
   { keys: ['/'], label: 'Open the command palette', group: 'Composing' },
   { keys: ['Esc'], label: 'Stop the running turn', group: 'Composing' },
   { keys: ['↑', '↓'], label: 'Move through the command list', group: 'Command palette' },
-  { keys: ['Tab'], label: 'Insert the highlighted command', group: 'Command palette' }
+  { keys: ['Tab'], label: 'Insert the highlighted command', group: 'Command palette' },
+  { keys: ['Enter'], label: 'Go to the next search hit', group: 'Search' },
+  { keys: ['Shift', 'Enter'], label: 'Go to the previous search hit', group: 'Search' },
+  { keys: ['Esc'], label: 'Close the search bar', group: 'Search' }
 ]
 
 export function ShortcutsDialog({ onClose }: { onClose: () => void }) {

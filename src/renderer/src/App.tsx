@@ -54,7 +54,12 @@ export default function App() {
   useEffect(() => {
     const dev = (
       window as unknown as {
-        __piDesktopDev?: { openChanges?: boolean; openFiles?: boolean; openFile?: string }
+        __piDesktopDev?: {
+          openChanges?: boolean
+          openFiles?: boolean
+          openFile?: string
+          session?: string
+        }
       }
     ).__piDesktopDev
     if (dev?.openFile) {
@@ -69,6 +74,14 @@ export default function App() {
     }
     if (dev?.openChanges) setChangesOpen(true)
   }, [])
+
+  // Development aid: resume a specific session so screenshots can show a
+  // conversation that already has content.
+  useEffect(() => {
+    const dev = (window as unknown as { __piDesktopDev?: { session?: string } }).__piDesktopDev
+    if (!dev?.session || !workspace) return
+    void openWorkspace(workspace, dev.session)
+  }, [workspace, openWorkspace])
 
   // Development aid: exercise the export path once the session has content.
   useEffect(() => {

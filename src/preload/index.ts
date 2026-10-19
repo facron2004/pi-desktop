@@ -87,13 +87,26 @@ const fileSearchArg = process.argv.find((argument) =>
 const openFileArg = process.argv.find((argument) =>
   argument.startsWith('--pi-desktop-open-file=')
 )
-if (prefillArg || openChanges || openFiles || exportFlag || fileSearchArg || openFileArg) {
+const searchArg = process.argv.find((argument) => argument.startsWith('--pi-desktop-search='))
+const sessionArg = process.argv.find((argument) => argument.startsWith('--pi-desktop-session='))
+if (
+  prefillArg ||
+  openChanges ||
+  openFiles ||
+  exportFlag ||
+  fileSearchArg ||
+  openFileArg ||
+  searchArg ||
+  sessionArg
+) {
   contextBridge.exposeInMainWorld('__piDesktopDev', {
     prefill: prefillArg ? prefillArg.slice('--pi-desktop-prefill='.length) : undefined,
     openChanges,
     openFiles,
     export: exportFlag,
     fileSearch: fileSearchArg ? fileSearchArg.slice('--pi-desktop-file-search='.length) : undefined,
-    openFile: openFileArg ? openFileArg.slice('--pi-desktop-open-file='.length) : undefined
+    openFile: openFileArg ? openFileArg.slice('--pi-desktop-open-file='.length) : undefined,
+    search: searchArg ? searchArg.slice('--pi-desktop-search='.length) : undefined,
+    session: sessionArg ? sessionArg.slice('--pi-desktop-session='.length) : undefined
   })
 }

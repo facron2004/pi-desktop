@@ -677,6 +677,122 @@
   scroll-behavior: smooth;
 }
 
+/* ------------------------------------------------------------------ *
+ * In-conversation search
+ * ------------------------------------------------------------------ */
+
+.thread-search {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 12px 28px 0;
+}
+
+.thread-search__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 11px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  color: var(--text-faint);
+}
+
+.thread-search__bar input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: none;
+  outline: none;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.thread-search__count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.thread-search__results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+}
+
+.thread-search__hit {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: background 0.1s var(--ease);
+}
+
+.thread-search__hit:hover {
+  background: var(--bg-hover);
+}
+
+.thread-search__hit[data-active='true'] {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.thread-search__source {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--bg-deep);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.thread-search__snippet {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-search__snippet mark {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.turn--flash {
+  animation: turn-flash 1.2s var(--ease);
+}
+
+@keyframes turn-flash {
+  from {
+    background: var(--accent-soft);
+  }
+  to {
+    background: transparent;
+  }
+}
+
 .thread__inner {
   max-width: 860px;
   margin: 0 auto;

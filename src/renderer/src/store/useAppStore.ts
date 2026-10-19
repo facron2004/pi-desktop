@@ -172,7 +172,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     })
 
     if (!result.ok) {
-      set({ error: result.error, status: { phase: 'error', cwd: workspace.path, error: result.error } })
+      // A start that was superseded by a newer one reports no error, and the
+      // newer runtime owns the status.
+      if (result.error) {
+        set({ error: result.error, status: { phase: 'error', cwd: workspace.path, error: result.error } })
+      }
       return
     }
     await get().refreshState()

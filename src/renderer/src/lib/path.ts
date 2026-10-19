@@ -24,13 +24,17 @@ export function basename(value: string): string {
 /**
  * The path of `target` relative to `root`, for display.
  * Falls back to the full path when the two are unrelated.
+ *
+ * Pi reports Windows paths with forward slashes while the workspace path
+ * uses backslashes, so the comparison is done on normalised separators.
  */
 export function relativePath(root: string, target: string): string {
   if (!root) return target
-  const normalisedRoot = root.replace(/[\\/]+$/, '').toLowerCase()
-  const normalisedTarget = target.toLowerCase()
-  if (!normalisedTarget.startsWith(`${normalisedRoot}/`) && !normalisedTarget.startsWith(`${normalisedRoot}\\`)) {
-    return target
-  }
-  return target.slice(normalisedRoot.length + 1)
+  const normalise = (value: string) =>
+    value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  const normalisedRoot = normalise(root)
+  const normalisedTarget = normalise(target)
+  if (!normalisedTarget.startsWith(`${normalisedRoot}/`)) return target
+  // Normalising keeps the length, so the original prefix is the same size.
+  return target.slice(root.replace(/[\\/]+$/, '').length + 1)
 }

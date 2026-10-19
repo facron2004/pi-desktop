@@ -73,6 +73,8 @@ export class PiRuntime extends EventEmitter {
       this.setStatus({ phase: 'error', cwd: options.cwd, error: error.message })
     })
     client.on('exit', ({ code, signal }: { code: number | null; signal: string | null }) => {
+      // A client that was replaced or stopped on purpose exits on purpose.
+      if (this.client !== client) return
       this.setStatus({
         phase: 'stopped',
         cwd: options.cwd,
@@ -87,6 +89,8 @@ export class PiRuntime extends EventEmitter {
       client.start()
       this.client = client
       const state = await client.request<PiState>({ type: 'get_state' }, 30_000)
+      // A newer start may have replaced this client while it was coming up.
+      if (this.client !== client) return { ok: false }
       this.setStatus({
         phase: 'ready',
         cwd: options.cwd,
@@ -95,6 +99,9 @@ export class PiRuntime extends EventEmitter {
       })
       return { ok: true }
     } catch (error) {
+      // The client was replaced while it was starting: the newer one owns
+      // the status now, so this failure is not worth reporting.
+      if (this.client !== client) return { ok: false }
       const message = error instanceof Error ? error.message : String(error)
       await this.stop()
       // Pi usually explains itself on stderr before it gives up.

@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, Check, Copy, SquareTerminal } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDown, Check, Copy, Search, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../lib/thread'
 import { formatClock, formatCost, formatTokens } from '../lib/format'
+import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
 import { AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard } from './ToolCard'
 
@@ -39,6 +40,39 @@ function buildTurns(items: ThreadItem[]): Turn[] {
   return turns
 }
 
+/** The text of a turn that the search bar looks through. */
+function searchableChunks(turns: Turn[]): SearchableChunk[] {
+  const chunks: SearchableChunk[] = []
+  for (const turn of turns) {
+    if (turn.user?.text.trim()) {
+      chunks.push({ turnId: turn.id, source: 'You', text: turn.user.text })
+    }
+    for (const assistant of turn.assistants) {
+      for (const block of assistant.blocks) {
+        if (block.type === 'text' && block.text.trim()) {
+          chunks.push({ turnId: turn.id, source: 'Pi', text: block.text })
+        }
+      }
+    }
+    for (const tool of turn.tools) {
+      chunks.push({ turnId: turn.id, source: 'Tool', text: `${tool.toolName} ${summarise(tool.args)}` })
+    }
+  }
+  return chunks
+}
+
+/** A short, single-line summary of a tool call's arguments. */
+function summarise(args: Record<string, unknown>): string {
+  const parts: string[] = []
+  for (const [key, value] of Object.entries(args)) {
+    if (value === undefined || value === null) continue
+    const text = typeof value === 'string' ? value : JSON.stringify(value)
+    parts.push(`${key}: ${text}`)
+    if (parts.length >= 3) break
+  }
+  return parts.join(' · ')
+}
+
 function useCopy() {
   const [copied, setCopied] = useState<string | null>(null)
 
@@ -63,7 +97,14 @@ export function Thread() {
   const [atBottom, setAtBottom] = useState(true)
   const { copied, copy } = useCopy()
 
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [hitIndex, setHitIndex] = useState(0)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
   const turns = useMemo(() => buildTurns(items), [items])
+  const chunks = useMemo(() => searchableChunks(turns), [turns])
+  const hits: SearchHit[] = useMemo(() => findMatches(chunks, query), [chunks, query])
 
   useLayoutEffect(() => {
     const node = scrollRef.current
@@ -83,6 +124,59 @@ export function Thread() {
     return () => node.removeEventListener('scroll', onScroll)
   }, [])
 
+  // `Ctrl+F` searches the conversation, the way every other editor does.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        setSearchOpen(true)
+        requestAnimationFrame(() => searchInputRef.current?.focus())
+        return
+      }
+      if (event.key === 'Escape' && searchOpen) {
+        event.preventDefault()
+        setSearchOpen(false)
+        setQuery('')
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [searchOpen])
+
+  useEffect(() => {
+    setHitIndex(0)
+  }, [query])
+
+  // Development aid: open the search bar with a query for screenshots.
+  useEffect(() => {
+    const dev = (window as unknown as { __piDesktopDev?: { search?: string } }).__piDesktopDev
+    if (!dev?.search) return
+    setSearchOpen(true)
+    setQuery(dev.search)
+  }, [])
+
+  const jumpToHit = useCallback((hit: SearchHit | undefined) => {
+    if (!hit) return
+    const node = scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${hit.turnId}"]`)
+    if (!node) return
+    stickRef.current = false
+    node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    node.classList.remove('turn--flash')
+    // Force a reflow so the animation can run again on the same turn.
+    void node.offsetWidth
+    node.classList.add('turn--flash')
+  }, [])
+
+  const stepHit = useCallback(
+    (delta: number) => {
+      if (hits.length === 0) return
+      const next = (hitIndex + delta + hits.length) % hits.length
+      setHitIndex(next)
+      jumpToHit(hits[next])
+    },
+    [hits, hitIndex, jumpToHit]
+  )
+
   const scrollToBottom = () => {
     const node = scrollRef.current
     if (!node) return
@@ -93,6 +187,75 @@ export function Thread() {
 
   return (
     <div className="thread" ref={scrollRef}>
+      {searchOpen ? (
+        <div className="thread-search">
+          <div className="thread-search__bar">
+            <Search size={13} />
+            <input
+              ref={searchInputRef}
+              value={query}
+              placeholder="Search this conversation"
+              autoFocus
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  stepHit(event.shiftKey ? -1 : 1)
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  setSearchOpen(false)
+                  setQuery('')
+                }
+              }}
+            />
+            <span className="thread-search__count">
+              {query.trim()
+                ? hits.length
+                  ? `${hitIndex + 1} of ${hits.length}`
+                  : 'no results'
+                : ''}
+            </span>
+            <button
+              className="icon-btn"
+              title="Close search"
+              onClick={() => {
+                setSearchOpen(false)
+                setQuery('')
+              }}
+            >
+              <X size={13} />
+            </button>
+          </div>
+
+          {hits.length > 0 ? (
+            <div className="thread-search__results">
+              {hits.slice(0, 6).map((hit, index) => {
+                const [before, match, after] = splitSnippet(hit.snippet, query)
+                return (
+                  <button
+                    key={hit.key}
+                    className="thread-search__hit"
+                    data-active={index === hitIndex}
+                    onClick={() => {
+                      setHitIndex(index)
+                      jumpToHit(hit)
+                    }}
+                  >
+                    <span className="thread-search__source">{hit.source}</span>
+                    <span className="thread-search__snippet">
+                      {before}
+                      <mark>{match}</mark>
+                      {after}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="thread__inner">
         {turns.map((turn) => {
           const toolMap = new Map(turn.tools.map((tool) => [tool.toolCallId, tool]))
@@ -115,7 +278,7 @@ export function Thread() {
             .trim()
 
           return (
-            <section className="turn" key={turn.id}>
+            <section className="turn" key={turn.id} data-turn={turn.id}>
               {turn.user ? <UserMessage item={turn.user} onCopy={copy} copied={copied} /> : null}
 
               {turn.assistants.length > 0 || turn.notices.length > 0 || turn.bash.length > 0 ? (
