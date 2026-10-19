@@ -4,6 +4,7 @@ import {
   CircleAlert,
   CornerDownLeft,
   FilePlus,
+  FileSearch,
   FileText,
   Pencil,
   Search,
@@ -139,6 +140,12 @@ export function ToolCard({ item }: { item: ToolItem }) {
   const fileName = basename(String(item.args?.path ?? ''))
   const language = languageOf(fileName)
 
+  // A card about a file can open that file in the viewer.
+  const viewedFile =
+    item.toolName === 'read' || item.toolName === 'edit' || item.toolName === 'write'
+      ? String(item.args?.path ?? '')
+      : ''
+
   return (
     <div className="tool" data-tone={tone}>
       <div className="tool__head">
@@ -157,6 +164,23 @@ export function ToolCard({ item }: { item: ToolItem }) {
             <span className="tool__status">{formatDuration(item.durationMs)}</span>
           ) : null}
         </button>
+
+        {viewedFile ? (
+          <button
+            className="tool__reuse-icon"
+            title="Open this file"
+            aria-label="Open this file"
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent<InspectorRequest>('pi:open-inspector', {
+                  detail: { tab: 'files', file: viewedFile }
+                })
+              )
+            }
+          >
+            <FileSearch size={12} />
+          </button>
+        ) : null}
 
         {reuse ? (
           <button
