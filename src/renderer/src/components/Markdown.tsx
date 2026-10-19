@@ -1,9 +1,10 @@
-import { memo, useEffect, useState, type ReactNode } from 'react'
+import { isValidElement, memo, useEffect, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Check, Copy } from 'lucide-react'
+import { Check, Copy, MessageSquarePlus } from 'lucide-react'
 import { highlightCode } from '../lib/highlight'
 import { useSearchQuery } from '../lib/search-context'
+import { useAppStore } from '../store/useAppStore'
 
 /** Wrap every occurrence of the search query in a `<mark>`. */
 function Highlight({ children, query }: { children?: ReactNode; query: string }) {
@@ -40,17 +41,18 @@ function useIsDark(): boolean {
 
 interface CodeBlockProps {
   code: string
-  language: string
+  language?: string
 }
 
 const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
   const [html, setHtml] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const isDark = useIsDark()
 
   useEffect(() => {
     let cancelled = false
-    highlightCode(code, language, isDark)
+    highlightCode(code, language ?? 'text', isDark)
       .then((value) => {
         if (!cancelled) setHtml(value)
       })
@@ -72,21 +74,34 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
     }
   }
 
-  if (!html) {
-    return (
-      <pre>
-        <code>{code}</code>
-      </pre>
-    )
+  // A fenced block with four backticks survives a snippet that contains a
+  // fence of its own.
+  const ask = () => {
+    insertIntoComposer(`\`\`\`\`${language ?? 'text'}\n${code}\n\`\`\`\``)
   }
 
   return (
     <div className="code-block">
-      <button className="code-block__copy" onClick={() => void copy()} title="Copy code">
-        {copied ? <Check size={11} /> : <Copy size={11} />}
-        {copied ? 'Copied' : 'Copy'}
-      </button>
-      <div className="shiki-host" dangerouslySetInnerHTML={{ __html: html }} />
+      <div className="code-block__bar">
+        <span className="code-block__lang">{language ?? 'text'}</span>
+        <span className="code-block__tools">
+          <button className="code-block__tool" onClick={ask} title="Ask Pi about this code">
+            <MessageSquarePlus size={11} />
+            Ask
+          </button>
+          <button className="code-block__tool" onClick={() => void copy()} title="Copy code">
+            {copied ? <Check size={11} /> : <Copy size={11} />}
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </span>
+      </div>
+      {html ? (
+        <div className="shiki-host" dangerouslySetInnerHTML={{ __html: html }} />
+      ) : (
+        <pre>
+          <code>{code}</code>
+        </pre>
+      )}
     </div>
   )
 })
@@ -100,17 +115,20 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          code({ className, children: content, ...rest }) {
-            const match = /language-([\w+-]+)/.exec(className ?? '')
-            const text = String(content ?? '').replace(/\n$/, '')
-            if (match) {
-              return <CodeBlock code={text} language={match[1]} />
+          // A fenced block arrives as a `pre` around a `code` element. The
+          // block brings its own frame, so the default wrapper would only
+          // add a second border around it.
+          pre({ children: content }) {
+            const child = Array.isArray(content) ? content[0] : content
+            if (
+              isValidElement<{ className?: string; children?: ReactNode }>(child) &&
+              child.type === 'code'
+            ) {
+              const match = /language-([\w+-]+)/.exec(child.props.className ?? '')
+              const text = String(child.props.children ?? '').replace(/\n$/, '')
+              return <CodeBlock code={text} language={match?.[1]} />
             }
-            return (
-              <code className={className} {...rest}>
-                {content}
-              </code>
-            )
+            return <pre>{content}</pre>
           },
           p({ children: content, ...rest }) {
             return <p {...rest}>{marked(content)}</p>

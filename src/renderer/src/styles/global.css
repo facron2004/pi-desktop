@@ -2263,42 +2263,75 @@ kbd {
 }
 
 .code-block {
-  position: relative;
+  margin: 0 0 0.85em;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-deep);
+  overflow: hidden;
 }
 
-.code-block__copy {
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  z-index: 2;
+.code-block > pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+
+.code-block__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 27px;
+  padding: 0 5px 0 11px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+}
+
+.code-block__lang {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-block__tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.code-block__tool {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 22px;
+  height: 20px;
   padding: 0 7px;
-  border-radius: 6px;
+  border-radius: 5px;
   font-size: 10.5px;
   color: var(--text-faint);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
   opacity: 0;
-  transition: opacity 0.16s var(--ease), color 0.12s var(--ease), border-color 0.12s var(--ease);
+  transition: opacity 0.16s var(--ease), color 0.12s var(--ease), background 0.12s var(--ease);
 }
 
-.code-block:hover .code-block__copy {
+.code-block:hover .code-block__tool,
+.code-block__tool:focus-visible {
   opacity: 1;
 }
 
-.code-block__copy:hover {
+.code-block__tool:hover {
   color: var(--text);
-  border-color: var(--border-strong);
+  background: var(--bg-hover);
 }
 
 .shiki-host pre.shiki {
-  margin: 0 0 0.85em;
+  margin: 0;
   padding: 12px 13px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
+  border-radius: 0;
+  border: none;
   overflow-x: auto;
   line-height: 1.55;
   background: var(--bg-deep) !important;
