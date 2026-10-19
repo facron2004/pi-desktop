@@ -15,8 +15,9 @@ import type {
   SessionStats,
   Workspace
 } from '@shared/types'
-import { applyEvent, itemsFromMessages, type ThreadItem } from '../lib/thread'
+import { applyEvent, itemsFromMessages, lastAssistantText, type ThreadItem } from '../lib/thread'
 import { basename, resolveAgainst, samePath } from '../lib/path'
+import { APP_COMMANDS } from '../lib/app-commands'
 
 export type QueueKind = 'steer' | 'followUp'
 
@@ -91,6 +92,8 @@ export interface AppStore {
   refreshState: () => Promise<void>
   reloadMessages: () => Promise<void>
   refreshCommands: () => Promise<void>
+  /** Run one of the commands the app itself provides. */
+  runAppCommand: (name: string) => Promise<void>
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>
   dismissError: () => void
   showToast: (message: string, level?: 'info' | 'warning' | 'error') => void
@@ -123,7 +126,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   isStreaming: false,
   models: [],
   thinkingLevels: [],
-  commands: [],
+  commands: APP_COMMANDS,
   items: [],
   queue: { steering: [], followUp: [] },
   forkTargets: [],
@@ -484,10 +487,61 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async refreshCommands() {
     try {
-      const data = await window.pi.runtime.request<{ commands: PiCommand[] }>('get_commands')
-      set({ commands: data?.commands ?? [] })
+      const data = await window.pi.runtime.request<{ commands?: PiCommand[] }>('get_commands')
+      // The app's own commands come first — they are few, and they are the
+      // ones the desktop app is for.
+      set({ commands: [...APP_COMMANDS, ...(data?.commands ?? [])] })
     } catch {
-      set({ commands: [] })
+      set({ commands: APP_COMMANDS })
+    }
+  },
+
+  /** Run one of the commands the app itself provides. */
+  async runAppCommand(name: string) {
+    switch (name) {
+      case 'export':
+        await get().exportSession()
+        break
+      case 'duplicate':
+        await get().duplicateSession()
+        break
+      case 'branch': {
+        const targets = get().forkTargets
+        const last = targets[targets.length - 1]
+        if (!last) {
+          get().showToast('There is no prompt to branch from yet', 'warning')
+          break
+        }
+        await get().forkFrom(last.entryId)
+        break
+      }
+      case 'compact':
+        await get().compact()
+        break
+      case 'copy': {
+        const text = lastAssistantText(get().items)
+        if (!text) {
+          get().showToast('There is no answer to copy yet', 'warning')
+          break
+        }
+        try {
+          await navigator.clipboard.writeText(text)
+          get().showToast('The last answer was copied')
+        } catch {
+          get().showToast('The clipboard is not available', 'error')
+        }
+        break
+      }
+      case 'changes':
+      case 'files':
+        // The inspector lives in the app shell, so it is asked for directly.
+        window.dispatchEvent(new CustomEvent('pi:open-inspector', { detail: name }))
+        break
+      case 'new':
+        await get().newChat()
+        break
+      default:
+        break
     }
   },
 

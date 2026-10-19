@@ -1803,6 +1803,11 @@
   color: var(--blue);
 }
 
+.palette__badge--app {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .palette__badge--extension {
   background: var(--green-soft);
   color: var(--green);

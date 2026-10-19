@@ -37,7 +37,8 @@ Claude Desktop.
   walks through the hits. `Alt+↑` and `Alt+↓` walk the turns themselves, and a running
   turn counts its own seconds.
 - **Command palette.** Type `/` in the composer to reach Pi's own commands — skills,
-  prompt templates and extension commands.
+  prompt templates and extension commands — and the ones the desktop app adds:
+  `/export`, `/duplicate`, `/branch`, `/compact`, `/copy`, `/changes`, `/files`, `/new`.
 - **Model and effort control.** Switch model and reasoning level mid-conversation. The
   context meter in the top bar opens a session panel with the token breakdown, the cost
   so far and the message counts, and it can compact the context — with or without

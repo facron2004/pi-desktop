@@ -504,6 +504,21 @@ function normalizePrompt(text: string): string {
   return text.trim().replace(/\s+/g, ' ').toLowerCase()
 }
 
+/** The text of the last answer in the thread, if there is one. */
+export function lastAssistantText(items: ThreadItem[]): string {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (item.kind !== 'assistant') continue
+    const text = item.blocks
+      .filter((block): block is Extract<AssistantBlock, { type: 'text' }> => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n\n')
+      .trim()
+    if (text) return text
+  }
+  return ''
+}
+
 /**
  * Map the user messages in the thread to the entry ids Pi can fork from.
  *

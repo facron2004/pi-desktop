@@ -27,6 +27,7 @@ export function Composer() {
   const status = useAppStore((state) => state.status)
   const workspace = useAppStore((state) => state.workspace)
   const commands = useAppStore((state) => state.commands)
+  const runAppCommand = useAppStore((state) => state.runAppCommand)
   const composerText = useAppStore((state) => state.composerText)
   const clearComposerText = useAppStore((state) => state.clearComposerText)
   const composerInsert = useAppStore((state) => state.composerInsert)
@@ -138,6 +139,18 @@ export function Composer() {
 
   const insertCommand = useCallback(
     (command: PiCommand) => {
+      // The app's own commands run right away; Pi's are text that is sent
+      // to the agent.
+      if (command.source === 'app') {
+        setSlash(null)
+        if (slash) {
+          // The typed command is consumed by the app.
+          const cursor = textareaRef.current?.selectionStart ?? text.length
+          setText(`${text.slice(0, slash.start)}${text.slice(cursor)}`.trim())
+        }
+        void runAppCommand(command.name)
+        return
+      }
       if (!slash) return
       const node = textareaRef.current
       const cursor = node?.selectionStart ?? slash.cursor
@@ -152,7 +165,7 @@ export function Composer() {
         target.setSelectionRange(position, position)
       })
     },
-    [slash, text]
+    [slash, text, runAppCommand]
   )
 
   const submit = useCallback(() => {

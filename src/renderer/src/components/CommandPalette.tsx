@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react'
-import { Command as CommandIcon, FileText, Sparkles, Wrench } from 'lucide-react'
+import { AppWindow, Command as CommandIcon, FileText, Sparkles, Wrench } from 'lucide-react'
 import type { PiCommand } from '@shared/types'
 
 const SOURCE_META = {
   skill: { label: 'Skill', Icon: Sparkles, className: 'palette__badge--skill' },
   prompt: { label: 'Prompt', Icon: FileText, className: 'palette__badge--prompt' },
-  extension: { label: 'Extension', Icon: Wrench, className: 'palette__badge--extension' }
+  extension: { label: 'Extension', Icon: Wrench, className: 'palette__badge--extension' },
+  app: { label: 'App', Icon: AppWindow, className: 'palette__badge--app' }
 } as const
 
 export function filterCommands(commands: PiCommand[], query: string): PiCommand[] {
@@ -59,7 +60,7 @@ export function CommandPalette({
         <div className="palette__empty">
           No command matches <code>/{query}</code>.
           <br />
-          Pi also has built-in commands like <code>/help</code> and <code>/model</code>.
+          Try <code>/help</code> or <code>/model</code>.
         </div>
       ) : (
         <div className="palette__list">
@@ -68,7 +69,7 @@ export function CommandPalette({
             const Icon = meta.Icon
             return (
               <button
-                key={command.name}
+                key={`${command.source}-${command.name}`}
                 className="palette__item"
                 role="option"
                 aria-selected={index === activeIndex}
@@ -95,7 +96,7 @@ export function CommandPalette({
         <kbd>↓</kbd>
         <span>to navigate</span>
         <kbd>↵</kbd>
-        <span>to insert</span>
+        <span>to select</span>
         <kbd>esc</kbd>
         <span>to dismiss</span>
       </div>

@@ -132,9 +132,17 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown)
     const onShowShortcuts = () => setShortcutsOpen(true)
     window.addEventListener('pi:show-shortcuts', onShowShortcuts)
+    // The command palette can ask for the inspector.
+    const onOpenInspector = (event: Event) => {
+      const tab = (event as CustomEvent<string>).detail
+      setInspectorTab(tab === 'files' ? 'files' : 'changes')
+      setChangesOpen(true)
+    }
+    window.addEventListener('pi:open-inspector', onOpenInspector)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
+      window.removeEventListener('pi:open-inspector', onOpenInspector)
     }
   }, [newChat])
 

@@ -103,7 +103,8 @@ export interface ModelInfo {
 export interface PiCommand {
   name: string
   description?: string
-  source: 'extension' | 'prompt' | 'skill'
+  /** `app` covers the commands the desktop app itself provides. */
+  source: 'extension' | 'prompt' | 'skill' | 'app'
   sourceInfo?: {
     path?: string
     source?: string
