@@ -41,6 +41,7 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
 | `src/main/window-state.ts` | remembers the size and place of the window |
 | `src/preload/` | `contextBridge` surface — the only renderer↔main channel |
 | `src/renderer/` | React UI |
+| `src/renderer/src/components/Launcher.tsx` | the palette over the app (`Ctrl+Shift+P`) |
 | `src/shared/types.ts` | Protocol and domain types shared by every layer |
 | `scripts/rpc-smoke.mjs` | Spawns the bundled CLI and exercises the RPC commands |
 | `scripts/rpc-ui-smoke.mjs` | Round-trips the extension UI dialogs over the wire |
@@ -82,6 +83,19 @@ messages on screen in `src/renderer/src/lib/thread.ts`.
 
 Pi can only name the session that is open (`set_session_name`), so naming a
 conversation that is not active means opening it, naming it and closing it again.
+
+## The launcher
+
+`Ctrl+Shift+P` opens a palette over the app. It lists every action the app has,
+every project it can open, and the model and reasoning switches. The actions are
+built in `useLauncherActions` in `src/renderer/src/components/Launcher.tsx`; the
+app's own commands are run through the store (`runAppCommand`), so the launcher
+and the `/` command list never drift apart.
+
+`Ctrl+P` and `Ctrl+T` walk through Pi's own list of models and reasoning levels.
+The store cycles the list that `get_available_models` and
+`get_available_thinking_levels` reported, so the order is the one the model
+picker shows.
 
 ## Bash
 

@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Columns2, ExternalLink, FileDiff, FilePlus, Files, Pencil, Rows3, X } from 'lucide-react'
+import {
+  ArrowLeft,
+  Columns2,
+  Copy,
+  ExternalLink,
+  FileDiff,
+  FilePlus,
+  Files,
+  MessageSquare,
+  Pencil,
+  Rows3,
+  X
+} from 'lucide-react'
 import { collectChanges } from '../lib/changes'
 import { relativePath, resolveAgainst } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
@@ -33,6 +45,8 @@ export function InspectorPanel({
   const workspace = useAppStore((state) => state.workspace)
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
+  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
+  const showToast = useAppStore((state) => state.showToast)
   const diffSplit = settings.diffSplit === true
   const changes = useMemo(() => collectChanges(items), [items])
 
@@ -62,6 +76,50 @@ export function InspectorPanel({
   )
 
   const [tab, setTab] = useState<Tab>(initialTab)
+
+  // The paths of the changed files, relative to the project, so the list
+  // means the same thing to the user and to the agent.
+  const relativePaths = useMemo(
+    () => changes.map((change) => relativePath(workspace?.path ?? '', change.path)),
+    [changes, workspace?.path]
+  )
+
+  const copyPaths = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(relativePaths.join('\n'))
+      showToast(
+        relativePaths.length === 1
+          ? 'The path was copied'
+          : `${relativePaths.length} paths were copied`
+      )
+    } catch {
+      showToast('The clipboard is not available', 'error')
+    }
+  }, [relativePaths, showToast])
+
+  /**
+   * Hand the list of changed files to the agent.
+   *
+   * The prompt is put in the composer rather than sent, so the user can say
+   * something else about the changes before it goes out.
+   */
+  const askAboutChanges = useCallback(() => {
+    const list = changes
+      .map((change, index) => {
+        const one = stats[index]
+        const size =
+          change.kind === 'write' && !one.added && !one.removed
+            ? 'new file'
+            : `${one.added ? `+${one.added}` : ''} ${one.removed ? `−${one.removed}` : ''}`.trim()
+        return `- ${relativePaths[index]}${size ? ` (${size})` : ''}`
+      })
+      .join('\n')
+    insertIntoComposer(
+      `Review the changes you just made to these files and tell me what you changed and why:\n${list}`,
+      'append'
+    )
+    showToast('The file list is in the composer')
+  }, [changes, stats, relativePaths, insertIntoComposer, showToast])
 
   // The open file lives in the app shell, so a diff in the thread can send
   // the reader to a line of a file.
@@ -196,6 +254,20 @@ export function InspectorPanel({
             </div>
           ) : (
             <div className="drawer__body">
+              <div className="drawer__actions">
+                <button className="ghost-btn" onClick={() => void copyPaths()} title="Copy the paths of the changed files">
+                  <Copy size={12} />
+                  Copy paths
+                </button>
+                <button
+                  className="ghost-btn"
+                  onClick={askAboutChanges}
+                  title="Put the list of changed files in the composer"
+                >
+                  <MessageSquare size={12} />
+                  Ask Pi about these changes
+                </button>
+              </div>
               {changes.map((change, index) => {
                 const one = stats[index]
                 return (

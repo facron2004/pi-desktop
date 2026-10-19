@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { CopyPlus, FileDown, Keyboard, PanelLeft, Pencil, RefreshCw, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CopyPlus, FileDown, Keyboard, PanelLeft, Pencil, RefreshCw } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { useAppStore } from './store/useAppStore'
 import { collectProjects, sortProjects } from './lib/projects'
@@ -12,6 +12,7 @@ import { SettingsDialog } from './components/SettingsDialog'
 import { InspectorPanel } from './components/InspectorPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
+import { Launcher, useLauncherActions } from './components/Launcher'
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
@@ -20,9 +21,6 @@ export default function App() {
   const isStreaming = useAppStore((state) => state.isStreaming)
   const status = useAppStore((state) => state.status)
   const piState = useAppStore((state) => state.piState)
-  const error = useAppStore((state) => state.error)
-  const toast = useAppStore((state) => state.toast)
-  const dismissError = useAppStore((state) => state.dismissError)
   const pickWorkspace = useAppStore((state) => state.pickWorkspace)
   const newChat = useAppStore((state) => state.newChat)
   const openWorkspace = useAppStore((state) => state.openWorkspace)
@@ -40,10 +38,13 @@ export default function App() {
   const switchProject = useAppStore((state) => state.switchProject)
   const retry = useAppStore((state) => state.retry)
   const abortRetry = useAppStore((state) => state.abortRetry)
+  const cycleModel = useAppStore((state) => state.cycleModel)
+  const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [launcherOpen, setLauncherOpen] = useState(false)
   const [changesOpen, setChangesOpen] = useState(false)
   const [inspectorTab, setInspectorTab] = useState<'changes' | 'files'>('changes')
   const [inspectorFile, setInspectorFile] = useState<{ path: string; line?: number } | null>(null)
@@ -56,6 +57,21 @@ export default function App() {
   const drawerWidth = draggedWidth ?? settings.drawerWidth ?? 420
   const [draggedSidebar, setDraggedSidebar] = useState<number | null>(null)
   const sidebarWidth = draggedSidebar ?? settings.sidebarWidth ?? 272
+
+  const toggleSidebar = useCallback(() => setSidebarOpen((value) => !value), [])
+  const openSettings = useCallback(() => setSettingsOpen(true), [])
+  const openShortcuts = useCallback(() => setShortcutsOpen(true), [])
+  const launcherActions = useLauncherActions({
+    sidebarOpen,
+    toggleSidebar,
+    openSettings,
+    openShortcuts
+  })
+
+  const startRename = useCallback(() => {
+    setDraft(piState?.sessionName ?? '')
+    setRenaming(true)
+  }, [piState?.sessionName])
 
   useEffect(() => {
     void bootstrap()
@@ -126,7 +142,7 @@ export default function App() {
       }
       if (mod && event.key.toLowerCase() === 'b') {
         event.preventDefault()
-        setSidebarOpen((value) => !value)
+        toggleSidebar()
         return
       }
       if (mod && event.key.toLowerCase() === 'k') {
@@ -138,6 +154,27 @@ export default function App() {
         event.preventDefault()
         setShortcutsOpen((value) => !value)
         return
+      }
+      // `Ctrl+Shift+P` opens the launcher, where everything the app can do
+      // is one search away.
+      if (mod && event.shiftKey && event.key.toLowerCase() === 'p') {
+        event.preventDefault()
+        setLauncherOpen((value) => !value)
+        return
+      }
+      // `Ctrl+P` and `Ctrl+T` walk through the models and the reasoning
+      // levels, the way they do in Pi's own terminal.
+      if (!launcherOpen && mod && !event.shiftKey && !event.altKey) {
+        if (event.key.toLowerCase() === 'p') {
+          event.preventDefault()
+          void cycleModel(1)
+          return
+        }
+        if (event.key.toLowerCase() === 't') {
+          event.preventDefault()
+          void cycleThinkingLevel(1)
+          return
+        }
       }
       // `Ctrl+1` … `Ctrl+9` jump to the n-th project of the sidebar.
       if (mod && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
@@ -155,6 +192,8 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown)
     const onShowShortcuts = () => setShortcutsOpen(true)
     window.addEventListener('pi:show-shortcuts', onShowShortcuts)
+    const onRenameSession = () => startRename()
+    window.addEventListener('pi:rename-session', onRenameSession)
     // The command palette and the thread can ask for the inspector.
     const onOpenInspector = (event: Event) => {
       const request = (event as CustomEvent<InspectorRequest>).detail
@@ -166,9 +205,21 @@ export default function App() {
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
+      window.removeEventListener('pi:rename-session', onRenameSession)
       window.removeEventListener('pi:open-inspector', onOpenInspector)
     }
-  }, [newChat, settings.workspaces, sessions, workspace?.path, switchProject])
+  }, [
+    newChat,
+    toggleSidebar,
+    settings.workspaces,
+    sessions,
+    workspace?.path,
+    switchProject,
+    launcherOpen,
+    cycleModel,
+    cycleThinkingLevel,
+    startRename
+  ])
 
   // The title of a conversation is its name, and the first line of it when
   // it was never named. The project is shown next to it, so two conversations
@@ -258,10 +309,7 @@ export default function App() {
               <button
                 className="icon-btn no-drag"
                 title="Rename this conversation"
-                onClick={() => {
-                  setDraft(piState?.sessionName ?? '')
-                  setRenaming(true)
-                }}
+                onClick={startRename}
               >
                 <Pencil size={12} />
               </button>
@@ -371,32 +419,13 @@ export default function App() {
             ))}
           </div>
         ))}
-
-        {error ? (
-          <div className="modal-layer" style={{ alignItems: 'flex-end' }} onMouseDown={dismissError}>
-            <div
-              className="notice"
-              data-level="error"
-              style={{ marginBottom: 20, maxWidth: 640 }}
-              onMouseDown={(event) => event.stopPropagation()}
-            >
-              <span style={{ flex: 1 }}>{error}</span>
-              <button className="icon-btn" onClick={dismissError}>
-                <X size={13} />
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        {toast ? (
-          <div className="toast" data-level={toast.level}>
-            {toast.text}
-          </div>
-        ) : null}
       </main>
 
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
       {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
+      {launcherOpen ? (
+        <Launcher actions={launcherActions} onClose={() => setLauncherOpen(false)} />
+      ) : null}
       <ExtensionDialog />
       {changesOpen ? (
         <InspectorPanel

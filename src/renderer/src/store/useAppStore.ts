@@ -95,6 +95,10 @@ export interface AppStore {
   stop: () => Promise<void>
   setModel: (model: ModelInfo) => Promise<void>
   setThinkingLevel: (level: string) => Promise<void>
+  /** Switch to the next model of Pi's list, or to the previous one. */
+  cycleModel: (direction?: 1 | -1) => Promise<void>
+  /** Move to the next reasoning effort, or to the previous one. */
+  cycleThinkingLevel: (direction?: 1 | -1) => Promise<void>
   /** Compact the context, optionally with instructions for the summary. */
   compact: (instructions?: string) => Promise<void>
   setAutoCompaction: (enabled: boolean) => Promise<void>
@@ -476,6 +480,48 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
+  /**
+   * Walk through the models Pi offers.
+   *
+   * The list is Pi's own, so the order is the one the model picker shows —
+   * a shortcut and a click lead to the same place.
+   */
+  async cycleModel(direction = 1) {
+    const { models, piState } = get()
+    if (models.length === 0) {
+      get().showToast('Pi did not report any models', 'warning')
+      return
+    }
+    if (models.length === 1) {
+      get().showToast(`Only ${models[0].name || models[0].id} is available`, 'warning')
+      return
+    }
+    const current = models.findIndex((model) => model.id === piState?.model?.id)
+    // A model that is not in the list — a scoped one, say — has no place in
+    // the cycle, so the walk starts at the first or the last entry.
+    const start = current === -1 ? (direction === 1 ? -1 : 0) : current
+    const next = models[(start + direction + models.length) % models.length]
+    await get().setModel(next)
+    get().showToast(`Model: ${next.name || next.id}`)
+  },
+
+  async cycleThinkingLevel(direction = 1) {
+    const { thinkingLevels, piState } = get()
+    if (thinkingLevels.length === 0) {
+      get().showToast('This model has no reasoning levels', 'warning')
+      return
+    }
+    if (thinkingLevels.length === 1) {
+      get().showToast(`Reasoning effort: ${thinkingLevels[0]}`, 'warning')
+      return
+    }
+    const current = thinkingLevels.indexOf(piState?.thinkingLevel ?? '')
+    const start = current === -1 ? (direction === 1 ? -1 : 0) : current
+    const next = thinkingLevels[(start + direction + thinkingLevels.length) % thinkingLevels.length]
+    await get().setThinkingLevel(next)
+    get().showToast(`Reasoning effort: ${next}`)
+  },
+
   async compact(instructions) {
     try {
       const payload: Record<string, unknown> = {}
@@ -634,11 +680,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async togglePin(file) {
     const pinned = get().settings.pinnedSessions ?? []
-    const next = pinned.includes(file)
+    const wasPinned = pinned.includes(file)
+    const next = wasPinned
       ? pinned.filter((entry) => entry !== file)
       : [...pinned, file]
     const settings = await window.pi.settings.patch({ pinnedSessions: next })
     set({ settings })
+    const name = get().sessions.find((session) => session.file === file)?.name
+    get().showToast(
+      wasPinned ? `${name ?? 'Conversation'} unpinned` : `${name ?? 'Conversation'} pinned to the top`
+    )
   },
 
   async respondUi(response) {

@@ -32,6 +32,9 @@ export function Composer() {
   const composerText = useAppStore((state) => state.composerText)
   const clearComposerText = useAppStore((state) => state.clearComposerText)
   const composerInsert = useAppStore((state) => state.composerInsert)
+  const error = useAppStore((state) => state.error)
+  const dismissError = useAppStore((state) => state.dismissError)
+  const toast = useAppStore((state) => state.toast)
 
   const [text, setText] = useState('')
   const [images, setImages] = useState<{ data: string; mimeType: string }[]>([])
@@ -276,6 +279,21 @@ export function Composer() {
         ) : null}
 
         <div className="composer">
+          {/* The app's own messages sit in the box, so they never cover the
+              text the user is writing. */}
+          {error ? (
+            <div className="composer__notice" data-level="error" role="alert">
+              <span>{error}</span>
+              <button className="icon-btn" onClick={dismissError} title="Dismiss">
+                <X size={12} />
+              </button>
+            </div>
+          ) : toast ? (
+            <div className="composer__notice" data-level={toast.level}>
+              {toast.text}
+            </div>
+          ) : null}
+
           {pendingQueue.length > 0 ? (
             <div className="composer__queue">
               {pendingQueue.map((entry, index) => (

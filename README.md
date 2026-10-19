@@ -29,8 +29,10 @@ Claude Desktop.
   **Files** is a project tree you can search by name and read in place, with syntax
   highlighting and line numbers. Diffs can be shown unified or side by side, and the
   panel can be dragged to any width. A line number in a diff opens the file at that
-  line, so a change can be followed into the code around it. The sidebar and the panel
-  keep the width they were given.
+  line, so a change can be followed into the code around it. The list of changed files
+  can be copied to the clipboard, or handed to the agent in one go — the file list lands
+  in the composer, ready to be asked about. The sidebar and the panel keep the width
+  they were given.
 - **Extension dialogs.** When a Pi extension asks you a question — pick one, confirm,
   type a value, edit a block of text — the desktop app shows the dialog and answers Pi
   for you. Extensions can also push status lines, widgets and notifications.
@@ -54,17 +56,22 @@ Claude Desktop.
 - **Command palette.** Type `/` in the composer to reach Pi's own commands — skills,
   prompt templates and extension commands — and the ones the desktop app adds:
   `/export`, `/duplicate`, `/branch`, `/compact`, `/copy`, `/changes`, `/files`, `/new`.
-- **Model and effort control.** Switch model and reasoning level mid-conversation. The
-  context meter in the top bar opens a session panel with the token breakdown, the cost
-  so far and the message counts, and it can compact the context — with or without
-  instructions for the summary.
+- **Everything within reach.** `Ctrl+Shift+P` opens a palette over the app: every action
+  it has, every project it can open, and the model and reasoning switches. It is one
+  search away from anything, without touching the mouse.
+- **Model and effort control.** Switch model and reasoning level mid-conversation.
+  `Ctrl+P` and `Ctrl+T` walk through Pi's own list of models and reasoning levels, the
+  way they do in Pi's terminal. The context meter in the top bar opens a session panel
+  with the token breakdown, the cost so far and the message counts, and it can compact
+  the context — with or without instructions for the summary.
 - **Steering.** While Pi is working you can steer it ("stop and do this instead") or
   queue a follow-up for when it finishes.
 - **Retries you can see.** When a request fails with a transient error, Pi retries it on its
   own. The app says so — with the attempt, the reason and a button that stops the retry
   instead of waiting it out.
 - **Keyboard-first.** `Ctrl+N` new chat, `Ctrl+B` sidebar, `Ctrl+K` focus the composer,
-  `Ctrl+F` search the conversation, `Ctrl+1`…`Ctrl+9` switch project, `Alt+↑`/`Alt+↓` walk
+  `Ctrl+F` search the conversation, `Ctrl+1`…`Ctrl+9` switch project, `Ctrl+Shift+P`
+  the palette, `Ctrl+P`/`Ctrl+T` the next model and reasoning level, `Alt+↑`/`Alt+↓` walk
   the turns, `↑` recalls earlier prompts, `Esc` stops a run. `Ctrl+/` lists every
   shortcut. The app also follows the system's "reduce motion" setting.
 
@@ -164,7 +171,7 @@ src/
 ├── preload/index.ts      contextBridge API (contextIsolation, no nodeIntegration)
 ├── shared/types.ts       protocol and domain types shared by all three layers
 └── renderer/src/         React UI
-    ├── components/       thread, tool cards, diffs, composer, settings, panels
+    ├── components/       thread, tool cards, diffs, composer, launcher, panels
     ├── lib/thread.ts     Pi session event → UI thread reducer
     ├── lib/changes.ts    tool calls → changed-files review
     ├── lib/diff-fold.ts  line diff → folded, expandable diff rows
