@@ -65,6 +65,23 @@ node scripts/rpc-ui-smoke.mjs                  # extension UI smoke test
    `src/renderer/src/lib/thread.ts` — not the components.
 5. Verify with `npm run typecheck` and a real run against the bundled CLI.
 
+## The session tree
+
+Pi stores a session as a tree of entries, and two commands move around it:
+
+- `fork` starts a new session from a user message. It forks **before** that
+  message: the new branch keeps the earlier history and the message itself comes
+  back as text, so the client puts it back in the composer.
+- `clone` copies the active branch into a new session at the current position.
+
+Both need the session to be on disk already, so they fail on a session that has
+never received a message. `get_fork_messages` reports the prompts of the active
+branch, in order, with the entry id to fork from; the thread pairs them with the
+messages on screen in `src/renderer/src/lib/thread.ts`.
+
+Pi can only name the session that is open (`set_session_name`), so naming a
+conversation that is not active means opening it, naming it and closing it again.
+
 ## Style
 
 - TypeScript everywhere, `strict` on. No `any` in the IPC boundary.
@@ -86,7 +103,8 @@ PI_DESKTOP_PROMPT="do the thing" \
 npm run build && npx electron .
 ```
 
-`PI_DESKTOP_THEME=light|dark|system` overrides the theme for the run.
+`PI_DESKTOP_THEME=light|dark|system` overrides the theme for the run. It only changes
+what is rendered; the stored setting stays as the user left it.
 
 Other flags, all off by default: `PI_DESKTOP_PREFILL` fills the composer,
 `PI_DESKTOP_OPEN_CHANGES` and `PI_DESKTOP_OPEN_FILES` open an inspector tab,

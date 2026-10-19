@@ -26,6 +26,14 @@ export function scheduleCapture(context: CaptureContext): void {
   const target = process.env.PI_DESKTOP_SCREENSHOT
   if (!target) return
 
+  // Warnings and errors from the renderer are worth seeing while looking at
+  // a screenshot — a React key warning shows up as a broken layout.
+  context.window.webContents.on('console-message', (details) => {
+    if (details.level === 'warning' || details.level === 'error') {
+      console.error(`[pi-desktop] renderer ${details.level}: ${details.message}`)
+    }
+  })
+
   const delay = Number(process.env.PI_DESKTOP_SCREENSHOT_DELAY ?? 4000)
   const prompt = process.env.PI_DESKTOP_PROMPT
   const evalScript = process.env.PI_DESKTOP_EVAL
