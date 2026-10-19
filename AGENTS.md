@@ -97,6 +97,14 @@ The store cycles the list that `get_available_models` and
 `get_available_thinking_levels` reported, so the order is the one the model
 picker shows.
 
+## Files in the composer
+
+`@` in the composer opens the list of files of the project; the list narrows as
+the name is typed and a picked file leaves its path in the message. The search
+walks the project in the main process (`fs:search`), and it matches the path,
+not only the name — the separators are normalised, so `src/renderer` finds the
+folder on Windows as well.
+
 ## Bash
 
 `abort_bash` only aborts a command that the client started with the RPC `bash`

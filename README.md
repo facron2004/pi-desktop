@@ -56,6 +56,9 @@ Claude Desktop.
 - **Command palette.** Type `/` in the composer to reach Pi's own commands — skills,
   prompt templates and extension commands — and the ones the desktop app adds:
   `/export`, `/duplicate`, `/branch`, `/compact`, `/copy`, `/changes`, `/files`, `/new`.
+- **Files by name.** Type `@` in the composer and the files of the project are listed;
+  the list narrows down as the name is typed, and picking one puts its path into the
+  message. The path is the one Pi uses, so it means the same thing to the agent.
 - **Everything within reach.** `Ctrl+Shift+P` opens a palette over the app: every action
   it has, every project it can open, the model and reasoning switches, the theme and
   the text size. It is one search away from anything, without touching the mouse.

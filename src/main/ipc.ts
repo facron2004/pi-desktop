@@ -287,8 +287,12 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('fs:search', (_event, query: string, limit?: number): FileEntry[] => {
     const root = workspaceRoot(context)
-    const needle = query.trim().toLowerCase()
-    if (!root || !needle) return []
+    // The separators are normalised, so "src/renderer" finds the folder on
+    // Windows as well.
+    const needle = query.trim().toLowerCase().replace(/\\/g, '/')
+    // An empty query lists the files of the project, which is what the
+    // composer shows when the user types "@" and has not narrowed it down.
+    if (!root) return []
     const ceiling = Math.min(Math.max(limit ?? MAX_SEARCH_RESULTS, 1), MAX_SEARCH_RESULTS)
     const results: FileEntry[] = []
     const base = path.resolve(root)
@@ -313,7 +317,7 @@ export function registerIpc(context: IpcContext): void {
         // The path is searched, not only the name, so "renderer" finds the
         // files of the renderer and "readme" finds the README in a folder.
         const relative = path.relative(base, full)
-        if (!relative.toLowerCase().includes(needle)) continue
+        if (!relative.replace(/\\/g, '/').toLowerCase().includes(needle)) continue
         let size: number | undefined
         try {
           size = statSync(full).size

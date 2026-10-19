@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, Paperclip, Square, Terminal, X } from 'lucide-react'
 import { useAppStore, type QueueKind } from '../store/useAppStore'
-import type { PiCommand } from '@shared/types'
+import type { FileEntry, PiCommand } from '@shared/types'
 import { filterCommands } from '../lib/commands'
+import { relativePath } from '../lib/path'
 import { CommandPalette } from './CommandPalette'
+import { FileMention } from './FileMention'
 
 interface SlashMatch {
+  query: string
+  start: number
+  cursor: number
+}
+
+interface MentionMatch {
   query: string
   start: number
   cursor: number
@@ -18,6 +26,22 @@ function detectSlash(text: string, cursor: number): SlashMatch | null {
   if (!match) return null
   const query = match[1]
   return { query, start: cursor - query.length - 1, cursor }
+}
+
+/**
+ * Detect an `@file` token that ends at the caret.
+ *
+ * The `@` has to start a word, so an address in a sentence does not open the
+ * file list.
+ */
+function detectMention(text: string, cursor: number): MentionMatch | null {
+  const before = text.slice(0, cursor)
+  const at = before.lastIndexOf('@')
+  if (at === -1) return null
+  if (at > 0 && !/\s/.test(before[at - 1])) return null
+  const query = before.slice(at + 1)
+  if (/\s/.test(query)) return null
+  return { query, start: at, cursor }
 }
 
 export function Composer() {
@@ -40,6 +64,9 @@ export function Composer() {
   const [images, setImages] = useState<{ data: string; mimeType: string }[]>([])
   const [kind, setKind] = useState<QueueKind>('steer')
   const [slash, setSlash] = useState<SlashMatch | null>(null)
+  const [mention, setMention] = useState<MentionMatch | null>(null)
+  const [mentionFiles, setMentionFiles] = useState<FileEntry[]>([])
+  const [mentionIndex, setMentionIndex] = useState(0)
   const [paletteIndex, setPaletteIndex] = useState(0)
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
@@ -75,6 +102,7 @@ export function Composer() {
       node.focus()
       node.setSelectionRange(cursor, cursor)
       setSlash(detectSlash(prefill, cursor))
+      setMention(detectMention(prefill, cursor))
     })
   }, [])
 
@@ -89,6 +117,8 @@ export function Composer() {
       const cursor = composerText.length
       node.focus()
       node.setSelectionRange(cursor, cursor)
+      setSlash(detectSlash(composerText, cursor))
+      setMention(detectMention(composerText, cursor))
     })
   }, [composerText, clearComposerText])
 
@@ -142,7 +172,48 @@ export function Composer() {
     setPaletteIndex((index) => Math.min(index, Math.max(0, matching.length - 1)))
   }, [matching.length])
 
+  // The files that match the `@` in the composer. The search waits a moment,
+  // so a fast typist does not walk the project over and over.
+  useEffect(() => {
+    if (!mention) {
+      setMentionFiles([])
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void window.pi.fs.search(mention.query, 12).then((files) => {
+        if (cancelled) return
+        setMentionFiles(files)
+        setMentionIndex(0)
+      })
+    }, 110)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [mention])
+
   const closePalette = useCallback(() => setSlash(null), [])
+
+  /** Put the path of a picked file into the composer. */
+  const insertMention = useCallback(
+    (file: FileEntry) => {
+      if (!mention) return
+      // Pi writes its paths with slashes, even on Windows.
+      const relative = relativePath(workspace?.path ?? '', file.path).replace(/\\/g, '/')
+      const addition = `@${relative} `
+      setText(`${text.slice(0, mention.start)}${addition}${text.slice(mention.cursor)}`)
+      setMention(null)
+      requestAnimationFrame(() => {
+        const target = textareaRef.current
+        if (!target) return
+        const position = mention.start + addition.length
+        target.focus()
+        target.setSelectionRange(position, position)
+      })
+    },
+    [mention, text, workspace?.path]
+  )
 
   const insertCommand = useCallback(
     (command: PiCommand) => {
@@ -183,9 +254,37 @@ export function Composer() {
     setText('')
     setImages([])
     closePalette()
+    setMention(null)
   }, [text, images, kind, send, closePalette])
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // The file list comes first: an `@` in the text means the user is
+    // pointing at a file, not at a command.
+    if (mention) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setMention(null)
+        return
+      }
+      if (mentionFiles.length > 0) {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault()
+          setMentionIndex((index) => (index + 1) % mentionFiles.length)
+          return
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault()
+          setMentionIndex((index) => (index - 1 + mentionFiles.length) % mentionFiles.length)
+          return
+        }
+        if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+          event.preventDefault()
+          insertMention(mentionFiles[mentionIndex])
+          return
+        }
+      }
+    }
+
     if (slash && matching.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -271,13 +370,23 @@ export function Composer() {
   return (
     <div className="composer-wrap">
       <div className="composer-stack">
-        {slash ? (
+        {slash && !mention ? (
           <CommandPalette
             commands={matching}
             query={slash.query}
             activeIndex={paletteIndex}
             onActiveChange={setPaletteIndex}
             onSelect={insertCommand}
+          />
+        ) : null}
+
+        {mention ? (
+          <FileMention
+            files={mentionFiles}
+            root={workspace?.path}
+            activeIndex={mentionIndex}
+            onActiveChange={setMentionIndex}
+            onSelect={insertMention}
           />
         ) : null}
 
@@ -349,16 +458,21 @@ export function Composer() {
               const cursor = event.target.selectionStart ?? value.length
               setText(value)
               setSlash(detectSlash(value, cursor))
+              setMention(detectMention(value, cursor))
               setPaletteIndex(0)
             }}
             onKeyDown={onKeyDown}
             onClick={(event) => {
               const cursor = event.currentTarget.selectionStart ?? text.length
               setSlash(detectSlash(text, cursor))
+              setMention(detectMention(text, cursor))
             }}
             onBlur={() => {
-              // Let a click on a palette item land before the list disappears.
-              window.setTimeout(() => setSlash(null), 120)
+              // Let a click on a list item land before the list disappears.
+              window.setTimeout(() => {
+                setSlash(null)
+                setMention(null)
+              }, 120)
             }}
             onPaste={(event) => {
               const files = event.clipboardData?.files
@@ -423,7 +537,7 @@ export function Composer() {
               ) : (
                 <span>
                   <kbd>Enter</kbd> to send · <kbd>↑</kbd> for history · type <kbd>/</kbd> for
-                  commands
+                  commands · <kbd>@</kbd> for a file
                 </span>
               )}
             </div>
