@@ -1,0 +1,42 @@
+appId: dev.pi.desktop
+productName: Pi Desktop
+copyright: Copyright © 2026 Pi Desktop contributors
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/node_modules/*/{test,tests,__tests__,example,examples,docs,doc}/**'
+
+asarUnpack:
+  - node_modules/@earendil-works/pi-coding-agent/**/*
+
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  shortcutName: Pi Desktop
+
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.developer-tools
+  darkModeSupport: true
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Development
