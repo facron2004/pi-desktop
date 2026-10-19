@@ -127,6 +127,9 @@ export function Composer() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || !isStreaming) return
+      // The palette uses Escape to close itself and handles the key before
+      // it reaches the window, so the run is left alone.
+      if (event.defaultPrevented) return
       event.preventDefault()
       void stop()
     }

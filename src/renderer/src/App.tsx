@@ -135,6 +135,9 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const mod = event.ctrlKey || event.metaKey
+      // The palette has the keyboard while it is open — only the chord that
+      // closes it again stays alive.
+      if (launcherOpen && !(mod && event.shiftKey && event.key.toLowerCase() === 'p')) return
       if (mod && event.key.toLowerCase() === 'n') {
         event.preventDefault()
         void newChat()
@@ -164,7 +167,7 @@ export default function App() {
       }
       // `Ctrl+P` and `Ctrl+T` walk through the models and the reasoning
       // levels, the way they do in Pi's own terminal.
-      if (!launcherOpen && mod && !event.shiftKey && !event.altKey) {
+      if (mod && !event.shiftKey && !event.altKey) {
         if (event.key.toLowerCase() === 'p') {
           event.preventDefault()
           void cycleModel(1)
