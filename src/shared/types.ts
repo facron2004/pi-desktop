@@ -234,6 +234,8 @@ export interface PiDesktopBridge {
   sessions: {
     list(cwd?: string): Promise<SessionMeta[]>
     reveal(file: string): Promise<void>
+    /** Move a session file to the OS trash. Returns false when it fails. */
+    remove(file: string): Promise<boolean>
   }
   runtime: {
     start(options: RuntimeStartOptions): Promise<{ ok: boolean; error?: string }>

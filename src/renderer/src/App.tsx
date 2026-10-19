@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Keyboard, PanelLeft, Pencil, RefreshCw, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { FileDown, Keyboard, PanelLeft, Pencil, RefreshCw, X } from 'lucide-react'
 import { useAppStore } from './store/useAppStore'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
@@ -14,6 +14,7 @@ export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
   const info = useAppStore((state) => state.info)
   const items = useAppStore((state) => state.items)
+  const isStreaming = useAppStore((state) => state.isStreaming)
   const status = useAppStore((state) => state.status)
   const piState = useAppStore((state) => state.piState)
   const error = useAppStore((state) => state.error)
@@ -23,6 +24,7 @@ export default function App() {
   const newChat = useAppStore((state) => state.newChat)
   const openWorkspace = useAppStore((state) => state.openWorkspace)
   const renameSession = useAppStore((state) => state.renameSession)
+  const exportSession = useAppStore((state) => state.exportSession)
   const workspace = useAppStore((state) => state.workspace)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -31,6 +33,7 @@ export default function App() {
   const [changesOpen, setChangesOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
+  const exportedRef = useRef(false)
 
   useEffect(() => {
     void bootstrap()
@@ -49,6 +52,17 @@ export default function App() {
     ).__piDesktopDev
     if (dev?.openChanges) setChangesOpen(true)
   }, [])
+
+  // Development aid: exercise the export path once the session has content.
+  useEffect(() => {
+    const dev = (
+      window as unknown as { __piDesktopDev?: { export?: boolean } }
+    ).__piDesktopDev
+    if (!dev?.export || exportedRef.current) return
+    if (items.length === 0 || isStreaming) return
+    exportedRef.current = true
+    void exportSession()
+  }, [items.length, isStreaming, exportSession])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -146,6 +160,14 @@ export default function App() {
               onClick={() => setShortcutsOpen(true)}
             >
               <Keyboard size={14} />
+            </button>
+            <button
+              className="icon-btn"
+              title="Export this conversation as HTML"
+              disabled={status.phase !== 'ready' || items.length === 0}
+              onClick={() => void exportSession()}
+            >
+              <FileDown size={14} />
             </button>
             <button
               className="icon-btn"

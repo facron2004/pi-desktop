@@ -328,6 +328,11 @@
   color: var(--text);
 }
 
+.session-item__rename--danger:hover {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
 .session-item__input {
   width: 100%;
   border: 1px solid var(--accent-line);
@@ -2061,6 +2066,35 @@ kbd {
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+}
+
+.confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.confirm__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  flex: 0 0 auto;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.confirm__icon[data-tone='danger'] {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.confirm__body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-muted);
 }
 
 .kv {

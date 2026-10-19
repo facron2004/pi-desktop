@@ -35,7 +35,8 @@ const bridge: PiDesktopBridge = {
   },
   sessions: {
     list: (cwd?: string): Promise<SessionMeta[]> => ipcRenderer.invoke('sessions:list', cwd),
-    reveal: (file: string): Promise<void> => ipcRenderer.invoke('sessions:reveal', file)
+    reveal: (file: string): Promise<void> => ipcRenderer.invoke('sessions:reveal', file),
+    remove: (file: string): Promise<boolean> => ipcRenderer.invoke('sessions:remove', file)
   },
   runtime: {
     start: (options: RuntimeStartOptions) => ipcRenderer.invoke('runtime:start', options),
@@ -67,9 +68,11 @@ const prefillArg = process.argv.find((argument) =>
   argument.startsWith('--pi-desktop-prefill=')
 )
 const openChanges = process.argv.includes('--pi-desktop-open-changes')
-if (prefillArg || openChanges) {
+const exportFlag = process.argv.includes('--pi-desktop-export')
+if (prefillArg || openChanges || exportFlag) {
   contextBridge.exposeInMainWorld('__piDesktopDev', {
     prefill: prefillArg ? prefillArg.slice('--pi-desktop-prefill='.length) : undefined,
-    openChanges
+    openChanges,
+    export: exportFlag
   })
 }

@@ -13,6 +13,7 @@ import type {
   Workspace
 } from '@shared/types'
 import { applyEvent, itemsFromMessages, type ThreadItem } from '../lib/thread'
+import { basename, resolveAgainst } from '../lib/path'
 
 export type QueueKind = 'steer' | 'followUp'
 
@@ -42,6 +43,8 @@ export interface AppStore {
   refreshSessions: () => Promise<void>
   selectSession: (session: SessionMeta) => Promise<void>
   renameSession: (name: string) => Promise<void>
+  exportSession: () => Promise<void>
+  deleteSession: (file: string) => Promise<void>
   newChat: () => Promise<void>
   send: (text: string, images: { data: string; mimeType: string }[], kind?: QueueKind) => Promise<void>
   stop: () => Promise<void>
@@ -205,6 +208,44 @@ export const useAppStore = create<AppStore>((set, get) => ({
         piState: state.piState ? { ...state.piState, sessionName: trimmed } : state.piState
       }))
       await get().refreshSessions()
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
+  async exportSession() {
+    try {
+      const result = await window.pi.runtime.request<{ path?: string }>('export_html')
+      const raw = result?.path
+      if (!raw) {
+        get().showToast('Pi did not report an export file')
+        return
+      }
+      // Pi reports a bare file name relative to the session's working directory.
+      const target = resolveAgainst(get().workspace?.path, raw)
+      await window.pi.shell.openPath(target)
+      get().showToast(`Exported ${basename(target)}`)
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
+  async deleteSession(file: string) {
+    const session = get().sessions.find((entry) => entry.file === file)
+    const active = get().activeSessionFile === file
+    try {
+      if (active) {
+        // Start a fresh session first so Pi does not keep writing to the file.
+        await window.pi.runtime.request('new_session')
+        set({ items: [], activeSessionFile: undefined })
+      }
+      const removed = await window.pi.sessions.remove(file)
+      if (!removed) {
+        set({ error: `Could not delete ${session?.name ?? 'the conversation'}` })
+        return
+      }
+      await get().refreshSessions()
+      get().showToast('Conversation deleted')
     } catch (error) {
       set({ error: messageOf(error) })
     }

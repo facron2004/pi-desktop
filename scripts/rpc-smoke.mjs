@@ -3,6 +3,8 @@
  * Run with: node scripts/rpc-smoke.mjs [cwd]
  */
 import { spawn } from 'node:child_process'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -84,6 +86,27 @@ function request(payload, timeout = 20000) {
   })
 }
 
+/** Find the biggest session file for the workspace under test. */
+function findPopulatedSession() {
+  const root = path.join(os.homedir(), '.pi', 'agent', 'sessions')
+  if (!existsSync(root)) return null
+  const encoded = `--${path.resolve(cwd).replace(/^[/\\]+/, '').replace(/[/\\:]/g, '-')}--`
+  const dir = path.join(root, encoded)
+  if (!existsSync(dir)) return null
+  let best = null
+  let bestSize = 0
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith('.jsonl')) continue
+    const full = path.join(dir, file)
+    const size = statSync(full).size
+    if (size > bestSize) {
+      bestSize = size
+      best = full
+    }
+  }
+  return best
+}
+
 try {
   console.log('spawning:', cli, 'cwd:', cwd)
   const state = await request({ type: 'get_state' })
@@ -116,6 +139,21 @@ try {
 
   const after = await request({ type: 'get_state' })
   console.log('new session id =', after.data?.sessionId, '| file =', after.data?.sessionFile)
+
+  // Export needs a session that actually contains a conversation.
+  const populated = findPopulatedSession()
+  if (populated) {
+    const switched = await request({ type: 'switch_session', sessionPath: populated })
+    console.log('switch to populated ok =', switched.success, populated.split(/[\\/]/).pop())
+    const exported = await request({ type: 'export_html' }, 60000)
+    console.log(
+      'export_html ok =',
+      exported.success,
+      exported.error ? `error: ${exported.error}` : JSON.stringify(exported.data ?? {})
+    )
+  } else {
+    console.log('export_html skipped: no populated session found')
+  }
 } catch (error) {
   console.error('SMOKE FAILED:', error.message)
   process.exitCode = 1

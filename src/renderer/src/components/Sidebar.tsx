@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
 import { FolderOpen, MessageSquare, Pencil, Plus, Search, Settings, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
+import type { SessionMeta } from '@shared/types'
 import { formatRelativeTime } from '../lib/format'
+import { ConfirmDialog } from './ConfirmDialog'
 
 export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const sessions = useAppStore((state) => state.sessions)
@@ -13,10 +15,12 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const newChat = useAppStore((state) => state.newChat)
   const removeWorkspace = useAppStore((state) => state.removeWorkspace)
   const renameSession = useAppStore((state) => state.renameSession)
+  const deleteSession = useAppStore((state) => state.deleteSession)
 
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -183,6 +187,16 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
                   >
                     <Pencil size={11} />
                   </button>
+                  <button
+                    className="session-item__rename session-item__rename--danger"
+                    title="Delete conversation"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setPendingDelete(session)
+                    }}
+                  >
+                    <Trash2 size={11} />
+                  </button>
                 </div>
               ))}
             </div>
@@ -222,6 +236,21 @@ export function Sidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
           Settings
         </button>
       </div>
+
+      {pendingDelete ? (
+        <ConfirmDialog
+          title="Delete conversation"
+          body={`“${pendingDelete.name || pendingDelete.preview || 'Untitled session'}” will be moved to the system trash. This cannot be undone from inside Pi Desktop.`}
+          confirmLabel="Delete"
+          tone="danger"
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => {
+            const target = pendingDelete
+            setPendingDelete(null)
+            void deleteSession(target.file)
+          }}
+        />
+      ) : null}
     </aside>
   )
 }

@@ -41,7 +41,8 @@ function createWindow(): BrowserWindow {
         ...(process.env.PI_DESKTOP_PREFILL
           ? [`--pi-desktop-prefill=${process.env.PI_DESKTOP_PREFILL}`]
           : []),
-        ...(process.env.PI_DESKTOP_OPEN_CHANGES ? ['--pi-desktop-open-changes'] : [])
+        ...(process.env.PI_DESKTOP_OPEN_CHANGES ? ['--pi-desktop-open-changes'] : []),
+        ...(process.env.PI_DESKTOP_EXPORT ? ['--pi-desktop-export'] : [])
       ]
     }
   })
@@ -56,9 +57,9 @@ function createWindow(): BrowserWindow {
 
   // Surface renderer problems in the terminal during development.
   if (!app.isPackaged) {
-    window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-      if (level >= 2) {
-        console.error(`[renderer] ${message} (${sourceId}:${line})`)
+    window.webContents.on('console-message', (event) => {
+      if (event.level === 'error' || event.level === 'warning') {
+        console.error(`[renderer] ${event.message} (${event.sourceId}:${event.lineNumber})`)
       }
     })
     window.webContents.on('render-process-gone', (_event, details) => {

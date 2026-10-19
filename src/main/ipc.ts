@@ -100,6 +100,17 @@ export function registerIpc(context: IpcContext): void {
     shell.showItemInFolder(file)
   })
 
+  ipcMain.handle('sessions:remove', async (_event, file: string): Promise<boolean> => {
+    try {
+      // Recoverable: hand the file to the OS trash instead of unlinking it.
+      await shell.trashItem(file)
+      return true
+    } catch (error) {
+      console.error('[pi-desktop] could not trash the session file:', error)
+      return false
+    }
+  })
+
   ipcMain.handle('runtime:start', async (_event, options: RuntimeStartOptions) => {
     return runtime.start(options)
   })
