@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react'
-import { Check, Copy, ExternalLink } from 'lucide-react'
+import { Check, Copy, ExternalLink, File as FileIcon } from 'lucide-react'
 import type { FileContent } from '@shared/types'
 import { highlightCode } from '../lib/highlight'
+import { fileTone } from '../lib/files'
+import { basename, relativePath } from '../lib/path'
 
 interface FileViewerProps {
   file: string
+  root?: string
 }
 
-export function FileViewer({ file }: FileViewerProps) {
+export function FileViewer({ file, root }: FileViewerProps) {
   const [content, setContent] = useState<FileContent | null>(null)
   const [html, setHtml] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -30,7 +33,8 @@ export function FileViewer({ file }: FileViewerProps) {
         try {
           const rendered = await highlightCode(result.content, result.language, true)
           if (!cancelled) setHtml(rendered)
-        } catch {
+        } catch (error) {
+          console.error('[pi-desktop] highlighting failed:', error)
           if (!cancelled) setHtml(null)
         }
       })
@@ -67,8 +71,14 @@ export function FileViewer({ file }: FileViewerProps) {
   return (
     <div className="viewer">
       <div className="viewer__bar">
-        <span className="viewer__path" title={content.path}>
-          {content.path}
+        <span className="viewer__crumb">
+          <span className="viewer__crumb-root">{root ? basename(root) : ''}</span>
+          <span className="viewer__crumb-path" title={content.path}>
+            <span className="tree__icon" data-tone={fileTone(content.path.split(/[\\/]/).pop() ?? '')}>
+              <FileIcon />
+            </span>
+            {relativePath(root ?? '', content.path)}
+          </span>
         </span>
         {content.truncated ? <span className="change__badge">truncated</span> : null}
         <button className="ghost-btn" onClick={() => void copy()}>

@@ -311,6 +311,8 @@ export interface PiDesktopBridge {
     list(dir: string): Promise<FileEntry[]>
     /** Read a text file inside the open workspace. */
     read(file: string): Promise<FileContent | null>
+    /** Find files inside the open workspace whose name contains the query. */
+    search(query: string, limit?: number): Promise<FileEntry[]>
   }
 }
 

@@ -2366,6 +2366,102 @@ kbd {
   color: var(--text-faint);
 }
 
+.tree__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 8px;
+  padding: 0 4px 0 8px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-deep);
+  color: var(--text-faint);
+}
+
+.tree__search:focus-within {
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+
+.tree__search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: none;
+  outline: none;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.tree__search .icon-btn {
+  width: 20px;
+  height: 20px;
+}
+
+.tree__results {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tree__results-head {
+  padding: 2px 8px 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.tree__item--flat {
+  gap: 7px;
+}
+
+.tree__dir {
+  margin-left: auto;
+  padding-left: 8px;
+  max-width: 55%;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.tree__icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-faint);
+}
+
+.tree__icon[data-tone='ts'] {
+  color: var(--blue);
+}
+
+.tree__icon[data-tone='js'] {
+  color: var(--accent);
+}
+
+.tree__icon[data-tone='json'] {
+  color: var(--green);
+}
+
+.tree__icon[data-tone='style'] {
+  color: var(--violet);
+}
+
+.tree__icon[data-tone='markdown'] {
+  color: var(--text-muted);
+}
+
+.tree__icon[data-tone='shell'] {
+  color: var(--green);
+}
+
+.tree__icon[data-tone='image'] {
+  color: var(--red);
+}
+
 .spin {
   animation: spin 0.8s linear infinite;
 }
@@ -2399,6 +2495,37 @@ kbd {
   min-width: 0;
   font-family: var(--font-mono);
   font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.viewer__crumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+}
+
+.viewer__crumb-root {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--bg-active);
+  color: var(--text-muted);
+}
+
+.viewer__crumb-path {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-family: var(--font-mono);
   color: var(--text-faint);
   white-space: nowrap;
   overflow: hidden;

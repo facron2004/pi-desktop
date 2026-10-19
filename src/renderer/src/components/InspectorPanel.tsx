@@ -27,6 +27,15 @@ export function InspectorPanel({
     setOpenFile(null)
   }, [initialTab])
 
+  // Development aid: open a file straight away so screenshots can show the
+  // viewer. Set by the main process via PI_DESKTOP_OPEN_FILE.
+  useEffect(() => {
+    const dev = (window as unknown as { __piDesktopDev?: { openFile?: string } }).__piDesktopDev
+    if (!dev?.openFile) return
+    setTab('files')
+    setOpenFile(dev.openFile)
+  }, [])
+
   return (
     <aside className="drawer" aria-label="Project inspector">
       <header className="drawer__head">
@@ -69,7 +78,7 @@ export function InspectorPanel({
               Back
             </button>
           </div>
-          <FileViewer file={openFile} />
+          <FileViewer file={openFile} root={workspace?.path} />
         </div>
       ) : tab === 'files' ? (
         <div className="drawer__body drawer__body--flush">

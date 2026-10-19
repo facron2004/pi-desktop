@@ -20,3 +20,17 @@ export function basename(value: string): string {
   const parts = value.split(/[\\/]/).filter(Boolean)
   return parts[parts.length - 1] ?? value
 }
+
+/**
+ * The path of `target` relative to `root`, for display.
+ * Falls back to the full path when the two are unrelated.
+ */
+export function relativePath(root: string, target: string): string {
+  if (!root) return target
+  const normalisedRoot = root.replace(/[\\/]+$/, '').toLowerCase()
+  const normalisedTarget = target.toLowerCase()
+  if (!normalisedTarget.startsWith(`${normalisedRoot}/`) && !normalisedTarget.startsWith(`${normalisedRoot}\\`)) {
+    return target
+  }
+  return target.slice(normalisedRoot.length + 1)
+}

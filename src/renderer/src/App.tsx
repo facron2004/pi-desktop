@@ -53,8 +53,15 @@ export default function App() {
   // Development aid: open the changes drawer for screenshots.
   useEffect(() => {
     const dev = (
-      window as unknown as { __piDesktopDev?: { openChanges?: boolean; openFiles?: boolean } }
+      window as unknown as {
+        __piDesktopDev?: { openChanges?: boolean; openFiles?: boolean; openFile?: string }
+      }
     ).__piDesktopDev
+    if (dev?.openFile) {
+      setInspectorTab('files')
+      setChangesOpen(true)
+      return
+    }
     if (dev?.openFiles) {
       setInspectorTab('files')
       setChangesOpen(true)

@@ -64,7 +64,9 @@ const bridge: PiDesktopBridge = {
   },
   fs: {
     list: (dir: string): Promise<FileEntry[]> => ipcRenderer.invoke('fs:list', dir),
-    read: (file: string): Promise<FileContent | null> => ipcRenderer.invoke('fs:read', file)
+    read: (file: string): Promise<FileContent | null> => ipcRenderer.invoke('fs:read', file),
+    search: (query: string, limit?: number): Promise<FileEntry[]> =>
+      ipcRenderer.invoke('fs:search', query, limit)
   }
 }
 
@@ -79,11 +81,19 @@ const prefillArg = process.argv.find((argument) =>
 const openChanges = process.argv.includes('--pi-desktop-open-changes')
 const openFiles = process.argv.includes('--pi-desktop-open-files')
 const exportFlag = process.argv.includes('--pi-desktop-export')
-if (prefillArg || openChanges || openFiles || exportFlag) {
+const fileSearchArg = process.argv.find((argument) =>
+  argument.startsWith('--pi-desktop-file-search=')
+)
+const openFileArg = process.argv.find((argument) =>
+  argument.startsWith('--pi-desktop-open-file=')
+)
+if (prefillArg || openChanges || openFiles || exportFlag || fileSearchArg || openFileArg) {
   contextBridge.exposeInMainWorld('__piDesktopDev', {
     prefill: prefillArg ? prefillArg.slice('--pi-desktop-prefill='.length) : undefined,
     openChanges,
     openFiles,
-    export: exportFlag
+    export: exportFlag,
+    fileSearch: fileSearchArg ? fileSearchArg.slice('--pi-desktop-file-search='.length) : undefined,
+    openFile: openFileArg ? openFileArg.slice('--pi-desktop-open-file='.length) : undefined
   })
 }

@@ -1,6 +1,6 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, type Dirent } from 'node:fs'
 import path from 'node:path'
 import type {
   AppInfo,
@@ -38,6 +38,27 @@ export interface FileContent {
 }
 
 const MAX_FILE_BYTES = 512 * 1024
+const MAX_SEARCH_RESULTS = 200
+const MAX_SEARCH_DEPTH = 12
+/** Directories that are never worth walking when searching a project. */
+const SEARCH_SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.hg',
+  '.svn',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+  '.next',
+  '.nuxt',
+  '.cache',
+  '.venv',
+  'venv',
+  '__pycache__',
+  '.idea',
+  '.vscode'
+])
 const LANGUAGE_BY_EXT: Record<string, string> = {
   ts: 'typescript',
   tsx: 'tsx',
@@ -225,6 +246,46 @@ export function registerIpc(context: IpcContext): void {
     } catch {
       return null
     }
+  })
+
+  ipcMain.handle('fs:search', (_event, query: string, limit?: number): FileEntry[] => {
+    const root = workspaceRoot(context)
+    const needle = query.trim().toLowerCase()
+    if (!root || !needle) return []
+    const ceiling = Math.min(Math.max(limit ?? MAX_SEARCH_RESULTS, 1), MAX_SEARCH_RESULTS)
+    const results: FileEntry[] = []
+
+    const walk = (dir: string, depth: number): void => {
+      if (results.length >= ceiling || depth > MAX_SEARCH_DEPTH) return
+      let entries: Dirent[]
+      try {
+        entries = readdirSync(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        if (results.length >= ceiling) return
+        if (entry.name.startsWith('.')) continue
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (SEARCH_SKIP_DIRS.has(entry.name)) continue
+          walk(full, depth + 1)
+          continue
+        }
+        if (!entry.isFile()) continue
+        if (!entry.name.toLowerCase().includes(needle)) continue
+        let size: number | undefined
+        try {
+          size = statSync(full).size
+        } catch {
+          size = undefined
+        }
+        results.push({ name: entry.name, path: full, kind: 'file', size })
+      }
+    }
+
+    walk(path.resolve(root), 0)
+    return results
   })
 
   ipcMain.handle('sessions:remove', async (_event, file: string): Promise<boolean> => {

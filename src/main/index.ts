@@ -43,6 +43,12 @@ function createWindow(): BrowserWindow {
           : []),
         ...(process.env.PI_DESKTOP_OPEN_CHANGES ? ['--pi-desktop-open-changes'] : []),
         ...(process.env.PI_DESKTOP_OPEN_FILES ? ['--pi-desktop-open-files'] : []),
+        ...(process.env.PI_DESKTOP_FILE_SEARCH
+          ? [`--pi-desktop-file-search=${process.env.PI_DESKTOP_FILE_SEARCH}`]
+          : []),
+        ...(process.env.PI_DESKTOP_OPEN_FILE
+          ? [`--pi-desktop-open-file=${process.env.PI_DESKTOP_OPEN_FILE}`]
+          : []),
         ...(process.env.PI_DESKTOP_EXPORT ? ['--pi-desktop-export'] : [])
       ]
     }
