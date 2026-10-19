@@ -187,9 +187,9 @@ export function TopBar({
           <span>Files</span>
         </button>
 
-        <button className="btn btn--ghost btn--sm" onClick={() => void compact()} disabled={!ready}>
+        <button className="pill" onClick={() => void compact()} disabled={!ready} title="Summarise the conversation to free up the context window">
           <Minimize2 size={13} />
-          Compact
+          <span>Compact</span>
         </button>
       </div>
     </div>

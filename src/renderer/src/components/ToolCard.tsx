@@ -38,6 +38,7 @@ const RESULT_PREVIEW = 1200
  */
 export function BashCard({ item }: { item: BashItem }) {
   const [open, setOpen] = useState(false)
+  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const failed = item.exitCode !== undefined && item.exitCode !== 0
 
   return (
@@ -53,6 +54,16 @@ export function BashCard({ item }: { item: BashItem }) {
             <span className="tool__status">{failed ? `exit ${item.exitCode}` : 'ok'}</span>
           ) : null}
         </button>
+        {item.command ? (
+          <button
+            className="tool__reuse-icon"
+            title="Reuse this command"
+            aria-label="Reuse this command"
+            onClick={() => insertIntoComposer(item.command)}
+          >
+            <CornerDownLeft size={12} />
+          </button>
+        ) : null}
         <button
           className="tool__caret"
           onClick={() => setOpen((value) => !value)}

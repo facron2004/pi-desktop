@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { FileDown, Keyboard, PanelLeft, Pencil, RefreshCw, X } from 'lucide-react'
+import { CopyPlus, FileDown, Keyboard, PanelLeft, Pencil, RefreshCw, X } from 'lucide-react'
 import { useAppStore } from './store/useAppStore'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
@@ -25,6 +25,7 @@ export default function App() {
   const newChat = useAppStore((state) => state.newChat)
   const openWorkspace = useAppStore((state) => state.openWorkspace)
   const renameSession = useAppStore((state) => state.renameSession)
+  const duplicateSession = useAppStore((state) => state.duplicateSession)
   const exportSession = useAppStore((state) => state.exportSession)
   const workspace = useAppStore((state) => state.workspace)
   const uiStatuses = useAppStore((state) => state.uiStatuses)
@@ -210,6 +211,14 @@ export default function App() {
               onClick={() => setShortcutsOpen(true)}
             >
               <Keyboard size={14} />
+            </button>
+            <button
+              className="icon-btn"
+              title="Duplicate this conversation"
+              disabled={status.phase !== 'ready' || items.length === 0}
+              onClick={() => void duplicateSession()}
+            >
+              <CopyPlus size={14} />
             </button>
             <button
               className="icon-btn"

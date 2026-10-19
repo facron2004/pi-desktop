@@ -163,6 +163,18 @@ try {
     console.log('get_tree ok =', tree.success, 'roots =', roots.length, 'leaf =', tree.data?.leafId)
 
     if (targets.length) {
+      // A copy of the branch is the other half of the branching story. It
+      // needs a session that is already on disk.
+      const cloned = await request({ type: 'clone' }, 30000)
+      console.log(
+        'clone ok =',
+        cloned.success,
+        cloned.error ? `error: ${cloned.error}` : JSON.stringify(cloned.data ?? {})
+      )
+      const afterClone = await request({ type: 'get_state' })
+      console.log('cloned session =', afterClone.data?.sessionFile?.split(/[\\/]/).pop())
+      console.log('clone kept the history:', afterClone.data?.messageCount, 'messages')
+
       const forked = await request({ type: 'fork', entryId: targets[targets.length - 1].entryId }, 30000)
       console.log('fork ok =', forked.success, 'cancelled =', forked.data?.cancelled)
       const after = await request({ type: 'get_state' })

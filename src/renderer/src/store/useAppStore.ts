@@ -76,6 +76,8 @@ export interface AppStore {
   renameSession: (name: string) => Promise<void>
   /** Name a conversation from the list, active or not. */
   renameSessionFile: (file: string, name: string) => Promise<void>
+  /** Copy the current conversation into a new one. */
+  duplicateSession: () => Promise<void>
   exportSession: () => Promise<void>
   deleteSession: (file: string) => Promise<void>
   newChat: () => Promise<void>
@@ -538,6 +540,32 @@ export const useAppStore = create<AppStore>((set, get) => ({
         mode
       }
     }))
+  },
+
+  async duplicateSession() {
+    if (get().status.phase !== 'ready') return
+    const origin =
+      get().piState?.sessionName ||
+      get().sessions.find((session) => session.file === get().activeSessionFile)?.preview ||
+      'Conversation'
+    try {
+      const result = await window.pi.runtime.request<{ cancelled?: boolean }>('clone')
+      if (result?.cancelled) {
+        get().showToast('The duplicate was cancelled', 'warning')
+        return
+      }
+      await get().refreshState()
+      await get().reloadMessages()
+      await get().refreshForkTargets()
+      // The copy would carry the same name, which makes the two hard to tell
+      // apart in the list.
+      const short = origin.length > 44 ? `${origin.slice(0, 43)}…` : origin
+      await window.pi.runtime.request('set_session_name', { name: `${short} · copy` })
+      await get().refreshSessions()
+      get().showToast('Conversation duplicated')
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
   },
 
   async refreshForkTargets() {

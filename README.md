@@ -31,7 +31,8 @@ Claude Desktop.
   per project, filters them, renames them and exports them as HTML.
 - **Branch from any prompt.** Every message you sent is a branch point. "Branch" opens a
   new conversation that keeps the earlier history and hands the prompt back to the
-  composer, so you can try a different approach without losing the run-up.
+  composer, so you can try a different approach without losing the run-up. The copy
+  button in the title bar duplicates the whole conversation instead.
 - **Search the conversation.** `Ctrl+F` finds every mention of a word in the thread and
   walks through the hits. `Alt+↑` and `Alt+↓` walk the turns themselves, and a running
   turn counts its own seconds.
