@@ -418,7 +418,11 @@ export function Composer() {
                 </button>
               </>
             ) : (
-              <button className="btn btn--primary" onClick={submit} disabled={!ready}>
+              <button
+                className="btn btn--primary"
+                onClick={submit}
+                disabled={!ready || (!text.trim() && !images.length)}
+              >
                 <ArrowUp size={14} />
                 Send
               </button>

@@ -91,7 +91,7 @@ export function ToolCard({ item }: { item: ToolItem }) {
     return editPairs(item.args ?? {}).map((pair) => buildDiff(pair.oldText, pair.newText))
   }, [item.args, item.toolName])
 
-  const summary = descriptor.summary(item.args ?? {})
+  const summary = descriptor.summary(item.args ?? {}, workspace?.path)
   const result = item.result ?? ''
   const truncated = result.length > RESULT_PREVIEW
   const visibleResult = truncated && !full ? result.slice(0, RESULT_PREVIEW) : result

@@ -321,6 +321,10 @@ export function Thread() {
           const orphanTools = turn.tools.filter((tool) => !referenced.has(tool.toolCallId))
           const lastAssistant = turn.assistants[turn.assistants.length - 1]
 
+          // When the current run started, for the elapsed counter. The
+          // prompt is the honest start of the turn.
+          const runStartedAt = turn.user?.timestamp ?? lastAssistant?.timestamp
+
           const assistantText = turn.assistants
             .flatMap((assistant) =>
               assistant.blocks
@@ -347,14 +351,7 @@ export function Thread() {
                 <div className="assistant">
                   <div className="assistant__avatar">π</div>
                   <div className="assistant__body">
-                    {turn.assistants.map((assistant) => (
-                      <AssistantBlocks
-                        key={assistant.id}
-                        assistant={assistant}
-                        toolMap={toolMap}
-                        isLast={assistant.id === lastAssistant?.id}
-                      />
-                    ))}
+                    {renderTurn(turn, toolMap)}
 
                     {turn.bash.map((item) => (
                       <BashCard key={item.id} item={item} />
@@ -372,6 +369,7 @@ export function Thread() {
                       <div className="assistant__footer">
                         <span className="spinner" />
                         <span>Working…</span>
+                        {runStartedAt ? <Elapsed since={runStartedAt} /> : null}
                       </div>
                     ) : null}
 
@@ -419,101 +417,94 @@ export function Thread() {
   )
 }
 
-function AssistantBlocks({
-  assistant,
-  toolMap,
-  isLast
-}: {
-  assistant: AssistantItem
-  toolMap: Map<string, ToolItem>
-  isLast: boolean
-}) {
-  const lastTextIndex = assistant.blocks.reduce(
-    (found, block, index) => (block.type === 'text' ? index : found),
-    -1
-  )
+/** A counter that ticks once a second while the agent is working. */
+function Elapsed({ since }: { since: number }) {
+  const [now, setNow] = useState(() => Date.now())
 
-  return (
-    <>
-      {renderBlocks(assistant, toolMap, lastTextIndex)}
-      {isLast && !assistant.streaming && (assistant.usage || assistant.model) ? (
-        <div className="assistant__footer">
-          {assistant.model ? <span>{assistant.model}</span> : null}
-          {assistant.usage ? (
-            <>
-              <span>{formatTokens(assistant.usage.totalTokens)} tokens</span>
-              {assistant.usage.cost ? <span>{formatCost(assistant.usage.cost.total)}</span> : null}
-            </>
-          ) : null}
-          {assistant.stopReason === 'error' ? (
-            <span style={{ color: 'var(--red)' }}>{assistant.error ?? 'error'}</span>
-          ) : null}
-          <span>{formatClock(assistant.timestamp)}</span>
-        </div>
-      ) : null}
-    </>
-  )
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const seconds = Math.max(0, Math.round((now - since) / 1000))
+  if (seconds < 60) return <span>{seconds}s</span>
+  return <span>{Math.floor(seconds / 60)}m {seconds % 60}s</span>
 }
 
 /**
- * Render the blocks of one assistant message.
+ * Render a whole turn.
  *
- * Calls of the same tool that follow each other are folded into a single
- * card, so a run of reads reads as one line instead of a dozen.
+ * The blocks of every reply in the turn are laid out in one sequence, so
+ * calls of the same tool that follow each other are folded into a single
+ * card. The agent usually reads one file after the other, and each of those
+ * is a reply of its own — grouping inside a reply would not catch them.
  */
-function renderBlocks(
-  assistant: AssistantItem,
-  toolMap: Map<string, ToolItem>,
-  lastTextIndex: number
-): ReactNode[] {
-  const blocks = assistant.blocks
+function renderTurn(turn: Turn, toolMap: Map<string, ToolItem>): ReactNode[] {
   const nodes: ReactNode[] = []
-  let index = 0
+  let group: ToolItem[] = []
+  let lastAssistant: AssistantItem | undefined
 
-  while (index < blocks.length) {
-    const block = blocks[index]
-    if (block.type === 'text') {
-      if (block.text.trim()) {
+  const flush = () => {
+    if (!group.length) return
+    if (group.length > 1) {
+      nodes.push(<ToolGroup key={`group-${group[0].id}`} items={group} />)
+    } else {
+      nodes.push(<ToolCard key={group[0].id} item={group[0]} />)
+    }
+    group = []
+  }
+
+  for (const assistant of turn.assistants) {
+    lastAssistant = assistant
+    const lastTextIndex = assistant.blocks.reduce(
+      (found, block, index) => (block.type === 'text' ? index : found),
+      -1
+    )
+
+    assistant.blocks.forEach((block, index) => {
+      if (block.type === 'text') {
+        if (!block.text.trim()) return
+        flush()
         nodes.push(
           <AssistantText
-            key={index}
+            key={`${assistant.id}-${index}`}
             text={block.text}
             streaming={assistant.streaming && index === lastTextIndex}
           />
         )
+        return
       }
-      index += 1
-      continue
-    }
-    if (block.type === 'thinking') {
-      nodes.push(<ThinkingBlock key={index} text={block.text} />)
-      index += 1
-      continue
-    }
+      if (block.type === 'thinking') {
+        flush()
+        nodes.push(<ThinkingBlock key={`${assistant.id}-${index}`} text={block.text} />)
+        return
+      }
+      const tool = toolMap.get(block.id)
+      if (!tool) return
+      if (group.length && group[0].toolName !== tool.toolName) flush()
+      group.push(tool)
+    })
+  }
+  flush()
 
-    const tool = toolMap.get(block.id)
-    if (!tool) {
-      index += 1
-      continue
-    }
-
-    const run = [tool]
-    let next = index + 1
-    while (next < blocks.length) {
-      const candidate = blocks[next]
-      if (candidate.type !== 'toolCall') break
-      const item = toolMap.get(candidate.id)
-      if (!item || item.toolName !== tool.toolName) break
-      run.push(item)
-      next += 1
-    }
-
-    if (run.length > 1) {
-      nodes.push(<ToolGroup key={`group-${index}`} items={run} />)
-    } else {
-      nodes.push(<ToolCard key={index} item={tool} />)
-    }
-    index = next
+  if (lastAssistant && !lastAssistant.streaming && (lastAssistant.usage || lastAssistant.model)) {
+    nodes.push(
+      <div className="assistant__footer" key="turn-footer">
+        {lastAssistant.model ? <span>{lastAssistant.model}</span> : null}
+        {lastAssistant.usage ? (
+          <>
+            <span>{formatTokens(lastAssistant.usage.totalTokens)} tokens</span>
+            {lastAssistant.usage.cost ? (
+              <span>{formatCost(lastAssistant.usage.cost.total)}</span>
+            ) : null}
+          </>
+        ) : null}
+        {lastAssistant.stopReason === 'error' ? (
+          <span style={{ color: 'var(--red)' }}>{lastAssistant.error ?? 'error'}</span>
+        ) : null}
+        <span>{formatClock(lastAssistant.timestamp)}</span>
+      </div>
+    )
   }
 
   return nodes

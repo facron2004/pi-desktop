@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import type { ToolItem } from '../lib/thread'
 import { describeTool } from '../lib/tools'
+import { useAppStore } from '../store/useAppStore'
 import { ToolCard, TOOL_ICONS } from './ToolCard'
 
 /**
@@ -12,6 +13,7 @@ import { ToolCard, TOOL_ICONS } from './ToolCard'
  * group that holds one of those starts open.
  */
 export function ToolGroup({ items }: { items: ToolItem[] }) {
+  const workspace = useAppStore((state) => state.workspace)
   const descriptor = describeTool(items[0].toolName)
   const tone = items.some((item) => item.status === 'error') ? 'error' : descriptor.tone
   const Icon = TOOL_ICONS[tone]
@@ -24,7 +26,7 @@ export function ToolGroup({ items }: { items: ToolItem[] }) {
   const [open, setOpen] = useState(showDetail)
 
   const summary = items
-    .map((item) => descriptor.summary(item.args ?? {}))
+    .map((item) => descriptor.summary(item.args ?? {}, workspace?.path))
     .filter(Boolean)
     .join(' · ')
 

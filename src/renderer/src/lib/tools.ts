@@ -1,3 +1,5 @@
+import { relativePath } from './path'
+
 export type ToolTone = 'read' | 'edit' | 'exec' | 'write' | 'search' | 'generic'
 
 export interface ToolDescriptor {
@@ -6,7 +8,7 @@ export interface ToolDescriptor {
   plural: string
   tone: ToolTone
   /** One-line summary shown next to the tool name. */
-  summary(args: Record<string, unknown>): string
+  summary(args: Record<string, unknown>, root?: string): string
 }
 
 function str(value: unknown): string {
@@ -21,26 +23,39 @@ function shortenPath(value: string, max = 68): string {
   return `…${value.slice(value.length - max + 1)}`
 }
 
+/**
+ * A path as it should be shown: relative to the project when it is inside
+ * it, because the full path is mostly noise.
+ */
+function displayPath(value: string, root?: string): string {
+  if (!value) return ''
+  if (root) {
+    const relative = relativePath(root, value)
+    if (relative !== value) return shortenPath(relative)
+  }
+  return shortenPath(value)
+}
+
 const DESCRIPTORS: Record<string, ToolDescriptor> = {
   read: {
     label: 'Read',
     plural: 'reads',
     tone: 'read',
-    summary: (args) => shortenPath(str(args.path))
+    summary: (args, root) => displayPath(str(args.path), root)
   },
   write: {
     label: 'Write',
     plural: 'writes',
     tone: 'write',
-    summary: (args) => shortenPath(str(args.path))
+    summary: (args, root) => displayPath(str(args.path), root)
   },
   edit: {
     label: 'Edit',
     plural: 'edits',
     tone: 'edit',
-    summary: (args) => {
+    summary: (args, root) => {
       const edits = Array.isArray(args.edits) ? args.edits : []
-      const path = shortenPath(str(args.path))
+      const path = displayPath(str(args.path), root)
       if (edits.length > 1) return `${path} · ${edits.length} edits`
       return path
     }
@@ -81,7 +96,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     label: 'List',
     plural: 'listings',
     tone: 'read',
-    summary: (args) => shortenPath(str(args.path) || '.')
+    summary: (args, root) => displayPath(str(args.path) || '.', root)
   }
 }
 
