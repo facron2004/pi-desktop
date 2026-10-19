@@ -5,6 +5,7 @@ import type {
   AppSettings,
   ExtensionUiRequest,
   ExtensionUiResponse,
+  ForkTarget,
   ModelInfo,
   PiCommand,
   PiEvent,
@@ -47,6 +48,10 @@ export interface AppStore {
   items: ThreadItem[]
   queue: { steering: string[]; followUp: string[] }
   activeSessionFile?: string
+  /** User messages the active branch can be forked from. */
+  forkTargets: ForkTarget[]
+  /** True while a fork is in flight, so the button cannot be pressed twice. */
+  forking: boolean
   error?: string
   toast?: { text: string; level: 'info' | 'warning' | 'error' }
   busy: boolean
@@ -60,7 +65,7 @@ export interface AppStore {
   /** Text pushed into the composer through `set_editor_text`. */
   composerText?: string
   /** Text to append to the composer, e.g. a command the user wants to reuse. */
-  composerInsert?: { text: string; seq: number }
+  composerInsert?: { text: string; seq: number; mode?: 'append' | 'replace' }
 
   bootstrap: () => Promise<void>
   openWorkspace: (workspace: Workspace, sessionFile?: string) => Promise<void>
@@ -88,7 +93,10 @@ export interface AppStore {
   dismissUi: () => Promise<void>
   clearComposerText: () => void
   /** Append text to the composer and focus it. */
-  insertIntoComposer: (text: string) => void
+  insertIntoComposer: (text: string, mode?: 'append' | 'replace') => void
+  refreshForkTargets: () => Promise<void>
+  /** Start a new branch that keeps the history before `entryId`. */
+  forkFrom: (entryId: string) => Promise<void>
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -112,6 +120,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   commands: [],
   items: [],
   queue: { steering: [], followUp: [] },
+  forkTargets: [],
+  forking: false,
   busy: false,
   uiStatuses: [],
   uiWidgets: [],
@@ -409,6 +419,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const data = await window.pi.runtime.request<{ messages: AgentMessage[] }>('get_messages')
       set({ items: itemsFromMessages(data?.messages ?? []) })
+      await get().refreshForkTargets()
     } catch (error) {
       set({ error: messageOf(error) })
     }
@@ -462,12 +473,66 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ composerText: undefined })
   },
 
-  insertIntoComposer(text) {
+  insertIntoComposer(text, mode = 'append') {
     const trimmed = text.trim()
     if (!trimmed) return
     set((state) => ({
-      composerInsert: { text: trimmed, seq: (state.composerInsert?.seq ?? 0) + 1 }
+      composerInsert: {
+        text: trimmed,
+        seq: (state.composerInsert?.seq ?? 0) + 1,
+        mode
+      }
     }))
+  },
+
+  async refreshForkTargets() {
+    try {
+      const data = await window.pi.runtime.request<{ messages?: ForkTarget[] }>('get_fork_messages')
+      set({ forkTargets: data?.messages ?? [] })
+    } catch {
+      set({ forkTargets: [] })
+    }
+  },
+
+  async forkFrom(entryId) {
+    if (get().forking) return
+    if (get().isStreaming) {
+      get().showToast('Wait for the current turn to finish before branching', 'warning')
+      return
+    }
+    const originSession = get().sessions.find((session) => session.file === get().activeSessionFile)
+    const origin = originSession?.name || originSession?.preview || ''
+    set({ forking: true })
+    try {
+      const result = await window.pi.runtime.request<{ text?: string; cancelled?: boolean }>('fork', {
+        entryId
+      })
+      if (result?.cancelled) {
+        get().showToast('The branch was cancelled', 'warning')
+        return
+      }
+      // The fork opens a new session file, so everything that points at the
+      // old one has to be refreshed.
+      await get().refreshState()
+      await get().reloadMessages()
+      await get().refreshForkTargets()
+      await get().refreshSessions()
+      // Two conversations that start with the same prompt are hard to tell
+      // apart in the sidebar, so the branch gets a name of its own.
+      const label = (origin || result?.text || 'Conversation').trim()
+      const short = label.length > 44 ? `${label.slice(0, 43)}…` : label
+      await window.pi.runtime.request('set_session_name', { name: `${short} · branch` })
+      await get().refreshSessions()
+      // Pi forks *before* the message, so the prompt comes back as text for
+      // the user to tweak and send again.
+      const prompt = result?.text?.trim()
+      if (prompt) get().insertIntoComposer(prompt, 'replace')
+      get().showToast('Branched into a new conversation')
+    } catch (error) {
+      set({ error: messageOf(error) })
+    } finally {
+      set({ forking: false })
+    }
   }
 }))
 
@@ -499,6 +564,10 @@ function handleEvent(set: SetState, get: GetState, event: PiEvent): void {
       if (get().uiRequest) set({ uiRequest: undefined })
       void get().refreshState()
       void get().refreshSessions()
+      // The prompt of this turn is a new branch point. Refreshing here as
+      // well as on `message_start` covers the case where Pi had not recorded
+      // the message yet when the event arrived.
+      void get().refreshForkTargets()
       break
     case 'session_info_changed': {
       const name = typeof event.name === 'string' ? event.name : undefined
@@ -523,9 +592,15 @@ function handleEvent(set: SetState, get: GetState, event: PiEvent): void {
       })
       break
     }
+    case 'message_start': {
+      set((state) => ({ items: applyEvent(state.items, event) }))
+      // A new prompt is a new place the branch can be forked from.
+      const role = (event as { message?: { role?: string } }).message?.role
+      if (role === 'user') void get().refreshForkTargets()
+      break
+    }
     case 'message_end':
     case 'message_update':
-    case 'message_start':
     case 'tool_execution_start':
     case 'tool_execution_update':
     case 'tool_execution_end':

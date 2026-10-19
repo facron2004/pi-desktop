@@ -25,6 +25,9 @@ Claude Desktop.
   for you. Extensions can also push status lines, widgets and notifications.
 - **Session history.** Pi persists every conversation to disk; the sidebar lists them
   per project, filters them, renames them and exports them as HTML.
+- **Branch from any prompt.** Every message you sent is a branch point. "Branch" opens a
+  new conversation that keeps the earlier history and hands the prompt back to the
+  composer, so you can try a different approach without losing the run-up.
 - **Search the conversation.** `Ctrl+F` finds every mention of a word in the thread and
   walks through the hits.
 - **Command palette.** Type `/` in the composer to reach Pi's own commands — skills,
@@ -34,8 +37,8 @@ Claude Desktop.
 - **Steering.** While Pi is working you can steer it ("stop and do this instead") or
   queue a follow-up for when it finishes.
 - **Keyboard-first.** `Ctrl+N` new chat, `Ctrl+B` sidebar, `Ctrl+K` focus the composer,
-  `Ctrl+F` search the conversation, `↑` recalls earlier prompts, `Esc` stops a run.
-  `Ctrl+/` lists every shortcut.
+  `Ctrl+F` search the conversation, `Alt+↑`/`Alt+↓` walk the turns, `↑` recalls earlier
+  prompts, `Esc` stops a run. `Ctrl+/` lists every shortcut.
 
 ## How it talks to Pi
 

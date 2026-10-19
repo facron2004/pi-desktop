@@ -1,5 +1,15 @@
 import { useState } from 'react'
-import { Brain, Check, ChevronRight, Copy, CircleAlert, CircleCheck, Info, TriangleAlert } from 'lucide-react'
+import {
+  Brain,
+  Check,
+  ChevronRight,
+  Copy,
+  CircleAlert,
+  CircleCheck,
+  GitBranch,
+  Info,
+  TriangleAlert
+} from 'lucide-react'
 import type { NoticeItem, UserItem } from '../lib/thread'
 import { formatClock } from '../lib/format'
 import { Markdown } from './Markdown'
@@ -7,11 +17,18 @@ import { Markdown } from './Markdown'
 export function UserMessage({
   item,
   onCopy,
-  copied
+  copied,
+  forkEntryId,
+  onFork,
+  forking
 }: {
   item: UserItem
   onCopy: (id: string, text: string) => void
   copied: string | null
+  /** The Pi entry id this prompt can be forked from, when it can. */
+  forkEntryId?: string
+  onFork?: (entryId: string) => void
+  forking?: boolean
 }) {
   return (
     <div className="user-msg">
@@ -26,6 +43,17 @@ export function UserMessage({
         {item.text ? <Markdown>{item.text}</Markdown> : null}
         <div className="user-msg__actions">
           <span className="user-msg__time">{formatClock(item.timestamp)}</span>
+          {forkEntryId && onFork ? (
+            <button
+              className="ghost-btn ghost-btn--branch"
+              onClick={() => onFork(forkEntryId)}
+              disabled={forking}
+              title="Branch from here — a new conversation that keeps the earlier history"
+            >
+              <GitBranch size={12} />
+              {forking ? 'Branching…' : 'Branch'}
+            </button>
+          ) : null}
           <button
             className="ghost-btn"
             onClick={() => onCopy(item.id, item.text)}

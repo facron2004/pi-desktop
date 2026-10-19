@@ -63,18 +63,18 @@ function extractText(content: unknown): string {
   return ''
 }
 
-function readSessionFile(file: string): string[] {
+function readSessionFile(file: string): { lines: string[]; mtime: number } {
   try {
     const stats = statSync(file)
-    if (stats.size > MAX_SESSION_BYTES) return []
-    return readFileSync(file, 'utf8').split('\n')
+    if (stats.size > MAX_SESSION_BYTES) return { lines: [], mtime: 0 }
+    return { lines: readFileSync(file, 'utf8').split('\n'), mtime: stats.mtimeMs }
   } catch {
-    return []
+    return { lines: [], mtime: 0 }
   }
 }
 
 function parseSession(file: string): SessionMeta | null {
-  const lines = readSessionFile(file)
+  const { lines, mtime } = readSessionFile(file)
   if (!lines.length) return null
 
   let header: SessionHeader | null = null
@@ -161,7 +161,11 @@ function parseSession(file: string): SessionMeta | null {
     }
   }
 
-  const updatedAt = Date.parse(entries[entries.length - 1]?.timestamp ?? header.timestamp ?? '') || 0
+  // A fork copies the entries of the original branch, so their timestamps are
+  // old. The file itself was just written, and that is what the sidebar has
+  // to sort by.
+  const entryTime = Date.parse(entries[entries.length - 1]?.timestamp ?? header.timestamp ?? '') || 0
+  const updatedAt = Math.max(entryTime, mtime)
 
   return {
     id: header.id,

@@ -113,6 +113,17 @@ export interface PiCommand {
   }
 }
 
+/**
+ * A user message the active branch can be forked from.
+ *
+ * Pi forks *before* the message, so the new branch keeps everything that came
+ * earlier and the prompt itself comes back as text for the user to re-send.
+ */
+export interface ForkTarget {
+  entryId: string
+  text: string
+}
+
 export interface PiState {
   model?: ModelInfo
   thinkingLevel?: string

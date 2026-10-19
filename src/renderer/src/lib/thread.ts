@@ -1,4 +1,4 @@
-import type { AgentMessage, ContentBlock, PiEvent, Usage } from '@shared/types'
+import type { AgentMessage, ContentBlock, ForkTarget, PiEvent, Usage } from '@shared/types'
 
 export type AssistantBlock =
   | { type: 'text'; text: string }
@@ -497,4 +497,57 @@ function extractToolResult(value: unknown): string | undefined {
     return JSON.stringify(value, null, 2)
   }
   return String(value)
+}
+
+/** Collapse a prompt to a comparable shape. */
+function normalizePrompt(text: string): string {
+  return text.trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+/**
+ * Map the user messages in the thread to the entry ids Pi can fork from.
+ *
+ * Pi reports the forkable prompts of the active branch in order, so the
+ * pairing is positional. The text is used first, because a resumed session
+ * and a live stream can disagree about whitespace.
+ */
+export function pairForkTargets(
+  items: ThreadItem[],
+  targets: ForkTarget[]
+): Map<string, string> {
+  const paired = new Map<string, string>()
+  if (!targets.length) return paired
+
+  const byText = new Map<string, string[]>()
+  for (const target of targets) {
+    const key = normalizePrompt(target.text)
+    const bucket = byText.get(key)
+    if (bucket) bucket.push(target.entryId)
+    else byText.set(key, [target.entryId])
+  }
+
+  const users = items.filter((item): item is UserItem => item.kind === 'user')
+  const used = new Set<string>()
+
+  for (const user of users) {
+    const bucket = byText.get(normalizePrompt(user.text))
+    const entryId = bucket?.shift()
+    if (!entryId) continue
+    paired.set(user.id, entryId)
+    used.add(entryId)
+  }
+
+  // A prompt with no text — an image-only message — still lines up by
+  // position within the branch.
+  const leftover = targets.filter((target) => !used.has(target.entryId))
+  let index = 0
+  for (const user of users) {
+    if (paired.has(user.id)) continue
+    const target = leftover[index]
+    index += 1
+    if (!target) break
+    paired.set(user.id, target.entryId)
+  }
+
+  return paired
 }

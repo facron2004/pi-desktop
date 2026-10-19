@@ -151,6 +151,24 @@ try {
       exported.success,
       exported.error ? `error: ${exported.error}` : JSON.stringify(exported.data ?? {})
     )
+
+    // Session branching: the app offers a "branch from here" button on every
+    // prompt, so the fork point has to be discoverable and usable.
+    const forkable = await request({ type: 'get_fork_messages' })
+    const targets = forkable.data?.messages ?? []
+    console.log('fork targets =', targets.length, 'first =', targets[0]?.entryId ?? 'none')
+
+    const tree = await request({ type: 'get_tree' })
+    const roots = tree.data?.tree ?? []
+    console.log('get_tree ok =', tree.success, 'roots =', roots.length, 'leaf =', tree.data?.leafId)
+
+    if (targets.length) {
+      const forked = await request({ type: 'fork', entryId: targets[targets.length - 1].entryId }, 30000)
+      console.log('fork ok =', forked.success, 'cancelled =', forked.data?.cancelled)
+      const after = await request({ type: 'get_state' })
+      console.log('forked session =', after.data?.sessionFile?.split(/[\\/]/).pop())
+      console.log('fork kept the earlier history:', after.data?.messageCount, 'messages')
+    }
   } else {
     console.log('export_html skipped: no populated session found')
   }

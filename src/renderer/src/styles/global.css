@@ -916,6 +916,12 @@
   transition: opacity 0.16s var(--ease), background 0.12s var(--ease), color 0.12s var(--ease);
 }
 
+/* Branching moves the conversation somewhere else, so it stays visible
+   instead of waiting for a hover that may never come. */
+.user-msg__actions .ghost-btn--branch {
+  opacity: 0.5;
+}
+
 .user-msg__bubble:hover .user-msg__actions .ghost-btn {
   opacity: 1;
 }

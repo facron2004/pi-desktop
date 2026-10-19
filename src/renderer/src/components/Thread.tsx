@@ -4,6 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../lib/thread'
 import { formatClock, formatCost, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
+import { pairForkTargets } from '../lib/thread'
 import { SearchContext } from '../lib/search-context'
 import { AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard } from './ToolCard'
@@ -93,6 +94,9 @@ function useCopy() {
 export function Thread() {
   const items = useAppStore((state) => state.items)
   const isStreaming = useAppStore((state) => state.isStreaming)
+  const forkTargets = useAppStore((state) => state.forkTargets)
+  const forkFrom = useAppStore((state) => state.forkFrom)
+  const forking = useAppStore((state) => state.forking)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   const [atBottom, setAtBottom] = useState(true)
@@ -106,6 +110,7 @@ export function Thread() {
   const turns = useMemo(() => buildTurns(items), [items])
   const chunks = useMemo(() => searchableChunks(turns), [turns])
   const hits: SearchHit[] = useMemo(() => findMatches(chunks, query), [chunks, query])
+  const forkByUserId = useMemo(() => pairForkTargets(items, forkTargets), [items, forkTargets])
 
   useLayoutEffect(() => {
     const node = scrollRef.current
@@ -326,7 +331,16 @@ export function Thread() {
 
           return (
             <section className="turn" key={turn.id} data-turn={turn.id}>
-              {turn.user ? <UserMessage item={turn.user} onCopy={copy} copied={copied} /> : null}
+              {turn.user ? (
+                <UserMessage
+                  item={turn.user}
+                  onCopy={copy}
+                  copied={copied}
+                  forkEntryId={forkByUserId.get(turn.user.id)}
+                  onFork={forkFrom}
+                  forking={forking}
+                />
+              ) : null}
 
               {turn.assistants.length > 0 || turn.notices.length > 0 || turn.bash.length > 0 ? (
                 <div className="assistant">

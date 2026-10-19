@@ -87,13 +87,18 @@ export function Composer() {
     })
   }, [composerText, clearComposerText])
 
-  // A tool card can hand a command or a path back to the composer.
+  // A tool card can hand a command or a path back to the composer, and a
+  // branch puts the original prompt back so it can be tweaked and sent again.
   const insertSeq = useRef(0)
   useEffect(() => {
     if (!composerInsert || composerInsert.seq === insertSeq.current) return
     insertSeq.current = composerInsert.seq
     const addition = composerInsert.text
-    setText((current) => (current.trim() ? `${current.trimEnd()}\n${addition}` : addition))
+    const replace = composerInsert.mode === 'replace'
+    setText((current) => {
+      if (replace) return addition
+      return current.trim() ? `${current.trimEnd()}\n${addition}` : addition
+    })
     requestAnimationFrame(() => {
       const node = textareaRef.current
       if (!node) return
