@@ -7,6 +7,7 @@ import { Thread } from './components/Thread'
 import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
 import { SettingsDialog } from './components/SettingsDialog'
+import { ChangesPanel } from './components/ChangesPanel'
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
@@ -25,6 +26,7 @@ export default function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [changesOpen, setChangesOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
 
@@ -37,6 +39,14 @@ export default function App() {
     const platform = useAppStore.getState().info?.platform
     if (platform) root.dataset.platform = platform
   }, [info])
+
+  // Development aid: open the changes drawer for screenshots.
+  useEffect(() => {
+    const dev = (
+      window as unknown as { __piDesktopDev?: { openChanges?: boolean } }
+    ).__piDesktopDev
+    if (dev?.openChanges) setChangesOpen(true)
+  }, [])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -63,7 +73,11 @@ export default function App() {
   const title = piState?.sessionName || workspace?.name || 'Pi Desktop'
 
   return (
-    <div className="app" data-sidebar={sidebarOpen ? 'open' : 'collapsed'}>
+    <div
+      className="app"
+      data-sidebar={sidebarOpen ? 'open' : 'collapsed'}
+      data-drawer={changesOpen ? 'open' : 'closed'}
+    >
       {sidebarOpen ? <Sidebar onOpenSettings={() => setSettingsOpen(true)} /> : null}
 
       <main className="main">
@@ -126,7 +140,7 @@ export default function App() {
           </div>
         </div>
 
-        {status.phase === 'ready' ? <TopBar /> : null}
+        {status.phase === 'ready' ? <TopBar onOpenChanges={() => setChangesOpen(true)} /> : null}
 
         {items.length === 0 ? (
           <Welcome onPick={() => void pickWorkspace()} />
@@ -156,6 +170,7 @@ export default function App() {
       </main>
 
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
+      {changesOpen ? <ChangesPanel onClose={() => setChangesOpen(false)} /> : null}
     </div>
   )
 }

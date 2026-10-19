@@ -1,17 +1,22 @@
-import { ChevronDown, Cpu, Gauge, Minimize2, Sparkles } from 'lucide-react'
+import { useMemo } from 'react'
+import { ChevronDown, Cpu, FileDiff, Gauge, Minimize2, Sparkles } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
+import { collectChanges } from '../lib/changes'
 import { formatTokens } from '../lib/format'
 import { Popover } from './Popover'
 
-export function TopBar() {
+export function TopBar({ onOpenChanges }: { onOpenChanges: () => void }) {
   const models = useAppStore((state) => state.models)
   const piState = useAppStore((state) => state.piState)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
   const stats = useAppStore((state) => state.stats)
+  const items = useAppStore((state) => state.items)
   const setModel = useAppStore((state) => state.setModel)
   const setThinkingLevel = useAppStore((state) => state.setThinkingLevel)
   const compact = useAppStore((state) => state.compact)
   const ready = useAppStore((state) => state.status.phase === 'ready')
+
+  const changes = useMemo(() => collectChanges(items), [items])
 
   const currentModel = piState?.model
   const currentLevel = piState?.thinkingLevel
@@ -121,6 +126,15 @@ export function TopBar() {
       ) : null}
 
       <div style={{ flex: 1 }} />
+
+      {changes.length > 0 ? (
+        <button className="pill" onClick={onOpenChanges} title="Review the files Pi changed">
+          <FileDiff size={13} />
+          <span>
+            {changes.length} changed {changes.length === 1 ? 'file' : 'files'}
+          </span>
+        </button>
+      ) : null}
 
       <button className="btn btn--ghost btn--sm" onClick={() => void compact()} disabled={!ready}>
         <Minimize2 size={13} />

@@ -12,6 +12,14 @@ export function formatCost(value: number | undefined | null): string {
   return `$${value.toFixed(2)}`
 }
 
+export function formatClock(timestamp: number | undefined): string {
+  if (!timestamp) return ''
+  return new Date(timestamp).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
 export function formatRelativeTime(timestamp: number | undefined): string {
   if (!timestamp) return ''
   const delta = Date.now() - timestamp

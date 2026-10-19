@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Brain, Check, ChevronRight, Copy, CircleAlert, CircleCheck, Info, TriangleAlert } from 'lucide-react'
 import type { NoticeItem, UserItem } from '../lib/thread'
+import { formatClock } from '../lib/format'
 import { Markdown } from './Markdown'
 
 export function UserMessage({
@@ -24,6 +25,7 @@ export function UserMessage({
         ) : null}
         {item.text ? <Markdown>{item.text}</Markdown> : null}
         <div className="user-msg__actions">
+          <span className="user-msg__time">{formatClock(item.timestamp)}</span>
           <button
             className="ghost-btn"
             onClick={() => onCopy(item.id, item.text)}
@@ -38,8 +40,13 @@ export function UserMessage({
   )
 }
 
-export function AssistantText({ text }: { text: string }) {
-  return <Markdown>{text}</Markdown>
+export function AssistantText({ text, streaming }: { text: string; streaming?: boolean }) {
+  return (
+    <div className="assistant__text">
+      <Markdown>{text}</Markdown>
+      {streaming ? <span className="caret-blink" aria-hidden="true" /> : null}
+    </div>
+  )
 }
 
 export function ThinkingBlock({ text }: { text: string }) {

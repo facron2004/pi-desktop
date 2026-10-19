@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, Check, Copy, SquareTerminal } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../lib/thread'
-import { formatCost, formatTokens } from '../lib/format'
+import { formatClock, formatCost, formatTokens } from '../lib/format'
 import { AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard } from './ToolCard'
 
@@ -210,12 +210,23 @@ function AssistantBlocks({
   toolMap: Map<string, ToolItem>
   isLast: boolean
 }) {
+  const lastTextIndex = assistant.blocks.reduce(
+    (found, block, index) => (block.type === 'text' ? index : found),
+    -1
+  )
+
   return (
     <>
       {assistant.blocks.map((block, index) => {
         if (block.type === 'text') {
           if (!block.text.trim()) return null
-          return <AssistantText key={index} text={block.text} />
+          return (
+            <AssistantText
+              key={index}
+              text={block.text}
+              streaming={assistant.streaming && index === lastTextIndex}
+            />
+          )
         }
         if (block.type === 'thinking') {
           return <ThinkingBlock key={index} text={block.text} />
@@ -235,6 +246,7 @@ function AssistantBlocks({
           {assistant.stopReason === 'error' ? (
             <span style={{ color: 'var(--red)' }}>{assistant.error ?? 'error'}</span>
           ) : null}
+          <span>{formatClock(assistant.timestamp)}</span>
         </div>
       ) : null}
     </>
