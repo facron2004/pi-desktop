@@ -18,6 +18,7 @@ export function ExtensionDialog() {
   const [remaining, setRemaining] = useState<number | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement>(null)
   const optionsRef = useRef<HTMLDivElement>(null)
+  const declineRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (!request) return
@@ -26,6 +27,12 @@ export function ExtensionDialog() {
     requestAnimationFrame(() => {
       if (request.method === 'select') {
         optionsRef.current?.focus()
+        return
+      }
+      if (request.method === 'confirm') {
+        // A confirmation is often about something destructive, so the safe
+        // answer is the one that has the focus.
+        declineRef.current?.focus()
         return
       }
       inputRef.current?.focus()
@@ -174,7 +181,11 @@ export function ExtensionDialog() {
           </button>
           {request.method === 'confirm' ? (
             <>
-              <button className="btn" onClick={() => void respondUi({ confirmed: false })}>
+              <button
+                ref={declineRef}
+                className="btn"
+                onClick={() => void respondUi({ confirmed: false })}
+              >
                 No
               </button>
               <button className="btn btn--primary" onClick={submit}>
