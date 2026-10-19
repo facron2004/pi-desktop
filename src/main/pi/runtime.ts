@@ -110,7 +110,14 @@ export class PiRuntime extends EventEmitter {
   async stop(): Promise<void> {
     const client = this.client
     this.client = null
-    if (client) await client.stop()
+    if (client) {
+      // Pi can still emit records while it shuts down. Detach the forwarders
+      // first so late output never reaches a window that may be closing.
+      client.removeAllListeners('event')
+      client.removeAllListeners('stderr')
+      client.removeAllListeners('exit')
+      await client.stop()
+    }
     this.setStatus({ phase: 'stopped' })
   }
 

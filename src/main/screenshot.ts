@@ -63,3 +63,33 @@ export function scheduleCapture(context: CaptureContext): void {
 
   setTimeout(() => void waitForReady(), 1500)
 }
+
+/**
+ * Development helper: close the window while Pi is still working.
+ *
+ * This reproduces the case that used to crash the main process with
+ * "Object has been destroyed" when late protocol records reached a window
+ * that was already closing.
+ *
+ * Environment:
+ *   PI_DESKTOP_CLOSE_AFTER_MS  ms after start at which the window closes
+ */
+export function scheduleWindowClose(context: CaptureContext): void {
+  const closeAfter = Number(process.env.PI_DESKTOP_CLOSE_AFTER_MS ?? 0)
+  if (closeAfter <= 0) return
+  setTimeout(() => {
+    console.log('[pi-desktop] closing the window on purpose')
+    context.window.close()
+  }, closeAfter)
+
+  // Keep the process alive after the window is gone so Pi keeps streaming
+  // into a window that no longer exists. That is the case that used to
+  // throw "Object has been destroyed".
+  const exitAfter = Number(process.env.PI_DESKTOP_EXIT_AFTER_MS ?? 0)
+  if (exitAfter > 0) {
+    setTimeout(() => {
+      console.log('[pi-desktop] exiting after the close test')
+      app.exit(0)
+    }, exitAfter)
+  }
+}

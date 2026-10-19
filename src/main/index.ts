@@ -1,8 +1,9 @@
 import { app, BrowserWindow, shell } from 'electron'
+import { appendFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { bridgeRuntime, registerIpc } from './ipc'
 import { PiRuntime } from './pi/runtime'
-import { scheduleCapture } from './screenshot'
+import { scheduleCapture, scheduleWindowClose } from './screenshot'
 import { SettingsStore } from './settings'
 
 const isMac = process.platform === 'darwin'
@@ -41,6 +42,12 @@ function createWindow(): BrowserWindow {
 
   window.once('ready-to-show', () => window.show())
 
+  // The window can be closed while Pi is still shutting down; drop the
+  // reference so nothing tries to push events into a destroyed renderer.
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null
+  })
+
   // Surface renderer problems in the terminal during development.
   if (!app.isPackaged) {
     window.webContents.on('console-message', (_event, level, message, line, sourceId) => {
@@ -72,6 +79,26 @@ function createWindow(): BrowserWindow {
 }
 
 app.setAppUserModelId('dev.pi.desktop')
+
+/**
+ * A stray exception in the main process must not surface as a native error
+ * dialog that blocks the app. Log it to the user data folder instead so the
+ * problem is still diagnosable.
+ */
+process.on('uncaughtException', (error: Error) => {
+  console.error('[pi-desktop] uncaught exception:', error)
+  try {
+    const logDir = app.getPath('logs')
+    mkdirSync(logDir, { recursive: true })
+    appendFileSync(
+      path.join(logDir, 'pi-desktop.log'),
+      `${new Date().toISOString()}\n${error?.stack ?? String(error)}\n\n`,
+      'utf8'
+    )
+  } catch {
+    /* logging must never throw */
+  }
+})
 
 app.whenReady().then(() => {
   settings = new SettingsStore()
@@ -111,6 +138,7 @@ app.whenReady().then(() => {
   bridgeRuntime(context)
 
   scheduleCapture({ window: mainWindow, runtime })
+  scheduleWindowClose({ window: mainWindow, runtime })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -120,7 +148,8 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  if (!isMac) app.quit()
+  // The keep-alive flag is a development aid for the window-close test.
+  if (!isMac && process.env.PI_DESKTOP_KEEP_ALIVE !== '1') app.quit()
 })
 
 app.on('before-quit', async () => {

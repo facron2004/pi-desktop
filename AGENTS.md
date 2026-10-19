@@ -22,6 +22,11 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
    is not available in the renderer.
 5. **Events are the source of truth.** The UI is a projection of Pi's session events
    (`src/renderer/src/lib/thread.ts`). Do not duplicate state that Pi already owns.
+6. **Never touch a destroyed window.** Pi keeps emitting records for a moment after
+   it is asked to stop, and that can land after the window closed. Accessing
+   `window.webContents` on a closed window hangs or throws "Object has been
+   destroyed" and kills the main process. Always check `isDestroyed()` first —
+   use the `sendToWindow` helper in `src/main/ipc.ts` instead of sending directly.
 
 ## Layout
 

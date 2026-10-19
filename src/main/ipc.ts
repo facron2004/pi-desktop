@@ -120,16 +120,35 @@ export function registerIpc(context: IpcContext): void {
   })
 }
 
+/**
+ * Send to the renderer, tolerating a window that is already gone.
+ *
+ * Pi keeps producing output for a moment after it is asked to stop, and that
+ * can land after the window was closed. Calling `webContents.send` on a
+ * destroyed window throws "Object has been destroyed" and takes the whole
+ * main process down with an error dialog.
+ */
+function sendToWindow(window: BrowserWindow | null, channel: string, payload: unknown): void {
+  if (!window || window.isDestroyed()) return
+  const contents = window.webContents
+  if (!contents || contents.isDestroyed()) return
+  try {
+    contents.send(channel, payload)
+  } catch (error) {
+    console.error(`[pi-desktop] could not deliver "${channel}":`, error)
+  }
+}
+
 /** Forward runtime traffic to the renderer window. */
 export function bridgeRuntime(context: IpcContext): void {
   const { runtime, getWindow } = context
   runtime.on('event', (event: PiEvent) => {
-    getWindow()?.webContents.send('runtime:event', event)
+    sendToWindow(getWindow(), 'runtime:event', event)
   })
   runtime.on('status', (status: RuntimeStatus) => {
-    getWindow()?.webContents.send('runtime:status', status)
+    sendToWindow(getWindow(), 'runtime:status', status)
   })
   runtime.on('stderr', (line: string) => {
-    getWindow()?.webContents.send('runtime:stderr', line)
+    sendToWindow(getWindow(), 'runtime:stderr', line)
   })
 }
