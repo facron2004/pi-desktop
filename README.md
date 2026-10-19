@@ -20,7 +20,8 @@ Claude Desktop.
   as a line diff, so you can see exactly what changed. Long stretches of untouched
   lines collapse into a single row you can open, a run of the same call folds into one
   card, and a command or a path can be handed back to the composer. The file a card
-  read or wrote is shown as highlighted code with line numbers.
+  read or wrote is shown as highlighted code with line numbers, and the output of a
+  command or the result of a tool can be copied out with one click.
 - **Code blocks that answer back.** A snippet gets a header with its language, a copy
   button and an "Ask" button that drops the snippet into the composer, ready for a
   question about it.

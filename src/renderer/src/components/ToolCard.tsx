@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
 import {
+  Check,
   ChevronRight,
   CircleAlert,
+  Copy,
   CornerDownLeft,
   FilePlus,
   FileSearch,
@@ -34,6 +36,38 @@ export const TOOL_ICONS: Record<ToolTone | 'error', typeof FileText> = {
 
 /** Results longer than this are collapsed behind a "show more" control. */
 const RESULT_PREVIEW = 1200
+
+/**
+ * A button that copies a text and says so for a moment.
+ *
+ * The output of a command is often worth keeping, and copying it by hand
+ * out of a long log is a nuisance.
+ */
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false)
+  const showToast = useAppStore((state) => state.showToast)
+  if (!text) return null
+  return (
+    <button
+      className="tool__reuse-icon"
+      title={label}
+      aria-label={label}
+      onClick={() => {
+        void navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            setCopied(true)
+            window.setTimeout(() => setCopied(false), 1600)
+          })
+          .catch(() => {
+            showToast('The clipboard is not available', 'error')
+          })
+      }}
+    >
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+    </button>
+  )
+}
 
 /**
  * A command Pi ran itself, rather than through a tool call.
@@ -69,6 +103,7 @@ export function BashCard({ item }: { item: BashItem }) {
             <CornerDownLeft size={12} />
           </button>
         ) : null}
+        <CopyButton text={item.output} label="Copy the output" />
         <button
           className="tool__caret"
           onClick={() => setOpen((value) => !value)}
@@ -192,6 +227,8 @@ export function ToolCard({ item }: { item: ToolItem }) {
             <CornerDownLeft size={12} />
           </button>
         ) : null}
+
+        <CopyButton text={result} label="Copy the result" />
 
         <button
           className="tool__caret"
