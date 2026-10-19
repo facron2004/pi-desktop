@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { CopyPlus, FileDown, Keyboard, PanelLeft, Pencil, RefreshCw, X } from 'lucide-react'
+import type { InspectorRequest } from '@shared/types'
 import { useAppStore } from './store/useAppStore'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
@@ -39,6 +40,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [changesOpen, setChangesOpen] = useState(false)
   const [inspectorTab, setInspectorTab] = useState<'changes' | 'files'>('changes')
+  const [inspectorFile, setInspectorFile] = useState<{ path: string; line?: number } | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
   const exportedRef = useRef(false)
@@ -132,10 +134,11 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown)
     const onShowShortcuts = () => setShortcutsOpen(true)
     window.addEventListener('pi:show-shortcuts', onShowShortcuts)
-    // The command palette can ask for the inspector.
+    // The command palette and the thread can ask for the inspector.
     const onOpenInspector = (event: Event) => {
-      const tab = (event as CustomEvent<string>).detail
-      setInspectorTab(tab === 'files' ? 'files' : 'changes')
+      const request = (event as CustomEvent<InspectorRequest>).detail
+      setInspectorTab(request?.tab === 'files' ? 'files' : 'changes')
+      if (request?.file) setInspectorFile({ path: request.file, line: request.line })
       setChangesOpen(true)
     }
     window.addEventListener('pi:open-inspector', onOpenInspector)
@@ -252,10 +255,12 @@ export default function App() {
           <TopBar
             onOpenChanges={() => {
               setInspectorTab('changes')
+              setInspectorFile(null)
               setChangesOpen(true)
             }}
             onOpenFiles={() => {
               setInspectorTab('files')
+              setInspectorFile(null)
               setChangesOpen(true)
             }}
           />
@@ -325,6 +330,8 @@ export default function App() {
       {changesOpen ? (
         <InspectorPanel
           initialTab={inspectorTab}
+          file={inspectorFile}
+          onOpenFile={setInspectorFile}
           onClose={() => setChangesOpen(false)}
           onResize={setDraggedWidth}
           onResizeEnd={(width) => {

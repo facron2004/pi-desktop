@@ -127,6 +127,14 @@ export interface ForkTarget {
   text: string
 }
 
+/** What the app shell is asked to show in the inspector. */
+export interface InspectorRequest {
+  tab?: 'changes' | 'files'
+  /** A file to open, optionally at a line. */
+  file?: string
+  line?: number
+}
+
 export interface PiState {
   model?: ModelInfo
   thinkingLevel?: string

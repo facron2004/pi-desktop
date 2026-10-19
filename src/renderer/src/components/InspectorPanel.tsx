@@ -16,11 +16,16 @@ const MAX_WIDTH = 920
 export function InspectorPanel({
   onClose,
   initialTab = 'changes',
+  file,
+  onOpenFile,
   onResize,
   onResizeEnd
 }: {
   onClose: () => void
   initialTab?: Tab
+  /** The file to show, when the panel was asked for a specific one. */
+  file: { path: string; line?: number } | null
+  onOpenFile: (file: { path: string; line?: number } | null) => void
   onResize?: (width: number) => void
   onResizeEnd?: (width: number) => void
 }) {
@@ -32,11 +37,14 @@ export function InspectorPanel({
   const changes = useMemo(() => collectChanges(items), [items])
 
   const [tab, setTab] = useState<Tab>(initialTab)
-  const [openFile, setOpenFile] = useState<string | null>(null)
+
+  // The open file lives in the app shell, so a diff in the thread can send
+  // the reader to a line of a file.
+  const openFile = file
+  const setOpenFile = onOpenFile
 
   useEffect(() => {
     setTab(initialTab)
-    setOpenFile(null)
   }, [initialTab])
 
   // Development aid: open a file straight away so screenshots can show the
@@ -47,8 +55,8 @@ export function InspectorPanel({
     if (!dev?.openFile) return
     setTab('files')
     const root = useAppStore.getState().workspace?.path
-    setOpenFile(root ? resolveAgainst(root, dev.openFile) : dev.openFile)
-  }, [])
+    setOpenFile({ path: root ? resolveAgainst(root, dev.openFile) : dev.openFile })
+  }, [setOpenFile])
 
   // Drag the left edge to make the panel wider or narrower.
   const widthRef = useRef(0)
@@ -149,11 +157,11 @@ export function InspectorPanel({
               Back
             </button>
           </div>
-          <FileViewer file={openFile} root={workspace?.path} />
+          <FileViewer file={openFile.path} root={workspace?.path} line={openFile.line} />
         </div>
       ) : tab === 'files' ? (
         <div className="drawer__body drawer__body--flush">
-          <FileTree root={workspace?.path ?? ''} onOpen={setOpenFile} />
+          <FileTree root={workspace?.path ?? ''} onOpen={(path) => setOpenFile({ path })} />
         </div>
       ) : changes.length === 0 ? (
         <div className="drawer__empty">
@@ -177,9 +185,13 @@ export function InspectorPanel({
                   <span className="change__icon" data-kind={change.kind}>
                     {change.kind === 'edit' ? <Pencil size={12} /> : <FilePlus size={12} />}
                   </span>
-                  <span className="change__path" title={change.path}>
+                  <button
+                    className="change__path"
+                    title={`Open ${change.path}`}
+                    onClick={() => setOpenFile({ path: change.path })}
+                  >
                     {relativePath(workspace?.path ?? '', change.path)}
-                  </span>
+                  </button>
                   {stats.added || stats.removed ? (
                     <span className="change__stats">
                       {stats.added ? <span data-kind="add">+{stats.added}</span> : null}
@@ -192,7 +204,11 @@ export function InspectorPanel({
                 </header>
 
                 {change.diffs.length > 0 ? (
-                  <DiffView diffs={change.diffs} mode={diffSplit ? 'split' : 'unified'} />
+                  <DiffView
+                    diffs={change.diffs}
+                    mode={diffSplit ? 'split' : 'unified'}
+                    onOpenLine={(line) => setOpenFile({ path: change.path, line })}
+                  />
                 ) : null}
 
                 {!change.diffs.length && change.content ? (

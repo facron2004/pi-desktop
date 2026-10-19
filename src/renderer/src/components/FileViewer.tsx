@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, Copy, ExternalLink, File as FileIcon } from 'lucide-react'
 import type { FileContent } from '@shared/types'
 import { highlightCode } from '../lib/highlight'
@@ -9,14 +9,17 @@ import { useIsDark } from '../lib/theme'
 interface FileViewerProps {
   file: string
   root?: string
+  /** Scroll to this line and mark it, when the file was opened from a diff. */
+  line?: number
 }
 
-export function FileViewer({ file, root }: FileViewerProps) {
+export function FileViewer({ file, root, line }: FileViewerProps) {
   const [content, setContent] = useState<FileContent | null>(null)
   const [html, setHtml] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState(false)
   const isDark = useIsDark()
+  const codeRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -47,6 +50,20 @@ export function FileViewer({ file, root }: FileViewerProps) {
       cancelled = true
     }
   }, [file, isDark])
+
+  // Bring the line the reader came from into view and mark it.
+  useEffect(() => {
+    if (!line || !html) return
+    const host = codeRef.current
+    if (!host) return
+    const lines = host.querySelectorAll<HTMLElement>('.line')
+    const target = lines[line - 1]
+    if (!target) return
+    target.scrollIntoView({ block: 'center' })
+    target.setAttribute('data-marked', 'true')
+    const timer = window.setTimeout(() => target.removeAttribute('data-marked'), 2400)
+    return () => window.clearTimeout(timer)
+  }, [html, line, content])
 
   const copy = async () => {
     if (!content) return
@@ -83,7 +100,8 @@ export function FileViewer({ file, root }: FileViewerProps) {
           </span>
         </span>
         {content.truncated ? <span className="change__badge">truncated</span> : null}
-        <button className="ghost-btn" onClick={() => void copy()}>
+        {line ? <span className="change__badge">line {line}</span> : null}
+        <button className="ghost-btn" onClick={() => void copy()} title="Copy the file">
           {copied ? <Check size={12} /> : <Copy size={12} />}
         </button>
         <button
@@ -96,9 +114,29 @@ export function FileViewer({ file, root }: FileViewerProps) {
       </div>
 
       {html ? (
-        <div className="viewer__code shiki-host" dangerouslySetInnerHTML={{ __html: html }} />
+        <div
+          className="viewer__code shiki-host"
+          ref={(node) => {
+            codeRef.current = node
+          }}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
       ) : (
-        <pre className="tool__pre viewer__code">{content.content}</pre>
+        // Without a grammar the file still needs line numbers, so the lines
+        // are wrapped by hand.
+        <pre
+          className="tool__pre viewer__code viewer__code--plain"
+          ref={(node) => {
+            codeRef.current = node
+          }}
+        >
+          {content.content.split('\n').map((text, index) => (
+            <span className="line" key={index}>
+              {text}
+              {'\n'}
+            </span>
+          ))}
+        </pre>
       )}
     </div>
   )

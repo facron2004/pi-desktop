@@ -24,8 +24,9 @@ Claude Desktop.
 - **Project inspector.** A docked panel with two tabs: **Changes** lists every file the
   agent edited or created in this session, with the line counts of each change, and
   **Files** is a project tree you can search by name and read in place, with syntax
-  highlighting. Diffs can be shown unified or side by side, and the panel can be dragged
-  to any width.
+  highlighting and line numbers. Diffs can be shown unified or side by side, and the
+  panel can be dragged to any width. A line number in a diff opens the file at that
+  line, so a change can be followed into the code around it.
 - **Extension dialogs.** When a Pi extension asks you a question — pick one, confirm,
   type a value, edit a block of text — the desktop app shows the dialog and answers Pi
   for you. Extensions can also push status lines, widgets and notifications.

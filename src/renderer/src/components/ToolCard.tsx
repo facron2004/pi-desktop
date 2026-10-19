@@ -10,6 +10,7 @@ import {
   SquareTerminal,
   Wrench
 } from 'lucide-react'
+import type { InspectorRequest } from '@shared/types'
 import type { BashItem, ToolItem } from '../lib/thread'
 import { describeTool, editPairs, type ToolTone } from '../lib/tools'
 import { formatDuration } from '../lib/format'
@@ -120,6 +121,18 @@ export function ToolCard({ item }: { item: ToolItem }) {
           }
         : null
 
+  // A line of the diff leads to that line of the file, so a change can be
+  // followed into the code around it.
+  const editedFile = item.toolName === 'edit' ? String(item.args?.path ?? '') : ''
+  const openLine = (line: number) => {
+    if (!editedFile) return
+    window.dispatchEvent(
+      new CustomEvent<InspectorRequest>('pi:open-inspector', {
+        detail: { tab: 'files', file: editedFile, line }
+      })
+    )
+  }
+
   return (
     <div className="tool" data-tone={tone}>
       <div className="tool__head">
@@ -161,7 +174,13 @@ export function ToolCard({ item }: { item: ToolItem }) {
 
       {open ? (
         <div className="tool__body">
-          {diffs.length > 0 ? <DiffView diffs={diffs} mode={diffSplit ? 'split' : 'unified'} /> : null}
+          {diffs.length > 0 ? (
+            <DiffView
+              diffs={diffs}
+              mode={diffSplit ? 'split' : 'unified'}
+              onOpenLine={editedFile ? openLine : undefined}
+            />
+          ) : null}
 
           {item.toolName === 'write' ? (
             <pre className="tool__pre">{String(item.args?.content ?? '')}</pre>

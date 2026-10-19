@@ -1055,12 +1055,15 @@
 
 .user-msg__time {
   margin-right: auto;
+  flex: 0 0 auto;
   font-size: 10.5px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
 
 .user-msg__actions .ghost-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
   opacity: 0;
   transition: opacity 0.16s var(--ease), background 0.12s var(--ease), color 0.12s var(--ease);
 }
@@ -1497,6 +1500,22 @@
   color: var(--text-faint);
   user-select: none;
   border-right: 1px solid var(--border-soft);
+}
+
+/* A line number that leads to the file it belongs to. */
+
+.diff__gutter--link {
+  border: 0;
+  border-right: 1px solid var(--border-soft);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  transition: color 0.12s var(--ease), background 0.12s var(--ease);
+}
+
+.diff__gutter--link:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .diff__code {
@@ -3119,6 +3138,43 @@ kbd {
   line-height: 1.6;
 }
 
+/* Line numbers in the file viewer */
+
+.viewer__code pre.shiki code,
+.viewer__code--plain {
+  counter-reset: viewer-line;
+}
+
+.viewer__code .line::before {
+  counter-increment: viewer-line;
+  content: counter(viewer-line);
+  display: inline-block;
+  position: sticky;
+  left: 0;
+  width: 2.4em;
+  margin-right: 1em;
+  padding-right: 0.9em;
+  text-align: right;
+  color: var(--text-faint);
+  background: var(--bg-deep);
+  border-right: 1px solid var(--border-soft);
+  user-select: none;
+}
+
+.viewer__code .line[data-marked='true'] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.viewer__code--plain {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--bg-deep);
+  border: none;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
 .kv {
   display: grid;
   grid-template-columns: 140px 1fr;
@@ -3262,12 +3318,23 @@ body.is-resizing {
 .change__path {
   flex: 1 1 auto;
   min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--text);
+  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.change__path:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .change__badge {

@@ -6,6 +6,7 @@ import type {
   ExtensionUiRequest,
   ExtensionUiResponse,
   ForkTarget,
+  InspectorRequest,
   ModelInfo,
   PiCommand,
   PiEvent,
@@ -543,7 +544,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       case 'changes':
       case 'files':
         // The inspector lives in the app shell, so it is asked for directly.
-        window.dispatchEvent(new CustomEvent('pi:open-inspector', { detail: name }))
+        window.dispatchEvent(
+          new CustomEvent<InspectorRequest>('pi:open-inspector', { detail: { tab: name } })
+        )
         break
       case 'new':
         await get().newChat()

@@ -99,7 +99,16 @@ function GapButton({
   )
 }
 
-export function DiffView({ diffs, mode = 'unified' }: { diffs: DiffBlock[]; mode?: DiffMode }) {
+export function DiffView({
+  diffs,
+  mode = 'unified',
+  onOpenLine
+}: {
+  diffs: DiffBlock[]
+  mode?: DiffMode
+  /** Open the file this diff belongs to at a given line. */
+  onOpenLine?: (line: number) => void
+}) {
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
 
   const folded = useMemo(
@@ -118,6 +127,23 @@ export function DiffView({ diffs, mode = 'unified' }: { diffs: DiffBlock[]; mode
       return next
     })
 
+  // A line number becomes a link to the file itself, so a diff can be
+  // followed into the code around it.
+  const gutter = (line: number | null | undefined) => {
+    if (!onOpenLine || line === null || line === undefined) {
+      return <span className="diff__gutter">{line ?? ''}</span>
+    }
+    return (
+      <button
+        className="diff__gutter diff__gutter--link"
+        onClick={() => onOpenLine(line)}
+        title={`Open the file at line ${line}`}
+      >
+        {line}
+      </button>
+    )
+  }
+
   if (mode === 'split') {
     return (
       <div className="diff diff--split">
@@ -135,13 +161,13 @@ export function DiffView({ diffs, mode = 'unified' }: { diffs: DiffBlock[]; mode
               ) : (
                 <div className="diff__split" key={rowIndex}>
                   <div className="diff__side" data-kind={row.left?.kind ?? 'empty'}>
-                    <span className="diff__gutter">{row.left?.line ?? ''}</span>
+                    {gutter(row.left?.line)}
                     <span className="diff__code">
                       {row.left ? (row.left.kind === 'del' ? '- ' : '  ') + row.left.text : ''}
                     </span>
                   </div>
                   <div className="diff__side" data-kind={row.right?.kind ?? 'empty'}>
-                    <span className="diff__gutter">{row.right?.line ?? ''}</span>
+                    {gutter(row.right?.line)}
                     <span className="diff__code">
                       {row.right ? (row.right.kind === 'add' ? '+ ' : '  ') + row.right.text : ''}
                     </span>
@@ -170,8 +196,8 @@ export function DiffView({ diffs, mode = 'unified' }: { diffs: DiffBlock[]; mode
               </div>
             ) : (
               <div className="diff__row" data-kind={row.kind} key={rowIndex}>
-                <span className="diff__gutter">{row.oldLine ?? ''}</span>
-                <span className="diff__gutter">{row.newLine ?? ''}</span>
+                {gutter(row.oldLine)}
+                {gutter(row.newLine)}
                 <span className="diff__code">
                   {row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '}
                   {row.text}
