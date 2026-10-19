@@ -192,9 +192,13 @@ export function ToolCard({ item }: { item: ToolItem }) {
             <CodeSnippet code={String(item.args?.content ?? '')} language={language} />
           ) : null}
 
-          {item.toolName === 'bash' || item.toolName === 'powershell' ? (
-            <pre className="tool__pre">{String(item.args?.command ?? '')}</pre>
-          ) : null}
+          {item.toolName === 'bash' || item.toolName === 'powershell'
+            ? // The header already shows the first line of the command, so
+              // only a command that runs over several lines is repeated.
+              String(item.args?.command ?? '').includes('\n') && (
+                <pre className="tool__pre">{String(item.args?.command ?? '')}</pre>
+              )
+            : null}
 
           {visibleResult ? (
             item.toolName === 'read' && item.status !== 'error' ? (
