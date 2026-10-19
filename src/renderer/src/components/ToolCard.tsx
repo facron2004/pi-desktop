@@ -17,7 +17,7 @@ import { relativePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { buildDiff, DiffView } from './DiffView'
 
-const ICONS: Record<ToolTone | 'error', typeof FileText> = {
+export const TOOL_ICONS: Record<ToolTone | 'error', typeof FileText> = {
   read: FileText,
   edit: Pencil,
   exec: SquareTerminal,
@@ -39,7 +39,7 @@ export function ToolCard({ item }: { item: ToolItem }) {
   const workspace = useAppStore((state) => state.workspace)
   const descriptor = describeTool(item.toolName)
   const tone = item.status === 'error' ? 'error' : descriptor.tone
-  const Icon = ICONS[tone]
+  const Icon = TOOL_ICONS[tone]
 
   const diffs = useMemo(() => {
     if (item.toolName !== 'edit') return []

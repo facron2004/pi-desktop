@@ -278,6 +278,11 @@ export interface AppInfo {
   platform: string
   pi: PiLaunchInfo
   sessionRoot: string
+  /**
+   * A theme forced for this run by a development flag. It only changes what
+   * is rendered; the stored setting stays as the user left it.
+   */
+  forcedTheme?: 'light' | 'dark' | 'system'
 }
 
 export interface AuthStatus {

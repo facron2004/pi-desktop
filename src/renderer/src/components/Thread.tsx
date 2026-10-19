@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, Check, Copy, Search, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../lib/thread'
@@ -8,6 +8,7 @@ import { pairForkTargets } from '../lib/thread'
 import { SearchContext } from '../lib/search-context'
 import { AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard } from './ToolCard'
+import { ToolGroup } from './ToolGroup'
 
 interface Turn {
   id: string
@@ -442,23 +443,7 @@ function AssistantBlocks({
 
   return (
     <>
-      {assistant.blocks.map((block, index) => {
-        if (block.type === 'text') {
-          if (!block.text.trim()) return null
-          return (
-            <AssistantText
-              key={index}
-              text={block.text}
-              streaming={assistant.streaming && index === lastTextIndex}
-            />
-          )
-        }
-        if (block.type === 'thinking') {
-          return <ThinkingBlock key={index} text={block.text} />
-        }
-        const tool = toolMap.get(block.id)
-        return tool ? <ToolCard key={index} item={tool} /> : null
-      })}
+      {renderBlocks(assistant, toolMap, lastTextIndex)}
       {isLast && !assistant.streaming && (assistant.usage || assistant.model) ? (
         <div className="assistant__footer">
           {assistant.model ? <span>{assistant.model}</span> : null}
@@ -476,4 +461,68 @@ function AssistantBlocks({
       ) : null}
     </>
   )
+}
+
+/**
+ * Render the blocks of one assistant message.
+ *
+ * Calls of the same tool that follow each other are folded into a single
+ * card, so a run of reads reads as one line instead of a dozen.
+ */
+function renderBlocks(
+  assistant: AssistantItem,
+  toolMap: Map<string, ToolItem>,
+  lastTextIndex: number
+): ReactNode[] {
+  const blocks = assistant.blocks
+  const nodes: ReactNode[] = []
+  let index = 0
+
+  while (index < blocks.length) {
+    const block = blocks[index]
+    if (block.type === 'text') {
+      if (block.text.trim()) {
+        nodes.push(
+          <AssistantText
+            key={index}
+            text={block.text}
+            streaming={assistant.streaming && index === lastTextIndex}
+          />
+        )
+      }
+      index += 1
+      continue
+    }
+    if (block.type === 'thinking') {
+      nodes.push(<ThinkingBlock key={index} text={block.text} />)
+      index += 1
+      continue
+    }
+
+    const tool = toolMap.get(block.id)
+    if (!tool) {
+      index += 1
+      continue
+    }
+
+    const run = [tool]
+    let next = index + 1
+    while (next < blocks.length) {
+      const candidate = blocks[next]
+      if (candidate.type !== 'toolCall') break
+      const item = toolMap.get(candidate.id)
+      if (!item || item.toolName !== tool.toolName) break
+      run.push(item)
+      next += 1
+    }
+
+    if (run.length > 1) {
+      nodes.push(<ToolGroup key={`group-${index}`} items={run} />)
+    } else {
+      nodes.push(<ToolCard key={index} item={tool} />)
+    }
+    index = next
+  }
+
+  return nodes
 }

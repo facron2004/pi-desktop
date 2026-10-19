@@ -2,6 +2,8 @@ export type ToolTone = 'read' | 'edit' | 'exec' | 'write' | 'search' | 'generic'
 
 export interface ToolDescriptor {
   label: string
+  /** The name of the tool when several of them run in a row. */
+  plural: string
   tone: ToolTone
   /** One-line summary shown next to the tool name. */
   summary(args: Record<string, unknown>): string
@@ -22,16 +24,19 @@ function shortenPath(value: string, max = 68): string {
 const DESCRIPTORS: Record<string, ToolDescriptor> = {
   read: {
     label: 'Read',
+    plural: 'reads',
     tone: 'read',
     summary: (args) => shortenPath(str(args.path))
   },
   write: {
     label: 'Write',
+    plural: 'writes',
     tone: 'write',
     summary: (args) => shortenPath(str(args.path))
   },
   edit: {
     label: 'Edit',
+    plural: 'edits',
     tone: 'edit',
     summary: (args) => {
       const edits = Array.isArray(args.edits) ? args.edits : []
@@ -42,16 +47,19 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   },
   bash: {
     label: 'Bash',
+    plural: 'bash commands',
     tone: 'exec',
     summary: (args) => str(args.command).split('\n')[0] ?? ''
   },
   powershell: {
     label: 'PowerShell',
+    plural: 'PowerShell commands',
     tone: 'exec',
     summary: (args) => str(args.command).split('\n')[0] ?? ''
   },
   grep: {
     label: 'Grep',
+    plural: 'searches',
     tone: 'search',
     summary: (args) => {
       const pattern = str(args.pattern)
@@ -61,6 +69,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   },
   find: {
     label: 'Find',
+    plural: 'searches',
     tone: 'search',
     summary: (args) => {
       const pattern = str(args.pattern)
@@ -70,6 +79,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
   },
   ls: {
     label: 'List',
+    plural: 'listings',
     tone: 'read',
     summary: (args) => shortenPath(str(args.path) || '.')
   }
@@ -77,6 +87,7 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
 
 const GENERIC: ToolDescriptor = {
   label: 'Tool',
+  plural: 'tool calls',
   tone: 'generic',
   summary: (args) => {
     const keys = Object.keys(args ?? {})

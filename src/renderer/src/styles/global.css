@@ -1433,6 +1433,18 @@
   overflow: auto;
 }
 
+.tool__body--group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-deep);
+}
+
+.tool__body--group .tool {
+  background: var(--bg-panel);
+}
+
 .tool__pre {
   margin: 0;
   padding: 11px 12px;

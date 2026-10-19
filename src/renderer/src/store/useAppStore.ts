@@ -134,7 +134,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       window.pi.settings.get()
     ])
     set({ info, settings })
-    applyAppearance(settings)
+    applyAppearance(settings, info.forcedTheme)
 
     window.pi.runtime.onEvent((event) => handleEvent(set, get, event))
     window.pi.runtime.onStatus((status) => {
@@ -160,7 +160,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       activeWorkspaceId: workspace.id
     })
     set({ settings })
-    applyAppearance(settings)
+    applyAppearance(settings, get().info?.forcedTheme)
     await get().openWorkspace(workspace)
   },
 
@@ -205,7 +205,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async removeWorkspace(id) {
     const settings = await window.pi.workspaces.remove(id)
     set({ settings })
-    applyAppearance(settings)
+    applyAppearance(settings, get().info?.forcedTheme)
     const next = settings.workspaces[0]
     if (next) {
       await get().openWorkspace(next)
@@ -450,7 +450,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async updateSettings(patch) {
     const settings = await window.pi.settings.patch(patch)
     set({ settings })
-    applyAppearance(settings)
+    applyAppearance(settings, get().info?.forcedTheme)
   },
 
   dismissError() {
@@ -553,10 +553,16 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function applyAppearance(settings: AppSettings): void {
+function applyAppearance(
+  settings: AppSettings,
+  forcedTheme?: 'light' | 'dark' | 'system'
+): void {
   const root = document.documentElement
   const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-  const dark = settings.theme === 'dark' || (settings.theme === 'system' && prefersDark)
+  // A development flag can force the theme for one run. The stored setting
+  // stays untouched, so the app goes back to the user's theme afterwards.
+  const theme = forcedTheme ?? settings.theme
+  const dark = theme === 'dark' || (theme === 'system' && prefersDark)
   root.dataset.theme = dark ? 'dark' : 'light'
   root.style.setProperty('--font-scale', String(settings.fontScale ?? 1))
   void window.pi.app.setTheme(dark ? 'dark' : 'light')

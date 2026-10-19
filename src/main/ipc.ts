@@ -118,6 +118,12 @@ function workspaceName(dir: string): string {
   return base || dir
 }
 
+/** The theme a development flag forces for this run, if any. */
+function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
+  const value = process.env.PI_DESKTOP_THEME
+  return value === 'light' || value === 'dark' || value === 'system' ? value : undefined
+}
+
 export function registerIpc(context: IpcContext): void {
   const { runtime, settings, getWindow } = context
 
@@ -137,7 +143,8 @@ export function registerIpc(context: IpcContext): void {
         display: launch.display,
         version
       },
-      sessionRoot: resolveSessionRoot()
+      sessionRoot: resolveSessionRoot(),
+      forcedTheme: forcedTheme()
     }
   })
 

@@ -138,11 +138,6 @@ app.whenReady().then(() => {
     settings.addWorkspace(workspace)
   }
 
-  const forcedTheme = process.env.PI_DESKTOP_THEME
-  if (forcedTheme === 'light' || forcedTheme === 'dark' || forcedTheme === 'system') {
-    settings.patch({ theme: forcedTheme })
-  }
-
   runtime = new PiRuntime({
     customPiPath: settings.get().piPath,
     trustProject: settings.get().trustProject
