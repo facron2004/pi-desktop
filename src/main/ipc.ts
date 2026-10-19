@@ -57,7 +57,8 @@ const SEARCH_SKIP_DIRS = new Set([
   'venv',
   '__pycache__',
   '.idea',
-  '.vscode'
+  '.vscode',
+  'target'
 ])
 /**
  * Directories the file tree does not walk into.
@@ -283,6 +284,7 @@ export function registerIpc(context: IpcContext): void {
     if (!root || !needle) return []
     const ceiling = Math.min(Math.max(limit ?? MAX_SEARCH_RESULTS, 1), MAX_SEARCH_RESULTS)
     const results: FileEntry[] = []
+    const base = path.resolve(root)
 
     const walk = (dir: string, depth: number): void => {
       if (results.length >= ceiling || depth > MAX_SEARCH_DEPTH) return
@@ -294,7 +296,6 @@ export function registerIpc(context: IpcContext): void {
       }
       for (const entry of entries) {
         if (results.length >= ceiling) return
-        if (entry.name.startsWith('.')) continue
         const full = path.join(dir, entry.name)
         if (entry.isDirectory()) {
           if (SEARCH_SKIP_DIRS.has(entry.name)) continue
@@ -302,7 +303,10 @@ export function registerIpc(context: IpcContext): void {
           continue
         }
         if (!entry.isFile()) continue
-        if (!entry.name.toLowerCase().includes(needle)) continue
+        // The path is searched, not only the name, so "renderer" finds the
+        // files of the renderer and "readme" finds the README in a folder.
+        const relative = path.relative(base, full)
+        if (!relative.toLowerCase().includes(needle)) continue
         let size: number | undefined
         try {
           size = statSync(full).size
@@ -313,7 +317,9 @@ export function registerIpc(context: IpcContext): void {
       }
     }
 
-    walk(path.resolve(root), 0)
+    walk(base, 0)
+    // The walk follows the disk, which has no order of its own.
+    results.sort((a, b) => a.path.localeCompare(b.path))
     return results
   })
 
