@@ -172,7 +172,9 @@ export function Welcome({ onPick }: { onPick: () => void }) {
                   </span>
                   <span className="welcome__recent-meta">
                     {formatRelativeTime(session.updatedAt)}
-                    {session.messageCount ? ` · ${session.messageCount} msgs` : ''}
+                    {session.messageCount
+                      ? ` · ${session.messageCount} msg${session.messageCount === 1 ? '' : 's'}`
+                      : ''}
                   </span>
                 </button>
               ))}

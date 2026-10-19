@@ -24,6 +24,7 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
+import { transcriptOf } from '../lib/thread'
 
 /** One thing the user can do from the launcher. */
 export interface LauncherAction {
@@ -69,6 +70,8 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const models = useAppStore((state) => state.models)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
   const fontScale = useAppStore((state) => state.settings.fontScale ?? 1)
+  const items = useAppStore((state) => state.items)
+  const showToast = useAppStore((state) => state.showToast)
 
   // The theme that is on screen, which is what the reader sees — the setting
   // itself may still be "follow the system".
@@ -115,6 +118,25 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Conversation',
       icon: Copy,
       run: () => runAppCommand('copy')
+    },
+    {
+      id: 'copy-conversation',
+      title: 'Copy the whole conversation',
+      group: 'Conversation',
+      icon: Copy,
+      run: async () => {
+        const transcript = transcriptOf(items)
+        if (!transcript) {
+          showToast('There is nothing to copy yet', 'warning')
+          return
+        }
+        try {
+          await navigator.clipboard.writeText(transcript)
+          showToast('The conversation was copied')
+        } catch {
+          showToast('The clipboard is not available', 'error')
+        }
+      }
     },
     {
       id: 'export',

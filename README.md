@@ -73,7 +73,9 @@ Claude Desktop.
   `Ctrl+F` search the conversation, `Ctrl+1`…`Ctrl+9` switch project, `Ctrl+Shift+P`
   the palette, `Ctrl+P`/`Ctrl+T` the next model and reasoning level, `Alt+↑`/`Alt+↓` walk
   the turns, `↑` recalls earlier prompts, `Esc` stops a run. `Ctrl+/` lists every
-  shortcut. The app also follows the system's "reduce motion" setting.
+  shortcut. The conversations in the sidebar are reachable with the keyboard, and
+  everything that can be focused shows where the focus is. The app also follows the
+  system's "reduce motion" setting.
 
 ## How it talks to Pi
 

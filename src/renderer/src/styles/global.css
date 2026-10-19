@@ -3886,3 +3886,24 @@ body.is-resizing {
   font-size: 12px;
   color: var(--text);
 }
+
+/* ------------------------------------------------------------------ *
+ * Keyboard focus
+ * ------------------------------------------------------------------ */
+
+/* The keyboard has to leave a mark, or the focus is lost in the app. */
+button:focus-visible,
+[role='button']:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* A search field inside a frame marks the frame, not itself. */
+.palette__search:focus-within,
+.drawer__filter:focus-within {
+  border-color: var(--accent-line);
+}
+
+.launcher__search:focus-within {
+  border-bottom-color: var(--accent-line);
+}

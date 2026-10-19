@@ -524,6 +524,31 @@ export function lastAssistantText(items: ThreadItem[]): string {
 }
 
 /**
+ * The whole conversation as plain text.
+ *
+ * Only the messages are written down — the tool calls are noise for whoever
+ * reads the transcript.
+ */
+export function transcriptOf(items: ThreadItem[]): string {
+  const parts: string[] = []
+  for (const item of items) {
+    if (item.kind === 'user') {
+      if (!item.text.trim()) continue
+      parts.push(`## You\n\n${item.text.trim()}`)
+      continue
+    }
+    if (item.kind !== 'assistant') continue
+    const text = item.blocks
+      .filter((block): block is Extract<AssistantBlock, { type: 'text' }> => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n\n')
+      .trim()
+    if (text) parts.push(`## Pi\n\n${text}`)
+  }
+  return parts.join('\n\n')
+}
+
+/**
  * Map the user messages in the thread to the entry ids Pi can fork from.
  *
  * Pi reports the forkable prompts of the active branch in order, so the

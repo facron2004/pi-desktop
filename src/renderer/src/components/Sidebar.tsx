@@ -454,7 +454,16 @@ function SessionRow({
     <div
       className="session-item"
       data-active={active}
+      // The row holds its own buttons, so it cannot be one itself — but it
+      // still has to be reachable with the keyboard.
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect(session.file)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        onSelect(session.file)
+      }}
       title={session.name || session.preview || session.file}
     >
       <MessageSquare size={13} className="session-item__icon" />
@@ -488,7 +497,7 @@ function SessionRow({
               {project ? (
                 <span>· {project}</span>
               ) : session.messageCount ? (
-                <span>· {session.messageCount} msgs</span>
+                <span>· {session.messageCount} msg{session.messageCount === 1 ? '' : 's'}</span>
               ) : null}
             </span>
           </>
