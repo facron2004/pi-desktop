@@ -29,7 +29,8 @@ Claude Desktop.
   **Files** is a project tree you can search by name and read in place, with syntax
   highlighting and line numbers. Diffs can be shown unified or side by side, and the
   panel can be dragged to any width. A line number in a diff opens the file at that
-  line, so a change can be followed into the code around it.
+  line, so a change can be followed into the code around it. The sidebar and the panel
+  keep the width they were given.
 - **Extension dialogs.** When a Pi extension asks you a question — pick one, confirm,
   type a value, edit a block of text — the desktop app shows the dialog and answers Pi
   for you. Extensions can also push status lines, widgets and notifications.

@@ -38,6 +38,7 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
 |---|---|
 | `src/main/` | Electron main process: window, IPC, settings, session index |
 | `src/main/pi/` | Pi integration: CLI discovery, RPC client, runtime, one-shot CLI |
+| `src/main/window-state.ts` | remembers the size and place of the window |
 | `src/preload/` | `contextBridge` surface — the only renderer↔main channel |
 | `src/renderer/` | React UI |
 | `src/shared/types.ts` | Protocol and domain types shared by every layer |
@@ -125,3 +126,6 @@ closes the window on purpose to reproduce the destroyed-window case.
 `PI_DESKTOP_EVAL` runs a JS snippet in the renderer just before the capture
 and `PI_DESKTOP_EVAL_DELAY` (default 400ms) is the settle time afterwards.
 That is how transient UI — a clicked button, a flashed turn — gets captured.
+The snippet can also reach the store through `window.__piDesktopStore`, which
+the renderer exposes when the harness is in use. It is the way to reach a
+state that is hard to produce on purpose, such as a retry in progress.

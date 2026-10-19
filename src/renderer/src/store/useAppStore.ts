@@ -99,6 +99,8 @@ export interface AppStore {
   compact: (instructions?: string) => Promise<void>
   setAutoCompaction: (enabled: boolean) => Promise<void>
   refreshState: () => Promise<void>
+  /** Remember the conversation that is open in the current project. */
+  rememberSession: (file: string) => Promise<void>
   reloadMessages: () => Promise<void>
   refreshCommands: () => Promise<void>
   /** Run one of the commands the app itself provides. */
@@ -168,7 +170,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
     const target = active ?? settings.workspaces[0]
     if (target) {
-      await get().openWorkspace(target)
+      // The conversation that was open in this project is opened again, so
+      // the user comes back to the work rather than to an empty screen.
+      const remembered = settings.lastSessions?.[target.path]
+      await get().openWorkspace(target, remembered)
     }
   },
 
@@ -508,10 +513,30 @@ export const useAppStore = create<AppStore>((set, get) => ({
           .catch(() => undefined as SessionStats | undefined)
       ])
       set({ piState: state, models, thinkingLevels: levels, stats })
-      if (state?.sessionFile) set({ activeSessionFile: state.sessionFile })
+      if (state?.sessionFile) {
+        set({ activeSessionFile: state.sessionFile })
+        void get().rememberSession(state.sessionFile)
+      }
     } catch (error) {
       set({ error: messageOf(error) })
     }
+  },
+
+  /**
+   * Remember which conversation was open in a project.
+   *
+   * The next start of the app opens it again, so the user does not lose the
+   * thread of the work they were in the middle of.
+   */
+  async rememberSession(file) {
+    const workspace = get().workspace
+    if (!workspace || !file) return
+    const last = get().settings.lastSessions ?? {}
+    if (last[workspace.path] === file) return
+    const settings = await window.pi.settings.patch({
+      lastSessions: { ...last, [workspace.path]: file }
+    })
+    set({ settings })
   },
 
   async reloadMessages() {

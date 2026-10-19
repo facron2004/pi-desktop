@@ -261,6 +261,8 @@ export interface AppSettings {
   activeWorkspaceId?: string
   /** Session files the user pinned to the top of the sidebar. */
   pinnedSessions?: string[]
+  /** The conversation that was open in a project, by project path. */
+  lastSessions?: Record<string, string>
   /** Absolute path to a custom `pi` executable or CLI script. */
   piPath?: string
   model?: string

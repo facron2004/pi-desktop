@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { existsSync } from 'node:fs'
 import type {
   ExtensionUiResponse,
   PiEvent,
@@ -49,7 +50,11 @@ export class PiRuntime extends EventEmitter {
       return { ok: false, error }
     }
 
-    const args = [...launch.prefixArgs, ...buildRpcArgs(options, this.options.trustProject)]
+    // A session that was deleted while the app was closed cannot be opened.
+    const sessionFile =
+      options.sessionFile && existsSync(options.sessionFile) ? options.sessionFile : undefined
+
+    const args = [...launch.prefixArgs, ...buildRpcArgs({ ...options, sessionFile }, this.options.trustProject)]
 
     this.setStatus({ phase: 'starting', cwd: options.cwd })
 
