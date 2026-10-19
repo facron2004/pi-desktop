@@ -102,12 +102,18 @@ function GapButton({
 export function DiffView({
   diffs,
   mode = 'unified',
-  onOpenLine
+  onOpenLine,
+  expandAll,
+  onExpandAllChange
 }: {
   diffs: DiffBlock[]
   mode?: DiffMode
   /** Open the file this diff belongs to at a given line. */
   onOpenLine?: (line: number) => void
+  /** Force every folded run open (`true`) or closed (`false`). */
+  expandAll?: boolean
+  /** Called when the reader takes over from the forced state. */
+  onExpandAllChange?: (value: boolean | undefined) => void
 }) {
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
 
@@ -116,16 +122,55 @@ export function DiffView({
     [diffs]
   )
 
+  // Every folded run of this diff, so the panel can open or close all of
+  // them at once.
+  const gapKeys = useMemo(
+    () =>
+      folded.flatMap((rows) =>
+        rows
+          .filter((row): row is Extract<DiffRow, { kind: 'gap' }> => row.kind === 'gap')
+          .map((row) => row.key)
+      ),
+    [folded]
+  )
+
+  // The forced state wins over the runs the reader opened by hand.
+  const effective = useMemo(() => {
+    if (expandAll === undefined) return opened
+    const next = new Set(opened)
+    for (const key of gapKeys) {
+      if (expandAll) next.add(key)
+      else next.delete(key)
+    }
+    return next
+  }, [expandAll, opened, gapKeys])
+
   const hasContent = useMemo(() => folded.some((rows) => rows.length > 0), [folded])
   if (!hasContent) return null
 
-  const toggle = (key: string) =>
+  const toggle = (key: string) => {
+    if (expandAll !== undefined) {
+      // The panel is forcing a state; a click on one run takes over from it.
+      const next = new Set(gapKeys)
+      if (expandAll) {
+        // Everything was open, so this one is closed and the rest stay open.
+        for (const other of gapKeys) next.delete(other)
+        next.add(key)
+      } else {
+        for (const other of gapKeys) next.add(other)
+        next.delete(key)
+      }
+      setOpened(next)
+      onExpandAllChange?.(undefined)
+      return
+    }
     setOpened((previous) => {
       const next = new Set(previous)
       if (next.has(key)) next.delete(key)
       else next.add(key)
       return next
     })
+  }
 
   // A line number becomes a link to the file itself, so a diff can be
   // followed into the code around it.
@@ -149,12 +194,12 @@ export function DiffView({
       <div className="diff diff--split">
         {folded.map((rows, blockIndex) => (
           <div className="diff__block" key={blockIndex}>
-            {buildSplitDiff(displayRows(rows, opened)).map((row, rowIndex) =>
+            {buildSplitDiff(displayRows(rows, effective)).map((row, rowIndex) =>
               row.gap ? (
                 <div className="diff__split" data-gap="true" key={rowIndex}>
                   <GapButton
                     count={row.gap.count}
-                    open={opened.has(row.gap.key)}
+                    open={effective.has(row.gap.key)}
                     onToggle={() => toggle(row.gap?.key ?? '')}
                   />
                 </div>
@@ -185,12 +230,12 @@ export function DiffView({
     <div className="diff">
       {folded.map((rows, blockIndex) => (
         <div className="diff__block" key={blockIndex}>
-          {displayRows(rows, opened).map((row, rowIndex) =>
+          {displayRows(rows, effective).map((row, rowIndex) =>
             row.kind === 'gap' ? (
               <div className="diff__row diff__row--gap" key={rowIndex}>
                 <GapButton
                   count={row.hidden.length}
-                  open={opened.has(row.key)}
+                  open={effective.has(row.key)}
                   onToggle={() => toggle(row.key)}
                 />
               </div>

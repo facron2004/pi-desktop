@@ -3846,14 +3846,43 @@ body.is-resizing {
 
 /* The bulk actions of the changes panel stay in sight while the list of
    files scrolls by. */
-.drawer__actions {
+.drawer__bar {
   position: sticky;
-  top: 0;
+  top: -12px;
   z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: -12px -12px 0;
+  padding: 12px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.drawer__actions {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding-bottom: 10px;
-  margin-bottom: -2px;
-  background: var(--bg-panel);
+}
+
+.drawer__filter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg-deep);
+  color: var(--text-faint);
+}
+
+.drawer__filter input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text);
 }

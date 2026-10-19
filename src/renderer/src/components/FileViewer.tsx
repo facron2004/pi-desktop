@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Copy, ExternalLink, File as FileIcon } from 'lucide-react'
+import { Check, Copy, ExternalLink, File as FileIcon, MessageSquarePlus } from 'lucide-react'
 import type { FileContent } from '@shared/types'
 import { fileTone } from '../lib/files'
 import { formatBytes } from '../lib/format'
 import { basename, relativePath } from '../lib/path'
+import { useAppStore } from '../store/useAppStore'
 import { CodeSnippet } from './CodeSnippet'
 
 interface FileViewerProps {
@@ -19,6 +20,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
   const [error, setError] = useState(false)
   const codeRef = useRef<HTMLElement | null>(null)
   const lineRef = useRef(line)
+  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   lineRef.current = line
 
   useEffect(() => {
@@ -101,6 +103,15 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
         </span>
         <button className="ghost-btn" onClick={() => void copy()} title="Copy the file">
           {copied ? <Check size={12} /> : <Copy size={12} />}
+        </button>
+        <button
+          className="ghost-btn"
+          title="Ask Pi about this file"
+          onClick={() =>
+            insertIntoComposer(`Take a look at ${relativePath(root ?? '', content.path)} and tell me`)
+          }
+        >
+          <MessageSquarePlus size={12} />
         </button>
         <button
           className="ghost-btn"

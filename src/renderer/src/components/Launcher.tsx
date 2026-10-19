@@ -11,12 +11,15 @@ import {
   Keyboard,
   MessageSquarePlus,
   Minimize2,
+  Moon,
   PanelLeft,
   Pin,
   Search,
   Settings,
   Sparkles,
-  SquarePen
+  SquarePen,
+  Sun,
+  Type
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
@@ -32,6 +35,9 @@ export interface LauncherAction {
   icon: LucideIcon
   run: () => void | Promise<void>
 }
+
+/** The text sizes the settings offer, from the smallest to the largest. */
+const FONT_STEPS = [0.92, 1, 1.1, 1.22]
 
 /** The parts of the app shell the launcher drives. */
 export interface LauncherShell {
@@ -54,6 +60,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const cycleModel = useAppStore((state) => state.cycleModel)
   const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
   const togglePin = useAppStore((state) => state.togglePin)
+  const updateSettings = useAppStore((state) => state.updateSettings)
   const workspaces = useAppStore((state) => state.settings.workspaces)
   const sessions = useAppStore((state) => state.sessions)
   const workspace = useAppStore((state) => state.workspace)
@@ -61,6 +68,14 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const pinned = useAppStore((state) => state.settings.pinnedSessions ?? [])
   const models = useAppStore((state) => state.models)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
+  const fontScale = useAppStore((state) => state.settings.fontScale ?? 1)
+
+  // The theme that is on screen, which is what the reader sees — the setting
+  // itself may still be "follow the system".
+  const theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
+  const fontIndex = FONT_STEPS.findIndex((step) => Math.abs(step - fontScale) < 0.01)
+  const biggerFont = FONT_STEPS[(fontIndex + 1 + FONT_STEPS.length) % FONT_STEPS.length]
+  const smallerFont = FONT_STEPS[(fontIndex - 1 + FONT_STEPS.length) % FONT_STEPS.length]
 
   const actions: LauncherAction[] = [
     {
@@ -193,6 +208,27 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'View',
       icon: Keyboard,
       run: () => shell.openShortcuts()
+    },
+    {
+      id: 'theme',
+      title: theme === 'light' ? 'Use the dark theme' : 'Use the light theme',
+      group: 'View',
+      icon: theme === 'light' ? Moon : Sun,
+      run: () => updateSettings({ theme: theme === 'light' ? 'dark' : 'light' })
+    },
+    {
+      id: 'font-bigger',
+      title: 'Make the text larger',
+      group: 'View',
+      icon: Type,
+      run: () => updateSettings({ fontScale: biggerFont })
+    },
+    {
+      id: 'font-smaller',
+      title: 'Make the text smaller',
+      group: 'View',
+      icon: Type,
+      run: () => updateSettings({ fontScale: smallerFont })
     },
     {
       id: 'settings',

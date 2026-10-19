@@ -27,12 +27,12 @@ Claude Desktop.
 - **Project inspector.** A docked panel with two tabs: **Changes** lists every file the
   agent edited or created in this session, with the line counts of each change, and
   **Files** is a project tree you can search by name and read in place, with syntax
-  highlighting and line numbers. Diffs can be shown unified or side by side, and the
-  panel can be dragged to any width. A line number in a diff opens the file at that
-  line, so a change can be followed into the code around it. The list of changed files
-  can be copied to the clipboard, or handed to the agent in one go — the file list lands
-  in the composer, ready to be asked about. The sidebar and the panel keep the width
-  they were given.
+  highlighting and line numbers. Diffs can be shown unified or side by side, the folded
+  runs of unchanged lines can be opened all at once, and the panel can be dragged to any
+  width. A line number in a diff opens the file at that line, so a change can be
+  followed into the code around it. The list of changed files can be filtered, copied to
+  the clipboard, or handed to the agent in one go — the file list lands in the composer,
+  ready to be asked about. The sidebar and the panel keep the width they were given.
 - **Extension dialogs.** When a Pi extension asks you a question — pick one, confirm,
   type a value, edit a block of text — the desktop app shows the dialog and answers Pi
   for you. Extensions can also push status lines, widgets and notifications.
@@ -57,8 +57,8 @@ Claude Desktop.
   prompt templates and extension commands — and the ones the desktop app adds:
   `/export`, `/duplicate`, `/branch`, `/compact`, `/copy`, `/changes`, `/files`, `/new`.
 - **Everything within reach.** `Ctrl+Shift+P` opens a palette over the app: every action
-  it has, every project it can open, and the model and reasoning switches. It is one
-  search away from anything, without touching the mouse.
+  it has, every project it can open, the model and reasoning switches, the theme and
+  the text size. It is one search away from anything, without touching the mouse.
 - **Model and effort control.** Switch model and reasoning level mid-conversation.
   `Ctrl+P` and `Ctrl+T` walk through Pi's own list of models and reasoning levels, the
   way they do in Pi's terminal. The context meter in the top bar opens a session panel

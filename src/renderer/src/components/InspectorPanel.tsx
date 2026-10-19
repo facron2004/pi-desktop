@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Columns2,
   Copy,
   ExternalLink,
@@ -10,6 +12,7 @@ import {
   MessageSquare,
   Pencil,
   Rows3,
+  Search,
   X
 } from 'lucide-react'
 import { collectChanges } from '../lib/changes'
@@ -76,6 +79,10 @@ export function InspectorPanel({
   )
 
   const [tab, setTab] = useState<Tab>(initialTab)
+  // The files the agent touched, narrowed down by a search on the path.
+  const [fileFilter, setFileFilter] = useState('')
+  // `undefined` means the reader decides, one run at a time.
+  const [expandAll, setExpandAll] = useState<boolean | undefined>(undefined)
 
   // The paths of the changed files, relative to the project, so the list
   // means the same thing to the user and to the agent.
@@ -83,6 +90,14 @@ export function InspectorPanel({
     () => changes.map((change) => relativePath(workspace?.path ?? '', change.path)),
     [changes, workspace?.path]
   )
+
+  // The changed files that survive the search, with their line counts.
+  const entries = useMemo(() => {
+    const needle = fileFilter.trim().toLowerCase()
+    return changes
+      .map((change, index) => ({ change, stat: stats[index], path: relativePaths[index] }))
+      .filter((entry) => !needle || entry.path.toLowerCase().includes(needle))
+  }, [changes, stats, relativePaths, fileFilter])
 
   const copyPaths = useCallback(async () => {
     try {
@@ -254,22 +269,64 @@ export function InspectorPanel({
             </div>
           ) : (
             <div className="drawer__body">
-              <div className="drawer__actions">
-                <button className="ghost-btn" onClick={() => void copyPaths()} title="Copy the paths of the changed files">
-                  <Copy size={12} />
-                  Copy paths
-                </button>
-                <button
-                  className="ghost-btn"
-                  onClick={askAboutChanges}
-                  title="Put the list of changed files in the composer"
-                >
-                  <MessageSquare size={12} />
-                  Ask Pi about these changes
-                </button>
+              <div className="drawer__bar">
+                {changes.length >= 3 ? (
+                  <div className="drawer__filter">
+                    <Search size={12} />
+                    <input
+                      value={fileFilter}
+                      placeholder="Filter the changed files"
+                      onChange={(event) => setFileFilter(event.target.value)}
+                    />
+                    {fileFilter ? (
+                      <button
+                        className="icon-btn"
+                        onClick={() => setFileFilter('')}
+                        title="Clear the filter"
+                      >
+                        <X size={11} />
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="drawer__actions">
+                  <button
+                    className="ghost-btn"
+                    onClick={() => void copyPaths()}
+                    title="Copy the paths of the changed files"
+                  >
+                    <Copy size={12} />
+                    Copy paths
+                  </button>
+                  <button
+                    className="ghost-btn"
+                    onClick={askAboutChanges}
+                    title="Put the list of changed files in the composer"
+                  >
+                    <MessageSquare size={12} />
+                    Ask Pi
+                  </button>
+                  <span style={{ flex: 1 }} />
+                  <button
+                    className="icon-btn"
+                    onClick={() => setExpandAll((value) => value !== true)}
+                    title={expandAll === true ? 'Fold the unchanged lines' : 'Show the unchanged lines'}
+                  >
+                    {expandAll === true ? (
+                      <ChevronsDownUp size={13} />
+                    ) : (
+                      <ChevronsUpDown size={13} />
+                    )}
+                  </button>
+                </div>
               </div>
-              {changes.map((change, index) => {
-                const one = stats[index]
+
+              {entries.length === 0 ? (
+                <div className="drawer__empty">No changed file matches “{fileFilter}”.</div>
+              ) : null}
+
+              {entries.map(({ change, stat: one, path }) => {
                 return (
                   <section className="change" key={change.path}>
                     <header className="change__head">
@@ -281,7 +338,7 @@ export function InspectorPanel({
                         title={`Open ${change.path}`}
                         onClick={() => setOpenFile({ path: change.path })}
                       >
-                        {relativePath(workspace?.path ?? '', change.path)}
+                        {path}
                       </button>
                       {one.added || one.removed ? (
                         <span className="change__stats">
@@ -306,6 +363,8 @@ export function InspectorPanel({
                         diffs={change.diffs}
                         mode={diffSplit ? 'split' : 'unified'}
                         onOpenLine={(line) => setOpenFile({ path: change.path, line })}
+                        expandAll={expandAll}
+                        onExpandAllChange={setExpandAll}
                       />
                     ) : null}
 
