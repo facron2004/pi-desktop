@@ -1,5 +1,7 @@
+import { app } from 'electron'
 import { EventEmitter } from 'node:events'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import type {
   ExtensionUiResponse,
   PiEvent,
@@ -54,7 +56,28 @@ export class PiRuntime extends EventEmitter {
     const sessionFile =
       options.sessionFile && existsSync(options.sessionFile) ? options.sessionFile : undefined
 
-    const args = [...launch.prefixArgs, ...buildRpcArgs({ ...options, sessionFile }, this.options.trustProject)]
+    const customInstructionsFile = path.join(app.getPath('userData'), 'pi-desktop-instructions.md')
+    try {
+      if (options.customInstructions?.trim()) {
+        mkdirSync(path.dirname(customInstructionsFile), { recursive: true })
+        writeFileSync(customInstructionsFile, options.customInstructions.trim(), 'utf8')
+      } else if (existsSync(customInstructionsFile)) {
+        unlinkSync(customInstructionsFile)
+      }
+    } catch (error) {
+      const message = `Could not prepare custom instructions: ${error instanceof Error ? error.message : String(error)}`
+      this.setStatus({ phase: 'error', cwd: options.cwd, error: message })
+      return { ok: false, error: message }
+    }
+
+    const args = [
+      ...launch.prefixArgs,
+      ...buildRpcArgs(
+        { ...options, sessionFile },
+        this.options.trustProject,
+        options.customInstructions?.trim() ? customInstructionsFile : undefined
+      )
+    ]
 
     this.setStatus({ phase: 'starting', cwd: options.cwd })
 
@@ -178,7 +201,11 @@ function describeExit(stderr: string[], code: number | null, signal: string | nu
 }
 
 /** CLI flags for RPC mode, derived from the requested start options. */
-export function buildRpcArgs(options: RuntimeStartOptions, trustProject = true): string[] {
+export function buildRpcArgs(
+  options: RuntimeStartOptions,
+  trustProject = true,
+  customInstructionsFile?: string
+): string[] {
   const args = ['--mode', 'rpc']
   if (options.sessionFile) {
     args.push('--session', options.sessionFile)
@@ -188,6 +215,9 @@ export function buildRpcArgs(options: RuntimeStartOptions, trustProject = true):
   }
   if (options.thinkingLevel) {
     args.push('--thinking', options.thinkingLevel)
+  }
+  if (customInstructionsFile) {
+    args.push('--append-system-prompt', customInstructionsFile)
   }
   // Project-local extensions, skills and settings are trust-gated. RPC mode
   // has nobody to ask, so the choice has to be made up front.

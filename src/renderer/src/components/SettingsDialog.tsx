@@ -1,36 +1,81 @@
-import { useEffect, useState } from 'react'
-import { Check, FolderOpen, X } from 'lucide-react'
-import { useAppStore } from '../store/useAppStore'
-import { Switch } from './Switch'
+import { useEffect, useRef, useState } from 'react'
+import {
+  Check,
+  Info,
+  Palette,
+  ShieldCheck,
+  SlidersHorizontal,
+  UserRound,
+  X
+} from 'lucide-react'
 import type { AuthStatus } from '@shared/types'
+import { useDialogFocus } from '../hooks/useDialogFocus'
+import { useT } from '../lib/i18n'
+import { useAppStore } from '../store/useAppStore'
+import {
+  AboutSettings,
+  AppearanceSettings,
+  GeneralSettings,
+  PersonalizationSettings,
+  ProjectSafetySettings
+} from './SettingsSections'
+
+type SettingsPage = 'general' | 'personalization' | 'appearance' | 'project-safety' | 'about'
+
+const PAGES = [
+  { id: 'general', label: 'General', Icon: SlidersHorizontal },
+  { id: 'personalization', label: 'Personalization', Icon: UserRound },
+  { id: 'appearance', label: 'Appearance', Icon: Palette },
+  { id: 'project-safety', label: 'Project safety', Icon: ShieldCheck },
+  { id: 'about', label: 'About', Icon: Info }
+] as const
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const settings = useAppStore((state) => state.settings)
-  const info = useAppStore((state) => state.info)
+  const models = useAppStore((state) => state.models)
   const updateSettings = useAppStore((state) => state.updateSettings)
   const showToast = useAppStore((state) => state.showToast)
   const pickWorkspace = useAppStore((state) => state.pickWorkspace)
+  const t = useT()
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocus(dialogRef, onClose)
 
+  const [page, setPage] = useState<SettingsPage>('general')
   const [piPath, setPiPath] = useState(settings.piPath ?? '')
   const [provider, setProvider] = useState(settings.provider ?? '')
+  const [defaultModel, setDefaultModel] = useState(settings.model ?? '')
+  const [defaultThinking, setDefaultThinking] = useState(settings.thinkingLevel ?? '')
+  const [customInstructions, setCustomInstructions] = useState(settings.customInstructions ?? '')
   const [auth, setAuth] = useState<AuthStatus | null>(null)
   const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     setPiPath(settings.piPath ?? '')
-  }, [settings.piPath])
+    setDefaultModel(settings.model ?? '')
+    setDefaultThinking(settings.thinkingLevel ?? '')
+    setCustomInstructions(settings.customInstructions ?? '')
+  }, [settings.piPath, settings.model, settings.thinkingLevel, settings.customInstructions])
 
   const save = async () => {
+    const selectedModel = models.find(
+      (model) =>
+        defaultModel === model.id || defaultModel === `${model.provider}/${model.id}`
+    )
     await updateSettings({
       piPath: piPath.trim() || undefined,
-      provider: provider.trim() || undefined
+      provider: provider.trim() || undefined,
+      model: selectedModel
+        ? `${selectedModel.provider}/${selectedModel.id}`
+        : defaultModel.trim() || undefined,
+      thinkingLevel: defaultThinking || undefined,
+      customInstructions: customInstructions.trim() || undefined
     })
-    showToast('Settings saved')
+    showToast(t('Settings saved'))
   }
 
   const check = async () => {
     if (!provider.trim()) {
-      showToast('Enter a provider first, e.g. anthropic')
+      showToast(t('Enter a provider first, e.g. anthropic'))
       return
     }
     setChecking(true)
@@ -44,183 +89,82 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="modal-layer" onMouseDown={onClose}>
-      <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="modal settings-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <div className="modal__head">
-          <h2 className="modal__title">Settings</h2>
-          <button className="icon-btn" onClick={onClose}>
+          <h2 id="settings-title" className="modal__title">{t('Settings')}</h2>
+          <button className="icon-btn" onClick={onClose} aria-label={t('Close')}>
             <X size={15} />
           </button>
         </div>
 
-        <div className="modal__body">
-          <div className="field">
-            <label className="field__label">Projects</label>
-            <div className="field__row">
-              <button className="btn" onClick={() => void pickWorkspace()}>
-                <FolderOpen size={13} />
-                Open a folder
-              </button>
-              <span className="field__hint" style={{ flex: 1 }}>
-                Every folder you open is listed in the sidebar, and you can jump to it with{' '}
-                <code>Ctrl</code> <code>1</code> … <code>9</code>.
-              </span>
-            </div>
-          </div>
-
-          <div className="field">
-            <label className="field__label" htmlFor="pi-path">
-              Pi CLI path
-            </label>
-            <div className="field__row">
-              <input
-                id="pi-path"
-                className="input"
-                value={piPath}
-                placeholder="Leave empty to use the bundled Pi"
-                onChange={(event) => setPiPath(event.target.value)}
-              />
+        <div className="settings-layout">
+          <nav className="settings-nav" aria-label={t('Settings sections')}>
+            {PAGES.map(({ id, label, Icon }) => (
               <button
-                className="btn"
-                onClick={() => {
+                key={id}
+                type="button"
+                data-active={page === id}
+                aria-current={page === id ? 'page' : undefined}
+                onClick={() => setPage(id)}
+              >
+                <Icon size={15} />
+                <span>{t(label)}</span>
+              </button>
+            ))}
+          </nav>
+
+          <main className="settings-content">
+            {page === 'general' ? (
+              <GeneralSettings
+                form={{
+                  piPath,
+                  provider,
+                  defaultModel,
+                  defaultThinking
+                }}
+                onChange={(patch) => {
+                  if ('piPath' in patch) setPiPath(patch.piPath ?? '')
+                  if ('provider' in patch) setProvider(patch.provider ?? '')
+                  if ('defaultModel' in patch) setDefaultModel(patch.defaultModel ?? '')
+                  if ('defaultThinking' in patch) setDefaultThinking(patch.defaultThinking ?? '')
+                }}
+                auth={auth}
+                checking={checking}
+                onCheck={() => void check()}
+                onOpenProject={() => void pickWorkspace()}
+                onResetPiPath={() => {
                   setPiPath('')
                   void updateSettings({ piPath: undefined })
                 }}
-              >
-                Reset
-              </button>
-            </div>
-            <span className="field__hint">
-              Point this at a `pi` executable or at the CLI script of a checkout. When empty, Pi
-              Desktop uses the copy bundled with the app.
-            </span>
-          </div>
-
-          <div className="field">
-            <label className="field__label">Appearance</label>
-            <div className="field__row">
-              <div className="segmented">
-                {(['dark', 'light', 'system'] as const).map((theme) => (
-                  <button
-                    key={theme}
-                    data-active={settings.theme === theme}
-                    onClick={() => void updateSettings({ theme })}
-                  >
-                    {theme[0].toUpperCase() + theme.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="field">
-            <label className="field__label">Text size</label>
-            <div className="field__row">
-              <div className="segmented">
-                {[
-                  { label: 'Small', value: 0.92 },
-                  { label: 'Default', value: 1 },
-                  { label: 'Large', value: 1.1 },
-                  { label: 'XL', value: 1.22 }
-                ].map((option) => (
-                  <button
-                    key={option.label}
-                    data-active={Math.abs((settings.fontScale ?? 1) - option.value) < 0.01}
-                    onClick={() => void updateSettings({ fontScale: option.value })}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="field">
-            <label className="field__label">Provider credentials</label>
-            <div className="field__row">
-              <input
-                className="input"
-                value={provider}
-                placeholder="e.g. anthropic"
-                onChange={(event) => setProvider(event.target.value)}
               />
-              <button className="btn" onClick={() => void check()} disabled={checking}>
-                {checking ? <span className="spinner" /> : <Check size={13} />}
-                Check
-              </button>
-            </div>
-            {auth ? (
-              <span className="field__hint" style={{ color: auth.ready ? 'var(--green)' : 'var(--red)' }}>
-                {auth.ready
-                  ? `${auth.provider} is ready to use.`
-                  : `${auth.provider ?? 'provider'} is not ready${auth.detail ? `: ${auth.detail}` : '.'}`}
-              </span>
-            ) : (
-              <span className="field__hint">
-                Runs <code>pi auth check</code> to confirm the provider can be used.
-              </span>
-            )}
-          </div>
-
-          <div className="field">
-            <label className="field__label">Diff layout</label>
-            <div className="field__row">
-              <div className="segmented">
-                <button
-                  data-active={!settings.diffSplit}
-                  onClick={() => void updateSettings({ diffSplit: false })}
-                >
-                  Unified
-                </button>
-                <button
-                  data-active={settings.diffSplit === true}
-                  onClick={() => void updateSettings({ diffSplit: true })}
-                >
-                  Side by side
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="field">
-            <label className="field__label">Project resources</label>
-            <div className="field__row">
-              <Switch
-                checked={settings.trustProject !== false}
-                onChange={(value) => void updateSettings({ trustProject: value })}
-                label="Trust project-local extensions and settings"
+            ) : null}
+            {page === 'personalization' ? (
+              <PersonalizationSettings
+                value={customInstructions}
+                onChange={setCustomInstructions}
               />
-              <span className="field__hint" style={{ flex: 1 }}>
-                Allow this project&apos;s <code>.pi/extensions</code>, <code>.pi/skills</code> and{' '}
-                <code>.pi/settings.json</code> to load. Turn this off for projects you do not
-                trust.
-              </span>
-            </div>
-          </div>
-
-          <div className="field">
-            <label className="field__label">Environment</label>
-            <div className="kv">
-              <span className="kv__key">Pi CLI</span>
-              <span className="kv__value">{info?.pi.display ?? '—'}</span>
-              <span className="kv__key">Pi version</span>
-              <span className="kv__value">{info?.pi.version ?? '—'}</span>
-              <span className="kv__key">Session folder</span>
-              <span className="kv__value">{info?.sessionRoot ?? '—'}</span>
-              <span className="kv__key">Electron</span>
-              <span className="kv__value">{info?.electron ?? '—'}</span>
-              <span className="kv__key">Node</span>
-              <span className="kv__value">{info?.node ?? '—'}</span>
-            </div>
-          </div>
+            ) : null}
+            {page === 'appearance' ? <AppearanceSettings /> : null}
+            {page === 'project-safety' ? <ProjectSafetySettings /> : null}
+            {page === 'about' ? <AboutSettings /> : null}
+          </main>
         </div>
 
         <div className="modal__foot">
           <button className="btn" onClick={onClose}>
-            Close
+            {t('Close')}
           </button>
           <button className="btn btn--primary" onClick={() => void save()}>
             <Check size={13} />
-            Save
+            {t('Save')}
           </button>
         </div>
       </div>

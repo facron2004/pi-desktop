@@ -135,6 +135,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
   pinnedSessions: [],
   theme: 'dark',
+  language: 'en',
   fontScale: 1,
   diffSplit: false,
   drawerWidth: 420,

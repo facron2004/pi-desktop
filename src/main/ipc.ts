@@ -383,7 +383,10 @@ export function registerIpc(context: IpcContext): void {
   )
 
   ipcMain.handle('runtime:start', async (_event, options: RuntimeStartOptions) => {
-    return runtime.start(options)
+    return runtime.start({
+      ...options,
+      customInstructions: settings.get().customInstructions
+    })
   })
 
   ipcMain.handle('runtime:stop', async () => {

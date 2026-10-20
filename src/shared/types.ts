@@ -255,6 +255,7 @@ export interface SessionMeta {
 }
 
 export type ThemePreference = 'dark' | 'light' | 'system'
+export type AppLanguage = 'en' | 'zh-CN'
 
 export interface AppSettings {
   workspaces: Workspace[]
@@ -268,7 +269,10 @@ export interface AppSettings {
   model?: string
   provider?: string
   thinkingLevel?: string
+  /** User instructions appended to Pi's system prompt when the runtime starts. */
+  customInstructions?: string
   theme: ThemePreference
+  language: AppLanguage
   fontScale: number
   /** Show diffs side by side instead of unified. */
   diffSplit: boolean
@@ -390,6 +394,8 @@ export interface RuntimeStartOptions {
   sessionFile?: string
   model?: string
   thinkingLevel?: string
+  /** App-level instructions appended to the system prompt for this process. */
+  customInstructions?: string
 }
 
 export interface RuntimeStatus {
