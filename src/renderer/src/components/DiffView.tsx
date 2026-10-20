@@ -1,11 +1,14 @@
 import { useMemo, useState } from 'react'
+import { ClipboardCopy } from 'lucide-react'
 import {
   CONTEXT_LINES,
   foldDiff,
   type DiffBlock,
   type DiffRow
 } from '../lib/diff-fold'
+import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
+import '../styles/diff-actions.css'
 
 /** One line of a side-by-side diff. Either side may be empty. */
 export interface SplitRow {
@@ -77,6 +80,68 @@ function displayRows(rows: DiffRow[], opened: ReadonlySet<string>): DiffRow[] {
   return out
 }
 
+/** A row that carries a line of text, as opposed to a folded run. */
+type ContentRow = Extract<DiffRow, { kind: 'add' | 'del' | 'ctx' }>
+
+/**
+ * The rows one block contributes to a patch.
+ *
+ * The span is the rows the reader can see: a folded run at either end is left
+ * out. A fold *inside* that span is filled back in, because a unified hunk is
+ * one contiguous range — dropping the hidden lines makes the body and the hunk
+ * header disagree and `git apply` rejects it. Opening a fold only widens the
+ * span; it never changes which changes are copied.
+ */
+function patchRows(rows: DiffRow[], opened: ReadonlySet<string>): ContentRow[] {
+  const segments: { lines: ContentRow[]; visible: boolean }[] = []
+  for (const row of rows) {
+    if (row.kind !== 'gap') {
+      segments.push({ lines: [row], visible: true })
+      continue
+    }
+    const lines = row.hidden.filter((line): line is ContentRow => line.kind !== 'gap')
+    segments.push({ lines, visible: opened.has(row.key) })
+  }
+
+  let first = -1
+  let last = -1
+  for (let index = 0; index < segments.length; index += 1) {
+    if (!segments[index].visible || segments[index].lines.length === 0) continue
+    if (first === -1) first = index
+    last = index
+  }
+  if (first === -1) return []
+
+  const out: ContentRow[] = []
+  for (let index = first; index <= last; index += 1) out.push(...segments[index].lines)
+  return out
+}
+
+/**
+ * One hunk of `<path>`, in the format `git apply` reads.
+ *
+ * The hunk header counts the lines each side contributes and starts at the
+ * first line number it knows. A side with no lines at all is anchored on the
+ * line before the change (0 at the top of the file), which is what git itself
+ * writes for pure additions and deletions.
+ */
+function hunkPatch(path: string, rows: ContentRow[]): string | null {
+  if (rows.length === 0) return null
+  const oldRows = rows.filter((row) => row.oldLine !== null)
+  const newRows = rows.filter((row) => row.newLine !== null)
+  const firstOld = oldRows[0]?.oldLine ?? null
+  const firstNew = newRows[0]?.newLine ?? null
+  const oldCount = oldRows.length
+  const newCount = newRows.length
+  const oldStart = oldCount > 0 ? (firstOld ?? 0) : Math.max((firstNew ?? 1) - 1, 0)
+  const newStart = newCount > 0 ? (firstNew ?? 0) : Math.max((firstOld ?? 1) - 1, 0)
+  const body = rows
+    .map((row) => `${row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '}${row.text}`)
+    .join('\n')
+  const clean = path.replace(/\\/g, '/')
+  return `diff --git a/${clean} b/${clean}\n--- a/${clean}\n+++ b/${clean}\n@@ -${oldStart},${oldCount} +${newStart},${newCount} @@\n${body}\n`
+}
+
 function GapButton({
   count,
   open,
@@ -104,12 +169,18 @@ function GapButton({
 export function DiffView({
   diffs,
   mode = 'unified',
+  patchPath,
   onOpenLine,
   expandAll,
   onExpandAllChange
 }: {
   diffs: DiffBlock[]
   mode?: DiffMode
+  /**
+   * The file the block belongs to. When set, each block offers a copy action
+   * that writes that block alone out as a patch.
+   */
+  patchPath?: string
   /** Open the file this diff belongs to at a given line. */
   onOpenLine?: (line: number) => void
   /** Force every folded run open (`true`) or closed (`false`). */
@@ -118,10 +189,17 @@ export function DiffView({
   onExpandAllChange?: (value: boolean | undefined) => void
 }) {
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
+  const showToast = useAppStore((state) => state.showToast)
   const t = useT()
 
   const folded = useMemo(
     () => diffs.map((block, blockIndex) => foldDiff(block.rows, CONTEXT_LINES, String(blockIndex))),
+    [diffs]
+  )
+
+  // A block with no added or removed line has nothing to patch.
+  const patchable = useMemo(
+    () => diffs.map((block) => block.rows.some((row) => row.kind === 'add' || row.kind === 'del')),
     [diffs]
   )
 
@@ -192,11 +270,48 @@ export function DiffView({
     )
   }
 
+  const copyHunk = async (blockIndex: number) => {
+    if (!patchPath) return
+    const patch = hunkPatch(patchPath, patchRows(folded[blockIndex] ?? [], effective))
+    if (!patch) {
+      showToast(t('This block has no changes to copy'), 'warning')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(patch)
+      showToast(t('The hunk was copied'))
+    } catch {
+      showToast(t('The clipboard is not available'), 'error')
+    }
+  }
+
+  // The action belongs to the block, so it sits outside the row grid and
+  // works the same in both layouts.
+  const hunkAction = (blockIndex: number) =>
+    patchPath && patchable[blockIndex] ? (
+      <div className="diff__hunk-actions">
+        <button
+          type="button"
+          className="diff__hunk-copy"
+          title={t('Copy this hunk as a patch')}
+          aria-label={t('Copy this hunk as a patch')}
+          onClick={() => void copyHunk(blockIndex)}
+        >
+          <ClipboardCopy size={11} />
+          <span>{t('Copy this hunk')}</span>
+        </button>
+      </div>
+    ) : null
+
+  const blockClassName = (blockIndex: number) =>
+    patchPath && patchable[blockIndex] ? 'diff__block diff__block--patchable' : 'diff__block'
+
   if (mode === 'split') {
     return (
       <div className="diff diff--split">
         {folded.map((rows, blockIndex) => (
-          <div className="diff__block" key={blockIndex}>
+          <div className={blockClassName(blockIndex)} key={blockIndex}>
+            {hunkAction(blockIndex)}
             {buildSplitDiff(displayRows(rows, effective)).map((row, rowIndex) =>
               row.gap ? (
                 <div className="diff__split" data-gap="true" key={rowIndex}>
@@ -232,7 +347,8 @@ export function DiffView({
   return (
     <div className="diff">
       {folded.map((rows, blockIndex) => (
-        <div className="diff__block" key={blockIndex}>
+        <div className={blockClassName(blockIndex)} key={blockIndex}>
+          {hunkAction(blockIndex)}
           {displayRows(rows, effective).map((row, rowIndex) =>
             row.kind === 'gap' ? (
               <div className="diff__row diff__row--gap" key={rowIndex}>

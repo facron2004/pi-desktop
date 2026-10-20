@@ -546,7 +546,23 @@ const zhCN: Record<string, string> = {
   'Search the file': '在文件中搜索',
   'Go to line': '跳转到行',
   Wrap: '自动换行',
-  'Wrap long lines': '长行自动换行'
+  'Wrap long lines': '长行自动换行',
+  'Copy the patch': '复制补丁',
+  'Open this commit': '打开此提交',
+  'Reading the commit…': '正在读取提交…',
+  'The commit could not be read.': '无法读取该提交。',
+  'This commit does not change any files.': '该提交没有更改任何文件。',
+  'The patch is too large to show in full.': '补丁过大，无法完整显示。',
+  Refresh: '刷新',
+  'Copy the plan': '复制计划',
+  'Put the plan in the composer': '把计划放入输入框',
+  'Put this step in the composer': '将此步骤放入输入框',
+  'The plan was copied': '计划已复制',
+  'The plan is in the composer': '计划已放入输入框',
+  'Copy this hunk': '复制此修改块',
+  'Copy this hunk as a patch': '将此修改块作为补丁复制',
+  'The hunk was copied': '修改块已复制',
+  'This block has no changes to copy': '此修改块没有可复制的内容'
 }
 
 export function translate(text: string, language: AppLanguage): string {

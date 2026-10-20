@@ -4,6 +4,9 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import type {
   GitCommit,
+  GitCommitDetail,
+  GitCommitFile,
+  GitCommitFileDiff,
   GitCommitResult,
   GitFileDiff,
   GitFileStatus,
@@ -404,6 +407,156 @@ export async function readPatch(root: string, filePath?: string): Promise<GitPat
     truncated = true
   }
   return { text, truncated }
+}
+
+/** Hashes arrive from a dialog; keep whatever runs in git to hex. */
+function isHash(value: string): boolean {
+  return /^[0-9a-f]{4,40}$/i.test(value)
+}
+
+/** Parse `git show --name-status` (rename-aware) by the new path. */
+function parseNameStatus(raw: string): Map<string, { status: string; oldPath?: string }> {
+  const map = new Map<string, { status: string; oldPath?: string }>()
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    const parts = line.split('\t')
+    const code = parts[0]?.trim() ?? ''
+    if (!code) continue
+    if (code.startsWith('R') || code.startsWith('C')) {
+      const oldPath = parts[1]
+      const newPath = parts[2]
+      if (!newPath) continue
+      map.set(newPath, { status: code[0] ?? 'M', oldPath })
+      continue
+    }
+    const target = parts[1]
+    if (target) map.set(target, { status: code[0] ?? 'M' })
+  }
+  return map
+}
+
+/**
+ * Parse `git show --numstat --format= -M -z`.
+ *
+ * A rename is split over three NUL fields (`added\tremoved\t`, old path, new
+ * path), so the loop steps over the pair instead of treating it as two files.
+ */
+function parseNumstatZ(raw: string): GitCommitFile[] {
+  const files: GitCommitFile[] = []
+  const fields = raw.split('\0')
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index]
+    if (!field) continue
+    const [addedRaw = '', removedRaw = '', third = ''] = field.split('\t')
+    let path = third
+    let oldPath: string | undefined
+    if (!path && index + 2 < fields.length) {
+      oldPath = fields[index + 1]
+      path = fields[index + 2]
+      index += 2
+    }
+    if (!path) continue
+    const binary = addedRaw === '-' || removedRaw === '-'
+    files.push({
+      path,
+      oldPath,
+      status: oldPath ? 'R' : 'M',
+      added: binary ? 0 : Number(addedRaw) || 0,
+      removed: binary ? 0 : Number(removedRaw) || 0,
+      binary
+    })
+  }
+  return files
+}
+
+/** Metadata, file list and patch of one commit. */
+export async function readCommitDetail(
+  root: string,
+  hash: string
+): Promise<GitCommitDetail | null> {
+  if (!root || !isHash(hash)) return null
+
+  const meta = await git(root, ['show', '-s', '--format=%H%x1f%s%x1f%an%x1f%at%x1f%b', hash])
+  if (meta.code !== 0 || !meta.stdout.trim()) return null
+  const parts = meta.stdout.split('\u001f')
+  const fullHash = parts[0]?.trim() ?? hash
+  const subject = parts[1] ?? ''
+  const author = parts[2] ?? ''
+  const seconds = Number(parts[3]) || 0
+  const body = parts.slice(4).join('\u001f').trim()
+
+  const [numstat, nameStatus, shown] = await Promise.all([
+    git(root, ['show', '--numstat', '--format=', '-M', '-z', hash], COMMIT_TIMEOUT_MS),
+    git(root, ['show', '--name-status', '--format=', '-M', hash], COMMIT_TIMEOUT_MS),
+    git(root, ['show', '--no-color', '--format=', '-M', hash], COMMIT_TIMEOUT_MS)
+  ])
+
+  const statuses = parseNameStatus(nameStatus.stdout)
+  const files = parseNumstatZ(numstat.stdout).map((file) => {
+    const known = statuses.get(file.path)
+    return {
+      ...file,
+      oldPath: known?.oldPath ?? file.oldPath,
+      status: known?.status ?? file.status
+    }
+  })
+
+  let patch = shown.code === 0 ? shown.stdout : ''
+  let truncated = false
+  if (patch.length > MAX_PATCH_BYTES) {
+    patch = patch.slice(0, MAX_PATCH_BYTES)
+    truncated = true
+  }
+
+  return {
+    hash: fullHash,
+    subject,
+    author,
+    date: seconds * 1000,
+    body,
+    files,
+    patch,
+    truncated
+  }
+}
+
+/** Both sides of one file as they were in one commit. */
+export async function readCommitFileDiff(
+  root: string,
+  hash: string,
+  filePath: string
+): Promise<GitCommitFileDiff | null> {
+  if (!root || !isHash(hash) || !filePath) return null
+  const posix = filePath.replace(/\\/g, '/')
+
+  // A pathspec would make git call the rename an addition (the old path is not
+  // in the pathspec), so the whole commit's name-status is read instead.
+  const nameStatus = await git(root, ['show', '--name-status', '--format=', '-M', hash])
+  const entry = parseNameStatus(nameStatus.stdout).get(filePath)
+  const oldPath = (entry?.oldPath ?? filePath).replace(/\\/g, '/')
+
+  const [newSide, parent] = await Promise.all([
+    git(root, ['show', `${hash}:${posix}`]),
+    git(root, ['rev-parse', '--verify', `${hash}^`])
+  ])
+  let oldRaw = ''
+  if (parent.code === 0) {
+    const oldSide = await git(root, ['show', `${hash}^:${oldPath}`])
+    if (oldSide.code === 0) oldRaw = oldSide.stdout
+  }
+  const newRaw = newSide.code === 0 ? newSide.stdout : ''
+
+  const binary = oldRaw.includes('\u0000') || newRaw.includes('\u0000')
+  const oldCapped = binary ? { text: '', truncated: false } : capText(oldRaw)
+  const newCapped = binary ? { text: '', truncated: false } : capText(newRaw)
+
+  return {
+    path: filePath,
+    oldText: oldCapped.text,
+    newText: newCapped.text,
+    binary,
+    truncated: oldCapped.truncated || newCapped.truncated
+  }
 }
 
 /**

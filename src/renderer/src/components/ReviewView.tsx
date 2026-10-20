@@ -545,7 +545,7 @@ function ReviewFile({
               {state.diff.truncated ? (
                 <div className="review__note">{t('The file is too large to show in full.')}</div>
               ) : null}
-              <DiffView diffs={blocks} mode={split ? 'split' : 'unified'} />
+              <DiffView diffs={blocks} mode={split ? 'split' : 'unified'} patchPath={file.path} />
             </>
           )}
         </div>

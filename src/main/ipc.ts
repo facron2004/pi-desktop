@@ -19,6 +19,8 @@ import { resolvePiLaunch } from './pi/locate'
 import { PiRuntime } from './pi/runtime'
 import {
   commitWorkingTree,
+  readCommitDetail,
+  readCommitFileDiff,
   readFileDiff,
   readLog,
   readPatch,
@@ -338,6 +340,14 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('git:patch', (_event, file?: string) =>
     readPatch(workspaceRoot(context), file)
+  )
+
+  ipcMain.handle('git:commitDetail', (_event, hash: string) =>
+    readCommitDetail(workspaceRoot(context), hash)
+  )
+
+  ipcMain.handle('git:commitFileDiff', (_event, hash: string, file: string) =>
+    readCommitFileDiff(workspaceRoot(context), hash, file)
   )
 
   ipcMain.handle('git:revertFile', (_event, file: string) =>

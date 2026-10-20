@@ -339,6 +339,41 @@ export interface GitPatch {
   truncated: boolean
 }
 
+/** One file of a commit, as `git show --numstat` reports it. */
+export interface GitCommitFile {
+  path: string
+  /** The path before a rename. */
+  oldPath?: string
+  /** A, M, D, R or C. */
+  status: string
+  added: number
+  removed: number
+  binary: boolean
+}
+
+/** Everything the commit dialog shows when a commit is opened. */
+export interface GitCommitDetail {
+  hash: string
+  subject: string
+  author: string
+  /** Unix milliseconds. */
+  date: number
+  body: string
+  files: GitCommitFile[]
+  /** `git show` output for the whole commit. */
+  patch: string
+  truncated: boolean
+}
+
+/** The two sides of one file at one commit. */
+export interface GitCommitFileDiff {
+  path: string
+  oldText: string
+  newText: string
+  binary: boolean
+  truncated: boolean
+}
+
 /**
  * The two sides of one working-tree file, for the review tab.
  *
@@ -477,6 +512,10 @@ export interface PiDesktopBridge {
     fileDiff(file: string): Promise<GitFileDiff>
     /** Unified patch of the whole working tree, or of one file. */
     patch(file?: string): Promise<GitPatch>
+    /** Metadata, file list and patch of one commit. */
+    commitDetail(hash: string): Promise<GitCommitDetail | null>
+    /** Both sides of one file as they were in one commit. */
+    commitFileDiff(hash: string, file: string): Promise<GitCommitFileDiff | null>
     /** Discard the working-tree changes of a tracked file. */
     revertFile(file: string): Promise<GitCommitResult>
     /** Move one file into (or out of) the index. */

@@ -175,13 +175,23 @@ comes from `git status --porcelain` in `GitStatus.files`. `git:patch` returns a
 unified HEAD→worktree patch (all files or one) with untracked files synthesized as
 `new file` patches; it is meant to be pasted into `git apply`.
 
+`git:commitDetail` reads a commit (metadata, `--numstat -z -M` file list and the
+`git show` patch); `git:commitFileDiff` reads the two sides at `hash^` and `hash`.
+Rename detection for that pair must be done on the whole commit — a pathspec makes
+git report the rename as an addition, so `readCommitFileDiff` looks the old path up
+in the commit's full `--name-status`. The history row in the commit dialog opens the
+read-only detail dialog; DiffView's per-block hunk copy is renderer-only and only
+appears when a `patchPath` is passed (the Review tab does; the Changes tab does not).
+
 ## The plan strip
 
 `PlanStrip` is a projection, not a feature of the protocol: `extractPlan` reads
 markdown checklists out of the newest assistant message and returns `null` for
 anything shorter than two entries. Collapse/dismiss are view preferences keyed
 by the source message id, so a new plan opens expanded. Do not add store state
-for it — the thread is the source of truth.
+for it — the thread is the source of truth. Its actions only hand the checklist
+back: copy as `- [x]` markdown, insert the whole plan or a single step through
+`insertIntoComposer`; the strip itself is never changed by them.
 
 ## Jumping to a search hit
 

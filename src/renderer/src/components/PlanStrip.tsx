@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Check, ChevronDown, Circle, ListChecks, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Check,
+  ChevronDown,
+  Circle,
+  Copy,
+  ListChecks,
+  MessageSquarePlus,
+  X
+} from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import { extractPlan } from '../lib/plan'
+import { extractPlan, type PlanEntry } from '../lib/plan'
 import { useT } from '../lib/i18n'
 
 /** Where the strip remembers what the user did with the plan on screen. */
@@ -42,6 +50,14 @@ function writePreference(preference: StripPreference): void {
 }
 
 /**
+ * The plan the way the agent wrote it: a markdown checklist, one step a line,
+ * so it can go back to a message or into the editor unchanged.
+ */
+function checklistMarkdown(entries: PlanEntry[]): string {
+  return entries.map((entry) => `- [${entry.done ? 'x' : ' '}] ${entry.text}`).join('\n')
+}
+
+/**
  * The agent's plan, as a strip above the composer.
  *
  * The plan is markdown the agent already wrote, so the strip reads it back out
@@ -51,13 +67,25 @@ function writePreference(preference: StripPreference): void {
  */
 export function PlanStrip() {
   const items = useAppStore((state) => state.items)
+  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
+  const showToast = useAppStore((state) => state.showToast)
   const t = useT()
   const plan = useMemo(() => extractPlan(items), [items])
   const [preference, setPreference] = useState<StripPreference | null>(readPreference)
+  // The copy button says what it just did for a moment, the way the other
+  // copy buttons in the app do.
+  const [copied, setCopied] = useState(false)
+  const copyTimer = useRef<number | null>(null)
 
   useEffect(() => {
     if (preference) writePreference(preference)
   }, [preference])
+
+  useEffect(() => {
+    return () => {
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current)
+    }
+  }, [])
 
   const sourceId = plan?.sourceId
   const own = preference && preference.sourceId === sourceId ? preference : null
@@ -83,6 +111,28 @@ export function PlanStrip() {
   const currentIndex = plan.entries.findIndex((entry) => !entry.done)
   const complete = currentIndex === -1
   const progress = `${Math.round((plan.done / plan.total) * 100)}%`
+
+  const copyPlan = async () => {
+    try {
+      await navigator.clipboard.writeText(checklistMarkdown(plan.entries))
+      setCopied(true)
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current)
+      copyTimer.current = window.setTimeout(() => setCopied(false), 1400)
+      showToast(t('The plan was copied'))
+    } catch {
+      showToast(t('The clipboard is not available'), 'error')
+    }
+  }
+
+  // The plan goes into the composer rather than out as a message: what to say
+  // about it is the user's, and the strip stays a projection of the thread
+  // instead of a second copy of it.
+  const putPlanInComposer = () => {
+    // `insertIntoComposer` trims its input, so the newline only tells the
+    // composer where the plan ends when there is already text there.
+    insertIntoComposer(`${checklistMarkdown(plan.entries)}\n`)
+    showToast(t('The plan is in the composer'))
+  }
 
   return (
     <div className="plan-strip" data-collapsed={collapsed}>
@@ -142,13 +192,51 @@ export function PlanStrip() {
               data-done={entry.done}
               data-current={index === currentIndex}
             >
-              <span className="plan-strip__mark" aria-hidden="true">
-                {entry.done ? <Check size={11} strokeWidth={3} /> : <Circle size={8} />}
-              </span>
-              <span className="plan-strip__text">{entry.text}</span>
+              <button
+                type="button"
+                className="plan-strip__step"
+                title={t('Put this step in the composer')}
+                aria-label={`${t('Put this step in the composer')}: ${entry.text}`}
+                onClick={() => insertIntoComposer(entry.text)}
+              >
+                <span className="plan-strip__mark" aria-hidden="true">
+                  {entry.done ? <Check size={11} strokeWidth={3} /> : <Circle size={8} />}
+                </span>
+                <span className="plan-strip__text">{entry.text}</span>
+              </button>
             </li>
           ))}
         </ul>
+
+        {collapsed ? null : (
+          <div className="plan-strip__actions">
+            <button
+              type="button"
+              className="plan-strip__action"
+              data-copied={copied ? 'true' : undefined}
+              title={t('Copy the plan')}
+              aria-label={t('Copy the plan')}
+              onClick={() => void copyPlan()}
+            >
+              {copied ? (
+                <Check size={11} aria-hidden="true" />
+              ) : (
+                <Copy size={11} aria-hidden="true" />
+              )}
+              <span>{copied ? t('Copied') : t('Copy the plan')}</span>
+            </button>
+            <button
+              type="button"
+              className="plan-strip__action"
+              title={t('Put the plan in the composer')}
+              aria-label={t('Put the plan in the composer')}
+              onClick={putPlanInComposer}
+            >
+              <MessageSquarePlus size={11} aria-hidden="true" />
+              <span>{t('Put the plan in the composer')}</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

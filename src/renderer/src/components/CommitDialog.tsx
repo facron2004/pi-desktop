@@ -4,6 +4,7 @@ import {
   Check,
   ChevronRight,
   Copy,
+  Eye,
   GitBranch,
   GitCommit,
   Info,
@@ -128,7 +129,14 @@ function writeDraft(value: string): void {
  * conversation, so a change the user made by hand is committed along with the
  * ones Pi made — which is what "commit everything" means.
  */
-export function CommitDialog({ onClose }: { onClose: () => void }) {
+export function CommitDialog({
+  onClose,
+  onOpenCommit
+}: {
+  onClose: () => void
+  /** Open the read-only detail of a commit from the history list. */
+  onOpenCommit?: (hash: string) => void
+}) {
   const git = useAppStore((state) => state.git)
   const commitChanges = useAppStore((state) => state.commitChanges)
   const refreshGit = useAppStore((state) => state.refreshGit)
@@ -592,6 +600,17 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
                               ) : null}
                             </span>
                           </button>
+                          {onOpenCommit ? (
+                            <button
+                              type="button"
+                              className="commit__history-copy"
+                              title={t('Open this commit')}
+                              aria-label={`${t('Open this commit')}: ${commit.subject}`}
+                              onClick={() => onOpenCommit(commit.hash)}
+                            >
+                              <Eye size={12} />
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="commit__history-copy"

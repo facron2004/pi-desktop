@@ -26,6 +26,7 @@ import { DiffView } from './DiffView'
 import { FileTree } from './FileTree'
 import { FileViewer } from './FileViewer'
 import { CommitDialog } from './CommitDialog'
+import { CommitDetailDialog } from './CommitDetailDialog'
 import { ReviewView } from './ReviewView'
 import { TextSearch } from './TextSearch'
 import { useT } from '../lib/i18n'
@@ -64,6 +65,7 @@ export function InspectorPanel({
   const diffSplit = settings.diffSplit === true
   const changes = useMemo(() => collectChanges(items), [items])
   const [commitOpen, setCommitOpen] = useState(false)
+  const [commitHash, setCommitHash] = useState<string | null>(null)
 
   // The panel is the place the review happens, so it asks git for a fresh
   // working tree every time it is opened.
@@ -528,7 +530,15 @@ export function InspectorPanel({
         </div>
       </div>
 
-      {commitOpen ? <CommitDialog onClose={() => setCommitOpen(false)} /> : null}
+      {commitOpen ? (
+        <CommitDialog
+          onClose={() => setCommitOpen(false)}
+          onOpenCommit={(hash) => setCommitHash(hash)}
+        />
+      ) : null}
+      {commitHash ? (
+        <CommitDetailDialog hash={commitHash} onClose={() => setCommitHash(null)} />
+      ) : null}
     </aside>
   )
 }

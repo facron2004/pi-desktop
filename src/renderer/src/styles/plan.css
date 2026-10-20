@@ -123,7 +123,7 @@
   gap: 1px;
   list-style: none;
   margin: 0;
-  padding: 5px 10px 8px;
+  padding: 5px 10px 3px;
   max-height: 168px;
   overflow-y: auto;
   border-top: 1px solid var(--border-soft);
@@ -135,9 +135,6 @@
 }
 
 .plan-strip__entry {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-muted);
@@ -149,6 +146,27 @@
 
 .plan-strip__entry[data-current='true'] {
   color: var(--text);
+}
+
+/* A step is a button: clicking it hands the step back to the composer, so it
+   has to look pressable without turning the list into a row of chips. */
+.plan-strip__step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  margin: 0 -5px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  transition: background 0.12s var(--ease);
+}
+
+.plan-strip__step:hover {
+  background: var(--bg-hover);
 }
 
 .plan-strip__mark {
@@ -170,12 +188,43 @@
   overflow-wrap: anywhere;
 }
 
+/* The two actions under the entries; the collapsed row keeps its one line. */
+.plan-strip__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 0 8px 6px;
+}
+
+.plan-strip__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: 11px;
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+}
+
+.plan-strip__action:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.plan-strip__action[data-copied='true'] {
+  color: var(--green);
+}
+
 /* The strip moves only to say that the progress changed; when the system asks
    for less motion it changes without the travel. */
 @media (prefers-reduced-motion: reduce) {
   .plan-strip__progress-fill,
   .plan-strip__caret,
-  .plan-strip__dismiss {
+  .plan-strip__dismiss,
+  .plan-strip__step,
+  .plan-strip__action {
     transition: none;
   }
 }

@@ -37,9 +37,11 @@ Claude Desktop.
   unstaged changes" is ticked, lists the recent commits (a subject can be reused as
   the message, and a hash copied), offers `feat`/`fix`/`docs`/… templates, and keeps
   a failed or cancelled message for the next attempt. A file's full patch — or the
-  whole working tree's — can be copied for another tool, and a renamed file shows both
-  of its paths (`old → new`) with the diff taken against the old content. A folder
-  that is not a repository simply shows no branch.
+  whole working tree's, or one hunk of a diff — can be copied for another tool, and a
+  renamed file shows both of its paths (`old → new`) with the diff taken against the
+  old content. Any commit in the history can be opened to read its file list and
+  per-file diff without leaving the app. A folder that is not a repository simply
+  shows no branch.
 - **Integrated terminal.** `Ctrl+`` opens a terminal under the conversation. Commands
   run in the project through Pi's own `bash` command, the output streams in as it
   arrives, and each block says its exit code and how long it took. The drawer can be
@@ -120,7 +122,8 @@ Claude Desktop.
 - **The plan on screen.** When the agent writes a checklist, the app lifts it into a
   strip above the composer: how many steps are done, which one is current, and the
   whole list one click away. It is read from the conversation, so it needs no tool of
-  its own — and a new plan opens again on its own.
+  its own — and a new plan opens again on its own. The plan can be copied as a
+  markdown checklist, dropped into the composer whole, or picked apart step by step.
 - **Retries you can see.** When a request fails with a transient error, Pi retries it on its
   own. The app says so — with the attempt, the reason and a button that stops the retry
   instead of waiting it out.
@@ -215,9 +218,9 @@ drawer, the commit dialog, the search across conversations, the git review tab,
 the plan strip, a jump from a search hit, the commit history, the model menu, the
 image lightbox, git staging, a command handed to the terminal, the session tree,
 a fork started from it, the project text search, the pre-commit checks, a renamed
-file with a copied patch, the file viewer's find bar, and the session-tree filter.
-The roadmap for the remaining Codex-style work is in
-[`docs/codex-parity.md`](docs/codex-parity.md).
+file with a copied patch, the file viewer's find bar, the session-tree filter, an
+opened commit, a copied hunk and the plan's actions. The roadmap for the remaining
+Codex-style work is in [`docs/codex-parity.md`](docs/codex-parity.md).
 
 ## Architecture
 
