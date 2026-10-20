@@ -151,6 +151,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   fontScale: 1,
   diffSplit: false,
   drawerWidth: 420,
+  terminalHeight: 280,
   trustProject: true
 }
 

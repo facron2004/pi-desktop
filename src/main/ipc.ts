@@ -16,7 +16,7 @@ import type {
 import { checkAuth, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
 import { PiRuntime } from './pi/runtime'
-import { commitAll, readLog, readStatus } from './git'
+import { commitAll, readFileDiff, readLog, readStatus, revertFile } from './git'
 import { SettingsStore } from './settings'
 import { listSessions, resolveSessionRoot, searchSessions } from './sessions'
 
@@ -239,6 +239,14 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('git:commit', (_event, message: string) =>
     commitAll(workspaceRoot(context), message)
+  )
+
+  ipcMain.handle('git:fileDiff', (_event, file: string) =>
+    readFileDiff(workspaceRoot(context), file)
+  )
+
+  ipcMain.handle('git:revertFile', (_event, file: string) =>
+    revertFile(workspaceRoot(context), file)
   )
 
   ipcMain.handle('fs:list', (_event, dir: string): FileEntry[] => {

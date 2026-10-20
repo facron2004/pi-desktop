@@ -119,6 +119,10 @@ an id prefixed `terminal-` and `excludeFromContext: true`. The store drops
 `bashExecution` messages that carry `excludeFromContext` — so a command typed
 into the terminal never appears in the conversation or in the model's context.
 
+Pi strips ANSI escape sequences from the bash output before it reaches the
+client, so `parseAnsi` in `lib/ansi.ts` is a safety net for future colour
+output, not something the current `bash` path exercises.
+
 ## Git
 
 The branch chip, the review panel and the commit dialog read git from the folder
@@ -129,6 +133,19 @@ handler returns `{ isRepo: false }` rather than failing.
 Committing stages everything (`git add -A`) and commits it. That includes
 changes the user made by hand, which is what "commit the working tree" means —
 do not narrow it to the files the conversation touched without saying so.
+
+The Review tab reads the same status through `git:fileDiff`: old side from
+`git show HEAD:path`, new side from disk, then the renderer rebuilds a line diff
+with `buildDiff`. Reverting restores a tracked file with `git checkout HEAD --`
+after a confirmation; an untracked file is deliberately not deleted.
+
+## The plan strip
+
+`PlanStrip` is a projection, not a feature of the protocol: `extractPlan` reads
+markdown checklists out of the newest assistant message and returns `null` for
+anything shorter than two entries. Collapse/dismiss are view preferences keyed
+by the source message id, so a new plan opens expanded. Do not add store state
+for it — the thread is the source of truth.
 
 ## Style
 

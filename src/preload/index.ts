@@ -8,6 +8,7 @@ import type {
   FileEntry,
   GitCommit,
   GitCommitResult,
+  GitFileDiff,
   GitStatus,
   PiDesktopBridge,
   PiEvent,
@@ -69,7 +70,10 @@ const bridge: PiDesktopBridge = {
     status: (): Promise<GitStatus> => ipcRenderer.invoke('git:status'),
     log: (limit?: number): Promise<GitCommit[]> => ipcRenderer.invoke('git:log', limit),
     commit: (message: string): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:commit', message)
+      ipcRenderer.invoke('git:commit', message),
+    fileDiff: (file: string): Promise<GitFileDiff> => ipcRenderer.invoke('git:fileDiff', file),
+    revertFile: (file: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:revertFile', file)
   },
   shell: {
     openPath: (target: string): Promise<string> => ipcRenderer.invoke('shell:openPath', target),

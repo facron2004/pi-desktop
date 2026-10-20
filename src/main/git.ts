@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import type { GitCommit, GitCommitResult, GitFileStatus, GitStatus } from '@shared/types'
+import type { GitCommit, GitCommitResult, GitFileDiff, GitFileStatus, GitStatus } from '@shared/types'
 
 const run = promisify(execFile)
 
@@ -11,6 +11,8 @@ const COMMIT_TIMEOUT_MS = 120_000
 /** Untracked files larger than this are counted as one line instead of read. */
 const MAX_UNTRACKED_BYTES = 512 * 1024
 const MAX_UNTRACKED_STATS = 60
+/** How much of either side of a review diff is sent to the renderer. */
+const MAX_DIFF_BYTES = 512 * 1024
 
 interface GitOutput {
   code: number
@@ -173,6 +175,123 @@ function cleanError(text: string): string {
     .filter((line) => line && !/^\(use "git /i.test(line) && !/^hint:/i.test(line))
     .slice(0, 4)
     .join(' ')
+}
+
+/** Resolve a repository-relative path, or null when it escapes the work tree. */
+function insideWorkTree(root: string, relative: string): string | null {
+  const target = path.resolve(root, relative)
+  const relation = path.relative(path.resolve(root), target)
+  if (relation.startsWith('..') || path.isAbsolute(relation)) return null
+  return target
+}
+
+function looksBinary(buffer: Buffer): boolean {
+  return buffer.subarray(0, 8000).includes(0)
+}
+
+function capText(text: string): { text: string; truncated: boolean } {
+  if (Buffer.byteLength(text, 'utf8') <= MAX_DIFF_BYTES) return { text, truncated: false }
+  return { text: text.slice(0, MAX_DIFF_BYTES), truncated: true }
+}
+
+/**
+ * Both sides of one working-tree file.
+ *
+ * The review tab builds a line diff from these, so it can reuse the renderer
+ * the thread already uses for tool edits. Keeping it to two strings also means
+ * the diff looks the same whether the change came from Pi or from an editor.
+ */
+export async function readFileDiff(root: string, filePath: string): Promise<GitFileDiff> {
+  const blank: GitFileDiff = {
+    path: filePath,
+    status: '',
+    untracked: false,
+    oldText: '',
+    newText: '',
+    binary: false,
+    truncated: false
+  }
+  if (!root || !filePath) return { ...blank, error: 'No file was given.' }
+  const target = insideWorkTree(root, filePath)
+  if (!target) return { ...blank, error: 'The file is outside the project.' }
+
+  const status = await git(root, ['status', '--porcelain=v1', '--', filePath])
+  const line = status.stdout.split('\n').find((entry) => entry.trim())
+  const letters = line ? line.slice(0, 2) : ' M'
+  const untracked = letters === '??'
+
+  // The old side comes from HEAD; a file that was never committed has none.
+  let oldText = ''
+  let oldTruncated = false
+  let binary = false
+  if (!untracked) {
+    const shown = await git(root, ['show', `HEAD:${filePath.replace(/\\/g, '/')}`])
+    if (shown.code === 0) {
+      if (shown.stdout.includes('\u0000')) {
+        binary = true
+      } else {
+        const capped = capText(shown.stdout)
+        oldText = capped.text
+        oldTruncated = capped.truncated
+      }
+    }
+  }
+
+  // The new side comes from disk; a deleted file has none.
+  let newText = ''
+  let newTruncated = false
+  try {
+    const buffer = await readFile(target)
+    if (looksBinary(buffer)) {
+      binary = true
+    } else {
+      const capped = capText(buffer.toString('utf8'))
+      newText = capped.text
+      newTruncated = capped.truncated
+    }
+  } catch {
+    /* a deleted or unreadable file only has the old side */
+  }
+
+  if (binary) {
+    oldText = ''
+    newText = ''
+  }
+  return {
+    path: filePath,
+    status: letters,
+    untracked,
+    oldText,
+    newText,
+    binary,
+    truncated: oldTruncated || newTruncated
+  }
+}
+
+/**
+ * Discard the working-tree changes of one tracked file.
+ *
+ * Restoring from HEAD also unstages the file, which is what "revert" means
+ * here. A file that was never committed is left alone — deleting it is the
+ * user's decision, not a diff button's.
+ */
+export async function revertFile(root: string, filePath: string): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  const status = await readStatus(root)
+  if (!status.isRepo) return { ok: false, error: 'This folder is not a git repository.' }
+  const file = status.files.find((entry) => entry.path === filePath)
+  if (!file) return { ok: false, error: 'That file has no uncommitted changes.' }
+  if (file.untracked) {
+    return { ok: false, error: 'A new file is not reverted; delete it if you do not want it.' }
+  }
+  const head = await git(root, ['rev-parse', '--verify', 'HEAD'])
+  if (head.code !== 0) return { ok: false, error: 'The repository has no commit to go back to.' }
+
+  const result = await git(root, ['checkout', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
+  if (result.code !== 0) {
+    return { ok: false, error: cleanError(result.stderr) || 'git checkout failed.' }
+  }
+  return { ok: true }
 }
 
 /**

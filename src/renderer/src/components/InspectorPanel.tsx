@@ -10,6 +10,7 @@ import {
   FilePlus,
   Files,
   GitCommit,
+  GitCompare,
   MessageSquare,
   Pencil,
   Rows3,
@@ -25,9 +26,10 @@ import { DiffView } from './DiffView'
 import { FileTree } from './FileTree'
 import { FileViewer } from './FileViewer'
 import { CommitDialog } from './CommitDialog'
+import { ReviewView } from './ReviewView'
 import { useT } from '../lib/i18n'
 
-type Tab = 'changes' | 'files'
+type Tab = 'changes' | 'files' | 'review'
 
 const MIN_WIDTH = 300
 const MAX_WIDTH = 920
@@ -256,6 +258,21 @@ export function InspectorPanel({
           </button>
           <button
             className="drawer__tab"
+            data-active={tab === 'review' && !openFile}
+            onClick={() => {
+              setTab('review')
+              setOpenFile(null)
+            }}
+            title={t('Review the uncommitted changes of the project')}
+          >
+            <GitCompare size={13} />
+            {t('Review')}
+            {git?.isRepo && git.files.length > 0 ? (
+              <span className="drawer__count">{git.files.length}</span>
+            ) : null}
+          </button>
+          <button
+            className="drawer__tab"
             data-active={tab === 'files' && !openFile}
             onClick={() => {
               setTab('files')
@@ -267,13 +284,13 @@ export function InspectorPanel({
           </button>
         </div>
         <span style={{ flex: 1 }} />
-        {changes.length > 0 && (totals.added || totals.removed) ? (
+        {tab === 'changes' && changes.length > 0 && (totals.added || totals.removed) ? (
           <span className="drawer__stats" title={t('Lines added and removed over all files')}>
             {totals.added ? <span data-kind="add">+{totals.added}</span> : null}
             {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
           </span>
         ) : null}
-        {tab === 'changes' && git?.isRepo ? (
+        {tab !== 'files' && git?.isRepo ? (
           <button
             className="ghost-btn drawer__commit"
             onClick={() => setCommitOpen(true)}
@@ -289,7 +306,7 @@ export function InspectorPanel({
             {git.clean ? null : <span className="drawer__count">{git.files.length}</span>}
           </button>
         ) : null}
-        {tab === 'changes' && changes.length > 0 ? (
+        {tab !== 'files' && (tab === 'review' || changes.length > 0) ? (
           <div className="segmented segmented--tight" title={t('Diff layout')}>
             <button
               data-active={!diffSplit}
@@ -319,7 +336,11 @@ export function InspectorPanel({
           <FileTree root={workspace?.path ?? ''} onOpen={(path) => setOpenFile({ path })} />
         </div>
 
-        <div className="drawer__pane" data-active={!openFile && tab !== 'files'}>
+        <div className="drawer__pane" data-active={!openFile && tab === 'review'}>
+          <ReviewView onOpenFile={setOpenFile} />
+        </div>
+
+        <div className="drawer__pane" data-active={!openFile && tab === 'changes'}>
           {changes.length === 0 ? (
             <div className="drawer__empty">
               {git?.isRepo && git.files.length > 0

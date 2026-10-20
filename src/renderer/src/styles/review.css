@@ -1,0 +1,237 @@
+.review {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.review__bar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+}
+
+.review__filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--bg-deep);
+  color: var(--text-faint);
+}
+
+.review__filter:focus-within {
+  border-color: var(--border-strong);
+}
+
+.review__filter input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.review__filter input::placeholder {
+  color: var(--text-faint);
+}
+
+.review__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.review__totals {
+  display: inline-flex;
+  gap: 6px;
+  padding-right: 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.review__totals [data-kind='add'],
+.review__stats [data-kind='add'] {
+  color: var(--green);
+}
+
+.review__totals [data-kind='del'],
+.review__stats [data-kind='del'] {
+  color: var(--red);
+}
+
+.review__state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 14px 16px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.review__empty {
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.review__empty p {
+  margin: 0 0 6px;
+}
+
+.review__empty-hint {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.review__list {
+  display: flex;
+  flex-direction: column;
+}
+
+.review__file {
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.review__file[data-open='true'] {
+  background: var(--bg-deep);
+}
+
+.review__head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 4px;
+}
+
+.review__file:hover .review__head {
+  background: var(--bg-hover);
+}
+
+.review__toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 4px;
+  text-align: left;
+  border-radius: 6px;
+}
+
+.review__toggle:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -2px;
+}
+
+.review__chevron {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  transition: transform 0.14s var(--ease);
+}
+
+.review__file[data-open='true'] .review__chevron {
+  transform: rotate(90deg);
+}
+
+.review__status {
+  flex: 0 0 auto;
+  width: 15px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.review__status[data-kind='add'] {
+  color: var(--green);
+}
+
+.review__status[data-kind='del'] {
+  color: var(--red);
+}
+
+.review__status[data-kind='edit'] {
+  color: var(--blue);
+}
+
+.review__status[data-kind='rename'] {
+  color: var(--violet);
+}
+
+.review__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.review__file[data-open='true'] .review__path {
+  color: var(--text);
+}
+
+.review__stats {
+  display: inline-flex;
+  gap: 6px;
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.review__file-actions {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity 0.12s var(--ease);
+}
+
+.review__file:hover .review__file-actions,
+.review__file:focus-within .review__file-actions {
+  opacity: 1;
+}
+
+.review__revert:hover {
+  color: var(--red);
+}
+
+.review__body {
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+}
+
+.review__note {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--warning, var(--text-faint));
+  border-bottom: 1px solid var(--border-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review__chevron,
+  .review__file-actions {
+    transition: none;
+  }
+}

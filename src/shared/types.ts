@@ -330,6 +330,27 @@ export interface GitCommitResult {
   files?: number
 }
 
+/**
+ * The two sides of one working-tree file, for the review tab.
+ *
+ * The renderer turns them into a line diff with the same builder the thread
+ * uses, so a review looks exactly like an inline diff.
+ */
+export interface GitFileDiff {
+  path: string
+  /** Porcelain status of the file: two letters, or `??` when untracked. */
+  status: string
+  untracked: boolean
+  /** Content at HEAD — empty for a file that was just created. */
+  oldText: string
+  /** Content in the working tree — empty for a deleted file. */
+  newText: string
+  binary: boolean
+  /** One of the sides was too large to read whole. */
+  truncated: boolean
+  error?: string
+}
+
 export type ThemePreference = 'dark' | 'light' | 'system'
 export type AppLanguage = 'en' | 'zh-CN'
 
@@ -356,6 +377,8 @@ export interface AppSettings {
   drawerWidth: number
   /** Width of the sidebar in pixels. */
   sidebarWidth?: number
+  /** Height of the terminal drawer in pixels. */
+  terminalHeight?: number
   /** Automatically accept the working directory of new workspaces. */
   trustProject: boolean
 }
@@ -438,6 +461,10 @@ export interface PiDesktopBridge {
     log(limit?: number): Promise<GitCommit[]>
     /** Stage everything and commit it with `message`. */
     commit(message: string): Promise<GitCommitResult>
+    /** Both sides of one working-tree file, for the review tab. */
+    fileDiff(file: string): Promise<GitFileDiff>
+    /** Discard the working-tree changes of a tracked file. */
+    revertFile(file: string): Promise<GitCommitResult>
   }
   shell: {
     openPath(target: string): Promise<string>

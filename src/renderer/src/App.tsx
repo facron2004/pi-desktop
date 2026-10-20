@@ -22,6 +22,7 @@ import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
 import { Launcher, useLauncherActions } from './components/Launcher'
 import { TerminalPanel } from './components/TerminalPanel'
+import { PlanStrip } from './components/PlanStrip'
 import { useT } from './lib/i18n'
 
 export default function App() {
@@ -452,6 +453,8 @@ export default function App() {
             ))}
           </div>
         ))}
+
+        <PlanStrip />
 
         {terminalOpen ? <TerminalPanel onClose={() => setTerminalOpen(false)} /> : null}
 

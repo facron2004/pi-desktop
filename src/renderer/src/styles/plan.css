@@ -1,0 +1,181 @@
+/* ------------------------------------------------------------------ *
+ * Plan strip
+ *
+ * The checklist the agent is working through, above the composer. It reads as
+ * part of the composer rather than as another message: same width, same
+ * tokens, one compact line until the user opens it.
+ * ------------------------------------------------------------------ */
+
+.plan-strip {
+  flex: 0 0 auto;
+  padding: 0 24px 8px;
+}
+
+.plan-strip__inner {
+  max-width: 900px;
+  margin: 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.plan-strip__head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 10px;
+}
+
+.plan-strip__toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  text-align: left;
+  color: var(--text-muted);
+}
+
+.plan-strip__icon {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.plan-strip__count {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.plan-strip__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.plan-strip__label[data-complete='true'] {
+  color: var(--green);
+}
+
+.plan-strip__caret {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  transform: rotate(-90deg);
+  transition: transform 0.18s var(--ease);
+}
+
+.plan-strip__caret[data-open='true'] {
+  transform: rotate(0deg);
+}
+
+.plan-strip__dismiss {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  opacity: 0;
+  transition: background 0.12s var(--ease), color 0.12s var(--ease), opacity 0.12s var(--ease);
+}
+
+/* The dismissal stays out of the way until the strip is pointed at, but a
+   keyboard user has to be able to reach it. */
+.plan-strip:hover .plan-strip__dismiss,
+.plan-strip__dismiss:focus-visible {
+  opacity: 1;
+}
+
+.plan-strip__dismiss:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.plan-strip__progress {
+  height: 2px;
+  background: var(--border-soft);
+}
+
+.plan-strip__progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s var(--ease), background 0.25s var(--ease);
+}
+
+.plan-strip__progress-fill[data-complete='true'] {
+  background: var(--green);
+}
+
+.plan-strip__entries {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  list-style: none;
+  margin: 0;
+  padding: 5px 10px 8px;
+  max-height: 168px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* The list is laid out flex when it is open, so `hidden` has to win. */
+.plan-strip__entries[hidden] {
+  display: none;
+}
+
+.plan-strip__entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.plan-strip__entry[data-done='true'] {
+  color: var(--text-faint);
+}
+
+.plan-strip__entry[data-current='true'] {
+  color: var(--text);
+}
+
+.plan-strip__mark {
+  flex: 0 0 14px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+
+.plan-strip__entry[data-done='true'] .plan-strip__mark {
+  color: var(--green);
+}
+
+.plan-strip__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The strip moves only to say that the progress changed; when the system asks
+   for less motion it changes without the travel. */
+@media (prefers-reduced-motion: reduce) {
+  .plan-strip__progress-fill,
+  .plan-strip__caret,
+  .plan-strip__dismiss {
+    transition: none;
+  }
+}

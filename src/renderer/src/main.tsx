@@ -4,6 +4,7 @@ import App from './App'
 import './styles/tokens.css'
 import './styles/global.css'
 import './styles/terminal.css'
+import './styles/plan.css'
 
 const container = document.getElementById('root')
 if (!container) throw new Error('Root container is missing')

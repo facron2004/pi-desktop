@@ -32,17 +32,21 @@ Claude Desktop.
   app. A folder that is not a repository simply shows no branch.
 - **Integrated terminal.** `Ctrl+`` opens a terminal under the conversation. Commands
   run in the project through Pi's own `bash` command, the output streams in as it
-  arrives, and each block says its exit code and how long it took. A command can be
-  stopped, the history is recalled with `↑`/`↓`, and the output can be copied or
-  cleared. Terminal commands are kept out of the model's context.
+  arrives, and each block says its exit code and how long it took. The drawer can be
+  dragged taller and keeps its height, `Ctrl+C` stops the running command, `↑`/`↓`
+  recall history, and the output can be filtered, copied or cleared. Terminal commands
+  are kept out of the model's context.
 - **Search the conversations.** The sidebar filter looks at titles and projects; type
   two characters and it also searches the text of every conversation on disk. Each hit
   says who said it, shows the sentence with the match marked, and opens the
   conversation when clicked.
-- **Project inspector.** A docked panel with two tabs: **Changes** lists every file the
-  agent edited or created in this session, with the line counts of each change, and
-  **Files** is a project tree you can search by name and read in place, with syntax
-  highlighting and line numbers. Diffs can be shown unified or side by side, the folded
+- **Project inspector.** A docked panel with three tabs. **Changes** lists every file
+  the agent edited or created in this session, with the line counts of each change;
+  **Review** reads the git working tree instead, so edits made outside the app show up
+  too — every file expands to its real diff, and a tracked file can be reverted to HEAD
+  after a confirmation; **Files** is a project tree you can search by name and read in
+  place, with syntax highlighting and line numbers. Diffs can be shown unified or side
+  by side, the folded
   runs of unchanged lines can be opened all at once, and the panel can be dragged to any
   width. A line number in a diff opens the file at that line, so a change can be
   followed into the code around it. The list of changed files can be filtered, copied to
@@ -85,6 +89,10 @@ Claude Desktop.
   steering and follow-up messages are delivered.
 - **Steering.** While Pi is working you can steer it ("stop and do this instead") or
   queue a follow-up for when it finishes.
+- **The plan on screen.** When the agent writes a checklist, the app lifts it into a
+  strip above the composer: how many steps are done, which one is current, and the
+  whole list one click away. It is read from the conversation, so it needs no tool of
+  its own — and a new plan opens again on its own.
 - **Retries you can see.** When a request fails with a transient error, Pi retries it on its
   own. The app says so — with the attempt, the reason and a button that stops the retry
   instead of waiting it out.
@@ -174,8 +182,9 @@ node scripts/rpc-ui-smoke.mjs
 
 Screenshots live in [`docs/shots/`](docs/shots): the welcome screen, a real
 conversation with an inline diff, the light theme, the app mid-run, the terminal
-drawer, the commit dialog, and the search across conversations. The roadmap for
-the remaining Codex-style work is in [`docs/codex-parity.md`](docs/codex-parity.md).
+drawer, the commit dialog, the search across conversations, the git review tab
+and the plan strip. The roadmap for the remaining Codex-style work is in
+[`docs/codex-parity.md`](docs/codex-parity.md).
 
 ## Architecture
 

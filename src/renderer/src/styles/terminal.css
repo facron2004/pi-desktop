@@ -8,14 +8,55 @@
  * ------------------------------------------------------------------ */
 
 .terminal {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   height: clamp(240px, 32vh, 320px);
-  min-height: 200px;
+  min-height: 160px;
+  max-height: 65vh;
   border-top: 1px solid var(--border);
   background: var(--bg-deep);
   animation: terminal-rise 0.16s var(--ease);
+}
+
+/* The top edge of the drawer is the resize handle. Its hit area is wider than
+   the line it draws so the grab is easy and the line stays quiet at rest. */
+.terminal__resizer {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  height: 7px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.terminal__resizer::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: transparent;
+  transition: background 0.14s var(--ease);
+}
+
+.terminal__resizer:hover::after,
+.terminal__resizer:focus-visible::after,
+body.terminal-resizing .terminal__resizer::after {
+  background: var(--accent-line);
+}
+
+.terminal__resizer:focus-visible {
+  outline: none;
+}
+
+body.terminal-resizing {
+  cursor: row-resize;
+  user-select: none;
 }
 
 @keyframes terminal-rise {
@@ -121,6 +162,60 @@
 
 .terminal__spacer {
   flex: 1 1 auto;
+}
+
+/* Filter box: narrows the log to the commands whose text matches. */
+.terminal__filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 1 170px;
+  min-width: 84px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--bg-deep);
+  color: var(--text-faint);
+  transition: border-color 0.12s var(--ease), background 0.12s var(--ease);
+}
+
+.terminal__filter:focus-within {
+  border-color: var(--border-strong);
+  background: var(--bg);
+}
+
+.terminal__filter > svg {
+  flex: 0 0 auto;
+}
+
+.terminal__filter input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text);
+}
+
+.terminal__filter input::placeholder {
+  color: var(--text-faint);
+}
+
+.terminal__filter-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  color: var(--text-faint);
+}
+
+.terminal__filter-clear:hover {
+  color: var(--text-muted);
 }
 
 .terminal__actions {
@@ -292,6 +387,95 @@
 .terminal__output--muted {
   color: var(--text-faint);
   font-style: italic;
+}
+
+/* ------------------------------------------------------------------ *
+ * ANSI colour runs
+ *
+ * The parser emits one span per run. The colours come from the same tokens
+ * as the rest of the app; the hues the palette does not carry (yellow,
+ * magenta, cyan) are mixed from the tokens rather than hard-coded, so both
+ * themes stay consistent.
+ * ------------------------------------------------------------------ */
+
+.terminal__seg {
+  color: inherit;
+}
+
+.terminal__seg--bold {
+  font-weight: 600;
+}
+
+.terminal__seg--dim {
+  opacity: 0.72;
+}
+
+.terminal__seg--tone-black {
+  color: var(--text-faint);
+}
+
+.terminal__seg--tone-red {
+  color: var(--red);
+}
+
+.terminal__seg--tone-green {
+  color: var(--green);
+}
+
+.terminal__seg--tone-yellow {
+  color: color-mix(in srgb, var(--green) 52%, var(--red));
+}
+
+.terminal__seg--tone-blue {
+  color: var(--blue);
+}
+
+.terminal__seg--tone-magenta {
+  color: var(--violet);
+}
+
+.terminal__seg--tone-cyan {
+  color: color-mix(in srgb, var(--green) 48%, var(--blue));
+}
+
+.terminal__seg--tone-white {
+  color: var(--text);
+}
+
+.terminal__seg--tone-dim {
+  color: var(--text-faint);
+}
+
+.terminal__seg--tone-bright-black {
+  color: var(--text-muted);
+}
+
+.terminal__seg--tone-bright-red {
+  color: color-mix(in srgb, var(--red) 68%, var(--text));
+}
+
+.terminal__seg--tone-bright-green {
+  color: color-mix(in srgb, var(--green) 68%, var(--text));
+}
+
+.terminal__seg--tone-bright-yellow {
+  color: color-mix(in srgb, color-mix(in srgb, var(--green) 52%, var(--red)) 68%, var(--text));
+}
+
+.terminal__seg--tone-bright-blue {
+  color: color-mix(in srgb, var(--blue) 68%, var(--text));
+}
+
+.terminal__seg--tone-bright-magenta {
+  color: color-mix(in srgb, var(--violet) 68%, var(--text));
+}
+
+.terminal__seg--tone-bright-cyan {
+  color: color-mix(in srgb, color-mix(in srgb, var(--green) 48%, var(--blue)) 68%, var(--text));
+}
+
+.terminal__seg--tone-bright-white {
+  color: var(--accent);
 }
 
 /* ------------------------------------------------------------------ *

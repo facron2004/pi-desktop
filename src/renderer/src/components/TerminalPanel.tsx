@@ -1,10 +1,57 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowDown, Copy, Eraser, Folder, Square, SquareTerminal, X } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDown, Copy, Eraser, Folder, Search, Square, SquareTerminal, X } from 'lucide-react'
 import type { PiEvent } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { formatDuration } from '../lib/format'
 import { scrollBehavior } from '../lib/motion'
 import { useT } from '../lib/i18n'
+import { parseAnsi, stripAnsi, type AnsiSegment } from '../lib/ansi'
+
+const MIN_TERMINAL_HEIGHT = 160
+const DEFAULT_TERMINAL_HEIGHT = 280
+/** The drawer may not swallow the conversation above it. */
+const MAX_TERMINAL_HEIGHT_RATIO = 0.65
+const RESIZE_STEP = 16
+
+function clampHeight(value: number): number {
+  const max = Math.round(window.innerHeight * MAX_TERMINAL_HEIGHT_RATIO)
+  return Math.max(MIN_TERMINAL_HEIGHT, Math.min(max, Math.round(value)))
+}
+
+function segmentClassName(segment: AnsiSegment): string {
+  const names = ['terminal__seg']
+  if (segment.tone) names.push(`terminal__seg--tone-${segment.tone}`)
+  if (segment.bold) names.push('terminal__seg--bold')
+  if (segment.dim) names.push('terminal__seg--dim')
+  return names.join(' ')
+}
+
+/**
+ * The output of one command, with SGR colour runs turned into spans.
+ *
+ * The stored text stays untouched: copy reads it with `stripAnsi`, so the
+ * clipboard never carries escape bytes.
+ */
+function AnsiText({ text }: { text: string }) {
+  const segments = useMemo(() => parseAnsi(text), [text])
+  const styled = segments.some((segment) => segment.tone || segment.bold || segment.dim)
+  if (!styled) {
+    return (
+      <pre className="terminal__output">
+        {segments.map((segment) => segment.text).join('')}
+      </pre>
+    )
+  }
+  return (
+    <pre className="terminal__output">
+      {segments.map((segment, index) => (
+        <span key={index} className={segmentClassName(segment)}>
+          {segment.text}
+        </span>
+      ))}
+    </pre>
+  )
+}
 
 /** The payload of Pi's `bash` command, as far as the panel cares. */
 interface BashResult {
@@ -44,6 +91,8 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
   const status = useAppStore((state) => state.status)
   const workspace = useAppStore((state) => state.workspace)
   const showToast = useAppStore((state) => state.showToast)
+  const storedHeight = useAppStore((state) => state.settings.terminalHeight)
+  const updateSettings = useAppStore((state) => state.updateSettings)
   const ready = status.phase === 'ready'
 
   const [blocks, setBlocks] = useState<TerminalBlock[]>([])
@@ -54,16 +103,64 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
   const [running, setRunning] = useState<string | null>(null)
   const [stopping, setStopping] = useState(false)
   const [atBottom, setAtBottom] = useState(true)
+  // The drag updates this locally; the store only hears about it on release.
+  const [height, setHeight] = useState(() => clampHeight(storedHeight ?? DEFAULT_TERMINAL_HEIGHT))
+  const [filter, setFilter] = useState('')
 
   const inputRef = useRef<HTMLInputElement>(null)
   const logRef = useRef<HTMLDivElement>(null)
+  const filterRef = useRef<HTMLInputElement>(null)
   const stickRef = useRef(true)
   const draftRef = useRef('')
   const runningRef = useRef<string | null>(null)
   const sequenceRef = useRef(0)
+  const heightRef = useRef(height)
+  const draggingRef = useRef(false)
   // Command ids whose events land in this panel, and when they started.
   const activeRef = useRef<Set<string>>(new Set())
   const startedRef = useRef<Map<string, number>>(new Map())
+  // Ids the reader stopped, so the block shows "Cancelled" even if Pi's
+  // response does not say so itself.
+  const stoppedRef = useRef<Set<string>>(new Set())
+
+  // The filter only hides blocks; the log and the copy still hold everything.
+  const filterQuery = filter.trim()
+  const visibleBlocks = useMemo(() => {
+    if (!filterQuery) return blocks
+    const needle = filterQuery.toLowerCase()
+    return blocks.filter(
+      (block) =>
+        block.command.toLowerCase().includes(needle) ||
+        stripAnsi(block.output).toLowerCase().includes(needle)
+    )
+  }, [blocks, filterQuery])
+
+  useEffect(() => {
+    heightRef.current = height
+  }, [height])
+
+  // The stored value can land after the drawer mounted (bootstrap) or change
+  // elsewhere; follow it unless a drag is in progress.
+  useEffect(() => {
+    if (draggingRef.current || typeof storedHeight !== 'number') return
+    const next = clampHeight(storedHeight)
+    heightRef.current = next
+    setHeight(next)
+  }, [storedHeight])
+
+  // A smaller window must not leave the drawer taller than 65% of it.
+  useEffect(() => {
+    const onWindowResize = () => {
+      const next = clampHeight(heightRef.current)
+      heightRef.current = next
+      setHeight(next)
+    }
+    window.addEventListener('resize', onWindowResize)
+    return () => window.removeEventListener('resize', onWindowResize)
+  }, [])
+
+  // A drag that ends in an unmount must not leave the resize cursor behind.
+  useEffect(() => () => document.body.classList.remove('terminal-resizing'), [])
 
   // The streamed output is the full text; the final response may be the
   // truncated version of it, so the events are appended as they arrive.
@@ -115,7 +212,7 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
     const node = logRef.current
     if (!node || !stickRef.current) return
     node.scrollTop = node.scrollHeight
-  }, [blocks])
+  }, [visibleBlocks, height])
 
   // The reader can scroll up to read an earlier command; from then on the log
   // stays where it is instead of jumping to the newest output.
@@ -138,6 +235,70 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
     setAtBottom(true)
     node.scrollTo({ top: node.scrollHeight, behavior: scrollBehavior() })
   }, [])
+
+  // The handle is the top edge of the drawer: dragging it up makes the drawer
+  // taller. The height is local while the pointer is down and only the release
+  // writes it to the settings, so a drag is one settings change rather than one
+  // per pixel.
+  const startResize = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return
+      event.preventDefault()
+      const handle = event.currentTarget
+      const startY = event.clientY
+      const startHeight = heightRef.current
+      draggingRef.current = true
+      document.body.classList.add('terminal-resizing')
+
+      const move = (moveEvent: PointerEvent) => {
+        const next = clampHeight(startHeight + (startY - moveEvent.clientY))
+        heightRef.current = next
+        setHeight(next)
+      }
+      const finish = () => {
+        if (!draggingRef.current) return
+        draggingRef.current = false
+        handle.removeEventListener('pointermove', move)
+        handle.removeEventListener('pointerup', finish)
+        handle.removeEventListener('pointercancel', finish)
+        handle.removeEventListener('lostpointercapture', finish)
+        document.body.classList.remove('terminal-resizing')
+        void updateSettings({ terminalHeight: heightRef.current })
+      }
+
+      handle.setPointerCapture(event.pointerId)
+      handle.addEventListener('pointermove', move)
+      handle.addEventListener('pointerup', finish)
+      handle.addEventListener('pointercancel', finish)
+      handle.addEventListener('lostpointercapture', finish)
+    },
+    [updateSettings]
+  )
+
+  // The same handle works from the keyboard: arrows resize by a step, Escape
+  // still belongs to the drawer.
+  const resizeFromKeyboard = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      const step = event.shiftKey ? RESIZE_STEP * 4 : RESIZE_STEP
+      let delta = 0
+      if (event.key === 'ArrowUp') delta = step
+      else if (event.key === 'ArrowDown') delta = -step
+      else return
+      event.preventDefault()
+      const next = clampHeight(heightRef.current + delta)
+      heightRef.current = next
+      setHeight(next)
+      void updateSettings({ terminalHeight: next })
+    },
+    [updateSettings]
+  )
+
+  const resetHeight = useCallback(() => {
+    const next = clampHeight(DEFAULT_TERMINAL_HEIGHT)
+    heightRef.current = next
+    setHeight(next)
+    void updateSettings({ terminalHeight: next })
+  }, [updateSettings])
 
   const submit = useCallback(() => {
     const command = input.trim()
@@ -182,7 +343,7 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
                       : result.output ?? '',
                   status: 'done',
                   exitCode: typeof result.exitCode === 'number' ? result.exitCode : undefined,
-                  cancelled: result.cancelled === true,
+                  cancelled: result.cancelled === true || stoppedRef.current.has(id),
                   truncated: result.truncated === true,
                   fullOutputPath: result.fullOutputPath,
                   durationMs: started === undefined ? undefined : Date.now() - started
@@ -192,14 +353,21 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
         )
       } catch (error) {
         const started = startedRef.current.get(id)
+        const cancelled = stoppedRef.current.has(id)
         const message = error instanceof Error ? error.message : String(error)
         setBlocks((previous) =>
           previous.map((block) =>
             block.id === id
               ? {
                   ...block,
-                  status: 'error',
-                  output: block.output ? `${block.output}\n${message}` : message,
+                  status: cancelled ? 'done' : 'error',
+                  cancelled,
+                  // A stop is not a failure: the partial output is all there is.
+                  output: cancelled
+                    ? block.output
+                    : block.output
+                      ? `${block.output}\n${message}`
+                      : message,
                   durationMs: started === undefined ? undefined : Date.now() - started
                 }
               : block
@@ -208,6 +376,7 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
       } finally {
         activeRef.current.delete(id)
         startedRef.current.delete(id)
+        stoppedRef.current.delete(id)
         runningRef.current = null
         setRunning(null)
         setStopping(false)
@@ -216,12 +385,21 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
     })()
   }, [input, ready, history])
 
+  // The Stop button and Ctrl+C share this path: the runtime is asked to abort
+  // the command, and the block is marked cancelled straight away so the log
+  // does not keep claiming that it runs.
   const stop = useCallback(async () => {
-    if (!runningRef.current) return
+    const id = runningRef.current
+    if (!id) return
+    stoppedRef.current.add(id)
     setStopping(true)
     try {
       await window.pi.runtime.request('abort_bash')
+      setBlocks((previous) =>
+        previous.map((block) => (block.id === id ? { ...block, cancelled: true } : block))
+      )
     } catch {
+      stoppedRef.current.delete(id)
       setStopping(false)
     }
   }, [])
@@ -235,7 +413,10 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
 
   const copyOutput = useCallback(async () => {
     const text = blocks
-      .map((block) => (block.output ? `$ ${block.command}\n${block.output}` : `$ ${block.command}`))
+      .map((block) => {
+        const output = stripAnsi(block.output)
+        return output ? `$ ${block.command}\n${output}` : `$ ${block.command}`
+      })
       .join('\n')
     if (!text.trim()) {
       showToast(t('There is nothing to copy yet'), 'warning')
@@ -250,6 +431,19 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
   }, [blocks, showToast, t])
 
   const onInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // Ctrl+C behaves like a terminal: it stops the running command, and when
+    // nothing runs it throws away the draft instead of copying a selection.
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+      event.preventDefault()
+      if (runningRef.current) {
+        void stop()
+        return
+      }
+      setInput('')
+      setCursor(-1)
+      draftRef.current = ''
+      return
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
       event.preventDefault()
       clear()
@@ -288,14 +482,38 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
   return (
     <section
       className="terminal"
+      style={{ height: `${height}px` }}
       aria-label={t('Terminal')}
       onKeyDown={(event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+          event.preventDefault()
+          // The conversation search listens on the window for the same keys;
+          // inside the terminal the filter owns them.
+          event.stopPropagation()
+          filterRef.current?.focus()
+          filterRef.current?.select()
+          return
+        }
         if (event.key !== 'Escape') return
         event.preventDefault()
         event.stopPropagation()
         onClose()
       }}
     >
+      <div
+        className="terminal__resizer"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label={t('Resize the terminal')}
+        aria-valuenow={height}
+        aria-valuemin={MIN_TERMINAL_HEIGHT}
+        aria-valuemax={Math.max(MIN_TERMINAL_HEIGHT, Math.round(window.innerHeight * MAX_TERMINAL_HEIGHT_RATIO))}
+        title={t('Drag to resize · double-click to reset')}
+        tabIndex={0}
+        onPointerDown={startResize}
+        onKeyDown={resizeFromKeyboard}
+        onDoubleClick={resetHeight}
+      />
       <header className="terminal__head">
         <SquareTerminal size={13} className="terminal__head-icon" />
         <span className="terminal__title">{t('Terminal')}</span>
@@ -312,6 +530,37 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
           </span>
         ) : null}
         <span className="terminal__spacer" />
+        <div className="terminal__filter">
+          <Search size={11} aria-hidden="true" />
+          <input
+            ref={filterRef}
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Escape') return
+              // An empty box lets Escape through, so the drawer still closes.
+              if (!filterQuery) return
+              event.preventDefault()
+              event.stopPropagation()
+              setFilter('')
+            }}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder={t('Filter')}
+            aria-label={t('Filter the output')}
+          />
+          {filter ? (
+            <button
+              type="button"
+              className="terminal__filter-clear"
+              title={t('Clear the filter')}
+              aria-label={t('Clear the filter')}
+              onClick={() => setFilter('')}
+            >
+              <X size={10} />
+            </button>
+          ) : null}
+        </div>
         <div className="terminal__actions">
           {running ? (
             <button className="ghost-btn" onClick={() => void stop()} disabled={stopping}>
@@ -356,7 +605,11 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
             <div className="terminal__empty">{t('Run a command in the workspace…')}</div>
           ) : null}
 
-          {blocks.map((block) => (
+          {ready && hasBlocks && filterQuery && visibleBlocks.length === 0 ? (
+            <div className="terminal__empty">{t('No commands match the filter.')}</div>
+          ) : null}
+
+          {visibleBlocks.map((block) => (
             <article className="terminal__block" key={block.id}>
               <div className="terminal__command">
                 <span className="terminal__prompt" aria-hidden="true">
@@ -395,7 +648,7 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
                 </span>
               </div>
               {block.output ? (
-                <pre className="terminal__output">{block.output}</pre>
+                <AnsiText text={block.output} />
               ) : block.status === 'running' ? (
                 <pre className="terminal__output terminal__output--muted">
                   {t('Waiting for output…')}

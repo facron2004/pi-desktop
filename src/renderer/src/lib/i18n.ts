@@ -417,7 +417,37 @@ const zhCN: Record<string, string> = {
   'Matches in conversations': '对话内容匹配',
   'No matches in conversation text': '对话内容中没有匹配',
   You: '你',
-  Pi: 'Pi'
+  Pi: 'Pi',
+  Review: '审阅',
+  'Review the uncommitted changes of the project': '审阅项目中未提交的更改',
+  'Filter the working tree': '过滤工作区文件',
+  'Lines added and removed in the working tree': '工作区新增与删除的行数',
+  'Reading the working tree…': '正在读取工作区…',
+  'Open a project that git tracks to review its changes here.':
+    '打开一个受 git 跟踪的项目，即可在这里审阅其更改。',
+  'Everything is committed.': '所有更改都已提交。',
+  'Revert file': '还原文件',
+  Revert: '还原',
+  'Revert this file': '还原此文件',
+  'The changes were reverted': '更改已还原',
+  'The file could not be reverted': '无法还原该文件',
+  'Show the changes of this file': '展开此文件的更改',
+  'Collapse this file': '收起此文件',
+  'Reading the changes…': '正在读取更改…',
+  'Could not read the changes of this file.': '无法读取该文件的更改。',
+  'Binary file changed.': '二进制文件已更改。',
+  'The file is too large to show in full.': '文件过大，无法完整显示。',
+  'Open the file': '打开文件',
+  'Resize the terminal': '调整终端高度',
+  'Drag to resize · double-click to reset': '拖动调整高度 · 双击重置',
+  Filter: '过滤',
+  'Filter the output': '过滤输出',
+  'No commands match the filter.': '没有匹配过滤条件的命令。',
+  'Show the plan': '展开计划',
+  'Hide the plan': '收起计划',
+  'Dismiss the plan': '关闭计划',
+  'All steps complete': '所有步骤已完成',
+  'Plan progress': '计划进度'
 }
 
 export function translate(text: string, language: AppLanguage): string {
