@@ -84,6 +84,13 @@ messages on screen in `src/renderer/src/lib/thread.ts`.
 Pi can only name the session that is open (`set_session_name`), so naming a
 conversation that is not active means opening it, naming it and closing it again.
 
+`SessionTreeDialog` reads `get_tree` and draws the whole tree; `lib/session-tree.ts`
+turns the payload into rows, skips bookkeeping entries without losing the depth of
+their children, marks the path to the leaf, and falls back to the last visible row
+on that path when the leaf itself is a meta entry. A user row's fork action calls
+the store's `forkFrom(entryId)` and closes the dialog — the prompt comes back in
+the composer, exactly like the `/branch` command.
+
 ## The launcher
 
 `Ctrl+Shift+P` opens a palette over the app. It lists every action the app has,
@@ -104,6 +111,12 @@ the name is typed and a picked file leaves its path in the message. The search
 walks the project in the main process (`fs:search`), and it matches the path,
 not only the name — the separators are normalised, so `src/renderer` finds the
 folder on Windows as well.
+
+The Files tab has a Text mode backed by `fs:searchText`: the same walk and skip
+policy as `fs:search`, literal case-insensitive matching, binary and files over
+512 KB skipped, at most 3 hits per file and 200 in total. Preview offsets
+(`matchStart`/`matchLength`) are relative to the one-line preview, not the file
+line; the viewer scrolls to `line`.
 
 ## Bash
 

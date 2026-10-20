@@ -51,6 +51,15 @@ Claude Desktop.
   says who said it and shows the sentence with the match marked; clicking one opens
   that conversation (and its project, if need be), scrolls the matching turn into view
   and flashes it, with the words marked and the in-thread search parked on them.
+- **Search inside the files.** The Files tab has a **Text** mode: type a word and the
+  project is searched line by line (binary and huge files are skipped), with the hits
+  grouped by file, their line numbers, and the match marked. Clicking a hit opens the
+  file at that line.
+- **The session tree.** `Ctrl+Shift+T` (or `/tree`) shows how the conversation branches:
+  every prompt, answer, command and summary in order, the path that is open marked and
+  its tip labelled, splits marked where a branch begins. Any prompt in it can start a
+  new branch — the fork opens a new conversation and puts the prompt back in the
+  composer, ready to be rewritten.
 - **Project inspector.** A docked panel with three tabs. **Changes** lists every file
   the agent edited or created in this session, with the line counts of each change;
   **Review** reads the git working tree instead, so edits made outside the app show up
@@ -111,11 +120,12 @@ Claude Desktop.
   instead of waiting it out.
 - **Keyboard-first.** `Ctrl+N` new chat, `Ctrl+B` sidebar, `Ctrl+K` focus the composer,
   `Ctrl+F` search the conversation, `Ctrl+1`…`Ctrl+9` switch project, `Ctrl+Shift+P`
-  the palette, `` Ctrl+` `` the terminal, `Ctrl+P`/`Ctrl+T` the next model and reasoning
-  level, `Alt+↑`/`Alt+↓` walk the turns, `↑` recalls earlier prompts, `Esc` stops a run.
-  `Ctrl+/` lists every shortcut. The conversations in the sidebar are reachable with
-  the keyboard, and everything that can be focused shows where the focus is. The app
-  also follows the system's "reduce motion" setting.
+  the palette, `` Ctrl+` `` the terminal, `Ctrl+Shift+T` the session tree,
+  `Ctrl+P`/`Ctrl+T` the next model and reasoning level, `Alt+↑`/`Alt+↓` walk the turns,
+  `↑` recalls earlier prompts, `Esc` stops a run. `Ctrl+/` lists every shortcut. The
+  conversations in the sidebar are reachable with the keyboard, and everything that can
+  be focused shows where the focus is. The app also follows the system's "reduce motion"
+  setting.
 
 ## How it talks to Pi
 
@@ -197,8 +207,10 @@ Screenshots live in [`docs/shots/`](docs/shots): the welcome screen, a real
 conversation with an inline diff, the light theme, the app mid-run, the terminal
 drawer, the commit dialog, the search across conversations, the git review tab,
 the plan strip, a jump from a search hit, the commit history, the model menu, the
-image lightbox, git staging and a command handed to the terminal. The roadmap for
-the remaining Codex-style work is in [`docs/codex-parity.md`](docs/codex-parity.md).
+image lightbox, git staging, a command handed to the terminal, the session tree,
+a fork started from it, the project text search and the pre-commit checks. The
+roadmap for the remaining Codex-style work is in
+[`docs/codex-parity.md`](docs/codex-parity.md).
 
 ## Architecture
 
@@ -222,6 +234,7 @@ src/
     ├── lib/thread.ts     Pi session event → UI thread reducer
     ├── lib/changes.ts    tool calls → changed-files review
     ├── lib/session-search.ts  debounced full-text search of the conversations
+    ├── lib/session-tree.ts  get_tree → rows, active path, branch labels
     ├── lib/diff-fold.ts  line diff → folded, expandable diff rows
     ├── lib/projects.ts   registered projects + the conversations of each
     ├── lib/search.ts     in-conversation search

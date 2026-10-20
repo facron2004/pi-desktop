@@ -9,6 +9,7 @@ import {
   FolderOpen,
   GitBranch,
   GitCommit,
+  GitFork,
   Keyboard,
   MessageSquarePlus,
   Minimize2,
@@ -114,6 +115,14 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Conversation',
       icon: GitBranch,
       run: () => runAppCommand('branch')
+    },
+    {
+      id: 'tree',
+      title: 'Show the session tree',
+      hint: 'Ctrl+Shift+T',
+      group: 'Conversation',
+      icon: GitFork,
+      run: () => runAppCommand('tree')
     },
     {
       id: 'copy',

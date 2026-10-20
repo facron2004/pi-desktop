@@ -11,6 +11,7 @@ import type {
   PiEvent,
   RuntimeStartOptions,
   RuntimeStatus,
+  TextSearchHit,
   Workspace
 } from '@shared/types'
 import { checkAuth, piVersion } from './pi/cli'
@@ -39,6 +40,11 @@ export interface IpcContext {
 const MAX_FILE_BYTES = 512 * 1024
 const MAX_SEARCH_RESULTS = 200
 const MAX_SEARCH_DEPTH = 12
+/** How many matches of one file a text search reports. */
+const MAX_TEXT_HITS_PER_FILE = 3
+/** Characters of a line shown around a text match. */
+const TEXT_PREVIEW_MAX = 160
+const TEXT_PREVIEW_LEAD = 40
 /** Directories that are never worth walking when searching a project. */
 const SEARCH_SKIP_DIRS = new Set([
   'node_modules',
@@ -136,6 +142,68 @@ function isInside(root: string, target: string): boolean {
 function workspaceName(dir: string): string {
   const base = path.basename(dir)
   return base || dir
+}
+
+/**
+ * Find up to three matches of `needle` in one text file.
+ *
+ * A session or a lock file can match almost every line, and past a handful of
+ * rows per file the list stops being readable — the search moves on instead.
+ * A NUL byte means the file is binary, and a preview of its bytes is not
+ * something the reader could use, so it is not a result.
+ */
+function searchFileText(file: string, needle: string, remaining: number): TextSearchHit[] {
+  const perFile = Math.min(remaining, MAX_TEXT_HITS_PER_FILE)
+  if (perFile <= 0) return []
+
+  let buffer: Buffer
+  try {
+    const stats = statSync(file)
+    // A file past the read cap is skipped rather than half-read: a hit in the
+    // part that was never read would be a result the user cannot find.
+    if (!stats.isFile() || stats.size === 0 || stats.size > MAX_FILE_BYTES) return []
+    buffer = readFileSync(file)
+  } catch {
+    return []
+  }
+  if (buffer.includes(0)) return []
+
+  const hits: TextSearchHit[] = []
+  const lines = buffer.toString('utf8').split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    if (hits.length >= perFile) break
+    // Windows line endings keep the \r; leaving it in would end the preview
+    // with a stray character.
+    const raw = lines[index].endsWith('\r') ? lines[index].slice(0, -1) : lines[index]
+    const at = raw.toLowerCase().indexOf(needle)
+    if (at === -1) continue
+
+    // The preview drops the indentation of the line, so the match offset moves
+    // with it. The offsets that go back to the renderer point into the preview.
+    const content = raw.trim()
+    if (!content) continue
+    const offset = at - (raw.length - raw.trimStart().length)
+    if (offset < 0 || offset + needle.length > content.length) continue
+
+    const from = offset > TEXT_PREVIEW_LEAD ? offset - TEXT_PREVIEW_LEAD : 0
+    let to = Math.min(content.length, from + TEXT_PREVIEW_MAX)
+    // A match longer than the window keeps its length; the row then shortens
+    // the rest with an ellipsis of its own.
+    if (offset + needle.length > to) to = Math.min(content.length, offset + needle.length)
+    const prefix = from > 0 ? '…' : ''
+    const suffix = to < content.length ? '…' : ''
+    const body = content.slice(from, to)
+
+    hits.push({
+      path: file,
+      line: index + 1,
+      column: at + 1,
+      preview: `${prefix}${body}${suffix}`,
+      matchStart: prefix.length + (offset - from),
+      matchLength: needle.length
+    })
+  }
+  return hits
 }
 
 /** The theme a development flag forces for this run, if any. */
@@ -377,6 +445,43 @@ export function registerIpc(context: IpcContext): void {
     // The walk follows the disk, which has no order of its own.
     results.sort((a, b) => a.path.localeCompare(b.path))
     return results
+  })
+
+  // Search what is inside the files, not only their names. The walk is the
+  // same one the file search uses, so both see the same project.
+  ipcMain.handle('fs:searchText', (_event, query: string, limit?: number): TextSearchHit[] => {
+    const root = workspaceRoot(context)
+    const needle = query.trim().toLowerCase()
+    if (!root || !needle) return []
+    const ceiling = Math.min(Math.max(limit ?? MAX_SEARCH_RESULTS, 1), MAX_SEARCH_RESULTS)
+    const base = path.resolve(root)
+    const hits: TextSearchHit[] = []
+
+    const walk = (dir: string, depth: number): void => {
+      if (hits.length >= ceiling || depth > MAX_SEARCH_DEPTH) return
+      let entries: Dirent[]
+      try {
+        entries = readdirSync(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        if (hits.length >= ceiling) return
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (SEARCH_SKIP_DIRS.has(entry.name)) continue
+          walk(full, depth + 1)
+          continue
+        }
+        if (!entry.isFile()) continue
+        const found = searchFileText(full, needle, ceiling - hits.length)
+        if (found.length) hits.push(...found)
+      }
+    }
+
+    walk(base, 0)
+    hits.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
+    return hits.slice(0, ceiling)
   })
 
   ipcMain.handle('sessions:remove', async (_event, file: string): Promise<boolean> => {

@@ -11,6 +11,7 @@ const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
   { keys: ['Ctrl', 'F'], label: 'Search the conversation', group: 'Workspace' },
   { keys: ['Ctrl', '1…9'], label: 'Switch to another project', group: 'Workspace' },
   { keys: ['Ctrl', 'Shift', 'P'], label: 'Open the command palette', group: 'Workspace' },
+  { keys: ['Ctrl', 'Shift', 'T'], label: 'Show the session tree', group: 'Workspace' },
   { keys: ['Ctrl', '/'], label: 'Show this shortcut list', group: 'Workspace' },
   { keys: ['Ctrl', 'P'], label: 'Use the next model', group: 'Model' },
   { keys: ['Ctrl', 'T'], label: 'Use the next reasoning effort', group: 'Model' },

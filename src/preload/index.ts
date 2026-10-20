@@ -16,6 +16,7 @@ import type {
   RuntimeStatus,
   SessionMeta,
   SessionSearchHit,
+  TextSearchHit,
   Workspace
 } from '@shared/types'
 
@@ -90,6 +91,8 @@ const bridge: PiDesktopBridge = {
     read: (file: string): Promise<FileContent | null> => ipcRenderer.invoke('fs:read', file),
     search: (query: string, limit?: number): Promise<FileEntry[]> =>
       ipcRenderer.invoke('fs:search', query, limit),
+    searchText: (query: string, limit?: number): Promise<TextSearchHit[]> =>
+      ipcRenderer.invoke('fs:searchText', query, limit),
     reveal: (file: string): Promise<void> => ipcRenderer.invoke('fs:reveal', file),
     saveImage: (data: string, mimeType: string): Promise<string | null> =>
       ipcRenderer.invoke('fs:saveImage', data, mimeType)

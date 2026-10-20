@@ -485,6 +485,8 @@ export interface PiDesktopBridge {
     read(file: string): Promise<FileContent | null>
     /** Find files inside the open workspace whose name contains the query. */
     search(query: string, limit?: number): Promise<FileEntry[]>
+    /** Find text inside the files of the open workspace. */
+    searchText(query: string, limit?: number): Promise<TextSearchHit[]>
     /** Show a file in the file manager of the operating system. */
     reveal(file: string): Promise<void>
     /** Write a picture the model produced to a file the user picks. */
@@ -506,6 +508,25 @@ export interface FileContent {
   /** Size of the file on disk, in bytes. */
   size?: number
   language: string
+}
+
+/**
+ * One match of a text search inside the files of a project.
+ *
+ * `matchStart` and `matchLength` point into `preview`, not into the file, so
+ * the renderer can highlight the match without reading the line again.
+ */
+export interface TextSearchHit {
+  /** Absolute path of the file. */
+  path: string
+  /** 1-based line of the match in the file. */
+  line: number
+  /** 1-based column of the match in that line. */
+  column: number
+  /** The line around the match, trimmed and shortened to fit one row. */
+  preview: string
+  matchStart: number
+  matchLength: number
 }
 
 export interface RuntimeStartOptions {

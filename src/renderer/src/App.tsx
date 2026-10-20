@@ -23,6 +23,7 @@ import { ExtensionDialog } from './components/ExtensionDialog'
 import { Launcher, useLauncherActions } from './components/Launcher'
 import { TerminalPanel, type TerminalRunRequest } from './components/TerminalPanel'
 import { PlanStrip } from './components/PlanStrip'
+import { SessionTreeDialog } from './components/SessionTreeDialog'
 import { useT } from './lib/i18n'
 
 export default function App() {
@@ -58,6 +59,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [launcherOpen, setLauncherOpen] = useState(false)
   const [terminalOpen, setTerminalOpen] = useState(false)
+  const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   // A command headed for the drawer. `seq` makes the same command twice two
   // requests instead of one the drawer already ran.
   const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
@@ -198,6 +200,12 @@ export default function App() {
         setLauncherOpen((value) => !value)
         return
       }
+      // `Ctrl+Shift+T` shows the branches of the conversation.
+      if (mod && event.shiftKey && event.key.toLowerCase() === 't') {
+        event.preventDefault()
+        setSessionTreeOpen((value) => !value)
+        return
+      }
       // `Ctrl+P` and `Ctrl+T` walk through the models and the reasoning
       // levels, the way they do in Pi's own terminal.
       if (mod && !event.shiftKey && !event.altKey) {
@@ -251,6 +259,9 @@ export default function App() {
       setTerminalOpen(true)
     }
     window.addEventListener('pi:terminal-run', onTerminalRun)
+    // The launcher and the `/tree` command ask for the branch dialog.
+    const onOpenSessionTree = () => setSessionTreeOpen(true)
+    window.addEventListener('pi:open-session-tree', onOpenSessionTree)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
@@ -258,6 +269,7 @@ export default function App() {
       window.removeEventListener('pi:open-inspector', onOpenInspector)
       window.removeEventListener('pi:toggle-terminal', onToggleTerminal)
       window.removeEventListener('pi:terminal-run', onTerminalRun)
+      window.removeEventListener('pi:open-session-tree', onOpenSessionTree)
     }
   }, [
     newChat,
@@ -499,6 +511,9 @@ export default function App() {
       {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
       {launcherOpen ? (
         <Launcher actions={launcherActions} onClose={() => setLauncherOpen(false)} />
+      ) : null}
+      {sessionTreeOpen ? (
+        <SessionTreeDialog onClose={() => setSessionTreeOpen(false)} />
       ) : null}
       <ExtensionDialog />
       {changesOpen ? (

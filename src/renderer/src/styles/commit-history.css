@@ -268,3 +268,42 @@
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
+
+/* Pre-commit checks -------------------------------------------------- */
+
+.commit__checks {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: -4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.commit__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.commit__check svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+/* What the commit would take or leave behind gets the alert icon; how the
+   message reads is a quieter note. */
+.commit__check[data-tone='warn'] svg {
+  color: var(--red);
+}
+
+.commit__check[data-tone='info'] {
+  color: var(--text-faint);
+}
+
+.commit__check[data-tone='info'] svg {
+  color: var(--text-faint);
+}

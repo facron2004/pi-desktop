@@ -494,7 +494,46 @@ const zhCN: Record<string, string> = {
   'Only staged files are committed; the rest stays in the working tree.':
     '只提交已暂存的文件，其余更改保留在工作区。',
   'Nothing is staged yet.': '还没有暂存任何文件。',
-  'Run in terminal': '在终端中运行'
+  'Run in terminal': '在终端中运行',
+  'Session tree': '会话树',
+  branches: '个分支',
+  branch: '个分支',
+  entries: '个条目',
+  entry: '个条目',
+  'Refresh the session tree': '刷新会话树',
+  'Reading the session tree…': '正在读取会话树…',
+  'The session tree could not be read.': '无法读取会话树。',
+  'This conversation has no messages yet.': '本次对话还没有消息。',
+  'Collapse this branch': '收起此分支',
+  'Expand this branch': '展开此分支',
+  current: '当前',
+  'Fork from this prompt': '从此提示创建分支',
+  'Copy the prompt': '复制提示',
+  'The prompt was copied': '提示已复制',
+  'Forking starts a new conversation before the prompt you pick; the current one is left as it is.':
+    '从所选提示之前创建新的对话；当前对话保持不变。',
+  'Show the session tree': '显示会话树',
+  'Show the branches of this conversation': '显示本次对话的所有分支',
+  'Pre-commit checks': '提交前检查',
+  'Nothing is staged. Turn on “Include unstaged changes” or stage a file first.':
+    '尚未暂存任何文件。请勾选“包含未暂存的更改”或先暂存文件。',
+  '1 binary file will be committed.': '将提交 1 个二进制文件。',
+  'binary files will be committed.': '个二进制文件将被提交。',
+  '1 file will stay unstaged.': '将保留 1 个未暂存文件。',
+  'files will stay unstaged.': '个文件将保持未暂存。',
+  'characters in the first line; keep the subject under 72.':
+    '个字符；主题行请控制在 72 字以内。',
+  'says too little on its own; add a body or pick a template.':
+    '过于笼统；请补充正文或选择模板。',
+  'The first line ends with a period; a subject is written without one.':
+    '第一行以句号结尾；提交主题通常不加句号。',
+  '1 untracked file will be committed.': '将提交 1 个未跟踪文件。',
+  'untracked files will be committed.': '个未跟踪文件将被提交。',
+  Text: '文本',
+  'Search inside the project files': '在项目文件中搜索',
+  'No matches': '没有匹配',
+  'The text search failed.': '文本搜索失败。',
+  'Close the text search': '关闭文本搜索'
 }
 
 export function translate(text: string, language: AppLanguage): string {

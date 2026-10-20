@@ -31,6 +31,11 @@ export const APP_COMMANDS: PiCommand[] = [
     source: 'app'
   },
   {
+    name: 'tree',
+    description: 'Show the branches of this conversation',
+    source: 'app'
+  },
+  {
     name: 'compact',
     description: 'Summarise the conversation to free up the context',
     source: 'app'

@@ -27,6 +27,7 @@ import { FileTree } from './FileTree'
 import { FileViewer } from './FileViewer'
 import { CommitDialog } from './CommitDialog'
 import { ReviewView } from './ReviewView'
+import { TextSearch } from './TextSearch'
 import { useT } from '../lib/i18n'
 
 type Tab = 'changes' | 'files' | 'review'
@@ -106,6 +107,9 @@ export function InspectorPanel({
   const [fileFilter, setFileFilter] = useState('')
   // `undefined` means the reader decides, one run at a time.
   const [expandAll, setExpandAll] = useState<boolean | undefined>(undefined)
+  // The Files tab browses the tree or searches inside the files. The tree stays
+  // mounted while the search is on, so its open folders survive a look.
+  const [filesMode, setFilesMode] = useState<'tree' | 'text'>('tree')
 
   // The paths of the changed files, relative to the project, so the list
   // means the same thing to the user and to the agent.
@@ -333,7 +337,34 @@ export function InspectorPanel({
           opened while a file is on screen. */}
       <div className="drawer__stack">
         <div className="drawer__pane" data-active={!openFile && tab === 'files'}>
-          <FileTree root={workspace?.path ?? ''} onOpen={(path) => setOpenFile({ path })} />
+          <div className="file-mode">
+            <div className="segmented">
+              <button
+                data-active={filesMode === 'tree'}
+                onClick={() => setFilesMode('tree')}
+                title={t('Browse the project files')}
+              >
+                {t('Files')}
+              </button>
+              <button
+                data-active={filesMode === 'text'}
+                onClick={() => setFilesMode('text')}
+                title={t('Search inside the project files')}
+              >
+                {t('Text')}
+              </button>
+            </div>
+          </div>
+          <div className="file-mode__body" hidden={filesMode !== 'tree'}>
+            <FileTree root={workspace?.path ?? ''} onOpen={(path) => setOpenFile({ path })} />
+          </div>
+          {filesMode === 'text' ? (
+            <TextSearch
+              root={workspace?.path ?? ''}
+              onOpenFile={setOpenFile}
+              onClose={() => setFilesMode('tree')}
+            />
+          ) : null}
         </div>
 
         <div className="drawer__pane" data-active={!openFile && tab === 'review'}>

@@ -737,6 +737,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       case 'terminal':
         window.dispatchEvent(new CustomEvent('pi:toggle-terminal'))
         break
+      case 'tree':
+        window.dispatchEvent(new CustomEvent('pi:open-session-tree'))
+        break
       case 'new':
         await get().newChat()
         break

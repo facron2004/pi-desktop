@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronRight, Copy, GitBranch, GitCommit, RefreshCw } from 'lucide-react'
+import {
+  AlertTriangle,
+  Check,
+  ChevronRight,
+  Copy,
+  GitBranch,
+  GitCommit,
+  Info,
+  RefreshCw
+} from 'lucide-react'
 import type { GitCommit as GitCommitEntry, GitFileStatus } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
@@ -13,6 +22,83 @@ const HISTORY_LIMIT = 20
 /** The conventional prefixes offered above the message box. */
 const TEMPLATES = ['feat', 'fix', 'docs', 'refactor', 'test', 'chore'] as const
 type Template = (typeof TEMPLATES)[number]
+
+/** The longest first line a commit subject should be, as git's own advice says. */
+const SUBJECT_LIMIT = 72
+
+/** Subjects that say nothing about the change, so the body has to carry it. */
+const GENERIC_SUBJECTS = new Set(['update', 'fix', 'changes', 'wip', 'test'])
+
+/** At most this many check lines; the dialog has to stay quiet. */
+const MAX_CHECKS = 3
+
+/**
+ * Extensions that name a blob rather than text.
+ *
+ * The list is a heuristic and nothing more — the checks warn about what is
+ * about to land, they never stop a commit.
+ */
+const BINARY_EXTENSIONS = new Set([
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'avif',
+  'ico',
+  'bmp',
+  'tiff',
+  'zip',
+  'gz',
+  'tgz',
+  'bz2',
+  'xz',
+  '7z',
+  'rar',
+  'tar',
+  'pdf',
+  'doc',
+  'docx',
+  'xls',
+  'xlsx',
+  'ppt',
+  'pptx',
+  'exe',
+  'dll',
+  'so',
+  'dylib',
+  'bin',
+  'class',
+  'jar',
+  'wasm',
+  'node',
+  'woff',
+  'woff2',
+  'ttf',
+  'otf',
+  'eot',
+  'mp3',
+  'mp4',
+  'mov',
+  'avi',
+  'webm',
+  'wav',
+  'flac',
+  'sqlite',
+  'db',
+  'pak',
+  'asar',
+  'psd',
+  'sketch',
+  'fig'
+])
+
+/** One line of advice about the commit that is on screen. */
+interface Check {
+  key: string
+  tone: 'warn' | 'info'
+  text: string
+}
 
 /** A draft survives a failed or cancelled commit, not a successful one. */
 const DRAFT_KEY = 'pi-desktop.commit-draft'
@@ -191,6 +277,91 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
     // toggle has to be on, or the commit would have an empty index.
     (includeAll || stagedCount > 0)
 
+  // Advice about the commit that is about to land: what it would take, what it
+  // would leave behind, and how the message reads. Nothing here blocks the
+  // commit — the dialog says its piece and the button stays the only gate.
+  const checks = useMemo(() => {
+    const found: Check[] = []
+    const trimmed = message.trim()
+    const [firstLine = '', ...rest] = trimmed.split('\n')
+    const subject = firstLine.trim()
+    const hasBody = rest.some((line) => line.trim().length > 0)
+    const subjectLength = Array.from(subject).length
+
+    // The files this commit would really take, toggle included.
+    const toCommit = includeAll ? files : files.filter((file) => file.staged)
+    let binary = 0
+    let untracked = 0
+    for (const file of toCommit) {
+      // A blob that was never committed is reported once, as a blob.
+      if (looksBinaryPath(file.path)) binary += 1
+      else if (file.untracked) untracked += 1
+    }
+    const leftBehind = files.filter((file) => !file.staged).length
+
+    if (!includeAll && stagedCount === 0) {
+      found.push({
+        key: 'nothing-staged',
+        tone: 'warn',
+        text: t('Nothing is staged. Turn on “Include unstaged changes” or stage a file first.')
+      })
+    }
+    if (binary > 0) {
+      found.push({
+        key: 'binary',
+        tone: 'warn',
+        text: countText(
+          binary,
+          t,
+          '1 binary file will be committed.',
+          'binary files will be committed.'
+        )
+      })
+    }
+    if (!includeAll && stagedCount > 0 && leftBehind > 0) {
+      found.push({
+        key: 'left-behind',
+        tone: 'warn',
+        text: countText(leftBehind, t, '1 file will stay unstaged.', 'files will stay unstaged.')
+      })
+    }
+    if (subjectLength > SUBJECT_LIMIT) {
+      found.push({
+        key: 'subject-long',
+        tone: 'info',
+        text: `${subjectLength} ${t('characters in the first line; keep the subject under 72.')}`
+      })
+    }
+    if (!hasBody && isGenericSubject(subject)) {
+      found.push({
+        key: 'subject-generic',
+        tone: 'info',
+        text: `“${subject}” ${t('says too little on its own; add a body or pick a template.')}`
+      })
+    }
+    if (subject.endsWith('.')) {
+      found.push({
+        key: 'subject-period',
+        tone: 'info',
+        text: t('The first line ends with a period; a subject is written without one.')
+      })
+    }
+    if (untracked > 0) {
+      found.push({
+        key: 'untracked',
+        tone: 'info',
+        text: countText(
+          untracked,
+          t,
+          '1 untracked file will be committed.',
+          'untracked files will be committed.'
+        )
+      })
+    }
+
+    return found.slice(0, MAX_CHECKS)
+  }, [message, includeAll, files, stagedCount, t])
+
   const submit = async () => {
     if (!canCommit) return
     setBusy(true)
@@ -345,6 +516,21 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
                 }}
               />
 
+              {checks.length > 0 ? (
+                <ul className="commit__checks" aria-label={t('Pre-commit checks')}>
+                  {checks.map((check) => (
+                    <li className="commit__check" key={check.key} data-tone={check.tone}>
+                      {check.tone === 'warn' ? (
+                        <AlertTriangle size={11} aria-hidden="true" />
+                      ) : (
+                        <Info size={11} aria-hidden="true" />
+                      )}
+                      <span>{check.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+
               {error ? <p className="commit__error">{error}</p> : null}
 
               <section className="commit__history" aria-label={t('Recent commits')}>
@@ -438,6 +624,38 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
       </div>
     </div>
   )
+}
+
+/** A count with its singular spelled out, so every language keeps its own. */
+function countText(
+  count: number,
+  t: (text: string) => string,
+  singular: string,
+  plural: string
+): string {
+  return count === 1 ? t(singular) : `${count} ${t(plural)}`
+}
+
+/**
+ * True for a path that names a blob: a known binary extension, or no extension
+ * at all. A leading dot starts a name (`.gitignore`), not an extension.
+ */
+function looksBinaryPath(filePath: string): boolean {
+  const name = filePath.split(/[\\/]/).pop()?.toLowerCase() ?? ''
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) return !name.startsWith('.')
+  return BINARY_EXTENSIONS.has(name.slice(dot + 1))
+}
+
+/** True when the subject is one of the words that describe no change at all. */
+function isGenericSubject(subject: string): boolean {
+  // Trailing punctuation and a template prefix are noise around the word.
+  let word = subject.toLowerCase().replace(/[.!?,;:]+$/, '').trim()
+  const prefixed = /^([a-z]+):\s+(.+)$/.exec(word)
+  if (prefixed && (TEMPLATES as readonly string[]).includes(prefixed[1])) {
+    word = prefixed[2].trim()
+  }
+  return GENERIC_SUBJECTS.has(word)
 }
 
 /** The single letter git itself shows, and the tone it is drawn in. */
