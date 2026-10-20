@@ -25,11 +25,17 @@ Claude Desktop.
 - **Code blocks that answer back.** A snippet gets a header with its language, a copy
   button and an "Ask" button that drops the snippet into the composer, ready for a
   question about it.
+- **Images that open.** A picture in a message — yours or the model's — is a button:
+  click it and the image fills the window, with its size, a Save button and Escape to
+  close.
 - **Git branch and review.** The top bar says which branch the open project is on,
   how far it is ahead or behind its upstream, and how many files are uncommitted.
   The Changes panel can review the whole working tree — every file git reports, with
   the lines it adds and removes — and commit it with a message, without leaving the
-  app. A folder that is not a repository simply shows no branch.
+  app. The commit dialog lists the recent commits (a subject can be reused as the
+  message, and a hash copied), offers `feat`/`fix`/`docs`/… templates, and keeps a
+  failed or cancelled message for the next attempt. A folder that is not a repository
+  simply shows no branch.
 - **Integrated terminal.** `Ctrl+`` opens a terminal under the conversation. Commands
   run in the project through Pi's own `bash` command, the output streams in as it
   arrives, and each block says its exit code and how long it took. The drawer can be
@@ -38,8 +44,9 @@ Claude Desktop.
   are kept out of the model's context.
 - **Search the conversations.** The sidebar filter looks at titles and projects; type
   two characters and it also searches the text of every conversation on disk. Each hit
-  says who said it, shows the sentence with the match marked, and opens the
-  conversation when clicked.
+  says who said it and shows the sentence with the match marked; clicking one opens
+  that conversation (and its project, if need be), scrolls the matching turn into view
+  and flashes it, with the words marked and the in-thread search parked on them.
 - **Project inspector.** A docked panel with three tabs. **Changes** lists every file
   the agent edited or created in this session, with the line counts of each change;
   **Review** reads the git working tree instead, so edits made outside the app show up
@@ -82,11 +89,13 @@ Claude Desktop.
   it has, every project it can open, the model and reasoning switches, the theme and
   the text size. It is one search away from anything, without touching the mouse.
 - **Model and effort control.** Switch model and reasoning level mid-conversation.
-  `Ctrl+P` and `Ctrl+T` walk through Pi's own list of models and reasoning levels, the
-  way they do in Pi's terminal. The context meter in the top bar opens a session panel
-  with the token breakdown, the cost so far and the message counts, and it can compact
-  the context — with or without instructions for the summary. The same panel says how
-  steering and follow-up messages are delivered.
+  The model menu says what each choice costs per million tokens, how large its context
+  window is, and whether it reasons and takes images; the reasoning menu explains what
+  each effort level means. `Ctrl+P` and `Ctrl+T` walk through Pi's own list of models
+  and reasoning levels, the way they do in Pi's terminal. The context meter in the top
+  bar opens a session panel with the token breakdown, the cost so far and the message
+  counts, and it can compact the context — with or without instructions for the
+  summary. The same panel says how steering and follow-up messages are delivered.
 - **Steering.** While Pi is working you can steer it ("stop and do this instead") or
   queue a follow-up for when it finishes.
 - **The plan on screen.** When the agent writes a checklist, the app lifts it into a
@@ -182,8 +191,9 @@ node scripts/rpc-ui-smoke.mjs
 
 Screenshots live in [`docs/shots/`](docs/shots): the welcome screen, a real
 conversation with an inline diff, the light theme, the app mid-run, the terminal
-drawer, the commit dialog, the search across conversations, the git review tab
-and the plan strip. The roadmap for the remaining Codex-style work is in
+drawer, the commit dialog, the search across conversations, the git review tab,
+the plan strip, a jump from a search hit, the commit history, the model menu and
+the image lightbox. The roadmap for the remaining Codex-style work is in
 [`docs/codex-parity.md`](docs/codex-parity.md).
 
 ## Architecture

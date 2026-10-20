@@ -15,6 +15,7 @@ import type {
   PiState,
   RuntimeStatus,
   SessionMeta,
+  SessionSearchHit,
   SessionStats,
   Workspace
 } from '@shared/types'
@@ -35,6 +36,20 @@ export interface UiWidgetEntry {
   key: string
   lines: string[]
   placement: 'aboveEditor' | 'belowEditor'
+}
+
+/**
+ * A conversation-search hit the reader asked to be taken to.
+ *
+ * The thread owns the DOM, so the request travels through the store: the
+ * sidebar sets it, the thread scrolls to the message and clears it again.
+ */
+export interface PendingJump {
+  file: string
+  /** 1-based index among the user/assistant messages of the session file. */
+  messageIndex: number
+  query: string
+  seq: number
 }
 
 export interface AppStore {
@@ -69,6 +84,8 @@ export interface AppStore {
   git?: GitStatus
   /** Bumped when the app asks the review panel to open its commit dialog. */
   commitRequest: number
+  /** A message the thread has been asked to scroll to and flash. */
+  pendingJump?: PendingJump
 
   /** A blocking extension dialog waiting for an answer. */
   uiRequest?: ExtensionUiRequest
@@ -141,6 +158,10 @@ export interface AppStore {
   commitChanges: (message: string) => Promise<GitCommitResult>
   /** Ask the review panel to open its commit dialog. */
   requestCommit: () => void
+  /** Open the conversation of a search hit and take the reader to the message. */
+  openSearchHit: (hit: SessionSearchHit, query: string) => Promise<void>
+  /** The thread found the message (or gave up); forget the request. */
+  consumeJump: () => void
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -238,7 +259,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       uiWidgets: [],
       uiTitle: undefined,
       composerText: undefined,
-      git: undefined
+      git: undefined,
+      pendingJump: undefined
     })
 
     const settings = get().settings
@@ -891,6 +913,40 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   requestCommit() {
     set((state) => ({ commitRequest: state.commitRequest + 1 }))
+  },
+
+  async openSearchHit(hit, query) {
+    const known = get().sessions.find((entry) => entry.file === hit.file)
+    const session: SessionMeta = known ?? {
+      id: hit.sessionId,
+      file: hit.file,
+      cwd: hit.cwd,
+      name: hit.name,
+      preview: hit.preview,
+      updatedAt: hit.updatedAt,
+      messageCount: 0
+    }
+    try {
+      // Another project's conversation is opened first; the thread of that
+      // project is the one the jump belongs to.
+      if (get().activeSessionFile !== hit.file) {
+        await get().selectSession(session)
+      }
+      set((state) => ({
+        pendingJump: {
+          file: hit.file,
+          messageIndex: hit.messageIndex,
+          query,
+          seq: (state.pendingJump?.seq ?? 0) + 1
+        }
+      }))
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
+  consumeJump() {
+    set({ pendingJump: undefined })
   }
 }))
 

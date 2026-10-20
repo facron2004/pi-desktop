@@ -1,0 +1,130 @@
+/* The picture in a message before it opens: a button so the keyboard can
+   reach it, with a ring that shows the picture is clickable. */
+.lightbox-trigger {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  line-height: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: box-shadow 0.14s var(--ease);
+}
+
+.lightbox-trigger img {
+  display: block;
+}
+
+.lightbox-trigger:hover {
+  box-shadow: 0 0 0 2px var(--accent-line);
+}
+
+.lightbox-trigger:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
+/* The full-window view. The scrim stays dark in both themes: a picture is
+   read against a dark field either way, so the chrome above it keeps light
+   text instead of the theme's foreground colour. */
+.lightbox-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 24px 32px 36px;
+  background: rgba(0, 0, 0, 0.82);
+  animation: lightbox-fade 0.14s var(--ease);
+}
+
+@keyframes lightbox-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.lightbox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
+  outline: none;
+}
+
+.lightbox__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 26px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11.5px;
+}
+
+.lightbox__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.lightbox__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.lightbox__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 7px;
+  color: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.1);
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+}
+
+.lightbox__btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.lightbox__btn:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 2px;
+}
+
+.lightbox__btn--icon {
+  width: 26px;
+  padding: 0;
+}
+
+.lightbox__stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+}
+
+.lightbox__stage img {
+  display: block;
+  max-width: calc(100vw - 64px);
+  max-height: calc(100vh - 96px);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  object-fit: contain;
+  -webkit-user-select: none;
+  user-select: none;
+}

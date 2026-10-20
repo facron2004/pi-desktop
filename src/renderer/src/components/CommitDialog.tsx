@@ -1,9 +1,39 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { GitBranch, GitCommit } from 'lucide-react'
-import type { GitFileStatus } from '@shared/types'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Check, ChevronRight, Copy, GitBranch, GitCommit, RefreshCw } from 'lucide-react'
+import type { GitCommit as GitCommitEntry, GitFileStatus } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
+import { formatRelativeTime } from '../lib/format'
 import { useT } from '../lib/i18n'
+import '../styles/commit-history.css'
+
+/** How many commits the dialog reads back from HEAD. */
+const HISTORY_LIMIT = 20
+
+/** The conventional prefixes offered above the message box. */
+const TEMPLATES = ['feat', 'fix', 'docs', 'refactor', 'test', 'chore'] as const
+type Template = (typeof TEMPLATES)[number]
+
+/** A draft survives a failed or cancelled commit, not a successful one. */
+const DRAFT_KEY = 'pi-desktop.commit-draft'
+
+function readDraft(): string {
+  try {
+    return localStorage.getItem(DRAFT_KEY) ?? ''
+  } catch {
+    // A private window or a full quota; the dialog works without remembering.
+    return ''
+  }
+}
+
+function writeDraft(value: string): void {
+  try {
+    if (value) localStorage.setItem(DRAFT_KEY, value)
+    else localStorage.removeItem(DRAFT_KEY)
+  } catch {
+    // Nothing to do: the message on screen is still the one that gets committed.
+  }
+}
 
 /**
  * Review the working tree and commit it.
@@ -16,18 +46,76 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
   const git = useAppStore((state) => state.git)
   const commitChanges = useAppStore((state) => state.commitChanges)
   const refreshGit = useAppStore((state) => state.refreshGit)
+  const showToast = useAppStore((state) => state.showToast)
+  const language = useAppStore((state) => state.settings.language)
   const t = useT()
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocus(dialogRef, onClose)
 
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState(readDraft)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
+  // Replacing the message with a commit subject is destructive, so the old
+  // text is kept until the user types again.
+  const [undoMessage, setUndoMessage] = useState<string>()
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  const [historyOpen, setHistoryOpen] = useState(true)
+  const [commits, setCommits] = useState<GitCommitEntry[]>()
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState(false)
+  const [copiedHash, setCopiedHash] = useState<string>()
+  const historyRequest = useRef(0)
+  const copyTimer = useRef<number | null>(null)
+
+  const loadHistory = useCallback(async () => {
+    const request = ++historyRequest.current
+    setHistoryLoading(true)
+    setHistoryError(false)
+    try {
+      const list = await window.pi.git.log(HISTORY_LIMIT)
+      if (request !== historyRequest.current) return
+      setCommits(list)
+    } catch {
+      if (request !== historyRequest.current) return
+      setCommits(undefined)
+      setHistoryError(true)
+    } finally {
+      if (request === historyRequest.current) setHistoryLoading(false)
+    }
+  }, [])
 
   // The panel may have been opened before the working tree was read.
   useEffect(() => {
     void refreshGit()
   }, [refreshGit])
+
+  // The dialog closes after a commit, so the next open reads the new HEAD.
+  useEffect(() => {
+    void loadHistory()
+  }, [loadHistory])
+
+  useEffect(() => {
+    writeDraft(message)
+  }, [message])
+
+  useEffect(() => {
+    return () => {
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current)
+    }
+  }, [])
+
+  // The template chips sit before the message in the DOM, so the focus trap
+  // would land on a chip; the message is what the dialog is for.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const input = inputRef.current
+      if (!input) return
+      input.focus()
+      input.setSelectionRange(input.value.length, input.value.length)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [])
 
   const files = git?.files ?? []
   const totals = useMemo(
@@ -39,16 +127,74 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
     [files]
   )
 
+  const activeTemplate = useMemo<Template | undefined>(
+    () => TEMPLATES.find((tag) => message.startsWith(`${tag}: `)),
+    [message]
+  )
+
+  /** Put `next` in the box and leave the caret at its end. */
+  const setMessageAtEnd = (next: string) => {
+    setMessage(next)
+    requestAnimationFrame(() => {
+      const input = inputRef.current
+      if (!input) return
+      input.focus()
+      input.setSelectionRange(next.length, next.length)
+    })
+  }
+
+  const replaceMessage = (next: string) => {
+    setUndoMessage(undefined)
+    setMessageAtEnd(next)
+  }
+
+  const applyTemplate = (tag: Template) => {
+    const prefix = `${tag}: `
+    if (activeTemplate === tag) {
+      replaceMessage(message.slice(prefix.length))
+      return
+    }
+    // Swap one prefix for another without touching the body of the message.
+    const body = activeTemplate ? message.slice(activeTemplate.length + 2) : message
+    replaceMessage(`${prefix}${body}`)
+  }
+
+  const pickCommit = (commit: GitCommitEntry) => {
+    setUndoMessage(message.trim() ? message : undefined)
+    setMessageAtEnd(commit.subject)
+  }
+
+  const copyHash = async (hash: string) => {
+    try {
+      await navigator.clipboard.writeText(hash)
+      setCopiedHash(hash)
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current)
+      copyTimer.current = window.setTimeout(() => setCopiedHash(undefined), 1400)
+    } catch {
+      showToast(t('The clipboard is not available'), 'error')
+    }
+  }
+
   const canCommit = Boolean(git?.isRepo) && files.length > 0 && message.trim().length > 0 && !busy
 
   const submit = async () => {
     if (!canCommit) return
     setBusy(true)
     setError(undefined)
-    const result = await commitChanges(message.trim())
-    setBusy(false)
-    if (result.ok) onClose()
-    else setError(result.error ?? t('The commit failed'))
+    try {
+      const result = await commitChanges(message.trim())
+      if (result.ok) {
+        writeDraft('')
+        onClose()
+      } else {
+        // A failed commit keeps the message and the list exactly as they are.
+        setError(result.error ?? t('The commit failed'))
+      }
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : t('The commit failed'))
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -112,17 +258,48 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
                 ))}
               </ul>
 
-              <label className="commit__label" htmlFor="commit-message">
-                {t('Commit message')}
-              </label>
+              <div className="commit__label-row">
+                <label className="commit__label" htmlFor="commit-message">
+                  {t('Commit message')}
+                </label>
+                {undoMessage !== undefined ? (
+                  <button
+                    type="button"
+                    className="commit__undo"
+                    onClick={() => replaceMessage(undoMessage)}
+                  >
+                    {t('Undo')}
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="commit__templates" role="group" aria-label={t('Commit message templates')}>
+                {TEMPLATES.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    className="commit__template"
+                    data-active={activeTemplate === tag ? 'true' : undefined}
+                    aria-pressed={activeTemplate === tag}
+                    onClick={() => applyTemplate(tag)}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+
               <textarea
                 id="commit-message"
+                ref={inputRef}
                 className="commit__input"
                 rows={3}
                 autoFocus
                 value={message}
                 placeholder={t('What changed, and why?')}
-                onChange={(event) => setMessage(event.target.value)}
+                onChange={(event) => {
+                  setUndoMessage(undefined)
+                  setMessage(event.target.value)
+                }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
                     event.preventDefault()
@@ -132,6 +309,82 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
               />
 
               {error ? <p className="commit__error">{error}</p> : null}
+
+              <section className="commit__history" aria-label={t('Recent commits')}>
+                <div className="commit__history-head">
+                  <button
+                    type="button"
+                    className="commit__history-toggle"
+                    aria-expanded={historyOpen}
+                    aria-controls="commit-history"
+                    onClick={() => setHistoryOpen((open) => !open)}
+                  >
+                    <ChevronRight
+                      size={12}
+                      className="commit__history-chevron"
+                      data-open={historyOpen ? 'true' : undefined}
+                    />
+                    <span>{t('Recent commits')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn commit__history-refresh"
+                    disabled={historyLoading}
+                    title={t('Refresh recent commits')}
+                    aria-label={t('Refresh recent commits')}
+                    onClick={() => void loadHistory()}
+                  >
+                    <RefreshCw size={12} className={historyLoading ? 'spin' : undefined} />
+                  </button>
+                </div>
+
+                <div id="commit-history" hidden={!historyOpen}>
+                  {historyError ? (
+                    <p className="commit__history-state">{t('The recent commits could not be read.')}</p>
+                  ) : !commits ? (
+                    <p className="commit__history-state">{t('Reading recent commits…')}</p>
+                  ) : commits.length === 0 ? (
+                    <p className="commit__history-state">{t('This repository has no commits yet.')}</p>
+                  ) : (
+                    <ul className="commit__history-list">
+                      {commits.map((commit) => (
+                        <li key={commit.hash} className="commit__history-row">
+                          <button
+                            type="button"
+                            className="commit__history-pick"
+                            title={t('Use this commit message')}
+                            aria-label={`${t('Use this commit message')}: ${commit.subject}`}
+                            onClick={() => pickCommit(commit)}
+                          >
+                            <span className="commit__history-hash">{commit.hash.slice(0, 7)}</span>
+                            <span className="commit__history-subject">{commit.subject}</span>
+                            <span className="commit__history-meta">
+                              {commit.author ? (
+                                <span className="commit__history-author" title={commit.author}>
+                                  {commit.author}
+                                </span>
+                              ) : null}
+                              {commit.date ? (
+                                <span>{formatRelativeTime(commit.date, language)}</span>
+                              ) : null}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="commit__history-copy"
+                            title={copiedHash === commit.hash ? t('Copied') : t('Copy the hash')}
+                            aria-label={copiedHash === commit.hash ? t('Copied') : t('Copy the hash')}
+                            data-copied={copiedHash === commit.hash ? 'true' : undefined}
+                            onClick={() => void copyHash(commit.hash)}
+                          >
+                            {copiedHash === commit.hash ? <Check size={11} /> : <Copy size={11} />}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </section>
             </>
           ) : null}
         </div>

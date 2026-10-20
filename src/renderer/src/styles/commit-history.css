@@ -1,0 +1,219 @@
+/*
+ * The templates above the commit message and the recent commits below it.
+ *
+ * The dialog shell and the file list live in global.css; only the new parts
+ * are here, and every colour comes from tokens.css.
+ */
+
+.commit__label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.commit__undo {
+  padding: 0 2px;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.commit__undo:hover {
+  color: var(--text);
+}
+
+.commit__templates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: -3px;
+}
+
+.commit__template {
+  padding: 1px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--bg-deep);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.7;
+  transition: background 0.12s var(--ease), border-color 0.12s var(--ease), color 0.12s var(--ease);
+}
+
+.commit__template:hover {
+  border-color: var(--border);
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.commit__template[data-active='true'] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.commit__history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.commit__history-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.commit__history-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px 2px 2px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.commit__history-toggle:hover {
+  color: var(--text-muted);
+}
+
+.commit__history-chevron {
+  flex: 0 0 auto;
+  transition: transform 0.14s var(--ease);
+}
+
+.commit__history-chevron[data-open='true'] {
+  transform: rotate(90deg);
+}
+
+.icon-btn.commit__history-refresh {
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+}
+
+.icon-btn.commit__history-refresh:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.commit__history-state {
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-deep);
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.commit__history-list {
+  list-style: none;
+  margin: 0;
+  padding: 3px;
+  max-height: 164px;
+  overflow-y: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-deep);
+}
+
+.commit__history-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s var(--ease);
+}
+
+.commit__history-row:hover {
+  background: var(--bg-hover);
+}
+
+.commit__history-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.commit__history-hash {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.commit__history-subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.commit__history-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.commit__history-author {
+  min-width: 0;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit__history-copy {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 3px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  color: var(--text-faint);
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+}
+
+.commit__history-copy:hover {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.commit__history-copy[data-copied='true'] {
+  color: var(--green);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .commit__template,
+  .commit__history-row,
+  .commit__history-chevron,
+  .commit__history-copy {
+    transition: none;
+  }
+}

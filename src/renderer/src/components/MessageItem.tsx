@@ -14,6 +14,7 @@ import {
 import type { NoticeItem, UserItem } from '../lib/thread'
 import { formatClock } from '../lib/format'
 import { Markdown } from './Markdown'
+import { ImageButton } from './Lightbox'
 import { useT } from '../lib/i18n'
 
 export function UserMessage({
@@ -39,7 +40,12 @@ export function UserMessage({
         {item.images.length > 0 ? (
           <div className="user-msg__images">
             {item.images.map((image, index) => (
-              <img key={index} src={`data:${image.mimeType};base64,${image.data}`} alt="attachment" />
+              <ImageButton
+                key={index}
+                src={`data:${image.mimeType};base64,${image.data}`}
+                alt="attachment"
+                inline={{ data: image.data, mimeType: image.mimeType }}
+              />
             ))}
           </div>
         ) : null}
@@ -103,7 +109,11 @@ export function AssistantImage({ data, mimeType }: { data: string; mimeType: str
 
   return (
     <figure className="assistant__image">
-      <img src={`data:${mimeType};base64,${data}`} alt={t('The picture the model produced')} />
+      <ImageButton
+        src={`data:${mimeType};base64,${data}`}
+        alt={t('The picture the model produced')}
+        inline={{ data, mimeType }}
+      />
       <figcaption>
         <button className="ghost-btn" onClick={() => void save()}>
           {saved ? <Check size={12} /> : <Download size={12} />}

@@ -8,6 +8,7 @@ import { useSearchQuery } from '../lib/search-context'
 import { useIsDark } from '../lib/theme'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
+import { ImageButton } from './Lightbox'
 
 /** Wrap every occurrence of the search query in a `<mark>`. */
 function Highlight({ children, query }: { children?: ReactNode; query: string }) {
@@ -122,6 +123,10 @@ const markdownComponents: Components = {
         {children}
       </a>
     )
+  },
+  img({ src, alt, title }) {
+    if (!src) return null
+    return <ImageButton src={src} alt={alt} title={title} />
   }
 }
 

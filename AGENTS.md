@@ -147,6 +147,15 @@ anything shorter than two entries. Collapse/dismiss are view preferences keyed
 by the source message id, so a new plan opens expanded. Do not add store state
 for it — the thread is the source of truth.
 
+## Jumping to a search hit
+
+A conversation-search hit becomes a `pendingJump` in the store. The sidebar only
+sets it; `Thread` owns the DOM, so it maps `messageIndex` (the n-th user/assistant
+message of the file) to a turn, falls back to the first turn containing the query
+when a branch makes the index miss, scrolls and flashes that turn, opens the
+in-thread search on the same words, and clears the request. Do not scroll from the
+sidebar — a conversation that is not mounted has nothing to scroll.
+
 ## Style
 
 - TypeScript everywhere, `strict` on. No `any` in the IPC boundary.

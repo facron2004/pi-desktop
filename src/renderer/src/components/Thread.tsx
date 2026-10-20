@@ -268,6 +268,73 @@ export function Thread() {
     node.scrollTo({ top: node.scrollHeight, behavior: scrollBehavior() })
   }
 
+  // A conversation-search hit from the sidebar asks for a message, and the
+  // thread is the only thing that knows where that message is on screen. The
+  // request is cleared once the turn has been reached either way, so a hit
+  // that no longer exists cannot keep the thread from scrolling again.
+  const pendingJump = useAppStore((state) => state.pendingJump)
+  const consumeJump = useAppStore((state) => state.consumeJump)
+  const activeSessionFile = useAppStore((state) => state.activeSessionFile)
+
+  // A query belongs to the conversation it was typed in. Clearing it here
+  // keeps a jump highlight from following the reader into the next one; the
+  // jump effect below sets it again when the hit lands.
+  const previousSession = useRef(activeSessionFile)
+  useEffect(() => {
+    if (previousSession.current === activeSessionFile) return
+    previousSession.current = activeSessionFile
+    setQuery('')
+  }, [activeSessionFile])
+
+  useEffect(() => {
+    if (!pendingJump || pendingJump.file !== activeSessionFile) return
+    if (items.length === 0) return
+
+    const conversation = items.filter((item) => item.kind === 'user' || item.kind === 'assistant')
+    const target = conversation[pendingJump.messageIndex - 1]
+    let turnId: string | undefined
+    if (target) {
+      turnId = turns.find(
+        (turn) =>
+          turn.user?.id === target.id ||
+          turn.assistants.some((assistant) => assistant.id === target.id)
+      )?.id
+    }
+
+    // A branched session stores messages that are not on the active branch,
+    // so the index can miss. The words of the hit are the fallback.
+    const needle = pendingJump.query.trim().toLowerCase()
+    if (!turnId && needle) {
+      turnId = searchableChunks(turns, workspace?.path).find((chunk) =>
+        chunk.text.toLowerCase().includes(needle)
+      )?.turnId
+    }
+
+    const node = turnId
+      ? scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${turnId}"]`)
+      : null
+    if (node) {
+      stickRef.current = false
+      setAtBottom(false)
+      node.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
+      node.classList.remove('turn--flash')
+      // Force a reflow so the animation runs again when the same turn is
+      // picked twice in a row.
+      void node.offsetWidth
+      node.classList.add('turn--flash')
+      window.setTimeout(() => node.classList.remove('turn--flash'), 1600)
+    }
+
+    // The words of the hit stay marked and the search bar opens on them, so
+    // it is obvious why this turn was picked and the reader can walk the rest
+    // of the hits from here.
+    if (pendingJump.query.trim()) {
+      setQuery(pendingJump.query)
+      setSearchOpen(true)
+    }
+    consumeJump()
+  }, [pendingJump, activeSessionFile, items, turns, workspace?.path, consumeJump])
+
   return (
     <div className="thread" ref={scrollRef}>
       {searchOpen ? (

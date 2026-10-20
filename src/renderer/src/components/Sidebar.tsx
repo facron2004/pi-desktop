@@ -22,7 +22,6 @@ import { useT } from '../lib/i18n'
 import {
   MIN_SESSION_SEARCH_LENGTH,
   projectNameForHit,
-  sessionMetaForHit,
   snippetParts,
   useSessionSearch
 } from '../lib/session-search'
@@ -83,6 +82,7 @@ export function Sidebar({
   const renameSessionFile = useAppStore((state) => state.renameSessionFile)
   const deleteSession = useAppStore((state) => state.deleteSession)
   const togglePin = useAppStore((state) => state.togglePin)
+  const openSearchHit = useAppStore((state) => state.openSearchHit)
   const t = useT()
 
   const [query, setQuery] = useState('')
@@ -254,10 +254,10 @@ export function Sidebar({
       />
     ))
 
-  // A hit only carries what the section shows, but the store opens a session
-  // by its metadata, so the fields are folded into a SessionMeta.
+  // A hit opens the conversation and asks the thread to scroll to the message
+  // it belongs to; the query comes along so the words stay marked.
   const openContentHit = (hit: SessionSearchHit) => {
-    void selectSession(sessionMetaForHit(hit))
+    void openSearchHit(hit, trimmedQuery)
   }
 
   // A conversation can appear more than once — one row per matching message —

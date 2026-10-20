@@ -1,0 +1,156 @@
+/* ------------------------------------------------------------------ *
+ * Model picker
+ *
+ * The model and reasoning menus of the composer. A row has to carry more
+ * than a name — provider, context window, price and capabilities — without
+ * turning the popover into a table, so the meta line stays quiet and the
+ * badges are the only things that draw the eye.
+ * ------------------------------------------------------------------ */
+
+.model-picker__list {
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.model-picker__empty {
+  padding: 7px 9px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.model-picker__row {
+  align-items: center;
+  gap: 8px;
+}
+
+.model-picker__row-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.model-picker__row-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.model-picker__row[data-selected='true'] .model-picker__row-name {
+  color: var(--accent);
+}
+
+.model-picker__row-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 2px 8px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.model-picker__provider {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.model-picker__meta-item {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.model-picker__price {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.model-picker__badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 15px;
+  letter-spacing: 0.02em;
+}
+
+.model-picker__badge[data-kind='reasoning'] {
+  color: var(--violet);
+  background: var(--violet-soft);
+}
+
+.model-picker__badge[data-kind='image'] {
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.model-picker__check {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+/* Reasoning levels ------------------------------------------------- */
+
+.model-picker__reasoning-row {
+  align-items: center;
+}
+
+.model-picker__reasoning-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.model-picker__reasoning-level {
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.model-picker__reasoning-row[data-selected='true'] .model-picker__reasoning-level {
+  color: var(--accent);
+}
+
+.model-picker__reasoning-hint {
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+/* Trigger --------------------------------------------------------- */
+
+/* The pill holds a model name that can be longer than the composer allows,
+   so the name is the part that gives way and the icon and caret stay put. */
+.model-picker__trigger {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.model-picker__trigger > svg,
+.model-picker__trigger .pill__caret {
+  flex: 0 0 auto;
+}
+
+.model-picker__trigger-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
