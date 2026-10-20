@@ -2,7 +2,14 @@ import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import type { GitCommit, GitCommitResult, GitFileDiff, GitFileStatus, GitStatus } from '@shared/types'
+import type {
+  GitCommit,
+  GitCommitResult,
+  GitFileDiff,
+  GitFileStatus,
+  GitPatch,
+  GitStatus
+} from '@shared/types'
 
 const run = promisify(execFile)
 
@@ -13,6 +20,8 @@ const MAX_UNTRACKED_BYTES = 512 * 1024
 const MAX_UNTRACKED_STATS = 60
 /** How much of either side of a review diff is sent to the renderer. */
 const MAX_DIFF_BYTES = 512 * 1024
+/** How much of a patch is sent to the renderer. */
+const MAX_PATCH_BYTES = 1024 * 1024
 
 interface GitOutput {
   code: number
@@ -283,17 +292,19 @@ export async function readFileDiff(root: string, filePath: string): Promise<GitF
   const target = insideWorkTree(root, filePath)
   if (!target) return { ...blank, error: 'The file is outside the project.' }
 
-  const status = await git(root, ['status', '--porcelain=v1', '--', filePath])
-  const line = status.stdout.split('\n').find((entry) => entry.trim())
-  const letters = line ? line.slice(0, 2) : ' M'
-  const untracked = letters === '??'
+  const status = await git(root, ['status', '--porcelain=v1', '-z', '--', filePath])
+  const entry = parsePorcelain(status.stdout)[0]
+  const letters = entry ? `${entry.index}${entry.worktree}` : ' M'
+  const untracked = entry?.untracked ?? letters === '??'
+  // A renamed file's old content lives under the old path in HEAD.
+  const oldPath = entry?.oldPath ?? filePath
 
   // The old side comes from HEAD; a file that was never committed has none.
   let oldText = ''
   let oldTruncated = false
   let binary = false
   if (!untracked) {
-    const shown = await git(root, ['show', `HEAD:${filePath.replace(/\\/g, '/')}`])
+    const shown = await git(root, ['show', `HEAD:${oldPath.replace(/\\/g, '/')}`])
     if (shown.code === 0) {
       if (shown.stdout.includes('\u0000')) {
         binary = true
@@ -334,6 +345,65 @@ export async function readFileDiff(root: string, filePath: string): Promise<GitF
     binary,
     truncated: oldTruncated || newTruncated
   }
+}
+
+/** Build a new-file patch for a file git does not track yet. */
+function untrackedPatch(relative: string, content: string, truncated: boolean): string {
+  const clean = relative.replace(/\\/g, '/')
+  const lines = content.split('\n')
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  const body = lines.map((line) => `+${line}`).join('\n')
+  const marker = truncated ? '\n\\ No newline at end of file' : ''
+  return `diff --git a/${clean} b/${clean}\nnew file mode 100644\n--- /dev/null\n+++ b/${clean}\n@@ -0,0 +1,${lines.length} @@\n${body}${marker}\n`
+}
+
+/**
+ * A unified patch of the working tree against HEAD.
+ *
+ * `git diff HEAD` covers staged and unstaged changes at once, which is what a
+ * reviewer wants to copy out; untracked files are appended by hand because git
+ * does not diff them without being told to add them first.
+ */
+export async function readPatch(root: string, filePath?: string): Promise<GitPatch> {
+  if (!root) return { text: '', truncated: false }
+
+  const args = ['-c', 'core.quotepath=false', 'diff', 'HEAD', '--no-color', '--no-ext-diff']
+  if (filePath) args.push('--', filePath)
+  const diff = await git(root, args, COMMIT_TIMEOUT_MS)
+  let text = diff.code === 0 ? diff.stdout : ''
+  let truncated = false
+  if (text.length > MAX_PATCH_BYTES) {
+    text = text.slice(0, MAX_PATCH_BYTES)
+    truncated = true
+  }
+
+  const status = await readStatus(root)
+  const untracked = status.files.filter(
+    (file) => file.untracked && (!filePath || file.path === filePath)
+  )
+  for (const file of untracked) {
+    const target = insideWorkTree(root, file.path)
+    if (!target) continue
+    const clean = file.path.replace(/\\/g, '/')
+    try {
+      const buffer = await readFile(target)
+      if (looksBinary(buffer)) {
+        text += `diff --git a/${clean} b/${clean}\nnew file mode 100644\nBinary files /dev/null and b/${clean} differ\n`
+        continue
+      }
+      const capped = capText(buffer.toString('utf8'))
+      text += untrackedPatch(file.path, capped.text, capped.truncated)
+      truncated = truncated || capped.truncated
+    } catch {
+      /* a file that vanished has nothing to add */
+    }
+  }
+
+  if (Buffer.byteLength(text, 'utf8') > MAX_PATCH_BYTES) {
+    text = text.slice(0, MAX_PATCH_BYTES)
+    truncated = true
+  }
+  return { text, truncated }
 }
 
 /**
@@ -378,12 +448,15 @@ function parsePorcelain(raw: string): GitFileStatus[] {
     const indexStatus = field[0] ?? ' '
     const worktreeStatus = field[1] ?? ' '
     const filePath = field.slice(3)
+    let oldPath: string | undefined
     if (indexStatus === 'R' || indexStatus === 'C' || worktreeStatus === 'R' || worktreeStatus === 'C') {
+      oldPath = fields[index + 1]
       index += 1
     }
     const untracked = indexStatus === '?' && worktreeStatus === '?'
     files.push({
       path: filePath,
+      oldPath,
       index: indexStatus,
       worktree: worktreeStatus,
       staged: !untracked && indexStatus !== ' ' && indexStatus !== '?',

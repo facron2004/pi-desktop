@@ -284,6 +284,8 @@ export interface SessionSearchHit {
 /** One entry of `git status --porcelain`, with its line counts when known. */
 export interface GitFileStatus {
   path: string
+  /** The path a rename or copy came from. */
+  oldPath?: string
   /** Index (staged) status code, as git reports it: M, A, D, R, … */
   index: string
   /** Worktree status code. */
@@ -328,6 +330,13 @@ export interface GitCommitResult {
   error?: string
   /** Files that went into the commit. */
   files?: number
+}
+
+/** A unified diff of the working tree against HEAD. */
+export interface GitPatch {
+  text: string
+  /** The patch (or one file in it) was too large to write whole. */
+  truncated: boolean
 }
 
 /**
@@ -466,6 +475,8 @@ export interface PiDesktopBridge {
     commit(message: string, includeUnstaged?: boolean): Promise<GitCommitResult>
     /** Both sides of one working-tree file, for the review tab. */
     fileDiff(file: string): Promise<GitFileDiff>
+    /** Unified patch of the whole working tree, or of one file. */
+    patch(file?: string): Promise<GitPatch>
     /** Discard the working-tree changes of a tracked file. */
     revertFile(file: string): Promise<GitCommitResult>
     /** Move one file into (or out of) the index. */

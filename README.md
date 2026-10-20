@@ -36,8 +36,10 @@ Claude Desktop.
   the commit dialog says how many are staged, commits only those unless "Include
   unstaged changes" is ticked, lists the recent commits (a subject can be reused as
   the message, and a hash copied), offers `feat`/`fix`/`docs`/… templates, and keeps
-  a failed or cancelled message for the next attempt. A folder that is not a
-  repository simply shows no branch.
+  a failed or cancelled message for the next attempt. A file's full patch — or the
+  whole working tree's — can be copied for another tool, and a renamed file shows both
+  of its paths (`old → new`) with the diff taken against the old content. A folder
+  that is not a repository simply shows no branch.
 - **Integrated terminal.** `Ctrl+`` opens a terminal under the conversation. Commands
   run in the project through Pi's own `bash` command, the output streams in as it
   arrives, and each block says its exit code and how long it took. The drawer can be
@@ -54,12 +56,16 @@ Claude Desktop.
 - **Search inside the files.** The Files tab has a **Text** mode: type a word and the
   project is searched line by line (binary and huge files are skipped), with the hits
   grouped by file, their line numbers, and the match marked. Clicking a hit opens the
-  file at that line.
+  file at that line. The file viewer itself has in-file find (`Ctrl+F` inside it, with
+  matches walked by Enter), a line-jump box, a word-wrap toggle and one-click copy of
+  the path or the contents.
 - **The session tree.** `Ctrl+Shift+T` (or `/tree`) shows how the conversation branches:
   every prompt, answer, command and summary in order, the path that is open marked and
-  its tip labelled, splits marked where a branch begins. Any prompt in it can start a
-  new branch — the fork opens a new conversation and puts the prompt back in the
-  composer, ready to be rewritten.
+  its tip labelled, splits marked where a branch begins. A filter narrows the tree to
+  the rows that match (their ancestors stay visible), folds are remembered per
+  conversation, and two arrows walk the branch tips. Any prompt in it can start a new
+  branch — the fork opens a new conversation and puts the prompt back in the composer,
+  ready to be rewritten.
 - **Project inspector.** A docked panel with three tabs. **Changes** lists every file
   the agent edited or created in this session, with the line counts of each change;
   **Review** reads the git working tree instead, so edits made outside the app show up
@@ -208,8 +214,9 @@ conversation with an inline diff, the light theme, the app mid-run, the terminal
 drawer, the commit dialog, the search across conversations, the git review tab,
 the plan strip, a jump from a search hit, the commit history, the model menu, the
 image lightbox, git staging, a command handed to the terminal, the session tree,
-a fork started from it, the project text search and the pre-commit checks. The
-roadmap for the remaining Codex-style work is in
+a fork started from it, the project text search, the pre-commit checks, a renamed
+file with a copied patch, the file viewer's find bar, and the session-tree filter.
+The roadmap for the remaining Codex-style work is in
 [`docs/codex-parity.md`](docs/codex-parity.md).
 
 ## Architecture

@@ -21,6 +21,7 @@ import {
   commitWorkingTree,
   readFileDiff,
   readLog,
+  readPatch,
   readStatus,
   revertFile,
   stageAll,
@@ -333,6 +334,10 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('git:fileDiff', (_event, file: string) =>
     readFileDiff(workspaceRoot(context), file)
+  )
+
+  ipcMain.handle('git:patch', (_event, file?: string) =>
+    readPatch(workspaceRoot(context), file)
   )
 
   ipcMain.handle('git:revertFile', (_event, file: string) =>

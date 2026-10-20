@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronRight,
+  ClipboardCopy,
   Copy,
   FileWarning,
   Minus,
@@ -186,6 +187,28 @@ export function ReviewView({
     }
   }, [files, showToast, t])
 
+  /** Copy a patch another tool can apply: the whole tree, or one file. */
+  const copyPatch = useCallback(
+    async (file?: string) => {
+      try {
+        const patch = await window.pi.git.patch(file)
+        if (!patch.text.trim()) {
+          showToast(t('There is no patch to copy yet'), 'warning')
+          return
+        }
+        await navigator.clipboard.writeText(patch.text)
+        showToast(
+          patch.truncated
+            ? t('The patch was copied, but it is too large to be complete')
+            : t('The patch was copied')
+        )
+      } catch {
+        showToast(t('The clipboard is not available'), 'error')
+      }
+    },
+    [showToast, t]
+  )
+
   const revert = useCallback(async () => {
     const target = revertTarget
     setRevertTarget(null)
@@ -257,6 +280,13 @@ export function ReviewView({
             ) : null}
             <button
               className="icon-btn"
+              onClick={() => void copyPatch()}
+              title={t('Copy the patch of the whole working tree')}
+            >
+              <ClipboardCopy size={12} />
+            </button>
+            <button
+              className="icon-btn"
               onClick={() => void copyPaths()}
               title={t('Copy the paths of the changed files')}
             >
@@ -310,6 +340,7 @@ export function ReviewView({
               onToggle={(path) => toggle(path)}
               onOpen={onOpenFile}
               onToggleStage={(file) => void toggleStage(file)}
+              onCopyPatch={(file) => void copyPatch(file.path)}
               onRevert={setRevertTarget}
             />
           ) : null}
@@ -324,6 +355,7 @@ export function ReviewView({
               onToggle={(path) => toggle(path)}
               onOpen={onOpenFile}
               onToggleStage={(file) => void toggleStage(file)}
+              onCopyPatch={(file) => void copyPatch(file.path)}
               onRevert={setRevertTarget}
             />
           ) : null}
@@ -354,6 +386,7 @@ function ReviewGroup({
   onToggle,
   onOpen,
   onToggleStage,
+  onCopyPatch,
   onRevert
 }: {
   label: string | null
@@ -365,6 +398,7 @@ function ReviewGroup({
   onToggle: (path: string) => void
   onOpen: (file: { path: string; line?: number }) => void
   onToggleStage: (file: GitFileStatus) => void
+  onCopyPatch: (file: GitFileStatus) => void
   onRevert: (path: string) => void
 }) {
   const t = useT()
@@ -387,6 +421,7 @@ function ReviewGroup({
           onOpen={() => onOpen({ path: file.path })}
           onReveal={() => void window.pi.fs.reveal(file.path)}
           onToggleStage={() => onToggleStage(file)}
+          onCopyPatch={() => onCopyPatch(file)}
           onRevert={() => onRevert(file.path)}
         />
       ))}
@@ -404,6 +439,7 @@ function ReviewFile({
   onOpen,
   onReveal,
   onToggleStage,
+  onCopyPatch,
   onRevert
 }: {
   file: GitFileStatus
@@ -414,6 +450,7 @@ function ReviewFile({
   onOpen: () => void
   onReveal: () => void
   onToggleStage: () => void
+  onCopyPatch: () => void
   onRevert: () => void
 }) {
   const t = useT()
@@ -437,7 +474,18 @@ function ReviewFile({
           <span className="review__status" data-kind={status.kind}>
             {status.label}
           </span>
-          <span className="review__path" title={file.path}>
+          <span
+            className="review__path"
+            title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
+          >
+            {file.oldPath ? (
+              <>
+                <span className="review__old-path">{file.oldPath}</span>
+                <span className="review__arrow" aria-hidden="true">
+                  →
+                </span>
+              </>
+            ) : null}
             {file.path}
           </span>
           <span className="review__stats">
@@ -453,6 +501,13 @@ function ReviewFile({
             title={file.staged ? t('Unstage this file') : t('Stage this file')}
           >
             {file.staged ? <Minus size={12} /> : <Plus size={12} />}
+          </button>
+          <button
+            className="icon-btn"
+            onClick={onCopyPatch}
+            title={t('Copy this patch')}
+          >
+            <ClipboardCopy size={12} />
           </button>
           <button className="icon-btn" onClick={onOpen} title={t('Open the file')}>
             <SquareArrowOutUpRight size={12} />

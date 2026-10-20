@@ -285,3 +285,16 @@
 .review__file[data-staged='true'] .review__status {
   box-shadow: inset 0 -2px 0 var(--green);
 }
+
+/* Renamed files: the path reads "old → new". */
+
+.review__old-path {
+  color: var(--text-faint);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+
+.review__arrow {
+  margin: 0 5px;
+  color: var(--text-faint);
+}

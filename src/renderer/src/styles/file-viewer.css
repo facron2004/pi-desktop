@@ -1,0 +1,138 @@
+/* The file viewer on top of the shared snippet styles: a find bar, a line
+   jump box and a wrap switch. The code, the gutter and the marked-line flash
+   keep using the rules in global.css. */
+
+/* The toolbar carries more tools now, so it wraps instead of clipping them. */
+.viewer .viewer__bar {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* The scrolling code is focusable, so it can take Ctrl+F right after a click. */
+.viewer__code:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: -1px;
+}
+
+.viewer .ghost-btn[data-active='true'] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+/* Line jump: small enough to sit in the toolbar, numeric so the browser does
+   not offer to complete a sentence. */
+.fv-jump {
+  flex: 0 0 auto;
+  width: 58px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.12s var(--ease);
+}
+
+.fv-jump::placeholder {
+  color: var(--text-faint);
+}
+
+.fv-jump:focus {
+  border-color: var(--accent-line);
+}
+
+/* In-file find bar. */
+.fv-find {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+  color: var(--text-faint);
+  animation: fv-find-in 0.12s var(--ease);
+}
+
+@keyframes fv-find-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+.fv-find__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s var(--ease);
+}
+
+.fv-find__input::placeholder {
+  color: var(--text-faint);
+}
+
+.fv-find__input:focus {
+  border-color: var(--accent-line);
+}
+
+.fv-find__count {
+  flex: 0 0 auto;
+  min-width: 56px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.fv-find .icon-btn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+}
+
+.fv-find .icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: none;
+}
+
+/* Word wrap only lengthens the rows: every line number stays at the start of
+   its own line, so the gutter keeps counting the rows of the file. */
+.viewer[data-wrap='true'] .viewer__code,
+.viewer[data-wrap='true'] .viewer__code pre.shiki,
+.viewer[data-wrap='true'] .viewer__code pre.shiki code,
+.viewer[data-wrap='true'] .viewer__code.snippet--plain {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.viewer[data-wrap='true'] .viewer__code pre.shiki code {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Matches are painted by the browser's highlight registry, so the rendered
+   markup is never rewritten and syntax highlighting keeps working while the
+   find bar is open. */
+::highlight(pi-file-find) {
+  background-color: var(--blue-soft);
+  color: var(--blue);
+}
+
+::highlight(pi-file-find-current) {
+  background-color: var(--blue);
+  color: var(--accent-contrast);
+}

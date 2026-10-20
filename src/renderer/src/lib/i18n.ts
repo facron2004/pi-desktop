@@ -533,7 +533,20 @@ const zhCN: Record<string, string> = {
   'Search inside the project files': '在项目文件中搜索',
   'No matches': '没有匹配',
   'The text search failed.': '文本搜索失败。',
-  'Close the text search': '关闭文本搜索'
+  'Close the text search': '关闭文本搜索',
+  'Copy the patch of the whole working tree': '复制整个工作区的补丁',
+  'Copy this patch': '复制此文件的补丁',
+  'There is no patch to copy yet': '暂无可复制的补丁',
+  'The patch was copied': '补丁已复制',
+  'The patch was copied, but it is too large to be complete': '补丁已复制，但内容过大并不完整',
+  'Filter the session tree': '筛选会话树',
+  'Previous branch tip': '上一条分支末端',
+  'Next branch tip': '下一条分支末端',
+  'No entries match': '没有匹配的条目',
+  'Search the file': '在文件中搜索',
+  'Go to line': '跳转到行',
+  Wrap: '自动换行',
+  'Wrap long lines': '长行自动换行'
 }
 
 export function translate(text: string, language: AppLanguage): string {

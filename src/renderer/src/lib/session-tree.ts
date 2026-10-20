@@ -282,3 +282,130 @@ export function flattenTree(tree: SessionTree, expanded: ReadonlySet<string>): T
   }
   return rows
 }
+
+/** The parent of every node that has an id, so a row can find its path. */
+function parentIds(tree: SessionTree): Map<string, string> {
+  const parents = new Map<string, string>()
+  const walk = (nodes: SessionTreeNode[], parent: string | undefined) => {
+    for (const node of nodes) {
+      const id = node.entry.id
+      if (!id) {
+        // An entry without an id cannot be tracked; its children keep the
+        // closest ancestor that can be.
+        walk(node.children, parent)
+        continue
+      }
+      if (parent) parents.set(id, parent)
+      walk(node.children, id)
+    }
+  }
+  walk(tree.roots, undefined)
+  return parents
+}
+
+/** The ids from a root down to `id`, the entry itself included. */
+export function pathToEntry(tree: SessionTree, id: string): string[] {
+  const parents = parentIds(tree)
+  const path: string[] = []
+  let cursor: string | undefined = id
+  while (cursor) {
+    path.unshift(cursor)
+    cursor = parents.get(cursor)
+  }
+  return path
+}
+
+/**
+ * The deepest visible row of every branch, in the order the tree is read.
+ *
+ * A branch ends at a node without children. When that node is a bookkeeping
+ * entry with no row of its own, the tip is the closest row above it — the same
+ * fallback the open leaf gets.
+ */
+export function branchTips(tree: SessionTree): string[] {
+  const tips: string[] = []
+  const seen = new Set<string>()
+  const walk = (nodes: SessionTreeNode[], lastRowId: string | null) => {
+    for (const node of nodes) {
+      const id = node.entry.id ?? ''
+      const rowId = id && describeEntry(node.entry) ? id : lastRowId
+      if (node.children.length === 0) {
+        if (rowId && !seen.has(rowId)) {
+          seen.add(rowId)
+          tips.push(rowId)
+        }
+        continue
+      }
+      walk(node.children, rowId)
+    }
+  }
+  walk(tree.roots, null)
+  return tips
+}
+
+function rowMatches(row: TreeRow, needle: string): boolean {
+  return (
+    row.title.toLowerCase().includes(needle) ||
+    (row.prompt ?? '').toLowerCase().includes(needle) ||
+    (row.label ?? '').toLowerCase().includes(needle) ||
+    (row.detail ?? '').toLowerCase().includes(needle)
+  )
+}
+
+export interface TreeView {
+  rows: TreeRow[]
+  /** False when a filter matched nothing at all. */
+  matched: boolean
+}
+
+/**
+ * The rows a filter leaves on screen.
+ *
+ * A row stays when it matches, and so do its ancestors — they are the only way
+ * to reach it. The branches on those paths are opened for as long as the filter
+ * is on; the reader's folds themselves are never changed.
+ */
+export function filterTree(
+  tree: SessionTree,
+  expanded: ReadonlySet<string>,
+  query: string
+): TreeView {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return { rows: flattenTree(tree, expanded), matched: true }
+
+  // Every row is tested, including the ones a fold hides: a match has to be
+  // able to open its own path.
+  const allRows = flattenTree(tree, branchIds(tree))
+  const matched = new Set<string>()
+  for (const row of allRows) {
+    if (rowMatches(row, needle)) matched.add(row.id)
+  }
+  if (matched.size === 0) return { rows: [], matched: false }
+
+  const parents = parentIds(tree)
+  const visible = new Set(matched)
+  const openIds = new Set<string>()
+  for (const id of matched) {
+    let cursor = parents.get(id)
+    while (cursor) {
+      visible.add(cursor)
+      openIds.add(cursor)
+      cursor = parents.get(cursor)
+    }
+  }
+
+  // Only the paths of the matches are open on top of the reader's folds.
+  const effective = new Set(expanded)
+  for (const id of openIds) effective.add(id)
+  const rows = flattenTree(tree, effective).filter((row) => visible.has(row.id))
+  // A matching branch can have every child filtered out. Its chevron then
+  // reads as open although nothing is below it, so it says closed instead.
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]
+    if (!row.hasChildren) continue
+    const next = rows[index + 1]
+    const openBelow = Boolean(next && next.depth > row.depth)
+    if (row.childrenOpen !== openBelow) rows[index] = { ...row, childrenOpen: openBelow }
+  }
+  return { rows, matched: true }
+}

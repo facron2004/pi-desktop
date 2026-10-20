@@ -1,5 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Copy, ExternalLink, File as FileIcon, Link2, MessageSquarePlus } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  Copy,
+  ExternalLink,
+  File as FileIcon,
+  Link2,
+  MessageSquarePlus,
+  Search,
+  X
+} from 'lucide-react'
 import type { FileContent } from '@shared/types'
 import { fileTone } from '../lib/files'
 import { formatBytes } from '../lib/format'
@@ -7,6 +18,122 @@ import { basename, relativePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { CodeSnippet } from './CodeSnippet'
 import { useT } from '../lib/i18n'
+import '../styles/file-viewer.css'
+
+/** Where the viewer remembers whether long lines wrap. */
+const WRAP_KEY = 'pi-desktop.file-viewer-wrap'
+
+/** A file is not worth tens of thousands of ranges; the count stops here. */
+const MAX_MATCHES = 2000
+
+/** Every hit in the file, and the one the reader is on. */
+const HIGHLIGHT_ALL = 'pi-file-find'
+const HIGHLIGHT_CURRENT = 'pi-file-find-current'
+
+/**
+ * The CSS Custom Highlight API paints matches without touching the rendered
+ * markup, so syntax highlighting can keep replacing the code underneath.
+ * The DOM typings only cover part of the registry, hence the local shape.
+ */
+interface FileHighlightRegistry {
+  set(name: string, highlight: Highlight): void
+  delete(name: string): void
+}
+
+function highlightRegistry(): FileHighlightRegistry | null {
+  if (typeof Highlight !== 'function') return null
+  return (CSS as unknown as { highlights?: FileHighlightRegistry }).highlights ?? null
+}
+
+function paintHighlights(matches: FileMatch[], current: number): void {
+  const registry = highlightRegistry()
+  if (!registry) return
+  registry.delete(HIGHLIGHT_ALL)
+  registry.delete(HIGHLIGHT_CURRENT)
+  if (!matches.length) return
+  registry.set(HIGHLIGHT_ALL, new Highlight(...matches.map((match) => match.range)))
+  registry.set(HIGHLIGHT_CURRENT, new Highlight(matches[Math.min(current, matches.length - 1)].range))
+}
+
+function clearHighlights(): void {
+  const registry = highlightRegistry()
+  registry?.delete(HIGHLIGHT_ALL)
+  registry?.delete(HIGHLIGHT_CURRENT)
+}
+
+interface FileMatch {
+  range: Range
+  /** The rendered line the match starts on, for scrolling it into view. */
+  line: HTMLElement | null
+}
+
+interface TextRun {
+  node: Text
+  /** Where this text node starts in the flat text of the whole file. */
+  start: number
+}
+
+/** The text node and offset for a position in the flat text. */
+function locateRun(runs: TextRun[], offset: number): { node: Text; offset: number } | null {
+  if (!runs.length) return null
+  let low = 0
+  let high = runs.length - 1
+  while (low < high) {
+    const mid = (low + high + 1) >> 1
+    if (runs[mid].start <= offset) low = mid
+    else high = mid - 1
+  }
+  const run = runs[low]
+  const within = offset - run.start
+  if (within < 0 || within > run.node.data.length) return null
+  return { node: run.node, offset: within }
+}
+
+/**
+ * Find `value` in the code as one flat string.
+ *
+ * The highlighted markup splits the text into a token per span, so searching
+ * per node would miss a phrase that crosses two tokens. Ranges bridge that.
+ */
+function collectMatches(host: HTMLElement | null, value: string): FileMatch[] {
+  if (!host || !value) return []
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT)
+  const runs: TextRun[] = []
+  let text = ''
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const run = node as Text
+    runs.push({ node: run, start: text.length })
+    text += run.data
+  }
+
+  const needle = value.toLowerCase()
+  const haystack = text.toLowerCase()
+  const matches: FileMatch[] = []
+  let from = haystack.indexOf(needle)
+  while (from !== -1 && matches.length < MAX_MATCHES) {
+    const start = locateRun(runs, from)
+    const end = locateRun(runs, from + needle.length)
+    if (start && end) {
+      const range = document.createRange()
+      range.setStart(start.node, start.offset)
+      range.setEnd(end.node, end.offset)
+      const container = range.startContainer
+      const element = container instanceof HTMLElement ? container : container.parentElement
+      matches.push({ range, line: element?.closest<HTMLElement>('.line') ?? null })
+    }
+    from = haystack.indexOf(needle, from + needle.length)
+  }
+  return matches
+}
+
+/** Read the wrap preference without letting a locked profile break the viewer. */
+function readWrap(): boolean {
+  try {
+    return localStorage.getItem(WRAP_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
 
 interface FileViewerProps {
   file: string
@@ -20,8 +147,22 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
   const [content, setContent] = useState<FileContent | null>(null)
   const [copied, setCopied] = useState<'file' | 'path' | null>(null)
   const [error, setError] = useState(false)
+  const [findOpen, setFindOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [count, setCount] = useState(0)
+  const [active, setActive] = useState(0)
+  const [jump, setJump] = useState('')
+  const [wrap, setWrap] = useState(readWrap)
   const codeRef = useRef<HTMLElement | null>(null)
   const lineRef = useRef(line)
+  const findInputRef = useRef<HTMLInputElement>(null)
+  const findOpenerRef = useRef<HTMLElement | null>(null)
+  const findOpenRef = useRef(false)
+  const queryRef = useRef('')
+  const matchesRef = useRef<FileMatch[]>([])
+  const activeRef = useRef(0)
+  const markTimerRef = useRef<number | undefined>(undefined)
+  const markedRef = useRef<HTMLElement | null>(null)
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   lineRef.current = line
 
@@ -47,35 +188,202 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     }
   }, [file])
 
-  // Bring the line the reader came from into view and mark it. The code is
-  // highlighted after it is shown, so this runs again once the highlighted
-  // version is in place.
-  const jumpToLine = useCallback(() => {
-    const wanted = lineRef.current
-    if (!wanted) return
-    const lines = codeRef.current?.querySelectorAll<HTMLElement>('.line')
-    const target = lines?.[wanted - 1]
-    if (!target) return
-    target.scrollIntoView({ block: 'center' })
+  // A new file is a new reading context: find, jump and any highlight belong
+  // to the old one and must not point into the new code.
+  useEffect(() => {
+    findOpenRef.current = false
+    queryRef.current = ''
+    matchesRef.current = []
+    activeRef.current = 0
+    setFindOpen(false)
+    setQuery('')
+    setCount(0)
+    setActive(0)
+    setJump('')
+    clearHighlights()
+  }, [file])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(WRAP_KEY, wrap ? 'true' : 'false')
+    } catch {
+      // A full quota or a locked profile; wrapping still works for this run.
+    }
+  }, [wrap])
+
+  useEffect(
+    () => () => {
+      clearHighlights()
+      window.clearTimeout(markTimerRef.current)
+      markedRef.current?.removeAttribute('data-marked')
+    },
+    []
+  )
+
+  /** Bring a line into view and flash it, the way opening from a diff does. */
+  const markLine = useCallback((target: HTMLElement) => {
+    markedRef.current?.removeAttribute('data-marked')
     target.setAttribute('data-marked', 'true')
-    window.setTimeout(() => target.removeAttribute('data-marked'), 2400)
+    markedRef.current = target
+    window.clearTimeout(markTimerRef.current)
+    markTimerRef.current = window.setTimeout(() => {
+      if (markedRef.current === target) {
+        target.removeAttribute('data-marked')
+        markedRef.current = null
+      }
+    }, 2400)
+  }, [])
+
+  const revealLine = useCallback(
+    (wanted: number) => {
+      if (!wanted || wanted < 1) return
+      const lines = codeRef.current?.querySelectorAll<HTMLElement>('.line')
+      const target = lines?.[wanted - 1]
+      if (!target) return
+      target.scrollIntoView({ block: 'center' })
+      markLine(target)
+    },
+    [markLine]
+  )
+
+  const scrollToMatch = useCallback((match: FileMatch | undefined) => {
+    match?.line?.scrollIntoView({ block: 'center' })
+  }, [])
+
+  /** Recompute after the code is rendered again, keeping the current hit. */
+  const refreshFind = useCallback(() => {
+    const matches = collectMatches(codeRef.current, queryRef.current)
+    matchesRef.current = matches
+    const next = matches.length ? Math.min(activeRef.current, matches.length - 1) : 0
+    activeRef.current = next
+    setCount(matches.length)
+    setActive(next)
+    paintHighlights(matches, next)
+    scrollToMatch(matches[next])
+  }, [scrollToMatch])
+
+  const step = useCallback(
+    (delta: number) => {
+      const matches = matchesRef.current
+      if (!matches.length) return
+      const next = (activeRef.current + delta + matches.length) % matches.length
+      activeRef.current = next
+      setActive(next)
+      paintHighlights(matches, next)
+      scrollToMatch(matches[next])
+    },
+    [scrollToMatch]
+  )
+
+  const closeFind = useCallback(() => {
+    findOpenRef.current = false
+    queryRef.current = ''
+    matchesRef.current = []
+    activeRef.current = 0
+    setFindOpen(false)
+    setQuery('')
+    setCount(0)
+    setActive(0)
+    clearHighlights()
+    const opener = findOpenerRef.current
+    findOpenerRef.current = null
+    if (opener?.isConnected) opener.focus()
+    else codeRef.current?.focus()
+  }, [])
+
+  const openFind = useCallback(() => {
+    if (!findOpenRef.current) {
+      findOpenerRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : codeRef.current
+      findOpenRef.current = true
+      setFindOpen(true)
+    }
+    window.requestAnimationFrame(() => {
+      findInputRef.current?.focus()
+      findInputRef.current?.select()
+    })
+  }, [])
+
+  // The code is highlighted asynchronously, so the lines the find bar points
+  // at are replaced once more after the first render.
+  const handleReady = useCallback(() => {
+    if (lineRef.current) revealLine(lineRef.current)
+    if (findOpenRef.current) refreshFind()
+  }, [revealLine, refreshFind])
+
+  // The find bar searches as it is typed, and the first hit is scrolled to.
+  useEffect(() => {
+    if (!findOpen) {
+      matchesRef.current = []
+      activeRef.current = 0
+      setCount(0)
+      setActive(0)
+      clearHighlights()
+      return
+    }
+    const matches = collectMatches(codeRef.current, query)
+    matchesRef.current = matches
+    activeRef.current = 0
+    setCount(matches.length)
+    setActive(0)
+    paintHighlights(matches, 0)
+    scrollToMatch(matches[0])
+  }, [findOpen, query, scrollToMatch])
+
+  // Opening a different line of the same file changes no code, so the snippet
+  // does not report itself ready again.
+  useEffect(() => {
+    if (line) revealLine(line)
+  }, [line, revealLine])
+
+  const handleHost = useCallback((node: HTMLElement | null) => {
+    codeRef.current = node
+    // The code is the reading surface: focusable, so Ctrl+F and the arrow keys
+    // work right after clicking the text instead of the toolbar.
+    if (node) node.tabIndex = 0
   }, [])
 
   /**
    * Copy the file or the place it lives.
    *
-   * The crumb shows the path inside the project, but a command that needs the
-   * file wants the whole path, so both are one click away.
+   * The crumb shows the path inside the project, and a command that runs from
+   * the workspace root wants exactly that, so the path is copied relative.
    */
   const copy = async (what: 'file' | 'path') => {
     if (!content) return
-    const text = what === 'file' ? content.content : content.path
+    const text = what === 'file' ? content.content : relativePath(root ?? '', content.path)
     try {
       await navigator.clipboard.writeText(text)
       setCopied(what)
       window.setTimeout(() => setCopied((current) => (current === what ? null : current)), 1600)
     } catch {
       /* clipboard may be unavailable */
+    }
+  }
+
+  const applyJump = useCallback(() => {
+    const wanted = Number.parseInt(jump, 10)
+    if (!Number.isFinite(wanted) || wanted < 1) return
+    const lines = codeRef.current?.querySelectorAll<HTMLElement>('.line')
+    if (!lines?.length) return
+    revealLine(Math.min(wanted, lines.length))
+  }, [jump, revealLine])
+
+  /**
+   * `Ctrl+F` means this file while the viewer has the keyboard. Stopping the
+   * event keeps the conversation-level search from opening behind it.
+   */
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f') {
+      event.preventDefault()
+      event.stopPropagation()
+      openFind()
+      return
+    }
+    if (event.key === 'Escape' && findOpenRef.current) {
+      event.preventDefault()
+      event.stopPropagation()
+      closeFind()
     }
   }
 
@@ -93,7 +401,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
   const lineCount = content.content ? content.content.split('\n').length : 0
 
   return (
-    <div className="viewer">
+    <div className="viewer" data-wrap={wrap ? 'true' : 'false'} onKeyDown={onKeyDown}>
       <div className="viewer__bar">
         <span className="viewer__crumb">
           <span className="viewer__crumb-root">{root ? basename(root) : ''}</span>
@@ -110,6 +418,41 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
           {lineCount} {lineCount === 1 ? t('line') : t('lines')}
           {content.size ? ` · ${formatBytes(content.size)}` : ''}
         </span>
+        <button
+          className="ghost-btn"
+          data-active={findOpen ? 'true' : 'false'}
+          onClick={openFind}
+          title={t('Search the file')}
+          aria-label={t('Search the file')}
+          aria-expanded={findOpen}
+        >
+          <Search size={12} />
+        </button>
+        <input
+          className="fv-jump"
+          value={jump}
+          placeholder={t('line')}
+          aria-label={t('Go to line')}
+          title={t('Go to line')}
+          inputMode="numeric"
+          spellCheck={false}
+          onChange={(event) => setJump(event.target.value.replace(/[^\d]/g, ''))}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              applyJump()
+            }
+          }}
+        />
+        <button
+          className="ghost-btn"
+          data-active={wrap ? 'true' : 'false'}
+          onClick={() => setWrap((value) => !value)}
+          title={t('Wrap long lines')}
+          aria-pressed={wrap}
+        >
+          {t('Wrap')}
+        </button>
         <button className="ghost-btn" onClick={() => void copy('file')} title={t('Copy the file')}>
           {copied === 'file' ? <Check size={12} /> : <Copy size={12} />}
         </button>
@@ -143,14 +486,71 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
         </button>
       </div>
 
+      {findOpen ? (
+        <div className="fv-find">
+          <Search size={12} className="fv-find__icon" />
+          <input
+            ref={findInputRef}
+            className="fv-find__input"
+            value={query}
+            placeholder={t('Search the file')}
+            aria-label={t('Search the file')}
+            spellCheck={false}
+            onChange={(event) => {
+              queryRef.current = event.target.value
+              setQuery(event.target.value)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                step(event.shiftKey ? -1 : 1)
+              }
+            }}
+          />
+          <span className="fv-find__count">
+            {query
+              ? count
+                ? `${active + 1} ${t('of')} ${count}`
+                : t('No matches')
+              : ''}
+          </span>
+          <button
+            className="icon-btn"
+            disabled={!count}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => step(-1)}
+            title={t('Go to the previous search hit')}
+            aria-label={t('Go to the previous search hit')}
+          >
+            <ArrowUp size={12} />
+          </button>
+          <button
+            className="icon-btn"
+            disabled={!count}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => step(1)}
+            title={t('Go to the next search hit')}
+            aria-label={t('Go to the next search hit')}
+          >
+            <ArrowDown size={12} />
+          </button>
+          <button
+            className="icon-btn"
+            onClick={closeFind}
+            title={t('Close search')}
+            aria-label={t('Close search')}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      ) : null}
+
       <CodeSnippet
         code={content.content}
         language={content.language}
         className="viewer__code"
-        onHost={(node) => {
-          codeRef.current = node
-        }}
-        onReady={jumpToLine}
+        onHost={handleHost}
+        onReady={handleReady}
       />
     </div>
   )

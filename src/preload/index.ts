@@ -9,6 +9,7 @@ import type {
   GitCommit,
   GitCommitResult,
   GitFileDiff,
+  GitPatch,
   GitStatus,
   PiDesktopBridge,
   PiEvent,
@@ -73,6 +74,7 @@ const bridge: PiDesktopBridge = {
     commit: (message: string, includeUnstaged?: boolean): Promise<GitCommitResult> =>
       ipcRenderer.invoke('git:commit', message, includeUnstaged === true),
     fileDiff: (file: string): Promise<GitFileDiff> => ipcRenderer.invoke('git:fileDiff', file),
+    patch: (file?: string): Promise<GitPatch> => ipcRenderer.invoke('git:patch', file),
     revertFile: (file: string): Promise<GitCommitResult> =>
       ipcRenderer.invoke('git:revertFile', file),
     stageFile: (file: string): Promise<GitCommitResult> =>

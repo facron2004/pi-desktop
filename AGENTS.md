@@ -91,6 +91,11 @@ on that path when the leaf itself is a meta entry. A user row's fork action call
 the store's `forkFrom(entryId)` and closes the dialog — the prompt comes back in
 the composer, exactly like the `/branch` command.
 
+The dialog also filters rows (ancestors kept, folds untouched so clearing restores
+them), remembers collapsed branches in localStorage keyed by `activeSessionFile`,
+and walks the branch tips with two header buttons that expand the path, scroll and
+flash the row.
+
 ## The launcher
 
 `Ctrl+Shift+P` opens a palette over the app. It lists every action the app has,
@@ -117,6 +122,12 @@ policy as `fs:search`, literal case-insensitive matching, binary and files over
 512 KB skipped, at most 3 hits per file and 200 in total. Preview offsets
 (`matchStart`/`matchLength`) are relative to the one-line preview, not the file
 line; the viewer scrolls to `line`.
+
+`FileViewer` has its own in-file find (Ctrl+F only while the viewer is focused,
+so the conversation search keeps its key everywhere else), a line-jump box, a
+wrap toggle persisted in localStorage, and copy-path/copy-contents actions. The
+find highlights use the CSS Custom Highlight API rather than rewriting the Shiki
+output, so async highlighting keeps working.
 
 ## Bash
 
@@ -155,11 +166,14 @@ default when nothing is staged) stages the work tree with `git add -A` first.
 Do not silently commit unstaged work — the user chose what to stage.
 
 The Review tab reads the same status through `git:fileDiff`: old side from
-`git show HEAD:path`, new side from disk, then the renderer rebuilds a line diff
-with `buildDiff`. Reverting restores a tracked file with `git checkout HEAD --`
-after a confirmation; an untracked file is deliberately not deleted. Staging is
-per file (`stageFile`/`unstageFile`) or all at once, and the staged flag of each
-file comes from `git status --porcelain` in `GitStatus.files`.
+`git show HEAD:path` (or `HEAD:oldPath` for a rename — `parsePorcelain` keeps the
+old path), new side from disk, then the renderer rebuilds a line diff with
+`buildDiff`. Reverting restores a tracked file with `git checkout HEAD --` after
+a confirmation; an untracked file is deliberately not deleted. Staging is per
+file (`stageFile`/`unstageFile`) or all at once, and the staged flag of each file
+comes from `git status --porcelain` in `GitStatus.files`. `git:patch` returns a
+unified HEAD→worktree patch (all files or one) with untracked files synthesized as
+`new file` patches; it is meant to be pasted into `git apply`.
 
 ## The plan strip
 
