@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ChevronRight, ClipboardCopy, RefreshCw, X } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  ChevronRight,
+  ClipboardCopy,
+  ClipboardList,
+  Copy,
+  CornerUpLeft,
+  RefreshCw,
+  Search,
+  X
+} from 'lucide-react'
 import type { GitCommitDetail, GitCommitFile, GitCommitFileDiff } from '@shared/types'
 import { buildDiff } from '../lib/diff-fold'
 import { formatRelativeTime } from '../lib/format'
@@ -12,11 +23,15 @@ import '../styles/commit-detail.css'
 type LoadState = 'loading' | 'error' | 'ready'
 type FileDiffState = GitCommitFileDiff | 'loading' | 'error'
 
+/** The file filter only earns its row when the list is long enough to scan. */
+const FILTER_THRESHOLD = 6
+
 /**
  * One commit, read-only: its message, the files it touched and their diffs.
  *
  * The history list in the commit dialog is the way in; nothing here changes
- * the working tree or the index.
+ * the working tree or the index. A commit opens its first parent, so a reader
+ * can walk history here without going back to the list.
  */
 export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: () => void }) {
   const t = useT()
@@ -25,29 +40,69 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocus(dialogRef, onClose)
 
+  const [currentHash, setCurrentHash] = useState(hash)
+  /** Commits this dialog walked away from, newest last. */
+  const [backStack, setBackStack] = useState<string[]>([])
   const [detail, setDetail] = useState<GitCommitDetail | null>(null)
   const [state, setState] = useState<LoadState>('loading')
   const [open, setOpen] = useState<string | null>(null)
   const [diffs, setDiffs] = useState<Record<string, FileDiffState>>({})
+  const [filter, setFilter] = useState('')
+  const requestRef = useRef(0)
+  const hashRef = useRef(currentHash)
+  hashRef.current = currentHash
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (target: string) => {
+    const request = ++requestRef.current
     setState('loading')
     try {
-      const data = await window.pi.git.commitDetail(hash)
-      if (!data) {
-        setState('error')
-        return
-      }
-      setDetail(data)
-      setState('ready')
+      const data = await window.pi.git.commitDetail(target)
+      if (request !== requestRef.current) return
+      setDetail(data ?? null)
+      setState(data ? 'ready' : 'error')
     } catch {
+      if (request !== requestRef.current) return
+      setDetail(null)
       setState('error')
     }
+  }, [])
+
+  // The dialog may be reused for another commit; start that commit at the top.
+  useEffect(() => {
+    setCurrentHash(hash)
+    setBackStack([])
   }, [hash])
 
+  // A different commit gets fresh state: no old diff, no old fold, no filter.
   useEffect(() => {
-    void load()
-  }, [load])
+    setDetail(null)
+    setOpen(null)
+    setDiffs({})
+    setFilter('')
+    void load(currentHash)
+  }, [currentHash, load])
+
+  const showCommit = (next: string) => {
+    setDetail(null)
+    setOpen(null)
+    setDiffs({})
+    setFilter('')
+    setCurrentHash(next)
+  }
+
+  const goParent = () => {
+    const parent = detail?.parentHash
+    if (!parent) return
+    setBackStack((previous) => [...previous, currentHash])
+    showCommit(parent)
+  }
+
+  const goBack = () => {
+    const previous = backStack[backStack.length - 1]
+    if (previous === undefined) return
+    showCommit(previous)
+    setBackStack(backStack.slice(0, -1))
+  }
 
   const expand = useCallback(
     async (file: GitCommitFile) => {
@@ -57,25 +112,43 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
       }
       setOpen(file.path)
       if (diffs[file.path]) return
+      const requestHash = currentHash
       setDiffs((previous) => ({ ...previous, [file.path]: 'loading' }))
       try {
-        const data = await window.pi.git.commitFileDiff(hash, file.path)
+        const data = await window.pi.git.commitFileDiff(requestHash, file.path)
+        // A response that lands after the reader walked to another commit
+        // belongs to neither its list nor its cache.
+        if (hashRef.current !== requestHash) return
         setDiffs((previous) => ({ ...previous, [file.path]: data ?? 'error' }))
       } catch {
+        if (hashRef.current !== requestHash) return
         setDiffs((previous) => ({ ...previous, [file.path]: 'error' }))
       }
     },
-    [diffs, hash, open]
+    [currentHash, diffs, open]
   )
 
-  const totals = useMemo(
-    () =>
-      (detail?.files ?? []).reduce(
-        (acc, file) => ({ added: acc.added + file.added, removed: acc.removed + file.removed }),
-        { added: 0, removed: 0 }
-      ),
-    [detail]
-  )
+  const copyHash = useCallback(async () => {
+    if (!detail) return
+    try {
+      await navigator.clipboard.writeText(detail.hash)
+      showToast(t('Copied to clipboard'))
+    } catch {
+      showToast(t('The clipboard is not available'), 'error')
+    }
+  }, [detail, showToast, t])
+
+  const copyMessage = useCallback(async () => {
+    if (!detail) return
+    const body = detail.body.trim()
+    const message = body ? `${detail.subject}\n\n${body}` : detail.subject
+    try {
+      await navigator.clipboard.writeText(message)
+      showToast(t('Copied to clipboard'))
+    } catch {
+      showToast(t('The clipboard is not available'), 'error')
+    }
+  }, [detail, showToast, t])
 
   const copyPatch = useCallback(async () => {
     if (!detail) return
@@ -86,6 +159,23 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
       showToast(t('The clipboard is not available'), 'error')
     }
   }, [detail, showToast, t])
+
+  const files = detail?.files ?? []
+
+  const visibleFiles = useMemo(() => {
+    const needle = filter.trim().toLowerCase()
+    if (!needle) return files
+    return files.filter((file) => file.path.toLowerCase().includes(needle))
+  }, [files, filter])
+
+  const totals = useMemo(
+    () =>
+      files.reduce(
+        (acc, file) => ({ added: acc.added + file.added, removed: acc.removed + file.removed }),
+        { added: 0, removed: 0 }
+      ),
+    [files]
+  )
 
   return (
     <div className="modal-layer" onMouseDown={onClose}>
@@ -106,29 +196,73 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
             <span className="commit-detail__meta">
               {detail ? (
                 <>
-                  <span className="commit-detail__hash">{detail.hash.slice(0, 7)}</span>
+                  <span className="commit-detail__hash-group">
+                    <span className="commit-detail__hash">{detail.hash.slice(0, 7)}</span>
+                    <button
+                      className="icon-btn commit-detail__copy-hash"
+                      onClick={() => void copyHash()}
+                      title={t('Copy the hash')}
+                      aria-label={t('Copy the hash')}
+                    >
+                      <Copy size={11} />
+                    </button>
+                  </span>
                   <span>{detail.author}</span>
                   <span>{formatRelativeTime(detail.date, language)}</span>
                 </>
               ) : (
-                <span className="commit-detail__hash">{hash.slice(0, 7)}</span>
+                <span className="commit-detail__hash">{currentHash.slice(0, 7)}</span>
               )}
             </span>
           </div>
-          <button
-            className="icon-btn"
-            onClick={() => void copyPatch()}
-            title={t('Copy the patch')}
-            disabled={!detail}
-          >
-            <ClipboardCopy size={13} />
-          </button>
-          <button className="icon-btn" onClick={() => void load()} title={t('Refresh')}>
-            <RefreshCw size={13} className={state === 'loading' ? 'spin' : undefined} />
-          </button>
-          <button className="icon-btn" onClick={onClose} title={t('Close')}>
-            <X size={15} />
-          </button>
+
+          <div className="commit-detail__actions">
+            <button
+              className="ghost-btn commit-detail__nav-btn"
+              onClick={goBack}
+              disabled={backStack.length === 0}
+              title={t('Back')}
+            >
+              <CornerUpLeft size={12} />
+              {t('Back')}
+            </button>
+            <button
+              className="ghost-btn commit-detail__nav-btn"
+              onClick={goParent}
+              disabled={!detail?.parentHash}
+              title={t('Parent commit')}
+            >
+              <ArrowLeft size={12} />
+              {t('Parent commit')}
+            </button>
+            <button
+              className="icon-btn"
+              onClick={() => void copyMessage()}
+              title={t('Copy commit message')}
+              aria-label={t('Copy commit message')}
+              disabled={!detail}
+            >
+              <ClipboardList size={13} />
+            </button>
+            <button
+              className="icon-btn"
+              onClick={() => void copyPatch()}
+              title={t('Copy the patch')}
+              disabled={!detail}
+            >
+              <ClipboardCopy size={13} />
+            </button>
+            <button
+              className="icon-btn"
+              onClick={() => void load(currentHash)}
+              title={t('Refresh')}
+            >
+              <RefreshCw size={13} className={state === 'loading' ? 'spin' : undefined} />
+            </button>
+            <button className="icon-btn" onClick={onClose} title={t('Close')}>
+              <X size={15} />
+            </button>
+          </div>
         </div>
 
         <div className="commit-detail__body">
@@ -154,11 +288,34 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
                 {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
               </div>
 
+              {detail.files.length > FILTER_THRESHOLD ? (
+                <div className="commit-detail__filter">
+                  <Search size={12} />
+                  <input
+                    value={filter}
+                    placeholder={t('Filter files')}
+                    aria-label={t('Filter files')}
+                    onChange={(event) => setFilter(event.target.value)}
+                  />
+                  {filter ? (
+                    <button
+                      className="icon-btn"
+                      onClick={() => setFilter('')}
+                      title={t('Clear the filter')}
+                    >
+                      <X size={11} />
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
               {detail.files.length === 0 ? (
                 <div className="commit-detail__empty">{t('This commit does not change any files.')}</div>
+              ) : visibleFiles.length === 0 ? (
+                <div className="commit-detail__empty">{t('No file matches')}</div>
               ) : (
                 <ul className="commit-detail__files">
-                  {detail.files.map((file) => {
+                  {visibleFiles.map((file) => {
                     const isOpen = open === file.path
                     const diff = diffs[file.path]
                     return (

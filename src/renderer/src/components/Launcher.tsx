@@ -17,6 +17,7 @@ import {
   PanelLeft,
   Pin,
   Search,
+  Server,
   Settings,
   Sparkles,
   SquarePen,
@@ -249,6 +250,13 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Project',
       icon: GitCommit,
       run: () => runAppCommand('commit')
+    },
+    {
+      id: 'mcp',
+      title: 'MCP servers',
+      group: 'Project',
+      icon: Server,
+      run: () => runAppCommand('mcp')
     },
     {
       id: 'shortcuts',

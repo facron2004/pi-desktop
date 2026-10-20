@@ -181,7 +181,8 @@ unified HEAD→worktree patch (all files or one) with untracked files synthesize
 `new file` patches; it is meant to be pasted into `git apply`.
 
 `git:commitDetail` reads a commit (metadata, `--numstat -z -M` file list and the
-`git show` patch); `git:commitFileDiff` reads the two sides at `hash^` and `hash`.
+`git show` patch); `git:commitFileDiff` reads the two sides at `hash^` and `hash`,
+and `parentHash` (the first parent) lets the dialog walk back through history.
 Rename detection for that pair must be done on the whole commit — a pathspec makes
 git report the rename as an addition, so `readCommitFileDiff` looks the old path up
 in the commit's full `--name-status`. The history row in the commit dialog opens the
@@ -198,6 +199,17 @@ validate the name and use `git switch`; `addWorktree` always creates a new branc
 default because a branch already checked out here cannot be checked out twice, and an
 empty path means a sibling folder. The branch chip in the top bar is `BranchMenu`; a
 worktree row switches the app to that folder (the store registers it as a workspace).
+
+## MCP
+
+`src/main/mcp.ts` reads `~/.pi/agent/mcp.json` and `<workspace>/.pi/mcp.json` and
+merges them by server name the way Pi does: a project entry replaces the user entry
+with the same name, and an entry without `command`/`url`/`type` overrides only
+`enabled`/`exposure`/`toolExposure` while keeping the user server's command and env.
+When project trust is off the project file is not loaded at all, and the dialog says
+so. `env` and `headers` values are credentials: only the key names leave main, never
+the values. The dialog is read-only and never connects to a server — connection state
+is the runtime's business, and there is no RPC command for it.
 
 ## The plan strip
 

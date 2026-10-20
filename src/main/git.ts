@@ -482,14 +482,15 @@ export async function readCommitDetail(
 ): Promise<GitCommitDetail | null> {
   if (!root || !isHash(hash)) return null
 
-  const meta = await git(root, ['show', '-s', '--format=%H%x1f%s%x1f%an%x1f%at%x1f%b', hash])
+  const meta = await git(root, ['show', '-s', '--format=%H%x1f%s%x1f%an%x1f%at%x1f%P%x1f%b', hash])
   if (meta.code !== 0 || !meta.stdout.trim()) return null
   const parts = meta.stdout.split('\u001f')
   const fullHash = parts[0]?.trim() ?? hash
   const subject = parts[1] ?? ''
   const author = parts[2] ?? ''
   const seconds = Number(parts[3]) || 0
-  const body = parts.slice(4).join('\u001f').trim()
+  const parentHash = parts[4]?.trim().split(' ')[0] || undefined
+  const body = parts.slice(5).join('\u001f').trim()
 
   const [numstat, nameStatus, shown] = await Promise.all([
     git(root, ['show', '--numstat', '--format=', '-M', '-z', hash], COMMIT_TIMEOUT_MS),
@@ -516,6 +517,7 @@ export async function readCommitDetail(
 
   return {
     hash: fullHash,
+    parentHash,
     subject,
     author,
     date: seconds * 1000,

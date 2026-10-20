@@ -266,6 +266,79 @@ export function AppearanceSettings() {
           ))}
         </div>
       </SettingsGroup>
+    </div>
+  )
+}
+
+type PanelWidth = 'sidebarWidth' | 'drawerWidth' | 'terminalHeight'
+
+/**
+ * The sizes the app falls back to when no width is stored: the sidebar and the
+ * inspector are resolved in App, the terminal keeps its own copy.
+ *
+ * Resetting writes those numbers instead of deleting the stored value. The
+ * terminal drawer tracks its height locally and only follows a numeric
+ * setting, so a cleared value would leave an open drawer at its old size until
+ * it was reopened; writing the default is the one behaviour that resizes every
+ * panel straight away, and it keeps the stored value equal to the fallback.
+ */
+const PANEL_DEFAULTS: Record<PanelWidth, number> = {
+  sidebarWidth: 272,
+  drawerWidth: 420,
+  terminalHeight: 280
+}
+
+const PANEL_ROWS: { key: PanelWidth; label: string }[] = [
+  { key: 'sidebarWidth', label: 'Sidebar' },
+  { key: 'drawerWidth', label: 'Inspector' },
+  { key: 'terminalHeight', label: 'Terminal' }
+]
+
+export function PanelsSettings() {
+  const settings = useAppStore((state) => state.settings)
+  const updateSettings = useAppStore((state) => state.updateSettings)
+  const t = useT()
+
+  const resetWidth = (key: PanelWidth) => {
+    // Spelled out per field so the patch stays a typed partial of AppSettings.
+    if (key === 'sidebarWidth') void updateSettings({ sidebarWidth: PANEL_DEFAULTS.sidebarWidth })
+    else if (key === 'drawerWidth') void updateSettings({ drawerWidth: PANEL_DEFAULTS.drawerWidth })
+    else void updateSettings({ terminalHeight: PANEL_DEFAULTS.terminalHeight })
+  }
+
+  return (
+    <div className="settings-page">
+      <PageIntro
+        title={t('Panels')}
+        description={t('Put the surrounding panels back to their default size, and choose how diffs are shown.')}
+      />
+
+      <SettingsGroup title={t('Panel widths')}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {PANEL_ROWS.map((row) => {
+            const value = settings[row.key]
+            return (
+              <div className="field" key={row.key}>
+                <div className="field__row">
+                  <span className="field__label">{t(row.label)}</span>
+                  <span
+                    className="field__hint"
+                    style={{ flex: 1, fontVariantNumeric: 'tabular-nums' }}
+                  >
+                    {typeof value === 'number' ? `${value} px` : t('Default')}
+                  </span>
+                  <button className="btn btn--sm" onClick={() => resetWidth(row.key)}>
+                    {t('Reset')}
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <span className="field__hint">
+          {t('You can also drag the edge of a panel to resize it.')}
+        </span>
+      </SettingsGroup>
 
       <SettingsGroup title={t('Diff layout')}>
         <div className="segmented">

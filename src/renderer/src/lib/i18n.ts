@@ -589,7 +589,39 @@ const zhCN: Record<string, string> = {
   'The hunk was reverted': '修改块已还原',
   'The hunk could not be reverted': '无法还原该修改块',
   'This block has no changes to revert': '此修改块没有可还原的内容',
-  'Recent searches': '最近的搜索'
+  'Recent searches': '最近的搜索',
+  'Parent commit': '父提交',
+  'Copy commit message': '复制提交说明',
+  'Filter files': '过滤文件',
+  'No file matches': '没有匹配的文件',
+  'MCP servers': 'MCP 服务器',
+  enabled: '已启用',
+  'from the project': '来自项目',
+  'Reading the MCP configuration…': '正在读取 MCP 配置…',
+  'Could not read the MCP configuration.': '无法读取 MCP 配置。',
+  'User configuration': '用户配置',
+  'Project configuration': '项目配置',
+  'not found': '未找到',
+  'The project MCP configuration is ignored while project trust is off.':
+    '项目信任关闭时，不会加载项目 MCP 配置。',
+  'No MCP servers are configured.': '尚未配置 MCP 服务器。',
+  'Add servers with “pi mcp add …” or edit the JSON files above.':
+    '使用“pi mcp add …”添加服务器，或编辑上方的 JSON 文件。',
+  'Read-only view: the dialog never connects to a server.': '只读视图：该对话框不会连接服务器。',
+  timeout: '超时',
+  env: '环境变量',
+  headers: '请求头',
+  'project override': '项目覆盖',
+  project: '项目',
+  user: '用户',
+  unknown: '未知',
+  disabled: '已停用',
+  'options only': '仅选项',
+  Panels: '面板',
+  'Panel widths': '面板宽度',
+  'Put the surrounding panels back to their default size, and choose how diffs are shown.':
+    '将周围面板恢复默认尺寸，并选择差异的显示方式。',
+  'You can also drag the edge of a panel to resize it.': '也可以拖动面板边缘调整大小。'
 }
 
 export function translate(text: string, language: AppLanguage): string {

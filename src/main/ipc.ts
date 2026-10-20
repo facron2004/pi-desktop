@@ -17,6 +17,7 @@ import type {
 import { checkAuth, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
 import { PiRuntime } from './pi/runtime'
+import { readMcpConfig } from './mcp'
 import {
   addWorktree,
   applyPatch,
@@ -605,6 +606,12 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('auth:check', async (_event, provider?: string) => {
     return checkAuth(provider, settings.get().piPath)
   })
+
+  // Configuration only: this never connects to a server, it reads the two
+  // mcp.json files the Pi process would load.
+  ipcMain.handle('mcp:read', () =>
+    readMcpConfig(workspaceRoot(context), settings.get().trustProject)
+  )
 
   ipcMain.handle('shell:openPath', async (_event, target: string) => {
     const error = await shell.openPath(target)

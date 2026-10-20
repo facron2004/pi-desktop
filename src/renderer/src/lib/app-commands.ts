@@ -36,6 +36,11 @@ export const APP_COMMANDS: PiCommand[] = [
     source: 'app'
   },
   {
+    name: 'mcp',
+    description: 'Show the MCP servers configured for this project',
+    source: 'app'
+  },
+  {
     name: 'compact',
     description: 'Summarise the conversation to free up the context',
     source: 'app'

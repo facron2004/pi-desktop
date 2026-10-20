@@ -3,6 +3,7 @@ import {
   Check,
   Info,
   Palette,
+  PanelsTopLeft,
   ShieldCheck,
   SlidersHorizontal,
   UserRound,
@@ -16,16 +17,24 @@ import {
   AboutSettings,
   AppearanceSettings,
   GeneralSettings,
+  PanelsSettings,
   PersonalizationSettings,
   ProjectSafetySettings
 } from './SettingsSections'
 
-type SettingsPage = 'general' | 'personalization' | 'appearance' | 'project-safety' | 'about'
+type SettingsPage =
+  | 'general'
+  | 'personalization'
+  | 'appearance'
+  | 'panels'
+  | 'project-safety'
+  | 'about'
 
 const PAGES = [
   { id: 'general', label: 'General', Icon: SlidersHorizontal },
   { id: 'personalization', label: 'Personalization', Icon: UserRound },
   { id: 'appearance', label: 'Appearance', Icon: Palette },
+  { id: 'panels', label: 'Panels', Icon: PanelsTopLeft },
   { id: 'project-safety', label: 'Project safety', Icon: ShieldCheck },
   { id: 'about', label: 'About', Icon: Info }
 ] as const
@@ -153,6 +162,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               />
             ) : null}
             {page === 'appearance' ? <AppearanceSettings /> : null}
+            {page === 'panels' ? <PanelsSettings /> : null}
             {page === 'project-safety' ? <ProjectSafetySettings /> : null}
             {page === 'about' ? <AboutSettings /> : null}
           </main>

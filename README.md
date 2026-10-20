@@ -41,9 +41,10 @@ Claude Desktop.
   single hunk can be reverted on its own after a confirmation. A renamed file shows
   both of its paths (`old → new`) with the diff taken against the old content. Any
   commit in the history can be opened to read its file list and per-file diff without
-  leaving the app. The branch chip opens the branch menu: switch a local branch,
-  create a new one, or add a worktree on a new branch and open it as a project. A
-  folder that is not a repository simply shows no branch.
+  leaving the app — with its parent commit one click away, a filter for long file
+  lists, and the hash or message copied out. The branch chip opens the branch menu:
+  switch a local branch, create a new one, or add a worktree on a new branch and open
+  it as a project. A folder that is not a repository simply shows no branch.
 - **Integrated terminal.** `Ctrl+`` opens a terminal under the conversation. Commands
   run in the project through Pi's own `bash` command, the output streams in as it
   arrives, and each block says its exit code and how long it took. The drawer can be
@@ -59,6 +60,11 @@ Claude Desktop.
   and flashes it, with the words marked and the in-thread search parked on them.
   Searches that found something are remembered, so the field offers them again while
   it is empty.
+- **MCP servers, visible.** `/mcp` (or the launcher) shows the MCP servers the Pi
+  process would load: user-level and project-level entries, merged the way Pi merges
+  them, with their scope, transport, enabled state, command or URL, and which
+  environment variables and headers they use — names only, never values. The view is
+  read-only and never connects to a server; a project whose trust is off says so.
 - **Search inside the files.** The Files tab has a **Text** mode: type a word and the
   project is searched line by line (binary and huge files are skipped), with the hits
   grouped by file, their line numbers, and the match marked. Clicking a hit opens the
@@ -113,6 +119,10 @@ Claude Desktop.
 - **Everything within reach.** `Ctrl+Shift+P` opens a palette over the app: every action
   it has, every project it can open, the model and reasoning switches, the theme and
   the text size. It is one search away from anything, without touching the mouse.
+- **Settings that fit the app.** Language, theme, text size, models, credentials,
+  project trust, a Panels page that resets the sidebar/inspector/terminal widths and
+  picks the diff layout, custom instructions, and the Pi connection — all in one
+  dialog.
 - **Model and effort control.** Switch model and reasoning level mid-conversation.
   The model menu says what each choice costs per million tokens, how large its context
   window is, and whether it reasons and takes images; the reasoning menu explains what
@@ -224,8 +234,9 @@ image lightbox, git staging, a command handed to the terminal, the session tree,
 a fork started from it, the project text search, the pre-commit checks, a renamed
 file with a copied patch, the file viewer's find bar, the session-tree filter, an
 opened commit, a copied hunk, the plan's actions, the branch menu with its worktrees,
-a reverted hunk and the recent searches. The roadmap for the remaining Codex-style
-work is in [`docs/codex-parity.md`](docs/codex-parity.md).
+a reverted hunk, the recent searches, the MCP server view, its untrusted-project note
+and the Panels settings. The roadmap for the remaining Codex-style work is in
+[`docs/codex-parity.md`](docs/codex-parity.md).
 
 ## Architecture
 

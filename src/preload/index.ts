@@ -15,6 +15,7 @@ import type {
   GitPatch,
   GitStatus,
   GitWorktreeResult,
+  McpConfig,
   PiDesktopBridge,
   PiEvent,
   RuntimeStartOptions,
@@ -71,6 +72,9 @@ const bridge: PiDesktopBridge = {
   },
   auth: {
     check: (provider?: string): Promise<AuthStatus> => ipcRenderer.invoke('auth:check', provider)
+  },
+  mcp: {
+    read: (): Promise<McpConfig> => ipcRenderer.invoke('mcp:read')
   },
   git: {
     status: (): Promise<GitStatus> => ipcRenderer.invoke('git:status'),

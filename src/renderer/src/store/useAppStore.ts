@@ -740,6 +740,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       case 'tree':
         window.dispatchEvent(new CustomEvent('pi:open-session-tree'))
         break
+      case 'mcp':
+        window.dispatchEvent(new CustomEvent('pi:open-mcp'))
+        break
       case 'new':
         await get().newChat()
         break

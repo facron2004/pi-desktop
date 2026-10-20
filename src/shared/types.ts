@@ -354,6 +354,8 @@ export interface GitCommitFile {
 /** Everything the commit dialog shows when a commit is opened. */
 export interface GitCommitDetail {
   hash: string
+  /** The first parent, when the commit has one. */
+  parentHash?: string
   subject: string
   author: string
   /** Unix milliseconds. */
@@ -405,6 +407,43 @@ export interface GitWorktreeResult extends GitCommitResult {
   /** Absolute path of the new worktree. */
   path?: string
   branch?: string
+}
+
+/* ------------------------------------------------------------------ *
+ * MCP configuration
+ * ------------------------------------------------------------------ */
+
+/** One MCP server, as the configuration files describe it. */
+export interface McpServerInfo {
+  name: string
+  /** Where the entry comes from. `both` means a project override of a user server. */
+  scope: 'user' | 'project' | 'both'
+  transport: 'stdio' | 'http' | 'unknown'
+  enabled: boolean
+  description?: string
+  command?: string
+  args?: string[]
+  url?: string
+  timeout?: number
+  /** Names of the environment variables, never their values. */
+  envKeys: string[]
+  /** Names of the HTTP headers, never their values. */
+  headerKeys: string[]
+  /** The project entry changes only options of the user entry. */
+  overrideOnly?: boolean
+}
+
+/** What the MCP dialog reads; it never connects to a server. */
+export interface McpConfig {
+  userPath: string
+  projectPath: string
+  userExists: boolean
+  projectExists: boolean
+  /** Project configuration is present but is not loaded because trust is off. */
+  projectIgnored: boolean
+  servers: McpServerInfo[]
+  /** Problems reading or parsing one of the files. */
+  errors: string[]
 }
 
 /**
@@ -531,6 +570,10 @@ export interface PiDesktopBridge {
   }
   auth: {
     check(provider?: string): Promise<AuthStatus>
+  }
+  mcp: {
+    /** The MCP servers the configuration files describe for the open project. */
+    read(): Promise<McpConfig>
   }
   git: {
     /** Branch, ahead/behind and the working tree of the open workspace. */

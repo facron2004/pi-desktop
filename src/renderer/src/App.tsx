@@ -24,6 +24,7 @@ import { Launcher, useLauncherActions } from './components/Launcher'
 import { TerminalPanel, type TerminalRunRequest } from './components/TerminalPanel'
 import { PlanStrip } from './components/PlanStrip'
 import { SessionTreeDialog } from './components/SessionTreeDialog'
+import { McpDialog } from './components/McpDialog'
 import { useT } from './lib/i18n'
 
 export default function App() {
@@ -60,6 +61,7 @@ export default function App() {
   const [launcherOpen, setLauncherOpen] = useState(false)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
+  const [mcpOpen, setMcpOpen] = useState(false)
   // A command headed for the drawer. `seq` makes the same command twice two
   // requests instead of one the drawer already ran.
   const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
@@ -262,6 +264,9 @@ export default function App() {
     // The launcher and the `/tree` command ask for the branch dialog.
     const onOpenSessionTree = () => setSessionTreeOpen(true)
     window.addEventListener('pi:open-session-tree', onOpenSessionTree)
+    // The launcher and the `/mcp` command ask for the server list.
+    const onOpenMcp = () => setMcpOpen(true)
+    window.addEventListener('pi:open-mcp', onOpenMcp)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
@@ -270,6 +275,7 @@ export default function App() {
       window.removeEventListener('pi:toggle-terminal', onToggleTerminal)
       window.removeEventListener('pi:terminal-run', onTerminalRun)
       window.removeEventListener('pi:open-session-tree', onOpenSessionTree)
+      window.removeEventListener('pi:open-mcp', onOpenMcp)
     }
   }, [
     newChat,
@@ -515,6 +521,7 @@ export default function App() {
       {sessionTreeOpen ? (
         <SessionTreeDialog onClose={() => setSessionTreeOpen(false)} />
       ) : null}
+      {mcpOpen ? <McpDialog onClose={() => setMcpOpen(false)} /> : null}
       <ExtensionDialog />
       {changesOpen ? (
         <InspectorPanel
