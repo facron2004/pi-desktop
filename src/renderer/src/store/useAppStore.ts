@@ -904,10 +904,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const result = await window.pi.git.commit(message)
     if (result.ok) {
       get().showToast(result.hash ? `Committed ${result.hash}` : 'Changes committed')
-      await get().refreshGit()
-    } else {
-      get().showToast(result.error ?? 'The commit failed', 'error')
+      // The dialog closes on the commit itself; the branch chip and the
+      // review panel catch up in the background rather than holding it open.
+      void get().refreshGit()
     }
+    // A failed commit is reported by the dialog inline, which keeps the
+    // message and the file list in front of the reader.
     return result
   },
 
