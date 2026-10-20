@@ -123,6 +123,11 @@ policy as `fs:search`, literal case-insensitive matching, binary and files over
 (`matchStart`/`matchLength`) are relative to the one-line preview, not the file
 line; the viewer scrolls to `line`.
 
+The sidebar's conversation search remembers the last eight queries that produced a
+hit (`pi-desktop.session-search.history`) and shows them while the field is empty
+and focused; picking one just fills the field, which runs the normal debounced
+search. Queries with no hits are not remembered.
+
 `FileViewer` has its own in-file find (Ctrl+F only while the viewer is focused,
 so the conversation search keeps its key everywhere else), a line-jump box, a
 wrap toggle persisted in localStorage, and copy-path/copy-contents actions. The
@@ -182,6 +187,17 @@ git report the rename as an addition, so `readCommitFileDiff` looks the old path
 in the commit's full `--name-status`. The history row in the commit dialog opens the
 read-only detail dialog; DiffView's per-block hunk copy is renderer-only and only
 appears when a `patchPath` is passed (the Review tab does; the Changes tab does not).
+The same blocks accept `revertPath` and reverse the hunk through `git:applyPatch`
+(reverse mode); `applyPatch` writes the patch body verbatim (trailing spaces and an
+empty last context line matter) and applies to the worktree only — the index is not
+touched, so a staged hunk stays staged while the file on disk changes.
+
+`git:branches` reads local branches (`for-each-ref`, tab-separated — it does not
+understand `%x1f`) and `git worktree list --porcelain`. `switchBranch`/`createBranch`
+validate the name and use `git switch`; `addWorktree` always creates a new branch by
+default because a branch already checked out here cannot be checked out twice, and an
+empty path means a sibling folder. The branch chip in the top bar is `BranchMenu`; a
+worktree row switches the app to that folder (the store registers it as a workspace).
 
 ## The plan strip
 

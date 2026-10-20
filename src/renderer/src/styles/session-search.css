@@ -151,3 +151,86 @@
   font-size: 11.5px;
   color: var(--text-faint);
 }
+
+/* ------------------------------------------------------------------ *
+ * Recent searches
+ *
+ * A quiet strip under the field: the same queries that found something
+ * before, so a search can be repeated without typing it again.
+ * ------------------------------------------------------------------ */
+
+.session-search__recents {
+  margin: 6px 2px 0;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-elevated);
+}
+
+.session-search__recents-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 6px 4px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.session-search__recents-head button {
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-faint);
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+}
+
+.session-search__recents-head button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.session-search__recents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.session-search__recent {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 4px 7px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+}
+
+.session-search__recent:hover,
+.session-search__recent[data-active='true'] {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.session-search__recent svg {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.session-search__recent-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

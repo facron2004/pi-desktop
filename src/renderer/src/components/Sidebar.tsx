@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Clock,
   FolderOpen,
   Loader2,
   MessageSquare,
@@ -90,6 +91,20 @@ export function Sidebar({
   const [draft, setDraft] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [searchFocused, setSearchFocused] = useState(false)
+  const [recentsOpen, setRecentsOpen] = useState(false)
+  const [recentIndex, setRecentIndex] = useState(-1)
+  const blurTimer = useRef<number | undefined>(undefined)
+  const recentsRef = useRef<HTMLDivElement | null>(null)
+
+  // The blur is delayed so a click on a recent search lands before the list
+  // disappears; the timer must not outlive the sidebar.
+  useEffect(
+    () => () => {
+      if (blurTimer.current) window.clearTimeout(blurTimer.current)
+    },
+    []
+  )
 
   // Drag the right edge to make the sidebar wider or narrower.
   const widthRef = useRef(0)
@@ -137,6 +152,46 @@ export function Sidebar({
     sessions.length > 0 &&
     trimmedQuery.length >= MIN_SESSION_SEARCH_LENGTH &&
     contentSearch.status !== 'idle'
+
+  // A query that found something is worth offering again. The list shows only
+  // while the reader is in the field and has not started a real search.
+  const recents = contentSearch.history
+  const recentsVisible =
+    searchFocused &&
+    recentsOpen &&
+    trimmedQuery.length < MIN_SESSION_SEARCH_LENGTH &&
+    recents.length > 0
+
+  useEffect(() => {
+    if (!recentsVisible || recentIndex < 0) return
+    recentsRef.current
+      ?.querySelector<HTMLElement>(`[data-recent-index="${recentIndex}"]`)
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [recentIndex, recentsVisible])
+
+  const focusSearch = () => {
+    if (blurTimer.current) window.clearTimeout(blurTimer.current)
+    setSearchFocused(true)
+    setRecentsOpen(true)
+  }
+
+  const leaveSearch = () => {
+    if (blurTimer.current) window.clearTimeout(blurTimer.current)
+    blurTimer.current = window.setTimeout(() => {
+      setSearchFocused(false)
+      setRecentIndex(-1)
+    }, 120)
+  }
+
+  const pickRecent = (value: string) => {
+    setQuery(value)
+    setRecentIndex(-1)
+  }
+
+  const clearRecents = () => {
+    contentSearch.clearHistory()
+    setRecentIndex(-1)
+  }
 
   const projects = useMemo(() => {
     const list = collectProjects(settings.workspaces, sessions)
@@ -382,19 +437,84 @@ export function Sidebar({
         </div>
 
         {sessions.length > 0 ? (
-          <div className="sidebar__search">
-            <Search size={13} />
-            <input
-              value={query}
-              placeholder={t('Filter conversations')}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-            {query ? (
-              <button className="icon-btn" style={{ width: 18, height: 18 }} onClick={() => setQuery('')}>
-                <X size={11} />
-              </button>
+          <>
+            <div className="sidebar__search">
+              <Search size={13} />
+              <input
+                value={query}
+                placeholder={t('Filter conversations')}
+                onChange={(event) => {
+                  setQuery(event.target.value)
+                  setRecentIndex(-1)
+                }}
+                onFocus={focusSearch}
+                onBlur={leaveSearch}
+                onKeyDown={(event) => {
+                  if (!recentsVisible) return
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault()
+                    setRecentIndex((current) => (current + 1) % recents.length)
+                    return
+                  }
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault()
+                    setRecentIndex((current) => (current <= 0 ? recents.length - 1 : current - 1))
+                    return
+                  }
+                  if (event.key === 'Enter') {
+                    if (recentIndex < 0) return
+                    event.preventDefault()
+                    pickRecent(recents[recentIndex])
+                    return
+                  }
+                  if (event.key === 'Escape') {
+                    // The list goes away, the field keeps its text and focus.
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setRecentsOpen(false)
+                    setRecentIndex(-1)
+                  }
+                }}
+              />
+              {query ? (
+                <button className="icon-btn" style={{ width: 18, height: 18 }} onClick={() => setQuery('')}>
+                  <X size={11} />
+                </button>
+              ) : null}
+            </div>
+
+            {recentsVisible ? (
+              <div
+                className="session-search__recents"
+                role="group"
+                aria-label={t('Recent searches')}
+              >
+                <div className="session-search__recents-head">
+                  <span>{t('Recent searches')}</span>
+                  <button onMouseDown={(event) => event.preventDefault()} onClick={clearRecents}>
+                    {t('Clear')}
+                  </button>
+                </div>
+                <div className="session-search__recents-list" ref={recentsRef}>
+                  {recents.map((entry, index) => (
+                    <button
+                      key={entry.toLowerCase()}
+                      className="session-search__recent"
+                      tabIndex={-1}
+                      data-recent-index={index}
+                      data-active={index === recentIndex || undefined}
+                      title={entry}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => pickRecent(entry)}
+                    >
+                      <Clock size={11} />
+                      <span className="session-search__recent-text">{entry}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             ) : null}
-          </div>
+          </>
         ) : null}
 
         {showContentSearch ? (

@@ -38,10 +38,12 @@ Claude Desktop.
   the message, and a hash copied), offers `feat`/`fix`/`docs`/… templates, and keeps
   a failed or cancelled message for the next attempt. A file's full patch — or the
   whole working tree's, or one hunk of a diff — can be copied for another tool, and a
-  renamed file shows both of its paths (`old → new`) with the diff taken against the
-  old content. Any commit in the history can be opened to read its file list and
-  per-file diff without leaving the app. A folder that is not a repository simply
-  shows no branch.
+  single hunk can be reverted on its own after a confirmation. A renamed file shows
+  both of its paths (`old → new`) with the diff taken against the old content. Any
+  commit in the history can be opened to read its file list and per-file diff without
+  leaving the app. The branch chip opens the branch menu: switch a local branch,
+  create a new one, or add a worktree on a new branch and open it as a project. A
+  folder that is not a repository simply shows no branch.
 - **Integrated terminal.** `Ctrl+`` opens a terminal under the conversation. Commands
   run in the project through Pi's own `bash` command, the output streams in as it
   arrives, and each block says its exit code and how long it took. The drawer can be
@@ -55,6 +57,8 @@ Claude Desktop.
   says who said it and shows the sentence with the match marked; clicking one opens
   that conversation (and its project, if need be), scrolls the matching turn into view
   and flashes it, with the words marked and the in-thread search parked on them.
+  Searches that found something are remembered, so the field offers them again while
+  it is empty.
 - **Search inside the files.** The Files tab has a **Text** mode: type a word and the
   project is searched line by line (binary and huge files are skipped), with the hits
   grouped by file, their line numbers, and the match marked. Clicking a hit opens the
@@ -219,8 +223,9 @@ the plan strip, a jump from a search hit, the commit history, the model menu, th
 image lightbox, git staging, a command handed to the terminal, the session tree,
 a fork started from it, the project text search, the pre-commit checks, a renamed
 file with a copied patch, the file viewer's find bar, the session-tree filter, an
-opened commit, a copied hunk and the plan's actions. The roadmap for the remaining
-Codex-style work is in [`docs/codex-parity.md`](docs/codex-parity.md).
+opened commit, a copied hunk, the plan's actions, the branch menu with its worktrees,
+a reverted hunk and the recent searches. The roadmap for the remaining Codex-style
+work is in [`docs/codex-parity.md`](docs/codex-parity.md).
 
 ## Architecture
 

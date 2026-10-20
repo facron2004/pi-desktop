@@ -374,6 +374,39 @@ export interface GitCommitFileDiff {
   truncated: boolean
 }
 
+/** One local branch of the open repository. */
+export interface GitBranch {
+  name: string
+  current: boolean
+  /** Short hash of the branch tip. */
+  tip?: string
+  /** The subject of the tip commit. */
+  subject?: string
+  upstream?: string
+}
+
+/** One worktree of the open repository. */
+export interface GitWorktree {
+  path: string
+  /** Branch checked out there, when it is not detached. */
+  branch?: string
+  current: boolean
+  bare: boolean
+}
+
+export interface GitBranches {
+  current?: string
+  detached: boolean
+  branches: GitBranch[]
+  worktrees: GitWorktree[]
+}
+
+export interface GitWorktreeResult extends GitCommitResult {
+  /** Absolute path of the new worktree. */
+  path?: string
+  branch?: string
+}
+
 /**
  * The two sides of one working-tree file, for the review tab.
  *
@@ -516,6 +549,18 @@ export interface PiDesktopBridge {
     commitDetail(hash: string): Promise<GitCommitDetail | null>
     /** Both sides of one file as they were in one commit. */
     commitFileDiff(hash: string, file: string): Promise<GitCommitFileDiff | null>
+    /** Apply a unified patch to the working tree, optionally in reverse. */
+    applyPatch(patch: string, reverse?: boolean): Promise<GitCommitResult>
+    /** Local branches and worktrees of the open repository. */
+    branches(): Promise<GitBranches>
+    switchBranch(name: string): Promise<GitCommitResult>
+    createBranch(name: string, checkout?: boolean): Promise<GitCommitResult>
+    /** Add a worktree, creating its branch when `createBranch` is set. */
+    addWorktree(
+      path: string,
+      branch: string,
+      createBranch?: boolean
+    ): Promise<GitWorktreeResult>
     /** Discard the working-tree changes of a tracked file. */
     revertFile(file: string): Promise<GitCommitResult>
     /** Move one file into (or out of) the index. */

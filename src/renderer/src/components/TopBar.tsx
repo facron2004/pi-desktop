@@ -7,7 +7,6 @@ import {
   FileDiff,
   Files,
   Gauge,
-  GitBranch,
   Minimize2,
   Search,
   Sparkles
@@ -15,6 +14,7 @@ import {
 import { useAppStore } from '../store/useAppStore'
 import { collectChanges } from '../lib/changes'
 import { formatTokens } from '../lib/format'
+import { BranchMenu } from './BranchMenu'
 import { Popover } from './Popover'
 import { ContextPanel } from './ContextPanel'
 import { useT } from '../lib/i18n'
@@ -328,7 +328,6 @@ export function TopBar({
   const compact = useAppStore((state) => state.compact)
   const ready = useAppStore((state) => state.status.phase === 'ready')
   const language = useAppStore((state) => state.settings.language)
-  const git = useAppStore((state) => state.git)
   const refreshGit = useAppStore((state) => state.refreshGit)
   const workspace = useAppStore((state) => state.workspace)
   const changes = useMemo(() => collectChanges(items), [items])
@@ -344,31 +343,7 @@ export function TopBar({
   return (
     <div className="topbar">
       <div className="topbar__group">
-        {git?.isRepo ? (
-          <button
-            className="pill git-chip"
-            data-dirty={!git.clean}
-            onClick={onOpenChanges}
-            title={
-              git.clean
-                ? `${git.branch ?? t('Repository')} — ${t('no uncommitted changes')}`
-                : `${git.branch ?? t('Repository')} — ${git.files.length} ${t('uncommitted')}. ${t('Review and commit')}`
-            }
-          >
-            <GitBranch size={13} />
-            <span className="git-chip__branch">
-              {git.branch ?? (git.head ? `#${git.head}` : t('Repository'))}
-            </span>
-            {git.detached ? <span className="git-chip__tag">{t('detached')}</span> : null}
-            {git.ahead > 0 ? <span className="git-chip__delta">↑{git.ahead}</span> : null}
-            {git.behind > 0 ? <span className="git-chip__delta">↓{git.behind}</span> : null}
-            {git.clean ? (
-              <Check size={12} className="git-chip__clean" />
-            ) : (
-              <span className="git-chip__dirty">{git.files.length}</span>
-            )}
-          </button>
-        ) : null}
+        <BranchMenu onOpenChanges={onOpenChanges} />
       </div>
       <div className="topbar__group topbar__group--end">
         {changes.length > 0 ? (

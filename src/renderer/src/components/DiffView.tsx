@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ClipboardCopy } from 'lucide-react'
+import { ClipboardCopy, RotateCcw } from 'lucide-react'
 import {
   CONTEXT_LINES,
   foldDiff,
@@ -8,6 +8,7 @@ import {
 } from '../lib/diff-fold'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
+import { ConfirmDialog } from './ConfirmDialog'
 import '../styles/diff-actions.css'
 
 /** One line of a side-by-side diff. Either side may be empty. */
@@ -170,6 +171,8 @@ export function DiffView({
   diffs,
   mode = 'unified',
   patchPath,
+  revertPath,
+  onReverted,
   onOpenLine,
   expandAll,
   onExpandAllChange
@@ -181,6 +184,13 @@ export function DiffView({
    * that writes that block alone out as a patch.
    */
   patchPath?: string
+  /**
+   * The file a block can be reverted in. Untracked files have no HEAD side, so
+   * the Review tab leaves this unset for them.
+   */
+  revertPath?: string
+  /** Called after a hunk was reverted, so the caller can reload its diff. */
+  onReverted?: () => void
   /** Open the file this diff belongs to at a given line. */
   onOpenLine?: (line: number) => void
   /** Force every folded run open (`true`) or closed (`false`). */
@@ -189,6 +199,9 @@ export function DiffView({
   onExpandAllChange?: (value: boolean | undefined) => void
 }) {
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
+  // The hunk patch shown in the confirmation, captured when the reader asked.
+  const [pendingRevert, setPendingRevert] = useState<string | null>(null)
+  const [reverting, setReverting] = useState(false)
   const showToast = useAppStore((state) => state.showToast)
   const t = useT()
 
@@ -270,9 +283,13 @@ export function DiffView({
     )
   }
 
+  /** The same patch the copy action writes, built from the block as displayed. */
+  const patchFor = (blockIndex: number, path: string) =>
+    hunkPatch(path, patchRows(folded[blockIndex] ?? [], effective))
+
   const copyHunk = async (blockIndex: number) => {
     if (!patchPath) return
-    const patch = hunkPatch(patchPath, patchRows(folded[blockIndex] ?? [], effective))
+    const patch = patchFor(blockIndex, patchPath)
     if (!patch) {
       showToast(t('This block has no changes to copy'), 'warning')
       return
@@ -285,92 +302,160 @@ export function DiffView({
     }
   }
 
-  // The action belongs to the block, so it sits outside the row grid and
-  // works the same in both layouts.
-  const hunkAction = (blockIndex: number) =>
-    patchPath && patchable[blockIndex] ? (
+  const askRevert = (blockIndex: number) => {
+    if (!revertPath) return
+    const patch = patchFor(blockIndex, revertPath)
+    if (!patch) {
+      showToast(t('This block has no changes to revert'), 'warning')
+      return
+    }
+    setPendingRevert(patch)
+  }
+
+  const confirmRevert = async () => {
+    const patch = pendingRevert
+    setPendingRevert(null)
+    if (!patch) return
+    setReverting(true)
+    try {
+      const result = await window.pi.git.applyPatch(patch, true)
+      if (!result.ok) {
+        showToast(result.error ?? t('The hunk could not be reverted'), 'error')
+        return
+      }
+      showToast(t('The hunk was reverted'))
+      onReverted?.()
+    } catch {
+      showToast(t('The hunk could not be reverted'), 'error')
+    } finally {
+      setReverting(false)
+    }
+  }
+
+  // The actions belong to the block, so they sit outside the row grid and
+  // work the same in both layouts.
+  const hunkActions = (blockIndex: number) => {
+    const copy = Boolean(patchPath) && patchable[blockIndex]
+    const revert = Boolean(revertPath) && patchable[blockIndex]
+    if (!copy && !revert) return null
+    return (
       <div className="diff__hunk-actions">
-        <button
-          type="button"
-          className="diff__hunk-copy"
-          title={t('Copy this hunk as a patch')}
-          aria-label={t('Copy this hunk as a patch')}
-          onClick={() => void copyHunk(blockIndex)}
-        >
-          <ClipboardCopy size={11} />
-          <span>{t('Copy this hunk')}</span>
-        </button>
+        {copy ? (
+          <button
+            type="button"
+            className="diff__hunk-copy"
+            title={t('Copy this hunk as a patch')}
+            aria-label={t('Copy this hunk as a patch')}
+            onClick={() => void copyHunk(blockIndex)}
+          >
+            <ClipboardCopy size={11} />
+            <span>{t('Copy this hunk')}</span>
+          </button>
+        ) : null}
+        {revert ? (
+          <button
+            type="button"
+            className="diff__hunk-copy diff__hunk-revert"
+            disabled={reverting}
+            title={t('Revert this hunk')}
+            aria-label={t('Revert this hunk')}
+            onClick={() => askRevert(blockIndex)}
+          >
+            <RotateCcw size={11} />
+            <span>{t('Revert this hunk')}</span>
+          </button>
+        ) : null}
       </div>
-    ) : null
+    )
+  }
 
   const blockClassName = (blockIndex: number) =>
-    patchPath && patchable[blockIndex] ? 'diff__block diff__block--patchable' : 'diff__block'
+    (patchPath || revertPath) && patchable[blockIndex]
+      ? 'diff__block diff__block--patchable'
+      : 'diff__block'
+
+  const confirmation = pendingRevert ? (
+    <ConfirmDialog
+      title={t('Revert this hunk')}
+      body={t('Only this hunk is reverted. The other changes in this file stay as they are.')}
+      confirmLabel={t('Revert')}
+      tone="danger"
+      onCancel={() => setPendingRevert(null)}
+      onConfirm={() => void confirmRevert()}
+    />
+  ) : null
 
   if (mode === 'split') {
     return (
-      <div className="diff diff--split">
+      <>
+        <div className="diff diff--split">
+          {folded.map((rows, blockIndex) => (
+            <div className={blockClassName(blockIndex)} key={blockIndex}>
+              {hunkActions(blockIndex)}
+              {buildSplitDiff(displayRows(rows, effective)).map((row, rowIndex) =>
+                row.gap ? (
+                  <div className="diff__split" data-gap="true" key={rowIndex}>
+                    <GapButton
+                      count={row.gap.count}
+                      open={effective.has(row.gap.key)}
+                      onToggle={() => toggle(row.gap?.key ?? '')}
+                    />
+                  </div>
+                ) : (
+                  <div className="diff__split" key={rowIndex}>
+                    <div className="diff__side" data-kind={row.left?.kind ?? 'empty'}>
+                      {gutter(row.left?.line)}
+                      <span className="diff__code">
+                        {row.left ? (row.left.kind === 'del' ? '- ' : '  ') + row.left.text : ''}
+                      </span>
+                    </div>
+                    <div className="diff__side" data-kind={row.right?.kind ?? 'empty'}>
+                      {gutter(row.right?.line)}
+                      <span className="diff__code">
+                        {row.right ? (row.right.kind === 'add' ? '+ ' : '  ') + row.right.text : ''}
+                      </span>
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          ))}
+        </div>
+        {confirmation}
+      </>
+    )
+  }
+
+  return (
+    <>
+      <div className="diff">
         {folded.map((rows, blockIndex) => (
           <div className={blockClassName(blockIndex)} key={blockIndex}>
-            {hunkAction(blockIndex)}
-            {buildSplitDiff(displayRows(rows, effective)).map((row, rowIndex) =>
-              row.gap ? (
-                <div className="diff__split" data-gap="true" key={rowIndex}>
+            {hunkActions(blockIndex)}
+            {displayRows(rows, effective).map((row, rowIndex) =>
+              row.kind === 'gap' ? (
+                <div className="diff__row diff__row--gap" key={rowIndex}>
                   <GapButton
-                    count={row.gap.count}
-                    open={effective.has(row.gap.key)}
-                    onToggle={() => toggle(row.gap?.key ?? '')}
+                    count={row.hidden.length}
+                    open={effective.has(row.key)}
+                    onToggle={() => toggle(row.key)}
                   />
                 </div>
               ) : (
-                <div className="diff__split" key={rowIndex}>
-                  <div className="diff__side" data-kind={row.left?.kind ?? 'empty'}>
-                    {gutter(row.left?.line)}
-                    <span className="diff__code">
-                      {row.left ? (row.left.kind === 'del' ? '- ' : '  ') + row.left.text : ''}
-                    </span>
-                  </div>
-                  <div className="diff__side" data-kind={row.right?.kind ?? 'empty'}>
-                    {gutter(row.right?.line)}
-                    <span className="diff__code">
-                      {row.right ? (row.right.kind === 'add' ? '+ ' : '  ') + row.right.text : ''}
-                    </span>
-                  </div>
+                <div className="diff__row" data-kind={row.kind} key={rowIndex}>
+                  {gutter(row.oldLine)}
+                  {gutter(row.newLine)}
+                  <span className="diff__code">
+                    {row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '}
+                    {row.text}
+                  </span>
                 </div>
               )
             )}
           </div>
         ))}
       </div>
-    )
-  }
-
-  return (
-    <div className="diff">
-      {folded.map((rows, blockIndex) => (
-        <div className={blockClassName(blockIndex)} key={blockIndex}>
-          {hunkAction(blockIndex)}
-          {displayRows(rows, effective).map((row, rowIndex) =>
-            row.kind === 'gap' ? (
-              <div className="diff__row diff__row--gap" key={rowIndex}>
-                <GapButton
-                  count={row.hidden.length}
-                  open={effective.has(row.key)}
-                  onToggle={() => toggle(row.key)}
-                />
-              </div>
-            ) : (
-              <div className="diff__row" data-kind={row.kind} key={rowIndex}>
-                {gutter(row.oldLine)}
-                {gutter(row.newLine)}
-                <span className="diff__code">
-                  {row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '}
-                  {row.text}
-                </span>
-              </div>
-            )
-          )}
-        </div>
-      ))}
-    </div>
+      {confirmation}
+    </>
   )
 }

@@ -18,7 +18,11 @@ import { checkAuth, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
 import { PiRuntime } from './pi/runtime'
 import {
+  addWorktree,
+  applyPatch,
   commitWorkingTree,
+  createBranch,
+  readBranches,
   readCommitDetail,
   readCommitFileDiff,
   readFileDiff,
@@ -28,6 +32,7 @@ import {
   revertFile,
   stageAll,
   stageFile,
+  switchBranch,
   unstageAll,
   unstageFile
 } from './git'
@@ -348,6 +353,26 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('git:commitFileDiff', (_event, hash: string, file: string) =>
     readCommitFileDiff(workspaceRoot(context), hash, file)
+  )
+
+  ipcMain.handle('git:applyPatch', (_event, patch: string, reverse?: boolean) =>
+    applyPatch(workspaceRoot(context), patch, reverse === true)
+  )
+
+  ipcMain.handle('git:branches', () => readBranches(workspaceRoot(context)))
+
+  ipcMain.handle('git:switchBranch', (_event, name: string) =>
+    switchBranch(workspaceRoot(context), name)
+  )
+
+  ipcMain.handle('git:createBranch', (_event, name: string, checkout?: boolean) =>
+    createBranch(workspaceRoot(context), name, checkout !== false)
+  )
+
+  ipcMain.handle(
+    'git:addWorktree',
+    (_event, worktreePath: string, branch: string, create?: boolean) =>
+      addWorktree(workspaceRoot(context), worktreePath, branch, create !== false)
   )
 
   ipcMain.handle('git:revertFile', (_event, file: string) =>

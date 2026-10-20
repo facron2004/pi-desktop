@@ -1,9 +1,9 @@
 /*
- * The "Copy this hunk" action on a review diff block.
+ * The "Copy this hunk" and "Revert this hunk" actions on a review diff block.
  *
- * It lives in the block's top-right corner and only shows on hover or when it
- * holds keyboard focus, so a diff stays clean until the reader looks for it.
- * Colours come from tokens.css.
+ * They live in the block's top-right corner and only show on hover or when
+ * they hold keyboard focus, so a diff stays clean until the reader looks for
+ * them. Colours come from tokens.css.
  */
 
 .diff__block--patchable {
@@ -15,6 +15,8 @@
   top: 2px;
   right: 4px;
   z-index: 1;
+  display: flex;
+  gap: 4px;
   opacity: 0;
   transition: opacity 0.12s var(--ease);
 }
@@ -45,6 +47,28 @@
   border-color: var(--border);
   background: var(--bg-hover);
   color: var(--text);
+}
+
+/* Reverting a hunk throws work away, so the action turns red on hover. */
+.diff__hunk-revert {
+  color: var(--text-faint);
+}
+
+.diff__hunk-revert:hover {
+  border-color: var(--red);
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.diff__hunk-copy:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.diff__hunk-copy:disabled:hover {
+  border-color: var(--border-soft);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
 }
 
 /* Hover is unavailable on touch, so leave the action on screen. */

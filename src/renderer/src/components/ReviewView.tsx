@@ -13,7 +13,7 @@ import {
   X
 } from 'lucide-react'
 import type { GitFileDiff, GitFileStatus } from '@shared/types'
-import { buildDiff } from '../lib/diff-fold'
+import { buildDiff, CONTEXT_LINES, type DiffBlock, type DiffRow } from '../lib/diff-fold'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -101,6 +101,21 @@ export function ReviewView({
       setRefreshing(false)
     }
   }, [refreshGit, load])
+
+  // Reverting a hunk rewrites the work tree, so this file's cached diff is
+  // stale: drop it, re-read the status and read the file again.
+  const reloadAfterHunk = useCallback(
+    async (path: string) => {
+      setDiffs((previous) => {
+        const next = { ...previous }
+        delete next[path]
+        return next
+      })
+      await refreshGit()
+      await load(path)
+    },
+    [refreshGit, load]
+  )
 
   // A file that left the working tree (committed or reverted) cannot keep its
   // cached diff, or the list would show a change that no longer exists.
@@ -342,6 +357,7 @@ export function ReviewView({
               onToggleStage={(file) => void toggleStage(file)}
               onCopyPatch={(file) => void copyPatch(file.path)}
               onRevert={setRevertTarget}
+              onHunkReverted={(path) => void reloadAfterHunk(path)}
             />
           ) : null}
           {unstagedFiles.length > 0 ? (
@@ -357,6 +373,7 @@ export function ReviewView({
               onToggleStage={(file) => void toggleStage(file)}
               onCopyPatch={(file) => void copyPatch(file.path)}
               onRevert={setRevertTarget}
+              onHunkReverted={(path) => void reloadAfterHunk(path)}
             />
           ) : null}
         </div>
@@ -387,7 +404,8 @@ function ReviewGroup({
   onOpen,
   onToggleStage,
   onCopyPatch,
-  onRevert
+  onRevert,
+  onHunkReverted
 }: {
   label: string | null
   count: number
@@ -400,6 +418,7 @@ function ReviewGroup({
   onToggleStage: (file: GitFileStatus) => void
   onCopyPatch: (file: GitFileStatus) => void
   onRevert: (path: string) => void
+  onHunkReverted: (path: string) => void
 }) {
   const t = useT()
   return (
@@ -423,11 +442,71 @@ function ReviewGroup({
           onToggleStage={() => onToggleStage(file)}
           onCopyPatch={() => onCopyPatch(file)}
           onRevert={() => onRevert(file.path)}
+          onHunkReverted={() => onHunkReverted(file.path)}
         />
       ))}
       {label ? null : <span className="sr-only">{t('Changes')}</span>}
     </div>
   )
+}
+
+/** A fold row standing for context the hunk split left out. */
+function hiddenGap(hidden: DiffRow[], key: string): DiffRow {
+  const first = hidden[0]
+  return {
+    kind: 'gap',
+    oldLine: first?.oldLine ?? null,
+    newLine: first?.newLine ?? null,
+    text: '',
+    hidden,
+    key
+  }
+}
+
+/**
+ * Cut a file diff into one block per hunk, the way git groups changes.
+ *
+ * "Copy this hunk" and "Revert this hunk" belong to one change region, so a
+ * run of unchanged lines longer than the context on both sides starts a new
+ * block. The lines the split leaves out become a fold on the following block:
+ * they stay expandable, and while the fold is closed they stay out of the
+ * copied or reverted patch.
+ */
+function splitHunks(rows: DiffRow[], context = CONTEXT_LINES): DiffBlock[] {
+  const changes: number[] = []
+  for (let index = 0; index < rows.length; index += 1) {
+    if (rows[index].kind === 'add' || rows[index].kind === 'del') changes.push(index)
+  }
+  if (changes.length === 0) return []
+
+  const groups: { start: number; end: number }[] = []
+  for (const index of changes) {
+    const last = groups[groups.length - 1]
+    // Two changes share a hunk while their context on both sides still touches.
+    if (!last || index - last.end - 1 > context * 2) {
+      groups.push({
+        start: Math.max(index - context, 0),
+        end: Math.min(index + context, rows.length - 1)
+      })
+    } else {
+      last.end = Math.min(index + context, rows.length - 1)
+    }
+  }
+
+  const blocks: DiffBlock[] = []
+  let cursor = 0
+  for (let group = 0; group < groups.length; group += 1) {
+    const { start, end } = groups[group]
+    const blockRows: DiffRow[] = []
+    if (start > cursor) blockRows.push(hiddenGap(rows.slice(cursor, start), `hunk:${group}:before`))
+    blockRows.push(...rows.slice(start, end + 1))
+    if (group === groups.length - 1 && end < rows.length - 1) {
+      blockRows.push(hiddenGap(rows.slice(end + 1), `hunk:${group}:after`))
+    }
+    blocks.push({ rows: blockRows })
+    cursor = end + 1
+  }
+  return blocks
 }
 
 function ReviewFile({
@@ -440,7 +519,8 @@ function ReviewFile({
   onReveal,
   onToggleStage,
   onCopyPatch,
-  onRevert
+  onRevert,
+  onHunkReverted
 }: {
   file: GitFileStatus
   isOpen: boolean
@@ -452,13 +532,14 @@ function ReviewFile({
   onToggleStage: () => void
   onCopyPatch: () => void
   onRevert: () => void
+  onHunkReverted: () => void
 }) {
   const t = useT()
   const status = statusOf(file)
 
   const blocks = useMemo(() => {
     if (!state || state.status !== 'ready' || state.diff.binary) return []
-    return [buildDiff(state.diff.oldText, state.diff.newText)]
+    return splitHunks(buildDiff(state.diff.oldText, state.diff.newText).rows)
   }, [state])
 
   return (
@@ -545,7 +626,13 @@ function ReviewFile({
               {state.diff.truncated ? (
                 <div className="review__note">{t('The file is too large to show in full.')}</div>
               ) : null}
-              <DiffView diffs={blocks} mode={split ? 'split' : 'unified'} patchPath={file.path} />
+              <DiffView
+                diffs={blocks}
+                mode={split ? 'split' : 'unified'}
+                patchPath={file.path}
+                revertPath={file.untracked ? undefined : file.path}
+                onReverted={onHunkReverted}
+              />
             </>
           )}
         </div>

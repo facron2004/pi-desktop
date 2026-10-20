@@ -562,7 +562,34 @@ const zhCN: Record<string, string> = {
   'Copy this hunk': '复制此修改块',
   'Copy this hunk as a patch': '将此修改块作为补丁复制',
   'The hunk was copied': '修改块已复制',
-  'This block has no changes to copy': '此修改块没有可复制的内容'
+  'This block has no changes to copy': '此修改块没有可复制的内容',
+  Branches: '分支',
+  'HEAD is detached. Switch to a branch so new commits are kept.':
+    'HEAD 处于分离状态。请切换到分支，以便保留新的提交。',
+  'This repository has no branches yet.': '该仓库还没有分支。',
+  'Reading the branches…': '正在读取分支…',
+  'New branch…': '新建分支…',
+  'Review changes': '查看更改',
+  'New branch name': '新分支名称',
+  'Create and switch': '创建并切换',
+  Worktrees: '工作树',
+  'Add worktree…': '添加工作树…',
+  'Branch for the worktree': '工作树使用的分支',
+  'Folder (empty for a sibling folder)': '文件夹（留空则使用同级目录）',
+  'Create worktree': '创建工作树',
+  'Could not switch branch': '无法切换分支',
+  'Could not create the branch': '无法创建分支',
+  'Could not add the worktree': '无法添加工作树',
+  'Switched to': '已切换到',
+  'Created and switched to': '已创建并切换到',
+  'Worktree created at': '工作树已创建：',
+  'Revert this hunk': '还原此修改块',
+  'Only this hunk is reverted. The other changes in this file stay as they are.':
+    '只还原此修改块，文件中的其他更改保持不变。',
+  'The hunk was reverted': '修改块已还原',
+  'The hunk could not be reverted': '无法还原该修改块',
+  'This block has no changes to revert': '此修改块没有可还原的内容',
+  'Recent searches': '最近的搜索'
 }
 
 export function translate(text: string, language: AppLanguage): string {

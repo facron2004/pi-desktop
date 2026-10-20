@@ -6,6 +6,7 @@ import type {
   ExtensionUiResponse,
   FileContent,
   FileEntry,
+  GitBranches,
   GitCommit,
   GitCommitDetail,
   GitCommitFileDiff,
@@ -13,6 +14,7 @@ import type {
   GitFileDiff,
   GitPatch,
   GitStatus,
+  GitWorktreeResult,
   PiDesktopBridge,
   PiEvent,
   RuntimeStartOptions,
@@ -81,6 +83,19 @@ const bridge: PiDesktopBridge = {
       ipcRenderer.invoke('git:commitDetail', hash),
     commitFileDiff: (hash: string, file: string): Promise<GitCommitFileDiff | null> =>
       ipcRenderer.invoke('git:commitFileDiff', hash, file),
+    applyPatch: (patch: string, reverse?: boolean): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:applyPatch', patch, reverse === true),
+    branches: (): Promise<GitBranches> => ipcRenderer.invoke('git:branches'),
+    switchBranch: (name: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:switchBranch', name),
+    createBranch: (name: string, checkout?: boolean): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:createBranch', name, checkout !== false),
+    addWorktree: (
+      path: string,
+      branch: string,
+      createBranch?: boolean
+    ): Promise<GitWorktreeResult> =>
+      ipcRenderer.invoke('git:addWorktree', path, branch, createBranch !== false),
     revertFile: (file: string): Promise<GitCommitResult> =>
       ipcRenderer.invoke('git:revertFile', file),
     stageFile: (file: string): Promise<GitCommitResult> =>

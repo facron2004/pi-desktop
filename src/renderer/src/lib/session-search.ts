@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SessionMeta, SessionSearchHit } from '@shared/types'
 import { basename } from './path'
 
@@ -15,6 +15,10 @@ export const MAX_SESSION_HITS = 30
 const SNIPPET_MAX = 100
 const SNIPPET_LEAD = 32
 
+/** The last few searches that found something, so they can be picked again. */
+const HISTORY_KEY = 'pi-desktop.session-search.history'
+const HISTORY_LIMIT = 8
+
 export interface SessionSearchState {
   status: 'idle' | 'searching' | 'done'
   hits: SessionSearchHit[]
@@ -27,8 +31,44 @@ interface SearchResult {
   hits: SessionSearchHit[]
 }
 
+export interface SessionSearch extends SessionSearchState {
+  /** Queries that found something in a conversation, newest first. */
+  history: string[]
+  clearHistory: () => void
+}
+
 const IDLE: SessionSearchState = { status: 'idle', hits: [] }
 const SEARCHING: SessionSearchState = { status: 'searching', hits: [] }
+
+/** Queries remembered from earlier runs. Unreadable storage is just empty. */
+export function readRecentSearches(): string[] {
+  try {
+    const raw = window.localStorage.getItem(HISTORY_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+      .slice(0, HISTORY_LIMIT)
+  } catch {
+    return []
+  }
+}
+
+function writeRecentSearches(entries: string[]): void {
+  try {
+    window.localStorage.setItem(HISTORY_KEY, JSON.stringify(entries))
+  } catch {
+    // A full or disabled storage must not break the search.
+  }
+}
+
+/** Put one query at the front, without a second copy that differs in case. */
+export function rememberSearch(query: string, history: readonly string[]): string[] {
+  const trimmed = query.trim()
+  if (!trimmed) return [...history]
+  const key = trimmed.toLowerCase()
+  return [trimmed, ...history.filter((entry) => entry.toLowerCase() !== key)].slice(0, HISTORY_LIMIT)
+}
 
 /**
  * Ask the main process for conversations whose messages contain the query.
@@ -38,9 +78,11 @@ const SEARCHING: SessionSearchState = { status: 'searching', hits: [] }
  * the query the user just replaced. The sequence number does the same for
  * answers that arrive out of order.
  */
-export function useSessionSearch(query: string, enabled = true): SessionSearchState {
+export function useSessionSearch(query: string, enabled = true): SessionSearch {
   const [result, setResult] = useState<SearchResult>({ query: '', status: 'done', hits: [] })
+  const [history, setHistory] = useState<string[]>(() => readRecentSearches())
   const sequence = useRef(0)
+  const recorded = useRef('')
   const trimmed = query.trim()
   const active = enabled && trimmed.length >= MIN_SESSION_SEARCH_LENGTH
 
@@ -73,10 +115,33 @@ export function useSessionSearch(query: string, enabled = true): SessionSearchSt
     }
   }, [trimmed, enabled])
 
-  if (!active) return IDLE
-  if (result.query !== trimmed) return SEARCHING
-  if (result.status === 'failed') return IDLE
-  return { status: 'done', hits: result.hits }
+  // Only a search that found something is worth offering again; a query with
+  // no hits is one the reader probably did not mean to keep.
+  useEffect(() => {
+    if (result.status !== 'done' || result.hits.length === 0 || !result.query) return
+    const key = result.query.toLowerCase()
+    if (recorded.current === key) return
+    recorded.current = key
+    setHistory((previous) => rememberSearch(result.query, previous))
+  }, [result])
+
+  // Keep the stored copy in step, so a reopened window offers the same list.
+  useEffect(() => {
+    writeRecentSearches(history)
+  }, [history])
+
+  const clearHistory = useCallback(() => {
+    recorded.current = ''
+    setHistory([])
+  }, [])
+
+  let state: SessionSearchState = IDLE
+  if (active) {
+    if (result.query !== trimmed) state = SEARCHING
+    else if (result.status === 'failed') state = IDLE
+    else state = { status: 'done', hits: result.hits }
+  }
+  return { ...state, history, clearHistory }
 }
 
 /** The store opens a conversation by its metadata, so a hit becomes one. */

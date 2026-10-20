@@ -1,8 +1,12 @@
 import { execFile } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type {
+  GitBranch,
+  GitBranches,
   GitCommit,
   GitCommitDetail,
   GitCommitFile,
@@ -11,7 +15,9 @@ import type {
   GitFileDiff,
   GitFileStatus,
   GitPatch,
-  GitStatus
+  GitStatus,
+  GitWorktree,
+  GitWorktreeResult
 } from '@shared/types'
 
 const run = promisify(execFile)
@@ -557,6 +563,209 @@ export async function readCommitFileDiff(
     binary,
     truncated: oldCapped.truncated || newCapped.truncated
   }
+}
+
+/** A branch name we are willing to hand to git as a value (not an option). */
+function cleanBranch(value: string): string | null {
+  const name = value.trim()
+  if (!name || name.length > 240 || name.startsWith('-')) return null
+  return name
+}
+
+/** Apply a unified patch to the working tree, optionally in reverse. */
+export async function applyPatch(
+  root: string,
+  patch: string,
+  reverse = false
+): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  const trimmed = patch.trim()
+  if (!trimmed.startsWith('diff --git ')) {
+    return { ok: false, error: 'That does not look like a patch.' }
+  }
+  if (trimmed.length > MAX_PATCH_BYTES) {
+    return { ok: false, error: 'The patch is too large to apply.' }
+  }
+
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'pi-desktop-patch-'))
+  const file = path.join(dir, 'change.patch')
+  try {
+    // The body is written as it came: trailing spaces and an empty last
+    // context line are part of the patch, even though the prefix check used
+    // a trimmed copy.
+    writeFileSync(file, patch.endsWith('\n') ? patch : `${patch}\n`, 'utf8')
+    const args = ['apply', '--whitespace=nowarn']
+    if (reverse) args.push('--reverse')
+    args.push(file)
+    const result = await git(root, args, COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) {
+      return {
+        ok: false,
+        error: cleanError(result.stderr) || cleanError(result.stdout) || 'git apply failed.'
+      }
+    }
+    return { ok: true }
+  } finally {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      /* a temp directory that cannot be removed is not worth an error */
+    }
+  }
+}
+
+/** Local branches and worktrees of the open repository. */
+export async function readBranches(root: string): Promise<GitBranches> {
+  const empty: GitBranches = { detached: false, branches: [], worktrees: [] }
+  if (!root) return empty
+
+  const [currentOut, refs, worktreesOut] = await Promise.all([
+    git(root, ['branch', '--show-current']),
+    git(root, [
+      'for-each-ref',
+      // for-each-ref does not understand %x1f; a literal tab is the separator
+      // it can carry through every git version.
+      '--format=%(refname:short)\t%(upstream:short)\t%(objectname:short)\t%(contents:subject)',
+      'refs/heads'
+    ]),
+    git(root, ['worktree', 'list', '--porcelain'])
+  ])
+
+  const current = currentOut.stdout.trim() || undefined
+  const branches: GitBranch[] = refs.stdout
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => {
+      const [name = '', upstream = '', tip = '', ...subjectParts] = line.split('\t')
+      return {
+        name,
+        current: name === current,
+        tip: tip || undefined,
+        subject: subjectParts.join('\t') || undefined,
+        upstream: upstream || undefined
+      }
+    })
+    .filter((branch) => branch.name)
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  const worktrees: GitWorktree[] = []
+  let block: { path?: string; branch?: string; bare?: boolean } = {}
+  const flush = () => {
+    if (!block.path) return
+    worktrees.push({
+      path: block.path,
+      branch: block.branch,
+      bare: block.bare === true,
+      current: path.resolve(block.path) === path.resolve(root)
+    })
+    block = {}
+  }
+  for (const line of worktreesOut.stdout.split('\n')) {
+    if (!line.trim()) {
+      flush()
+      continue
+    }
+    const space = line.indexOf(' ')
+    const key = space === -1 ? line : line.slice(0, space)
+    const value = space === -1 ? '' : line.slice(space + 1)
+    if (key === 'worktree') {
+      flush()
+      block.path = value
+    } else if (key === 'branch') {
+      block.branch = value.replace(/^refs\/heads\//, '')
+    } else if (key === 'bare') {
+      block.bare = true
+    }
+  }
+  flush()
+
+  return { current, detached: !current, branches, worktrees }
+}
+
+/** Check out a local branch. */
+export async function switchBranch(root: string, name: string): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  const branch = cleanBranch(name)
+  if (!branch) return { ok: false, error: 'That is not a branch name.' }
+
+  let result = await git(root, ['switch', branch], COMMIT_TIMEOUT_MS)
+  if (result.code !== 0) {
+    // Older git or a branch that only exists as a path: checkout understands
+    // both, so it is the fallback rather than a second command to maintain.
+    result = await git(root, ['checkout', branch], COMMIT_TIMEOUT_MS)
+  }
+  if (result.code !== 0) {
+    return { ok: false, error: cleanError(result.stderr) || 'Could not switch branch.' }
+  }
+  return { ok: true }
+}
+
+/** Create a local branch, checking it out unless `checkout` is false. */
+export async function createBranch(
+  root: string,
+  name: string,
+  checkout = true
+): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  const branch = cleanBranch(name)
+  if (!branch) return { ok: false, error: 'That is not a branch name.' }
+
+  const format = await git(root, ['check-ref-format', '--branch', branch])
+  if (format.code !== 0) return { ok: false, error: 'That is not a valid branch name.' }
+
+  const result = await git(
+    root,
+    checkout ? ['switch', '-c', branch] : ['branch', branch],
+    COMMIT_TIMEOUT_MS
+  )
+  if (result.code !== 0) {
+    return { ok: false, error: cleanError(result.stderr) || 'Could not create the branch.' }
+  }
+  return { ok: true }
+}
+
+/**
+ * Add a worktree next to the repository.
+ *
+ * A worktree without its own branch would have to check out a branch that is
+ * already checked out here, which git refuses; so the common case — create a
+ * new branch for the worktree — is the default. An empty path means a sibling
+ * folder named after the repository and the branch.
+ */
+export async function addWorktree(
+  root: string,
+  rawPath: string,
+  rawBranch: string,
+  create = true
+): Promise<GitWorktreeResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  const branch = cleanBranch(rawBranch)
+  if (!branch) return { ok: false, error: 'That is not a branch name.' }
+  const format = await git(root, ['check-ref-format', '--branch', branch])
+  if (format.code !== 0) return { ok: false, error: 'That is not a valid branch name.' }
+
+  const parent = path.dirname(path.resolve(root))
+  const suggested = `${path.basename(root)}-${branch.replace(/[^A-Za-z0-9._-]+/g, '-')}`
+  const target = rawPath.trim()
+    ? path.isAbsolute(rawPath.trim())
+      ? path.resolve(rawPath.trim())
+      : path.resolve(root, rawPath.trim())
+    : path.join(parent, suggested)
+
+  if (insideWorkTree(root, target)) {
+    return { ok: false, error: 'The worktree has to be outside the project folder.' }
+  }
+
+  const args = ['worktree', 'add']
+  if (create) args.push('-b', branch)
+  args.push(target)
+  if (!create) args.push(branch)
+
+  const result = await git(root, args, COMMIT_TIMEOUT_MS)
+  if (result.code !== 0) {
+    return { ok: false, error: cleanError(result.stderr) || 'Could not add the worktree.' }
+  }
+  return { ok: true, path: target, branch }
 }
 
 /**
