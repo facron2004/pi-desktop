@@ -173,7 +173,9 @@ node scripts/rpc-ui-smoke.mjs
 ```
 
 Screenshots live in [`docs/shots/`](docs/shots): the welcome screen, a real
-conversation with an inline diff, the light theme, and the app mid-run.
+conversation with an inline diff, the light theme, the app mid-run, the terminal
+drawer, the commit dialog, and the search across conversations. The roadmap for
+the remaining Codex-style work is in [`docs/codex-parity.md`](docs/codex-parity.md).
 
 ## Architecture
 
