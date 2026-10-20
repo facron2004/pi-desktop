@@ -13,11 +13,12 @@ import { InspectorPanel } from './components/InspectorPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
 import { Launcher, useLauncherActions } from './components/Launcher'
+import { useT } from './lib/i18n'
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
   const info = useAppStore((state) => state.info)
-  const items = useAppStore((state) => state.items)
+  const hasItems = useAppStore((state) => state.items.length > 0)
   const isStreaming = useAppStore((state) => state.isStreaming)
   const status = useAppStore((state) => state.status)
   const piState = useAppStore((state) => state.piState)
@@ -40,6 +41,7 @@ export default function App() {
   const abortRetry = useAppStore((state) => state.abortRetry)
   const cycleModel = useAppStore((state) => state.cycleModel)
   const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
+  const t = useT()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -79,9 +81,10 @@ export default function App() {
 
   useEffect(() => {
     const root = document.documentElement
+    root.lang = settings.language
     const platform = useAppStore.getState().info?.platform
     if (platform) root.dataset.platform = platform
-  }, [info])
+  }, [info, settings.language])
 
   // Development aid: open the changes drawer for screenshots.
   useEffect(() => {
@@ -127,13 +130,14 @@ export default function App() {
       window as unknown as { __piDesktopDev?: { export?: boolean } }
     ).__piDesktopDev
     if (!dev?.export || exportedRef.current) return
-    if (items.length === 0 || isStreaming) return
+    if (!hasItems || isStreaming) return
     exportedRef.current = true
     void exportSession()
-  }, [items.length, isStreaming, exportSession])
+  }, [hasItems, isStreaming, exportSession])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('[aria-modal="true"]')) return
       const mod = event.ctrlKey || event.metaKey
       // The palette has the keyboard while it is open — only the chord that
       // closes it again stays alive.
@@ -274,7 +278,7 @@ export default function App() {
         <div className="titlebar drag-region">
           <button
             className="icon-btn no-drag"
-            title="Toggle sidebar"
+            title={t('Toggle sidebar')}
             onClick={() => setSidebarOpen((value) => !value)}
           >
             <PanelLeft size={15} />
@@ -311,7 +315,7 @@ export default function App() {
               ) : null}
               <button
                 className="icon-btn no-drag"
-                title="Rename this conversation"
+                title={t('Rename this conversation')}
                 onClick={startRename}
               >
                 <Pencil size={12} />
@@ -322,30 +326,30 @@ export default function App() {
           <div className="titlebar__actions no-drag">
             <button
               className="icon-btn"
-              title="Keyboard shortcuts"
+              title={t('Keyboard shortcuts')}
               onClick={() => setShortcutsOpen(true)}
             >
               <Keyboard size={14} />
             </button>
             <button
               className="icon-btn"
-              title="Duplicate this conversation"
-              disabled={status.phase !== 'ready' || items.length === 0}
+              title={t('Duplicate this conversation')}
+              disabled={status.phase !== 'ready' || !hasItems}
               onClick={() => void duplicateSession()}
             >
               <CopyPlus size={14} />
             </button>
             <button
               className="icon-btn"
-              title="Export this conversation as HTML"
-              disabled={status.phase !== 'ready' || items.length === 0}
+              title={t('Export this conversation as HTML')}
+              disabled={status.phase !== 'ready' || !hasItems}
               onClick={() => void exportSession()}
             >
               <FileDown size={14} />
             </button>
             <button
               className="icon-btn"
-              title="Restart the Pi runtime"
+              title={t('Restart the Pi runtime')}
               onClick={() => {
                 if (workspace) void openWorkspace(workspace)
               }}
@@ -370,7 +374,7 @@ export default function App() {
           />
         ) : null}
 
-        {items.length === 0 ? (
+        {!hasItems ? (
           <Welcome onPick={() => void pickWorkspace()} />
         ) : (
           <Thread />
@@ -381,14 +385,14 @@ export default function App() {
             <div className="retry" role="status">
               <RefreshCw size={13} className="spin" />
               <span className="retry__text">
-                Pi is retrying
+                {t('Pi is retrying')}
                 {retry.maxAttempts
-                  ? ` (attempt ${retry.attempt} of ${retry.maxAttempts})`
-                  : ` (attempt ${retry.attempt})`}
+                  ? ` (${t('attempt')} ${retry.attempt} ${t('of')} ${retry.maxAttempts})`
+                  : ` (${t('attempt')} ${retry.attempt})`}
                 {retry.errorMessage ? ` — ${retry.errorMessage}` : ''}
               </span>
               <button className="ghost-btn" onClick={() => void abortRetry()}>
-                Stop retrying
+                {t('Stop retrying')}
               </button>
             </div>
           </div>

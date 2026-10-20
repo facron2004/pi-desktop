@@ -1,4 +1,7 @@
 import { X } from 'lucide-react'
+import { useRef } from 'react'
+import { useDialogFocus } from '../hooks/useDialogFocus'
+import { useT } from '../lib/i18n'
 
 const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
   { keys: ['Ctrl', 'N'], label: 'Start a new conversation', group: 'Workspace' },
@@ -26,13 +29,24 @@ const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
 ]
 
 export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocus(dialogRef, onClose)
+  const t = useT()
   const groups = Array.from(new Set(SHORTCUTS.map((entry) => entry.group)))
 
   return (
     <div className="modal-layer" onMouseDown={onClose}>
-      <div className="modal modal--narrow" onMouseDown={(event) => event.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="modal modal--narrow"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="shortcuts-title"
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <div className="modal__head">
-          <h2 className="modal__title">Keyboard shortcuts</h2>
+          <h2 id="shortcuts-title" className="modal__title">{t('Keyboard shortcuts')}</h2>
           <button className="icon-btn" onClick={onClose}>
             <X size={15} />
           </button>
@@ -41,10 +55,10 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
         <div className="modal__body">
           {groups.map((group) => (
             <section className="shortcut-group" key={group}>
-              <h3 className="shortcut-group__title">{group}</h3>
+              <h3 className="shortcut-group__title">{t(group)}</h3>
               {SHORTCUTS.filter((entry) => entry.group === group).map((entry) => (
                 <div className="shortcut" key={entry.label}>
-                  <span className="shortcut__label">{entry.label}</span>
+                  <span className="shortcut__label">{t(entry.label)}</span>
                   <span className="shortcut__keys">
                     {entry.keys.map((key) => (
                       <kbd key={key}>{key}</kbd>
@@ -58,7 +72,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
 
         <div className="modal__foot">
           <button className="btn btn--primary" onClick={onClose}>
-            Got it
+            {t('Got it')}
           </button>
         </div>
       </div>

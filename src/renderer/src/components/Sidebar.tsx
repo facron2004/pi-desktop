@@ -12,12 +12,13 @@ import {
   X
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import type { SessionMeta } from '@shared/types'
+import type { AppSettings, SessionMeta } from '@shared/types'
 import { formatDayBucket, formatRelativeTime } from '../lib/format'
 import { samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
+import { useT } from '../lib/i18n'
 
 const MIN_WIDTH = 200
 const MAX_WIDTH = 460
@@ -28,11 +29,11 @@ type GroupEntry =
   | { kind: 'session'; session: SessionMeta; key: string }
 
 /** Split the sessions of a project into buckets by when they happened. */
-function groupByDay(sessions: SessionMeta[]): GroupEntry[] {
+function groupByDay(sessions: SessionMeta[], language: AppSettings['language']): GroupEntry[] {
   const entries: GroupEntry[] = []
   let previous = ''
   for (const session of sessions) {
-    const bucket = formatDayBucket(session.updatedAt)
+    const bucket = formatDayBucket(session.updatedAt, language)
     if (bucket !== previous) {
       entries.push({ kind: 'heading', label: bucket, key: `heading-${bucket}` })
       previous = bucket
@@ -74,6 +75,7 @@ export function Sidebar({
   const renameSessionFile = useAppStore((state) => state.renameSessionFile)
   const deleteSession = useAppStore((state) => state.deleteSession)
   const togglePin = useAppStore((state) => state.togglePin)
+  const t = useT()
 
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -180,10 +182,10 @@ export function Sidebar({
   }
 
   const renderSessions = (items: SessionMeta[]) =>
-    groupByDay(items).map((entry) =>
+    groupByDay(items, settings.language).map((entry) =>
       entry.kind === 'heading' ? (
         <div className="session-list__heading" key={entry.key}>
-          {entry.label}
+          {t(entry.label)}
         </div>
       ) : (
         <SessionRow
@@ -240,7 +242,7 @@ export function Sidebar({
         className="sidebar__resizer"
         role="separator"
         aria-orientation="vertical"
-        aria-label="Resize the sidebar"
+        aria-label={t('Resize the sidebar')}
         onPointerDown={startResize}
       />
       <div className="sidebar__head drag-region">
@@ -253,19 +255,19 @@ export function Sidebar({
       <div className="sidebar__body">
         <button className="btn-new-chat" onClick={() => void newChat()}>
           <Plus size={15} />
-          New chat
+          {t('New chat')}
         </button>
 
         <div className="sidebar__section">
           <div className="sidebar__section-head">
-            <span>Projects</span>
-            <button title="Open a folder" onClick={() => void pickWorkspace()}>
+            <span>{t('Projects')}</span>
+            <button title={t('Open a folder')} onClick={() => void pickWorkspace()}>
               <FolderOpen size={13} />
             </button>
           </div>
 
           {ordered.length === 0 ? (
-            <div className="sidebar__empty">No project selected yet.</div>
+            <div className="sidebar__empty">{t('No project selected yet.')}</div>
           ) : (
             <div className="project-tree">
               {ordered.map((project) => {
@@ -276,7 +278,7 @@ export function Sidebar({
                     <div className="project__row">
                       <button
                         className="project__main"
-                        title={active ? project.path : `Open ${project.path}`}
+                        title={active ? project.path : `${t('Open')} ${project.path}`}
                         onClick={() => void openProject(project)}
                       >
                         <span className="project__icon">
@@ -288,7 +290,7 @@ export function Sidebar({
                         </span>
                         <span className="project__text">
                           <span className="project__name">{project.name}</span>
-                          <span className="project__path">{project.path || 'Unknown location'}</span>
+                          <span className="project__path">{project.path || t('Unknown location')}</span>
                         </span>
                         {project.sessions.length > 0 ? (
                           <span className="project__count">{project.sessions.length}</span>
@@ -297,7 +299,7 @@ export function Sidebar({
                       {project.registered && projectId ? (
                         <button
                           className="project__remove"
-                          title="Remove project"
+                          title={t('Remove project')}
                           onClick={() => void removeWorkspace(projectId)}
                         >
                           <Trash2 size={12} />
@@ -316,7 +318,7 @@ export function Sidebar({
             <Search size={13} />
             <input
               value={query}
-              placeholder="Filter conversations"
+              placeholder={t('Filter conversations')}
               onChange={(event) => setQuery(event.target.value)}
             />
             {query ? (
@@ -330,7 +332,7 @@ export function Sidebar({
         {pinnedSessions.length > 0 ? (
           <div className="sidebar__section">
             <div className="sidebar__section-head">
-              <span>Pinned</span>
+              <span>{t('Pinned')}</span>
               <span style={{ textTransform: 'none', letterSpacing: 0 }}>
                 {pinnedSessions.length}
               </span>
@@ -360,14 +362,14 @@ export function Sidebar({
 
         {sessions.length > 0 && needle && groups.length === 0 && pinnedSessions.length === 0 ? (
           <div className="sidebar__section">
-            <div className="sidebar__empty">No conversation matches “{query}”.</div>
+            <div className="sidebar__empty">{t('No conversation matches')} “{query}”.</div>
           </div>
         ) : null}
 
         {sessions.length > 0 && !needle && groups.length === 0 && workspace ? (
           <div className="sidebar__section">
             <div className="sidebar__empty">
-              No conversation in this project yet. Start one and it will show up here.
+              {t('No conversation in this project yet. Start one and it will show up here.')}
             </div>
           </div>
         ) : null}
@@ -375,7 +377,7 @@ export function Sidebar({
         {sessions.length === 0 ? (
           <div className="sidebar__section">
             <div className="sidebar__empty">
-              No conversations yet. Start one and it will show up here.
+              {t('No conversations yet. Start one and it will show up here.')}
             </div>
           </div>
         ) : null}
@@ -386,25 +388,29 @@ export function Sidebar({
           <span className="runtime-chip__dot" />
           <span>
             {status.phase === 'ready'
-              ? 'Pi connected'
+              ? t('Pi connected')
               : status.phase === 'starting'
-                ? 'Starting Pi…'
+                ? t('Starting Pi…')
                 : status.phase === 'error'
-                  ? 'Pi unavailable'
-                  : 'Pi stopped'}
+                  ? t('Pi unavailable')
+                  : t('Pi stopped')}
           </span>
         </div>
         <button className="sidebar__foot-btn" onClick={onOpenSettings}>
           <Settings size={14} />
-          Settings
+          {t('Settings')}
         </button>
       </div>
 
       {pendingDelete ? (
         <ConfirmDialog
-          title="Delete conversation"
-          body={`“${pendingDelete.name || pendingDelete.preview || 'Untitled session'}” will be moved to the system trash. This cannot be undone from inside Pi Desktop.`}
-          confirmLabel="Delete"
+          title={t('Delete conversation')}
+          body={
+            settings.language === 'zh-CN'
+              ? `“${pendingDelete.name || pendingDelete.preview || '未命名会话'}”将移至系统回收站。此操作无法在 Pi Desktop 中撤销。`
+              : `“${pendingDelete.name || pendingDelete.preview || 'Untitled session'}” will be moved to the system trash. This cannot be undone from inside Pi Desktop.`
+          }
+          confirmLabel={t('Delete')}
           tone="danger"
           onCancel={() => setPendingDelete(null)}
           onConfirm={() => {
@@ -450,6 +456,8 @@ function SessionRow({
   onDelete,
   onTogglePin
 }: SessionRowProps) {
+  const t = useT()
+  const language = useAppStore((state) => state.settings.language)
   return (
     <div
       className="session-item"
@@ -490,14 +498,14 @@ function SessionRow({
         ) : (
           <>
             <span className="session-item__title">
-              {session.name || session.preview || 'Untitled session'}
+              {session.name || session.preview || t('Untitled session')}
             </span>
             <span className="session-item__meta">
-              <span>{formatRelativeTime(session.updatedAt)}</span>
+              <span>{formatRelativeTime(session.updatedAt, language)}</span>
               {project ? (
                 <span>· {project}</span>
               ) : session.messageCount ? (
-                <span>· {session.messageCount} msg{session.messageCount === 1 ? '' : 's'}</span>
+                <span>· {session.messageCount} {session.messageCount === 1 ? t('msg') : t('msgs')}</span>
               ) : null}
             </span>
           </>
@@ -506,7 +514,7 @@ function SessionRow({
       <button
         className="session-item__rename"
         data-on={pinned}
-        title={pinned ? 'Unpin conversation' : 'Pin conversation to the top'}
+        title={pinned ? t('Unpin conversation') : t('Pin conversation to the top')}
         onClick={(event) => {
           event.stopPropagation()
           onTogglePin()
@@ -516,7 +524,7 @@ function SessionRow({
       </button>
       <button
         className="session-item__rename"
-        title="Rename conversation"
+        title={t('Rename conversation')}
         onClick={(event) => {
           event.stopPropagation()
           onStartRename()
@@ -526,7 +534,7 @@ function SessionRow({
       </button>
       <button
         className="session-item__rename session-item__rename--danger"
-        title="Delete conversation"
+        title={t('Delete conversation')}
         onClick={(event) => {
           event.stopPropagation()
           onDelete()

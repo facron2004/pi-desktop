@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Command as CommandIcon } from 'lucide-react'
 import type { PiCommand } from '@shared/types'
 import { COMMAND_SOURCE } from '../lib/command-source'
+import { useT } from '../lib/i18n'
 
 interface CommandPaletteProps {
   commands: PiCommand[]
@@ -19,6 +20,7 @@ export function CommandPalette({
   onSelect
 }: CommandPaletteProps) {
   const listRef = useRef<HTMLDivElement>(null)
+  const t = useT()
 
   useEffect(() => {
     const node = listRef.current?.querySelector<HTMLElement>('[data-active="true"]')
@@ -26,16 +28,16 @@ export function CommandPalette({
   }, [activeIndex])
 
   return (
-    <div className="palette" ref={listRef} role="listbox" aria-label="Commands">
+    <div className="palette" ref={listRef} role="listbox" aria-label={t('Commands')}>
       <div className="palette__head">
         <CommandIcon size={12} />
         <span>
           {query ? (
             <>
-              Commands matching <code>/{query}</code>
+              {t('Commands matching')} <code>/{query}</code>
             </>
           ) : (
-            'Commands'
+            t('Commands')
           )}
         </span>
         <span className="palette__count">{commands.length}</span>
@@ -43,9 +45,9 @@ export function CommandPalette({
 
       {commands.length === 0 ? (
         <div className="palette__empty">
-          No command matches <code>/{query}</code>.
+          {t('No command matches')} <code>/{query}</code>.
           <br />
-          Try <code>/help</code> or <code>/model</code>.
+          {t('Try')} <code>/help</code> {t('or')} <code>/model</code>.
         </div>
       ) : (
         <div className="palette__list">
@@ -79,11 +81,11 @@ export function CommandPalette({
       <div className="palette__foot">
         <kbd>↑</kbd>
         <kbd>↓</kbd>
-        <span>to navigate</span>
+        <span>{t('to navigate')}</span>
         <kbd>↵</kbd>
-        <span>to select</span>
+        <span>{t('to select')}</span>
         <kbd>esc</kbd>
-        <span>to dismiss</span>
+        <span>{t('to dismiss')}</span>
       </div>
     </div>
   )

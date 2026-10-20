@@ -28,15 +28,26 @@ export function CodeSnippet({
   const isDark = useIsDark()
   // The rendered code belongs to the text it was made from, so a new text
   // never shows the highlighting of the old one.
-  const [rendered, setRendered] = useState<{ code: string; html: string } | null>(null)
-  const html = rendered && rendered.code === code ? rendered.html : null
+  const [rendered, setRendered] = useState<{
+    code: string
+    language: string
+    isDark: boolean
+    html: string
+  } | null>(null)
+  const html =
+    rendered &&
+    rendered.code === code &&
+    rendered.language === (language ?? '') &&
+    rendered.isDark === isDark
+      ? rendered.html
+      : null
 
   useEffect(() => {
     if (!code || !language) return
     let cancelled = false
     highlightCode(code, language, isDark)
       .then((markup) => {
-        if (!cancelled) setRendered({ code, html: markup })
+        if (!cancelled) setRendered({ code, language: language ?? '', isDark, html: markup })
       })
       .catch(() => {
         if (!cancelled) setRendered(null)

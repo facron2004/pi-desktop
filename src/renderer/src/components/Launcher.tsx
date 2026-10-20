@@ -26,6 +26,7 @@ import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
 import { COMMAND_SOURCE } from '../lib/command-source'
 import { transcriptOf } from '../lib/thread'
+import { useT } from '../lib/i18n'
 
 /** One thing the user can do from the launcher. */
 export interface LauncherAction {
@@ -71,7 +72,6 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const models = useAppStore((state) => state.models)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
   const fontScale = useAppStore((state) => state.settings.fontScale ?? 1)
-  const items = useAppStore((state) => state.items)
   const showToast = useAppStore((state) => state.showToast)
 
   // The theme that is on screen, which is what the reader sees — the setting
@@ -126,7 +126,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Conversation',
       icon: Copy,
       run: async () => {
-        const transcript = transcriptOf(items)
+        const transcript = transcriptOf(useAppStore.getState().items)
         if (!transcript) {
           showToast('There is nothing to copy yet', 'warning')
           return
@@ -309,6 +309,7 @@ export function Launcher({
   const listRef = useRef<HTMLDivElement>(null)
   const commands = useAppStore((state) => state.commands)
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
+  const t = useT()
 
   /**
    * Pi's own commands join the search as soon as there is something to
@@ -340,11 +341,23 @@ export function Launcher({
       }
     }
     const scored = list
-      .map((action) => ({ action, score: tokens.length ? scoreAction(action, tokens) : 0 }))
+      .map((action) => ({
+        action,
+        score: tokens.length
+          ? scoreAction(
+              {
+                ...action,
+                title: `${action.title} ${t(action.title)}`,
+                group: `${action.group} ${t(action.group)}`
+              },
+              tokens
+            )
+          : 0
+      }))
       .filter((entry): entry is { action: LauncherAction; score: number } => entry.score !== null)
       .sort((a, b) => b.score - a.score)
     return scored.map((entry, position) => ({ ...entry, position }))
-  }, [actions, piCommands, query, insertIntoComposer])
+  }, [actions, piCommands, query, insertIntoComposer, t])
 
   const groups = useMemo(() => {
     const map = new Map<string, typeof visible>()
@@ -419,7 +432,7 @@ export function Launcher({
           <input
             ref={inputRef}
             value={query}
-            placeholder="Search for an action, a command or a project"
+            placeholder={t('Search for an action, a command or a project')}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onKeyDown}
           />
@@ -428,14 +441,14 @@ export function Launcher({
         <div className="launcher__list" ref={listRef}>
           {visible.length === 0 ? (
             <div className="palette__empty">
-              Nothing matches “{query}”.
+              {t('Nothing matches')} “{query}”.
               <br />
-              Try “new”, “model”, “files”, a skill or the name of a project.
+              {t('Try new, model, files, a skill or the name of a project.')}
             </div>
           ) : (
             groups.map((group) => (
               <div className="launcher__group" key={group.name}>
-                <div className="launcher__group-title">{group.name}</div>
+                <div className="launcher__group-title">{t(group.name)}</div>
                 {group.items.map((entry) => {
                   const Icon = entry.action.icon
                   return (
@@ -450,7 +463,7 @@ export function Launcher({
                       <span className="palette__icon">
                         <Icon size={12} />
                       </span>
-                      <span className="launcher__name">{entry.action.title}</span>
+                      <span className="launcher__name">{t(entry.action.title)}</span>
                       <span className="launcher__hint">{entry.action.hint}</span>
                     </button>
                   )
@@ -463,11 +476,11 @@ export function Launcher({
         <div className="palette__foot">
           <kbd>↑</kbd>
           <kbd>↓</kbd>
-          <span>to move</span>
+          <span>{t('to move')}</span>
           <kbd>↵</kbd>
-          <span>to run</span>
+          <span>{t('to run')}</span>
           <kbd>esc</kbd>
-          <span>to dismiss</span>
+          <span>{t('to dismiss')}</span>
         </div>
       </div>
     </div>

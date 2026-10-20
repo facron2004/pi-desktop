@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { FolderOpen, GitBranch, Keyboard, MessageSquare, Terminal, Wand2 } from 'lucide-react'
 import { formatRelativeTime } from '../lib/format'
 import { useAppStore } from '../store/useAppStore'
+import { useT } from '../lib/i18n'
 
 const STARTERS = [
   {
@@ -64,11 +65,11 @@ export function Welcome({ onPick }: { onPick: () => void }) {
   const status = useAppStore((state) => state.status.phase)
   const error = useAppStore((state) => state.error)
   const send = useAppStore((state) => state.send)
-  const model = useAppStore((state) => state.piState?.model)
   const sessions = useAppStore((state) => state.sessions)
   const settings = useAppStore((state) => state.settings)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const selectSession = useAppStore((state) => state.selectSession)
+  const t = useT()
 
   // The conversations of this project, most recent first. Resuming one from
   // here saves a trip through the sidebar. A pinned conversation comes
@@ -104,23 +105,14 @@ export function Welcome({ onPick }: { onPick: () => void }) {
   return (
     <div className="welcome">
       <div className="welcome__inner">
-        <div className="welcome__logo">π</div>
-
         <h1 className="welcome__title">
-          {workspace ? `Working in ${workspace.name}` : 'Pi Desktop'}
+          {workspace ? `${t('Let’s build')} ${workspace.name}` : t('Start a new project')}
         </h1>
         <p className="welcome__subtitle">
           {workspace
-            ? 'Describe a task and Pi will explore the project, run commands and edit files. Everything it does is shown inline below.'
-            : 'Choose a project folder to give Pi a working directory. Pi runs there with your own permissions.'}
+            ? t('Choose a task to get started, or describe what you want to build.')
+            : t('Choose a project folder and start a task with Pi.')}
         </p>
-
-        {model ? (
-          <span className="welcome__model">
-            {model.name}
-            {model.reasoning ? <span className="welcome__model-dot" /> : null}
-          </span>
-        ) : null}
 
         {workspace ? (
           <div className="welcome__cards">
@@ -128,26 +120,26 @@ export function Welcome({ onPick }: { onPick: () => void }) {
               <button
                 className="welcome__card"
                 key={starter.title}
-                onClick={() => void send(starter.body, [])}
+                onClick={() => void send(t(starter.body), [])}
               >
                 <div className="welcome__card-title">
                   <starter.icon size={13} style={{ verticalAlign: -2, marginRight: 6 }} />
-                  {starter.title}
+                  {t(starter.title)}
                 </div>
-                <div className="welcome__card-body">{starter.body}</div>
+                <div className="welcome__card-body">{t(starter.body)}</div>
               </button>
             ))}
           </div>
         ) : (
           <button className="btn btn--primary" style={{ marginTop: 20 }} onClick={onPick}>
             <FolderOpen size={14} />
-            Open project folder
+            {t('Open project folder')}
           </button>
         )}
 
         {error ? (
           <div className="welcome__error">
-            <strong>Pi could not start.</strong>
+            <strong>{t('Pi could not start.')}</strong>
             <br />
             {error}
           </div>
@@ -156,7 +148,7 @@ export function Welcome({ onPick }: { onPick: () => void }) {
         {recent.length > 0 ? (
           <div className="welcome__recent">
             <div className="welcome__recent-head">
-              <span>Recent conversations</span>
+              <span>{t('Recent conversations')}</span>
             </div>
             <div className="welcome__recent-list">
               {recent.map((session) => (
@@ -168,12 +160,12 @@ export function Welcome({ onPick }: { onPick: () => void }) {
                 >
                   <MessageSquare size={13} />
                   <span className="welcome__recent-title">
-                    {session.name || session.preview || 'Untitled session'}
+                    {session.name || session.preview || t('Untitled session')}
                   </span>
                   <span className="welcome__recent-meta">
-                    {formatRelativeTime(session.updatedAt)}
+                    {formatRelativeTime(session.updatedAt, settings.language)}
                     {session.messageCount
-                      ? ` · ${session.messageCount} msg${session.messageCount === 1 ? '' : 's'}`
+                      ? ` · ${session.messageCount} ${session.messageCount === 1 ? t('msg') : t('msgs')}`
                       : ''}
                   </span>
                 </button>
@@ -185,28 +177,29 @@ export function Welcome({ onPick }: { onPick: () => void }) {
         {status === 'starting' ? (
           <div className="welcome__pending">
             <span className="spinner" />
-            <span>Starting the Pi runtime…</span>
+            <span>{t('Starting the Pi runtime…')}</span>
           </div>
         ) : null}
 
         <div className="welcome__hints">
           <span>
-            <kbd>/</kbd> commands
+            <kbd>/</kbd> {t('commands')}
           </span>
           <span>
             <kbd>Ctrl</kbd>
-            <kbd>F</kbd> search chat
+            <kbd>Shift</kbd>
+            <kbd>P</kbd> {t('everything')}
           </span>
           <span>
             <kbd>Ctrl</kbd>
-            <kbd>K</kbd> focus composer
+            <kbd>K</kbd> {t('focus composer')}
           </span>
           <button
             className="ghost-btn"
             onClick={() => window.dispatchEvent(new CustomEvent('pi:show-shortcuts'))}
           >
             <Keyboard size={12} />
-            All shortcuts
+            {t('All shortcuts')}
           </button>
         </div>
       </div>

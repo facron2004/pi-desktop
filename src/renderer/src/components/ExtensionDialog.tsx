@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, MessageSquareText, TriangleAlert } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
+import { useDialogFocus } from '../hooks/useDialogFocus'
+import { useT } from '../lib/i18n'
 
 /**
  * Modal for the blocking half of Pi's extension UI sub-protocol.
@@ -12,6 +14,7 @@ export function ExtensionDialog() {
   const request = useAppStore((state) => state.uiRequest)
   const respondUi = useAppStore((state) => state.respondUi)
   const dismissUi = useAppStore((state) => state.dismissUi)
+  const t = useT()
 
   const [value, setValue] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
@@ -19,6 +22,8 @@ export function ExtensionDialog() {
   const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement>(null)
   const optionsRef = useRef<HTMLDivElement>(null)
   const declineRef = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocus(dialogRef, () => void dismissUi(), Boolean(request))
 
   useEffect(() => {
     if (!request) return
@@ -58,15 +63,15 @@ export function ExtensionDialog() {
 
   const timeoutNote = useMemo(() => {
     if (!request?.timeout) return null
-    if (remaining === null) return 'Pi resolves this on its own'
+    if (remaining === null) return t('Pi resolves this on its own')
     return remaining > 0
-      ? `Pi resolves this on its own in ${remaining}s`
-      : 'Pi is resolving this on its own'
-  }, [request, remaining])
+      ? `${t('Pi resolves this on its own in')} ${remaining}${t('seconds')}`
+      : t('Pi is resolving this on its own')
+  }, [request, remaining, t])
 
   if (!request) return null
 
-  const title = request.title ?? 'Pi is asking for input'
+  const title = t(request.title ?? 'Pi is asking for input')
 
   const submit = () => {
     if (request.method === 'select') {
@@ -83,10 +88,11 @@ export function ExtensionDialog() {
   return (
     <div className="modal-layer" onMouseDown={() => void dismissUi()}>
       <div
+        ref={dialogRef}
         className="modal modal--prompt"
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-labelledby="extension-dialog-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="modal__head modal__head--prompt">
@@ -98,7 +104,7 @@ export function ExtensionDialog() {
             )}
           </span>
           <div className="modal__headings">
-            <h2 className="modal__title">{title}</h2>
+            <h2 id="extension-dialog-title" className="modal__title">{title}</h2>
             {request.message ? <p className="modal__message">{request.message}</p> : null}
           </div>
         </header>
@@ -177,7 +183,7 @@ export function ExtensionDialog() {
         <footer className="modal__foot">
           <span className="modal__note">{timeoutNote ?? ''}</span>
           <button className="btn" onClick={() => void dismissUi()}>
-            Cancel
+            {t('Cancel')}
           </button>
           {request.method === 'confirm' ? (
             <>
@@ -186,10 +192,10 @@ export function ExtensionDialog() {
                 className="btn"
                 onClick={() => void respondUi({ confirmed: false })}
               >
-                No
+                {t('No')}
               </button>
               <button className="btn btn--primary" onClick={submit}>
-                Yes
+                {t('Yes')}
               </button>
             </>
           ) : (
@@ -198,7 +204,7 @@ export function ExtensionDialog() {
               onClick={submit}
               disabled={request.method === 'select' && !selected}
             >
-              Send
+              {t('Send')}
             </button>
           )}
         </footer>

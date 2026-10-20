@@ -10,6 +10,11 @@ import { initialBounds, wasMaximized, watchWindowState } from './window-state'
 
 const isMac = process.platform === 'darwin'
 
+// Keep screenshot runs from reading or writing the user's regular app data.
+if (process.env.PI_DESKTOP_SCREENSHOT && process.env.PI_DESKTOP_USER_DATA) {
+  app.setPath('userData', path.resolve(process.env.PI_DESKTOP_USER_DATA))
+}
+
 let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore | null = null
 let runtime: PiRuntime | null = null
@@ -23,15 +28,15 @@ function createWindow(): BrowserWindow {
     minWidth: 1080,
     minHeight: 680,
     show: false,
-    backgroundColor: '#0b0d10',
+    backgroundColor: '#181818',
     title: 'Pi Desktop',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac
       ? { trafficLightPosition: { x: 18, y: 18 } }
       : {
           titleBarOverlay: {
-            color: '#0b0d10',
-            symbolColor: '#8a93a3',
+            color: '#181818',
+            symbolColor: '#a7a7a7',
             height: 44
           }
         }),

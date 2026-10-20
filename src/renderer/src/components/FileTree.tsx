@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronRight, File, Folder, FolderOpen, Loader2, Search, X } from 'lucide-react'
 import type { FileEntry } from '@shared/types'
 import { fileTone } from '../lib/files'
 import { formatBytes } from '../lib/format'
 import { relativePath } from '../lib/path'
+import { useT } from '../lib/i18n'
 
 interface FileTreeProps {
   root: string
@@ -11,12 +12,16 @@ interface FileTreeProps {
 }
 
 export function FileTree({ root, onOpen }: FileTreeProps) {
+  const t = useT()
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [children, setChildren] = useState<Map<string, FileEntry[]>>(new Map())
   const [loading, setLoading] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const [matches, setMatches] = useState<FileEntry[] | null>(null)
   const [searching, setSearching] = useState(false)
+  const activeRoot = useRef(root)
+  const searchVersion = useRef(0)
+  activeRoot.current = root
 
   const load = useCallback(
     async (dir: string) => {
@@ -24,23 +29,34 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
       setLoading((current) => new Set(current).add(dir))
       try {
         const entries = await window.pi.fs.list(dir)
-        setChildren((current) => new Map(current).set(dir, entries))
+        if (activeRoot.current === root) setChildren((current) => new Map(current).set(dir, entries))
+      } catch {
+        // The folder may disappear while it is being read.
       } finally {
-        setLoading((current) => {
-          const next = new Set(current)
-          next.delete(dir)
-          return next
-        })
+        if (activeRoot.current === root) {
+          setLoading((current) => {
+            const next = new Set(current)
+            next.delete(dir)
+            return next
+          })
+        }
       }
     },
-    [children]
+    [children, root]
   )
 
   useEffect(() => {
+    setChildren(new Map())
+    setExpanded(new Set())
+    setLoading(new Set())
+    setMatches(null)
+    setQuery('')
+    setSearching(false)
+    searchVersion.current += 1
     if (!root) return
     void load(root)
     setExpanded((current) => new Set(current).add(root))
-  }, [root, load])
+  }, [root])
 
   // Development aid: prefill the search box so screenshots can show results.
   useEffect(() => {
@@ -51,6 +67,7 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
   // Search the whole project, not just the folders that happen to be open.
   useEffect(() => {
     const needle = query.trim()
+    const version = ++searchVersion.current
     if (!needle) {
       setMatches(null)
       setSearching(false)
@@ -62,20 +79,32 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
       window.pi.fs
         .search(needle)
         .then((found) => {
-          if (!cancelled) setMatches(found)
+          if (
+            !cancelled &&
+            activeRoot.current === root &&
+            searchVersion.current === version
+          ) setMatches(found)
         })
         .catch(() => {
-          if (!cancelled) setMatches([])
+          if (
+            !cancelled &&
+            activeRoot.current === root &&
+            searchVersion.current === version
+          ) setMatches([])
         })
         .finally(() => {
-          if (!cancelled) setSearching(false)
+          if (
+            !cancelled &&
+            activeRoot.current === root &&
+            searchVersion.current === version
+          ) setSearching(false)
         })
     }, 180)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [query])
+  }, [query, root])
 
   const toggle = (dir: string) => {
     setExpanded((current) => {
@@ -90,7 +119,7 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
   }
 
   if (!root) {
-    return <div className="drawer__empty">Open a project folder to browse its files.</div>
+    return <div className="drawer__empty">{t('Open a project folder to browse its files.')}</div>
   }
 
   return (
@@ -99,11 +128,11 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
         <Search size={12} />
         <input
           value={query}
-          placeholder="Find files"
+          placeholder={t('Find files')}
           onChange={(event) => setQuery(event.target.value)}
         />
         {query ? (
-          <button className="icon-btn" onClick={() => setQuery('')} title="Clear">
+          <button className="icon-btn" onClick={() => setQuery('')} title={t('Clear')}>
             <X size={12} />
           </button>
         ) : null}
@@ -113,11 +142,11 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
         <div className="tree__results">
           <div className="tree__results-head">
             {searching
-              ? 'Searching…'
-              : `${matches.length} ${matches.length === 1 ? 'file' : 'files'} match “${query.trim()}”`}
+              ? t('Searching…')
+              : `${matches.length} ${matches.length === 1 ? t('file') : t('files')} ${t('match')} “${query.trim()}”`}
           </div>
           {!searching && matches.length === 0 ? (
-            <div className="tree__empty">Nothing found</div>
+            <div className="tree__empty">{t('Nothing found')}</div>
           ) : null}
           {matches.map((entry) => {
             const relative = relativePath(root, entry.path)
@@ -176,6 +205,7 @@ function TreeLevel({
   onToggle,
   onOpen
 }: TreeLevelProps) {
+  const t = useT()
   const entries = children.get(dir)
   if (!entries) {
     return loading.has(dir) ? (
@@ -185,7 +215,7 @@ function TreeLevel({
     ) : null
   }
   if (entries.length === 0) {
-    return <div className="tree__empty" style={{ paddingLeft: depth * 12 + 18 }}>empty</div>
+    return <div className="tree__empty" style={{ paddingLeft: depth * 12 + 18 }}>{t('empty')}</div>
   }
 
   return (

@@ -16,12 +16,14 @@ import {
   X
 } from 'lucide-react'
 import { collectChanges } from '../lib/changes'
+import { formatChanges } from '../lib/diff-text'
 import { relativePath, resolveAgainst } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { diffStats } from '../lib/diff-fold'
 import { DiffView } from './DiffView'
 import { FileTree } from './FileTree'
 import { FileViewer } from './FileViewer'
+import { useT } from '../lib/i18n'
 
 type Tab = 'changes' | 'files'
 
@@ -50,6 +52,7 @@ export function InspectorPanel({
   const updateSettings = useAppStore((state) => state.updateSettings)
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const showToast = useAppStore((state) => state.showToast)
+  const t = useT()
   const diffSplit = settings.diffSplit === true
   const changes = useMemo(() => collectChanges(items), [items])
 
@@ -104,13 +107,33 @@ export function InspectorPanel({
       await navigator.clipboard.writeText(relativePaths.join('\n'))
       showToast(
         relativePaths.length === 1
-          ? 'The path was copied'
-          : `${relativePaths.length} paths were copied`
+          ? t('The path was copied')
+          : `${relativePaths.length} ${t('paths were copied')}`
       )
     } catch {
-      showToast('The clipboard is not available', 'error')
+      showToast(t('The clipboard is not available'), 'error')
     }
-  }, [relativePaths, showToast])
+  }, [relativePaths, showToast, t])
+
+  /**
+   * Take every change out of the app.
+   *
+   * The diff of a review or the body of a commit is written somewhere else,
+   * and picking it out of the panel line by line is a waste of a minute.
+   */
+  const copyDiff = useCallback(async () => {
+    const text = formatChanges(changes, relativePaths)
+    if (!text.trim()) {
+      showToast(t('There is no diff to copy yet'), 'warning')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast(t('The diff was copied'))
+    } catch {
+      showToast(t('The clipboard is not available'), 'error')
+    }
+  }, [changes, relativePaths, showToast, t])
 
   /**
    * Hand the list of changed files to the agent.
@@ -130,11 +153,13 @@ export function InspectorPanel({
       })
       .join('\n')
     insertIntoComposer(
-      `Review the changes you just made to these files and tell me what you changed and why:\n${list}`,
+      settings.language === 'zh-CN'
+        ? `请检查你刚才对这些文件所做的修改，并说明修改内容和原因：\n${list}`
+        : `Review the changes you just made to these files and tell me what you changed and why:\n${list}`,
       'append'
     )
-    showToast('The file list is in the composer')
-  }, [changes, stats, relativePaths, insertIntoComposer, showToast])
+    showToast(t('The file list is in the composer'))
+  }, [changes, stats, relativePaths, insertIntoComposer, showToast, settings.language, t])
 
   // The open file lives in the app shell, so a diff in the thread can send
   // the reader to a line of a file.
@@ -189,12 +214,12 @@ export function InspectorPanel({
   )
 
   return (
-    <aside className="drawer" aria-label="Project inspector">
+    <aside className="drawer" aria-label={t('Project inspector')}>
       <div
         className="drawer__resizer"
         role="separator"
         aria-orientation="vertical"
-        aria-label="Resize the panel"
+        aria-label={t('Resize the panel')}
         onPointerDown={startResize}
       />
       <header className="drawer__head">
@@ -208,7 +233,7 @@ export function InspectorPanel({
             }}
           >
             <FileDiff size={13} />
-            Changes
+            {t('Changes')}
             {changes.length > 0 ? <span className="drawer__count">{changes.length}</span> : null}
           </button>
           <button
@@ -220,35 +245,35 @@ export function InspectorPanel({
             }}
           >
             <Files size={13} />
-            Files
+            {t('Files')}
           </button>
         </div>
         <span style={{ flex: 1 }} />
         {changes.length > 0 && (totals.added || totals.removed) ? (
-          <span className="drawer__stats" title="Lines added and removed over all files">
+          <span className="drawer__stats" title={t('Lines added and removed over all files')}>
             {totals.added ? <span data-kind="add">+{totals.added}</span> : null}
             {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
           </span>
         ) : null}
         {tab === 'changes' && changes.length > 0 ? (
-          <div className="segmented segmented--tight" title="Diff layout">
+          <div className="segmented segmented--tight" title={t('Diff layout')}>
             <button
               data-active={!diffSplit}
               onClick={() => void updateSettings({ diffSplit: false })}
-              title="Unified diff"
+              title={t('Unified diff')}
             >
               <Rows3 size={12} />
             </button>
             <button
               data-active={diffSplit}
               onClick={() => void updateSettings({ diffSplit: true })}
-              title="Side-by-side diff"
+              title={t('Side-by-side diff')}
             >
               <Columns2 size={12} />
             </button>
           </div>
         ) : null}
-        <button className="icon-btn" onClick={onClose} title="Close">
+        <button className="icon-btn" onClick={onClose} title={t('Close')}>
           <X size={15} />
         </button>
       </header>
@@ -263,9 +288,9 @@ export function InspectorPanel({
         <div className="drawer__pane" data-active={!openFile && tab !== 'files'}>
           {changes.length === 0 ? (
             <div className="drawer__empty">
-              No files have been changed yet.
+              {t('No files have been changed yet.')}
               <br />
-              Edits and new files show up here as Pi works.
+              {t('Edits and new files show up here as Pi works.')}
             </div>
           ) : (
             <div className="drawer__body">
@@ -275,14 +300,14 @@ export function InspectorPanel({
                     <Search size={12} />
                     <input
                       value={fileFilter}
-                      placeholder="Filter the changed files"
+                      placeholder={t('Filter the changed files')}
                       onChange={(event) => setFileFilter(event.target.value)}
                     />
                     {fileFilter ? (
                       <button
                         className="icon-btn"
                         onClick={() => setFileFilter('')}
-                        title="Clear the filter"
+                        title={t('Clear the filter')}
                       >
                         <X size={11} />
                       </button>
@@ -293,25 +318,33 @@ export function InspectorPanel({
                 <div className="drawer__actions">
                   <button
                     className="ghost-btn"
+                    onClick={() => void copyDiff()}
+                    title={t('Copy the diff of every changed file')}
+                  >
+                    <FileDiff size={12} />
+                    {t('Copy the diff')}
+                  </button>
+                  <button
+                    className="ghost-btn"
                     onClick={() => void copyPaths()}
-                    title="Copy the paths of the changed files"
+                    title={t('Copy the paths of the changed files')}
                   >
                     <Copy size={12} />
-                    Copy paths
+                    {t('Copy paths')}
                   </button>
                   <button
                     className="ghost-btn"
                     onClick={askAboutChanges}
-                    title="Put the list of changed files in the composer"
+                    title={t('Put the list of changed files in the composer')}
                   >
                     <MessageSquare size={12} />
-                    Ask Pi
+                    {t('Ask Pi')}
                   </button>
                   <span style={{ flex: 1 }} />
                   <button
                     className="icon-btn"
                     onClick={() => setExpandAll((value) => value !== true)}
-                    title={expandAll === true ? 'Fold the unchanged lines' : 'Show the unchanged lines'}
+                    title={expandAll === true ? t('Fold the unchanged lines') : t('Show the unchanged lines')}
                   >
                     {expandAll === true ? (
                       <ChevronsDownUp size={13} />
@@ -323,7 +356,7 @@ export function InspectorPanel({
               </div>
 
               {entries.length === 0 ? (
-                <div className="drawer__empty">No changed file matches “{fileFilter}”.</div>
+                <div className="drawer__empty">{t('No changed file matches')} “{fileFilter}”.</div>
               ) : null}
 
               {entries.map(({ change, stat: one, path }) => {
@@ -335,7 +368,7 @@ export function InspectorPanel({
                       </span>
                       <button
                         className="change__path"
-                        title={`Open ${change.path}`}
+                        title={`${t('Open')} ${change.path}`}
                         onClick={() => setOpenFile({ path: change.path })}
                       >
                         {path}
@@ -347,11 +380,11 @@ export function InspectorPanel({
                         </span>
                       ) : null}
                       {change.edits > 1 ? (
-                        <span className="change__badge">{change.edits} edits</span>
+                        <span className="change__badge">{change.edits} {t('edits')}</span>
                       ) : null}
                       <button
                         className="change__reveal"
-                        title="Reveal in the file manager"
+                        title={t('Reveal in the file manager')}
                         onClick={() => void window.pi.fs.reveal(change.path)}
                       >
                         <ExternalLink size={12} />
@@ -373,7 +406,7 @@ export function InspectorPanel({
                     ) : null}
 
                     {!change.diffs.length && !change.content ? (
-                      <pre className="tool__pre">Written to disk.</pre>
+                      <pre className="tool__pre">{t('Written to disk.')}</pre>
                     ) : null}
                   </section>
                 )
@@ -388,7 +421,7 @@ export function InspectorPanel({
               <div className="viewer__back">
                 <button className="ghost-btn" onClick={() => setOpenFile(null)}>
                   <ArrowLeft size={12} />
-                  Back
+                  {t('Back')}
                 </button>
               </div>
               <FileViewer file={openFile.path} root={workspace?.path} line={openFile.line} />

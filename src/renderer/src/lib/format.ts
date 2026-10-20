@@ -1,10 +1,11 @@
+import type { AppLanguage } from '@shared/types'
+
 export function formatTokens(value: number | undefined | null): string {
   if (value === undefined || value === null || Number.isNaN(value)) return '—'
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`
   return String(value)
 }
-
 export function formatCost(value: number | undefined | null): string {
   if (value === undefined || value === null || Number.isNaN(value)) return '—'
   if (value === 0) return '$0.00'
@@ -20,21 +21,24 @@ export function formatClock(timestamp: number | undefined): string {
   })
 }
 
-export function formatRelativeTime(timestamp: number | undefined): string {
+export function formatRelativeTime(timestamp: number | undefined, language: AppLanguage = 'en'): string {
   if (!timestamp) return ''
   const delta = Date.now() - timestamp
   const minutes = Math.floor(delta / 60_000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
+  if (minutes < 1) return language === 'zh-CN' ? '刚刚' : 'just now'
+  if (minutes < 60) return language === 'zh-CN' ? `${minutes} 分钟前` : `${minutes}m ago`
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
+  if (hours < 24) return language === 'zh-CN' ? `${hours} 小时前` : `${hours}h ago`
   const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}d ago`
-  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  if (days < 7) return language === 'zh-CN' ? `${days} 天前` : `${days}d ago`
+  return new Date(timestamp).toLocaleDateString(language === 'zh-CN' ? 'zh-CN' : undefined, {
+    month: 'short',
+    day: 'numeric'
+  })
 }
 
 /** A coarse bucket for grouping conversations by when they happened. */
-export function formatDayBucket(timestamp: number | undefined): string {
+export function formatDayBucket(timestamp: number | undefined, language: AppLanguage = 'en'): string {
   if (!timestamp) return 'Earlier'
   const now = new Date()
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
@@ -44,7 +48,10 @@ export function formatDayBucket(timestamp: number | undefined): string {
   if (age < day * 2) return 'Yesterday'
   if (age < day * 7) return 'Earlier this week'
   if (age < day * 30) return 'Earlier this month'
-  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+  return new Date(timestamp).toLocaleDateString(language === 'zh-CN' ? 'zh-CN' : undefined, {
+    month: 'short',
+    year: 'numeric'
+  })
 }
 
 export function formatDuration(ms: number | undefined): string {

@@ -5,6 +5,7 @@ import {
   type DiffBlock,
   type DiffRow
 } from '../lib/diff-fold'
+import { useT } from '../lib/i18n'
 
 /** One line of a side-by-side diff. Either side may be empty. */
 export interface SplitRow {
@@ -85,15 +86,16 @@ function GapButton({
   open: boolean
   onToggle: () => void
 }) {
+  const t = useT()
   return (
     <button
       className="diff__gap"
       data-open={open}
       onClick={onToggle}
-      title={open ? 'Hide these lines' : `Show ${count} unchanged lines`}
+      title={open ? t('Hide these lines') : `${t('Show')} ${count} ${t('unchanged lines')}`}
     >
       <span className="diff__gap-label">
-        {open ? '−' : '⋯'} {count} unchanged {count === 1 ? 'line' : 'lines'}
+        {open ? '−' : '⋯'} {count} {t('unchanged')} {count === 1 ? t('line') : t('lines')}
       </span>
     </button>
   )
@@ -116,6 +118,7 @@ export function DiffView({
   onExpandAllChange?: (value: boolean | undefined) => void
 }) {
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
+  const t = useT()
 
   const folded = useMemo(
     () => diffs.map((block, blockIndex) => foldDiff(block.rows, CONTEXT_LINES, String(blockIndex))),
@@ -182,7 +185,7 @@ export function DiffView({
       <button
         className="diff__gutter diff__gutter--link"
         onClick={() => onOpenLine(line)}
-        title={`Open the file at line ${line}`}
+        title={`${t('Open the file at line')} ${line}`}
       >
         {line}
       </button>

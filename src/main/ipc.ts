@@ -164,8 +164,8 @@ export function registerIpc(context: IpcContext): void {
       // Keep the native window controls in step with the app chrome.
       window.setTitleBarOverlay(
         theme === 'light'
-          ? { color: '#f6f7f9', symbolColor: '#5c6573', height: 44 }
-          : { color: '#0b0d10', symbolColor: '#8a93a3', height: 44 }
+          ? { color: '#ffffff', symbolColor: '#5e5e5e', height: 44 }
+          : { color: '#181818', symbolColor: '#a7a7a7', height: 44 }
       )
     } catch {
       /* the platform may not support a title bar overlay */

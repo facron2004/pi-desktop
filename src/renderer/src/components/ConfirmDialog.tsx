@@ -1,4 +1,7 @@
 import { AlertTriangle } from 'lucide-react'
+import { useRef } from 'react'
+import { useDialogFocus } from '../hooks/useDialogFocus'
+import { useT } from '../lib/i18n'
 
 interface ConfirmDialogProps {
   title: string
@@ -17,11 +20,22 @@ export function ConfirmDialog({
   onConfirm,
   onCancel
 }: ConfirmDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const t = useT()
+  useDialogFocus(dialogRef, onCancel)
   return (
     <div className="modal-layer" onMouseDown={onCancel}>
-      <div className="modal modal--narrow" onMouseDown={(event) => event.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="modal modal--narrow"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <div className="modal__head">
-          <h2 className="modal__title">{title}</h2>
+          <h2 id="confirm-title" className="modal__title">{title}</h2>
         </div>
 
         <div className="modal__body">
@@ -35,13 +49,13 @@ export function ConfirmDialog({
 
         <div className="modal__foot">
           <button className="btn" onClick={onCancel}>
-            Cancel
+            {t('Cancel')}
           </button>
           <button
             className={tone === 'danger' ? 'btn btn--danger' : 'btn btn--primary'}
             onClick={onConfirm}
           >
-            {confirmLabel}
+            {t(confirmLabel)}
           </button>
         </div>
       </div>

@@ -18,11 +18,13 @@ import type { BashItem, ToolItem } from '../lib/thread'
 import { describeTool, editPairs, type ToolTone } from '../lib/tools'
 import { formatDuration } from '../lib/format'
 import { buildDiff } from '../lib/diff-fold'
+import { formatDiff } from '../lib/diff-text'
 import { languageOf } from '../lib/files'
 import { basename, relativePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { CodeSnippet } from './CodeSnippet'
 import { DiffView } from './DiffView'
+import { useT } from '../lib/i18n'
 
 export const TOOL_ICONS: Record<ToolTone | 'error', typeof FileText> = {
   read: FileText,
@@ -46,12 +48,13 @@ const RESULT_PREVIEW = 1200
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false)
   const showToast = useAppStore((state) => state.showToast)
+  const t = useT()
   if (!text) return null
   return (
     <button
       className="tool__reuse-icon"
-      title={label}
-      aria-label={label}
+      title={t(label)}
+      aria-label={t(label)}
       onClick={() => {
         void navigator.clipboard
           .writeText(text)
@@ -60,7 +63,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
             window.setTimeout(() => setCopied(false), 1600)
           })
           .catch(() => {
-            showToast('The clipboard is not available', 'error')
+            showToast(t('The clipboard is not available'), 'error')
           })
       }}
     >
@@ -78,6 +81,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 export function BashCard({ item }: { item: BashItem }) {
   const [open, setOpen] = useState(false)
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
+  const t = useT()
   const failed = item.exitCode !== undefined && item.exitCode !== 0
 
   return (
@@ -88,26 +92,26 @@ export function BashCard({ item }: { item: BashItem }) {
             <SquareTerminal size={12} strokeWidth={2.2} />
           </span>
           <span className="tool__name">bash</span>
-          <span className="tool__summary">{item.command || 'running…'}</span>
+          <span className="tool__summary">{item.command || t('running…')}</span>
           {item.exitCode !== undefined ? (
-            <span className="tool__status">{failed ? `exit ${item.exitCode}` : 'ok'}</span>
+            <span className="tool__status">{failed ? `${t('exit')} ${item.exitCode}` : t('ok')}</span>
           ) : null}
         </button>
         {item.command ? (
           <button
             className="tool__reuse-icon"
-            title="Reuse this command"
-            aria-label="Reuse this command"
+            title={t('Reuse this command')}
+            aria-label={t('Reuse this command')}
             onClick={() => insertIntoComposer(item.command)}
           >
             <CornerDownLeft size={12} />
           </button>
         ) : null}
-        <CopyButton text={item.output} label="Copy the output" />
+        <CopyButton text={item.output} label={t('Copy the output')} />
         <button
           className="tool__caret"
           onClick={() => setOpen((value) => !value)}
-          aria-label={open ? 'Collapse' : 'Expand'}
+          aria-label={open ? t('Collapse') : t('Expand')}
         >
           <ChevronRight size={13} className="caret" data-open={open} />
         </button>
@@ -118,7 +122,7 @@ export function BashCard({ item }: { item: BashItem }) {
           {item.output ? (
             <pre className={`tool__pre${failed ? ' tool__error' : ''}`}>{item.output}</pre>
           ) : (
-            <pre className="tool__pre">No output.</pre>
+            <pre className="tool__pre">{t('No output.')}</pre>
           )}
         </div>
       ) : null}
@@ -133,6 +137,7 @@ export function ToolCard({ item }: { item: ToolItem }) {
   const diffSplit = useAppStore((state) => state.settings.diffSplit === true)
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const workspace = useAppStore((state) => state.workspace)
+  const t = useT()
   const descriptor = describeTool(item.toolName)
   const tone = item.status === 'error' ? 'error' : descriptor.tone
   const Icon = TOOL_ICONS[tone]
@@ -146,6 +151,20 @@ export function ToolCard({ item }: { item: ToolItem }) {
   const result = item.result ?? ''
   const truncated = result.length > RESULT_PREVIEW
   const visibleResult = truncated && !full ? result.slice(0, RESULT_PREVIEW) : result
+
+  /**
+   * What the copy button takes.
+   *
+   * The card shows the diff of an edit and the written file of a write, so
+   * that is what leaves the app — anything else would copy a line of text
+   * that is nowhere on the screen.
+   */
+  const copyable =
+    item.toolName === 'edit' && diffs.length > 0
+      ? { label: 'Copy the diff', text: formatDiff(diffs) }
+      : item.toolName === 'write'
+        ? { label: 'Copy the file', text: String(item.args?.content ?? '') }
+        : { label: 'Copy the result', text: result }
 
   // A command or a file path can be handed back to the composer, so the
   // user can build on it without copying it by hand.
@@ -203,8 +222,8 @@ export function ToolCard({ item }: { item: ToolItem }) {
         {viewedFile ? (
           <button
             className="tool__reuse-icon"
-            title="Open this file"
-            aria-label="Open this file"
+            title={t('Open this file')}
+            aria-label={t('Open this file')}
             onClick={() =>
               window.dispatchEvent(
                 new CustomEvent<InspectorRequest>('pi:open-inspector', {
@@ -220,20 +239,20 @@ export function ToolCard({ item }: { item: ToolItem }) {
         {reuse ? (
           <button
             className="tool__reuse-icon"
-            title={reuse.label}
-            aria-label={reuse.label}
+            title={t(reuse.label)}
+            aria-label={t(reuse.label)}
             onClick={() => insertIntoComposer(reuse.text)}
           >
             <CornerDownLeft size={12} />
           </button>
         ) : null}
 
-        <CopyButton text={result} label="Copy the result" />
+        <CopyButton text={copyable.text} label={t(copyable.label)} />
 
         <button
           className="tool__caret"
           onClick={() => setOpen((value) => !value)}
-          aria-label={open ? 'Collapse' : 'Expand'}
+          aria-label={open ? t('Collapse') : t('Expand')}
         >
           <ChevronRight size={13} className="caret" data-open={open} />
         </button>
@@ -274,8 +293,8 @@ export function ToolCard({ item }: { item: ToolItem }) {
           {truncated ? (
             <button className="tool__more" onClick={() => setFull((value) => !value)}>
               {full
-                ? 'Show less'
-                : `Show ${(result.length - RESULT_PREVIEW).toLocaleString()} more characters`}
+                ? t('Show less')
+                : `${t('Show')} ${(result.length - RESULT_PREVIEW).toLocaleString()} ${t('more characters')}`}
             </button>
           ) : null}
 

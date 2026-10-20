@@ -4,8 +4,10 @@ import { useAppStore, type QueueKind } from '../store/useAppStore'
 import type { FileEntry, PiCommand } from '@shared/types'
 import { filterCommands } from '../lib/commands'
 import { relativePath } from '../lib/path'
+import { useT } from '../lib/i18n'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
+import { ModelControls } from './TopBar'
 
 interface SlashMatch {
   query: string
@@ -58,6 +60,7 @@ export function Composer() {
   const composerInsert = useAppStore((state) => state.composerInsert)
   const error = useAppStore((state) => state.error)
   const dismissError = useAppStore((state) => state.dismissError)
+  const t = useT()
   const toast = useAppStore((state) => state.toast)
 
   const [text, setText] = useState('')
@@ -73,6 +76,7 @@ export function Composer() {
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const mentionListRef = useRef<HTMLDivElement>(null)
 
   const ready = status.phase === 'ready'
 
@@ -156,6 +160,7 @@ export function Composer() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('[aria-modal="true"]')) return
       if (event.key !== 'Escape' || !isStreaming) return
       // The palette uses Escape to close itself and handles the key before
       // it reaches the window, so the run is left alone.
@@ -172,26 +177,39 @@ export function Composer() {
     setPaletteIndex((index) => Math.min(index, Math.max(0, matching.length - 1)))
   }, [matching.length])
 
+  useEffect(() => {
+    mentionListRef.current
+      ?.querySelector<HTMLElement>(`[data-active='true']`)
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [mentionIndex, mentionFiles])
+
   // The files that match the `@` in the composer. The search waits a moment,
   // so a fast typist does not walk the project over and over.
   useEffect(() => {
-    if (!mention) {
+    if (!mention || !workspace?.path) {
       setMentionFiles([])
       return
     }
+    setMentionFiles([])
+    setMentionIndex(0)
     let cancelled = false
     const timer = window.setTimeout(() => {
-      void window.pi.fs.search(mention.query, 12).then((files) => {
-        if (cancelled) return
-        setMentionFiles(files)
-        setMentionIndex(0)
-      })
+      void window.pi.fs
+        .search(mention.query, 12)
+        .then((files) => {
+          if (cancelled) return
+          setMentionFiles(files)
+          setMentionIndex(0)
+        })
+        .catch(() => {
+          if (!cancelled) setMentionFiles([])
+        })
     }, 110)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [mention])
+  }, [mention, workspace?.path])
 
   const closePalette = useCallback(() => setSlash(null), [])
 
@@ -258,6 +276,7 @@ export function Composer() {
   }, [text, images, kind, send, closePalette])
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
     // The file list comes first: an `@` in the text means the user is
     // pointing at a file, not at a command.
     if (mention) {
@@ -308,7 +327,7 @@ export function Composer() {
       }
     }
 
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       submit()
       return
@@ -382,6 +401,7 @@ export function Composer() {
 
         {mention ? (
           <FileMention
+            listRef={mentionListRef}
             files={mentionFiles}
             root={workspace?.path}
             activeIndex={mentionIndex}
@@ -396,13 +416,13 @@ export function Composer() {
           {error ? (
             <div className="composer__notice" data-level="error" role="alert">
               <span>{error}</span>
-              <button className="icon-btn" onClick={dismissError} title="Dismiss">
+              <button className="icon-btn" onClick={dismissError} title={t('Dismiss')}>
                 <X size={12} />
               </button>
             </div>
           ) : toast ? (
             <div className="composer__notice" data-level={toast.level}>
-              {toast.text}
+              {t(toast.text)}
             </div>
           ) : null}
 
@@ -411,7 +431,7 @@ export function Composer() {
               {pendingQueue.map((entry, index) => (
                 <div className="composer__queue-item" data-kind={entry.kind} key={index}>
                   <span className="composer__queue-tag">
-                    {entry.kind === 'steer' ? 'Steer' : 'Queue'}
+                    {entry.kind === 'steer' ? t('Steer') : t('Queue')}
                   </span>
                   <span className="composer__queue-text">{entry.text}</span>
                 </div>
@@ -450,8 +470,8 @@ export function Composer() {
             disabled={!ready}
             placeholder={
               ready
-                ? `Ask Pi to work in ${workspace?.name ?? 'this project'} — or type / for commands`
-                : 'Open a project folder to start'
+                ? t('Ask Pi anything, @ to add files, / for commands')
+                : t('Open a project folder to start')
             }
             onChange={(event) => {
               const value = event.target.value
@@ -487,10 +507,10 @@ export function Composer() {
             }}
           />
 
-          <div className="composer__bar">
+          <div className="composer__bar" data-streaming={isStreaming}>
             <button
               className="icon-btn"
-              title="Attach an image"
+              title={t('Attach an image')}
               disabled={!ready}
               onClick={() => fileRef.current?.click()}
             >
@@ -498,7 +518,7 @@ export function Composer() {
             </button>
             <button
               className="icon-btn"
-              title="Browse commands"
+              title={t('Browse commands')}
               disabled={!ready || commands.length === 0}
               onClick={openPaletteManually}
             >
@@ -516,28 +536,34 @@ export function Composer() {
               }}
             />
 
+            {ready ? (
+              <div className="composer__models">
+                <ModelControls />
+              </div>
+            ) : null}
+
             <div className="composer__hint">
               {isStreaming ? (
-                <div className="segmented" title="How the next message is delivered">
+                <div className="segmented" title={t('How the next message is delivered')}>
                   <button
                     data-active={kind === 'steer'}
                     onClick={() => setKind('steer')}
-                    title="Deliver after the current tool calls finish"
+                    title={t('Deliver after the current tool calls finish')}
                   >
-                    Steer
+                    {t('Steer')}
                   </button>
                   <button
                     data-active={kind === 'followUp'}
                     onClick={() => setKind('followUp')}
-                    title="Deliver when the current run is done"
+                    title={t('Deliver when the current run is done')}
                   >
-                    Queue
+                    {t('Queue')}
                   </button>
                 </div>
               ) : (
                 <span>
-                  <kbd>Enter</kbd> to send · <kbd>↑</kbd> for history · type <kbd>/</kbd> for
-                  commands · <kbd>@</kbd> for a file
+                  <kbd>Enter</kbd> {t('to send')} · <kbd>↑</kbd> {t('for history')} · {t('type')}{' '}
+                  <kbd>/</kbd> {t('for commands')} · <kbd>@</kbd> {t('for a file')}
                 </span>
               )}
             </div>
@@ -547,33 +573,34 @@ export function Composer() {
                 <button
                   className="btn btn--danger"
                   onClick={() => void stop()}
-                  title="Stop the current run (Esc)"
+                  title={t('Stop the current run (Esc)')}
                 >
                   <Square size={12} fill="currentColor" />
-                  Stop
+                  {t('Stop')}
                 </button>
                 <button
-                  className="btn btn--primary"
+                  className="btn btn--primary composer__send"
                   onClick={submit}
                   disabled={!text.trim() && !images.length}
+                  aria-label={t('Send message')}
                   title={
                     kind === 'steer'
-                      ? 'Send now — Pi applies it after the current tool calls finish'
-                      : 'Queue — Pi applies it when the current run is done'
+                      ? t('Send now — Pi applies it after the current tool calls finish')
+                      : t('Queue — Pi applies it when the current run is done')
                   }
                 >
                   <ArrowUp size={14} />
-                  Send
                 </button>
               </>
             ) : (
               <button
-                className="btn btn--primary"
+                className="btn btn--primary composer__send"
                 onClick={submit}
                 disabled={!ready || (!text.trim() && !images.length)}
+                aria-label={t('Send message')}
+                title={t('Send message')}
               >
                 <ArrowUp size={14} />
-                Send
               </button>
             )}
           </div>

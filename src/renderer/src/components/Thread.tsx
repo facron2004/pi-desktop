@@ -13,6 +13,7 @@ import { SearchContext } from '../lib/search-context'
 import { AssistantImage, AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
 import { ToolGroup } from './ToolGroup'
+import { useT } from '../lib/i18n'
 
 interface Turn {
   id: string
@@ -95,6 +96,7 @@ export function Thread() {
   const models = useAppStore((state) => state.models)
   const forkTargets = useAppStore((state) => state.forkTargets)
   const forkFrom = useAppStore((state) => state.forkFrom)
+  const t = useT()
   const forking = useAppStore((state) => state.forking)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
@@ -107,7 +109,11 @@ export function Thread() {
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   const turns = useMemo(() => buildTurns(items), [items])
-  const chunks = useMemo(() => searchableChunks(turns, workspace?.path), [turns, workspace?.path])
+  const hasSearchQuery = searchOpen && Boolean(query.trim())
+  const chunks = useMemo(
+    () => (hasSearchQuery ? searchableChunks(turns, workspace?.path) : []),
+    [hasSearchQuery, turns, workspace?.path]
+  )
   const hits: SearchHit[] = useMemo(() => findMatches(chunks, query), [chunks, query])
   const forkByUserId = useMemo(() => pairForkTargets(items, forkTargets), [items, forkTargets])
 
@@ -155,6 +161,7 @@ export function Thread() {
   // `Ctrl+F` searches the conversation, the way every other editor does.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('[aria-modal="true"]')) return
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
         event.preventDefault()
         setSearchOpen(true)
@@ -238,6 +245,7 @@ export function Thread() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (document.querySelector('[aria-modal="true"]')) return
       if (!event.altKey) return
       if (event.key === 'ArrowUp') {
         event.preventDefault()
@@ -269,7 +277,7 @@ export function Thread() {
             <input
               ref={searchInputRef}
               value={query}
-              placeholder="Search this conversation"
+              placeholder={t('Search this conversation')}
               autoFocus
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
@@ -287,13 +295,13 @@ export function Thread() {
             <span className="thread-search__count">
               {query.trim()
                 ? hits.length
-                  ? `${hitIndex + 1} of ${hits.length}`
-                  : 'no results'
+                  ? `${hitIndex + 1} ${t('of')} ${hits.length}`
+                  : t('no results')
                 : ''}
             </span>
             <button
               className="icon-btn"
-              title="Close search"
+              title={t('Close search')}
               onClick={() => {
                 setSearchOpen(false)
                 setQuery('')
@@ -374,7 +382,7 @@ export function Thread() {
                 <div className="assistant">
                   <div className="assistant__avatar">π</div>
                   <div className="assistant__body">
-                    {renderTurn(turn, toolMap, models)}
+                    {renderTurn(turn, toolMap, models, t)}
 
                     {turn.bash.map((item) => (
                       <BashCard key={item.id} item={item} />
@@ -391,7 +399,7 @@ export function Thread() {
                     {isStreaming && turn === turns[turns.length - 1] ? (
                       <div className="assistant__footer">
                         <span className="spinner" />
-                        <span>Working…</span>
+                        <span>{t('Working…')}</span>
                         {activity ? <span className="assistant__activity">{activity}</span> : null}
                         {runStartedAt ? <Elapsed since={runStartedAt} /> : null}
                       </div>
@@ -402,10 +410,10 @@ export function Thread() {
                         <button
                           className="ghost-btn"
                           onClick={() => copy(turn.id, assistantText)}
-                          title="Copy the assistant's answer"
+                          title={t("Copy the assistant's answer")}
                         >
                           {copied === turn.id ? <Check size={12} /> : <Copy size={12} />}
-                          {copied === turn.id ? 'Copied' : 'Copy'}
+                          {copied === turn.id ? t('Copied') : t('Copy')}
                         </button>
                       </div>
                     ) : null}
@@ -423,7 +431,7 @@ export function Thread() {
             <div className="assistant__body">
               <div className="assistant__footer">
                 <span className="spinner" />
-                <span>Thinking…</span>
+                <span>{t('Thinking…')}</span>
               </div>
             </div>
           </div>
@@ -432,7 +440,7 @@ export function Thread() {
 
       {!atBottom ? (
         <div className="scroll-bottom-wrap">
-          <button className="scroll-bottom" onClick={scrollToBottom} title="Scroll to the latest">
+          <button className="scroll-bottom" onClick={scrollToBottom} title={t('Scroll to the latest')}>
             <ArrowDown size={15} />
           </button>
         </div>
@@ -444,6 +452,7 @@ export function Thread() {
 /** A counter that ticks once a second while the agent is working. */
 function Elapsed({ since }: { since: number }) {
   const [now, setNow] = useState(() => Date.now())
+  const t = useT()
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
@@ -451,8 +460,8 @@ function Elapsed({ since }: { since: number }) {
   }, [])
 
   const seconds = Math.max(0, Math.round((now - since) / 1000))
-  if (seconds < 60) return <span>{seconds}s</span>
-  return <span>{Math.floor(seconds / 60)}m {seconds % 60}s</span>
+  if (seconds < 60) return <span>{seconds}{t('seconds-short')}</span>
+  return <span>{Math.floor(seconds / 60)}{t('minutes-short')} {seconds % 60}{t('seconds-short')}</span>
 }
 
 /**
@@ -463,7 +472,12 @@ function Elapsed({ since }: { since: number }) {
  * card. The agent usually reads one file after the other, and each of those
  * is a reply of its own — grouping inside a reply would not catch them.
  */
-function renderTurn(turn: Turn, toolMap: Map<string, ToolItem>, models: ModelInfo[]): ReactNode[] {
+function renderTurn(
+  turn: Turn,
+  toolMap: Map<string, ToolItem>,
+  models: ModelInfo[],
+  t: (text: string) => string
+): ReactNode[] {
   const nodes: ReactNode[] = []
   let group: ToolItem[] = []
   let lastAssistant: AssistantItem | undefined
@@ -534,14 +548,14 @@ function renderTurn(turn: Turn, toolMap: Map<string, ToolItem>, models: ModelInf
         {lastAssistant.model ? <span>{modelName(models, lastAssistant.model)}</span> : null}
         {lastAssistant.usage ? (
           <>
-            <span>{formatTokens(lastAssistant.usage.totalTokens)} tokens</span>
+            <span>{formatTokens(lastAssistant.usage.totalTokens)} {t('tokens')}</span>
             {lastAssistant.usage.cost ? (
               <span>{formatCost(lastAssistant.usage.cost.total)}</span>
             ) : null}
           </>
         ) : null}
         {lastAssistant.stopReason === 'error' ? (
-          <span style={{ color: 'var(--red)' }}>{lastAssistant.error ?? 'error'}</span>
+          <span style={{ color: 'var(--red)' }}>{lastAssistant.error ?? t('error')}</span>
         ) : null}
         <span>{formatClock(lastAssistant.timestamp)}</span>
       </div>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Minimize2 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
+import { useT } from '../lib/i18n'
 import { formatCost, formatTokens } from '../lib/format'
 import { Switch } from './Switch'
 
@@ -14,6 +15,7 @@ export function ContextPanel({ close }: { close: () => void }) {
   const stats = useAppStore((state) => state.stats)
   const piState = useAppStore((state) => state.piState)
   const compact = useAppStore((state) => state.compact)
+  const t = useT()
   const setAutoCompaction = useAppStore((state) => state.setAutoCompaction)
   const setSteeringMode = useAppStore((state) => state.setSteeringMode)
   const setFollowUpMode = useAppStore((state) => state.setFollowUpMode)
@@ -40,10 +42,10 @@ export function ContextPanel({ close }: { close: () => void }) {
 
   return (
     <div className="ctx">
-      <div className="popover__label">Context window</div>
+      <div className="popover__label">{t('Context window')}</div>
       <div className="ctx__headline">
         <span className="ctx__big">{formatTokens(context?.tokens ?? 0)}</span>
-        <span className="ctx__muted"> of {formatTokens(context?.contextWindow)}</span>
+        <span className="ctx__muted"> {t('of')} {formatTokens(context?.contextWindow)}</span>
         {context?.percent !== null && context?.percent !== undefined ? (
           <span className="ctx__muted">· {Math.round(context.percent)}%</span>
         ) : null}
@@ -56,85 +58,85 @@ export function ContextPanel({ close }: { close: () => void }) {
         />
       </span>
 
-      <div className="popover__label ctx__section">Tokens</div>
+      <div className="popover__label ctx__section">{t('Tokens')}</div>
       <div className="ctx__rows">
         <div className="ctx__row">
-          <span>Input</span>
+          <span>{t('Input')}</span>
           <span>{formatTokens(tokens?.input)}</span>
         </div>
         <div className="ctx__row">
-          <span>Output</span>
+          <span>{t('Output')}</span>
           <span>{formatTokens(tokens?.output)}</span>
         </div>
         <div className="ctx__row">
-          <span>Cache read</span>
+          <span>{t('Cache read')}</span>
           <span>{formatTokens(tokens?.cacheRead)}</span>
         </div>
         <div className="ctx__row">
-          <span>Cache write</span>
+          <span>{t('Cache write')}</span>
           <span>{formatTokens(tokens?.cacheWrite)}</span>
         </div>
         <div className="ctx__row ctx__row--strong">
-          <span>Total</span>
+          <span>{t('Total')}</span>
           <span>{formatTokens(tokens?.total)}</span>
         </div>
         <div className="ctx__row ctx__row--strong">
-          <span>Cost</span>
+          <span>{t('Cost')}</span>
           <span>{formatCost(stats?.cost)}</span>
         </div>
       </div>
 
-      <div className="popover__label ctx__section">Messages</div>
+      <div className="popover__label ctx__section">{t('Messages')}</div>
       <div className="ctx__rows">
         <div className="ctx__row">
-          <span>Prompts</span>
+          <span>{t('Prompts')}</span>
           <span>{stats?.userMessages ?? 0}</span>
         </div>
         <div className="ctx__row">
-          <span>Replies</span>
+          <span>{t('Replies')}</span>
           <span>{stats?.assistantMessages ?? 0}</span>
         </div>
         <div className="ctx__row">
-          <span>Tool calls</span>
+          <span>{t('Tool calls')}</span>
           <span>{stats?.toolCalls ?? 0}</span>
         </div>
       </div>
 
-      <div className="popover__label ctx__section">Queued messages</div>
+      <div className="popover__label ctx__section">{t('Queued messages')}</div>
       <div className="ctx__rows">
         <div className="ctx__row">
-          <span>Steering</span>
+          <span>{t('Steering')}</span>
           <div className="segmented segmented--tight">
             <button
               data-active={piState?.steeringMode !== 'all'}
               onClick={() => void setSteeringMode('one-at-a-time')}
-              title="Deliver one steering message per turn"
+              title={t('Deliver one steering message per turn')}
             >
               One by one
             </button>
             <button
               data-active={piState?.steeringMode === 'all'}
               onClick={() => void setSteeringMode('all')}
-              title="Deliver every steering message at once"
+              title={t('Deliver every steering message at once')}
             >
               All at once
             </button>
           </div>
         </div>
         <div className="ctx__row">
-          <span>Follow-up</span>
+          <span>{t('Follow-up')}</span>
           <div className="segmented segmented--tight">
             <button
               data-active={piState?.followUpMode !== 'all'}
               onClick={() => void setFollowUpMode('one-at-a-time')}
-              title="Deliver one follow-up message per run"
+              title={t('Deliver one follow-up message per run')}
             >
               One by one
             </button>
             <button
               data-active={piState?.followUpMode === 'all'}
               onClick={() => void setFollowUpMode('all')}
-              title="Deliver every follow-up message at once"
+              title={t('Deliver every follow-up message at once')}
             >
               All at once
             </button>
@@ -142,11 +144,11 @@ export function ContextPanel({ close }: { close: () => void }) {
         </div>
       </div>
 
-      <div className="popover__label ctx__section">Compact</div>
+      <div className="popover__label ctx__section">{t('Compact')}</div>
       <input
         className="ctx__input"
         value={instructions}
-        placeholder="Instructions for the summary (optional)"
+        placeholder={t('Instructions for the summary (optional)')}
         onChange={(event) => setInstructions(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === 'Enter' && !busy) void runCompact()
@@ -164,7 +166,7 @@ export function ContextPanel({ close }: { close: () => void }) {
       <div className="ctx__toggle">
         <span>
           Compact automatically
-          <span className="ctx__hint">when the context window fills up</span>
+          <span className="ctx__hint">{t('when the context window fills up')}</span>
         </span>
         <Switch
           checked={piState?.autoCompactionEnabled !== false}

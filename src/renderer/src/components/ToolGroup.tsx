@@ -4,6 +4,7 @@ import type { ToolItem } from '../lib/thread'
 import { describeTool } from '../lib/tools'
 import { useAppStore } from '../store/useAppStore'
 import { ToolCard, TOOL_ICONS } from './ToolCard'
+import { useT } from '../lib/i18n'
 
 /**
  * Several calls of the same tool in a row, folded into one card.
@@ -15,6 +16,7 @@ import { ToolCard, TOOL_ICONS } from './ToolCard'
 export function ToolGroup({ items }: { items: ToolItem[] }) {
   const workspace = useAppStore((state) => state.workspace)
   const descriptor = describeTool(items[0].toolName)
+  const t = useT()
   const tone = items.some((item) => item.status === 'error') ? 'error' : descriptor.tone
   const Icon = TOOL_ICONS[tone]
 
@@ -45,7 +47,7 @@ export function ToolGroup({ items }: { items: ToolItem[] }) {
         <button
           className="tool__caret"
           onClick={() => setOpen((value) => !value)}
-          aria-label={open ? 'Collapse' : 'Expand'}
+          aria-label={open ? t('Collapse') : t('Expand')}
         >
           <ChevronRight size={13} className="caret" data-open={open} />
         </button>

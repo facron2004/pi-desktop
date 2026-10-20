@@ -14,6 +14,7 @@ import {
 import type { NoticeItem, UserItem } from '../lib/thread'
 import { formatClock } from '../lib/format'
 import { Markdown } from './Markdown'
+import { useT } from '../lib/i18n'
 
 export function UserMessage({
   item,
@@ -31,6 +32,7 @@ export function UserMessage({
   onFork?: (entryId: string) => void
   forking?: boolean
 }) {
+  const t = useT()
   return (
     <div className="user-msg">
       <div className="user-msg__bubble">
@@ -49,19 +51,19 @@ export function UserMessage({
               className="ghost-btn ghost-btn--branch"
               onClick={() => onFork(forkEntryId)}
               disabled={forking}
-              title="Branch from here — a new conversation that keeps the earlier history"
+              title={t('Branch from here — a new conversation that keeps the earlier history')}
             >
               <GitBranch size={12} />
-              {forking ? 'Branching…' : 'Branch'}
+              {forking ? t('Branching…') : t('Branch')}
             </button>
           ) : null}
           <button
             className="ghost-btn"
             onClick={() => onCopy(item.id, item.text)}
-            title="Copy your message"
+            title={t('Copy your message')}
           >
             {copied === item.id ? <Check size={12} /> : <Copy size={12} />}
-            {copied === item.id ? 'Copied' : 'Copy'}
+            {copied === item.id ? t('Copied') : t('Copy')}
           </button>
         </div>
       </div>
@@ -86,6 +88,7 @@ export function AssistantText({ text, streaming }: { text: string; streaming?: b
  */
 export function AssistantImage({ data, mimeType }: { data: string; mimeType: string }) {
   const [saved, setSaved] = useState(false)
+  const t = useT()
 
   const save = async () => {
     try {
@@ -100,11 +103,11 @@ export function AssistantImage({ data, mimeType }: { data: string; mimeType: str
 
   return (
     <figure className="assistant__image">
-      <img src={`data:${mimeType};base64,${data}`} alt="The picture the model produced" />
+      <img src={`data:${mimeType};base64,${data}`} alt={t('The picture the model produced')} />
       <figcaption>
         <button className="ghost-btn" onClick={() => void save()}>
           {saved ? <Check size={12} /> : <Download size={12} />}
-          {saved ? 'Saved' : 'Save'}
+          {saved ? t('Saved') : t('Save')}
         </button>
       </figcaption>
     </figure>
@@ -115,6 +118,7 @@ export function ThinkingBlock({ text, streaming }: { text: string; streaming?: b
   const [open, setOpen] = useState(false)
   // A click wins over the automatic behaviour for good.
   const [touched, setTouched] = useState(false)
+  const t = useT()
 
   // While the model is still reasoning, that text is the only thing that is
   // happening, so it is shown. It folds away once the answer arrives.
@@ -135,8 +139,8 @@ export function ThinkingBlock({ text, streaming }: { text: string; streaming?: b
       >
         <ChevronRight size={13} className="caret" data-open={open} />
         <Brain size={13} />
-        <span className="thinking__title">Thinking</span>
-        <span className="thinking__hint">{open ? 'hide' : 'show'}</span>
+        <span className="thinking__title">{t('Thinking')}</span>
+        <span className="thinking__hint">{open ? t('hide') : t('show')}</span>
       </button>
       {open ? <div className="thinking__body">{text}</div> : null}
     </div>

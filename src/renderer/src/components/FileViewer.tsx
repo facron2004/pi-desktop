@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Copy, ExternalLink, File as FileIcon, MessageSquarePlus } from 'lucide-react'
+import { Check, Copy, ExternalLink, File as FileIcon, Link2, MessageSquarePlus } from 'lucide-react'
 import type { FileContent } from '@shared/types'
 import { fileTone } from '../lib/files'
 import { formatBytes } from '../lib/format'
 import { basename, relativePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { CodeSnippet } from './CodeSnippet'
+import { useT } from '../lib/i18n'
 
 interface FileViewerProps {
   file: string
@@ -15,8 +16,9 @@ interface FileViewerProps {
 }
 
 export function FileViewer({ file, root, line }: FileViewerProps) {
+  const t = useT()
   const [content, setContent] = useState<FileContent | null>(null)
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<'file' | 'path' | null>(null)
   const [error, setError] = useState(false)
   const codeRef = useRef<HTMLElement | null>(null)
   const lineRef = useRef(line)
@@ -59,19 +61,26 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     window.setTimeout(() => target.removeAttribute('data-marked'), 2400)
   }, [])
 
-  const copy = async () => {
+  /**
+   * Copy the file or the place it lives.
+   *
+   * The crumb shows the path inside the project, but a command that needs the
+   * file wants the whole path, so both are one click away.
+   */
+  const copy = async (what: 'file' | 'path') => {
     if (!content) return
+    const text = what === 'file' ? content.content : content.path
     try {
-      await navigator.clipboard.writeText(content.content)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1600)
+      await navigator.clipboard.writeText(text)
+      setCopied(what)
+      window.setTimeout(() => setCopied((current) => (current === what ? null : current)), 1600)
     } catch {
       /* clipboard may be unavailable */
     }
   }
 
   if (error) {
-    return <div className="drawer__empty">That file could not be read.</div>
+    return <div className="drawer__empty">{t('That file could not be read.')}</div>
   }
   if (!content) {
     return (
@@ -95,27 +104,39 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
             {relativePath(root ?? '', content.path)}
           </span>
         </span>
-        {content.truncated ? <span className="change__badge">truncated</span> : null}
-        {line ? <span className="change__badge">line {line}</span> : null}
+        {content.truncated ? <span className="change__badge">{t('truncated')}</span> : null}
+        {line ? <span className="change__badge">{t('line')} {line}</span> : null}
         <span className="viewer__meta">
-          {lineCount} {lineCount === 1 ? 'line' : 'lines'}
+          {lineCount} {lineCount === 1 ? t('line') : t('lines')}
           {content.size ? ` · ${formatBytes(content.size)}` : ''}
         </span>
-        <button className="ghost-btn" onClick={() => void copy()} title="Copy the file">
-          {copied ? <Check size={12} /> : <Copy size={12} />}
+        <button className="ghost-btn" onClick={() => void copy('file')} title={t('Copy the file')}>
+          {copied === 'file' ? <Check size={12} /> : <Copy size={12} />}
         </button>
         <button
           className="ghost-btn"
-          title="Ask Pi about this file"
+          onClick={() => void copy('path')}
+          title={t('Copy the path of the file')}
+        >
+          {copied === 'path' ? <Check size={12} /> : <Link2 size={12} />}
+        </button>
+        <button
+          className="ghost-btn"
+          title={t('Ask Pi about this file')}
           onClick={() =>
-            insertIntoComposer(`Take a look at ${relativePath(root ?? '', content.path)} and tell me`)
+            insertIntoComposer(
+              t('Take a look at {file} and tell me').replace(
+                '{file}',
+                relativePath(root ?? '', content.path)
+              )
+            )
           }
         >
           <MessageSquarePlus size={12} />
         </button>
         <button
           className="ghost-btn"
-          title="Reveal in the file manager"
+          title={t('Reveal in the file manager')}
           onClick={() => void window.pi.fs.reveal(content.path)}
         >
           <ExternalLink size={12} />
