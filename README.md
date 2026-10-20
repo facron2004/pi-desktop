@@ -32,16 +32,20 @@ Claude Desktop.
   how far it is ahead or behind its upstream, and how many files are uncommitted.
   The Changes panel can review the whole working tree — every file git reports, with
   the lines it adds and removes — and commit it with a message, without leaving the
-  app. The commit dialog lists the recent commits (a subject can be reused as the
-  message, and a hash copied), offers `feat`/`fix`/`docs`/… templates, and keeps a
-  failed or cancelled message for the next attempt. A folder that is not a repository
-  simply shows no branch.
+  app. Files can be staged and unstaged one by one or all at once from the Review tab;
+  the commit dialog says how many are staged, commits only those unless "Include
+  unstaged changes" is ticked, lists the recent commits (a subject can be reused as
+  the message, and a hash copied), offers `feat`/`fix`/`docs`/… templates, and keeps
+  a failed or cancelled message for the next attempt. A folder that is not a
+  repository simply shows no branch.
 - **Integrated terminal.** `Ctrl+`` opens a terminal under the conversation. Commands
   run in the project through Pi's own `bash` command, the output streams in as it
   arrives, and each block says its exit code and how long it took. The drawer can be
   dragged taller and keeps its height, `Ctrl+C` stops the running command, `↑`/`↓`
-  recall history, and the output can be filtered, copied or cleared. Terminal commands
-  are kept out of the model's context.
+  recall history, and the output can be filtered, copied or cleared. A bash card in
+  the transcript can hand its command to the terminal and run it again, which keeps
+  the output out of the conversation. Terminal commands are kept out of the model's
+  context.
 - **Search the conversations.** The sidebar filter looks at titles and projects; type
   two characters and it also searches the text of every conversation on disk. Each hit
   says who said it and shows the sentence with the match marked; clicking one opens
@@ -192,9 +196,9 @@ node scripts/rpc-ui-smoke.mjs
 Screenshots live in [`docs/shots/`](docs/shots): the welcome screen, a real
 conversation with an inline diff, the light theme, the app mid-run, the terminal
 drawer, the commit dialog, the search across conversations, the git review tab,
-the plan strip, a jump from a search hit, the commit history, the model menu and
-the image lightbox. The roadmap for the remaining Codex-style work is in
-[`docs/codex-parity.md`](docs/codex-parity.md).
+the plan strip, a jump from a search hit, the commit history, the model menu, the
+image lightbox, git staging and a command handed to the terminal. The roadmap for
+the remaining Codex-style work is in [`docs/codex-parity.md`](docs/codex-parity.md).
 
 ## Architecture
 

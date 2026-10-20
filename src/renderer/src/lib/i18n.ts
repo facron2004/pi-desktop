@@ -475,7 +475,26 @@ const zhCN: Record<string, string> = {
   'Image preview': '图片预览',
   'Save the image': '保存图片',
   'The image was saved': '图片已保存',
-  'The image could not be saved': '无法保存图片'
+  'The image could not be saved': '无法保存图片',
+  Staged: '已暂存',
+  staged: '已暂存',
+  unstaged: '未暂存',
+  'Stage all': '全部暂存',
+  'Unstage all': '全部取消暂存',
+  'Stage every file': '暂存所有文件',
+  'Unstage every file': '取消暂存所有文件',
+  'Stage this file': '暂存此文件',
+  'Unstage this file': '取消暂存此文件',
+  'The file could not be staged': '无法暂存该文件',
+  'The files could not be staged': '无法暂存这些文件',
+  'The file could not be unstaged': '无法取消暂存该文件',
+  'The files could not be unstaged': '无法取消暂存这些文件',
+  'Include unstaged changes': '包含未暂存的更改',
+  'Everything in the working tree is committed.': '工作区中的所有更改都会被提交。',
+  'Only staged files are committed; the rest stays in the working tree.':
+    '只提交已暂存的文件，其余更改保留在工作区。',
+  'Nothing is staged yet.': '还没有暂存任何文件。',
+  'Run in terminal': '在终端中运行'
 }
 
 export function translate(text: string, language: AppLanguage): string {

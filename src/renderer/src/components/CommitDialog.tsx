@@ -55,6 +55,9 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
   const [message, setMessage] = useState(readDraft)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
+  // `null` means "the default for this index": staged files only when there
+  // is something staged, everything otherwise.
+  const [includeUnstaged, setIncludeUnstaged] = useState<boolean | null>(null)
   // Replacing the message with a commit subject is destructive, so the old
   // text is kept until the user types again.
   const [undoMessage, setUndoMessage] = useState<string>()
@@ -175,14 +178,25 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const canCommit = Boolean(git?.isRepo) && files.length > 0 && message.trim().length > 0 && !busy
+  const stagedCount = git?.staged ?? 0
+  const unstagedCount = git?.unstaged ?? 0
+  const includeAll = includeUnstaged ?? stagedCount === 0
+
+  const canCommit =
+    Boolean(git?.isRepo) &&
+    files.length > 0 &&
+    message.trim().length > 0 &&
+    !busy &&
+    // Committing what is staged is the default; with nothing staged the
+    // toggle has to be on, or the commit would have an empty index.
+    (includeAll || stagedCount > 0)
 
   const submit = async () => {
     if (!canCommit) return
     setBusy(true)
     setError(undefined)
     try {
-      const result = await commitChanges(message.trim())
+      const result = await commitChanges(message.trim(), includeAll)
       if (result.ok) {
         writeDraft('')
         onClose()
@@ -239,6 +253,26 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
                 {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
               </div>
 
+              <div className="commit__mode">
+                <label className="commit__mode-toggle">
+                  <input
+                    type="checkbox"
+                    checked={includeAll}
+                    onChange={(event) => setIncludeUnstaged(event.target.checked)}
+                  />
+                  <span>{t('Include unstaged changes')}</span>
+                </label>
+                <span className="commit__mode-counts">
+                  {stagedCount} {t('staged')} · {unstagedCount} {t('unstaged')}
+                </span>
+              </div>
+              <p className="commit__mode-hint">
+                {includeAll
+                  ? t('Everything in the working tree is committed.')
+                  : t('Only staged files are committed; the rest stays in the working tree.')}
+                {!includeAll && stagedCount === 0 ? ` ${t('Nothing is staged yet.')}` : null}
+              </p>
+
               <ul className="commit__files" aria-label={t('Files in this commit')}>
                 {files.map((file) => (
                   <li key={file.path} className="commit__file">
@@ -248,6 +282,9 @@ export function CommitDialog({ onClose }: { onClose: () => void }) {
                     <span className="commit__path" title={file.path}>
                       {file.path}
                     </span>
+                    {file.staged ? (
+                      <span className="commit__staged">{t('staged')}</span>
+                    ) : null}
                     {file.added || file.removed ? (
                       <span className="commit__stats">
                         {file.added ? <span data-kind="add">+{file.added}</span> : null}

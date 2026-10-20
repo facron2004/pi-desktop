@@ -75,6 +75,13 @@ interface TerminalBlock {
   durationMs?: number
 }
 
+/** A command handed to the drawer from somewhere else in the app. */
+export interface TerminalRunRequest {
+  command: string
+  /** Bumped for every hand-off, so the same command twice still runs twice. */
+  seq: number
+}
+
 // The drawer can be closed and opened again; a shell remembers what it ran.
 let rememberedHistory: string[] = []
 
@@ -86,7 +93,13 @@ let rememberedHistory: string[] = []
  * here. The output of these commands is excluded from the model context — the
  * drawer is the user's terminal, not a conversation message.
  */
-export function TerminalPanel({ onClose }: { onClose: () => void }) {
+export function TerminalPanel({
+  onClose,
+  request
+}: {
+  onClose: () => void
+  request?: TerminalRunRequest | null
+}) {
   const t = useT()
   const status = useAppStore((state) => state.status)
   const workspace = useAppStore((state) => state.workspace)
@@ -208,6 +221,17 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
     []
   )
 
+  // Development-mode strict effects mount, unmount and mount again, and the
+  // unmount half aborts whatever runs. A handed-over command therefore waits
+  // one tick before it starts, and does nothing when the drawer really closed.
+  const aliveRef = useRef(true)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => {
+      aliveRef.current = false
+    }
+  }, [])
+
   useLayoutEffect(() => {
     const node = logRef.current
     if (!node || !stickRef.current) return
@@ -300,8 +324,11 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
     void updateSettings({ terminalHeight: next })
   }, [updateSettings])
 
-  const submit = useCallback(() => {
-    const command = input.trim()
+  // The one path a command takes, whether it was typed or handed over from a
+  // card in the transcript: the id, the streaming, the history and the exit
+  // code handling all live here rather than in a second runner.
+  const submit = useCallback((override?: string) => {
+    const command = (override ?? input).trim()
     if (!command || runningRef.current || !ready) return
     const id = `terminal-${Date.now().toString(36)}-${++sequenceRef.current}`
     runningRef.current = id
@@ -384,6 +411,38 @@ export function TerminalPanel({ onClose }: { onClose: () => void }) {
       }
     })()
   }, [input, ready, history])
+
+  // A command handed over from the transcript lands in the input and, when the
+  // drawer is idle, runs through the same path as typing Enter. The sequence
+  // number is remembered so a re-render does not run the same hand-off twice.
+  const handledRequestRef = useRef(0)
+  useEffect(() => {
+    if (!request || request.seq === handledRequestRef.current) return
+    handledRequestRef.current = request.seq
+    const command = request.command.trim()
+    if (!command) return
+    setInput(command)
+    setCursor(-1)
+    draftRef.current = command
+    // A command that is already running is not interleaved with another one:
+    // the handed-over command waits in the input for the user to send it.
+    if (ready && !runningRef.current) {
+      // Deferred by a tick so a development-mode remount cannot abort the
+      // command before it has started.
+      window.setTimeout(() => {
+        if (!aliveRef.current) return
+        // A command started in the meantime keeps the input instead of being
+        // cleared by a run that cannot happen.
+        if (runningRef.current) {
+          setInput(command)
+          return
+        }
+        submit(command)
+      }, 0)
+      return
+    }
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }, [request, ready, submit])
 
   // The Stop button and Ctrl+C share this path: the runtime is asked to abort
   // the command, and the block is marked cancelled straight away so the log

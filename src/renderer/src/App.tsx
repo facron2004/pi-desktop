@@ -21,7 +21,7 @@ import { InspectorPanel } from './components/InspectorPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
 import { Launcher, useLauncherActions } from './components/Launcher'
-import { TerminalPanel } from './components/TerminalPanel'
+import { TerminalPanel, type TerminalRunRequest } from './components/TerminalPanel'
 import { PlanStrip } from './components/PlanStrip'
 import { useT } from './lib/i18n'
 
@@ -58,6 +58,10 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [launcherOpen, setLauncherOpen] = useState(false)
   const [terminalOpen, setTerminalOpen] = useState(false)
+  // A command headed for the drawer. `seq` makes the same command twice two
+  // requests instead of one the drawer already ran.
+  const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
+  const terminalSeqRef = useRef(0)
   const [changesOpen, setChangesOpen] = useState(false)
   const [inspectorTab, setInspectorTab] = useState<'changes' | 'files'>('changes')
   const [inspectorFile, setInspectorFile] = useState<{ path: string; line?: number } | null>(null)
@@ -237,12 +241,23 @@ export default function App() {
     // The command palette and the shortcuts dialog can open the drawer too.
     const onToggleTerminal = () => setTerminalOpen((value) => !value)
     window.addEventListener('pi:toggle-terminal', onToggleTerminal)
+    // A card in the transcript can hand a command to the drawer: the drawer is
+    // mounted here, so the card announces the command instead of calling it.
+    const onTerminalRun = (event: Event) => {
+      const command = (event as CustomEvent<{ command?: string }>).detail?.command
+      if (typeof command !== 'string' || !command.trim()) return
+      terminalSeqRef.current += 1
+      setTerminalRequest({ command, seq: terminalSeqRef.current })
+      setTerminalOpen(true)
+    }
+    window.addEventListener('pi:terminal-run', onTerminalRun)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
       window.removeEventListener('pi:rename-session', onRenameSession)
       window.removeEventListener('pi:open-inspector', onOpenInspector)
       window.removeEventListener('pi:toggle-terminal', onToggleTerminal)
+      window.removeEventListener('pi:terminal-run', onTerminalRun)
     }
   }, [
     newChat,
@@ -256,6 +271,12 @@ export default function App() {
     cycleThinkingLevel,
     startRename
   ])
+
+  // The handed-over command is a one-shot. Once the drawer is closed, the
+  // request is dropped so reopening it later does not replay the command.
+  useEffect(() => {
+    if (!terminalOpen) setTerminalRequest(null)
+  }, [terminalOpen])
 
   // The title of a conversation is its name, and the first line of it when
   // it was never named. The project is shown next to it, so two conversations
@@ -456,7 +477,12 @@ export default function App() {
 
         <PlanStrip />
 
-        {terminalOpen ? <TerminalPanel onClose={() => setTerminalOpen(false)} /> : null}
+        {terminalOpen ? (
+          <TerminalPanel
+            request={terminalRequest}
+            onClose={() => setTerminalOpen(false)}
+          />
+        ) : null}
 
         <Composer />
 

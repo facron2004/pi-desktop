@@ -154,8 +154,16 @@ export interface AppStore {
   abortRetry: () => Promise<void>
   /** Read the branch and the working tree of the open project. */
   refreshGit: () => Promise<void>
-  /** Stage every change and commit it. Also refreshes the git state. */
-  commitChanges: (message: string) => Promise<GitCommitResult>
+  /**
+   * Commit the staged files, or — with `includeUnstaged` — stage everything
+   * first and commit the whole working tree. Also refreshes the git state.
+   */
+  commitChanges: (message: string, includeUnstaged?: boolean) => Promise<GitCommitResult>
+  /** Move one file into (or out of) the index and refresh the git state. */
+  stageFile: (file: string) => Promise<GitCommitResult>
+  unstageFile: (file: string) => Promise<GitCommitResult>
+  stageAll: () => Promise<GitCommitResult>
+  unstageAll: () => Promise<GitCommitResult>
   /** Ask the review panel to open its commit dialog. */
   requestCommit: () => void
   /** Open the conversation of a search hit and take the reader to the message. */
@@ -900,8 +908,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  async commitChanges(message) {
-    const result = await window.pi.git.commit(message)
+  async commitChanges(message, includeUnstaged = false) {
+    const result = await window.pi.git.commit(message, includeUnstaged)
     if (result.ok) {
       get().showToast(result.hash ? `Committed ${result.hash}` : 'Changes committed')
       // The dialog closes on the commit itself; the branch chip and the
@@ -910,6 +918,46 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
     // A failed commit is reported by the dialog inline, which keeps the
     // message and the file list in front of the reader.
+    return result
+  },
+
+  async stageFile(file) {
+    const result = await window.pi.git.stageFile(file)
+    if (!result.ok) {
+      get().showToast(result.error ?? 'The file could not be staged', 'error')
+      return result
+    }
+    await get().refreshGit()
+    return result
+  },
+
+  async unstageFile(file) {
+    const result = await window.pi.git.unstageFile(file)
+    if (!result.ok) {
+      get().showToast(result.error ?? 'The file could not be unstaged', 'error')
+      return result
+    }
+    await get().refreshGit()
+    return result
+  },
+
+  async stageAll() {
+    const result = await window.pi.git.stageAll()
+    if (!result.ok) {
+      get().showToast(result.error ?? 'The files could not be staged', 'error')
+      return result
+    }
+    await get().refreshGit()
+    return result
+  },
+
+  async unstageAll() {
+    const result = await window.pi.git.unstageAll()
+    if (!result.ok) {
+      get().showToast(result.error ?? 'The files could not be unstaged', 'error')
+      return result
+    }
+    await get().refreshGit()
     return result
   },
 

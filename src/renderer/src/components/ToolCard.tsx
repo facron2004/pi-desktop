@@ -9,6 +9,7 @@ import {
   FileSearch,
   FileText,
   Pencil,
+  Play,
   Search,
   SquareTerminal,
   Wrench
@@ -73,6 +74,17 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 }
 
 /**
+ * Hands a command to the terminal drawer.
+ *
+ * The drawer is mounted by the app rather than by the card, so a card cannot
+ * call the drawer's run path directly; the hand-off goes through the window
+ * event the app listens for.
+ */
+function runInTerminal(command: string): void {
+  window.dispatchEvent(new CustomEvent('pi:terminal-run', { detail: { command } }))
+}
+
+/**
  * A command Pi ran itself, rather than through a tool call.
  *
  * The output arrives in chunks while the command runs, so the card keeps the
@@ -98,14 +110,24 @@ export function BashCard({ item }: { item: BashItem }) {
           ) : null}
         </button>
         {item.command ? (
-          <button
-            className="tool__reuse-icon"
-            title={t('Reuse this command')}
-            aria-label={t('Reuse this command')}
-            onClick={() => insertIntoComposer(item.command)}
-          >
-            <CornerDownLeft size={12} />
-          </button>
+          <>
+            <button
+              className="tool__reuse-icon"
+              title={t('Reuse this command')}
+              aria-label={t('Reuse this command')}
+              onClick={() => insertIntoComposer(item.command)}
+            >
+              <CornerDownLeft size={12} />
+            </button>
+            <button
+              className="tool__reuse-icon"
+              title={t('Run in terminal')}
+              aria-label={t('Run in terminal')}
+              onClick={() => runInTerminal(item.command)}
+            >
+              <Play size={12} />
+            </button>
+          </>
         ) : null}
         <CopyButton text={item.output} label={t('Copy the output')} />
         <button
@@ -178,6 +200,13 @@ export function ToolCard({ item }: { item: ToolItem }) {
           }
         : null
 
+  // A shell command can also be run again in the terminal drawer, where its
+  // output stays out of the conversation.
+  const terminalCommand =
+    item.toolName === 'bash' || item.toolName === 'powershell'
+      ? String(item.args?.command ?? '')
+      : ''
+
   // A line of the diff leads to that line of the file, so a change can be
   // followed into the code around it.
   const editedFile = item.toolName === 'edit' ? String(item.args?.path ?? '') : ''
@@ -244,6 +273,17 @@ export function ToolCard({ item }: { item: ToolItem }) {
             onClick={() => insertIntoComposer(reuse.text)}
           >
             <CornerDownLeft size={12} />
+          </button>
+        ) : null}
+
+        {terminalCommand ? (
+          <button
+            className="tool__reuse-icon"
+            title={t('Run in terminal')}
+            aria-label={t('Run in terminal')}
+            onClick={() => runInTerminal(terminalCommand)}
+          >
+            <Play size={12} />
           </button>
         ) : null}
 

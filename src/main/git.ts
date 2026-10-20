@@ -139,7 +139,11 @@ export async function readLog(root: string, limit = 20): Promise<GitCommit[]> {
 }
 
 /** Stage everything in the work tree and commit it. */
-export async function commitAll(root: string, message: string): Promise<GitCommitResult> {
+export async function commitWorkingTree(
+  root: string,
+  message: string,
+  includeUnstaged = false
+): Promise<GitCommitResult> {
   const trimmed = message.trim()
   if (!root) return { ok: false, error: 'No project is open.' }
   if (!trimmed) return { ok: false, error: 'Write a message for the commit first.' }
@@ -148,10 +152,25 @@ export async function commitAll(root: string, message: string): Promise<GitCommi
   if (!status.isRepo) return { ok: false, error: 'This folder is not a git repository.' }
   if (status.clean) return { ok: false, error: 'There is nothing to commit.' }
 
-  const added = await git(root, ['add', '-A'], COMMIT_TIMEOUT_MS)
-  if (added.code !== 0) {
-    return { ok: false, error: cleanError(added.stderr) || 'git add failed.' }
+  if (includeUnstaged) {
+    const added = await git(root, ['add', '-A'], COMMIT_TIMEOUT_MS)
+    if (added.code !== 0) {
+      return { ok: false, error: cleanError(added.stderr) || 'git add failed.' }
+    }
+  } else {
+    // Not staging anything would commit with an empty index, so say so
+    // instead of committing a surprise.
+    const staged = await git(root, ['diff', '--cached', '--quiet'])
+    if (staged.code === 0) {
+      return { ok: false, error: 'Nothing is staged. Stage a file or include unstaged changes.' }
+    }
+    if (staged.code !== 1) {
+      return { ok: false, error: cleanError(staged.stderr) || 'Could not read the index.' }
+    }
   }
+
+  const stagedFiles = await git(root, ['diff', '--cached', '--name-only'])
+  const count = stagedFiles.code === 0 ? stagedFiles.stdout.split('\n').filter(Boolean).length : 0
 
   const committed = await git(root, ['commit', '-m', trimmed], COMMIT_TIMEOUT_MS)
   if (committed.code !== 0) {
@@ -163,8 +182,57 @@ export async function commitAll(root: string, message: string): Promise<GitCommi
   return {
     ok: true,
     hash: head.code === 0 ? head.stdout.trim() || undefined : undefined,
-    files: status.files.length
+    files: count || status.files.length
   }
+}
+
+/** Move one file into the index. Deleted and new files go in as well. */
+export async function stageFile(root: string, filePath: string): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  if (!filePath) return { ok: false, error: 'No file was given.' }
+  const result = await git(root, ['add', '-A', '--', filePath], COMMIT_TIMEOUT_MS)
+  if (result.code !== 0) {
+    return { ok: false, error: cleanError(result.stderr) || 'git add failed.' }
+  }
+  return { ok: true }
+}
+
+/** Move one file out of the index, keeping its working-tree changes. */
+export async function unstageFile(root: string, filePath: string): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  if (!filePath) return { ok: false, error: 'No file was given.' }
+  // `restore --staged` needs a HEAD; a repository without a commit has to
+  // fall back to removing the entry from the index instead.
+  let result = await git(root, ['restore', '--staged', '--', filePath], COMMIT_TIMEOUT_MS)
+  if (result.code !== 0) {
+    result = await git(root, ['reset', '-q', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
+  }
+  if (result.code !== 0) {
+    result = await git(root, ['rm', '--cached', '-q', '--', filePath], COMMIT_TIMEOUT_MS)
+  }
+  if (result.code !== 0) {
+    return { ok: false, error: cleanError(result.stderr) || 'git restore failed.' }
+  }
+  return { ok: true }
+}
+
+export async function stageAll(root: string): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  const result = await git(root, ['add', '-A'], COMMIT_TIMEOUT_MS)
+  if (result.code !== 0) return { ok: false, error: cleanError(result.stderr) || 'git add failed.' }
+  return { ok: true }
+}
+
+export async function unstageAll(root: string): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  let result = await git(root, ['reset', '-q'], COMMIT_TIMEOUT_MS)
+  if (result.code !== 0) {
+    result = await git(root, ['rm', '-r', '--cached', '-q', '.'], COMMIT_TIMEOUT_MS)
+  }
+  if (result.code !== 0) {
+    return { ok: false, error: cleanError(result.stderr) || 'git reset failed.' }
+  }
+  return { ok: true }
 }
 
 /** Trim the noise git puts around its diagnostics before the UI shows it. */

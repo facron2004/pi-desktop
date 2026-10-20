@@ -119,6 +119,12 @@ an id prefixed `terminal-` and `excludeFromContext: true`. The store drops
 `bashExecution` messages that carry `excludeFromContext` — so a command typed
 into the terminal never appears in the conversation or in the model's context.
 
+A card in the transcript (the bash tool card, or a bash execution card) can hand
+its command to the drawer by dispatching `pi:terminal-run` with `{ command }`.
+`App` owns the drawer, so it turns the event into a `{ command, seq }` request
+that `TerminalPanel` runs through the same `submit()` path as a typed command —
+do not add a second command runner.
+
 Pi strips ANSI escape sequences from the bash output before it reaches the
 client, so `parseAnsi` in `lib/ansi.ts` is a safety net for future colour
 output, not something the current `bash` path exercises.
@@ -130,14 +136,17 @@ Pi runs in (`src/main/git.ts`, through `workspaceRoot` in `src/main/ipc.ts`).
 A folder that is not a repository is a normal answer, not an error: every
 handler returns `{ isRepo: false }` rather than failing.
 
-Committing stages everything (`git add -A`) and commits it. That includes
-changes the user made by hand, which is what "commit the working tree" means —
-do not narrow it to the files the conversation touched without saying so.
+Committing has two modes. When the index already has staged files, the commit
+dialog commits only those and says so; ticking "Include unstaged changes" (the
+default when nothing is staged) stages the work tree with `git add -A` first.
+Do not silently commit unstaged work — the user chose what to stage.
 
 The Review tab reads the same status through `git:fileDiff`: old side from
 `git show HEAD:path`, new side from disk, then the renderer rebuilds a line diff
 with `buildDiff`. Reverting restores a tracked file with `git checkout HEAD --`
-after a confirmation; an untracked file is deliberately not deleted.
+after a confirmation; an untracked file is deliberately not deleted. Staging is
+per file (`stageFile`/`unstageFile`) or all at once, and the staged flag of each
+file comes from `git status --porcelain` in `GitStatus.files`.
 
 ## The plan strip
 

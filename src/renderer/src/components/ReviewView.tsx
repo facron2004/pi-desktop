@@ -3,6 +3,8 @@ import {
   ChevronRight,
   Copy,
   FileWarning,
+  Minus,
+  Plus,
   RefreshCw,
   RotateCcw,
   Search,
@@ -37,6 +39,10 @@ export function ReviewView({
   const git = useAppStore((state) => state.git)
   const workspace = useAppStore((state) => state.workspace)
   const refreshGit = useAppStore((state) => state.refreshGit)
+  const stageFile = useAppStore((state) => state.stageFile)
+  const unstageFile = useAppStore((state) => state.unstageFile)
+  const stageAll = useAppStore((state) => state.stageAll)
+  const unstageAll = useAppStore((state) => state.unstageAll)
   const showToast = useAppStore((state) => state.showToast)
   const language = useAppStore((state) => state.settings.language)
   const diffSplit = useAppStore((state) => state.settings.diffSplit === true)
@@ -121,6 +127,40 @@ export function ReviewView({
     return files.filter((file) => file.path.toLowerCase().includes(needle))
   }, [files, filter])
 
+  const stagedFiles = useMemo(() => visible.filter((file) => file.staged), [visible])
+  const unstagedFiles = useMemo(() => visible.filter((file) => !file.staged), [visible])
+  const [stageBusy, setStageBusy] = useState(false)
+
+  const toggleStage = useCallback(
+    async (file: GitFileStatus) => {
+      const result = file.staged ? await unstageFile(file.path) : await stageFile(file.path)
+      if (!result.ok) {
+        showToast(result.error ?? t('The file could not be staged'), 'error')
+      }
+    },
+    [stageFile, unstageFile, showToast, t]
+  )
+
+  const stageEverything = useCallback(async () => {
+    setStageBusy(true)
+    try {
+      const result = await stageAll()
+      if (!result.ok) showToast(result.error ?? t('The files could not be staged'), 'error')
+    } finally {
+      setStageBusy(false)
+    }
+  }, [stageAll, showToast, t])
+
+  const unstageEverything = useCallback(async () => {
+    setStageBusy(true)
+    try {
+      const result = await unstageAll()
+      if (!result.ok) showToast(result.error ?? t('The files could not be unstaged'), 'error')
+    } finally {
+      setStageBusy(false)
+    }
+  }, [unstageAll, showToast, t])
+
   const totals = useMemo(
     () =>
       files.reduce(
@@ -193,6 +233,28 @@ export function ReviewView({
               {totals.added ? <span data-kind="add">+{totals.added}</span> : null}
               {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
             </span>
+            {git && git.staged > 0 ? (
+              <button
+                className="ghost-btn review__bulk"
+                onClick={() => void unstageEverything()}
+                disabled={stageBusy}
+                title={t('Unstage every file')}
+              >
+                <Minus size={11} />
+                {t('Unstage all')}
+              </button>
+            ) : null}
+            {git && git.unstaged > 0 ? (
+              <button
+                className="ghost-btn review__bulk"
+                onClick={() => void stageEverything()}
+                disabled={stageBusy}
+                title={t('Stage every file')}
+              >
+                <Plus size={11} />
+                {t('Stage all')}
+              </button>
+            ) : null}
             <button
               className="icon-btn"
               onClick={() => void copyPaths()}
@@ -237,19 +299,34 @@ export function ReviewView({
         </div>
       ) : (
         <div className="review__list">
-          {visible.map((file) => (
-            <ReviewFile
-              key={file.path}
-              file={file}
-              isOpen={open.has(file.path)}
-              state={diffs[file.path]}
+          {stagedFiles.length > 0 ? (
+            <ReviewGroup
+              label={t('Staged')}
+              count={stagedFiles.length}
+              files={stagedFiles}
+              open={open}
+              diffs={diffs}
               split={diffSplit}
-              onToggle={() => toggle(file.path)}
-              onOpen={() => onOpenFile({ path: file.path })}
-              onReveal={() => void window.pi.fs.reveal(file.path)}
-              onRevert={() => setRevertTarget(file.path)}
+              onToggle={(path) => toggle(path)}
+              onOpen={onOpenFile}
+              onToggleStage={(file) => void toggleStage(file)}
+              onRevert={setRevertTarget}
             />
-          ))}
+          ) : null}
+          {unstagedFiles.length > 0 ? (
+            <ReviewGroup
+              label={stagedFiles.length > 0 ? t('Changes') : null}
+              count={unstagedFiles.length}
+              files={unstagedFiles}
+              open={open}
+              diffs={diffs}
+              split={diffSplit}
+              onToggle={(path) => toggle(path)}
+              onOpen={onOpenFile}
+              onToggleStage={(file) => void toggleStage(file)}
+              onRevert={setRevertTarget}
+            />
+          ) : null}
         </div>
       )}
 
@@ -267,6 +344,57 @@ export function ReviewView({
   )
 }
 
+function ReviewGroup({
+  label,
+  count,
+  files,
+  open,
+  diffs,
+  split,
+  onToggle,
+  onOpen,
+  onToggleStage,
+  onRevert
+}: {
+  label: string | null
+  count: number
+  files: GitFileStatus[]
+  open: ReadonlySet<string>
+  diffs: Record<string, DiffState>
+  split: boolean
+  onToggle: (path: string) => void
+  onOpen: (file: { path: string; line?: number }) => void
+  onToggleStage: (file: GitFileStatus) => void
+  onRevert: (path: string) => void
+}) {
+  const t = useT()
+  return (
+    <div className="review__group">
+      {label ? (
+        <div className="review__group-head">
+          <span>{label}</span>
+          <span className="review__group-count">{count}</span>
+        </div>
+      ) : null}
+      {files.map((file) => (
+        <ReviewFile
+          key={file.path}
+          file={file}
+          isOpen={open.has(file.path)}
+          state={diffs[file.path]}
+          split={split}
+          onToggle={() => onToggle(file.path)}
+          onOpen={() => onOpen({ path: file.path })}
+          onReveal={() => void window.pi.fs.reveal(file.path)}
+          onToggleStage={() => onToggleStage(file)}
+          onRevert={() => onRevert(file.path)}
+        />
+      ))}
+      {label ? null : <span className="sr-only">{t('Changes')}</span>}
+    </div>
+  )
+}
+
 function ReviewFile({
   file,
   isOpen,
@@ -275,6 +403,7 @@ function ReviewFile({
   onToggle,
   onOpen,
   onReveal,
+  onToggleStage,
   onRevert
 }: {
   file: GitFileStatus
@@ -284,6 +413,7 @@ function ReviewFile({
   onToggle: () => void
   onOpen: () => void
   onReveal: () => void
+  onToggleStage: () => void
   onRevert: () => void
 }) {
   const t = useT()
@@ -295,7 +425,7 @@ function ReviewFile({
   }, [state])
 
   return (
-    <section className="review__file" data-open={isOpen}>
+    <section className="review__file" data-open={isOpen} data-staged={file.staged || undefined}>
       <div className="review__head">
         <button
           className="review__toggle"
@@ -317,6 +447,13 @@ function ReviewFile({
         </button>
 
         <div className="review__file-actions">
+          <button
+            className="icon-btn review__stage"
+            onClick={onToggleStage}
+            title={file.staged ? t('Unstage this file') : t('Stage this file')}
+          >
+            {file.staged ? <Minus size={12} /> : <Plus size={12} />}
+          </button>
           <button className="icon-btn" onClick={onOpen} title={t('Open the file')}>
             <SquareArrowOutUpRight size={12} />
           </button>

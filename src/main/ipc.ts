@@ -16,7 +16,17 @@ import type {
 import { checkAuth, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
 import { PiRuntime } from './pi/runtime'
-import { commitAll, readFileDiff, readLog, readStatus, revertFile } from './git'
+import {
+  commitWorkingTree,
+  readFileDiff,
+  readLog,
+  readStatus,
+  revertFile,
+  stageAll,
+  stageFile,
+  unstageAll,
+  unstageFile
+} from './git'
 import { SettingsStore } from './settings'
 import { listSessions, resolveSessionRoot, searchSessions } from './sessions'
 
@@ -237,9 +247,21 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('git:log', (_event, limit?: number) => readLog(workspaceRoot(context), limit))
 
-  ipcMain.handle('git:commit', (_event, message: string) =>
-    commitAll(workspaceRoot(context), message)
+  ipcMain.handle('git:commit', (_event, message: string, includeUnstaged?: boolean) =>
+    commitWorkingTree(workspaceRoot(context), message, includeUnstaged === true)
   )
+
+  ipcMain.handle('git:stageFile', (_event, file: string) =>
+    stageFile(workspaceRoot(context), file)
+  )
+
+  ipcMain.handle('git:unstageFile', (_event, file: string) =>
+    unstageFile(workspaceRoot(context), file)
+  )
+
+  ipcMain.handle('git:stageAll', () => stageAll(workspaceRoot(context)))
+
+  ipcMain.handle('git:unstageAll', () => unstageAll(workspaceRoot(context)))
 
   ipcMain.handle('git:fileDiff', (_event, file: string) =>
     readFileDiff(workspaceRoot(context), file)

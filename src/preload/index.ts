@@ -69,11 +69,17 @@ const bridge: PiDesktopBridge = {
   git: {
     status: (): Promise<GitStatus> => ipcRenderer.invoke('git:status'),
     log: (limit?: number): Promise<GitCommit[]> => ipcRenderer.invoke('git:log', limit),
-    commit: (message: string): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:commit', message),
+    commit: (message: string, includeUnstaged?: boolean): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:commit', message, includeUnstaged === true),
     fileDiff: (file: string): Promise<GitFileDiff> => ipcRenderer.invoke('git:fileDiff', file),
     revertFile: (file: string): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:revertFile', file)
+      ipcRenderer.invoke('git:revertFile', file),
+    stageFile: (file: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:stageFile', file),
+    unstageFile: (file: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:unstageFile', file),
+    stageAll: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:stageAll'),
+    unstageAll: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:unstageAll')
   },
   shell: {
     openPath: (target: string): Promise<string> => ipcRenderer.invoke('shell:openPath', target),

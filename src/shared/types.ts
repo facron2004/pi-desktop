@@ -459,12 +459,20 @@ export interface PiDesktopBridge {
     /** Branch, ahead/behind and the working tree of the open workspace. */
     status(): Promise<GitStatus>
     log(limit?: number): Promise<GitCommit[]>
-    /** Stage everything and commit it with `message`. */
-    commit(message: string): Promise<GitCommitResult>
+    /**
+     * Commit the staged files, or — with `includeUnstaged` — stage everything
+     * first and commit the whole working tree.
+     */
+    commit(message: string, includeUnstaged?: boolean): Promise<GitCommitResult>
     /** Both sides of one working-tree file, for the review tab. */
     fileDiff(file: string): Promise<GitFileDiff>
     /** Discard the working-tree changes of a tracked file. */
     revertFile(file: string): Promise<GitCommitResult>
+    /** Move one file into (or out of) the index. */
+    stageFile(file: string): Promise<GitCommitResult>
+    unstageFile(file: string): Promise<GitCommitResult>
+    stageAll(): Promise<GitCommitResult>
+    unstageAll(): Promise<GitCommitResult>
   }
   shell: {
     openPath(target: string): Promise<string>
