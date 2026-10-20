@@ -1,0 +1,68 @@
+# 与 Codex 的功能对齐：路线图
+
+更新：2026-10-20。目标是让 Pi Desktop 的前端在交互上尽可能接近 Codex 桌面端，
+同时不偏离本项目的边界 —— 它是 Pi 的协议客户端，不重新实现 agent，不改 Pi 协议。
+
+## 已完成
+
+| 能力 | 说明 |
+| --- | --- |
+| Git 分支状态 | 顶栏显示当前分支、领先/落后提交数、未提交文件数；点击打开 Changes |
+| 提交闭环 | Changes 面板的 Commit 打开审阅弹窗：工作区文件、行数统计、提交说明、Ctrl+Enter 提交 |
+| 集成终端 | `Ctrl+`` 打开底部终端，走 Pi 的 RPC `bash`，流式输出、退出码、耗时、Stop、历史、清空 |
+| 会话全文搜索 | 侧栏输入 2 个字符后搜索所有会话正文，命中带角色、片段高亮、项目与时间；点击跳转 |
+| 既有能力 | 流式对话、工具卡/diff、检查器（Changes/Files）、@ 文件、/ 命令、模型与推理切换、上下文面板、分支/fork、导出、扩展弹窗、键盘操作、双主题 |
+
+终端命令使用 `excludeFromContext: true` 与 `terminal-` 前缀的 id：它们留在会话文件里，
+但不进入模型上下文，也不出现在对话线程中（thread 的 hydration 会跳过这类 bashExecution）。
+
+## Codex 功能对照
+
+| Codex | 当前状态 | 下一步 |
+| --- | --- | --- |
+| 分支/工作区头部 | 分支 chip、dirty 数量 | 分支切换、新建分支、worktree |
+| Diff 审阅 | 对话内工具 diff + git 工作区文件列表 | 新增基于 `git diff` 的 Review 视图、按文件撤销、按 hunk 暂存 |
+| 提交 / PR | 一键提交全部更改 | 提交历史、生成提交说明、gh PR |
+| 集成终端 | 底部抽屉，RPC bash，流式 | 面板高度拖动、ANSI 颜色、Ctrl+C、命令历史持久化 |
+| 计划模式 | 无 | 读取会话中的 checklist/计划块并渲染为进度列表 |
+| 审批 / 沙箱 | 项目信任开关（设置） | 在项目头部提示信任状态，启动前可切换 |
+| 会话切换 | 侧栏历史、pin、全文搜索 | 搜索结果跳转到具体消息；会话树（get_tree） |
+| 图片 | 粘贴/拖拽附图、模型出图 | 灯箱、缩放、另存 |
+| 模型控制 | 模型/推理下拉、Ctrl+P/Ctrl+T | 成本与上下文窗口信息、搜索 |
+| MCP / 技能 | 仅 Pi 自身的命令列表 | `.pi/mcp.json` 只读展示与启用开关；技能列表 |
+| 快捷键 | 命令面板、快捷键表 | 与 Codex 对齐的默认键位与冲突检查 |
+
+## 下一轮优先级
+
+P0
+1. Review 视图：基于 `git diff` 的文件级审阅，支持单文件撤销（`git checkout --`）与整文件暂存，
+   与现有 Changes（工具调用推导）并存为两个标签。
+2. 终端打磨：拖拽高度并记住、Ctrl+C 中止、ANSI 颜色、输出搜索。
+3. 提交增强：提交历史（`git log`）浮层、提交说明模板、失败时保留弹窗内容。
+
+P1
+4. 会话树：`get_tree` 渲染分支，支持切换叶子（只读展示 + 跳转）。
+5. 计划/待办：把 assistant 文本里的 `- [ ]` 列表聚合为顶部进度条（纯前端投影，不新增状态）。
+6. 图片灯箱与拖拽覆盖层。
+7. 搜索增强：按会话分组、命中跳转并高亮、搜索历史。
+
+P2
+8. MCP 配置只读面板。
+9. 长会话虚拟列表（需要先测量）。
+10. 导出 Markdown、会话分享。
+
+## 验证约定
+
+- 每次改动：`npm run typecheck`、`npm run build`、`git diff --check`。
+- 视觉验证用截图 harness：`PI_DESKTOP_SCREENSHOT`、`PI_DESKTOP_USER_DATA`（隔离用户数据）、
+  `PI_DESKTOP_OPEN_TERMINAL`、`PI_DESKTOP_COMMIT`、`PI_DESKTOP_EVAL`（驱动输入并回读 DOM）。
+- 不发起付费模型推理；交互数据用真实会话文件或可控夹具。
+- 主进程/协议改动必须遵守 `AGENTS.md` 的约束（LF 分帧、id 关联、扩展弹窗 id）。
+
+## 协作边界
+
+- 共享文件（`src/shared/types.ts`、`src/main/ipc.ts`、`src/preload/index.ts`、store、i18n）由
+  单人一次改完，避免并发冲突。
+- 每个新面板的样式放在独立 CSS 文件（如 `terminal.css`、`session-search.css`），
+  只有通用规则进入 `global.css`。
+- 新文案先写英文 key，再在 `src/renderer/src/lib/i18n.ts` 补 zh-CN；缺 key 时回退英文。

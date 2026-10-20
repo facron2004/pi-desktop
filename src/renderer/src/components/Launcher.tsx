@@ -8,6 +8,7 @@ import {
   Files,
   FolderOpen,
   GitBranch,
+  GitCommit,
   Keyboard,
   MessageSquarePlus,
   Minimize2,
@@ -18,6 +19,7 @@ import {
   Settings,
   Sparkles,
   SquarePen,
+  SquareTerminal,
   Sun,
   Type
 } from 'lucide-react'
@@ -223,6 +225,21 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'View',
       icon: Files,
       run: () => runAppCommand('files')
+    },
+    {
+      id: 'terminal',
+      title: 'Toggle the terminal',
+      hint: 'Ctrl+`',
+      group: 'View',
+      icon: SquareTerminal,
+      run: () => runAppCommand('terminal')
+    },
+    {
+      id: 'commit',
+      title: 'Review and commit the working tree',
+      group: 'Project',
+      icon: GitCommit,
+      run: () => runAppCommand('commit')
     },
     {
       id: 'shortcuts',

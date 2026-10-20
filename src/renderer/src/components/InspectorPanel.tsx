@@ -9,6 +9,7 @@ import {
   FileDiff,
   FilePlus,
   Files,
+  GitCommit,
   MessageSquare,
   Pencil,
   Rows3,
@@ -23,6 +24,7 @@ import { diffStats } from '../lib/diff-fold'
 import { DiffView } from './DiffView'
 import { FileTree } from './FileTree'
 import { FileViewer } from './FileViewer'
+import { CommitDialog } from './CommitDialog'
 import { useT } from '../lib/i18n'
 
 type Tab = 'changes' | 'files'
@@ -52,9 +54,25 @@ export function InspectorPanel({
   const updateSettings = useAppStore((state) => state.updateSettings)
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const showToast = useAppStore((state) => state.showToast)
+  const git = useAppStore((state) => state.git)
+  const commitRequest = useAppStore((state) => state.commitRequest)
+  const refreshGit = useAppStore((state) => state.refreshGit)
   const t = useT()
   const diffSplit = settings.diffSplit === true
   const changes = useMemo(() => collectChanges(items), [items])
+  const [commitOpen, setCommitOpen] = useState(false)
+
+  // The panel is the place the review happens, so it asks git for a fresh
+  // working tree every time it is opened.
+  useEffect(() => {
+    void refreshGit()
+  }, [refreshGit])
+
+  // The app's own `/commit` command and the launcher ask for this dialog
+  // through the store instead of reaching into the component tree.
+  useEffect(() => {
+    if (commitRequest > 0) setCommitOpen(true)
+  }, [commitRequest])
 
   // The lines that were added and removed over all the files, for the head of
   // the panel. The same numbers are shown per file.
@@ -255,6 +273,22 @@ export function InspectorPanel({
             {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
           </span>
         ) : null}
+        {tab === 'changes' && git?.isRepo ? (
+          <button
+            className="ghost-btn drawer__commit"
+            onClick={() => setCommitOpen(true)}
+            disabled={git.clean}
+            title={
+              git.clean
+                ? t('There is nothing to commit')
+                : t('Review the working tree and commit it')
+            }
+          >
+            <GitCommit size={12} />
+            <span>{git.clean ? t('Committed') : t('Commit')}</span>
+            {git.clean ? null : <span className="drawer__count">{git.files.length}</span>}
+          </button>
+        ) : null}
         {tab === 'changes' && changes.length > 0 ? (
           <div className="segmented segmented--tight" title={t('Diff layout')}>
             <button
@@ -288,9 +322,21 @@ export function InspectorPanel({
         <div className="drawer__pane" data-active={!openFile && tab !== 'files'}>
           {changes.length === 0 ? (
             <div className="drawer__empty">
-              {t('No files have been changed yet.')}
+              {git?.isRepo && git.files.length > 0
+                ? t('This conversation has not changed any files.')
+                : t('No files have been changed yet.')}
               <br />
-              {t('Edits and new files show up here as Pi works.')}
+              {git?.isRepo && git.files.length > 0
+                ? t('The working tree has changes from outside this conversation.')
+                : t('Edits and new files show up here as Pi works.')}
+              {git?.isRepo && git.files.length > 0 ? (
+                <div className="drawer__empty-action">
+                  <button className="btn" onClick={() => setCommitOpen(true)}>
+                    <GitCommit size={12} />
+                    {git.files.length} {git.files.length === 1 ? t('file to commit') : t('files to commit')}
+                  </button>
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="drawer__body">
@@ -429,6 +475,8 @@ export function InspectorPanel({
           ) : null}
         </div>
       </div>
+
+      {commitOpen ? <CommitDialog onClose={() => setCommitOpen(false)} /> : null}
     </aside>
   )
 }

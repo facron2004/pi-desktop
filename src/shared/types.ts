@@ -254,6 +254,82 @@ export interface SessionMeta {
   model?: string
 }
 
+/**
+ * One hit of a full-text search over the conversations on disk.
+ *
+ * The snippet is a single line of text around the match, so the sidebar can
+ * show why a conversation matched without loading the whole session.
+ */
+export interface SessionSearchHit {
+  file: string
+  sessionId: string
+  /** Name the user gave the conversation, when it has one. */
+  name?: string
+  /** First user message on the active branch, used when there is no name. */
+  preview: string
+  cwd: string
+  updatedAt: number
+  role: 'user' | 'assistant'
+  snippet: string
+  /** Where the query sits inside `snippet`, in UTF-16 code units. */
+  matchStart: number
+  matchLength: number
+  messageIndex: number
+}
+
+/* ------------------------------------------------------------------ *
+ * Git
+ * ------------------------------------------------------------------ */
+
+/** One entry of `git status --porcelain`, with its line counts when known. */
+export interface GitFileStatus {
+  path: string
+  /** Index (staged) status code, as git reports it: M, A, D, R, … */
+  index: string
+  /** Worktree status code. */
+  worktree: string
+  staged: boolean
+  untracked: boolean
+  added?: number
+  removed?: number
+}
+
+export interface GitStatus {
+  /** False when the open folder is not inside a git work tree. */
+  isRepo: boolean
+  /** Top level of the work tree. */
+  root?: string
+  branch?: string
+  /** Short hash of HEAD, when the repository has a commit. */
+  head?: string
+  /** True when HEAD points at a commit rather than a branch. */
+  detached: boolean
+  /** Commits the branch is ahead of and behind its upstream. */
+  ahead: number
+  behind: number
+  files: GitFileStatus[]
+  staged: number
+  unstaged: number
+  /** No changes in the working tree and nothing untracked. */
+  clean: boolean
+}
+
+export interface GitCommit {
+  hash: string
+  subject: string
+  author: string
+  /** Unix milliseconds. */
+  date: number
+}
+
+export interface GitCommitResult {
+  ok: boolean
+  hash?: string
+  error?: string
+  /** Files that went into the commit. */
+  files?: number
+}
+
 export type ThemePreference = 'dark' | 'light' | 'system'
 export type AppLanguage = 'en' | 'zh-CN'
 
@@ -337,6 +413,8 @@ export interface PiDesktopBridge {
     list(cwd?: string): Promise<SessionMeta[]>
     /** Move a session file to the OS trash. Returns false when it fails. */
     remove(file: string): Promise<boolean>
+    /** Search the text of every conversation on disk. */
+    search(query: string, limit?: number): Promise<SessionSearchHit[]>
   }
   runtime: {
     start(options: RuntimeStartOptions): Promise<{ ok: boolean; error?: string }>
@@ -353,6 +431,13 @@ export interface PiDesktopBridge {
   }
   auth: {
     check(provider?: string): Promise<AuthStatus>
+  }
+  git: {
+    /** Branch, ahead/behind and the working tree of the open workspace. */
+    status(): Promise<GitStatus>
+    log(limit?: number): Promise<GitCommit[]>
+    /** Stage everything and commit it with `message`. */
+    commit(message: string): Promise<GitCommitResult>
   }
   shell: {
     openPath(target: string): Promise<string>

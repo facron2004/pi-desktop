@@ -16,8 +16,9 @@ import type {
 import { checkAuth, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
 import { PiRuntime } from './pi/runtime'
+import { commitAll, readLog, readStatus } from './git'
 import { SettingsStore } from './settings'
-import { listSessions, resolveSessionRoot } from './sessions'
+import { listSessions, resolveSessionRoot, searchSessions } from './sessions'
 
 export interface IpcContext {
   runtime: PiRuntime
@@ -225,6 +226,20 @@ export function registerIpc(context: IpcContext): void {
   )
 
   ipcMain.handle('sessions:list', (_event, cwd?: string) => listSessions(cwd))
+
+  ipcMain.handle('sessions:search', (_event, query: string, limit?: number) =>
+    searchSessions(query, limit)
+  )
+
+  // Git is read from the folder Pi runs in: the review panel and the branch
+  // chip describe the work tree the agent is actually editing.
+  ipcMain.handle('git:status', () => readStatus(workspaceRoot(context)))
+
+  ipcMain.handle('git:log', (_event, limit?: number) => readLog(workspaceRoot(context), limit))
+
+  ipcMain.handle('git:commit', (_event, message: string) =>
+    commitAll(workspaceRoot(context), message)
+  )
 
   ipcMain.handle('fs:list', (_event, dir: string): FileEntry[] => {
     const root = workspaceRoot(context)

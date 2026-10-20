@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CopyPlus, FileDown, Keyboard, PanelLeft, Pencil, RefreshCw } from 'lucide-react'
+import {
+  CopyPlus,
+  FileDown,
+  Keyboard,
+  PanelLeft,
+  Pencil,
+  RefreshCw,
+  SquareTerminal
+} from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { useAppStore } from './store/useAppStore'
 import { collectProjects, sortProjects } from './lib/projects'
@@ -13,6 +21,7 @@ import { InspectorPanel } from './components/InspectorPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
 import { Launcher, useLauncherActions } from './components/Launcher'
+import { TerminalPanel } from './components/TerminalPanel'
 import { useT } from './lib/i18n'
 
 export default function App() {
@@ -47,6 +56,7 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [launcherOpen, setLauncherOpen] = useState(false)
+  const [terminalOpen, setTerminalOpen] = useState(false)
   const [changesOpen, setChangesOpen] = useState(false)
   const [inspectorTab, setInspectorTab] = useState<'changes' | 'files'>('changes')
   const [inspectorFile, setInspectorFile] = useState<{ path: string; line?: number } | null>(null)
@@ -96,9 +106,17 @@ export default function App() {
           openFile?: string
           session?: string
           settings?: boolean
+          openTerminal?: boolean
+          commit?: boolean
         }
       }
     ).__piDesktopDev
+    if (dev?.openTerminal) setTerminalOpen(true)
+    if (dev?.commit) {
+      setInspectorTab('changes')
+      setChangesOpen(true)
+      useAppStore.getState().requestCommit()
+    }
     if (dev?.settings) {
       setSettingsOpen(true)
       return
@@ -157,6 +175,12 @@ export default function App() {
         window.dispatchEvent(new CustomEvent('pi:focus-composer'))
         return
       }
+      // `Ctrl+\`` is the terminal drawer, in every editor that has one.
+      if (mod && !event.shiftKey && (event.key === '`' || event.code === 'Backquote')) {
+        event.preventDefault()
+        setTerminalOpen((value) => !value)
+        return
+      }
       if (mod && event.key === '/') {
         event.preventDefault()
         setShortcutsOpen((value) => !value)
@@ -209,11 +233,15 @@ export default function App() {
       setChangesOpen(true)
     }
     window.addEventListener('pi:open-inspector', onOpenInspector)
+    // The command palette and the shortcuts dialog can open the drawer too.
+    const onToggleTerminal = () => setTerminalOpen((value) => !value)
+    window.addEventListener('pi:toggle-terminal', onToggleTerminal)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
       window.removeEventListener('pi:rename-session', onRenameSession)
       window.removeEventListener('pi:open-inspector', onOpenInspector)
+      window.removeEventListener('pi:toggle-terminal', onToggleTerminal)
     }
   }, [
     newChat,
@@ -326,6 +354,14 @@ export default function App() {
           <div className="titlebar__actions no-drag">
             <button
               className="icon-btn"
+              title={t('Open or close the terminal')}
+              data-active={terminalOpen}
+              onClick={() => setTerminalOpen((value) => !value)}
+            >
+              <SquareTerminal size={14} />
+            </button>
+            <button
+              className="icon-btn"
               title={t('Keyboard shortcuts')}
               onClick={() => setShortcutsOpen(true)}
             >
@@ -416,6 +452,8 @@ export default function App() {
             ))}
           </div>
         ))}
+
+        {terminalOpen ? <TerminalPanel onClose={() => setTerminalOpen(false)} /> : null}
 
         <Composer />
 

@@ -4252,3 +4252,242 @@ button:focus-visible,
     flex-wrap: wrap;
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Git: the branch chip in the top bar and the commit dialog
+ * ------------------------------------------------------------------ */
+
+.git-chip {
+  max-width: 320px;
+  border-color: var(--border-soft);
+  background: var(--bg-panel);
+}
+
+.git-chip[data-dirty='true'] {
+  border-color: var(--border);
+}
+
+.git-chip__branch {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.git-chip__tag {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--text-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.git-chip__delta {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.git-chip__clean {
+  color: var(--green);
+  opacity: 0.85;
+}
+
+.git-chip__dirty {
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.drawer__commit {
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 0 8px;
+}
+
+.drawer__commit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.drawer__empty-action {
+  margin-top: 16px;
+  display: flex;
+  justify-content: center;
+}
+
+.modal--commit {
+  width: min(620px, 100%);
+}
+
+.commit__branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.commit {
+  gap: 10px;
+}
+
+.commit__empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.commit__summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.commit__summary [data-kind='add'],
+.commit__stats [data-kind='add'] {
+  color: var(--green);
+}
+
+.commit__summary [data-kind='del'],
+.commit__stats [data-kind='del'] {
+  color: var(--red);
+}
+
+.commit__files {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 190px;
+  overflow-y: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--bg-deep);
+}
+
+.commit__file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+
+.commit__file:hover {
+  background: var(--bg-hover);
+}
+
+.commit__status {
+  width: 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.commit__status[data-kind='add'] {
+  color: var(--green);
+}
+
+.commit__status[data-kind='del'] {
+  color: var(--red);
+}
+
+.commit__status[data-kind='edit'] {
+  color: var(--blue);
+}
+
+.commit__status[data-kind='rename'] {
+  color: var(--violet);
+}
+
+.commit__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.commit__stats {
+  display: inline-flex;
+  gap: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+.commit__label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+}
+
+.commit__input {
+  width: 100%;
+  resize: vertical;
+  min-height: 74px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-deep);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.commit__input:focus {
+  outline: none;
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.commit__error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 12px;
+}
+
+.modal__foot .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .git-chip,
+  .commit__file {
+    transition: none;
+  }
+}

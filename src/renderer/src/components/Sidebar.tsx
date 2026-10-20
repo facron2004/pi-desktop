@@ -12,13 +12,21 @@ import {
   X
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import type { AppSettings, SessionMeta } from '@shared/types'
+import type { AppSettings, SessionMeta, SessionSearchHit } from '@shared/types'
 import { formatDayBucket, formatRelativeTime } from '../lib/format'
 import { samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
 import { useT } from '../lib/i18n'
+import {
+  MIN_SESSION_SEARCH_LENGTH,
+  projectNameForHit,
+  sessionMetaForHit,
+  snippetParts,
+  useSessionSearch
+} from '../lib/session-search'
+import '../styles/session-search.css'
 
 const MIN_WIDTH = 200
 const MAX_WIDTH = 460
@@ -119,6 +127,16 @@ export function Sidebar({
   )
 
   const needle = query.trim().toLowerCase()
+
+  // The input filters titles and projects at once; full text is a different,
+  // slower question, so it is asked separately and debounced.
+  const trimmedQuery = query.trim()
+  const contentSearch = useSessionSearch(trimmedQuery, sessions.length > 0)
+  const contentHits = contentSearch.hits
+  const showContentSearch =
+    sessions.length > 0 &&
+    trimmedQuery.length >= MIN_SESSION_SEARCH_LENGTH &&
+    contentSearch.status !== 'idle'
 
   const projects = useMemo(() => {
     const list = collectProjects(settings.workspaces, sessions)
@@ -236,6 +254,56 @@ export function Sidebar({
       />
     ))
 
+  // A hit only carries what the section shows, but the store opens a session
+  // by its metadata, so the fields are folded into a SessionMeta.
+  const openContentHit = (hit: SessionSearchHit) => {
+    void selectSession(sessionMetaForHit(hit))
+  }
+
+  // A conversation can appear more than once — one row per matching message —
+  // so the key pairs the file with the message index.
+  const renderContentHits = (items: SessionSearchHit[]) =>
+    items.map((hit) => {
+      const parts = snippetParts(hit)
+      const project = projectNameForHit(hit)
+      return (
+        <div
+          key={`${hit.file}:${hit.messageIndex}`}
+          className="session-search__hit"
+          data-active={hit.file === activeSessionFile}
+          role="button"
+          tabIndex={0}
+          title={hit.name || hit.preview || hit.file}
+          onClick={() => openContentHit(hit)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return
+            event.preventDefault()
+            openContentHit(hit)
+          }}
+        >
+          <span className="session-search__top">
+            <span className="session-search__title">
+              {hit.name || hit.preview || t('Untitled session')}
+            </span>
+            <span className="session-search__role" data-role={hit.role}>
+              {hit.role === 'user' ? t('You') : t('Pi')}
+            </span>
+          </span>
+          <span className="session-search__snippet">
+            {parts.before}
+            {parts.match ? <mark>{parts.match}</mark> : null}
+            {parts.after}
+          </span>
+          <span className="session-search__meta">
+            <span className="session-search__project">{project || t('Unknown location')}</span>
+            <span className="session-search__time">
+              {formatRelativeTime(hit.updatedAt, settings.language)}
+            </span>
+          </span>
+        </div>
+      )
+    })
+
   return (
     <aside className="sidebar">
       <div
@@ -329,6 +397,26 @@ export function Sidebar({
           </div>
         ) : null}
 
+        {showContentSearch ? (
+          <div className="sidebar__section session-search">
+            <div className="sidebar__section-head">
+              <span>{t('Matches in conversations')}</span>
+              {contentHits.length > 0 ? (
+                <span className="session-search__count">{contentHits.length}</span>
+              ) : null}
+            </div>
+            {contentSearch.status === 'searching' ? (
+              <div className="session-search__state">{t('Searching…')}</div>
+            ) : contentHits.length > 0 ? (
+              <div className="session-list">{renderContentHits(contentHits)}</div>
+            ) : (
+              <div className="session-search__state">
+                {t('No matches in conversation text')}
+              </div>
+            )}
+          </div>
+        ) : null}
+
         {pinnedSessions.length > 0 ? (
           <div className="sidebar__section">
             <div className="sidebar__section-head">
@@ -360,7 +448,13 @@ export function Sidebar({
           </div>
         ) : null}
 
-        {sessions.length > 0 && needle && groups.length === 0 && pinnedSessions.length === 0 ? (
+        {sessions.length > 0 &&
+        needle &&
+        groups.length === 0 &&
+        pinnedSessions.length === 0 &&
+        // The text search has its own empty state; saying the filter found
+        // nothing next to hits below it would contradict the list.
+        !showContentSearch ? (
           <div className="sidebar__section">
             <div className="sidebar__empty">{t('No conversation matches')} “{query}”.</div>
           </div>

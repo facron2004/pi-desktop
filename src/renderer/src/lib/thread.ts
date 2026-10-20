@@ -196,6 +196,10 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
         break
       }
       case 'bashExecution': {
+        // A command the terminal drawer ran is kept in the session but kept
+        // out of the model's context; it is the terminal's business, not the
+        // conversation's, so it is left out of the transcript as well.
+        if (message.excludeFromContext === true) break
         const bash = message as unknown as {
           command?: string
           output?: string

@@ -46,6 +46,16 @@ export const APP_COMMANDS: PiCommand[] = [
     source: 'app'
   },
   {
+    name: 'commit',
+    description: 'Review the working tree and commit it',
+    source: 'app'
+  },
+  {
+    name: 'terminal',
+    description: 'Open or close the terminal',
+    source: 'app'
+  },
+  {
     name: 'files',
     description: 'Browse the project files',
     source: 'app'

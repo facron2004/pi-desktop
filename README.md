@@ -25,6 +25,20 @@ Claude Desktop.
 - **Code blocks that answer back.** A snippet gets a header with its language, a copy
   button and an "Ask" button that drops the snippet into the composer, ready for a
   question about it.
+- **Git branch and review.** The top bar says which branch the open project is on,
+  how far it is ahead or behind its upstream, and how many files are uncommitted.
+  The Changes panel can review the whole working tree — every file git reports, with
+  the lines it adds and removes — and commit it with a message, without leaving the
+  app. A folder that is not a repository simply shows no branch.
+- **Integrated terminal.** `Ctrl+`` opens a terminal under the conversation. Commands
+  run in the project through Pi's own `bash` command, the output streams in as it
+  arrives, and each block says its exit code and how long it took. A command can be
+  stopped, the history is recalled with `↑`/`↓`, and the output can be copied or
+  cleared. Terminal commands are kept out of the model's context.
+- **Search the conversations.** The sidebar filter looks at titles and projects; type
+  two characters and it also searches the text of every conversation on disk. Each hit
+  says who said it, shows the sentence with the match marked, and opens the
+  conversation when clicked.
 - **Project inspector.** A docked panel with two tabs: **Changes** lists every file the
   agent edited or created in this session, with the line counts of each change, and
   **Files** is a project tree you can search by name and read in place, with syntax
@@ -76,11 +90,11 @@ Claude Desktop.
   instead of waiting it out.
 - **Keyboard-first.** `Ctrl+N` new chat, `Ctrl+B` sidebar, `Ctrl+K` focus the composer,
   `Ctrl+F` search the conversation, `Ctrl+1`…`Ctrl+9` switch project, `Ctrl+Shift+P`
-  the palette, `Ctrl+P`/`Ctrl+T` the next model and reasoning level, `Alt+↑`/`Alt+↓` walk
-  the turns, `↑` recalls earlier prompts, `Esc` stops a run. `Ctrl+/` lists every
-  shortcut. The conversations in the sidebar are reachable with the keyboard, and
-  everything that can be focused shows where the focus is. The app also follows the
-  system's "reduce motion" setting.
+  the palette, `` Ctrl+` `` the terminal, `Ctrl+P`/`Ctrl+T` the next model and reasoning
+  level, `Alt+↑`/`Alt+↓` walk the turns, `↑` recalls earlier prompts, `Esc` stops a run.
+  `Ctrl+/` lists every shortcut. The conversations in the sidebar are reachable with
+  the keyboard, and everything that can be focused shows where the focus is. The app
+  also follows the system's "reduce motion" setting.
 
 ## How it talks to Pi
 
@@ -173,14 +187,16 @@ src/
 │   │   └── cli.ts        one-shot CLI calls (version, auth check)
 │   ├── ipc.ts            typed IPC surface
 │   ├── sessions.ts       reads Pi's session files from ~/.pi/agent/sessions
+│   ├── git.ts            branch, working tree and commits of the open project
 │   ├── settings.ts       persisted app settings
 │   └── screenshot.ts     dev-only window capture
 ├── preload/index.ts      contextBridge API (contextIsolation, no nodeIntegration)
 ├── shared/types.ts       protocol and domain types shared by all three layers
 └── renderer/src/         React UI
-    ├── components/       thread, tool cards, diffs, composer, launcher, panels
+    ├── components/       thread, tool cards, diffs, composer, launcher, terminal, panels
     ├── lib/thread.ts     Pi session event → UI thread reducer
     ├── lib/changes.ts    tool calls → changed-files review
+    ├── lib/session-search.ts  debounced full-text search of the conversations
     ├── lib/diff-fold.ts  line diff → folded, expandable diff rows
     ├── lib/projects.ts   registered projects + the conversations of each
     ├── lib/search.ts     in-conversation search

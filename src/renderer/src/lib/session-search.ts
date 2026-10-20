@@ -1,0 +1,133 @@
+import { useEffect, useRef, useState } from 'react'
+import type { SessionMeta, SessionSearchHit } from '@shared/types'
+import { basename } from './path'
+
+/** A query shorter than this searches titles only; the text scan is heavier. */
+export const MIN_SESSION_SEARCH_LENGTH = 2
+
+/** How long the user has to stop typing before the files are read. */
+const DEBOUNCE_MS = 220
+
+/** The sidebar keeps a short list; the main process caps the scan to match. */
+export const MAX_SESSION_HITS = 30
+
+/** Characters of context shown around a hit, and characters before it. */
+const SNIPPET_MAX = 100
+const SNIPPET_LEAD = 32
+
+export interface SessionSearchState {
+  status: 'idle' | 'searching' | 'done'
+  hits: SessionSearchHit[]
+}
+
+/** A finished scan, remembered together with the query that produced it. */
+interface SearchResult {
+  query: string
+  status: 'done' | 'failed'
+  hits: SessionSearchHit[]
+}
+
+const IDLE: SessionSearchState = { status: 'idle', hits: [] }
+const SEARCHING: SessionSearchState = { status: 'searching', hits: [] }
+
+/**
+ * Ask the main process for conversations whose messages contain the query.
+ *
+ * The result is stored with its query instead of with the current one, so a
+ * render that happens before the debounce fires can never show the hits of
+ * the query the user just replaced. The sequence number does the same for
+ * answers that arrive out of order.
+ */
+export function useSessionSearch(query: string, enabled = true): SessionSearchState {
+  const [result, setResult] = useState<SearchResult>({ query: '', status: 'done', hits: [] })
+  const sequence = useRef(0)
+  const trimmed = query.trim()
+  const active = enabled && trimmed.length >= MIN_SESSION_SEARCH_LENGTH
+
+  useEffect(() => {
+    if (!enabled || trimmed.length < MIN_SESSION_SEARCH_LENGTH) {
+      sequence.current += 1
+      return
+    }
+
+    const ticket = ++sequence.current
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const hits = await window.pi.sessions.search(trimmed, MAX_SESSION_HITS)
+          if (sequence.current !== ticket) return
+          setResult({ query: trimmed, status: 'done', hits: hits.slice(0, MAX_SESSION_HITS) })
+        } catch {
+          // A failed scan is not worth an error in the sidebar — the title
+          // filter below still works, so the section just stays out of the way.
+          if (sequence.current !== ticket) return
+          setResult({ query: trimmed, status: 'failed', hits: [] })
+        }
+      })()
+    }, DEBOUNCE_MS)
+
+    return () => {
+      clearTimeout(timer)
+      // Anything still in flight for this query is stale once it is cleaned up.
+      sequence.current += 1
+    }
+  }, [trimmed, enabled])
+
+  if (!active) return IDLE
+  if (result.query !== trimmed) return SEARCHING
+  if (result.status === 'failed') return IDLE
+  return { status: 'done', hits: result.hits }
+}
+
+/** The store opens a conversation by its metadata, so a hit becomes one. */
+export function sessionMetaForHit(hit: SessionSearchHit): SessionMeta {
+  return {
+    id: hit.sessionId,
+    file: hit.file,
+    cwd: hit.cwd,
+    name: hit.name,
+    preview: hit.preview,
+    updatedAt: hit.updatedAt,
+    messageCount: 0
+  }
+}
+
+/** The folder a hit belongs to, as the sidebar shows projects. */
+export function projectNameForHit(hit: SessionSearchHit): string {
+  return hit.cwd ? basename(hit.cwd) : ''
+}
+
+export interface SnippetParts {
+  before: string
+  match: string
+  after: string
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+/**
+ * Cut a snippet down to one readable line around the match.
+ *
+ * The main process already trimmed the message, but it does not know how wide
+ * the sidebar is. Whitespace is replaced one character at a time so the match
+ * offsets still point at the right place after the normalisation.
+ */
+export function snippetParts(hit: SessionSearchHit): SnippetParts {
+  const source = hit.snippet.replace(/\s/g, ' ')
+  const start = clamp(Math.trunc(hit.matchStart), 0, source.length)
+  const end = clamp(start + Math.max(0, Math.trunc(hit.matchLength)), start, source.length)
+
+  const from = clamp(start - SNIPPET_LEAD, 0, source.length)
+  let to = Math.min(source.length, from + SNIPPET_MAX)
+  // A match longer than the window keeps its own length; the ellipsis of the
+  // row then stands in for the rest.
+  if (end > to) to = Math.min(source.length, end)
+
+  return {
+    before: (from > 0 ? '…' : '') + source.slice(from, start),
+    match: source.slice(start, Math.min(end, to)),
+    after: source.slice(Math.min(end, to), to) + (to < source.length ? '…' : '')
+  }
+}

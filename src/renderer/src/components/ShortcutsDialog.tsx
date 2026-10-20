@@ -6,6 +6,7 @@ import { useT } from '../lib/i18n'
 const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
   { keys: ['Ctrl', 'N'], label: 'Start a new conversation', group: 'Workspace' },
   { keys: ['Ctrl', 'B'], label: 'Show or hide the sidebar', group: 'Workspace' },
+  { keys: ['Ctrl', '`'], label: 'Open or close the terminal', group: 'Workspace' },
   { keys: ['Ctrl', 'K'], label: 'Focus the composer', group: 'Workspace' },
   { keys: ['Ctrl', 'F'], label: 'Search the conversation', group: 'Workspace' },
   { keys: ['Ctrl', '1…9'], label: 'Switch to another project', group: 'Workspace' },

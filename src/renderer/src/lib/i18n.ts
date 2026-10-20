@@ -377,13 +377,55 @@ const zhCN: Record<string, string> = {
   'Earlier this week': '本周更早',
   'Earlier this month': '本月更早',
   Earlier: '更早',
-  tokens: '个 Token'
+  tokens: '个 Token',
+  Commit: '提交',
+  'Commit changes': '提交更改',
+  Committed: '已提交',
+  'Commit message': '提交说明',
+  'What changed, and why?': '改了什么，为什么改？',
+  'Committing…': '正在提交…',
+  'The commit failed': '提交失败',
+  'This folder is not a git repository.': '该文件夹不是 Git 仓库。',
+  'The working tree is clean.': '工作区没有未提交的更改。',
+  'Files in this commit': '本次提交的文件',
+  'Review the working tree and commit it': '查看工作区并提交',
+  'There is nothing to commit': '没有可提交的更改',
+  'The branch the commit lands on': '提交所在的分支',
+  'file to commit': '个文件待提交',
+  'files to commit': '个文件待提交',
+  'no uncommitted changes': '没有未提交的更改',
+  uncommitted: '处未提交的更改',
+  'Review and commit': '查看并提交',
+  detached: '分离头指针',
+  Repository: '仓库',
+  'Open or close the terminal': '打开或关闭终端',
+  'This conversation has not changed any files.': '本次对话尚未修改任何文件。',
+  'The working tree has changes from outside this conversation.': '工作区中有本次对话之外的更改。',
+  Terminal: '终端',
+  'Terminal output': '终端输出',
+  'The terminal needs the Pi runtime.': '终端需要 Pi 运行时。',
+  'Open a project to start Pi, then run commands here.': '请打开项目以启动 Pi，然后在这里运行命令。',
+  'Run a command in the workspace…': '在工作区运行命令…',
+  'Type a command and press Enter': '输入命令并按 Enter',
+  'Pi is not running': 'Pi 未运行',
+  'Enter to run · Ctrl+L to clear': 'Enter 运行 · Ctrl+L 清屏',
+  Latest: '最新',
+  'Stopping…': '正在停止…',
+  Cancelled: '已取消',
+  Failed: '失败',
+  'Waiting for output…': '等待输出…',
+  'Matches in conversations': '对话内容匹配',
+  'No matches in conversation text': '对话内容中没有匹配',
+  You: '你',
+  Pi: 'Pi'
 }
 
 export function translate(text: string, language: AppLanguage): string {
   if (language !== 'zh-CN') return text
   const exported = /^Exported (.+)$/.exec(text)
   if (exported) return `已导出 ${exported[1]}`
+  const committed = /^Committed (.+)$/.exec(text)
+  if (committed) return `已提交 ${committed[1]}`
   const model = /^Model: (.+)$/.exec(text)
   if (model) return `模型：${model[1]}`
   const effort = /^Reasoning effort: (.+)$/.exec(text)

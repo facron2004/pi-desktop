@@ -113,6 +113,23 @@ does not touch it — the only way to stop it is `abort`, which ends the whole r
 Do not build a "stop this command" button on top of `abort_bash` and expect it
 to work for the agent's own commands.
 
+The terminal drawer is the client's own `bash` user: it sends the command with
+an id prefixed `terminal-` and `excludeFromContext: true`. The store drops
+`bash_execution_update` events with that prefix, and `itemsFromMessages` skips
+`bashExecution` messages that carry `excludeFromContext` — so a command typed
+into the terminal never appears in the conversation or in the model's context.
+
+## Git
+
+The branch chip, the review panel and the commit dialog read git from the folder
+Pi runs in (`src/main/git.ts`, through `workspaceRoot` in `src/main/ipc.ts`).
+A folder that is not a repository is a normal answer, not an error: every
+handler returns `{ isRepo: false }` rather than failing.
+
+Committing stages everything (`git add -A`) and commits it. That includes
+changes the user made by hand, which is what "commit the working tree" means —
+do not narrow it to the files the conversation touched without saying so.
+
 ## Style
 
 - TypeScript everywhere, `strict` on. No `any` in the IPC boundary.
@@ -142,8 +159,10 @@ Other flags, all off by default: `PI_DESKTOP_PREFILL` fills the composer,
 `PI_DESKTOP_FILE_SEARCH` and `PI_DESKTOP_OPEN_FILE` drive the file panel,
 `PI_DESKTOP_SEARCH` opens the in-conversation search, `PI_DESKTOP_SESSION`
 resumes a session file, `PI_DESKTOP_SETTINGS` opens the settings dialog,
-`PI_DESKTOP_EXPORT` exports the session, and `PI_DESKTOP_CLOSE_AFTER_MS`
-closes the window on purpose to reproduce the destroyed-window case.
+`PI_DESKTOP_EXPORT` exports the session, `PI_DESKTOP_OPEN_TERMINAL` opens the
+terminal drawer, `PI_DESKTOP_COMMIT` opens the review panel and its commit
+dialog, and `PI_DESKTOP_CLOSE_AFTER_MS` closes the window on purpose to
+reproduce the destroyed-window case.
 
 `PI_DESKTOP_EVAL` runs a JS snippet in the renderer just before the capture
 and `PI_DESKTOP_EVAL_DELAY` (default 400ms) is the settle time afterwards.

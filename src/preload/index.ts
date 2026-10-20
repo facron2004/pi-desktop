@@ -6,11 +6,15 @@ import type {
   ExtensionUiResponse,
   FileContent,
   FileEntry,
+  GitCommit,
+  GitCommitResult,
+  GitStatus,
   PiDesktopBridge,
   PiEvent,
   RuntimeStartOptions,
   RuntimeStatus,
   SessionMeta,
+  SessionSearchHit,
   Workspace
 } from '@shared/types'
 
@@ -40,7 +44,9 @@ const bridge: PiDesktopBridge = {
   },
   sessions: {
     list: (cwd?: string): Promise<SessionMeta[]> => ipcRenderer.invoke('sessions:list', cwd),
-    remove: (file: string): Promise<boolean> => ipcRenderer.invoke('sessions:remove', file)
+    remove: (file: string): Promise<boolean> => ipcRenderer.invoke('sessions:remove', file),
+    search: (query: string, limit?: number): Promise<SessionSearchHit[]> =>
+      ipcRenderer.invoke('sessions:search', query, limit)
   },
   runtime: {
     start: (options: RuntimeStartOptions) => ipcRenderer.invoke('runtime:start', options),
@@ -58,6 +64,12 @@ const bridge: PiDesktopBridge = {
   },
   auth: {
     check: (provider?: string): Promise<AuthStatus> => ipcRenderer.invoke('auth:check', provider)
+  },
+  git: {
+    status: (): Promise<GitStatus> => ipcRenderer.invoke('git:status'),
+    log: (limit?: number): Promise<GitCommit[]> => ipcRenderer.invoke('git:log', limit),
+    commit: (message: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:commit', message)
   },
   shell: {
     openPath: (target: string): Promise<string> => ipcRenderer.invoke('shell:openPath', target),
@@ -94,6 +106,8 @@ const openFileArg = process.argv.find((argument) =>
 const searchArg = process.argv.find((argument) => argument.startsWith('--pi-desktop-search='))
 const sessionArg = process.argv.find((argument) => argument.startsWith('--pi-desktop-session='))
 const settingsArg = process.argv.includes('--pi-desktop-settings')
+const openTerminal = process.argv.includes('--pi-desktop-open-terminal')
+const openCommit = process.argv.includes('--pi-desktop-commit')
 // The screenshot harness sets this, so the renderer exposes its store even
 // when no other flag was used.
 const devArg = process.argv.includes('--pi-desktop-dev')
@@ -107,7 +121,9 @@ if (
   openFileArg ||
   searchArg ||
   sessionArg ||
-  settingsArg
+  settingsArg ||
+  openTerminal ||
+  openCommit
 ) {
   contextBridge.exposeInMainWorld('__piDesktopDev', {
     prefill: prefillArg ? prefillArg.slice('--pi-desktop-prefill='.length) : undefined,
@@ -118,6 +134,8 @@ if (
     openFile: openFileArg ? openFileArg.slice('--pi-desktop-open-file='.length) : undefined,
     search: searchArg ? searchArg.slice('--pi-desktop-search='.length) : undefined,
     session: sessionArg ? sessionArg.slice('--pi-desktop-session='.length) : undefined,
-    settings: settingsArg
+    settings: settingsArg,
+    openTerminal,
+    commit: openCommit
   })
 }

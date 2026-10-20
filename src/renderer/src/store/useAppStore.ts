@@ -6,6 +6,8 @@ import type {
   ExtensionUiRequest,
   ExtensionUiResponse,
   ForkTarget,
+  GitCommitResult,
+  GitStatus,
   InspectorRequest,
   ModelInfo,
   PiCommand,
@@ -63,6 +65,10 @@ export interface AppStore {
   }
   error?: string
   toast?: { text: string; level: 'info' | 'warning' | 'error' }
+  /** Branch and working tree of the open project, when it is a git repo. */
+  git?: GitStatus
+  /** Bumped when the app asks the review panel to open its commit dialog. */
+  commitRequest: number
 
   /** A blocking extension dialog waiting for an answer. */
   uiRequest?: ExtensionUiRequest
@@ -129,6 +135,12 @@ export interface AppStore {
   forkFrom: (entryId: string) => Promise<void>
   /** Stop Pi from retrying a failed request. */
   abortRetry: () => Promise<void>
+  /** Read the branch and the working tree of the open project. */
+  refreshGit: () => Promise<void>
+  /** Stage every change and commit it. Also refreshes the git state. */
+  commitChanges: (message: string) => Promise<GitCommitResult>
+  /** Ask the review panel to open its commit dialog. */
+  requestCommit: () => void
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -156,6 +168,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   queue: { steering: [], followUp: [] },
   forkTargets: [],
   forking: false,
+  commitRequest: 0,
   uiStatuses: [],
   uiWidgets: [],
 
@@ -223,7 +236,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       uiStatuses: [],
       uiWidgets: [],
       uiTitle: undefined,
-      composerText: undefined
+      composerText: undefined,
+      git: undefined
     })
 
     const settings = get().settings
@@ -245,6 +259,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     await get().refreshState()
     await get().reloadMessages()
     await get().refreshSessions()
+    await get().refreshGit()
   },
 
   async removeWorkspace(id) {
@@ -678,6 +693,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
           new CustomEvent<InspectorRequest>('pi:open-inspector', { detail: { tab: name } })
         )
         break
+      case 'commit':
+        // Both the panel and the dialog belong to the shell: open the panel,
+        // then bump the request the panel watches.
+        window.dispatchEvent(
+          new CustomEvent<InspectorRequest>('pi:open-inspector', {
+            detail: { tab: 'changes' }
+          })
+        )
+        get().requestCommit()
+        break
+      case 'terminal':
+        window.dispatchEvent(new CustomEvent('pi:toggle-terminal'))
+        break
       case 'new':
         await get().newChat()
         break
@@ -838,6 +866,30 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       set({ error: messageOf(error) })
     }
+  },
+
+  async refreshGit() {
+    try {
+      set({ git: await window.pi.git.status() })
+    } catch {
+      // A folder that is not a repository is a normal state, not an error.
+      set({ git: undefined })
+    }
+  },
+
+  async commitChanges(message) {
+    const result = await window.pi.git.commit(message)
+    if (result.ok) {
+      get().showToast(result.hash ? `Committed ${result.hash}` : 'Changes committed')
+      await get().refreshGit()
+    } else {
+      get().showToast(result.error ?? 'The commit failed', 'error')
+    }
+    return result
+  },
+
+  requestCommit() {
+    set((state) => ({ commitRequest: state.commitRequest + 1 }))
   }
 }))
 
@@ -881,6 +933,9 @@ function handleEvent(set: SetState, get: GetState, event: PiEvent): void {
       if (get().uiRequest) set({ uiRequest: undefined })
       void get().refreshState()
       void get().refreshSessions()
+      // The agent just edited files, so the branch chip and the review panel
+      // should hear about the new working tree.
+      void get().refreshGit()
       // The prompt of this turn is a new branch point. Refreshing here as
       // well as on `message_start` covers the case where Pi had not recorded
       // the message yet when the event arrived.
@@ -933,12 +988,18 @@ function handleEvent(set: SetState, get: GetState, event: PiEvent): void {
       if (role === 'user') void get().refreshForkTargets()
       break
     }
+    case 'bash_execution_update': {
+      // A command typed into the terminal drawer runs through the same RPC
+      // command, but it belongs to the terminal rather than to the thread.
+      if (typeof event.id === 'string' && event.id.startsWith('terminal-')) break
+      set((state) => ({ items: applyEvent(state.items, event) }))
+      break
+    }
     case 'message_end':
     case 'message_update':
     case 'tool_execution_start':
     case 'tool_execution_update':
     case 'tool_execution_end':
-    case 'bash_execution_update':
     case 'compaction_start':
     case 'compaction_end':
     case 'extension_error':
