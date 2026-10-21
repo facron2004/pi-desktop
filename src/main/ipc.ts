@@ -52,8 +52,8 @@ const MAX_SEARCH_DEPTH = 12
 /** How many matches of one file a text search reports. */
 const MAX_TEXT_HITS_PER_FILE = 3
 /** Characters of a line shown around a text match. */
-const TEXT_PREVIEW_MAX = 160
-const TEXT_PREVIEW_LEAD = 40
+const TEXT_PREVIEW_MAX = 64
+const TEXT_PREVIEW_LEAD = 12
 /** Directories that are never worth walking when searching a project. */
 const SEARCH_SKIP_DIRS = new Set([
   'node_modules',

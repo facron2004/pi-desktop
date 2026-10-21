@@ -28,9 +28,12 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
+import { samePath } from '../lib/path'
+import { formatPlatformShortcut } from '../lib/shortcuts'
 import { COMMAND_SOURCE } from '../lib/command-source'
 import { transcriptOf } from '../lib/thread'
 import { useT } from '../lib/i18n'
+import { useDialogFocus } from '../hooks/useDialogFocus'
 
 /** One thing the user can do from the launcher. */
 export interface LauncherAction {
@@ -45,6 +48,16 @@ export interface LauncherAction {
 
 /** The text sizes the settings offer, from the smallest to the largest. */
 const FONT_STEPS = [0.92, 1, 1.1, 1.22]
+
+const MESSAGE_ACTION_IDS = new Set([
+  'rename',
+  'duplicate',
+  'tree',
+  'copy-conversation',
+  'export',
+  'compact',
+  'pin'
+])
 
 /** The parts of the app shell the launcher drives. */
 export interface LauncherShell {
@@ -72,6 +85,15 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const sessions = useAppStore((state) => state.sessions)
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
+  const hasMessages = useAppStore((state) => state.items.length > 0)
+  const hasForkTarget = useAppStore((state) => state.forkTargets.length > 0)
+  const hasAssistantAnswer = useAppStore((state) =>
+    state.items.some(
+      (item) =>
+        item.kind === 'assistant' &&
+        item.blocks.some((block) => block.type === 'text' && Boolean(block.text.trim()))
+    )
+  )
   const pinned = useAppStore((state) => state.settings.pinnedSessions ?? [])
   const models = useAppStore((state) => state.models)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
@@ -297,7 +319,9 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   ]
 
   // The projects come last, so the actions are what the user sees first.
-  const projects = sortProjects(collectProjects(workspaces, sessions), workspace?.path)
+  const projects = sortProjects(collectProjects(workspaces, sessions), workspace?.path).filter(
+    (project) => !workspace || !samePath(project.path, workspace.path)
+  )
   for (const project of projects) {
     actions.push({
       id: `project:${project.path}`,
@@ -309,7 +333,16 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     })
   }
 
-  return actions
+  // Keep the palette focused on actions the open session can currently perform.
+  return actions.filter((action) => {
+    if (action.id === 'branch') return hasMessages && hasForkTarget
+    if (action.id === 'copy') return hasAssistantAnswer
+    if (action.id === 'model-next' || action.id === 'model-previous') return models.length > 1
+    if (action.id === 'thinking-next' || action.id === 'thinking-previous') {
+      return thinkingLevels.length > 1
+    }
+    return !MESSAGE_ACTION_IDS.has(action.id) || hasMessages
+  })
 }
 
 /**
@@ -339,11 +372,15 @@ export function Launcher({
 }) {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
+  const dialogRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const commands = useAppStore((state) => state.commands)
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
+  const platform = useAppStore((state) => state.info?.platform)
   const t = useT()
+
+  useDialogFocus(dialogRef, onClose)
 
   /**
    * Pi's own commands join the search as soon as there is something to
@@ -403,10 +440,6 @@ export function Launcher({
     return Array.from(map, ([name, items]) => ({ name, items }))
   }, [visible])
 
-  useEffect(() => {
-    inputRef.current?.focus()
-  }, [])
-
   // A new query means a new list, so the highlight goes back to the top.
   useEffect(() => {
     setIndex(0)
@@ -460,60 +493,99 @@ export function Launcher({
 
   return (
     <div className="modal-layer" data-align="top" onMouseDown={onClose}>
-      <div className="launcher" onMouseDown={(event) => event.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="launcher"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('Command palette')}
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <div className="launcher__search">
           <Search size={15} />
           <input
             ref={inputRef}
             value={query}
             placeholder={t('Search for an action, a command or a project')}
+            aria-label={t('Search for an action, a command or a project')}
+            aria-describedby="launcher-keyboard-help"
+            aria-autocomplete="list"
+            aria-expanded={true}
+            aria-controls="launcher-results"
+            aria-activedescendant={
+              visible[index] ? `launcher-option-${visible[index].position}` : undefined
+            }
+            role="combobox"
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onKeyDown}
           />
         </div>
 
         <div className="launcher__list" ref={listRef}>
+          <div id="launcher-results" role="listbox" aria-label={t('Search results')}>
+            {visible.length > 0
+              ? groups.map((group) => (
+                <div
+                  className="launcher__group"
+                  key={group.name}
+                  role="group"
+                  aria-label={t(group.name)}
+                >
+                  <div className="launcher__group-title" aria-hidden="true">
+                    {t(group.name)}
+                  </div>
+                  {group.items.map((entry) => {
+                    const Icon = entry.action.icon
+                    return (
+                      <button
+                        key={entry.action.id}
+                        id={`launcher-option-${entry.position}`}
+                        className="launcher__item"
+                        data-active={entry.position === index}
+                        data-kind={entry.action.group === 'Pi' ? 'command' : undefined}
+                        data-has-hint={Boolean(entry.action.hint)}
+                        role="option"
+                        aria-selected={entry.position === index}
+                        tabIndex={-1}
+                        onMouseEnter={() => setIndex(entry.position)}
+                        onClick={() => run(entry)}
+                      >
+                        <span className="palette__icon">
+                          <Icon size={12} />
+                        </span>
+                        <span className="launcher__name">{t(entry.action.title)}</span>
+                        <span className="launcher__hint">
+                          {entry.action.hint
+                            ? entry.action.group === 'Pi'
+                              ? entry.action.hint
+                              : formatPlatformShortcut(entry.action.hint, platform)
+                            : null}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+                ))
+              : null}
+          </div>
           {visible.length === 0 ? (
-            <div className="palette__empty">
+            <div className="palette__empty" role="status" aria-live="polite">
               {t('Nothing matches')} “{query}”.
               <br />
               {t('Try new, model, files, a skill or the name of a project.')}
             </div>
-          ) : (
-            groups.map((group) => (
-              <div className="launcher__group" key={group.name}>
-                <div className="launcher__group-title">{t(group.name)}</div>
-                {group.items.map((entry) => {
-                  const Icon = entry.action.icon
-                  return (
-                    <button
-                      key={entry.action.id}
-                      className="launcher__item"
-                      data-active={entry.position === index}
-                      data-kind={entry.action.group === 'Pi' ? 'command' : undefined}
-                      onMouseEnter={() => setIndex(entry.position)}
-                      onClick={() => run(entry)}
-                    >
-                      <span className="palette__icon">
-                        <Icon size={12} />
-                      </span>
-                      <span className="launcher__name">{t(entry.action.title)}</span>
-                      <span className="launcher__hint">{entry.action.hint}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            ))
-          )}
+          ) : null}
         </div>
 
-        <div className="palette__foot">
+        <div className="palette__foot" id="launcher-keyboard-help">
           <kbd>↑</kbd>
+          <span>{t('or')}</span>
           <kbd>↓</kbd>
           <span>{t('to move')}</span>
           <kbd>↵</kbd>
           <span>{t('to run')}</span>
-          <kbd>esc</kbd>
+          <kbd>Esc</kbd>
           <span>{t('to dismiss')}</span>
         </div>
       </div>

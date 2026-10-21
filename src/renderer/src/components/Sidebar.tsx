@@ -87,6 +87,7 @@ export function Sidebar({
   const t = useT()
 
   const [query, setQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
@@ -159,7 +160,7 @@ export function Sidebar({
   const recentsVisible =
     searchFocused &&
     recentsOpen &&
-    trimmedQuery.length < MIN_SESSION_SEARCH_LENGTH &&
+    trimmedQuery.length === 0 &&
     recents.length > 0
 
   useEffect(() => {
@@ -384,7 +385,11 @@ export function Sidebar({
         <div className="sidebar__section">
           <div className="sidebar__section-head">
             <span>{t('Projects')}</span>
-            <button title={t('Open a folder')} onClick={() => void pickWorkspace()}>
+            <button
+              aria-label={t('Open a folder')}
+              title={t('Open a folder')}
+              onClick={() => void pickWorkspace()}
+            >
               <FolderOpen size={13} />
             </button>
           </div>
@@ -422,6 +427,7 @@ export function Sidebar({
                       {project.registered && projectId ? (
                         <button
                           className="project__remove"
+                          aria-label={t('Remove project')}
                           title={t('Remove project')}
                           onClick={() => void removeWorkspace(projectId)}
                         >
@@ -441,7 +447,9 @@ export function Sidebar({
             <div className="sidebar__search">
               <Search size={13} />
               <input
+                ref={searchInputRef}
                 value={query}
+                aria-label={t('Filter conversations')}
                 placeholder={t('Filter conversations')}
                 onChange={(event) => {
                   setQuery(event.target.value)
@@ -477,7 +485,15 @@ export function Sidebar({
                 }}
               />
               {query ? (
-                <button className="icon-btn" style={{ width: 18, height: 18 }} onClick={() => setQuery('')}>
+                <button
+                  className="icon-btn"
+                  onClick={() => {
+                    setQuery('')
+                    searchInputRef.current?.focus()
+                  }}
+                  title={t('Clear the filter')}
+                  aria-label={t('Clear the filter')}
+                >
                   <X size={11} />
                 </button>
               ) : null}
@@ -676,41 +692,35 @@ function SessionRow({
     <div
       className="session-item"
       data-active={active}
-      // The row holds its own buttons, so it cannot be one itself — but it
-      // still has to be reachable with the keyboard.
-      role="button"
-      tabIndex={0}
-      onClick={() => onSelect(session.file)}
-      onKeyDown={(event) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return
-        event.preventDefault()
-        onSelect(session.file)
-      }}
-      title={session.name || session.preview || session.file}
     >
-      <MessageSquare size={13} className="session-item__icon" />
-      <span className="session-item__text">
-        {renaming ? (
-          <input
-            className="session-item__input"
-            value={draft}
-            autoFocus
-            onChange={(event) => onRenameDraft(event.target.value)}
-            onBlur={() => onCommitRename(session.file)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                onCommitRename(session.file)
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault()
-                onCancelRename()
-              }
-            }}
-            onClick={(event) => event.stopPropagation()}
-          />
-        ) : (
-          <>
+      {renaming ? (
+        <input
+          className="session-item__input"
+          value={draft}
+          aria-label={t('Rename conversation')}
+          autoFocus
+          onChange={(event) => onRenameDraft(event.target.value)}
+          onBlur={() => onCommitRename(session.file)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              onCommitRename(session.file)
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              onCancelRename()
+            }
+          }}
+        />
+      ) : (
+        <button
+          type="button"
+          className="session-item__main"
+          onClick={() => onSelect(session.file)}
+          title={session.name || session.preview || session.file}
+        >
+          <MessageSquare size={13} className="session-item__icon" />
+          <span className="session-item__text">
             <span className="session-item__title">
               {session.name || session.preview || t('Untitled session')}
             </span>
@@ -722,35 +732,38 @@ function SessionRow({
                 <span>· {session.messageCount} {session.messageCount === 1 ? t('msg') : t('msgs')}</span>
               ) : null}
             </span>
-          </>
-        )}
-      </span>
+          </span>
+        </button>
+      )}
       <button
+        type="button"
         className="session-item__rename"
         data-on={pinned}
+        aria-label={pinned ? t('Unpin conversation') : t('Pin conversation to the top')}
         title={pinned ? t('Unpin conversation') : t('Pin conversation to the top')}
-        onClick={(event) => {
-          event.stopPropagation()
+        onClick={() => {
           onTogglePin()
         }}
       >
         <Pin size={11} />
       </button>
       <button
+        type="button"
         className="session-item__rename"
+        aria-label={t('Rename conversation')}
         title={t('Rename conversation')}
-        onClick={(event) => {
-          event.stopPropagation()
+        onClick={() => {
           onStartRename()
         }}
       >
         <Pencil size={11} />
       </button>
       <button
+        type="button"
         className="session-item__rename session-item__rename--danger"
+        aria-label={t('Delete conversation')}
         title={t('Delete conversation')}
-        onClick={(event) => {
-          event.stopPropagation()
+        onClick={() => {
           onDelete()
         }}
       >

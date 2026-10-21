@@ -157,7 +157,7 @@ export function CommitDialog({
   const [undoMessage, setUndoMessage] = useState<string>()
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
-  const [historyOpen, setHistoryOpen] = useState(true)
+  const [historyOpen, setHistoryOpen] = useState(() => window.innerHeight >= 860)
   const [commits, setCommits] = useState<GitCommitEntry[]>()
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(false)
@@ -583,7 +583,7 @@ export function CommitDialog({
                           <button
                             type="button"
                             className="commit__history-pick"
-                            title={t('Use this commit message')}
+                            title={`${t('Use this commit message')}: ${commit.subject}`}
                             aria-label={`${t('Use this commit message')}: ${commit.subject}`}
                             onClick={() => pickCommit(commit)}
                           >

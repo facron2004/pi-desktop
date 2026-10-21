@@ -85,7 +85,7 @@ const REASONING_HINTS: Record<string, string> = {
   medium: 'Balanced speed and depth',
   high: 'Thorough reasoning',
   xhigh: 'Deepest reasoning',
-  max: 'Deepest reasoning'
+  max: 'Maximum reasoning effort'
 }
 
 function reasoningHint(level: string): string {
@@ -146,11 +146,12 @@ export function ModelControls() {
   return (
     <div className="topbar__group model-controls">
       <Popover
-        width={320}
+        width={340}
         renderTrigger={({ open, toggle }) => (
           <button
             className="pill model-picker__trigger"
             data-active={open}
+            aria-expanded={open}
             onClick={toggle}
             disabled={!ready}
             title={triggerTitle}
@@ -171,6 +172,7 @@ export function ModelControls() {
                 <input
                   value={modelQuery}
                   placeholder={t('Filter models')}
+                  aria-label={t('Filter models')}
                   autoFocus
                   onChange={(event) => setModelQuery(event.target.value)}
                 />
@@ -204,6 +206,7 @@ export function ModelControls() {
                   key={`${model.provider}/${model.id}`}
                   className="popover__item model-picker__row"
                   data-selected={selected}
+                  aria-pressed={selected}
                   title={rowTitle}
                   onClick={() => {
                     void setModel(model)
@@ -252,6 +255,7 @@ export function ModelControls() {
           <button
             className="pill"
             data-active={open}
+            aria-expanded={open}
             onClick={toggle}
             disabled={!ready || !thinkingLevels.length}
           >
@@ -269,6 +273,7 @@ export function ModelControls() {
                 key={levelName}
                 className="popover__item model-picker__reasoning-row"
                 data-selected={currentLevel === levelName}
+                aria-pressed={currentLevel === levelName}
                 onClick={() => {
                   void setThinkingLevel(levelName)
                   close()
@@ -294,8 +299,16 @@ export function ModelControls() {
       {context ? (
         <Popover
           width={290}
+          className="context-popover"
           renderTrigger={({ open, toggle }) => (
-            <button className="context-meter" data-active={open} onClick={toggle} title={t('Session details')}>
+            <button
+              className="context-meter"
+              data-active={open}
+              aria-expanded={open}
+              aria-label={t('Session details')}
+              onClick={toggle}
+              title={t('Session details')}
+            >
               <Gauge size={13} />
               <span>
                 {formatTokens(context.tokens ?? 0)} / {formatTokens(context.contextWindow)}

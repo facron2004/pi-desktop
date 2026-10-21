@@ -35,12 +35,16 @@ export function ToolGroup({ items }: { items: ToolItem[] }) {
   return (
     <div className="tool tool--group" data-tone={tone}>
       <div className="tool__head">
-        <button className="tool__head-main" onClick={() => setOpen((value) => !value)}>
+        <button
+          className="tool__head-main"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
           <span className="tool__icon">
             <Icon size={12} strokeWidth={2.2} />
           </span>
           <span className="tool__name">
-            {items.length} {descriptor.plural}
+            {items.length} {t(descriptor.plural)}
           </span>
           <span className="tool__summary">{summary}</span>
         </button>
@@ -48,6 +52,7 @@ export function ToolGroup({ items }: { items: ToolItem[] }) {
           className="tool__caret"
           onClick={() => setOpen((value) => !value)}
           aria-label={open ? t('Collapse') : t('Expand')}
+          aria-expanded={open}
         >
           <ChevronRight size={13} className="caret" data-open={open} />
         </button>

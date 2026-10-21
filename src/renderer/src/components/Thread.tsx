@@ -345,6 +345,7 @@ export function Thread() {
               ref={searchInputRef}
               value={query}
               placeholder={t('Search this conversation')}
+              aria-label={t('Search this conversation')}
               autoFocus
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
@@ -359,7 +360,12 @@ export function Thread() {
                 }
               }}
             />
-            <span className="thread-search__count">
+            <span
+              className="thread-search__count"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
               {query.trim()
                 ? hits.length
                   ? `${hitIndex + 1} ${t('of')} ${hits.length}`
@@ -369,6 +375,7 @@ export function Thread() {
             <button
               className="icon-btn"
               title={t('Close search')}
+              aria-label={t('Close search')}
               onClick={() => {
                 setSearchOpen(false)
                 setQuery('')
@@ -387,6 +394,7 @@ export function Thread() {
                     key={hit.key}
                     className="thread-search__hit"
                     data-active={index === hitIndex}
+                    aria-current={index === hitIndex ? 'location' : undefined}
                     onClick={() => {
                       setHitIndex(index)
                       jumpToHit(hit)
@@ -507,7 +515,12 @@ export function Thread() {
 
       {!atBottom ? (
         <div className="scroll-bottom-wrap">
-          <button className="scroll-bottom" onClick={scrollToBottom} title={t('Scroll to the latest')}>
+          <button
+            className="scroll-bottom"
+            onClick={scrollToBottom}
+            title={t('Scroll to the latest')}
+            aria-label={t('Scroll to the latest')}
+          >
             <ArrowDown size={15} />
           </button>
         </div>

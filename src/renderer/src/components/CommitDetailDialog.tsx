@@ -48,9 +48,13 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
   const [open, setOpen] = useState<string | null>(null)
   const [diffs, setDiffs] = useState<Record<string, FileDiffState>>({})
   const [filter, setFilter] = useState('')
+  /** Read the commit's side against the file on disk instead of its parent. */
+  const [worktreeMode, setWorktreeMode] = useState(false)
   const requestRef = useRef(0)
   const hashRef = useRef(currentHash)
   hashRef.current = currentHash
+  const worktreeRef = useRef(worktreeMode)
+  worktreeRef.current = worktreeMode
 
   const load = useCallback(async (target: string) => {
     const request = ++requestRef.current
@@ -104,6 +108,26 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
     setBackStack(backStack.slice(0, -1))
   }
 
+  const loadFileDiff = useCallback(
+    async (file: GitCommitFile, againstWorktree: boolean) => {
+      const requestHash = currentHash
+      setDiffs((previous) => ({ ...previous, [file.path]: 'loading' }))
+      try {
+        const data = againstWorktree
+          ? await window.pi.git.commitWorktreeDiff(requestHash, file.path)
+          : await window.pi.git.commitFileDiff(requestHash, file.path)
+        // A response from another commit or another comparison mode belongs
+        // to neither the list nor the cache it would land in.
+        if (hashRef.current !== requestHash || worktreeRef.current !== againstWorktree) return
+        setDiffs((previous) => ({ ...previous, [file.path]: data ?? 'error' }))
+      } catch {
+        if (hashRef.current !== requestHash || worktreeRef.current !== againstWorktree) return
+        setDiffs((previous) => ({ ...previous, [file.path]: 'error' }))
+      }
+    },
+    [currentHash]
+  )
+
   const expand = useCallback(
     async (file: GitCommitFile) => {
       if (open === file.path) {
@@ -112,21 +136,21 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
       }
       setOpen(file.path)
       if (diffs[file.path]) return
-      const requestHash = currentHash
-      setDiffs((previous) => ({ ...previous, [file.path]: 'loading' }))
-      try {
-        const data = await window.pi.git.commitFileDiff(requestHash, file.path)
-        // A response that lands after the reader walked to another commit
-        // belongs to neither its list nor its cache.
-        if (hashRef.current !== requestHash) return
-        setDiffs((previous) => ({ ...previous, [file.path]: data ?? 'error' }))
-      } catch {
-        if (hashRef.current !== requestHash) return
-        setDiffs((previous) => ({ ...previous, [file.path]: 'error' }))
-      }
+      await loadFileDiff(file, worktreeMode)
     },
-    [currentHash, diffs, open]
+    [diffs, loadFileDiff, open, worktreeMode]
   )
+
+  // Switching the comparison drops every cached diff and reloads the file that
+  // is on screen, so the row the reader is looking at changes sides with it.
+  useEffect(() => {
+    setDiffs({})
+    if (!open) return
+    const file = detail?.files.find((entry) => entry.path === open)
+    if (file) void loadFileDiff(file, worktreeMode)
+    // Only the mode change matters here; open/detail are read at that moment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [worktreeMode])
 
   const copyHash = useCallback(async () => {
     if (!detail) return
@@ -248,6 +272,7 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
               className="icon-btn"
               onClick={() => void copyPatch()}
               title={t('Copy the patch')}
+              aria-label={t('Copy the patch')}
               disabled={!detail}
             >
               <ClipboardCopy size={13} />
@@ -256,10 +281,11 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
               className="icon-btn"
               onClick={() => void load(currentHash)}
               title={t('Refresh')}
+              aria-label={t('Refresh')}
             >
               <RefreshCw size={13} className={state === 'loading' ? 'spin' : undefined} />
             </button>
-            <button className="icon-btn" onClick={onClose} title={t('Close')}>
+            <button className="icon-btn" onClick={onClose} title={t('Close')} aria-label={t('Close')}>
               <X size={15} />
             </button>
           </div>
@@ -302,6 +328,7 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
                       className="icon-btn"
                       onClick={() => setFilter('')}
                       title={t('Clear the filter')}
+                      aria-label={t('Clear the filter')}
                     >
                       <X size={11} />
                     </button>

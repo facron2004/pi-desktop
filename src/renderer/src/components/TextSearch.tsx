@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Loader2, Search, X } from 'lucide-react'
+import { ArrowLeft, Loader2, Search, X } from 'lucide-react'
 import type { TextSearchHit } from '@shared/types'
 import { relativePath } from '../lib/path'
 import { useT } from '../lib/i18n'
@@ -27,6 +27,7 @@ export function TextSearch({
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<TextSearchHit[]>([])
   const [status, setStatus] = useState<SearchStatus>('idle')
+  const inputRef = useRef<HTMLInputElement>(null)
   const version = useRef(0)
   const trimmed = query.trim()
 
@@ -90,18 +91,33 @@ export function TextSearch({
       <div className="tree__search">
         {status === 'searching' ? <Loader2 size={12} className="spin" /> : <Search size={12} />}
         <input
+          ref={inputRef}
           value={query}
           autoFocus
+          aria-label={t('Search inside the project files')}
           placeholder={t('Search inside the project files')}
           onChange={(event) => setQuery(event.target.value)}
         />
         {query ? (
-          <button className="icon-btn" onClick={() => setQuery('')} title={t('Clear')}>
+          <button
+            className="icon-btn"
+            onClick={() => {
+              setQuery('')
+              inputRef.current?.focus()
+            }}
+            title={t('Clear')}
+            aria-label={t('Clear')}
+          >
             <X size={12} />
           </button>
         ) : null}
-        <button className="icon-btn" onClick={onClose} title={t('Close the text search')}>
-          <X size={12} />
+        <button
+          className="icon-btn"
+          onClick={onClose}
+          title={t('Back to files')}
+          aria-label={t('Back to files')}
+        >
+          <ArrowLeft size={12} />
         </button>
       </div>
 

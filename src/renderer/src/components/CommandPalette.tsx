@@ -69,7 +69,9 @@ export function CommandPalette({
                 </span>
                 <span className="palette__name">/{command.name}</span>
                 {command.description ? (
-                  <span className="palette__desc">{command.description}</span>
+                  <span className="palette__desc">
+                    {command.source === 'app' ? t(command.description) : command.description}
+                  </span>
                 ) : null}
                 <span className={`palette__badge ${meta.className}`}>{meta.label}</span>
               </button>
@@ -80,11 +82,12 @@ export function CommandPalette({
 
       <div className="palette__foot">
         <kbd>↑</kbd>
+        <span>{t('or')}</span>
         <kbd>↓</kbd>
         <span>{t('to navigate')}</span>
         <kbd>↵</kbd>
         <span>{t('to select')}</span>
-        <kbd>esc</kbd>
+        <kbd>Esc</kbd>
         <span>{t('to dismiss')}</span>
       </div>
     </div>

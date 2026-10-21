@@ -3,6 +3,7 @@ import { ArrowDown, Copy, Eraser, Folder, Search, Square, SquareTerminal, X } fr
 import type { PiEvent } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { formatDuration } from '../lib/format'
+import { formatPlatformShortcut } from '../lib/shortcuts'
 import { scrollBehavior } from '../lib/motion'
 import { useT } from '../lib/i18n'
 import { parseAnsi, stripAnsi, type AnsiSegment } from '../lib/ansi'
@@ -102,6 +103,7 @@ export function TerminalPanel({
 }) {
   const t = useT()
   const status = useAppStore((state) => state.status)
+  const platform = useAppStore((state) => state.info?.platform)
   const workspace = useAppStore((state) => state.workspace)
   const showToast = useAppStore((state) => state.showToast)
   const storedHeight = useAppStore((state) => state.settings.terminalHeight)
@@ -490,9 +492,9 @@ export function TerminalPanel({
   }, [blocks, showToast, t])
 
   const onInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    // Ctrl+C behaves like a terminal: it stops the running command, and when
-    // nothing runs it throws away the draft instead of copying a selection.
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+    // Control+C is the shell interrupt; Command+C must remain native copy on macOS.
+    if (event.ctrlKey && event.key.toLowerCase() === 'c') {
+      if (event.currentTarget.selectionStart !== event.currentTarget.selectionEnd) return
       event.preventDefault()
       if (runningRef.current) {
         void stop()
@@ -614,7 +616,10 @@ export function TerminalPanel({
               className="terminal__filter-clear"
               title={t('Clear the filter')}
               aria-label={t('Clear the filter')}
-              onClick={() => setFilter('')}
+              onClick={() => {
+                setFilter('')
+                filterRef.current?.focus()
+              }}
             >
               <X size={10} />
             </button>
@@ -630,6 +635,7 @@ export function TerminalPanel({
           <button
             className="icon-btn"
             title={t('Copy the output')}
+            aria-label={t('Copy the output')}
             onClick={() => void copyOutput()}
             disabled={!hasBlocks}
           >
@@ -638,12 +644,13 @@ export function TerminalPanel({
           <button
             className="icon-btn"
             title={t('Clear')}
+            aria-label={t('Clear')}
             onClick={clear}
             disabled={!hasBlocks}
           >
             <Eraser size={13} />
           </button>
-          <button className="icon-btn" title={t('Close')} onClick={onClose}>
+          <button className="icon-btn" title={t('Close')} aria-label={t('Close')} onClick={onClose}>
             <X size={14} />
           </button>
         </div>
@@ -718,7 +725,12 @@ export function TerminalPanel({
         </div>
 
         {!atBottom && hasBlocks ? (
-          <button className="terminal__jump" onClick={scrollToBottom} title={t('Scroll to the latest')}>
+          <button
+            className="terminal__jump"
+            onClick={scrollToBottom}
+            title={t('Scroll to the latest')}
+            aria-label={t('Scroll to the latest')}
+          >
             <ArrowDown size={11} />
             {t('Latest')}
           </button>
@@ -746,7 +758,9 @@ export function TerminalPanel({
           }}
           onKeyDown={onInputKeyDown}
         />
-        <span className="terminal__hint">{t('Enter to run · Ctrl+L to clear')}</span>
+        <span className="terminal__hint">
+          {formatPlatformShortcut(t('Enter to run · Ctrl+L to clear'), platform)}
+        </span>
       </div>
     </section>
   )

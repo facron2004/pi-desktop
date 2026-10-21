@@ -65,13 +65,14 @@ export function ExtensionDialog() {
     if (!request?.timeout) return null
     if (remaining === null) return t('Pi resolves this on its own')
     return remaining > 0
-      ? `${t('Pi resolves this on its own in')} ${remaining}${t('seconds')}`
+      ? `${t('Pi resolves this on its own in')} ${remaining} ${t('seconds')}`
       : t('Pi is resolving this on its own')
   }, [request, remaining, t])
 
   if (!request) return null
 
   const title = t(request.title ?? 'Pi is asking for input')
+  const selectedIndex = (request.options ?? []).indexOf(selected ?? '')
 
   const submit = () => {
     if (request.method === 'select') {
@@ -105,7 +106,11 @@ export function ExtensionDialog() {
           </span>
           <div className="modal__headings">
             <h2 id="extension-dialog-title" className="modal__title">{title}</h2>
-            {request.message ? <p className="modal__message">{request.message}</p> : null}
+            {request.message ? (
+              <p id="extension-dialog-message" className="modal__message">
+                {request.message}
+              </p>
+            ) : null}
           </div>
         </header>
 
@@ -114,6 +119,7 @@ export function ExtensionDialog() {
             className="modal__options"
             role="listbox"
             aria-label={title}
+            aria-activedescendant={selectedIndex >= 0 ? `extension-option-${selectedIndex}` : undefined}
             tabIndex={0}
             ref={optionsRef}
             onKeyDown={(event) => {
@@ -134,9 +140,10 @@ export function ExtensionDialog() {
               }
             }}
           >
-            {(request.options ?? []).map((option) => (
+            {(request.options ?? []).map((option, index) => (
               <button
                 key={option}
+                id={`extension-option-${index}`}
                 role="option"
                 aria-selected={selected === option}
                 className="modal__option"
@@ -159,6 +166,8 @@ export function ExtensionDialog() {
             className="input modal__input"
             value={value}
             placeholder={request.placeholder}
+            aria-labelledby="extension-dialog-title"
+            aria-describedby={request.message ? 'extension-dialog-message' : undefined}
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter') {
@@ -176,6 +185,8 @@ export function ExtensionDialog() {
             rows={10}
             value={value}
             placeholder={request.placeholder}
+            aria-labelledby="extension-dialog-title"
+            aria-describedby={request.message ? 'extension-dialog-message' : undefined}
             onChange={(event) => setValue(event.target.value)}
           />
         ) : null}

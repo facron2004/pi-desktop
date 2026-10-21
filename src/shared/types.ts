@@ -394,6 +394,8 @@ export interface GitWorktree {
   branch?: string
   current: boolean
   bare: boolean
+  /** Number of changed and untracked files in that worktree. */
+  dirty?: number
 }
 
 export interface GitBranches {
@@ -592,6 +594,8 @@ export interface PiDesktopBridge {
     commitDetail(hash: string): Promise<GitCommitDetail | null>
     /** Both sides of one file as they were in one commit. */
     commitFileDiff(hash: string, file: string): Promise<GitCommitFileDiff | null>
+    /** Both sides of one file between a commit and the file on disk. */
+    commitWorktreeDiff(hash: string, file: string): Promise<GitCommitFileDiff | null>
     /** Apply a unified patch to the working tree, optionally in reverse. */
     applyPatch(patch: string, reverse?: boolean): Promise<GitCommitResult>
     /** Local branches and worktrees of the open repository. */
@@ -604,6 +608,8 @@ export interface PiDesktopBridge {
       branch: string,
       createBranch?: boolean
     ): Promise<GitWorktreeResult>
+    /** Remove a registered worktree that is not the one that is open. */
+    removeWorktree(path: string): Promise<GitCommitResult>
     /** Discard the working-tree changes of a tracked file. */
     revertFile(file: string): Promise<GitCommitResult>
     /** Move one file into (or out of) the index. */

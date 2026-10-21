@@ -142,6 +142,7 @@ export function ThinkingBlock({ text, streaming }: { text: string; streaming?: b
     <div className="thinking" data-open={open}>
       <button
         className="thinking__head"
+        aria-expanded={open}
         onClick={() => {
           setTouched(true)
           setOpen((value) => !value)

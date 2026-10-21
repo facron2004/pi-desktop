@@ -256,11 +256,17 @@ export function ReviewView({
             <Search size={12} />
             <input
               value={filter}
-              placeholder={t('Filter the working tree')}
+              placeholder={t('Filter files')}
+              aria-label={t('Filter the working tree')}
               onChange={(event) => setFilter(event.target.value)}
             />
             {filter ? (
-              <button className="icon-btn" onClick={() => setFilter('')} title={t('Clear the filter')}>
+              <button
+                className="icon-btn"
+                onClick={() => setFilter('')}
+                title={t('Clear the filter')}
+                aria-label={t('Clear the filter')}
+              >
                 <X size={11} />
               </button>
             ) : null}
@@ -297,6 +303,7 @@ export function ReviewView({
               className="icon-btn"
               onClick={() => void copyPatch()}
               title={t('Copy the patch of the whole working tree')}
+              aria-label={t('Copy the patch of the whole working tree')}
             >
               <ClipboardCopy size={12} />
             </button>
@@ -304,6 +311,7 @@ export function ReviewView({
               className="icon-btn"
               onClick={() => void copyPaths()}
               title={t('Copy the paths of the changed files')}
+              aria-label={t('Copy the paths of the changed files')}
             >
               <Copy size={12} />
             </button>
@@ -311,6 +319,7 @@ export function ReviewView({
               className="icon-btn"
               onClick={() => void refresh()}
               title={t('Refresh the working tree')}
+              aria-label={t('Refresh the working tree')}
               disabled={refreshing}
             >
               <RefreshCw size={12} className={refreshing ? 'spin' : undefined} />
@@ -567,7 +576,7 @@ function ReviewFile({
                 </span>
               </>
             ) : null}
-            {file.path}
+            <span className="review__new-path">{file.path}</span>
           </span>
           <span className="review__stats">
             {file.added ? <span data-kind="add">+{file.added}</span> : null}
@@ -580,6 +589,7 @@ function ReviewFile({
             className="icon-btn review__stage"
             onClick={onToggleStage}
             title={file.staged ? t('Unstage this file') : t('Stage this file')}
+            aria-label={file.staged ? t('Unstage this file') : t('Stage this file')}
           >
             {file.staged ? <Minus size={12} /> : <Plus size={12} />}
           </button>
@@ -587,13 +597,19 @@ function ReviewFile({
             className="icon-btn"
             onClick={onCopyPatch}
             title={t('Copy this patch')}
+            aria-label={t('Copy this patch')}
           >
             <ClipboardCopy size={12} />
           </button>
-          <button className="icon-btn" onClick={onOpen} title={t('Open the file')}>
+          <button className="icon-btn" onClick={onOpen} title={t('Open the file')} aria-label={t('Open the file')}>
             <SquareArrowOutUpRight size={12} />
           </button>
-          <button className="icon-btn" onClick={onReveal} title={t('Reveal in the file manager')}>
+          <button
+            className="icon-btn"
+            onClick={onReveal}
+            title={t('Reveal in the file manager')}
+            aria-label={t('Reveal in the file manager')}
+          >
             <FileWarning size={12} />
           </button>
           {file.untracked ? null : (
@@ -601,6 +617,7 @@ function ReviewFile({
               className="icon-btn review__revert"
               onClick={onRevert}
               title={t('Revert this file')}
+              aria-label={t('Revert this file')}
             >
               <RotateCcw size={12} />
             </button>

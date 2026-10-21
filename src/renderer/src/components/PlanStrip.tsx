@@ -6,6 +6,7 @@ import {
   Copy,
   ListChecks,
   MessageSquarePlus,
+  Pencil,
   X
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'

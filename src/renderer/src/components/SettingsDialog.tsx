@@ -65,17 +65,31 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     setCustomInstructions(settings.customInstructions ?? '')
   }, [settings.piPath, settings.model, settings.thinkingLevel, settings.customInstructions])
 
+  const selectedModel = models.find(
+    (model) => defaultModel === model.id || defaultModel === `${model.provider}/${model.id}`
+  )
+  const savedModel = models.find(
+    (model) => settings.model === model.id || settings.model === `${model.provider}/${model.id}`
+  )
+  const modelValue = selectedModel
+    ? `${selectedModel.provider}/${selectedModel.id}`
+    : defaultModel.trim() || undefined
+  const savedModelValue = savedModel
+    ? `${savedModel.provider}/${savedModel.id}`
+    : settings.model?.trim() || undefined
+  const hasDraftChanges =
+    (piPath.trim() || undefined) !== (settings.piPath?.trim() || undefined) ||
+    (provider.trim() || undefined) !== (settings.provider?.trim() || undefined) ||
+    modelValue !== savedModelValue ||
+    (defaultThinking.trim() || undefined) !== (settings.thinkingLevel?.trim() || undefined) ||
+    (customInstructions.trim() || undefined) !==
+      (settings.customInstructions?.trim() || undefined)
+
   const save = async () => {
-    const selectedModel = models.find(
-      (model) =>
-        defaultModel === model.id || defaultModel === `${model.provider}/${model.id}`
-    )
     await updateSettings({
       piPath: piPath.trim() || undefined,
       provider: provider.trim() || undefined,
-      model: selectedModel
-        ? `${selectedModel.provider}/${selectedModel.id}`
-        : defaultModel.trim() || undefined,
+      model: modelValue,
       thinkingLevel: defaultThinking || undefined,
       customInstructions: customInstructions.trim() || undefined
     })
@@ -172,7 +186,11 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           <button className="btn" onClick={onClose}>
             {t('Close')}
           </button>
-          <button className="btn btn--primary" onClick={() => void save()}>
+          <button
+            className="btn btn--primary"
+            disabled={!hasDraftChanges}
+            onClick={() => void save()}
+          >
             <Check size={13} />
             {t('Save')}
           </button>

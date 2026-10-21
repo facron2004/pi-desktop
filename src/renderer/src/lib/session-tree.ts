@@ -64,7 +64,7 @@ export interface TreeRow {
 
 export interface TreeStats {
   entries: number
-  branches: number
+  forkPoints: number
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -126,16 +126,16 @@ export function pathToLeaf(tree: SessionTree): Set<string> {
 /** Count the entries and the places where more than one branch continues. */
 export function treeStats(tree: SessionTree): TreeStats {
   let entries = 0
-  let branches = 0
+  let forkPoints = 0
   const walk = (nodes: SessionTreeNode[]) => {
     for (const node of nodes) {
       entries += 1
-      if (node.children.length > 1) branches += 1
+      if (node.children.length > 1) forkPoints += 1
       walk(node.children)
     }
   }
   walk(tree.roots)
-  return { entries, branches }
+  return { entries, forkPoints }
 }
 
 /** Ids of every node that has children, so the tree can start fully open. */

@@ -1,11 +1,21 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode
+} from 'react'
 
 interface PopoverProps {
   /**
    * The trigger element. It has to call `toggle` when it is clicked —
    * without it the popover never opens.
    */
-  renderTrigger: (state: { open: boolean; toggle: () => void }) => ReactNode
+  renderTrigger: (state: {
+    open: boolean
+    toggle: (event?: ReactMouseEvent<HTMLElement>) => void
+  }) => ReactNode
   children: (close: () => void) => ReactNode
   align?: 'left' | 'right'
   width?: number
@@ -21,6 +31,20 @@ export function Popover({
 }: PopoverProps) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLElement | null>(null)
+
+  const close = useCallback(() => {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }, [])
+
+  const toggle = (event?: ReactMouseEvent<HTMLElement>) => {
+    const target = event?.currentTarget ?? document.activeElement
+    setOpen((value) => {
+      if (!value) triggerRef.current = target instanceof HTMLElement ? target : null
+      return !value
+    })
+  }
 
   useEffect(() => {
     if (!open) return
@@ -29,20 +53,30 @@ export function Popover({
         setOpen(false)
       }
     }
+    const onFocusIn = (event: FocusEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      close()
     }
     document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('focusin', onFocusIn)
     document.addEventListener('keydown', onKeyDown)
     return () => {
       document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('focusin', onFocusIn)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [open])
+  }, [close, open])
 
   return (
     <div className="popover-wrap" ref={containerRef}>
-      {renderTrigger({ open, toggle: () => setOpen((value) => !value) })}
+      {renderTrigger({ open, toggle })}
       {open ? (
         <div
           className={`popover ${className ?? ''}`}
@@ -52,7 +86,7 @@ export function Popover({
             width
           }}
         >
-          {children(() => setOpen(false))}
+          {children(close)}
         </div>
       ) : null}
     </div>

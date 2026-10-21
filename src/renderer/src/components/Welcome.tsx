@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
-import { FolderOpen, GitBranch, Keyboard, MessageSquare, Terminal, Wand2 } from 'lucide-react'
+import {
+  ArrowUpRight,
+  FolderOpen,
+  GitBranch,
+  Keyboard,
+  Lightbulb,
+  MessageSquare,
+  Terminal,
+  Wand2
+} from 'lucide-react'
 import { formatRelativeTime } from '../lib/format'
+import { formatPlatformShortcut } from '../lib/shortcuts'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 
@@ -16,9 +26,9 @@ const STARTERS = [
     body: 'Read the repository and propose an implementation plan for the feature I describe.'
   },
   {
-    icon: Terminal,
-    title: 'Fix a failing test',
-    body: 'Run the test suite, find what breaks, and fix the root cause.'
+    icon: Lightbulb,
+    title: 'Suggest an improvement',
+    body: 'Find one small change that would make this project easier to use, and explain why.'
   }
 ]
 
@@ -32,14 +42,29 @@ const RECENT_LIMIT = 4
 type ProjectKind = 'node' | 'python' | 'rust' | 'go' | 'unknown'
 
 /**
- * Look at the files that say what a project is built with.
+ * Read the package manifest before offering a test-suite starter.
  *
- * The read is cheap and the answer is worth it: a project with a test script
- * can be offered the test suite, and a Rust project a cargo build.
+ * The read is cheap and keeps the empty state from suggesting `npm test`
+ * when the project has no test script.
  */
 async function detectKind(root: string): Promise<ProjectKind> {
   const has = async (name: string) => Boolean(await window.pi.fs.read(`${root}/${name}`))
-  if (await has('package.json')) return 'node'
+  const packageJson = await window.pi.fs.read(`${root}/package.json`)
+  if (packageJson) {
+    try {
+      const manifest = JSON.parse(packageJson.content) as { scripts?: Record<string, unknown> }
+      const testScript = manifest.scripts?.test
+      if (
+        typeof testScript === 'string' &&
+        testScript.trim() &&
+        !/no test specified/i.test(testScript)
+      ) {
+        return 'node'
+      }
+    } catch {
+      // A malformed manifest cannot confirm that an npm test command exists.
+    }
+  }
   if (await has('pyproject.toml') || (await has('requirements.txt'))) return 'python'
   if (await has('Cargo.toml')) return 'rust'
   if (await has('go.mod')) return 'go'
@@ -69,6 +94,7 @@ export function Welcome({ onPick }: { onPick: () => void }) {
   const settings = useAppStore((state) => state.settings)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const selectSession = useAppStore((state) => state.selectSession)
+  const platform = useAppStore((state) => state.info?.platform)
   const t = useT()
 
   // The conversations of this project, most recent first. Resuming one from
@@ -122,8 +148,13 @@ export function Welcome({ onPick }: { onPick: () => void }) {
                 key={starter.title}
                 onClick={() => void send(t(starter.body), [])}
               >
+                <div className="welcome__card-top">
+                  <span className="welcome__card-icon" aria-hidden="true">
+                    <starter.icon size={16} />
+                  </span>
+                  <ArrowUpRight className="welcome__card-arrow" size={15} aria-hidden="true" />
+                </div>
                 <div className="welcome__card-title">
-                  <starter.icon size={13} style={{ verticalAlign: -2, marginRight: 6 }} />
                   {t(starter.title)}
                 </div>
                 <div className="welcome__card-body">{t(starter.body)}</div>
@@ -186,12 +217,12 @@ export function Welcome({ onPick }: { onPick: () => void }) {
             <kbd>/</kbd> {t('commands')}
           </span>
           <span>
-            <kbd>Ctrl</kbd>
+            <kbd>{formatPlatformShortcut('Ctrl', platform)}</kbd>
             <kbd>Shift</kbd>
             <kbd>P</kbd> {t('everything')}
           </span>
           <span>
-            <kbd>Ctrl</kbd>
+            <kbd>{formatPlatformShortcut('Ctrl', platform)}</kbd>
             <kbd>K</kbd> {t('focus composer')}
           </span>
           <button

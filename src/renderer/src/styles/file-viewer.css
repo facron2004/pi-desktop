@@ -8,6 +8,19 @@
   row-gap: 4px;
 }
 
+/* Give the compact toolbar controls a little more room to hit. */
+.viewer .viewer__actions > .ghost-btn {
+  min-width: 28px;
+  height: 28px;
+}
+
+.viewer__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
 /* The scrolling code is focusable, so it can take Ctrl+F right after a click. */
 .viewer__code:focus-visible {
   outline: 1px solid var(--accent-line);
@@ -24,13 +37,13 @@
 .fv-jump {
   flex: 0 0 auto;
   width: 58px;
-  height: 22px;
+  height: 28px;
   padding: 0 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-elevated);
   color: var(--text);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   font-variant-numeric: tabular-nums;
   text-align: center;
   outline: none;
@@ -68,13 +81,13 @@
 .fv-find__input {
   flex: 1 1 auto;
   min-width: 0;
-  height: 24px;
+  height: 28px;
   padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-elevated);
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   outline: none;
   transition: border-color 0.12s var(--ease);
 }
@@ -91,7 +104,7 @@
   flex: 0 0 auto;
   min-width: 56px;
   text-align: right;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   white-space: nowrap;
@@ -99,8 +112,8 @@
 
 .fv-find .icon-btn {
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
 }
 
 .fv-find .icon-btn:disabled {
@@ -135,4 +148,23 @@
 ::highlight(pi-file-find-current) {
   background-color: var(--blue);
   color: var(--accent-contrast);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fv-find {
+    animation: none;
+  }
+}
+
+@media (hover: none), (pointer: coarse), (any-pointer: coarse) {
+  .viewer .viewer__actions > .ghost-btn,
+  .viewer .fv-find .icon-btn {
+    min-width: 30px;
+    height: 30px;
+  }
+
+  .viewer .fv-jump,
+  .viewer .fv-find__input {
+    height: 30px;
+  }
 }

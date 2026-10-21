@@ -157,6 +157,7 @@ function GapButton({
     <button
       className="diff__gap"
       data-open={open}
+      aria-expanded={open}
       onClick={onToggle}
       title={open ? t('Hide these lines') : `${t('Show')} ${count} ${t('unchanged lines')}`}
     >
@@ -277,6 +278,7 @@ export function DiffView({
         className="diff__gutter diff__gutter--link"
         onClick={() => onOpenLine(line)}
         title={`${t('Open the file at line')} ${line}`}
+        aria-label={`${t('Open the file at line')} ${line}`}
       >
         {line}
       </button>

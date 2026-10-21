@@ -19,6 +19,7 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
   const [query, setQuery] = useState('')
   const [matches, setMatches] = useState<FileEntry[] | null>(null)
   const [searching, setSearching] = useState(false)
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const activeRoot = useRef(root)
   const searchVersion = useRef(0)
   activeRoot.current = root
@@ -127,12 +128,22 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
       <div className="tree__search">
         <Search size={12} />
         <input
+          ref={searchInputRef}
           value={query}
+          aria-label={t('Find files')}
           placeholder={t('Find files')}
           onChange={(event) => setQuery(event.target.value)}
         />
         {query ? (
-          <button className="icon-btn" onClick={() => setQuery('')} title={t('Clear')}>
+          <button
+            className="icon-btn"
+            onClick={() => {
+              setQuery('')
+              searchInputRef.current?.focus()
+            }}
+            title={t('Clear')}
+            aria-label={t('Clear')}
+          >
             <X size={12} />
           </button>
         ) : null}

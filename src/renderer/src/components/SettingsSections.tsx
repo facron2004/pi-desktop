@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Check, FolderOpen } from 'lucide-react'
 import type { AuthStatus } from '@shared/types'
 import { useT } from '../lib/i18n'
+import { formatPlatformShortcut } from '../lib/shortcuts'
 import { useAppStore } from '../store/useAppStore'
 import { Switch } from './Switch'
 
@@ -53,6 +54,7 @@ export function GeneralSettings({
 }: GeneralSettingsProps) {
   const models = useAppStore((state) => state.models)
   const language = useAppStore((state) => state.settings.language)
+  const platform = useAppStore((state) => state.info?.platform)
   const t = useT()
   const selectedModel = models.find(
     (model) =>
@@ -77,7 +79,10 @@ export function GeneralSettings({
               {t('Open a folder')}
             </button>
             <span className="field__hint" style={{ flex: 1 }}>
-              {t('Every folder you open is listed in the sidebar, and you can jump to it with Ctrl 1 … 9.')}
+              {formatPlatformShortcut(
+                t('Every folder you open is listed in the sidebar, and you can jump to it with Ctrl 1 … 9.'),
+                platform
+              )}
             </span>
           </div>
         </div>
@@ -218,13 +223,14 @@ export function AppearanceSettings() {
       />
 
       <SettingsGroup title={t('Language')}>
-        <div className="segmented">
+        <div className="segmented" role="group" aria-label={t('Language')}>
           {([
             { label: 'English', value: 'en' },
             { label: '简体中文', value: 'zh-CN' }
           ] as const).map((option) => (
             <button
               key={option.value}
+              aria-pressed={(settings.language ?? 'en') === option.value}
               data-active={(settings.language ?? 'en') === option.value}
               onClick={() => void updateSettings({ language: option.value })}
             >
@@ -235,10 +241,11 @@ export function AppearanceSettings() {
       </SettingsGroup>
 
       <SettingsGroup title={t('Theme')}>
-        <div className="segmented">
+        <div className="segmented" role="group" aria-label={t('Theme')}>
           {(['dark', 'light', 'system'] as const).map((theme) => (
             <button
               key={theme}
+              aria-pressed={settings.theme === theme}
               data-active={settings.theme === theme}
               onClick={() => void updateSettings({ theme })}
             >
@@ -249,7 +256,7 @@ export function AppearanceSettings() {
       </SettingsGroup>
 
       <SettingsGroup title={t('Text size')}>
-        <div className="segmented">
+        <div className="segmented settings-text-size" role="group" aria-label={t('Text size')}>
           {[
             { label: 'Small', value: 0.92 },
             { label: 'Default', value: 1 },
@@ -258,6 +265,8 @@ export function AppearanceSettings() {
           ].map((option) => (
             <button
               key={option.label}
+              data-size={option.label.toLowerCase()}
+              aria-pressed={Math.abs((settings.fontScale ?? 1) - option.value) < 0.01}
               data-active={Math.abs((settings.fontScale ?? 1) - option.value) < 0.01}
               onClick={() => void updateSettings({ fontScale: option.value })}
             >
@@ -341,14 +350,16 @@ export function PanelsSettings() {
       </SettingsGroup>
 
       <SettingsGroup title={t('Diff layout')}>
-        <div className="segmented">
+        <div className="segmented" role="group" aria-label={t('Diff layout')}>
           <button
+            aria-pressed={!settings.diffSplit}
             data-active={!settings.diffSplit}
             onClick={() => void updateSettings({ diffSplit: false })}
           >
             {t('Unified')}
           </button>
           <button
+            aria-pressed={settings.diffSplit === true}
             data-active={settings.diffSplit === true}
             onClick={() => void updateSettings({ diffSplit: true })}
           >

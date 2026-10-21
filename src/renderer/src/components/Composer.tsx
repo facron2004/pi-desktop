@@ -60,6 +60,7 @@ export function Composer() {
   const composerInsert = useAppStore((state) => state.composerInsert)
   const error = useAppStore((state) => state.error)
   const dismissError = useAppStore((state) => state.dismissError)
+  const fontScale = useAppStore((state) => state.settings.fontScale ?? 1)
   const t = useT()
   const toast = useAppStore((state) => state.toast)
 
@@ -155,8 +156,10 @@ export function Composer() {
     const node = textareaRef.current
     if (!node) return
     node.style.height = 'auto'
-    node.style.height = `${Math.min(node.scrollHeight, 240)}px`
-  }, [text])
+    const contentHeight = node.scrollHeight
+    node.style.height = `${Math.min(contentHeight, 240)}px`
+    node.style.overflowY = contentHeight > 240 ? 'auto' : 'hidden'
+  }, [text, fontScale])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -416,7 +419,12 @@ export function Composer() {
           {error ? (
             <div className="composer__notice" data-level="error" role="alert">
               <span>{error}</span>
-              <button className="icon-btn" onClick={dismissError} title={t('Dismiss')}>
+              <button
+                className="icon-btn"
+                onClick={dismissError}
+                aria-label={t('Dismiss')}
+                title={t('Dismiss')}
+              >
                 <X size={12} />
               </button>
             </div>
@@ -453,6 +461,8 @@ export function Composer() {
                       className="icon-btn"
                       style={{ width: 20, height: 20 }}
                       onClick={() => setImages((current) => current.filter((_, i) => i !== index))}
+                      aria-label={`${t('Remove image')} ${index + 1}`}
+                      title={`${t('Remove image')} ${index + 1}`}
                     >
                       <X size={12} />
                     </button>
@@ -468,6 +478,7 @@ export function Composer() {
             rows={1}
             value={text}
             disabled={!ready}
+            aria-label={t('Ask Pi anything, @ to add files, / for commands')}
             placeholder={
               ready
                 ? t('Ask Pi anything, @ to add files, / for commands')
@@ -507,9 +518,10 @@ export function Composer() {
             }}
           />
 
-          <div className="composer__bar" data-streaming={isStreaming}>
+          <div className="composer__bar" data-streaming={isStreaming} data-ready={ready}>
             <button
               className="icon-btn"
+              aria-label={t('Attach an image')}
               title={t('Attach an image')}
               disabled={!ready}
               onClick={() => fileRef.current?.click()}
@@ -518,6 +530,7 @@ export function Composer() {
             </button>
             <button
               className="icon-btn"
+              aria-label={t('Browse commands')}
               title={t('Browse commands')}
               disabled={!ready || commands.length === 0}
               onClick={openPaletteManually}
@@ -562,8 +575,8 @@ export function Composer() {
                 </div>
               ) : (
                 <span>
-                  <kbd>Enter</kbd> {t('to send')} · <kbd>↑</kbd> {t('for history')} · {t('type')}{' '}
-                  <kbd>/</kbd> {t('for commands')} · <kbd>@</kbd> {t('for a file')}
+                  <kbd>Enter</kbd> {t('to send')} · <kbd>↑</kbd> {t('for history')} · <kbd>/</kbd>{' '}
+                  {t('for commands')} · <kbd>@</kbd> {t('for a file')}
                 </span>
               )}
             </div>

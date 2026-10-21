@@ -529,10 +529,11 @@ export async function readCommitDetail(
 }
 
 /** Both sides of one file as they were in one commit. */
-export async function readCommitFileDiff(
+async function commitSides(
   root: string,
   hash: string,
-  filePath: string
+  filePath: string,
+  against: 'parent' | 'worktree'
 ): Promise<GitCommitFileDiff | null> {
   if (!root || !isHash(hash) || !filePath) return null
   const posix = filePath.replace(/\\/g, '/')
@@ -543,16 +544,31 @@ export async function readCommitFileDiff(
   const entry = parseNameStatus(nameStatus.stdout).get(filePath)
   const oldPath = (entry?.oldPath ?? filePath).replace(/\\/g, '/')
 
-  const [newSide, parent] = await Promise.all([
-    git(root, ['show', `${hash}:${posix}`]),
-    git(root, ['rev-parse', '--verify', `${hash}^`])
-  ])
-  let oldRaw = ''
-  if (parent.code === 0) {
-    const oldSide = await git(root, ['show', `${hash}^:${oldPath}`])
-    if (oldSide.code === 0) oldRaw = oldSide.stdout
+  const showSide = async (revision: string): Promise<string> => {
+    const shown = await git(root, ['show', revision])
+    return shown.code === 0 ? shown.stdout : ''
   }
-  const newRaw = newSide.code === 0 ? newSide.stdout : ''
+
+  let oldRaw = ''
+  let newRaw = ''
+  if (against === 'parent') {
+    const parent = await git(root, ['rev-parse', '--verify', `${hash}^`])
+    if (parent.code === 0) oldRaw = await showSide(`${hash}^:${oldPath}`)
+    newRaw = await showSide(`${hash}:${posix}`)
+  } else {
+    // Commit → working tree: the commit is the old side, the disk the new one.
+    oldRaw = await showSide(`${hash}:${oldPath}`)
+    const target = insideWorkTree(root, filePath)
+    if (target) {
+      try {
+        const buffer = await readFile(target)
+        newRaw = buffer.toString('utf8')
+        if (looksBinary(buffer)) oldRaw = `${oldRaw}\u0000`
+      } catch {
+        /* the file is gone from the working tree: the diff is a deletion */
+      }
+    }
+  }
 
   const binary = oldRaw.includes('\u0000') || newRaw.includes('\u0000')
   const oldCapped = binary ? { text: '', truncated: false } : capText(oldRaw)
@@ -565,6 +581,24 @@ export async function readCommitFileDiff(
     binary,
     truncated: oldCapped.truncated || newCapped.truncated
   }
+}
+
+/** Both sides of one file as they were between a commit's parent and the commit. */
+export function readCommitFileDiff(
+  root: string,
+  hash: string,
+  filePath: string
+): Promise<GitCommitFileDiff | null> {
+  return commitSides(root, hash, filePath, 'parent')
+}
+
+/** Both sides of one file between a commit and the file on disk. */
+export function readCommitWorktreeDiff(
+  root: string,
+  hash: string,
+  filePath: string
+): Promise<GitCommitFileDiff | null> {
+  return commitSides(root, hash, filePath, 'worktree')
 }
 
 /** A branch name we are willing to hand to git as a value (not an option). */
@@ -681,7 +715,51 @@ export async function readBranches(root: string): Promise<GitBranches> {
   }
   flush()
 
+  // A worktree is useful only when the menu says whether it has work in it;
+  // status per worktree is a handful of processes for a handful of folders.
+  await Promise.all(
+    worktrees
+      .filter((worktree) => !worktree.bare)
+      .slice(0, 20)
+      .map(async (worktree) => {
+        const status = await git(worktree.path, ['status', '--porcelain', '--untracked-files=all'])
+        if (status.code !== 0) return
+        const lines = status.stdout.split('\n').filter((line) => line.trim()).length
+        worktree.dirty = lines
+      })
+  )
+
   return { current, detached: !current, branches, worktrees }
+}
+
+/** Remove a registered worktree, refusing the one the app is looking at. */
+export async function removeWorktree(root: string, target: string): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  if (!target) return { ok: false, error: 'No worktree was given.' }
+  const resolved = path.resolve(target)
+
+  if (resolved === path.resolve(root)) {
+    return { ok: false, error: 'The worktree that is open cannot be removed.' }
+  }
+
+  const list = await git(root, ['worktree', 'list', '--porcelain'])
+  const registered = list.stdout
+    .split('\n')
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => path.resolve(line.slice('worktree '.length)))
+  if (!registered.includes(resolved)) {
+    return { ok: false, error: 'That folder is not a worktree of this repository.' }
+  }
+
+  const result = await git(root, ['worktree', 'remove', resolved], COMMIT_TIMEOUT_MS)
+  if (result.code !== 0) {
+    const detail = cleanError(result.stderr) || cleanError(result.stdout)
+    return {
+      ok: false,
+      error: detail || 'Could not remove the worktree. It may still have uncommitted changes.'
+    }
+  }
+  return { ok: true }
 }
 
 /** Check out a local branch. */

@@ -109,17 +109,19 @@ export function ContextPanel({ close }: { close: () => void }) {
           <div className="segmented segmented--tight">
             <button
               data-active={piState?.steeringMode !== 'all'}
+              aria-pressed={piState?.steeringMode !== 'all'}
               onClick={() => void setSteeringMode('one-at-a-time')}
               title={t('Deliver one steering message per turn')}
             >
-              One by one
+              {t('One by one')}
             </button>
             <button
               data-active={piState?.steeringMode === 'all'}
+              aria-pressed={piState?.steeringMode === 'all'}
               onClick={() => void setSteeringMode('all')}
               title={t('Deliver every steering message at once')}
             >
-              All at once
+              {t('All at once')}
             </button>
           </div>
         </div>
@@ -128,17 +130,19 @@ export function ContextPanel({ close }: { close: () => void }) {
           <div className="segmented segmented--tight">
             <button
               data-active={piState?.followUpMode !== 'all'}
+              aria-pressed={piState?.followUpMode !== 'all'}
               onClick={() => void setFollowUpMode('one-at-a-time')}
               title={t('Deliver one follow-up message per run')}
             >
-              One by one
+              {t('One by one')}
             </button>
             <button
               data-active={piState?.followUpMode === 'all'}
+              aria-pressed={piState?.followUpMode === 'all'}
               onClick={() => void setFollowUpMode('all')}
               title={t('Deliver every follow-up message at once')}
             >
-              All at once
+              {t('All at once')}
             </button>
           </div>
         </div>
@@ -149,6 +153,7 @@ export function ContextPanel({ close }: { close: () => void }) {
         className="ctx__input"
         value={instructions}
         placeholder={t('Instructions for the summary (optional)')}
+        aria-label={t('Instructions for the summary (optional)')}
         onChange={(event) => setInstructions(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === 'Enter' && !busy) void runCompact()
@@ -160,18 +165,18 @@ export function ContextPanel({ close }: { close: () => void }) {
         disabled={!ready || busy}
       >
         <Minimize2 size={13} />
-        {busy ? 'Compacting…' : 'Compact now'}
+        {busy ? t('Compacting…') : t('Compact now')}
       </button>
 
       <div className="ctx__toggle">
         <span>
-          Compact automatically
+          {t('Compact automatically')}
           <span className="ctx__hint">{t('when the context window fills up')}</span>
         </span>
         <Switch
           checked={piState?.autoCompactionEnabled !== false}
           onChange={(value) => void setAutoCompaction(value)}
-          label="Compact automatically"
+          label={t('Compact automatically')}
         />
       </div>
     </div>

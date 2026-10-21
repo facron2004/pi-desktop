@@ -2,8 +2,10 @@ import { X } from 'lucide-react'
 import { useRef } from 'react'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
+import { formatPlatformShortcut } from '../lib/shortcuts'
+import { useAppStore } from '../store/useAppStore'
 
-const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
+const SHORTCUTS: { keys: string[]; label: string; group: string; keySeparator?: 'or' }[] = [
   { keys: ['Ctrl', 'N'], label: 'Start a new conversation', group: 'Workspace' },
   { keys: ['Ctrl', 'B'], label: 'Show or hide the sidebar', group: 'Workspace' },
   { keys: ['Ctrl', '`'], label: 'Open or close the terminal', group: 'Workspace' },
@@ -21,7 +23,7 @@ const SHORTCUTS: { keys: string[]; label: string; group: string }[] = [
   { keys: ['↓'], label: 'Recall an older prompt', group: 'Composing' },
   { keys: ['/'], label: 'Open the command list', group: 'Composing' },
   { keys: ['Esc'], label: 'Stop the running turn', group: 'Composing' },
-  { keys: ['↑', '↓'], label: 'Move through the command list', group: 'Command palette' },
+  { keys: ['↑', '↓'], label: 'Move through the command list', group: 'Command palette', keySeparator: 'or' },
   { keys: ['Tab'], label: 'Insert the highlighted command', group: 'Command palette' },
   { keys: ['Alt', '↑'], label: 'Jump to the previous turn', group: 'Reading' },
   { keys: ['Alt', '↓'], label: 'Jump to the next turn', group: 'Reading' },
@@ -34,6 +36,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocus(dialogRef, onClose)
   const t = useT()
+  const platform = useAppStore((state) => state.info?.platform)
   const groups = Array.from(new Set(SHORTCUTS.map((entry) => entry.group)))
 
   return (
@@ -49,7 +52,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
       >
         <div className="modal__head">
           <h2 id="shortcuts-title" className="modal__title">{t('Keyboard shortcuts')}</h2>
-          <button className="icon-btn" onClick={onClose}>
+          <button className="icon-btn" onClick={onClose} aria-label={t('Close')} title={t('Close')}>
             <X size={15} />
           </button>
         </div>
@@ -62,8 +65,13 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
                 <div className="shortcut" key={entry.label}>
                   <span className="shortcut__label">{t(entry.label)}</span>
                   <span className="shortcut__keys">
-                    {entry.keys.map((key) => (
-                      <kbd key={key}>{key}</kbd>
+                    {entry.keys.map((key, index) => (
+                      <span className="shortcut__key" key={key}>
+                        {index > 0 && entry.keySeparator === 'or' ? (
+                          <span className="shortcut__key-separator">{t('or')}</span>
+                        ) : null}
+                        <kbd>{formatPlatformShortcut(key, platform)}</kbd>
+                      </span>
                     ))}
                   </span>
                 </div>

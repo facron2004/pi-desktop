@@ -164,11 +164,13 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (document.querySelector('[aria-modal="true"]')) return
       const mod = event.ctrlKey || event.metaKey
+      const launcherToggle =
+        launcherOpen && mod && event.shiftKey && event.key.toLowerCase() === 'p'
+      if (document.querySelector('[aria-modal="true"]') && !launcherToggle) return
       // The palette has the keyboard while it is open — only the chord that
       // closes it again stays alive.
-      if (launcherOpen && !(mod && event.shiftKey && event.key.toLowerCase() === 'p')) return
+      if (launcherOpen && !launcherToggle) return
       if (mod && event.key.toLowerCase() === 'n') {
         event.preventDefault()
         void newChat()
@@ -347,6 +349,8 @@ export default function App() {
           <button
             className="icon-btn no-drag"
             title={t('Toggle sidebar')}
+            aria-label={t('Toggle sidebar')}
+            aria-expanded={sidebarOpen}
             onClick={() => setSidebarOpen((value) => !value)}
           >
             <PanelLeft size={15} />
@@ -356,6 +360,7 @@ export default function App() {
               className="titlebar__rename"
               value={draft}
               autoFocus
+              aria-label={t('Rename this conversation')}
               onChange={(event) => setDraft(event.target.value)}
               onBlur={() => {
                 setRenaming(false)
@@ -384,6 +389,7 @@ export default function App() {
               <button
                 className="icon-btn no-drag"
                 title={t('Rename this conversation')}
+                aria-label={t('Rename this conversation')}
                 onClick={startRename}
               >
                 <Pencil size={12} />
@@ -395,6 +401,8 @@ export default function App() {
             <button
               className="icon-btn"
               title={t('Open or close the terminal')}
+              aria-label={t('Open or close the terminal')}
+              aria-pressed={terminalOpen}
               data-active={terminalOpen}
               onClick={() => setTerminalOpen((value) => !value)}
             >
@@ -403,6 +411,7 @@ export default function App() {
             <button
               className="icon-btn"
               title={t('Keyboard shortcuts')}
+              aria-label={t('Keyboard shortcuts')}
               onClick={() => setShortcutsOpen(true)}
             >
               <Keyboard size={14} />
@@ -410,6 +419,7 @@ export default function App() {
             <button
               className="icon-btn"
               title={t('Duplicate this conversation')}
+              aria-label={t('Duplicate this conversation')}
               disabled={status.phase !== 'ready' || !hasItems}
               onClick={() => void duplicateSession()}
             >
@@ -418,6 +428,7 @@ export default function App() {
             <button
               className="icon-btn"
               title={t('Export this conversation as HTML')}
+              aria-label={t('Export this conversation as HTML')}
               disabled={status.phase !== 'ready' || !hasItems}
               onClick={() => void exportSession()}
             >
@@ -426,6 +437,7 @@ export default function App() {
             <button
               className="icon-btn"
               title={t('Restart the Pi runtime')}
+              aria-label={t('Restart the Pi runtime')}
               onClick={() => {
                 if (workspace) void openWorkspace(workspace)
               }}

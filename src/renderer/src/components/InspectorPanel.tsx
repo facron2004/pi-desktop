@@ -107,6 +107,7 @@ export function InspectorPanel({
   const [tab, setTab] = useState<Tab>(initialTab)
   // The files the agent touched, narrowed down by a search on the path.
   const [fileFilter, setFileFilter] = useState('')
+  const fileFilterRef = useRef<HTMLInputElement>(null)
   // `undefined` means the reader decides, one run at a time.
   const [expandAll, setExpandAll] = useState<boolean | undefined>(undefined)
   // The Files tab browses the tree or searches inside the files. The tree stays
@@ -252,19 +253,24 @@ export function InspectorPanel({
         <div className="drawer__tabs">
           <button
             className="drawer__tab"
-            data-active={tab === 'changes' && !openFile}
+            data-active={tab === 'changes'}
+            aria-pressed={tab === 'changes'}
+            aria-label={t('Changes')}
+            title={t('Changes')}
             onClick={() => {
               setTab('changes')
               setOpenFile(null)
             }}
           >
             <FileDiff size={13} />
-            {t('Changes')}
+            <span className="drawer__tab-label">{t('Changes')}</span>
             {changes.length > 0 ? <span className="drawer__count">{changes.length}</span> : null}
           </button>
           <button
             className="drawer__tab"
-            data-active={tab === 'review' && !openFile}
+            data-active={tab === 'review'}
+            aria-pressed={tab === 'review'}
+            aria-label={t('Review')}
             onClick={() => {
               setTab('review')
               setOpenFile(null)
@@ -272,21 +278,24 @@ export function InspectorPanel({
             title={t('Review the uncommitted changes of the project')}
           >
             <GitCompare size={13} />
-            {t('Review')}
+            <span className="drawer__tab-label">{t('Review')}</span>
             {git?.isRepo && git.files.length > 0 ? (
               <span className="drawer__count">{git.files.length}</span>
             ) : null}
           </button>
           <button
             className="drawer__tab"
-            data-active={tab === 'files' && !openFile}
+            data-active={tab === 'files'}
+            aria-pressed={tab === 'files'}
+            aria-label={t('Files')}
+            title={t('Files')}
             onClick={() => {
               setTab('files')
               setOpenFile(null)
             }}
           >
             <Files size={13} />
-            {t('Files')}
+            <span className="drawer__tab-label">{t('Files')}</span>
           </button>
         </div>
         <span style={{ flex: 1 }} />
@@ -301,6 +310,7 @@ export function InspectorPanel({
             className="ghost-btn drawer__commit"
             onClick={() => setCommitOpen(true)}
             disabled={git.clean}
+            aria-label={git.clean ? t('Committed') : t('Commit')}
             title={
               git.clean
                 ? t('There is nothing to commit')
@@ -316,6 +326,8 @@ export function InspectorPanel({
           <div className="segmented segmented--tight" title={t('Diff layout')}>
             <button
               data-active={!diffSplit}
+              aria-label={t('Unified diff')}
+              aria-pressed={!diffSplit}
               onClick={() => void updateSettings({ diffSplit: false })}
               title={t('Unified diff')}
             >
@@ -323,6 +335,8 @@ export function InspectorPanel({
             </button>
             <button
               data-active={diffSplit}
+              aria-label={t('Side-by-side diff')}
+              aria-pressed={diffSplit}
               onClick={() => void updateSettings({ diffSplit: true })}
               title={t('Side-by-side diff')}
             >
@@ -330,7 +344,7 @@ export function InspectorPanel({
             </button>
           </div>
         ) : null}
-        <button className="icon-btn" onClick={onClose} title={t('Close')}>
+        <button className="icon-btn" onClick={onClose} title={t('Close')} aria-label={t('Close')}>
           <X size={15} />
         </button>
       </header>
@@ -343,6 +357,7 @@ export function InspectorPanel({
             <div className="segmented">
               <button
                 data-active={filesMode === 'tree'}
+                aria-pressed={filesMode === 'tree'}
                 onClick={() => setFilesMode('tree')}
                 title={t('Browse the project files')}
               >
@@ -350,6 +365,7 @@ export function InspectorPanel({
               </button>
               <button
                 data-active={filesMode === 'text'}
+                aria-pressed={filesMode === 'text'}
                 onClick={() => setFilesMode('text')}
                 title={t('Search inside the project files')}
               >
@@ -399,15 +415,21 @@ export function InspectorPanel({
                   <div className="drawer__filter">
                     <Search size={12} />
                     <input
+                      ref={fileFilterRef}
                       value={fileFilter}
+                      aria-label={t('Filter the changed files')}
                       placeholder={t('Filter the changed files')}
                       onChange={(event) => setFileFilter(event.target.value)}
                     />
                     {fileFilter ? (
                       <button
                         className="icon-btn"
-                        onClick={() => setFileFilter('')}
+                        onClick={() => {
+                          setFileFilter('')
+                          fileFilterRef.current?.focus()
+                        }}
                         title={t('Clear the filter')}
+                        aria-label={t('Clear the filter')}
                       >
                         <X size={11} />
                       </button>
@@ -445,6 +467,8 @@ export function InspectorPanel({
                     className="icon-btn"
                     onClick={() => setExpandAll((value) => value !== true)}
                     title={expandAll === true ? t('Fold the unchanged lines') : t('Show the unchanged lines')}
+                    aria-label={expandAll === true ? t('Fold the unchanged lines') : t('Show the unchanged lines')}
+                    aria-pressed={expandAll === true}
                   >
                     {expandAll === true ? (
                       <ChevronsDownUp size={13} />
@@ -485,6 +509,7 @@ export function InspectorPanel({
                       <button
                         className="change__reveal"
                         title={t('Reveal in the file manager')}
+                        aria-label={`${t('Reveal in the file manager')}: ${change.path}`}
                         onClick={() => void window.pi.fs.reveal(change.path)}
                       >
                         <ExternalLink size={12} />

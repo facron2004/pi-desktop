@@ -1,12 +1,15 @@
 .session-tree {
-  width: min(760px, 100%);
   max-height: min(760px, 92vh);
+}
+
+.modal.session-tree {
+  width: min(760px, 100%);
 }
 
 .session-tree__stats {
   margin-left: 10px;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   font-variant-numeric: tabular-nums;
 }
 
@@ -35,16 +38,17 @@
 .session-tree__filter input {
   flex: 1 1 auto;
   min-width: 0;
+  height: 100%;
   border: none;
   background: none;
   outline: none;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
   color: var(--text);
 }
 
 .session-tree__filter .icon-btn {
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
 }
 
 .session-tree__nav {
@@ -79,7 +83,7 @@
   gap: 7px;
   padding: 20px 14px;
   color: var(--text-faint);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--font-scale, 1));
 }
 
 .session-tree__state[data-tone='error'] {
@@ -94,7 +98,7 @@
   padding: 3px 8px 3px 0;
   border-radius: 6px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale, 1));
 }
 
 .session-tree__row:hover {
@@ -115,22 +119,22 @@
 
 .session-tree__row[data-role='meta'] {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .session-tree__row[data-role='tool'],
 .session-tree__row[data-role='bash'] {
   color: var(--text-faint);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
 }
 
 .session-tree__chevron {
   flex: 0 0 auto;
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   border-radius: 4px;
   color: var(--text-faint);
 }
@@ -202,7 +206,7 @@
   border-radius: 4px;
   background: var(--bg-active);
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale, 1));
 }
 
 .session-tree__current {
@@ -211,7 +215,7 @@
   border-radius: 8px;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 9.5px;
+  font-size: calc(9.5px * var(--font-scale, 1));
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -232,12 +236,24 @@
 }
 
 .session-tree__actions .icon-btn {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
 }
 
 .session-tree__actions .icon-btn:hover {
   color: var(--text);
+}
+
+@media (hover: none), (pointer: coarse), (any-pointer: coarse) {
+  .session-tree__actions {
+    gap: 4px;
+    opacity: 1;
+  }
+
+  .session-tree__actions .icon-btn {
+    width: 30px;
+    height: 30px;
+  }
 }
 
 .session-tree__foot {
@@ -249,7 +265,7 @@
 
 .session-tree__foot > span {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale, 1));
   line-height: 1.4;
 }
 

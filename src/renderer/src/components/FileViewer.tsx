@@ -409,7 +409,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
             <span className="tree__icon" data-tone={fileTone(content.path.split(/[\\/]/).pop() ?? '')}>
               <FileIcon />
             </span>
-            {relativePath(root ?? '', content.path)}
+            <span className="viewer__crumb-text">{relativePath(root ?? '', content.path)}</span>
           </span>
         </span>
         {content.truncated ? <span className="change__badge">{t('truncated')}</span> : null}
@@ -418,72 +418,82 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
           {lineCount} {lineCount === 1 ? t('line') : t('lines')}
           {content.size ? ` · ${formatBytes(content.size)}` : ''}
         </span>
-        <button
-          className="ghost-btn"
-          data-active={findOpen ? 'true' : 'false'}
-          onClick={openFind}
-          title={t('Search the file')}
-          aria-label={t('Search the file')}
-          aria-expanded={findOpen}
-        >
-          <Search size={12} />
-        </button>
-        <input
-          className="fv-jump"
-          value={jump}
-          placeholder={t('line')}
-          aria-label={t('Go to line')}
-          title={t('Go to line')}
-          inputMode="numeric"
-          spellCheck={false}
-          onChange={(event) => setJump(event.target.value.replace(/[^\d]/g, ''))}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault()
-              applyJump()
-            }
-          }}
-        />
-        <button
-          className="ghost-btn"
-          data-active={wrap ? 'true' : 'false'}
-          onClick={() => setWrap((value) => !value)}
-          title={t('Wrap long lines')}
-          aria-pressed={wrap}
-        >
-          {t('Wrap')}
-        </button>
-        <button className="ghost-btn" onClick={() => void copy('file')} title={t('Copy the file')}>
-          {copied === 'file' ? <Check size={12} /> : <Copy size={12} />}
-        </button>
-        <button
-          className="ghost-btn"
-          onClick={() => void copy('path')}
-          title={t('Copy the path of the file')}
-        >
-          {copied === 'path' ? <Check size={12} /> : <Link2 size={12} />}
-        </button>
-        <button
-          className="ghost-btn"
-          title={t('Ask Pi about this file')}
-          onClick={() =>
-            insertIntoComposer(
-              t('Take a look at {file} and tell me').replace(
-                '{file}',
-                relativePath(root ?? '', content.path)
+        <div className="viewer__actions">
+          <button
+            className="ghost-btn"
+            data-active={findOpen ? 'true' : 'false'}
+            onClick={openFind}
+            title={t('Search the file')}
+            aria-label={t('Search the file')}
+            aria-expanded={findOpen}
+          >
+            <Search size={14} />
+          </button>
+          <input
+            className="fv-jump"
+            value={jump}
+            placeholder={t('Line #')}
+            aria-label={t('Go to line')}
+            title={t('Go to line')}
+            inputMode="numeric"
+            spellCheck={false}
+            onChange={(event) => setJump(event.target.value.replace(/[^\d]/g, ''))}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                applyJump()
+              }
+            }}
+          />
+          <button
+            className="ghost-btn"
+            data-active={wrap ? 'true' : 'false'}
+            onClick={() => setWrap((value) => !value)}
+            title={t('Wrap long lines')}
+            aria-pressed={wrap}
+          >
+            {t('Wrap')}
+          </button>
+          <button
+            className="ghost-btn"
+            onClick={() => void copy('file')}
+            title={t('Copy the file')}
+            aria-label={t('Copy the file')}
+          >
+            {copied === 'file' ? <Check size={14} /> : <Copy size={14} />}
+          </button>
+          <button
+            className="ghost-btn"
+            onClick={() => void copy('path')}
+            title={t('Copy the path of the file')}
+            aria-label={t('Copy the path of the file')}
+          >
+            {copied === 'path' ? <Check size={14} /> : <Link2 size={14} />}
+          </button>
+          <button
+            className="ghost-btn"
+            title={t('Ask Pi about this file')}
+            aria-label={t('Ask Pi about this file')}
+            onClick={() =>
+              insertIntoComposer(
+                t('Take a look at {file} and tell me').replace(
+                  '{file}',
+                  relativePath(root ?? '', content.path)
+                )
               )
-            )
-          }
-        >
-          <MessageSquarePlus size={12} />
-        </button>
-        <button
-          className="ghost-btn"
-          title={t('Reveal in the file manager')}
-          onClick={() => void window.pi.fs.reveal(content.path)}
-        >
-          <ExternalLink size={12} />
-        </button>
+            }
+          >
+            <MessageSquarePlus size={14} />
+          </button>
+          <button
+            className="ghost-btn"
+            title={t('Reveal in the file manager')}
+            aria-label={t('Reveal in the file manager')}
+            onClick={() => void window.pi.fs.reveal(content.path)}
+          >
+            <ExternalLink size={14} />
+          </button>
+        </div>
       </div>
 
       {findOpen ? (
@@ -507,7 +517,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
               }
             }}
           />
-          <span className="fv-find__count">
+          <span className="fv-find__count" role="status" aria-live="polite">
             {query
               ? count
                 ? `${active + 1} ${t('of')} ${count}`

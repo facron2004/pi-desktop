@@ -112,7 +112,7 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
   )
   const rows = view.rows
   const stats = useMemo(
-    () => (state.status === 'ready' ? treeStats(state.tree) : { entries: 0, branches: 0 }),
+    () => (state.status === 'ready' ? treeStats(state.tree) : { entries: 0, forkPoints: 0 }),
     [state]
   )
   const branches = useMemo(
@@ -234,8 +234,8 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
           </h2>
           {state.status === 'ready' ? (
             <span className="session-tree__stats">
-              {stats.branches}{' '}
-              {stats.branches === 1 ? t('branch') : t('branches')} · {stats.entries}{' '}
+              {stats.forkPoints}{' '}
+              {stats.forkPoints === 1 ? t('fork point') : t('fork points')} · {stats.entries}{' '}
               {stats.entries === 1 ? t('entry') : t('entries')}
             </span>
           ) : null}
@@ -254,8 +254,12 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
                 {query ? (
                   <button
                     className="icon-btn"
-                    onClick={() => setQuery('')}
+                    onClick={() => {
+                      setQuery('')
+                      filterRef.current?.focus()
+                    }}
                     title={t('Clear the filter')}
+                    aria-label={t('Clear the filter')}
                   >
                     <X size={11} />
                   </button>
@@ -287,10 +291,11 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
             className="icon-btn"
             onClick={() => void load()}
             title={t('Refresh the session tree')}
+            aria-label={t('Refresh the session tree')}
           >
             <RefreshCw size={13} className={state.status === 'loading' ? 'spin' : undefined} />
           </button>
-          <button className="icon-btn" onClick={onClose} title={t('Close')}>
+          <button className="icon-btn" onClick={onClose} title={t('Close')} aria-label={t('Close')}>
             <X size={15} />
           </button>
         </div>

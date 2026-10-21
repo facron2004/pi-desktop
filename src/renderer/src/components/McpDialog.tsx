@@ -59,10 +59,15 @@ export function McpDialog({ onClose }: { onClose: () => void }) {
             </span>
           ) : null}
           <span style={{ flex: 1 }} />
-          <button className="icon-btn" onClick={() => void load()} title={t('Refresh')}>
+          <button
+            className="icon-btn"
+            onClick={() => void load()}
+            aria-label={t('Refresh')}
+            title={t('Refresh')}
+          >
             <RefreshCw size={13} className={state === 'loading' ? 'spin' : undefined} />
           </button>
-          <button className="icon-btn" onClick={onClose} title={t('Close')}>
+          <button className="icon-btn" onClick={onClose} aria-label={t('Close')} title={t('Close')}>
             <X size={15} />
           </button>
         </div>

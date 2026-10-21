@@ -140,8 +140,9 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
           className="pill git-chip"
           data-dirty={!git.clean}
           data-active={open}
-          onClick={() => {
-            toggle()
+          aria-expanded={open}
+          onClick={(event) => {
+            toggle(event)
             if (!open) void load()
           }}
           title={
@@ -173,6 +174,7 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
             <button
               className="icon-btn"
               onClick={() => void load()}
+              aria-label={t('Refresh')}
               title={t('Refresh')}
               disabled={loading}
             >
@@ -212,7 +214,11 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
           </div>
 
           <div className="branch-menu__actions">
-            <button className="ghost-btn" onClick={() => setShowNew((value) => !value)}>
+            <button
+              className="ghost-btn"
+              aria-expanded={showNew}
+              onClick={() => setShowNew((value) => !value)}
+            >
               <Plus size={11} />
               {t('New branch…')}
             </button>
@@ -236,13 +242,15 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
                 void createNewBranch(close)
               }}
             >
-              <input
-                autoFocus
-                value={newBranch}
-                placeholder={t('New branch name')}
-                spellCheck={false}
-                onChange={(event) => setNewBranch(event.target.value)}
-              />
+              <label className="branch-menu__field">
+                <span className="branch-menu__field-label">{t('Branch name')}</span>
+                <input
+                  autoFocus
+                  value={newBranch}
+                  spellCheck={false}
+                  onChange={(event) => setNewBranch(event.target.value)}
+                />
+              </label>
               <button
                 type="submit"
                 className="btn btn--primary btn--sm"
@@ -255,23 +263,36 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
 
           <div className="branch-menu__section">
             <div className="popover__label">{t('Worktrees')}</div>
-            {data?.worktrees.map((worktree) => (
-              <button
-                key={worktree.path}
-                className="branch-menu__row"
-                data-current={worktree.current || undefined}
-                disabled={Boolean(busy)}
-                title={worktree.path}
-                onClick={() => void openWorktree(worktree.path, close)}
-              >
-                <GitFork size={12} className="branch-menu__icon" />
-                <span className="branch-menu__name">{basename(worktree.path)}</span>
-                <span className="branch-menu__meta">{worktree.branch ?? t('detached')}</span>
-                {worktree.current ? <Check size={12} className="branch-menu__check" /> : null}
-              </button>
-            ))}
+            {data?.worktrees.map((worktree) => {
+              const name = basename(worktree.path)
+              const branch = worktree.branch ?? t('detached')
+              const dirty = typeof worktree.dirty === 'number' && worktree.dirty > 0
+              const dirtyLabel = dirty ? `${worktree.dirty} ${t('Uncommitted files')}` : ''
+              return (
+                <button
+                  key={worktree.path}
+                  className="branch-menu__row"
+                  data-current={worktree.current || undefined}
+                  disabled={Boolean(busy)}
+                  aria-label={`${name}, ${branch}${dirtyLabel ? `, ${dirtyLabel}` : ''}`}
+                  title={dirtyLabel ? `${worktree.path} · ${dirtyLabel}` : worktree.path}
+                  onClick={() => void openWorktree(worktree.path, close)}
+                >
+                  <GitFork size={12} className="branch-menu__icon" />
+                  <span className="branch-menu__name">{name}</span>
+                  <span className="branch-menu__meta">{branch}</span>
+                  {dirty ? (
+                    <span className="branch-menu__dirty" aria-hidden="true">
+                      {worktree.dirty}
+                    </span>
+                  ) : null}
+                  {worktree.current ? <Check size={12} className="branch-menu__check" /> : null}
+                </button>
+              )
+            })}
             <button
               className="ghost-btn"
+              aria-expanded={showWorktree}
               onClick={() => setShowWorktree((value) => !value)}
             >
               <Plus size={11} />
@@ -285,19 +306,24 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
                   void createWorktree(close)
                 }}
               >
-                <input
-                  autoFocus
-                  value={worktreeBranch}
-                  placeholder={t('Branch for the worktree')}
-                  spellCheck={false}
-                  onChange={(event) => setWorktreeBranch(event.target.value)}
-                />
-                <input
-                  value={worktreePath}
-                  placeholder={t('Folder (empty for a sibling folder)')}
-                  spellCheck={false}
-                  onChange={(event) => setWorktreePath(event.target.value)}
-                />
+                <label className="branch-menu__field">
+                  <span className="branch-menu__field-label">{t('Branch for the worktree')}</span>
+                  <input
+                    autoFocus
+                    value={worktreeBranch}
+                    spellCheck={false}
+                    onChange={(event) => setWorktreeBranch(event.target.value)}
+                  />
+                </label>
+                <label className="branch-menu__field">
+                  <span className="branch-menu__field-label">{t('Folder')}</span>
+                  <input
+                    value={worktreePath}
+                    placeholder={t('Folder (empty for a sibling folder)')}
+                    spellCheck={false}
+                    onChange={(event) => setWorktreePath(event.target.value)}
+                  />
+                </label>
                 <button
                   type="submit"
                   className="btn btn--primary btn--sm"
