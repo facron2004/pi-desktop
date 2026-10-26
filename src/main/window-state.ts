@@ -11,8 +11,8 @@ export interface WindowState {
   maximized?: boolean
 }
 
-const MIN_WIDTH = 1080
-const MIN_HEIGHT = 680
+const MIN_WIDTH = 880
+const MIN_HEIGHT = 572
 const DEFAULT_WIDTH = 1480
 const DEFAULT_HEIGHT = 940
 

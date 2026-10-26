@@ -25,5 +25,6 @@
     "src/renderer/src/**/*.tsx",
     "src/preload/*.d.ts",
     "src/shared/**/*"
-  ]
+  ],
+  "exclude": ["node_modules", "out", "release", "tests"]
 }

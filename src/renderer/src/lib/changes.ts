@@ -20,6 +20,20 @@ function pathOf(args: Record<string, unknown> | undefined): string {
   return typeof value === 'string' ? value : ''
 }
 
+/** Count distinct files changed by edit/write tool calls without building diffs. */
+export function countChangedFiles(items: ThreadItem[]): number {
+  const paths = new Set<string>()
+
+  for (const item of items) {
+    if (item.kind !== 'tool') continue
+    if (item.toolName !== 'edit' && item.toolName !== 'write') continue
+    const path = pathOf(item.args)
+    if (path) paths.add(path)
+  }
+
+  return paths.size
+}
+
 /**
  * Collect the files the agent changed during this session.
  *

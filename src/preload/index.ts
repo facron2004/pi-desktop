@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AppInfo,
   AppSettings,
@@ -87,6 +87,8 @@ const bridge: PiDesktopBridge = {
       ipcRenderer.invoke('git:commitDetail', hash),
     commitFileDiff: (hash: string, file: string): Promise<GitCommitFileDiff | null> =>
       ipcRenderer.invoke('git:commitFileDiff', hash, file),
+    commitWorktreeDiff: (hash: string, file: string): Promise<GitCommitFileDiff | null> =>
+      ipcRenderer.invoke('git:commitWorktreeDiff', hash, file),
     applyPatch: (patch: string, reverse?: boolean): Promise<GitCommitResult> =>
       ipcRenderer.invoke('git:applyPatch', patch, reverse === true),
     branches: (): Promise<GitBranches> => ipcRenderer.invoke('git:branches'),
@@ -100,6 +102,8 @@ const bridge: PiDesktopBridge = {
       createBranch?: boolean
     ): Promise<GitWorktreeResult> =>
       ipcRenderer.invoke('git:addWorktree', path, branch, createBranch !== false),
+    removeWorktree: (path: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:removeWorktree', path),
     revertFile: (file: string): Promise<GitCommitResult> =>
       ipcRenderer.invoke('git:revertFile', file),
     stageFile: (file: string): Promise<GitCommitResult> =>
@@ -107,7 +111,9 @@ const bridge: PiDesktopBridge = {
     unstageFile: (file: string): Promise<GitCommitResult> =>
       ipcRenderer.invoke('git:unstageFile', file),
     stageAll: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:stageAll'),
-    unstageAll: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:unstageAll')
+    unstageAll: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:unstageAll'),
+    push: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:push'),
+    pull: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:pull')
   },
   shell: {
     openPath: (target: string): Promise<string> => ipcRenderer.invoke('shell:openPath', target),
@@ -122,7 +128,14 @@ const bridge: PiDesktopBridge = {
       ipcRenderer.invoke('fs:searchText', query, limit),
     reveal: (file: string): Promise<void> => ipcRenderer.invoke('fs:reveal', file),
     saveImage: (data: string, mimeType: string): Promise<string | null> =>
-      ipcRenderer.invoke('fs:saveImage', data, mimeType)
+      ipcRenderer.invoke('fs:saveImage', data, mimeType),
+    pathForFile: (file: File): string => {
+      try {
+        return webUtils.getPathForFile(file)
+      } catch {
+        return ''
+      }
+    }
   }
 }
 

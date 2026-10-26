@@ -4,6 +4,7 @@ import {
   ClipboardCopy,
   Copy,
   FileWarning,
+  MessageSquarePlus,
   Minus,
   Plus,
   RefreshCw,
@@ -33,9 +34,11 @@ type DiffState =
  * without asking the agent to do it.
  */
 export function ReviewView({
-  onOpenFile
+  onOpenFile,
+  active
 }: {
   onOpenFile: (file: { path: string; line?: number }) => void
+  active: boolean
 }) {
   const git = useAppStore((state) => state.git)
   const workspace = useAppStore((state) => state.workspace)
@@ -44,6 +47,7 @@ export function ReviewView({
   const unstageFile = useAppStore((state) => state.unstageFile)
   const stageAll = useAppStore((state) => state.stageAll)
   const unstageAll = useAppStore((state) => state.unstageAll)
+  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const showToast = useAppStore((state) => state.showToast)
   const language = useAppStore((state) => state.settings.language)
   const diffSplit = useAppStore((state) => state.settings.diffSplit === true)
@@ -56,6 +60,7 @@ export function ReviewView({
   const [revertTarget, setRevertTarget] = useState<string | null>(null)
   const openRef = useRef(open)
   openRef.current = open
+  const initialized = useRef(false)
 
   // The panel is opened when the user wants to review, so it reads git then.
   useEffect(() => {
@@ -74,8 +79,18 @@ export function ReviewView({
     }
   }, [])
 
+  const firstPath = files.find((file) => file.staged)?.path ?? files[0]?.path
+  useEffect(() => {
+    if (!active || initialized.current || !firstPath) return
+    initialized.current = true
+    setOpen(new Set([firstPath]))
+    void load(firstPath)
+  }, [active, firstPath, load])
+
   const toggle = useCallback(
     (path: string) => {
+      // Refreshes and newly arriving files must not override the reader's choice.
+      initialized.current = true
       setOpen((previous) => {
         const next = new Set(previous)
         if (next.has(path)) {
@@ -140,7 +155,11 @@ export function ReviewView({
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase()
     if (!needle) return files
-    return files.filter((file) => file.path.toLowerCase().includes(needle))
+    return files.filter(
+      (file) =>
+        file.path.toLowerCase().includes(needle) ||
+        file.oldPath?.toLowerCase().includes(needle)
+    )
   }, [files, filter])
 
   const stagedFiles = useMemo(() => visible.filter((file) => file.staged), [visible])
@@ -299,6 +318,22 @@ export function ReviewView({
                 {t('Stage all')}
               </button>
             ) : null}
+            {git && !git.clean ? (
+              <button
+                className="icon-btn"
+                onClick={() =>
+                  insertIntoComposer(
+                    t(
+                      'Review the uncommitted git changes in this repository, point out any bugs or edge cases, and suggest improvements.'
+                    )
+                  )
+                }
+                title={t('Ask Pi to review uncommitted changes')}
+                aria-label={t('Ask Pi to review uncommitted changes')}
+              >
+                <MessageSquarePlus size={12} />
+              </button>
+            ) : null}
             <button
               className="icon-btn"
               onClick={() => void copyPatch()}
@@ -371,7 +406,7 @@ export function ReviewView({
           ) : null}
           {unstagedFiles.length > 0 ? (
             <ReviewGroup
-              label={stagedFiles.length > 0 ? t('Changes') : null}
+              label={t('Unstaged')}
               count={unstagedFiles.length}
               files={unstagedFiles}
               open={open}
@@ -416,7 +451,7 @@ function ReviewGroup({
   onRevert,
   onHunkReverted
 }: {
-  label: string | null
+  label: string
   count: number
   files: GitFileStatus[]
   open: ReadonlySet<string>
@@ -429,15 +464,12 @@ function ReviewGroup({
   onRevert: (path: string) => void
   onHunkReverted: (path: string) => void
 }) {
-  const t = useT()
   return (
     <div className="review__group">
-      {label ? (
-        <div className="review__group-head">
-          <span>{label}</span>
-          <span className="review__group-count">{count}</span>
-        </div>
-      ) : null}
+      <div className="review__group-head">
+        <span>{label}</span>
+        <span className="review__group-count">{count}</span>
+      </div>
       {files.map((file) => (
         <ReviewFile
           key={file.path}
@@ -454,7 +486,6 @@ function ReviewGroup({
           onHunkReverted={() => onHunkReverted(file.path)}
         />
       ))}
-      {label ? null : <span className="sr-only">{t('Changes')}</span>}
     </div>
   )
 }
@@ -544,6 +575,7 @@ function ReviewFile({
   onHunkReverted: () => void
 }) {
   const t = useT()
+  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const status = statusOf(file)
 
   const blocks = useMemo(() => {
@@ -592,6 +624,21 @@ function ReviewFile({
             aria-label={file.staged ? t('Unstage this file') : t('Stage this file')}
           >
             {file.staged ? <Minus size={12} /> : <Plus size={12} />}
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() =>
+              insertIntoComposer(
+                t('Review the uncommitted changes in @{file} and check for potential issues.').replace(
+                  '{file}',
+                  file.path.replace(/\\/g, '/')
+                )
+              )
+            }
+            title={t('Ask Pi to review this file')}
+            aria-label={t('Ask Pi to review this file')}
+          >
+            <MessageSquarePlus size={12} />
           </button>
           <button
             className="icon-btn"

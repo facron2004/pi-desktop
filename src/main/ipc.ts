@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, Notification, dialog, ipcMain, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from 'node:fs'
 import path from 'node:path'
@@ -26,16 +26,20 @@ import {
   readBranches,
   readCommitDetail,
   readCommitFileDiff,
+  readCommitWorktreeDiff,
   readFileDiff,
   readLog,
   readPatch,
   readStatus,
+  removeWorktree,
   revertFile,
   stageAll,
   stageFile,
   switchBranch,
   unstageAll,
-  unstageFile
+  unstageFile,
+  pushBranch,
+  pullBranch
 } from './git'
 import { SettingsStore } from './settings'
 import { listSessions, resolveSessionRoot, searchSessions } from './sessions'
@@ -229,7 +233,9 @@ export function registerIpc(context: IpcContext): void {
     const launch = resolvePiLaunch(current.piPath)
     const version = await piVersion(current.piPath)
     return {
-      version: process.env.npm_package_version ?? '0.1.0',
+      // `npm_package_version` only exists when npm launched the app; a
+      // packaged build reads the version it was built with instead.
+      version: process.env.npm_package_version ?? app.getVersion() ?? '0.2.0',
       electron: process.versions.electron,
       node: process.versions.node,
       platform: process.platform,
@@ -252,8 +258,8 @@ export function registerIpc(context: IpcContext): void {
       // Keep the native window controls in step with the app chrome.
       window.setTitleBarOverlay(
         theme === 'light'
-          ? { color: '#ffffff', symbolColor: '#5e5e5e', height: 44 }
-          : { color: '#181818', symbolColor: '#a7a7a7', height: 44 }
+          ? { color: '#f3f3f3', symbolColor: '#686868', height: 44 }
+          : { color: '#111317', symbolColor: '#9da4b2', height: 44 }
       )
     } catch {
       /* the platform may not support a title bar overlay */
@@ -356,6 +362,10 @@ export function registerIpc(context: IpcContext): void {
     readCommitFileDiff(workspaceRoot(context), hash, file)
   )
 
+  ipcMain.handle('git:commitWorktreeDiff', (_event, hash: string, file: string) =>
+    readCommitWorktreeDiff(workspaceRoot(context), hash, file)
+  )
+
   ipcMain.handle('git:applyPatch', (_event, patch: string, reverse?: boolean) =>
     applyPatch(workspaceRoot(context), patch, reverse === true)
   )
@@ -376,9 +386,17 @@ export function registerIpc(context: IpcContext): void {
       addWorktree(workspaceRoot(context), worktreePath, branch, create !== false)
   )
 
+  ipcMain.handle('git:removeWorktree', (_event, worktreePath: string) =>
+    removeWorktree(workspaceRoot(context), worktreePath)
+  )
+
   ipcMain.handle('git:revertFile', (_event, file: string) =>
     revertFile(workspaceRoot(context), file)
   )
+
+  ipcMain.handle('git:push', () => pushBranch(workspaceRoot(context)))
+
+  ipcMain.handle('git:pull', () => pullBranch(workspaceRoot(context)))
 
   ipcMain.handle('fs:list', (_event, dir: string): FileEntry[] => {
     const root = workspaceRoot(context)
@@ -645,9 +663,47 @@ function sendToWindow(window: BrowserWindow | null, channel: string, payload: un
 
 /** Forward runtime traffic to the renderer window. */
 export function bridgeRuntime(context: IpcContext): void {
-  const { runtime, getWindow } = context
+  const { runtime, settings, getWindow } = context
   runtime.on('event', (event: PiEvent) => {
-    sendToWindow(getWindow(), 'runtime:event', event)
+    const window = getWindow()
+    sendToWindow(window, 'runtime:event', event)
+
+    if (
+      window &&
+      !window.isDestroyed() &&
+      !window.isFocused() &&
+      settings.get().desktopNotifications !== false &&
+      Notification.isSupported()
+    ) {
+      const cwd = runtime.currentStatus.cwd
+      const project = cwd ? workspaceName(cwd) : 'Pi Desktop'
+      let body: string | null = null
+      if (event.type === 'agent_settled') {
+        body = `Pi finished working in ${project}.`
+      } else if (
+        event.type === 'extension_ui_request' &&
+        ['select', 'confirm', 'input', 'editor'].includes(String(event.method ?? ''))
+      ) {
+        body = String(event.title ?? event.message ?? `Pi needs your input in ${project}.`)
+      }
+      if (body) {
+        try {
+          const notification = new Notification({
+            title: 'Pi Desktop',
+            body,
+            silent: false
+          })
+          notification.on('click', () => {
+            if (window.isDestroyed()) return
+            if (window.isMinimized()) window.restore()
+            window.focus()
+          })
+          notification.show()
+        } catch {
+          /* notification subsystem may be unavailable on some setups */
+        }
+      }
+    }
   })
   runtime.on('status', (status: RuntimeStatus) => {
     sendToWindow(getWindow(), 'runtime:status', status)

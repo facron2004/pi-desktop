@@ -16,6 +16,7 @@ import {
   Moon,
   PanelLeft,
   Pin,
+  RefreshCw,
   Search,
   Server,
   Settings,
@@ -267,6 +268,15 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       run: () => runAppCommand('terminal')
     },
     {
+      id: 'restart-runtime',
+      title: 'Restart the Pi runtime',
+      group: 'Project',
+      icon: RefreshCw,
+      run: () => {
+        if (workspace) void useAppStore.getState().openWorkspace(workspace)
+      }
+    },
+    {
       id: 'commit',
       title: 'Review and commit the working tree',
       group: 'Project',
@@ -329,7 +339,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       hint: project.path,
       group: 'Projects',
       icon: FolderOpen,
-      run: () => switchProject(project.path)
+      run: () => switchProject(project.path, { allowWhileRunning: true })
     })
   }
 
@@ -337,6 +347,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   return actions.filter((action) => {
     if (action.id === 'branch') return hasMessages && hasForkTarget
     if (action.id === 'copy') return hasAssistantAnswer
+    if (action.id === 'restart-runtime') return Boolean(workspace)
     if (action.id === 'model-next' || action.id === 'model-previous') return models.length > 1
     if (action.id === 'thinking-next' || action.id === 'thinking-previous') {
       return thinkingLevels.length > 1
@@ -537,6 +548,7 @@ export function Launcher({
                   </div>
                   {group.items.map((entry) => {
                     const Icon = entry.action.icon
+                    const hasDescription = entry.action.group === 'Pi' || entry.action.group === 'Projects'
                     return (
                       <button
                         key={entry.action.id}
@@ -545,6 +557,7 @@ export function Launcher({
                         data-active={entry.position === index}
                         data-kind={entry.action.group === 'Pi' ? 'command' : undefined}
                         data-has-hint={Boolean(entry.action.hint)}
+                        data-hint-kind={hasDescription ? 'description' : 'shortcut'}
                         role="option"
                         aria-selected={entry.position === index}
                         tabIndex={-1}
@@ -557,7 +570,7 @@ export function Launcher({
                         <span className="launcher__name">{t(entry.action.title)}</span>
                         <span className="launcher__hint">
                           {entry.action.hint
-                            ? entry.action.group === 'Pi'
+                            ? hasDescription
                               ? entry.action.hint
                               : formatPlatformShortcut(entry.action.hint, platform)
                             : null}

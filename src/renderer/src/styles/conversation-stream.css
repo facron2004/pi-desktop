@@ -1,0 +1,349 @@
+/* ------------------------------------------------------------------ *
+ * Conversation stream
+ *
+ * The Codex-style execution stream: a continuous assistant document with
+ * tool calls folded in as compact rows, and a status line that says what
+ * the run is doing. Everything here uses the shared tokens; nothing is
+ * hard-coded.
+ * ------------------------------------------------------------------ */
+
+/* The line that says what the agent is doing. It is deliberately quiet —
+   one row, one sentence, one counter — so it can sit under a long answer
+   without competing with it. */
+.run-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: var(--ctl-sm);
+  padding: var(--sp-2) 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.run-status__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+}
+
+.run-status[data-phase='tool_running'] .run-status__icon {
+  color: var(--accent);
+}
+
+/* The agent cannot move until the dialog is answered, so the line is the
+   loudest state short of a failure. */
+.run-status[data-phase='waiting_approval'] .run-status__icon {
+  color: var(--status-warning);
+}
+
+.run-status[data-phase='queued'] .run-status__icon {
+  color: var(--text-tertiary);
+}
+
+.run-status[data-transport='disconnected'] .run-status__icon {
+  color: var(--status-warning);
+}
+
+.run-status__label {
+  flex: 0 0 auto;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.run-status__activity {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+.run-status__elapsed {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one-line record of how a run ended. */
+.run-outcome {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: var(--ctl-sm);
+  padding: var(--sp-2) 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.run-outcome__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-full);
+  background: var(--status-success-soft);
+  color: var(--status-success);
+}
+
+.run-outcome[data-outcome='aborted'] .run-outcome__icon {
+  background: var(--status-warning-soft);
+  color: var(--status-warning);
+}
+
+.run-outcome__meta {
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A tool call that was named but never ran. It is not a success and it is
+   not a failure either, so it reads as a third thing: a quiet, dashed row. */
+.tool[data-status='proposed'] > .tool__head .tool__icon {
+  color: var(--text-faint);
+}
+
+.tool[data-status='proposed'] > .tool__head .tool__state {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.tool[data-status='aborted'] > .tool__head .tool__icon {
+  color: var(--status-warning);
+}
+
+.tool[data-status='aborted'] > .tool__head .tool__state {
+  color: var(--status-warning);
+}
+
+/* The assistant text is a document, not a bubble: no background, no
+   padding, no border. The tool rows sit in the same column and the whole
+   turn reads as one continuous page. */
+.assistant__text {
+  font-size: var(--text-md);
+  line-height: 1.62;
+}
+
+.assistant__text .md > *:last-child {
+  margin-bottom: 0;
+}
+
+/* A lost transport is a warning, not a verdict: the run may still be going
+   behind the broken channel, so the banner says what is known. */
+:root .retry[data-kind='transport'] {
+  border-color: var(--status-warning-soft);
+  background: var(--status-warning-soft);
+}
+
+:root .retry[data-kind='transport'] svg {
+  color: var(--status-warning);
+}
+
+.retry__note {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+/* ------------------------------------------------------------------ *
+ * File changes of a turn
+ * ------------------------------------------------------------------ */
+
+.file-changes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.file-changes__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.file-changes__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+}
+
+.file-changes__count {
+  flex: 0 0 auto;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.file-changes__stats {
+  display: flex;
+  gap: var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.file-changes__add {
+  color: var(--status-success);
+}
+
+.file-changes__del {
+  color: var(--status-danger);
+}
+
+.file-changes__review {
+  margin-left: auto;
+}
+
+.file-changes__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-hair);
+}
+
+/* One file: a row that expands into its diff. */
+.file-change {
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.file-change:hover {
+  background: var(--surface-chrome);
+}
+
+.file-change__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-hair);
+  min-height: 32px;
+  padding: 0 var(--sp-2);
+}
+
+.file-change__main {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 26px;
+  padding: var(--sp-1) 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+
+.file-change__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  color: var(--text-secondary);
+}
+
+.file-change[data-kind='write'] .file-change__icon {
+  color: var(--status-success);
+}
+
+.file-change__name {
+  flex: 0 0 auto;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.file-change__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+}
+
+.file-change__edits,
+.file-change__stats {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.file-change__stats {
+  display: flex;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+}
+
+.file-change__caret {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  color: var(--text-faint);
+}
+
+.file-change__open {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-2);
+  height: 22px;
+  border-radius: var(--r-sm);
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.file-change:hover .file-change__open,
+.file-change:focus-within .file-change__open {
+  opacity: 1;
+}
+
+.file-change__open:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.file-change__body {
+  max-height: 420px;
+  overflow: auto;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-sunken);
+}
+
+/* The status row and the run summary share the document's measure. */
+.run-status,
+.run-outcome {
+  max-width: var(--content-w);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-status__icon .spin,
+  .run-status__icon .pulse {
+    animation: none;
+  }
+}

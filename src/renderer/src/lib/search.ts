@@ -4,6 +4,7 @@ export type SearchSource = 'You' | 'Pi' | 'Tool'
 
 export interface SearchableChunk {
   turnId: string
+  messageId?: string
   source: SearchSource
   text: string
 }
@@ -12,6 +13,7 @@ export interface SearchHit {
   /** Stable identity of the hit, used as a React key. */
   key: string
   turnId: string
+  messageId?: string
   source: SearchSource
   /** A short piece of text around the match. */
   snippet: string
@@ -28,15 +30,16 @@ export function findMatches(
   const needle = query.trim().toLowerCase()
   if (!needle) return []
   const hits: SearchHit[] = []
-  for (const chunk of chunks) {
+  for (const [chunkIndex, chunk] of chunks.entries()) {
     const haystack = chunk.text.toLowerCase()
     let from = 0
     for (;;) {
       const index = haystack.indexOf(needle, from)
       if (index === -1) break
       hits.push({
-        key: `${chunk.turnId}:${index}`,
+        key: `${chunk.turnId}:${chunkIndex}:${index}`,
         turnId: chunk.turnId,
+        ...(chunk.messageId ? { messageId: chunk.messageId } : {}),
         source: chunk.source,
         snippet: snippetAround(chunk.text, index, needle.length),
         index

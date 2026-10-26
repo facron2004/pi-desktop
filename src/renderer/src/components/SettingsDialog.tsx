@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Check,
+  Cpu,
+  Gauge,
   Info,
   Palette,
   PanelsTopLeft,
+  Puzzle,
   ShieldCheck,
   SlidersHorizontal,
   UserRound,
@@ -17,29 +20,44 @@ import {
   AboutSettings,
   AppearanceSettings,
   GeneralSettings,
+  ModelsSettings,
   PanelsSettings,
   PersonalizationSettings,
-  ProjectSafetySettings
+  PluginsSettings,
+  ProjectSafetySettings,
+  UsageSettings
 } from './SettingsSections'
 
-type SettingsPage =
+export type SettingsPage =
   | 'general'
-  | 'personalization'
+  | 'models'
   | 'appearance'
+  | 'usage'
+  | 'plugins'
+  | 'personalization'
   | 'panels'
   | 'project-safety'
   | 'about'
 
 const PAGES = [
   { id: 'general', label: 'General', Icon: SlidersHorizontal },
-  { id: 'personalization', label: 'Personalization', Icon: UserRound },
+  { id: 'models', label: 'Model management', Icon: Cpu },
   { id: 'appearance', label: 'Appearance', Icon: Palette },
+  { id: 'usage', label: 'Usage', Icon: Gauge },
+  { id: 'plugins', label: 'Plugins', Icon: Puzzle },
+  { id: 'personalization', label: 'Personalization', Icon: UserRound },
   { id: 'panels', label: 'Panels', Icon: PanelsTopLeft },
   { id: 'project-safety', label: 'Project safety', Icon: ShieldCheck },
   { id: 'about', label: 'About', Icon: Info }
 ] as const
 
-export function SettingsDialog({ onClose }: { onClose: () => void }) {
+export function SettingsDialog({
+  onClose,
+  initialPage = 'general'
+}: {
+  onClose: () => void
+  initialPage?: SettingsPage
+}) {
   const settings = useAppStore((state) => state.settings)
   const models = useAppStore((state) => state.models)
   const updateSettings = useAppStore((state) => state.updateSettings)
@@ -49,7 +67,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocus(dialogRef, onClose)
 
-  const [page, setPage] = useState<SettingsPage>('general')
+  const [page, setPage] = useState<SettingsPage>(initialPage)
   const [piPath, setPiPath] = useState(settings.piPath ?? '')
   const [provider, setProvider] = useState(settings.provider ?? '')
   const [defaultModel, setDefaultModel] = useState(settings.model ?? '')
@@ -59,11 +77,16 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [checking, setChecking] = useState(false)
 
   useEffect(() => {
+    setPage(initialPage)
+  }, [initialPage])
+
+  useEffect(() => {
     setPiPath(settings.piPath ?? '')
+    setProvider(settings.provider ?? '')
     setDefaultModel(settings.model ?? '')
     setDefaultThinking(settings.thinkingLevel ?? '')
     setCustomInstructions(settings.customInstructions ?? '')
-  }, [settings.piPath, settings.model, settings.thinkingLevel, settings.customInstructions])
+  }, [settings.piPath, settings.provider, settings.model, settings.thinkingLevel, settings.customInstructions])
 
   const selectedModel = models.find(
     (model) => defaultModel === model.id || defaultModel === `${model.provider}/${model.id}`
@@ -84,6 +107,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     (defaultThinking.trim() || undefined) !== (settings.thinkingLevel?.trim() || undefined) ||
     (customInstructions.trim() || undefined) !==
       (settings.customInstructions?.trim() || undefined)
+  const draftPage = page === 'general' || page === 'models' || page === 'personalization'
 
   const save = async () => {
     await updateSettings({
@@ -96,14 +120,15 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
     showToast(t('Settings saved'))
   }
 
-  const check = async () => {
-    if (!provider.trim()) {
+  const check = async (providerOverride?: string) => {
+    const target = (providerOverride ?? provider).trim()
+    if (!target) {
       showToast(t('Enter a provider first, e.g. anthropic'))
       return
     }
     setChecking(true)
     try {
-      const result = await window.pi.auth.check(provider.trim())
+      const result = await window.pi.auth.check(target)
       setAuth(result)
     } finally {
       setChecking(false)
@@ -161,7 +186,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 }}
                 auth={auth}
                 checking={checking}
-                onCheck={() => void check()}
+                onCheck={(p) => void check(p)}
                 onOpenProject={() => void pickWorkspace()}
                 onResetPiPath={() => {
                   setPiPath('')
@@ -169,13 +194,34 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 }}
               />
             ) : null}
+            {page === 'models' ? (
+              <ModelsSettings
+                form={{
+                  piPath,
+                  provider,
+                  defaultModel,
+                  defaultThinking
+                }}
+                onChange={(patch) => {
+                  if ('piPath' in patch) setPiPath(patch.piPath ?? '')
+                  if ('provider' in patch) setProvider(patch.provider ?? '')
+                  if ('defaultModel' in patch) setDefaultModel(patch.defaultModel ?? '')
+                  if ('defaultThinking' in patch) setDefaultThinking(patch.defaultThinking ?? '')
+                }}
+                auth={auth}
+                checking={checking}
+                onCheck={(p) => void check(p)}
+              />
+            ) : null}
+            {page === 'appearance' ? <AppearanceSettings /> : null}
+            {page === 'usage' ? <UsageSettings /> : null}
+            {page === 'plugins' ? <PluginsSettings onClose={onClose} /> : null}
             {page === 'personalization' ? (
               <PersonalizationSettings
                 value={customInstructions}
                 onChange={setCustomInstructions}
               />
             ) : null}
-            {page === 'appearance' ? <AppearanceSettings /> : null}
             {page === 'panels' ? <PanelsSettings /> : null}
             {page === 'project-safety' ? <ProjectSafetySettings /> : null}
             {page === 'about' ? <AboutSettings /> : null}
@@ -183,17 +229,30 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="modal__foot">
+          <span className="settings-save-hint">
+            {t(
+              hasDraftChanges
+                ? 'You have unsaved changes'
+                : draftPage
+                  ? 'Save to apply your changes'
+                  : page === 'about'
+                    ? 'Version and runtime information'
+                    : 'Changes are saved automatically'
+            )}
+          </span>
           <button className="btn" onClick={onClose}>
             {t('Close')}
           </button>
-          <button
-            className="btn btn--primary"
-            disabled={!hasDraftChanges}
-            onClick={() => void save()}
-          >
-            <Check size={13} />
-            {t('Save')}
-          </button>
+          {draftPage || hasDraftChanges ? (
+            <button
+              className="btn btn--primary"
+              disabled={!hasDraftChanges}
+              onClick={() => void save()}
+            >
+              <Check size={13} />
+              {t('Save')}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

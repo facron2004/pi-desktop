@@ -9,13 +9,13 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--sp-3);
 }
 
 .commit__undo {
-  padding: 0 2px;
+  padding: 0 var(--sp-hair);
   color: var(--text-faint);
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -27,20 +27,20 @@
 .commit__templates {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--sp-1);
   margin-top: -3px;
 }
 
 .commit__template {
-  padding: 1px 8px;
+  padding: 1px var(--sp-3);
   border: 1px solid var(--border-soft);
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--bg-deep);
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   line-height: 1.7;
-  transition: background 0.12s var(--ease), border-color 0.12s var(--ease), color 0.12s var(--ease);
+transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .commit__template:hover {
@@ -58,26 +58,26 @@
 .commit__history {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-top: 10px;
+  gap: var(--sp-2);
+  padding-top: var(--sp-4);
   border-top: 1px solid var(--border-soft);
 }
 
 .commit__history-head {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-1);
 }
 
 .commit__history-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-2);
   min-height: 28px;
-  padding: 4px 6px 4px 4px;
-  border-radius: var(--radius-sm);
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-1);
+  border-radius: var(--r-sm);
   color: var(--text-faint);
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   font-weight: 600;
 }
 
@@ -87,7 +87,7 @@
 
 .commit__history-chevron {
   flex: 0 0 auto;
-  transition: transform 0.14s var(--ease);
+transition: transform var(--dur-fast) var(--ease);
 }
 
 .commit__history-chevron[data-open='true'] {
@@ -96,7 +96,7 @@
 
 .icon-btn.commit__history-refresh {
   width: 28px;
-  height: 28px;
+  height: var(--ctl-sm);
   margin-left: auto;
 }
 
@@ -107,31 +107,31 @@
 
 .commit__history-state {
   margin: 0;
-  padding: 7px 10px;
+  padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
+  border-radius: var(--r-md);
   background: var(--bg-deep);
   color: var(--text-faint);
-  font-size: calc(11.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
 }
 
 .commit__history-list {
   list-style: none;
   margin: 0;
-  padding: 3px;
+  padding: var(--sp-1);
   max-height: 164px;
   overflow-y: auto;
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius);
+  border-radius: var(--r-md);
   background: var(--bg-deep);
 }
 
 .commit__history-row {
   display: flex;
   align-items: center;
-  gap: 2px;
-  border-radius: var(--radius-sm);
-  transition: background 0.12s var(--ease);
+  gap: var(--sp-hair);
+  border-radius: var(--r-sm);
+transition: background var(--dur-fast) var(--ease);
 }
 
 .commit__history-row:hover {
@@ -141,20 +141,20 @@
 .commit__history-pick {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-3);
   flex: 1 1 auto;
   min-width: 0;
-  padding: 4px 6px;
-  border-radius: var(--radius-sm);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
   text-align: left;
   color: var(--text-muted);
-  font-size: calc(11.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
 }
 
 .commit__history-hash {
   flex: 0 0 auto;
   font-family: var(--font-mono);
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   color: var(--text-faint);
 }
 
@@ -170,13 +170,13 @@
 .commit__history-meta {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   flex: 0 1 auto;
   min-width: 0;
   max-width: 46%;
   overflow: hidden;
   color: var(--text-faint);
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -194,11 +194,11 @@
   place-items: center;
   width: 28px;
   height: 28px;
-  margin-right: 3px;
+  margin-right: var(--sp-1);
   flex: 0 0 auto;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   color: var(--text-faint);
-  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .commit__history-copy:hover {
@@ -225,15 +225,15 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-top: 2px;
+  gap: var(--sp-4);
+  margin-top: var(--sp-hair);
 }
 
 .commit__mode-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font-size: calc(12px * var(--font-scale, 1));
+  gap: var(--sp-3);
+  font-size: var(--text-xs);
   color: var(--text-muted);
   cursor: pointer;
 }
@@ -247,24 +247,24 @@
 
 .commit__mode-counts {
   color: var(--text-faint);
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
 }
 
 .commit__mode-hint {
   margin: -4px 0 0;
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   line-height: 1.5;
   color: var(--text-faint);
 }
 
 .commit__staged {
   flex: 0 0 auto;
-  padding: 0 5px;
-  border-radius: 4px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-xs);
   background: var(--green-soft);
   color: var(--green);
-  font-size: calc(9.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -275,7 +275,7 @@
 .commit__checks {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--sp-1);
   margin: -4px 0 0;
   padding: 0;
   list-style: none;
@@ -284,15 +284,15 @@
 .commit__check {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
-  font-size: calc(11px * var(--font-scale, 1));
+  gap: var(--sp-2);
+  font-size: var(--text-2xs);
   line-height: 1.45;
   color: var(--text-muted);
 }
 
 .commit__check svg {
   flex: 0 0 auto;
-  margin-top: 2px;
+  margin-top: var(--sp-hair);
 }
 
 /* What the commit would take or leave behind gets the alert icon; how the

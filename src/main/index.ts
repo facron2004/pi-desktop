@@ -25,18 +25,18 @@ function createWindow(): BrowserWindow {
     width: bounds.width,
     height: bounds.height,
     ...(bounds.x !== undefined && bounds.y !== undefined ? { x: bounds.x, y: bounds.y } : {}),
-    minWidth: 1080,
-    minHeight: 680,
+    minWidth: 880,
+    minHeight: 572,
     show: false,
-    backgroundColor: '#181818',
+    backgroundColor: '#16181d',
     title: 'Pi Desktop',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac
       ? { trafficLightPosition: { x: 18, y: 18 } }
       : {
           titleBarOverlay: {
-            color: '#181818',
-            symbolColor: '#a7a7a7',
+            color: '#111317',
+            symbolColor: '#9da4b2',
             height: 44
           }
         }),

@@ -1,203 +1,146 @@
-import { useEffect, useMemo, useState } from 'react'
-import {
-  ArrowUpRight,
-  FolderOpen,
-  GitBranch,
-  Keyboard,
-  Lightbulb,
-  MessageSquare,
-  Terminal,
-  Wand2
-} from 'lucide-react'
-import { formatRelativeTime } from '../lib/format'
-import { formatPlatformShortcut } from '../lib/shortcuts'
+import { useMemo, type ReactNode } from 'react'
+import { Bug, Compass, FolderOpen, GitCompare, History, Keyboard } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
+import { formatRelativeTime } from '../lib/format'
+import { samePath } from '../lib/path'
 import { useT } from '../lib/i18n'
+import { formatPlatformShortcut } from '../lib/shortcuts'
 
-const STARTERS = [
-  {
-    icon: Wand2,
-    title: 'Review this codebase',
-    body: 'Give me a tour of the project: structure, key modules, and how to run it.'
-  },
-  {
-    icon: GitBranch,
-    title: 'Plan a change',
-    body: 'Read the repository and propose an implementation plan for the feature I describe.'
-  },
-  {
-    icon: Lightbulb,
-    title: 'Suggest an improvement',
-    body: 'Find one small change that would make this project easier to use, and explain why.'
-  }
-]
-
-/** How many past conversations the empty state offers to resume. */
-const RECENT_LIMIT = 4
-
-/**
- * The kind of project the folder holds, so the empty state can offer
- * something that fits it.
- */
-type ProjectKind = 'node' | 'python' | 'rust' | 'go' | 'unknown'
-
-/**
- * Read the package manifest before offering a test-suite starter.
- *
- * The read is cheap and keeps the empty state from suggesting `npm test`
- * when the project has no test script.
- */
-async function detectKind(root: string): Promise<ProjectKind> {
-  const has = async (name: string) => Boolean(await window.pi.fs.read(`${root}/${name}`))
-  const packageJson = await window.pi.fs.read(`${root}/package.json`)
-  if (packageJson) {
-    try {
-      const manifest = JSON.parse(packageJson.content) as { scripts?: Record<string, unknown> }
-      const testScript = manifest.scripts?.test
-      if (
-        typeof testScript === 'string' &&
-        testScript.trim() &&
-        !/no test specified/i.test(testScript)
-      ) {
-        return 'node'
-      }
-    } catch {
-      // A malformed manifest cannot confirm that an npm test command exists.
-    }
-  }
-  if (await has('pyproject.toml') || (await has('requirements.txt'))) return 'python'
-  if (await has('Cargo.toml')) return 'rust'
-  if (await has('go.mod')) return 'go'
-  return 'unknown'
-}
-
-/** The starter that fits the project, and the one it pushes down. */
-function startersFor(kind: ProjectKind): typeof STARTERS {
-  if (kind === 'unknown') return STARTERS
-  return [
-    {
-      icon: Terminal,
-      title: 'Run the tests',
-      body: 'Run the test suite of this project and tell me what fails.'
-    },
-    STARTERS[0],
-    STARTERS[1]
-  ]
-}
-
-export function Welcome({ onPick }: { onPick: () => void }) {
+export function Welcome({ onPick, children }: { onPick: () => void; children: ReactNode }) {
   const workspace = useAppStore((state) => state.workspace)
   const status = useAppStore((state) => state.status.phase)
-  const error = useAppStore((state) => state.error)
-  const send = useAppStore((state) => state.send)
-  const sessions = useAppStore((state) => state.sessions)
-  const settings = useAppStore((state) => state.settings)
-  const activeSessionFile = useAppStore((state) => state.activeSessionFile)
-  const selectSession = useAppStore((state) => state.selectSession)
   const platform = useAppStore((state) => state.info?.platform)
+  const git = useAppStore((state) => state.git)
+  const sessions = useAppStore((state) => state.sessions)
+  const isStreaming = useAppStore((state) => state.isStreaming)
+  const selectSession = useAppStore((state) => state.selectSession)
+  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const t = useT()
 
-  // The conversations of this project, most recent first. Resuming one from
-  // here saves a trip through the sidebar. A pinned conversation comes
-  // first, because the user marked it as worth returning to.
-  const recent = useMemo(() => {
-    if (!workspace) return []
-    const pinned = new Set(settings.pinnedSessions ?? [])
+  const recentSessions = useMemo(() => {
+    if (!workspace?.path) return []
     return sessions
-      .filter((session) => session.cwd === workspace.path && session.file !== activeSessionFile)
-      .sort((a, b) => {
-        const left = pinned.has(a.file) ? 1 : 0
-        const right = pinned.has(b.file) ? 1 : 0
-        if (left !== right) return right - left
-        return b.updatedAt - a.updatedAt
-      })
-      .slice(0, RECENT_LIMIT)
-  }, [sessions, workspace, activeSessionFile, settings.pinnedSessions])
+      .filter((session) => session.cwd && samePath(session.cwd, workspace.path))
+      .slice(0, 3)
+  }, [sessions, workspace?.path])
 
-  // The starters that fit the project the user opened.
-  const [kind, setKind] = useState<ProjectKind>('unknown')
-  useEffect(() => {
-    if (!workspace) return
-    let cancelled = false
-    void detectKind(workspace.path).then((found) => {
-      if (!cancelled) setKind(found)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [workspace])
-  const starters = useMemo(() => startersFor(kind), [kind])
+  const dirtyCount = git?.isRepo ? git.files.length : 0
 
   return (
     <div className="welcome">
       <div className="welcome__inner">
-        <h1 className="welcome__title">
-          {workspace ? `${t('Let’s build')} ${workspace.name}` : t('Start a new project')}
-        </h1>
-        <p className="welcome__subtitle">
-          {workspace
-            ? t('Choose a task to get started, or describe what you want to build.')
-            : t('Choose a project folder and start a task with Pi.')}
-        </p>
+        <div className="welcome__heading">
+          <h1 className="welcome__title">{t('What would you like to work on today?')}</h1>
+          <p className="welcome__subtitle">
+            {workspace
+              ? t('Start a new conversation in {project}').replace('{project}', workspace.name)
+              : t('Open a project to start a new conversation')}
+          </p>
+        </div>
 
-        {workspace ? (
-          <div className="welcome__cards">
-            {starters.map((starter) => (
+        <button className="btn welcome__open" onClick={onPick}>
+          <FolderOpen size={16} aria-hidden="true" />
+          {t('Open project folder')}
+        </button>
+
+        {children}
+
+        {workspace && status === 'ready' ? (
+          <div className="welcome__starters">
+            {dirtyCount > 0 ? (
               <button
-                className="welcome__card"
-                key={starter.title}
-                onClick={() => void send(t(starter.body), [])}
+                type="button"
+                className="welcome__starter"
+                onClick={() =>
+                  insertIntoComposer(
+                    t(
+                      'Review the uncommitted git changes in this repository, point out any bugs or edge cases, and suggest improvements.'
+                    ),
+                    'replace'
+                  )
+                }
               >
-                <div className="welcome__card-top">
-                  <span className="welcome__card-icon" aria-hidden="true">
-                    <starter.icon size={16} />
+                <span className="welcome__starter-icon" data-tone="amber">
+                  <GitCompare size={14} />
+                </span>
+                <span className="welcome__starter-body">
+                  <span className="welcome__starter-title">{t('Review uncommitted changes')}</span>
+                  <span className="welcome__starter-desc">
+                    {dirtyCount} {dirtyCount === 1 ? t('changed file') : t('changed files')}
+                    {git?.branch ? ` · ${git.branch}` : ''}
                   </span>
-                  <ArrowUpRight className="welcome__card-arrow" size={15} aria-hidden="true" />
-                </div>
-                <div className="welcome__card-title">
-                  {t(starter.title)}
-                </div>
-                <div className="welcome__card-body">{t(starter.body)}</div>
+                </span>
               </button>
-            ))}
-          </div>
-        ) : (
-          <button className="btn btn--primary" style={{ marginTop: 20 }} onClick={onPick}>
-            <FolderOpen size={14} />
-            {t('Open project folder')}
-          </button>
-        )}
+            ) : null}
 
-        {error ? (
-          <div className="welcome__error">
-            <strong>{t('Pi could not start.')}</strong>
-            <br />
-            {error}
+            <button
+              type="button"
+              className="welcome__starter"
+              onClick={() =>
+                insertIntoComposer(
+                  t(
+                    'Give me a concise overview of this codebase: architecture, key entry points, and how the main modules fit together.'
+                  ),
+                  'replace'
+                )
+              }
+            >
+              <span className="welcome__starter-icon" data-tone="blue">
+                <Compass size={14} />
+              </span>
+              <span className="welcome__starter-body">
+                <span className="welcome__starter-title">{t('Explain codebase architecture')}</span>
+                <span className="welcome__starter-desc">
+                  {t('Key modules, entry points & data flow')}
+                </span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              className="welcome__starter"
+              onClick={() =>
+                insertIntoComposer(
+                  t('Run the project typecheck or test suite and fix any issues that come up.'),
+                  'replace'
+                )
+              }
+            >
+              <span className="welcome__starter-icon" data-tone="violet">
+                <Bug size={14} />
+              </span>
+              <span className="welcome__starter-body">
+                <span className="welcome__starter-title">{t('Find & fix issues')}</span>
+                <span className="welcome__starter-desc">
+                  {t('Run typecheck or tests and resolve errors')}
+                </span>
+              </span>
+            </button>
           </div>
         ) : null}
 
-        {recent.length > 0 ? (
+        {recentSessions.length > 0 ? (
           <div className="welcome__recent">
-            <div className="welcome__recent-head">
-              <span>{t('Recent conversations')}</span>
+            <div className="welcome__recent-label">
+              <History size={12} />
+              <span>{t('Recent in this project')}</span>
             </div>
             <div className="welcome__recent-list">
-              {recent.map((session) => (
+              {recentSessions.map((session) => (
                 <button
-                  className="welcome__recent-item"
                   key={session.file}
+                  type="button"
+                  className="welcome__recent-item"
+                  // The welcome screen only shows while nothing is running, so
+                  // opening a conversation here never ends a run.
+                  disabled={isStreaming}
                   onClick={() => void selectSession(session)}
-                  title={session.name || session.preview || session.file}
                 >
-                  <MessageSquare size={13} />
                   <span className="welcome__recent-title">
-                    {session.name || session.preview || t('Untitled session')}
+                    {session.name || session.preview || t('Untitled conversation')}
                   </span>
-                  <span className="welcome__recent-meta">
-                    {formatRelativeTime(session.updatedAt, settings.language)}
-                    {session.messageCount
-                      ? ` · ${session.messageCount} ${session.messageCount === 1 ? t('msg') : t('msgs')}`
-                      : ''}
+                  <span className="welcome__recent-time">
+                    {formatRelativeTime(session.updatedAt)}
                   </span>
                 </button>
               ))}
@@ -206,33 +149,20 @@ export function Welcome({ onPick }: { onPick: () => void }) {
         ) : null}
 
         {status === 'starting' ? (
-          <div className="welcome__pending">
+          <div className="welcome__pending" role="status">
             <span className="spinner" />
             <span>{t('Starting the Pi runtime…')}</span>
           </div>
         ) : null}
 
-        <div className="welcome__hints">
-          <span>
-            <kbd>/</kbd> {t('commands')}
-          </span>
-          <span>
-            <kbd>{formatPlatformShortcut('Ctrl', platform)}</kbd>
-            <kbd>Shift</kbd>
-            <kbd>P</kbd> {t('everything')}
-          </span>
-          <span>
-            <kbd>{formatPlatformShortcut('Ctrl', platform)}</kbd>
-            <kbd>K</kbd> {t('focus composer')}
-          </span>
-          <button
-            className="ghost-btn"
-            onClick={() => window.dispatchEvent(new CustomEvent('pi:show-shortcuts'))}
-          >
-            <Keyboard size={12} />
-            {t('All shortcuts')}
-          </button>
-        </div>
+        <button
+          className="welcome__shortcut"
+          onClick={() => window.dispatchEvent(new CustomEvent('pi:open-launcher'))}
+        >
+          <Keyboard size={16} aria-hidden="true" />
+          <span>{formatPlatformShortcut('Ctrl+Shift+P', platform)}</span>
+          <span>{t('Open the command palette')}</span>
+        </button>
       </div>
     </div>
   )

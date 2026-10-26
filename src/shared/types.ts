@@ -146,6 +146,7 @@ export interface PiState {
   sessionId?: string
   sessionName?: string
   autoCompactionEnabled?: boolean
+  autoRetryEnabled?: boolean
   messageCount?: number
   pendingMessageCount?: number
 }
@@ -499,6 +500,8 @@ export interface AppSettings {
   terminalHeight?: number
   /** Automatically accept the working directory of new workspaces. */
   trustProject: boolean
+  /** Send a system notification when a background turn finishes or needs input. */
+  desktopNotifications?: boolean
 }
 
 export interface PiLaunchInfo {
@@ -617,6 +620,10 @@ export interface PiDesktopBridge {
     unstageFile(file: string): Promise<GitCommitResult>
     stageAll(): Promise<GitCommitResult>
     unstageAll(): Promise<GitCommitResult>
+    /** Push the current branch to its upstream remote. */
+    push(): Promise<GitCommitResult>
+    /** Pull changes from the upstream remote into the current branch. */
+    pull(): Promise<GitCommitResult>
   }
   shell: {
     openPath(target: string): Promise<string>
@@ -635,6 +642,8 @@ export interface PiDesktopBridge {
     reveal(file: string): Promise<void>
     /** Write a picture the model produced to a file the user picks. */
     saveImage(data: string, mimeType: string): Promise<string | null>
+    /** Resolve the filesystem path of a dropped File object. */
+    pathForFile(file: File): string
   }
 }
 

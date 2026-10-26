@@ -1,19 +1,26 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowDown, Check, Copy, Search, X } from 'lucide-react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ArrowDown, Check, ChevronDown, ChevronRight, ChevronUp, Copy, List, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../lib/thread'
-import type { ModelInfo } from '@shared/types'
+import type { InspectorRequest, ModelInfo } from '@shared/types'
+import { collectChanges } from '../lib/changes'
+import { diffStats } from '../lib/diff-fold'
 import { formatClock, formatCost, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
 import { pairForkTargets } from '../lib/thread'
 import { describeTool } from '../lib/tools'
+import { summarizeTool } from '../lib/tool-renderers'
 import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
 import { SearchContext } from '../lib/search-context'
-import { AssistantImage, AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
+import { AssistantImage, AssistantText, NoticeMessage, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
-import { ToolGroup } from './ToolGroup'
+import { ToolGroup, type ToolGroupItem } from './ToolGroup'
+import { FileChangeSummary } from './FileChangeSummary'
+import { RunOutcome, RunStatusRow } from './RunStatusRow'
 import { useT } from '../lib/i18n'
+import type { RunState } from '../store/useAppStore'
+import '../styles/conversation-stream.css'
 
 interface Turn {
   id: string
@@ -23,6 +30,11 @@ interface Turn {
   notices: NoticeItem[]
   bash: Extract<ThreadItem, { kind: 'bash' }>[]
 }
+
+const VISIBLE_RECENT_TURNS = 3
+const MIN_HIDDEN_MESSAGES = 12
+/** How far from the bottom still counts as "following the output". */
+const FOLLOW_RANGE = 80
 
 /** Group the flat item list into turns: a user message and everything it produced. */
 function buildTurns(items: ThreadItem[]): Turn[] {
@@ -53,12 +65,12 @@ function searchableChunks(turns: Turn[], root?: string): SearchableChunk[] {
   const chunks: SearchableChunk[] = []
   for (const turn of turns) {
     if (turn.user?.text.trim()) {
-      chunks.push({ turnId: turn.id, source: 'You', text: turn.user.text })
+      chunks.push({ turnId: turn.id, messageId: turn.user.id, source: 'You', text: turn.user.text })
     }
     for (const assistant of turn.assistants) {
       for (const block of assistant.blocks) {
         if (block.type === 'text' && block.text.trim()) {
-          chunks.push({ turnId: turn.id, source: 'Pi', text: block.text })
+          chunks.push({ turnId: turn.id, messageId: assistant.id, source: 'Pi', text: block.text })
         }
       }
     }
@@ -67,16 +79,33 @@ function searchableChunks(turns: Turn[], root?: string): SearchableChunk[] {
       // summary of the call goes into the index. Otherwise every word of
       // every edited file turns into a search hit.
       const label = describeTool(tool.toolName).summary(tool.args ?? {}, root)
-      chunks.push({ turnId: turn.id, source: 'Tool', text: `${tool.toolName} ${label}` })
+      chunks.push({
+        turnId: turn.id,
+        messageId: tool.id,
+        source: 'Tool',
+        text: `${tool.toolName} ${label}`
+      })
     }
   }
   return chunks
 }
 
+function searchTextForMessage(item: UserItem | AssistantItem): string {
+  if (item.kind === 'user') return item.text
+  return item.blocks
+    .map((block) => (block.type === 'text' ? block.text : ''))
+    .filter(Boolean)
+    .join('\n')
+}
+
+function normalizeSearchText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
 function useCopy() {
   const [copied, setCopied] = useState<string | null>(null)
 
-  const copy = async (id: string, text: string) => {
+  const copy = useCallback(async (id: string, text: string) => {
     try {
       await navigator.clipboard.writeText(text)
       setCopied(id)
@@ -84,7 +113,7 @@ function useCopy() {
     } catch {
       /* clipboard may be unavailable */
     }
-  }
+  }, [])
 
   return { copied, copy }
 }
@@ -92,7 +121,18 @@ function useCopy() {
 export function Thread() {
   const items = useAppStore((state) => state.items)
   const isStreaming = useAppStore((state) => state.isStreaming)
+  const run = useAppStore((state) => state.run)
+  const transport = useAppStore((state) => state.transport)
+  /**
+   * Whether a run is open, as opposed to whether Pi has started streaming.
+   *
+   * A prompt handed to a settled runtime is `queued` before any event
+   * arrives, so `isStreaming` alone would hide the row for exactly the moment
+   * the reader most wants to know what happened to their message.
+   */
+  const runOpen = isStreaming || (run.phase !== 'idle' && !run.settled)
   const workspace = useAppStore((state) => state.workspace)
+  const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const models = useAppStore((state) => state.models)
   const forkTargets = useAppStore((state) => state.forkTargets)
   const forkFrom = useAppStore((state) => state.forkFrom)
@@ -100,15 +140,44 @@ export function Thread() {
   const forking = useAppStore((state) => state.forking)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
+  const previousItemsRef = useRef(items)
+  const initialScrollRef = useRef({ sessionFile: activeSessionFile, done: false })
+  if (initialScrollRef.current.sessionFile !== activeSessionFile) {
+    initialScrollRef.current = { sessionFile: activeSessionFile, done: false }
+  }
   const [atBottom, setAtBottom] = useState(true)
+  const [expandedHistorySession, setExpandedHistorySession] = useState<string | null>(null)
+  const pendingTurnJumpRef = useRef<string | null>(null)
   const { copied, copy } = useCopy()
 
   const [searchOpen, setSearchOpen] = useState(false)
+  const [searchResultsOpen, setSearchResultsOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [hitIndex, setHitIndex] = useState(0)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const jumpHitIndexRef = useRef<number | null>(null)
+  const pendingJumpTargetRef = useRef<{ turnId: string; query: string } | null>(null)
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false)
+    setSearchResultsOpen(false)
+    setQuery('')
+  }, [])
 
   const turns = useMemo(() => buildTurns(items), [items])
+  const historySessionKey = activeSessionFile ?? ''
+  const historyExpanded = expandedHistorySession === historySessionKey
+  const hiddenTurnCount = Math.max(0, turns.length - VISIBLE_RECENT_TURNS)
+  const hiddenMessageCount = useMemo(
+    () =>
+      turns
+        .slice(0, hiddenTurnCount)
+        .reduce((count, turn) => count + Number(Boolean(turn.user)) + turn.assistants.length, 0),
+    [hiddenTurnCount, turns]
+  )
+  const historyCollapsed = !historyExpanded && hiddenMessageCount >= MIN_HIDDEN_MESSAGES
+  const firstVisibleTurn = historyCollapsed ? hiddenTurnCount : 0
+  const visibleTurns = historyCollapsed ? turns.slice(firstVisibleTurn) : turns
   const hasSearchQuery = searchOpen && Boolean(query.trim())
   const chunks = useMemo(
     () => (hasSearchQuery ? searchableChunks(turns, workspace?.path) : []),
@@ -117,15 +186,23 @@ export function Thread() {
   const hits: SearchHit[] = useMemo(() => findMatches(chunks, query), [chunks, query])
   const forkByUserId = useMemo(() => pairForkTargets(items, forkTargets), [items, forkTargets])
 
+  useEffect(() => {
+    if (hits.length === 0) setSearchResultsOpen(false)
+  }, [hits.length])
+
   /**
    * What Pi is doing right now.
    *
-   * The reader may have scrolled up, so the footer says what the agent is
-   * working on as well.
+   * Derived from the run state and from the tool call that is actually
+   * executing — not from the last tool in the list, which may have finished
+   * a while ago. The reader may have scrolled up, so the footer says what
+   * the agent is working on as well.
    */
   const activity = useMemo(() => {
     const last = turns[turns.length - 1]
     if (!last) return ''
+    // A running tool is the one that is executing; a proposed one has not
+    // started, so it is not what the agent is doing this second.
     let tool: ToolItem | undefined
     for (let index = last.tools.length - 1; index >= 0; index -= 1) {
       if (last.tools[index].status === 'running') {
@@ -133,25 +210,46 @@ export function Thread() {
         break
       }
     }
-    if (!tool) tool = last.tools[last.tools.length - 1]
+    if (!tool) {
+      for (let index = last.tools.length - 1; index >= 0; index -= 1) {
+        if (last.tools[index].status === 'proposed') {
+          tool = last.tools[index]
+          break
+        }
+      }
+    }
     if (!tool) return ''
-    const descriptor = describeTool(tool.toolName)
-    const summary = descriptor.summary(tool.args ?? {}, workspace?.path)
-    return summary ? `${descriptor.label} ${summary}` : descriptor.label
-  }, [turns, workspace?.path])
+    const summary = summarizeTool(tool)
+    return summary.detail ? `${summary.label} ${summary.detail}` : summary.label
+  }, [turns])
 
   useLayoutEffect(() => {
     const node = scrollRef.current
-    if (!node || !stickRef.current) return
-    node.scrollTop = node.scrollHeight
-  }, [items])
+    const itemsChanged = previousItemsRef.current !== items
+    previousItemsRef.current = items
+    if (!node || (!itemsChanged && initialScrollRef.current.done) || !stickRef.current || items.length === 0) return
+    if (!initialScrollRef.current.done) {
+      initialScrollRef.current.done = true
+      if (historyCollapsed) {
+        node.scrollTo({ top: 0, behavior: 'instant' })
+        const nearBottom = node.scrollHeight - node.clientHeight < FOLLOW_RANGE
+        stickRef.current = nearBottom
+        setAtBottom(nearBottom)
+        return
+      }
+    }
+    node.scrollTo({ top: node.scrollHeight, behavior: 'instant' })
+  }, [items, historyCollapsed])
 
+  // A reader who scrolls up is reading, not watching: the follow stops and
+  // only a click brings it back. The window is generous enough that a
+  // half-line of layout does not switch the mode.
   useEffect(() => {
     const node = scrollRef.current
     if (!node) return
     const onScroll = () => {
       const distance = node.scrollHeight - node.scrollTop - node.clientHeight
-      stickRef.current = distance < 120
+      stickRef.current = distance < FOLLOW_RANGE
       setAtBottom(stickRef.current)
     }
     node.addEventListener('scroll', onScroll, { passive: true })
@@ -170,16 +268,17 @@ export function Thread() {
       }
       if (event.key === 'Escape' && searchOpen) {
         event.preventDefault()
-        setSearchOpen(false)
-        setQuery('')
+        closeSearch()
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [searchOpen])
+  }, [searchOpen, closeSearch])
 
   useEffect(() => {
-    setHitIndex(0)
+    const jumpHitIndex = jumpHitIndexRef.current
+    jumpHitIndexRef.current = null
+    setHitIndex(jumpHitIndex ?? 0)
   }, [query])
 
   // Development aid: open the search bar with a query for screenshots.
@@ -190,18 +289,51 @@ export function Thread() {
     setQuery(dev.search)
   }, [])
 
-  const jumpToHit = useCallback((hit: SearchHit | undefined) => {
-    if (!hit) return
-    const node = scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${hit.turnId}"]`)
+  const jumpToTurn = useCallback(
+    (turnId: string) => {
+      const turnIndex = turns.findIndex((turn) => turn.id === turnId)
+      if (turnIndex < 0) return
+      if (turnIndex < firstVisibleTurn) {
+        pendingTurnJumpRef.current = turnId
+        setExpandedHistorySession(historySessionKey)
+        return
+      }
+      const node = scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${turnId}"]`)
+      if (!node) return
+      stickRef.current = false
+      node.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
+      node.classList.remove('turn--flash')
+      // Force a reflow so the animation can run again on the same turn.
+      void node.offsetWidth
+      node.classList.add('turn--flash')
+      window.setTimeout(() => node.classList.remove('turn--flash'), 1400)
+    },
+    [firstVisibleTurn, historySessionKey, turns]
+  )
+
+  const jumpToHit = useCallback(
+    (hit: SearchHit | undefined) => {
+      if (!hit) return
+      jumpToTurn(hit.turnId)
+    },
+    [jumpToTurn]
+  )
+
+  useLayoutEffect(() => {
+    const turnId = pendingTurnJumpRef.current
+    if (!turnId || firstVisibleTurn > 0) return
+    const node = scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${turnId}"]`)
     if (!node) return
+    pendingTurnJumpRef.current = null
     stickRef.current = false
+    setAtBottom(false)
     node.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
     node.classList.remove('turn--flash')
     // Force a reflow so the animation can run again on the same turn.
     void node.offsetWidth
     node.classList.add('turn--flash')
     window.setTimeout(() => node.classList.remove('turn--flash'), 1400)
-  }, [])
+  }, [firstVisibleTurn, turns])
 
   const stepHit = useCallback(
     (delta: number) => {
@@ -218,12 +350,12 @@ export function Thread() {
   const jumpTurn = useCallback((direction: -1 | 1) => {
     const container = scrollRef.current
     if (!container) return
-    const turns = Array.from(container.querySelectorAll<HTMLElement>('[data-turn]'))
-    if (turns.length === 0) return
+    const visibleTurnNodes = Array.from(container.querySelectorAll<HTMLElement>('[data-turn]'))
+    if (visibleTurnNodes.length === 0) return
 
     const containerTop = container.getBoundingClientRect().top
     const scrollTop = container.scrollTop
-    const offsets = turns.map((turn) => {
+    const offsets = visibleTurnNodes.map((turn) => {
       const rect = turn.getBoundingClientRect()
       return { turn, offset: rect.top - containerTop + scrollTop }
     })
@@ -232,7 +364,16 @@ export function Thread() {
       direction === -1
         ? [...offsets].reverse().find((item) => item.offset < scrollTop - 8)
         : offsets.find((item) => item.offset > scrollTop + 8)
-    if (!entry) return
+    if (!entry) {
+      if (direction === -1 && firstVisibleTurn > 0) {
+        const previous = turns[firstVisibleTurn - 1]
+        if (previous) {
+          pendingTurnJumpRef.current = previous.id
+          setExpandedHistorySession(historySessionKey)
+        }
+      }
+      return
+    }
 
     stickRef.current = false
     container.scrollTo({ top: entry.offset - 8, behavior: scrollBehavior() })
@@ -241,7 +382,7 @@ export function Thread() {
     void entry.turn.offsetWidth
     entry.turn.classList.add('turn--flash')
     window.setTimeout(() => entry.turn.classList.remove('turn--flash'), 1400)
-  }, [])
+  }, [firstVisibleTurn, historySessionKey, turns])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -274,7 +415,7 @@ export function Thread() {
   // that no longer exists cannot keep the thread from scrolling again.
   const pendingJump = useAppStore((state) => state.pendingJump)
   const consumeJump = useAppStore((state) => state.consumeJump)
-  const activeSessionFile = useAppStore((state) => state.activeSessionFile)
+  const showToast = useAppStore((state) => state.showToast)
 
   // A query belongs to the conversation it was typed in. Clearing it here
   // keeps a jump highlight from following the reader into the next one; the
@@ -284,36 +425,65 @@ export function Thread() {
     if (previousSession.current === activeSessionFile) return
     previousSession.current = activeSessionFile
     setQuery('')
+    setSearchResultsOpen(false)
+    pendingTurnJumpRef.current = null
+    pendingJumpTargetRef.current = null
   }, [activeSessionFile])
 
   useEffect(() => {
     if (!pendingJump || pendingJump.file !== activeSessionFile) return
     if (items.length === 0) return
 
-    const conversation = items.filter((item) => item.kind === 'user' || item.kind === 'assistant')
-    const target = conversation[pendingJump.messageIndex - 1]
-    let turnId: string | undefined
-    if (target) {
-      turnId = turns.find(
-        (turn) =>
-          turn.user?.id === target.id ||
-          turn.assistants.some((assistant) => assistant.id === target.id)
-      )?.id
+    const conversation = items.filter(
+      (item): item is UserItem | AssistantItem => item.kind === 'user' || item.kind === 'assistant'
+    )
+    const snippet = normalizeSearchText(pendingJump.snippet)
+    const target = conversation.find(
+      (item) =>
+        item.kind === pendingJump.role &&
+        normalizeSearchText(searchTextForMessage(item)).includes(snippet)
+    )
+    // Session files keep every branch, but the thread only displays the active
+    // one. Match the hit's surrounding text so an ordinal from another branch
+    // cannot send the reader to an unrelated message with the same query.
+    const turnId = target
+      ? turns.find(
+          (turn) =>
+            turn.user?.id === target.id ||
+            turn.assistants.some((assistant) => assistant.id === target.id)
+        )?.id
+      : undefined
+    if (!turnId && pendingJump.query.trim()) {
+      showToast("This search result isn't visible in the current conversation.")
     }
 
-    // A branched session stores messages that are not on the active branch,
-    // so the index can miss. The words of the hit are the fallback.
-    const needle = pendingJump.query.trim().toLowerCase()
-    if (!turnId && needle) {
-      turnId = searchableChunks(turns, workspace?.path).find((chunk) =>
-        chunk.text.toLowerCase().includes(needle)
-      )?.turnId
-    }
-
-    const node = turnId
+    const turnIndex = turnId ? turns.findIndex((turn) => turn.id === turnId) : -1
+    const hidden = turnIndex >= 0 && turnIndex < firstVisibleTurn
+    const node = turnId && !hidden
       ? scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${turnId}"]`)
       : null
-    if (node) {
+    // The words of the hit stay marked and the search bar opens on them, so
+    // it is obvious why this turn was picked and the reader can walk the rest
+    // of the hits from here.
+    if (pendingJump.query.trim()) {
+      const localHits = findMatches(searchableChunks(turns, workspace?.path), pendingJump.query)
+      const targetHitIndex = target
+        ? localHits.findIndex((hit) => hit.messageId === target.id)
+        : -1
+      if (query === pendingJump.query) {
+        jumpHitIndexRef.current = null
+        setHitIndex(Math.max(0, targetHitIndex))
+      } else {
+        jumpHitIndexRef.current = targetHitIndex >= 0 ? targetHitIndex : null
+      }
+      pendingJumpTargetRef.current = turnId
+        ? { turnId, query: pendingJump.query }
+        : null
+      if (hidden) setExpandedHistorySession(historySessionKey)
+      setQuery(pendingJump.query)
+      setSearchResultsOpen(false)
+      setSearchOpen(true)
+    } else if (node) {
       stickRef.current = false
       setAtBottom(false)
       node.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
@@ -323,17 +493,30 @@ export function Thread() {
       void node.offsetWidth
       node.classList.add('turn--flash')
       window.setTimeout(() => node.classList.remove('turn--flash'), 1600)
-    }
-
-    // The words of the hit stay marked and the search bar opens on them, so
-    // it is obvious why this turn was picked and the reader can walk the rest
-    // of the hits from here.
-    if (pendingJump.query.trim()) {
-      setQuery(pendingJump.query)
-      setSearchOpen(true)
+    } else if (turnId && hidden) {
+      pendingTurnJumpRef.current = turnId
+      setExpandedHistorySession(historySessionKey)
     }
     consumeJump()
-  }, [pendingJump, activeSessionFile, items, turns, workspace?.path, consumeJump])
+  }, [pendingJump, activeSessionFile, historySessionKey, items, turns, firstVisibleTurn, workspace?.path, query, consumeJump, showToast])
+
+  useEffect(() => {
+    const target = pendingJumpTargetRef.current
+    if (!target || (target.query && (!searchOpen || query !== target.query))) return
+
+    const node = scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${target.turnId}"]`)
+    pendingJumpTargetRef.current = null
+    if (!node) return
+
+    stickRef.current = false
+    setAtBottom(false)
+    node.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
+    node.classList.remove('turn--flash')
+    // Force a reflow so the animation runs again after the search bar opens.
+    void node.offsetWidth
+    node.classList.add('turn--flash')
+    window.setTimeout(() => node.classList.remove('turn--flash'), 1600)
+  }, [pendingJump, query, searchOpen, turns, firstVisibleTurn])
 
   return (
     <div className="thread" ref={scrollRef}>
@@ -355,8 +538,7 @@ export function Thread() {
                 }
                 if (event.key === 'Escape') {
                   event.preventDefault()
-                  setSearchOpen(false)
-                  setQuery('')
+                  closeSearch()
                 }
               }}
             />
@@ -373,20 +555,46 @@ export function Thread() {
                 : ''}
             </span>
             <button
+              className="icon-btn thread-search__previous"
+              title={t('Previous match (Shift+Enter)')}
+              aria-label={t('Previous match (Shift+Enter)')}
+              disabled={hits.length === 0}
+              onClick={() => stepHit(-1)}
+            >
+              <ChevronUp size={14} />
+            </button>
+            <button
+              className="icon-btn thread-search__next"
+              title={t('Next match (Enter)')}
+              aria-label={t('Next match (Enter)')}
+              disabled={hits.length === 0}
+              onClick={() => stepHit(1)}
+            >
+              <ChevronDown size={14} />
+            </button>
+            <button
+              className="icon-btn thread-search__toggle"
+              title={t(searchResultsOpen ? 'Hide search results' : 'Show search results')}
+              aria-label={t(searchResultsOpen ? 'Hide search results' : 'Show search results')}
+              aria-expanded={searchResultsOpen}
+              aria-controls="thread-search-results"
+              disabled={hits.length === 0}
+              onClick={() => setSearchResultsOpen((open) => !open)}
+            >
+              <List size={14} />
+            </button>
+            <button
               className="icon-btn"
               title={t('Close search')}
               aria-label={t('Close search')}
-              onClick={() => {
-                setSearchOpen(false)
-                setQuery('')
-              }}
+              onClick={closeSearch}
             >
               <X size={13} />
             </button>
           </div>
 
-          {hits.length > 0 ? (
-            <div className="thread-search__results">
+          {searchResultsOpen && hits.length > 0 ? (
+            <div className="thread-search__results" id="thread-search-results">
               {hits.slice(0, 6).map((hit, index) => {
                 const [before, match, after] = splitSnippet(hit.snippet, query)
                 return (
@@ -414,102 +622,66 @@ export function Thread() {
         </div>
       ) : null}
 
-      <div className="thread__inner">
+      <div className="thread__inner" data-history-collapsed={historyCollapsed}>
+        {historyCollapsed ? (
+          <div className="thread__history">
+            <button
+              type="button"
+              aria-expanded={false}
+              aria-label={t(`Up ${hiddenMessageCount} messages`)}
+              onClick={() => setExpandedHistorySession(historySessionKey)}
+            >
+              <span>{t(`Up ${hiddenMessageCount} messages`)}</span>
+              <ChevronRight size={15} strokeWidth={1.6} />
+            </button>
+          </div>
+        ) : null}
         <SearchContext.Provider value={query}>
-          {turns.map((turn) => {
-          const toolMap = new Map(turn.tools.map((tool) => [tool.toolCallId, tool]))
-          const referenced = new Set<string>()
-          for (const assistant of turn.assistants) {
-            for (const block of assistant.blocks) {
-              if (block.type === 'toolCall') referenced.add(block.id)
-            }
-          }
-          const orphanTools = turn.tools.filter((tool) => !referenced.has(tool.toolCallId))
-          const lastAssistant = turn.assistants[turn.assistants.length - 1]
-
-          // When the current run started, for the elapsed counter. The
-          // prompt is the honest start of the turn.
-          const runStartedAt = turn.user?.timestamp ?? lastAssistant?.timestamp
-
-          const assistantText = turn.assistants
-            .flatMap((assistant) =>
-              assistant.blocks
-                .filter((block) => block.type === 'text')
-                .map((block) => (block.type === 'text' ? block.text : ''))
+          {visibleTurns.map((turn, index) => {
+            const turnIndex = firstVisibleTurn + index
+            const userId = turn.user?.id
+            const isLastTurn = turnIndex === turns.length - 1
+            const showStreamingFooter = isStreaming && isLastTurn
+            return (
+              <ThreadTurnView
+                key={turn.id}
+                turn={turn}
+                models={models}
+                t={t}
+                onCopy={copy}
+                userCopied={copied === userId}
+                assistantCopied={copied === `${turn.id}:assistant`}
+                forkEntryId={userId ? forkByUserId.get(userId) : undefined}
+                onFork={forkFrom}
+                forking={Boolean(userId && forkByUserId.has(userId) && forking)}
+                isStreaming={isStreaming}
+                showStreamingFooter={showStreamingFooter}
+                activity={showStreamingFooter ? activity : ''}
+                run={run}
+                transport={transport}
+                isLastTurn={isLastTurn}
+              />
             )
-            .join('\n\n')
-            .trim()
-
-          return (
-            <section className="turn" key={turn.id} data-turn={turn.id}>
-              {turn.user ? (
-                <UserMessage
-                  item={turn.user}
-                  onCopy={copy}
-                  copied={copied}
-                  forkEntryId={forkByUserId.get(turn.user.id)}
-                  onFork={forkFrom}
-                  forking={forking}
-                />
-              ) : null}
-
-              {turn.assistants.length > 0 || turn.notices.length > 0 || turn.bash.length > 0 ? (
-                <div className="assistant">
-                  <div className="assistant__avatar">π</div>
-                  <div className="assistant__body">
-                    {renderTurn(turn, toolMap, models, t)}
-
-                    {turn.bash.map((item) => (
-                      <BashCard key={item.id} item={item} />
-                    ))}
-
-                    {orphanTools.map((tool) => (
-                      <ToolCard key={tool.id} item={tool} />
-                    ))}
-
-                    {turn.notices.map((notice) => (
-                      <NoticeMessage key={notice.id} item={notice} />
-                    ))}
-
-                    {isStreaming && turn === turns[turns.length - 1] ? (
-                      <div className="assistant__footer">
-                        <span className="spinner" />
-                        <span>{t('Working…')}</span>
-                        {activity ? <span className="assistant__activity">{activity}</span> : null}
-                        {runStartedAt ? <Elapsed since={runStartedAt} /> : null}
-                      </div>
-                    ) : null}
-
-                    {!isStreaming && assistantText ? (
-                      <div className="assistant__actions">
-                        <button
-                          className="ghost-btn"
-                          onClick={() => copy(turn.id, assistantText)}
-                          title={t("Copy the assistant's answer")}
-                        >
-                          {copied === turn.id ? <Check size={12} /> : <Copy size={12} />}
-                          {copied === turn.id ? t('Copied') : t('Copy')}
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
-            </section>
-          )
           })}
         </SearchContext.Provider>
 
-        {isStreaming && items.length === 0 ? (
+        {runOpen && items.length === 0 ? (
           <div className="assistant">
-            <div className="assistant__avatar">π</div>
             <div className="assistant__body">
-              <div className="assistant__footer">
-                <span className="spinner" />
-                <span>{t('Thinking…')}</span>
-              </div>
+              <RunStatusRow
+                run={run}
+                transport={transport}
+                activity={activity || undefined}
+              />
             </div>
           </div>
+        ) : null}
+
+        {/* The run state is repeated at the end of the stream, where the eye
+            already is: the footer of the last turn shows it too, and this one
+            covers the case where the run outlives the last turn. */}
+        {runOpen && items.length > 0 ? (
+          <RunStatusRow run={run} transport={transport} activity={activity || undefined} />
         ) : null}
       </div>
 
@@ -529,28 +701,199 @@ export function Thread() {
   )
 }
 
-/** A counter that ticks once a second while the agent is working. */
-function Elapsed({ since }: { since: number }) {
-  const [now, setNow] = useState(() => Date.now())
-  const t = useT()
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
-
-  const seconds = Math.max(0, Math.round((now - since) / 1000))
-  if (seconds < 60) return <span>{seconds}{t('seconds-short')}</span>
-  return <span>{Math.floor(seconds / 60)}{t('minutes-short')} {seconds % 60}{t('seconds-short')}</span>
+interface ThreadTurnViewProps {
+  turn: Turn
+  models: ModelInfo[]
+  t: (text: string) => string
+  onCopy: (id: string, text: string) => void
+  userCopied: boolean
+  assistantCopied: boolean
+  forkEntryId?: string
+  onFork: (entryId: string) => void
+  forking: boolean
+  isStreaming: boolean
+  showStreamingFooter: boolean
+  activity: string
+  run: RunState
+  transport: 'connected' | 'disconnected'
+  /** The turn that is last in the conversation, where a run summary belongs. */
+  isLastTurn: boolean
 }
+
+function sameReferences<T>(left: T[], right: T[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index])
+}
+
+function sameTurnContent(left: Turn, right: Turn): boolean {
+  return (
+    left.id === right.id &&
+    left.user === right.user &&
+    sameReferences(left.assistants, right.assistants) &&
+    sameReferences(left.tools, right.tools) &&
+    sameReferences(left.notices, right.notices) &&
+    sameReferences(left.bash, right.bash)
+  )
+}
+
+function equalThreadTurnViewProps(
+  previous: ThreadTurnViewProps,
+  next: ThreadTurnViewProps
+): boolean {
+  return (
+    sameTurnContent(previous.turn, next.turn) &&
+    previous.models === next.models &&
+    previous.t === next.t &&
+    previous.onCopy === next.onCopy &&
+    previous.userCopied === next.userCopied &&
+    previous.assistantCopied === next.assistantCopied &&
+    previous.forkEntryId === next.forkEntryId &&
+    previous.onFork === next.onFork &&
+    previous.forking === next.forking &&
+    previous.isStreaming === next.isStreaming &&
+    previous.showStreamingFooter === next.showStreamingFooter &&
+    previous.activity === next.activity &&
+    previous.run === next.run &&
+    previous.transport === next.transport &&
+    previous.isLastTurn === next.isLastTurn
+  )
+}
+
+const ThreadTurnView = memo(function ThreadTurnView({
+  turn,
+  models,
+  t,
+  onCopy,
+  userCopied,
+  assistantCopied,
+  forkEntryId,
+  onFork,
+  forking,
+  isStreaming,
+  showStreamingFooter,
+  activity,
+  run,
+  transport,
+  isLastTurn
+}: ThreadTurnViewProps) {
+  const toolMap = new Map(turn.tools.map((tool) => [tool.toolCallId, tool]))
+  const referenced = new Set<string>()
+  for (const assistant of turn.assistants) {
+    for (const block of assistant.blocks) {
+      if (block.type === 'toolCall') referenced.add(block.id)
+    }
+  }
+  // A tool the model called is already on screen through its assistant
+  // block; a tool whose call was never seen (a resumed run) is drawn on its
+  // own, at the position it was created in.
+  const orphanTools = turn.tools.filter((tool) => !referenced.has(tool.toolCallId))
+  const assistantText = turn.assistants
+    .flatMap((assistant) =>
+      assistant.blocks
+        .filter((block) => block.type === 'text')
+        .map((block) => (block.type === 'text' ? block.text : ''))
+    )
+    .join('\n\n')
+    .trim()
+  const assistantCopyId = `${turn.id}:assistant`
+  const turnChanges = useMemo(() => collectChanges(turn.tools), [turn.tools])
+  const turnDiffTotals = useMemo(() => {
+    let added = 0
+    let removed = 0
+    for (const change of turnChanges) {
+      for (const block of change.diffs) {
+        const stats = diffStats(block)
+        added += stats.added
+        removed += stats.removed
+      }
+      if (change.kind === 'write' && change.diffs.length === 0 && change.content) {
+        added += change.content.split('\n').length
+      }
+    }
+    return { added, removed }
+  }, [turnChanges])
+
+  return (
+    <section className="turn" data-turn={turn.id}>
+      {turn.user ? (
+        <UserMessage
+          item={turn.user}
+          onCopy={onCopy}
+          copied={userCopied ? turn.user.id : null}
+          forkEntryId={forkEntryId}
+          onFork={onFork}
+          forking={forking}
+        />
+      ) : null}
+
+      {turn.assistants.length > 0 || turn.notices.length > 0 || turn.bash.length > 0 ? (
+        <div className="assistant">
+          <div className="assistant__body">
+            {renderTurn(turn, toolMap, models, t)}
+
+            {turn.bash.map((item) => (
+              <BashCard key={item.id} item={item} />
+            ))}
+
+            {orphanTools.map((tool) => (
+              <ToolCard key={tool.id} item={tool} />
+            ))}
+
+            {turn.notices.map((notice) => (
+              <NoticeMessage key={notice.id} item={notice} />
+            ))}
+
+            {turnChanges.length > 0 ? (
+              <FileChangeSummary
+                changes={turnChanges}
+                added={turnDiffTotals.added}
+                removed={turnDiffTotals.removed}
+                onReview={() =>
+                  window.dispatchEvent(
+                    new CustomEvent<InspectorRequest>('pi:open-inspector', {
+                      detail: { tab: 'changes' }
+                    })
+                  )
+                }
+              />
+            ) : null}
+
+            {showStreamingFooter ? (
+              <RunStatusRow
+                run={run}
+                transport={transport}
+                activity={activity || undefined}
+              />
+            ) : run.settled && run.outcome && isLastTurn ? (
+              // One line at the end of the run: how it ended, how many turns
+              // it took and how long it was. It is a summary, not a card.
+              <RunOutcome run={run} />
+            ) : null}
+
+            {!isStreaming && assistantText ? (
+              <div className="assistant__actions">
+                <button
+                  className="ghost-btn"
+                  onClick={() => onCopy(assistantCopyId, assistantText)}
+                  title={t("Copy the assistant's answer")}
+                >
+                  {assistantCopied ? <Check size={12} /> : <Copy size={12} />}
+                  {assistantCopied ? t('Copied') : t('Copy')}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  )
+}, equalThreadTurnViewProps)
 
 /**
  * Render a whole turn.
  *
  * The blocks of every reply in the turn are laid out in one sequence, so
- * calls of the same tool that follow each other are folded into a single
- * card. The agent usually reads one file after the other, and each of those
- * is a reply of its own — grouping inside a reply would not catch them.
+ * tools and thinking stay in one group until visible reply text or an image
+ * interrupts them, even when they span several assistant messages.
  */
 function renderTurn(
   turn: Turn,
@@ -559,16 +902,12 @@ function renderTurn(
   t: (text: string) => string
 ): ReactNode[] {
   const nodes: ReactNode[] = []
-  let group: ToolItem[] = []
+  let group: ToolGroupItem[] = []
   let lastAssistant: AssistantItem | undefined
 
   const flush = () => {
     if (!group.length) return
-    if (group.length > 1) {
-      nodes.push(<ToolGroup key={`group-${group[0].id}`} items={group} />)
-    } else {
-      nodes.push(<ToolCard key={group[0].id} item={group[0]} />)
-    }
+    nodes.push(<ToolGroup key={`group-${group[0].id}`} items={group} />)
     group = []
   }
 
@@ -593,14 +932,13 @@ function renderTurn(
         return
       }
       if (block.type === 'thinking') {
-        flush()
-        nodes.push(
-          <ThinkingBlock
-            key={`${assistant.id}-${index}`}
-            text={block.text}
-            streaming={assistant.streaming}
-          />
-        )
+        if (!block.text.trim()) return
+        group.push({
+          kind: 'thinking',
+          id: `${assistant.id}-${index}`,
+          text: block.text,
+          streaming: assistant.streaming
+        })
         return
       }
       if (block.type === 'image') {
@@ -616,7 +954,6 @@ function renderTurn(
       }
       const tool = toolMap.get(block.id)
       if (!tool) return
-      if (group.length && group[0].toolName !== tool.toolName) flush()
       group.push(tool)
     })
   }

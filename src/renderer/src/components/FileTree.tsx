@@ -166,6 +166,11 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
               <button
                 key={entry.path}
                 className="tree__item tree__item--flat"
+                draggable
+                onDragStart={(event) => {
+                  event.dataTransfer.setData('application/x-pi-file', entry.path)
+                  event.dataTransfer.effectAllowed = 'copy'
+                }}
                 onClick={() => onOpen(entry.path)}
                 title={entry.path}
               >
@@ -242,6 +247,15 @@ function TreeLevel({
             <button
               className="tree__item"
               style={{ paddingLeft: depth * 12 + 8 }}
+              draggable={entry.kind === 'file'}
+              onDragStart={
+                entry.kind === 'file'
+                  ? (event) => {
+                      event.dataTransfer.setData('application/x-pi-file', entry.path)
+                      event.dataTransfer.effectAllowed = 'copy'
+                    }
+                  : undefined
+              }
               onClick={() => (entry.kind === 'directory' ? onToggle(entry.path) : onOpen(entry.path))}
               title={entry.path}
             >

@@ -1,22 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ModelInfo } from '@shared/types'
 import {
   Check,
   ChevronDown,
   Cpu,
-  FileDiff,
-  Files,
-  Gauge,
-  Minimize2,
   Search,
   Sparkles
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import { collectChanges } from '../lib/changes'
-import { formatTokens } from '../lib/format'
-import { BranchMenu } from './BranchMenu'
 import { Popover } from './Popover'
-import { ContextPanel } from './ContextPanel'
+import { ContextRing } from './ContextRing'
 import { useT } from '../lib/i18n'
 import '../styles/model-picker.css'
 
@@ -103,20 +96,14 @@ function acceptsImages(model: ModelInfo): boolean {
 
 export function ModelControls() {
   const models = useAppStore((state) => state.models)
-  const piState = useAppStore((state) => state.piState)
+  const currentModel = useAppStore((state) => state.piState?.model)
+  const currentLevel = useAppStore((state) => state.piState?.thinkingLevel)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
-  const stats = useAppStore((state) => state.stats)
   const setModel = useAppStore((state) => state.setModel)
   const setThinkingLevel = useAppStore((state) => state.setThinkingLevel)
   const ready = useAppStore((state) => state.status.phase === 'ready')
   const [modelQuery, setModelQuery] = useState('')
   const t = useT()
-
-  const currentModel = piState?.model
-  const currentLevel = piState?.thinkingLevel
-  const context = stats?.contextUsage
-  const percent = context?.percent ?? 0
-  const level = percent >= 80 ? 'high' : percent >= 50 ? 'mid' : 'low'
 
   const needle = modelQuery.trim().toLowerCase()
   const visibleModels = useMemo(
@@ -131,6 +118,15 @@ export function ModelControls() {
         : models,
     [models, needle]
   )
+  const modelGroups = useMemo(() => {
+    const groups = new Map<string, ModelInfo[]>()
+    for (const model of visibleModels) {
+      const group = groups.get(model.provider)
+      if (group) group.push(model)
+      else groups.set(model.provider, [model])
+    }
+    return [...groups]
+  }, [visibleModels])
   const currentContext = currentModel ? formatContextWindow(currentModel.contextWindow) : null
   const currentPrice = currentModel ? modelPrice(currentModel, t) : null
   const triggerTitle = currentModel
@@ -146,7 +142,10 @@ export function ModelControls() {
   return (
     <div className="topbar__group model-controls">
       <Popover
+        placement="top"
+        align="right"
         width={340}
+        className="model-picker"
         renderTrigger={({ open, toggle }) => (
           <button
             className="pill model-picker__trigger"
@@ -179,212 +178,136 @@ export function ModelControls() {
               </div>
             ) : null}
 
-            <div className="popover__label">{t('Models')}</div>
             {visibleModels.length === 0 ? (
               <div className="model-picker__empty">
                 {t('No model matches')} “{modelQuery}”
               </div>
             ) : null}
-            {visibleModels.map((model) => {
-              const modelContext = formatContextWindow(model.contextWindow)
-              const price = modelPrice(model, t)
-              const images = acceptsImages(model)
-              const selected = currentModel?.id === model.id
-              const rowTitle = [
-                model.name || model.id,
-                model.provider,
-                modelContext ? `${modelContext} ${t('ctx')}` : null,
-                price?.title ?? null,
-                model.reasoning ? t('Reasoning') : null,
-                images ? t('Image input') : null
-              ]
-                .filter((part): part is string => Boolean(part))
-                .join(' · ')
+            {modelGroups.map(([provider, group]) => (
+              <div className="model-picker__group" key={provider} role="group" aria-label={provider}>
+                <div className="popover__label model-picker__group-label" title={provider}>
+                  {provider}
+                </div>
+                {group.map((model) => {
+                  const modelContext = formatContextWindow(model.contextWindow)
+                  const price = modelPrice(model, t)
+                  const images = acceptsImages(model)
+                  const selected = currentModel?.id === model.id && currentModel.provider === model.provider
+                  const rowTitle = [
+                    model.name || model.id,
+                    model.provider,
+                    modelContext ? `${modelContext} ${t('ctx')}` : null,
+                    price?.title ?? null,
+                    model.reasoning ? t('Reasoning') : null,
+                    images ? t('Image input') : null
+                  ]
+                    .filter((part): part is string => Boolean(part))
+                    .join(' · ')
 
-              return (
-                <button
-                  key={`${model.provider}/${model.id}`}
-                  className="popover__item model-picker__row"
-                  data-selected={selected}
-                  aria-pressed={selected}
-                  title={rowTitle}
-                  onClick={() => {
-                    void setModel(model)
-                    close()
-                  }}
-                >
-                  <span className="model-picker__row-body">
-                    <span className="model-picker__row-name">{model.name || model.id}</span>
-                    <span className="model-picker__row-meta">
-                      {model.provider ? (
-                        <span className="model-picker__provider">{model.provider}</span>
-                      ) : null}
-                      {modelContext ? (
-                        <span className="model-picker__meta-item">
-                          {modelContext} {t('ctx')}
-                        </span>
-                      ) : null}
-                      {price ? (
-                        <span className="model-picker__price" title={price.title}>
-                          {price.text}
-                        </span>
-                      ) : null}
-                      {model.reasoning ? (
-                        <span className="model-picker__badge" data-kind="reasoning">
-                          {t('Reasoning')}
-                        </span>
-                      ) : null}
-                      {images ? (
-                        <span className="model-picker__badge" data-kind="image">
-                          {t('Images')}
-                        </span>
-                      ) : null}
-                    </span>
-                  </span>
-                  {selected ? <Check size={13} className="model-picker__check" /> : null}
-                </button>
-              )
-            })}
+                  return (
+                    <button
+                      key={`${model.provider}/${model.id}`}
+                      className="popover__item model-picker__row"
+                      data-selected={selected}
+                      aria-pressed={selected}
+                      title={rowTitle}
+                      onClick={() => {
+                        void setModel(model)
+                        close()
+                      }}
+                    >
+                      <span className="model-picker__row-body">
+                        <span className="model-picker__row-name">{model.name || model.id}</span>
+                        {modelContext || price || model.reasoning || images ? (
+                          <span className="model-picker__row-meta">
+                            {modelContext ? (
+                              <span className="model-picker__meta-item">
+                                {modelContext} {t('ctx')}
+                              </span>
+                            ) : null}
+                            {price ? (
+                              <span className="model-picker__price" title={price.title}>
+                                {price.text}
+                              </span>
+                            ) : null}
+                            {model.reasoning ? (
+                              <span className="model-picker__badge" data-kind="reasoning">
+                                {t('Reasoning')}
+                              </span>
+                            ) : null}
+                            {images ? (
+                              <span className="model-picker__badge" data-kind="image">
+                                {t('Images')}
+                              </span>
+                            ) : null}
+                          </span>
+                        ) : null}
+                      </span>
+                      {selected ? <Check size={13} className="model-picker__check" /> : null}
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
           </div>
         )}
       </Popover>
 
       <Popover
+        placement="top"
+        align="right"
         width={240}
+        className="reasoning-picker"
         renderTrigger={({ open, toggle }) => (
           <button
-            className="pill"
+            className="pill model-picker__effort-trigger"
             data-active={open}
             aria-expanded={open}
             onClick={toggle}
             disabled={!ready || !thinkingLevels.length}
           >
             <Sparkles size={13} />
-            <span>{currentLevel ? `${t('Thinking')}: ${currentLevel}` : t('Thinking')}</span>
+            <span>{currentLevel ? t(levelLabel(currentLevel)) : t('Thinking')}</span>
             <ChevronDown size={12} className="pill__caret" />
           </button>
         )}
       >
         {(close) => (
-          <div>
+          <div className="model-picker__effort">
             <div className="popover__label">{t('Reasoning effort')}</div>
-            {thinkingLevels.map((levelName) => (
-              <button
-                key={levelName}
-                className="popover__item model-picker__reasoning-row"
-                data-selected={currentLevel === levelName}
-                aria-pressed={currentLevel === levelName}
-                onClick={() => {
-                  void setThinkingLevel(levelName)
-                  close()
-                }}
-              >
-                <span className="model-picker__reasoning-body">
-                  <span className="model-picker__reasoning-level">
-                    {t(levelLabel(levelName))}
-                  </span>
-                  <span className="model-picker__reasoning-hint">
-                    {t(reasoningHint(levelName))}
-                  </span>
-                </span>
-                {currentLevel === levelName ? (
-                  <Check size={13} className="model-picker__check" />
-                ) : null}
-              </button>
-            ))}
+            <div className="model-picker__effort-list" role="group" aria-label={t('Reasoning effort')}>
+              {thinkingLevels.map((level) => {
+                const selected = currentLevel === level
+                const label = t(levelLabel(level))
+                const hint = t(reasoningHint(level))
+                return (
+                  <button
+                    key={level}
+                    type="button"
+                    className="popover__item model-picker__reasoning-row"
+                    data-selected={selected}
+                    aria-pressed={selected}
+                    disabled={!ready}
+                    title={`${label} · ${hint}`}
+                    onClick={() => {
+                      if (level !== currentLevel) void setThinkingLevel(level)
+                      close()
+                    }}
+                  >
+                    <span className="model-picker__reasoning-body">
+                      <span className="model-picker__reasoning-level">{label}</span>
+                      <span className="model-picker__reasoning-hint">{hint}</span>
+                    </span>
+                    {selected ? <Check size={13} className="model-picker__check" aria-hidden="true" /> : null}
+                  </button>
+                )
+              })}
+            </div>
           </div>
         )}
       </Popover>
 
-      {context ? (
-        <Popover
-          width={290}
-          className="context-popover"
-          renderTrigger={({ open, toggle }) => (
-            <button
-              className="context-meter"
-              data-active={open}
-              aria-expanded={open}
-              aria-label={t('Session details')}
-              onClick={toggle}
-              title={t('Session details')}
-            >
-              <Gauge size={13} />
-              <span>
-                {formatTokens(context.tokens ?? 0)} / {formatTokens(context.contextWindow)}
-              </span>
-              <span className="context-meter__bar">
-                <span
-                  className="context-meter__fill"
-                  data-level={level}
-                  style={{ width: `${Math.min(100, percent)}%` }}
-                />
-              </span>
-            </button>
-          )}
-        >
-          {(close) => <ContextPanel close={close} />}
-        </Popover>
-      ) : null}
-    </div>
-  )
-}
-
-export function TopBar({
-  onOpenChanges,
-  onOpenFiles
-}: {
-  onOpenChanges: () => void
-  onOpenFiles: () => void
-}) {
-  const items = useAppStore((state) => state.items)
-  const compact = useAppStore((state) => state.compact)
-  const ready = useAppStore((state) => state.status.phase === 'ready')
-  const language = useAppStore((state) => state.settings.language)
-  const refreshGit = useAppStore((state) => state.refreshGit)
-  const workspace = useAppStore((state) => state.workspace)
-  const changes = useMemo(() => collectChanges(items), [items])
-  const t = useT()
-
-  // The bar is the first thing the app draws for a project, so it also reads
-  // the branch of that project. `openWorkspace` refreshes it too; this covers
-  // a project that was already open when the window was restored.
-  useEffect(() => {
-    void refreshGit()
-  }, [refreshGit, workspace?.path])
-
-  return (
-    <div className="topbar">
-      <div className="topbar__group">
-        <BranchMenu onOpenChanges={onOpenChanges} />
-      </div>
-      <div className="topbar__group topbar__group--end">
-        {changes.length > 0 ? (
-          <button className="pill" onClick={onOpenChanges} title={t('Review the files Pi changed')}>
-            <FileDiff size={13} />
-            <span>
-              {language === 'zh-CN'
-                ? `${changes.length} 个文件已修改`
-                : `${changes.length} changed ${changes.length === 1 ? 'file' : 'files'}`}
-            </span>
-          </button>
-        ) : null}
-
-        <button className="pill" onClick={onOpenFiles} title={t('Browse the project files')}>
-          <Files size={13} />
-          <span>{t('Files')}</span>
-        </button>
-
-        <button
-          className="pill"
-          onClick={() => void compact()}
-          disabled={!ready}
-          title={t('Summarise the conversation to free up the context window')}
-        >
-          <Minimize2 size={13} />
-          <span>{t('Compact')}</span>
-        </button>
-      </div>
+      <ContextRing />
     </div>
   )
 }

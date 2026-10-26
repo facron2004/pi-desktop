@@ -123,6 +123,7 @@ export function ExtensionDialog() {
             tabIndex={0}
             ref={optionsRef}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return
               const options = request.options ?? []
               if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                 event.preventDefault()
@@ -170,6 +171,7 @@ export function ExtensionDialog() {
             aria-describedby={request.message ? 'extension-dialog-message' : undefined}
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return
               if (event.key === 'Enter') {
                 event.preventDefault()
                 submit()

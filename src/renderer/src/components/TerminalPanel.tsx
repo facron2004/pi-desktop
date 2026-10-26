@@ -9,7 +9,6 @@ import { useT } from '../lib/i18n'
 import { parseAnsi, stripAnsi, type AnsiSegment } from '../lib/ansi'
 
 const MIN_TERMINAL_HEIGHT = 160
-const DEFAULT_TERMINAL_HEIGHT = 280
 /** The drawer may not swallow the conversation above it. */
 const MAX_TERMINAL_HEIGHT_RATIO = 0.65
 const RESIZE_STEP = 16
@@ -17,6 +16,10 @@ const RESIZE_STEP = 16
 function clampHeight(value: number): number {
   const max = Math.round(window.innerHeight * MAX_TERMINAL_HEIGHT_RATIO)
   return Math.max(MIN_TERMINAL_HEIGHT, Math.min(max, Math.round(value)))
+}
+
+function defaultTerminalHeight(): number {
+  return clampHeight(window.innerHeight / 3)
 }
 
 function segmentClassName(segment: AnsiSegment): string {
@@ -46,7 +49,11 @@ function AnsiText({ text }: { text: string }) {
   return (
     <pre className="terminal__output">
       {segments.map((segment, index) => (
-        <span key={index} className={segmentClassName(segment)}>
+        // The runs are cut out of the whole output again on every delta, and
+        // the final response can replace that text outright, so the run's own
+        // text is the stable part of the key; the index only keeps two
+        // identical runs apart.
+        <span key={`${segment.text}-${index}`} className={segmentClassName(segment)}>
           {segment.text}
         </span>
       ))}
@@ -119,7 +126,9 @@ export function TerminalPanel({
   const [stopping, setStopping] = useState(false)
   const [atBottom, setAtBottom] = useState(true)
   // The drag updates this locally; the store only hears about it on release.
-  const [height, setHeight] = useState(() => clampHeight(storedHeight ?? DEFAULT_TERMINAL_HEIGHT))
+  const [height, setHeight] = useState(() =>
+    typeof storedHeight === 'number' ? clampHeight(storedHeight) : defaultTerminalHeight()
+  )
   const [filter, setFilter] = useState('')
 
   const inputRef = useRef<HTMLInputElement>(null)
@@ -157,22 +166,27 @@ export function TerminalPanel({
   // The stored value can land after the drawer mounted (bootstrap) or change
   // elsewhere; follow it unless a drag is in progress.
   useEffect(() => {
-    if (draggingRef.current || typeof storedHeight !== 'number') return
-    const next = clampHeight(storedHeight)
+    if (draggingRef.current) return
+    const next =
+      typeof storedHeight === 'number' ? clampHeight(storedHeight) : defaultTerminalHeight()
     heightRef.current = next
     setHeight(next)
   }, [storedHeight])
 
-  // A smaller window must not leave the drawer taller than 65% of it.
+  // Keep the responsive default in step with the window; custom heights only
+  // shrink when needed to leave room for the conversation.
   useEffect(() => {
     const onWindowResize = () => {
-      const next = clampHeight(heightRef.current)
+      const next =
+        typeof storedHeight === 'number'
+          ? clampHeight(heightRef.current)
+          : defaultTerminalHeight()
       heightRef.current = next
       setHeight(next)
     }
     window.addEventListener('resize', onWindowResize)
     return () => window.removeEventListener('resize', onWindowResize)
-  }, [])
+  }, [storedHeight])
 
   // A drag that ends in an unmount must not leave the resize cursor behind.
   useEffect(() => () => document.body.classList.remove('terminal-resizing'), [])
@@ -320,10 +334,10 @@ export function TerminalPanel({
   )
 
   const resetHeight = useCallback(() => {
-    const next = clampHeight(DEFAULT_TERMINAL_HEIGHT)
+    const next = defaultTerminalHeight()
     heightRef.current = next
     setHeight(next)
-    void updateSettings({ terminalHeight: next })
+    void updateSettings({ terminalHeight: undefined })
   }, [updateSettings])
 
   // The one path a command takes, whether it was typed or handed over from a
@@ -590,7 +604,6 @@ export function TerminalPanel({
             {stopping ? t('Stopping…') : t('running…')}
           </span>
         ) : null}
-        <span className="terminal__spacer" />
         <div className="terminal__filter">
           <Search size={11} aria-hidden="true" />
           <input

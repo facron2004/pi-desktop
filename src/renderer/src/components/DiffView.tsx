@@ -81,9 +81,22 @@ function displayRows(rows: DiffRow[], opened: ReadonlySet<string>): DiffRow[] {
   return out
 }
 
+/**
+ * A key for one hunk block.
+ *
+ * The block's position is not its identity: the same `DiffView` renders a
+ * different file when the reader switches files, and two files rarely have the
+ * same number of hunks. The first row's line numbers are what the block
+ * actually stands for, so they are what keys it.
+ */
+function blockKey(rows: DiffRow[], fallback: number): string {
+  const first = rows[0]
+  if (!first) return `block-${fallback}`
+  return `block-${first.oldLine ?? 'x'}-${first.newLine ?? 'x'}`
+}
+
 /** A row that carries a line of text, as opposed to a folded run. */
 type ContentRow = Extract<DiffRow, { kind: 'add' | 'del' | 'ctx' }>
-
 /**
  * The rows one block contributes to a patch.
  *
@@ -392,11 +405,11 @@ export function DiffView({
       <>
         <div className="diff diff--split">
           {folded.map((rows, blockIndex) => (
-            <div className={blockClassName(blockIndex)} key={blockIndex}>
+            <div className={blockClassName(blockIndex)} key={blockKey(rows, blockIndex)}>
               {hunkActions(blockIndex)}
-              {buildSplitDiff(displayRows(rows, effective)).map((row, rowIndex) =>
+              {buildSplitDiff(displayRows(rows, effective)).map((row) =>
                 row.gap ? (
-                  <div className="diff__split" data-gap="true" key={rowIndex}>
+                  <div className="diff__split" data-gap="true" key={`gap-${row.gap.key}`}>
                     <GapButton
                       count={row.gap.count}
                       open={effective.has(row.gap.key)}
@@ -404,7 +417,7 @@ export function DiffView({
                     />
                   </div>
                 ) : (
-                  <div className="diff__split" key={rowIndex}>
+                  <div className="diff__split" key={`${row.left?.line}-${row.right?.line}`}>
                     <div className="diff__side" data-kind={row.left?.kind ?? 'empty'}>
                       {gutter(row.left?.line)}
                       <span className="diff__code">
@@ -432,11 +445,11 @@ export function DiffView({
     <>
       <div className="diff">
         {folded.map((rows, blockIndex) => (
-          <div className={blockClassName(blockIndex)} key={blockIndex}>
+          <div className={blockClassName(blockIndex)} key={blockKey(rows, blockIndex)}>
             {hunkActions(blockIndex)}
-            {displayRows(rows, effective).map((row, rowIndex) =>
+            {displayRows(rows, effective).map((row) =>
               row.kind === 'gap' ? (
-                <div className="diff__row diff__row--gap" key={rowIndex}>
+                <div className="diff__row diff__row--gap" key={`gap-${row.key}`}>
                   <GapButton
                     count={row.hidden.length}
                     open={effective.has(row.key)}
@@ -444,7 +457,11 @@ export function DiffView({
                   />
                 </div>
               ) : (
-                <div className="diff__row" data-kind={row.kind} key={rowIndex}>
+                <div
+                  className="diff__row"
+                  data-kind={row.kind}
+                  key={`${row.oldLine}-${row.newLine}`}
+                >
                   {gutter(row.oldLine)}
                   {gutter(row.newLine)}
                   <span className="diff__code">

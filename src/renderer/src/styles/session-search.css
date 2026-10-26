@@ -17,15 +17,20 @@
 .session-search__hit {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-1);
   width: 100%;
-  padding: 7px 9px;
-  border-radius: 8px;
+  padding: var(--sp-3) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
   position: relative;
   text-align: left;
   color: var(--text-muted);
   cursor: pointer;
-  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.session-search__hit:last-child {
+  border-bottom: 0;
 }
 
 .session-search__hit:hover {
@@ -34,25 +39,15 @@
 }
 
 .session-search__hit[data-active='true'] {
-  background: var(--bg-active);
+  background: var(--sidebar-active);
   color: var(--text);
-}
-
-.session-search__hit[data-active='true']::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  border-radius: 2px;
-  background: var(--accent);
 }
 
 /* The row is a div that has to be reachable with Tab, so the ring is drawn
    here rather than left to the browser default on a div. */
 .session-search__hit:focus-visible {
-  outline: none;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
   background: var(--bg-hover);
   color: var(--text);
   box-shadow: inset 0 0 0 1px var(--blue);
@@ -61,15 +56,15 @@
 .session-search__top {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   min-width: 0;
 }
 
 .session-search__title {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: calc(12.5px * var(--font-scale, 1));
-  font-weight: 520;
+  font-size: var(--text-sm);
+  font-weight: 500;
   line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
@@ -78,39 +73,28 @@
 
 .session-search__role {
   flex: 0 0 auto;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: calc(9px * var(--font-scale, 1));
-  font-weight: 650;
-  letter-spacing: 0.06em;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-full);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0;
   text-transform: uppercase;
   line-height: 1.6;
-  color: var(--text-faint);
-  background: var(--accent-soft);
-}
-
-.session-search__role[data-role='user'] {
-  color: var(--blue);
-  background: var(--blue-soft);
-}
-
-.session-search__role[data-role='assistant'] {
-  color: var(--violet);
-  background: var(--violet-soft);
+  color: var(--text-secondary);
+  background: var(--surface-chrome);
 }
 
 .session-search__snippet {
-  font-size: calc(11.5px * var(--font-scale, 1));
-  line-height: 1.45;
-  color: var(--text-faint);
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: normal;
+  overflow-wrap: anywhere;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.session-search__hit:hover .session-search__snippet,
-.session-search__hit:focus-visible .session-search__snippet {
-  color: var(--text-muted);
 }
 
 /* The same treatment the in-conversation search gives its matches, so a
@@ -118,21 +102,22 @@
 .session-search__snippet mark {
   background: var(--accent-soft);
   color: var(--accent);
-  border-radius: 3px;
+  border-radius: var(--r-xs);
   padding: 0 1px;
 }
 
 .session-search__meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   min-width: 0;
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   line-height: 1.4;
   color: var(--text-faint);
 }
 
 .session-search__project {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -147,8 +132,8 @@
 }
 
 .session-search__state {
-  padding: 6px 8px 8px;
-  font-size: calc(11.5px * var(--font-scale, 1));
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  font-size: var(--text-2xs);
   color: var(--text-faint);
 }
 
@@ -160,10 +145,10 @@
  * ------------------------------------------------------------------ */
 
 .session-search__recents {
-  margin: 6px 2px 0;
-  padding: 4px;
+  margin: var(--sp-2) var(--sp-hair) 0;
+  padding: var(--sp-1);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--r-md);
   background: var(--bg-elevated);
 }
 
@@ -171,10 +156,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 2px 6px 4px;
-  font-size: calc(10px * var(--font-scale, 1));
-  font-weight: 650;
+  gap: var(--sp-3);
+  padding: var(--sp-hair) var(--sp-2) var(--sp-1);
+  font-size: var(--text-2xs);
+  font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -185,14 +170,14 @@
   align-items: center;
   justify-content: center;
   min-height: 24px;
-  padding: 0 7px;
-  border-radius: 4px;
-  font-size: calc(10px * var(--font-scale, 1));
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-xs);
+  font-size: var(--text-2xs);
   font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
   color: var(--text-faint);
-  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .session-search__recents-head button:hover {
@@ -211,14 +196,14 @@
 .session-search__recent {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--sp-3);
   width: 100%;
-  padding: 4px 7px;
-  border-radius: 6px;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm);
   text-align: left;
-  font-size: calc(12px * var(--font-scale, 1));
+  font-size: var(--text-xs);
   color: var(--text-muted);
-  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .session-search__recent:hover,
@@ -237,4 +222,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-search__hit,
+  .session-search__recents-head button,
+  .session-search__recent {
+    transition: none;
+  }
 }

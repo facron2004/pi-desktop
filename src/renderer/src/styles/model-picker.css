@@ -1,26 +1,44 @@
 /* ------------------------------------------------------------------ *
  * Model picker
  *
- * The model and reasoning menus of the composer. A row has to carry more
- * than a name — provider, context window, price and capabilities — without
- * turning the popover into a table, so the meta line stays quiet and the
- * badges are the only things that draw the eye.
+ * The model and reasoning menus of the composer. Provider labels organize
+ * the list while context, price and capabilities wrap quietly below a name.
  * ------------------------------------------------------------------ */
+
+.popover.model-picker,
+.popover.reasoning-picker {
+  background: var(--surface-canvas);
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-md);
+}
 
 .model-picker__list {
   max-height: 380px;
   overflow-y: auto;
 }
 
+.model-picker .model-picker__group-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+}
+
 .model-picker__empty {
-  padding: 7px 9px;
-  font-size: calc(12.5px * var(--font-scale, 1));
+  padding: var(--sp-3) var(--sp-3);
+  font-size: var(--text-xs);
   color: var(--text-faint);
 }
 
-.model-picker__row {
+.model-picker .model-picker__row {
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.model-picker .model-picker__row[data-selected='true'] {
+  background: var(--bg-hover);
 }
 
 .model-picker__row-body {
@@ -28,14 +46,14 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--sp-hair);
 }
 
 .model-picker__row-name {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: calc(12.5px * var(--font-scale, 1));
+  font-size: var(--text-xs);
   color: var(--text);
 }
 
@@ -46,26 +64,12 @@
 .model-picker__row-meta {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
-  gap: 2px 8px;
+  flex-wrap: wrap;
+  gap: var(--sp-hair) var(--sp-3);
   min-width: 0;
-  overflow: hidden;
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   line-height: 1.5;
   color: var(--text-faint);
-}
-
-.model-picker__provider {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 46%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: calc(9.5px * var(--font-scale, 1));
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .model-picker__meta-item {
@@ -76,29 +80,18 @@
 .model-picker__price {
   flex: 0 0 auto;
   font-family: var(--font-mono);
-  font-size: calc(10px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
 
 .model-picker__badge {
   flex: 0 0 auto;
-  padding: 0 5px;
-  border-radius: 4px;
-  font-size: calc(9.5px * var(--font-scale, 1));
-  font-weight: 600;
+  font-size: var(--text-2xs);
+  font-weight: 500;
   line-height: 15px;
   letter-spacing: 0.02em;
-}
-
-.model-picker__badge[data-kind='reasoning'] {
-  color: var(--violet);
-  background: var(--violet-soft);
-}
-
-.model-picker__badge[data-kind='image'] {
-  color: var(--blue);
-  background: var(--blue-soft);
+  color: var(--text-muted);
 }
 
 .model-picker__check {
@@ -108,8 +101,24 @@
 
 /* Reasoning levels ------------------------------------------------- */
 
-.model-picker__reasoning-row {
+.reasoning-picker .popover__label {
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  font-weight: 500;
+}
+
+.model-picker__effort-list {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.reasoning-picker .model-picker__reasoning-row {
   align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.reasoning-picker .model-picker__reasoning-row[data-selected='true'] {
+  background: var(--bg-hover);
 }
 
 .model-picker__reasoning-body {
@@ -117,11 +126,14 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--sp-hair);
 }
 
 .model-picker__reasoning-level {
-  font-size: calc(12.5px * var(--font-scale, 1));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-xs);
   color: var(--text);
 }
 
@@ -130,8 +142,10 @@
 }
 
 .model-picker__reasoning-hint {
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   color: var(--text-faint);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 /* Trigger --------------------------------------------------------- */

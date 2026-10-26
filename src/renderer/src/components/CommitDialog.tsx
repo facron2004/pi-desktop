@@ -156,6 +156,7 @@ export function CommitDialog({
   // text is kept until the user types again.
   const [undoMessage, setUndoMessage] = useState<string>()
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const historyRef = useRef<HTMLElement>(null)
 
   const [historyOpen, setHistoryOpen] = useState(() => window.innerHeight >= 860)
   const [commits, setCommits] = useState<GitCommitEntry[]>()
@@ -447,8 +448,8 @@ export function CommitDialog({
               </div>
               <p className="commit__mode-hint">
                 {includeAll
-                  ? t('Everything in the working tree is committed.')
-                  : t('Only staged files are committed; the rest stays in the working tree.')}
+                  ? t('Everything in the working tree will be included in the commit.')
+                  : t('Only staged files will be committed; the rest will stay in the working tree.')}
                 {!includeAll && stagedCount === 0 ? ` ${t('Nothing is staged yet.')}` : null}
               </p>
 
@@ -541,14 +542,26 @@ export function CommitDialog({
 
               {error ? <p className="commit__error">{error}</p> : null}
 
-              <section className="commit__history" aria-label={t('Recent commits')}>
+              <section
+                ref={historyRef}
+                className="commit__history"
+                aria-label={t('Recent commits')}
+              >
                 <div className="commit__history-head">
                   <button
                     type="button"
                     className="commit__history-toggle"
                     aria-expanded={historyOpen}
                     aria-controls="commit-history"
-                    onClick={() => setHistoryOpen((open) => !open)}
+                    onClick={() => {
+                      const opening = !historyOpen
+                      setHistoryOpen(opening)
+                      if (opening && window.innerHeight < 860) {
+                        requestAnimationFrame(() =>
+                          historyRef.current?.scrollIntoView({ block: 'nearest' })
+                        )
+                      }
+                    }}
                   >
                     <ChevronRight
                       size={12}

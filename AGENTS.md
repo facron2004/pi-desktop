@@ -67,6 +67,52 @@ node scripts/rpc-ui-smoke.mjs                  # extension UI smoke test
    `src/renderer/src/lib/thread.ts` — not the components.
 5. Verify with `npm run typecheck` and a real run against the bundled CLI.
 
+## The conversation stream
+
+The transcript is a projection of Pi's events, and the projection is a single
+reducer: `lib/thread.ts`. Live events and a replayed session go through the
+same code, so a reopened conversation and a running one render identically.
+
+What that buys, and what it costs:
+
+- A tool call is **one node**, keyed by `toolCallId`, from the moment the
+  model names it (`proposed`) through execution (`running`) to its end
+  (`ok` / `error` / `aborted`). A call that never ran stays `proposed` and
+  says "not run" — it did not succeed, so it must not look like it did.
+- The node keeps the position of its **first appearance**, so parallel tools
+  that finish out of order do not reorder the conversation. `patchTool` in
+  `lib/thread.ts` is the only writer; it merges a patch rather than
+  replacing, which is what stops `tool_execution_start` from wiping the
+  arguments `toolcall_end` already delivered.
+- `tool_execution_update.partialResult` is the tool's **newest** partial
+  result, not an increment. It replaces the previous one; appending it
+  repeats the whole output on every update.
+- `text_end` and `message_end` are the authority for content. Deltas are
+  replaced by them, not added to.
+- `agent_end` is not the end of the work: Pi may retry, compact or continue
+  on its own. The run only settles on `agent_settled` (with `aborted`
+  saying whether the user stopped it), and `markAborted` is what turns
+  everything still moving into `aborted` at that moment.
+- The run state lives in the store (`run`, `transport`), not in the thread:
+  `runId` / `turnId` are minted by the client because Pi's protocol has
+  neither, and `transport` is deliberately separate from the run phase —
+  a lost connection is not a failed run.
+- Text deltas are folded into the store immediately but **painted once per
+  animation frame** (`scheduleItems` in `useAppStore.ts`). The store is the
+  truth; the frame is the paint. `drainPending()` runs before anything that
+  changes the conversation (session switch, new chat, settle) so a queued
+  delta can never land in the wrong session.
+
+Tool rows are compact by design: icon, verb, object, state, duration — 32–40
+pixels. Everything else (arguments, output, diff) is behind the caret. The
+registry is `lib/tool-renderers.ts`; an unknown tool still gets a card,
+because an MCP server or a project extension is a normal outcome, not a
+reason to drop a call from the stream.
+
+Tests: `npm test` runs the reducer unit tests (`tests/thread.test.ts`,
+against the real RPC event shapes), `npm run test:e2e` spawns the bundled
+CLI and drives the real reducer with a real run — including a stop mid-run.
+
 ## The session tree
 
 Pi stores a session as a tree of entries, and two commands move around it:
@@ -96,6 +142,45 @@ them), remembers collapsed branches in localStorage keyed by `activeSessionFile`
 and walks the branch tips with two header buttons that expand the path, scroll and
 flash the row.
 
+## The sidebar is a list, not a switch
+
+A project row in the sidebar **only expands and collapses** its conversations. It
+does not make the project active, and it never touches the runtime — so browsing
+another project cannot end the conversation Pi is working in. The caret on the
+right of the row is what says so; a project becomes active only through a
+deliberate action: picking a folder, the launcher, `Ctrl+1…9`, or a worktree row.
+
+A **conversation** row does open Pi's session, and that replaces the run. Two
+rules keep the reader in charge of that:
+
+- `switchProject(path, { allowWhileRunning: true })` is the only way a switch may
+  end a run. Picking a folder, the launcher, `Ctrl+1…9` and worktrees pass it.
+  Everything else goes through `queueProjectSwitch`: the store keeps a
+  `pendingProject`, the composer says which project is waiting, and
+  `agent_settled` opens it. `openWorkspace` clears the queue, because a project
+  that is opened has nothing left to wait for.
+- A click on another conversation while `isStreaming` dispatches
+  `pi:confirm-switch-session` instead of switching. `App` owns the confirmation
+  (`ConfirmDialog`) and only the confirmed path calls `stop()` and then
+  `selectSession`. `openSearchHit` refuses with a toast for the same reason.
+
+Never let a click be the thing that stops the agent. If a new path needs to
+switch sessions, route it through one of those two doors.
+
+## The composer
+
+One round button, two meanings: it sends when the run is settled, and it stops
+when the agent is working. It stops only while there is no draft — with text in
+the box the button is the way to send (steer or queue), so the stop moves into
+the hint row as `composer__stop-link`. Both call the same `stop()`; there is no
+second abort path.
+
+The context window is a ring (`ContextRing`), not a gauge icon and not a bar.
+The arc length is the whole reading — the percentage of the window in use — and
+it is drawn in one colour, the control's own foreground. Do not add a colour
+scale: the length says how much, and the numbers stay in the `ContextPanel`
+popover behind it, which reads Pi's `get_session_stats`.
+
 ## The launcher
 
 `Ctrl+Shift+P` opens a palette over the app. It lists every action the app has,
@@ -106,8 +191,9 @@ and the `/` command list never drift apart.
 
 `Ctrl+P` and `Ctrl+T` walk through Pi's own list of models and reasoning levels.
 The store cycles the list that `get_available_models` and
-`get_available_thinking_levels` reported, so the order is the one the model
-picker shows.
+`get_available_thinking_levels` reported. The model picker groups its display by
+provider in first-appearance order, preserving Pi's order within each provider;
+that grouping does not reorder the store's list or the keyboard cycle.
 
 ## Files in the composer
 
@@ -216,8 +302,10 @@ is the runtime's business, and there is no RPC command for it.
 `PlanStrip` is a projection, not a feature of the protocol: `extractPlan` reads
 markdown checklists out of the newest assistant message and returns `null` for
 anything shorter than two entries. Collapse/dismiss are view preferences keyed
-by the source message id, so a new plan opens expanded. Do not add store state
-for it — the thread is the source of truth. Its actions only hand the checklist
+by the source message id, so a new plan starts collapsed. A transition to complete
+collapses it once; a manual reopen is remembered, including after a restart.
+The completion marker is a local view preference, not execution state. Do not add
+store state for it — the thread is the source of truth. Its actions only hand the checklist
 back: copy as `- [x]` markdown, insert the whole plan or a single step through
 `insertIntoComposer`; the strip itself is never changed by them.
 

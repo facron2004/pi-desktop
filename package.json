@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi Desktop — a native GUI for the Pi coding agent",
   "main": "./out/main/index.js",
   "author": "Facron",
@@ -15,7 +15,9 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "icon": "electron scripts/make-icon.mjs",
     "dist": "npm run build && electron-builder",
-    "dist:dir": "npm run build && electron-builder --dir"
+    "dist:dir": "npm run build && electron-builder --dir",
+    "test": "node tests/run.mjs",
+    "test:e2e": "node tests/e2e-run.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.3.0",

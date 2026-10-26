@@ -1,85 +1,288 @@
+/* ------------------------------------------------------------------ *
+ * Design tokens
+ *
+ * Two layers:
+ *   1. the palette below (surfaces, borders, text, accent, status)
+ *   2. the scale below it (type, spacing, radii, control sizes, motion)
+ *
+ * Components may only reference the semantic names. The older names at the
+ * bottom of each block are kept as aliases so the stylesheets that were
+ * written before the rename keep working; new code should use the semantic
+ * name directly.
+ * ------------------------------------------------------------------ */
+
 :root {
-  --bg: #181818;
-  --bg-deep: #141414;
-  --bg-panel: #1d1d1d;
-  --bg-elevated: #222222;
-  --bg-hover: #2a2a2a;
-  --bg-active: #303030;
+  color-scheme: dark;
+  accent-color: var(--accent);
 
-  --border: #303030;
-  --border-soft: #262626;
-  --border-strong: #414141;
+  /* ---- surfaces ------------------------------------------------- *
+   * Five planes plus a translucent glass layer. The sidebar/chrome sits
+   * slightly deeper than the conversation canvas, while cards, composer
+   * and overlays float above with a 1px top specular highlight.         */
+  --surface-canvas: #16181d;
+  --surface-chrome: #111317;
+  --surface-sunken: #0d0f13;
+  --surface-raised: #1d2027;
+  --surface-overlay: #232730;
+  --surface-glass: rgba(29, 32, 39, 0.82);
+  --blur-glass: blur(20px) saturate(165%);
 
-  --text: #f2f2f2;
-  --text-muted: #a7a7a7;
-  --text-faint: #9a9a9a;
+  --bg-hover: #242831;
+  --bg-active: #2e333f;
 
-  --accent: #ececec;
-  --accent-contrast: #171717;
-  --accent-soft: rgba(255, 255, 255, 0.08);
-  --accent-line: rgba(255, 255, 255, 0.22);
+  /* ---- borders --------------------------------------------------- */
+  --border-subtle: rgba(255, 255, 255, 0.065);
+  --border-default: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.17);
+  --border-specular: inset 0 1px 0 rgba(255, 255, 255, 0.065);
 
-  --blue: #6ea8fe;
-  --blue-soft: rgba(110, 168, 254, 0.12);
-  --green: #67d99a;
-  --green-soft: rgba(103, 217, 154, 0.12);
-  --red: #ff7d7d;
-  --red-soft: rgba(255, 125, 125, 0.12);
-  --violet: #b490ff;
-  --violet-soft: rgba(180, 144, 255, 0.12);
+  /* ---- text ------------------------------------------------------ */
+  --text-primary: #f2f4f8;
+  --text-secondary: #9da4b2;
+  --text-tertiary: #6c7382;
+  --text-disabled: #4c525f;
 
-  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', system-ui,
-    'Helvetica Neue', sans-serif;
-  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Menlo', Consolas,
+  /* ---- accent ---------------------------------------------------- *
+   * Electric blue for intent: selection, focus and the primary action all
+   * read as the same decision.                                       */
+  --accent: #4c9aff;
+  --accent-hover: #6aadff;
+  --accent-soft: rgba(76, 154, 255, 0.14);
+  --accent-line: rgba(76, 154, 255, 0.38);
+  --accent-glow: 0 0 0 3px rgba(76, 154, 255, 0.16);
+  --accent-contrast: #080b11;
+  --focus-ring: var(--accent);
+
+  /* ---- status ---------------------------------------------------- */
+  --status-success: #4ade80;
+  --status-success-soft: rgba(74, 222, 128, 0.14);
+  --status-warning: #f59e0b;
+  --status-warning-soft: rgba(245, 158, 11, 0.14);
+  --status-danger: #f87171;
+  --status-danger-soft: rgba(248, 113, 113, 0.14);
+
+  /* ---- diff ------------------------------------------------------ */
+  --diff-add-bg: #112a1d;
+  --diff-add-text: #7ee2a8;
+  --diff-del-bg: #2f1518;
+  --diff-del-text: #ffa198;
+
+  /* ---- type ------------------------------------------------------ *
+   * Seven steps. The scale lives here so that the font size setting
+   * multiplies every step at once and no component has to repeat the
+   * calculation.                                                       */
+  --text-2xs: calc(11px * var(--font-scale, 1));
+  --text-xs: calc(12px * var(--font-scale, 1));
+  --text-sm: calc(13px * var(--font-scale, 1));
+  --text-md: calc(14px * var(--font-scale, 1));
+  --text-lg: calc(16px * var(--font-scale, 1));
+  --text-xl: calc(20px * var(--font-scale, 1));
+  --text-2xl: calc(28px * var(--font-scale, 1));
+
+  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text',
+    'Segoe UI', system-ui, 'Helvetica Neue', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Menlo', Consolas,
     'Liberation Mono', monospace;
+  --font-sidebar: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text',
+    'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
 
-  --radius-sm: 6px;
-  --radius: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 20px;
+  /* ---- spacing ---------------------------------------------------- *
+   * A 4px rhythm with a 2px half step. The half step is not a second
+   * rhythm: it is there for the tight interior distances — the gap
+   * between an icon and its label, the padding inside a small control
+   * — that a 4px grid would push a pixel or two too far apart.
+   * --sp-hair is for the optical centring of a 1px rule only.        */
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 12px;
+  --sp-5: 16px;
+  --sp-6: 24px;
+  --sp-7: 32px;
+  --sp-8: 48px;
+  --sp-hair: 2px;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24);
-  --shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 24px 60px -12px rgba(0, 0, 0, 0.52);
+  /* ---- radii ------------------------------------------------------ */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 16px;
+  --r-full: 999px;
+  --composer-radius: 24px;
 
-  --sidebar-w: 272px;
-  --titlebar-h: 44px;
+  /* ---- control sizes ---------------------------------------------- *
+   * Three heights. A control that is not one of them does not belong
+   * in the interface.                                                   */
+  --ctl-sm: 28px;
+  --ctl-md: 32px;
+  --ctl-lg: 36px;
+
+  /* ---- motion ------------------------------------------------------ */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 240ms;
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* ---- layers ------------------------------------------------------ *
+   * The global layers, from the content up to the lightbox. The small
+   * numbers a component uses for its own stacking stay as they are.   */
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-scrim: 20;
+  --z-drawer: 25;
+  --z-popover: 30;
+  --z-floating: 40;
+  --z-modal: 50;
+  --z-overlay: 60;
+
+  /* ---- layout ----------------------------------------------------- */
+  --rail-w: 48px;
+  --sidebar-w: 240px;
+  --content-w: 740px;
+  --drawer-w: 420px;
+  --shell-inset: var(--sp-3);
+  --titlebar-h: 44px;
+  --panel-head-h: 52px;
+
+  /* ---- shadows ----------------------------------------------------- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32), var(--border-specular);
+  --shadow-card: 0 6px 20px -6px rgba(0, 0, 0, 0.45), var(--border-specular);
+  --shadow: 0 10px 28px -8px rgba(0, 0, 0, 0.56), var(--border-specular);
+  --shadow-lg: 0 24px 64px -12px rgba(0, 0, 0, 0.68), var(--border-specular);
+  --scrim: rgba(4, 6, 10, 0.64);
+  --drawer-scrim: rgba(4, 6, 10, 0.3);
+
+  /* ---- lightbox ---------------------------------------------------- *
+   * A picture is read against its own field, so the lightbox keeps a
+   * dark surround in both themes. The values still live here rather
+   * than in the component so a theme can override them in one place.  */
+  --lightbox-scrim: rgba(0, 0, 0, 0.82);
+  --lightbox-fg: rgba(255, 255, 255, 0.72);
+  --lightbox-fg-strong: #ffffff;
+  --lightbox-control: rgba(255, 255, 255, 0.18);
+  --lightbox-control-line: rgba(255, 255, 255, 0.1);
+
+  /* ---- aliases ----------------------------------------------------- *
+   * The names the rest of the stylesheets still use.                  */
+  --bg: var(--surface-canvas);
+  --bg-deep: var(--surface-sunken);
+  --bg-panel: var(--surface-chrome);
+  --bg-elevated: var(--surface-raised);
+  --bg-raised: var(--surface-raised);
+  --border: var(--border-default);
+  --border-soft: var(--border-subtle);
+  --text: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --text-faint: var(--text-tertiary);
+  --blue: var(--accent);
+  --blue-soft: var(--accent-soft);
+  --green: var(--status-success);
+  --green-soft: var(--status-success-soft);
+  --red: var(--status-danger);
+  --red-soft: var(--status-danger-soft);
+  --amber: var(--status-warning);
+  --amber-soft: var(--status-warning-soft);
+  --yellow: var(--status-warning);
+  --yellow-soft: var(--status-warning-soft);
+  --violet: #a78bfa;
+  --violet-soft: rgba(167, 139, 250, 0.14);
+
+  --radius-sm: var(--r-sm);
+  --radius: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
+
+  /* A pill is a shape, not a size: it is the full radius under the name
+   * the older stylesheets use.                                        */
+  --r-pill: var(--r-full);
+  --shadow-md: var(--shadow);
+  --composer-max: var(--content-w);
+  /* One step below --ctl-sm, for the inline chips inside a tool row. */
+  --ctl-xs: 24px;
+
+  --sidebar-bg: var(--surface-chrome);
+  --sidebar-hover: #1b1e25;
+  --sidebar-active: #242832;
+  --sidebar-text: var(--text-primary);
+  --sidebar-muted: var(--text-tertiary);
+  --chrome-bg: var(--surface-chrome);
 }
 
 :root[data-theme='light'] {
-  --bg: #ffffff;
-  --bg-deep: #f7f7f7;
-  --bg-panel: #f7f7f7;
-  --bg-elevated: #ffffff;
+  color-scheme: light;
+  accent-color: var(--accent);
+
+  --surface-canvas: #ffffff;
+  --surface-chrome: #f8f8f8;
+  --surface-sunken: #f2f2f2;
+  --surface-raised: #ffffff;
+  --surface-overlay: #ffffff;
+  --surface-glass: rgba(255, 255, 255, 0.85);
+
   --bg-hover: #eeeeee;
-  --bg-active: #e7e7e7;
+  --bg-active: #e8e8e8;
 
-  --border: #e5e5e5;
-  --border-soft: #efefef;
+  --border-subtle: #e8e8e8;
+  --border-default: #e4e4e4;
   --border-strong: #d4d4d4;
+  --border-specular: inset 0 1px 0 rgba(255, 255, 255, 0.85);
 
-  --text: #171717;
-  --text-muted: #5e5e5e;
-  --text-faint: #666666;
+  --text-primary: #242424;
+  --text-secondary: #686868;
+  --text-tertiary: #909090;
+  --text-disabled: #94a3b8;
 
-  --accent: #252525;
+  --accent: #292929;
+  --accent-hover: #111111;
+  --accent-soft: #ededed;
+  --accent-line: rgba(41, 41, 41, 0.32);
+  --accent-glow: 0 0 0 3px rgba(41, 41, 41, 0.14);
   --accent-contrast: #ffffff;
-  --accent-soft: rgba(0, 0, 0, 0.06);
-  --accent-line: rgba(0, 0, 0, 0.2);
 
-  --blue: #2f6fd0;
-  --blue-soft: rgba(47, 111, 208, 0.1);
-  --green: #1f9d55;
-  --green-soft: rgba(31, 157, 85, 0.1);
-  --red: #d64545;
-  --red-soft: rgba(214, 69, 69, 0.1);
-  --violet: #7448d4;
-  --violet-soft: rgba(116, 72, 212, 0.1);
+  --status-success: #16a34a;
+  --status-success-soft: rgba(22, 163, 74, 0.1);
+  --status-warning: #d97706;
+  --status-warning-soft: rgba(217, 119, 6, 0.1);
+  --status-danger: #dc2626;
+  --status-danger-soft: rgba(220, 38, 38, 0.1);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 24px 60px -16px rgba(0, 0, 0, 0.16);
+  --diff-add-bg: #e6f6ec;
+  --diff-add-text: #15803d;
+  --diff-del-bg: #fdeeee;
+  --diff-del-text: #b91c1c;
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05), var(--border-specular);
+  --shadow-card: 0 3px 18px rgba(0, 0, 0, 0.045);
+  --shadow: 0 10px 28px -8px rgba(15, 23, 42, 0.14), var(--border-specular);
+  --shadow-lg: 0 24px 64px -14px rgba(15, 23, 42, 0.2), var(--border-specular);
+  --scrim: rgba(15, 23, 42, 0.26);
+  --drawer-scrim: rgba(15, 23, 42, 0.14);
+
+  /* The lightbox stays a dark room in the light theme too — a photo
+   * needs a neutral field more than it needs a bright one — but the
+   * scrim is a touch lighter so it does not read as a black hole.    */
+  --lightbox-scrim: rgba(15, 17, 21, 0.86);
+  --lightbox-fg: rgba(255, 255, 255, 0.78);
+  --lightbox-fg-strong: #ffffff;
+  --lightbox-control: rgba(255, 255, 255, 0.2);
+  --lightbox-control-line: rgba(255, 255, 255, 0.12);
+
+  --violet: #7c3aed;
+  --violet-soft: rgba(124, 58, 237, 0.1);
+
+  --sidebar-hover: var(--bg-hover);
+  --sidebar-active: var(--bg-active);
+  --chrome-bg: #f3f3f3;
+}
+
+@media (forced-colors: active) {
+  :root {
+    --border-subtle: CanvasText;
+    --border-default: CanvasText;
+    --border-strong: CanvasText;
+    --focus-ring: Highlight;
+  }
 }
 
 * {
@@ -95,14 +298,21 @@ body,
 }
 
 body {
-  background: var(--bg);
-  color: var(--text);
+  background: var(--surface-canvas);
+  color: var(--text-primary);
   font-family: var(--font-ui);
-  font-size: calc(14px * var(--font-scale, 1));
+  font-size: var(--text-md);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overflow: hidden;
+}
+
+/* The keyboard has to leave a mark. One recipe for every element, so the
+   ring means the same thing wherever the focus lands. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 button {
@@ -131,19 +341,19 @@ select {
 
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   border: 3px solid transparent;
   background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-faint);
+  background: var(--text-tertiary);
   background-clip: content-box;
 }
 
 ::selection {
   background: var(--accent-soft);
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 .drag-region {

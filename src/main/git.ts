@@ -655,7 +655,8 @@ export async function readBranches(root: string): Promise<GitBranches> {
   const empty: GitBranches = { detached: false, branches: [], worktrees: [] }
   if (!root) return empty
 
-  const [currentOut, refs, worktreesOut] = await Promise.all([
+  const [topLevelOut, currentOut, refs, worktreesOut] = await Promise.all([
+    git(root, ['rev-parse', '--show-toplevel']),
     git(root, ['branch', '--show-current']),
     git(root, [
       'for-each-ref',
@@ -666,7 +667,12 @@ export async function readBranches(root: string): Promise<GitBranches> {
     ]),
     git(root, ['worktree', 'list', '--porcelain'])
   ])
+  const failed = [topLevelOut, currentOut, refs, worktreesOut].find((result) => result.code !== 0)
+  if (failed) {
+    throw new Error(cleanError(failed.stderr) || 'Could not read branches and worktrees.')
+  }
 
+  const currentRoot = path.resolve(topLevelOut.stdout.trim() || root)
   const current = currentOut.stdout.trim() || undefined
   const branches: GitBranch[] = refs.stdout
     .split('\n')
@@ -692,7 +698,7 @@ export async function readBranches(root: string): Promise<GitBranches> {
       path: block.path,
       branch: block.branch,
       bare: block.bare === true,
-      current: path.resolve(block.path) === path.resolve(root)
+      current: path.relative(currentRoot, path.resolve(block.path)) === ''
     })
     block = {}
   }
@@ -737,8 +743,10 @@ export async function removeWorktree(root: string, target: string): Promise<GitC
   if (!root) return { ok: false, error: 'No project is open.' }
   if (!target) return { ok: false, error: 'No worktree was given.' }
   const resolved = path.resolve(target)
+  const topLevel = await git(root, ['rev-parse', '--show-toplevel'])
+  const currentRoot = path.resolve(topLevel.stdout.trim() || root)
 
-  if (resolved === path.resolve(root)) {
+  if (path.relative(currentRoot, resolved) === '') {
     return { ok: false, error: 'The worktree that is open cannot be removed.' }
   }
 
@@ -870,6 +878,34 @@ export async function revertFile(root: string, filePath: string): Promise<GitCom
   const result = await git(root, ['checkout', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
   if (result.code !== 0) {
     return { ok: false, error: cleanError(result.stderr) || 'git checkout failed.' }
+  }
+  return { ok: true }
+}
+
+/** Push the current branch to its upstream remote, setting `-u origin HEAD` when no upstream is configured. */
+export async function pushBranch(root: string): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  const upstream = await git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
+  const args = upstream.code === 0 && upstream.stdout.trim() ? ['push'] : ['push', '-u', 'origin', 'HEAD']
+  const result = await git(root, args, COMMIT_TIMEOUT_MS)
+  if (result.code !== 0) {
+    return {
+      ok: false,
+      error: cleanError(result.stderr) || cleanError(result.stdout) || 'git push failed.'
+    }
+  }
+  return { ok: true }
+}
+
+/** Pull the latest changes from the upstream remote. */
+export async function pullBranch(root: string): Promise<GitCommitResult> {
+  if (!root) return { ok: false, error: 'No project is open.' }
+  const result = await git(root, ['pull'], COMMIT_TIMEOUT_MS)
+  if (result.code !== 0) {
+    return {
+      ok: false,
+      error: cleanError(result.stderr) || cleanError(result.stdout) || 'git pull failed.'
+    }
   }
   return { ok: true }
 }

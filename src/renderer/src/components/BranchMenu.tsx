@@ -1,5 +1,7 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
   ChevronDown,
   FileDiff,
@@ -7,13 +9,15 @@ import {
   GitFork,
   Loader2,
   Plus,
-  RefreshCw
+  RefreshCw,
+  Trash2
 } from 'lucide-react'
-import type { GitBranches } from '@shared/types'
+import type { GitBranches, GitWorktree } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { basename } from '../lib/path'
 import { useT } from '../lib/i18n'
 import { Popover } from './Popover'
+import { ConfirmDialog } from './ConfirmDialog'
 import '../styles/branch-menu.css'
 
 /**
@@ -23,29 +27,44 @@ import '../styles/branch-menu.css'
  * so the menu stays read-only until the user picks one of those two actions;
  * everything else (the dirty count, the review) is just a way in.
  */
-export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
+export function BranchMenu({
+  onOpenChanges,
+  iconOnly = false
+}: {
+  onOpenChanges: () => void
+  iconOnly?: boolean
+}) {
+  const gitChipRef = useRef<HTMLButtonElement>(null)
   const git = useAppStore((state) => state.git)
   const workspace = useAppStore((state) => state.workspace)
   const refreshGit = useAppStore((state) => state.refreshGit)
+  const pushGit = useAppStore((state) => state.pushGit)
+  const pullGit = useAppStore((state) => state.pullGit)
   const switchProject = useAppStore((state) => state.switchProject)
   const showToast = useAppStore((state) => state.showToast)
   const t = useT()
 
   const [data, setData] = useState<GitBranches | undefined>(undefined)
   const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState(false)
   const [busy, setBusy] = useState<string | undefined>(undefined)
   const [showNew, setShowNew] = useState(false)
   const [newBranch, setNewBranch] = useState('')
   const [showWorktree, setShowWorktree] = useState(false)
   const [worktreeBranch, setWorktreeBranch] = useState('')
   const [worktreePath, setWorktreePath] = useState('')
+  const [worktreeToRemove, setWorktreeToRemove] = useState<GitWorktree | undefined>()
+
+  const restoreFocus = () => requestAnimationFrame(() => gitChipRef.current?.focus())
 
   const load = useCallback(async () => {
     setLoading(true)
+    setLoadError(false)
     try {
       setData(await window.pi.git.branches())
     } catch {
       setData(undefined)
+      setLoadError(true)
     } finally {
       setLoading(false)
     }
@@ -104,7 +123,8 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
     }
     setBusy(target)
     try {
-      await switchProject(target)
+      // Asking for a worktree is asking for that folder, run and all.
+      await switchProject(target, { allowWhileRunning: true })
       close()
     } finally {
       setBusy(undefined)
@@ -125,21 +145,70 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
       setWorktreePath('')
       setShowWorktree(false)
       showToast(`${t('Worktree created at')} ${result.path ?? ''}`)
-      if (result.path) await switchProject(result.path)
+      if (result.path) await switchProject(result.path, { allowWhileRunning: true })
       close()
     } finally {
       setBusy(undefined)
     }
   }
 
-  return (
+  const removeWorktree = async () => {
+    const target = worktreeToRemove
+    if (!target || busy) return
+    setBusy('remove-worktree')
+    try {
+      const result = await window.pi.git.removeWorktree(target.path)
+      if (!result.ok) {
+        showToast(result.error ?? t('Could not remove the worktree'), 'error')
+        void load()
+        return
+      }
+      setWorktreeToRemove(undefined)
+      restoreFocus()
+      showToast(`${t('Worktree removed')}: ${basename(target.path)}`)
+      await Promise.allSettled([refreshGit(), load()])
+    } catch {
+      showToast(t('Could not remove the worktree'), 'error')
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
+  const runPush = async () => {
+    if (busy) return
+    setBusy('push')
+    try {
+      await pushGit()
+      await load()
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
+  const runPull = async () => {
+    if (busy) return
+    setBusy('pull')
+    try {
+      await pullGit()
+      await load()
+    } finally {
+      setBusy(undefined)
+    }
+  }
+
+  return [
     <Popover
+      key="branch-menu"
+      placement={iconOnly ? 'right' : 'bottom'}
+      className={iconOnly ? 'branch-menu--rail' : undefined}
       width={340}
       renderTrigger={({ open, toggle }) => (
         <button
-          className="pill git-chip"
+          ref={gitChipRef}
+          className={iconOnly ? 'icon-btn git-chip git-chip--icon no-drag' : 'pill git-chip no-drag'}
           data-dirty={!git.clean}
           data-active={open}
+          aria-label={iconOnly ? t('Branches') : undefined}
           aria-expanded={open}
           onClick={(event) => {
             toggle(event)
@@ -151,19 +220,23 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
               : `${git.branch ?? t('Repository')} — ${git.files.length} ${t('uncommitted')}. ${t('Review and commit')}`
           }
         >
-          <GitBranch size={13} />
-          <span className="git-chip__branch">
-            {git.branch ?? (git.head ? `#${git.head}` : t('Repository'))}
-          </span>
-          {git.detached ? <span className="git-chip__tag">{t('detached')}</span> : null}
-          {git.ahead > 0 ? <span className="git-chip__delta">↑{git.ahead}</span> : null}
-          {git.behind > 0 ? <span className="git-chip__delta">↓{git.behind}</span> : null}
-          {git.clean ? (
-            <Check size={12} className="git-chip__clean" />
-          ) : (
-            <span className="git-chip__dirty">{git.files.length}</span>
+          <GitBranch size={iconOnly ? 16 : 13} />
+          {iconOnly ? null : (
+            <>
+              <span className="git-chip__branch">
+                {git.branch ?? (git.head ? `#${git.head}` : t('Repository'))}
+              </span>
+              {git.detached ? <span className="git-chip__tag">{t('detached')}</span> : null}
+              {git.ahead > 0 ? <span className="git-chip__delta">↑{git.ahead}</span> : null}
+              {git.behind > 0 ? <span className="git-chip__delta">↓{git.behind}</span> : null}
+              {git.clean ? (
+                <Check size={12} className="git-chip__clean" />
+              ) : (
+                <span className="git-chip__dirty">{git.files.length}</span>
+              )}
+              <ChevronDown size={11} className="pill__caret" />
+            </>
           )}
-          <ChevronDown size={11} className="pill__caret" />
         </button>
       )}
     >
@@ -185,6 +258,12 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
           {git.detached ? (
             <p className="branch-menu__note">
               {t('HEAD is detached. Switch to a branch so new commits are kept.')}
+            </p>
+          ) : null}
+
+          {loadError ? (
+            <p className="branch-menu__note" role="status">
+              {t('Could not load branches and worktrees. Select Refresh to try again.')}
             </p>
           ) : null}
 
@@ -221,6 +300,26 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
             >
               <Plus size={11} />
               {t('New branch…')}
+            </button>
+            <button
+              className="ghost-btn"
+              disabled={Boolean(busy) || git.detached}
+              onClick={() => void runPull()}
+              title={t('Pull latest changes from remote')}
+            >
+              <ArrowDown size={11} />
+              {t('Pull')}
+              {git.behind > 0 ? ` (${git.behind})` : ''}
+            </button>
+            <button
+              className="ghost-btn"
+              disabled={Boolean(busy) || git.detached}
+              onClick={() => void runPush()}
+              title={t('Push commits to remote')}
+            >
+              <ArrowUp size={11} />
+              {t('Push')}
+              {git.ahead > 0 ? ` (${git.ahead})` : ''}
             </button>
             <button
               className="ghost-btn"
@@ -269,25 +368,49 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
               const dirty = typeof worktree.dirty === 'number' && worktree.dirty > 0
               const dirtyLabel = dirty ? `${worktree.dirty} ${t('Uncommitted files')}` : ''
               return (
-                <button
-                  key={worktree.path}
-                  className="branch-menu__row"
-                  data-current={worktree.current || undefined}
-                  disabled={Boolean(busy)}
-                  aria-label={`${name}, ${branch}${dirtyLabel ? `, ${dirtyLabel}` : ''}`}
-                  title={dirtyLabel ? `${worktree.path} · ${dirtyLabel}` : worktree.path}
-                  onClick={() => void openWorktree(worktree.path, close)}
-                >
-                  <GitFork size={12} className="branch-menu__icon" />
-                  <span className="branch-menu__name">{name}</span>
-                  <span className="branch-menu__meta">{branch}</span>
-                  {dirty ? (
-                    <span className="branch-menu__dirty" aria-hidden="true">
-                      {worktree.dirty}
-                    </span>
+                <div className="branch-menu__worktree" key={worktree.path}>
+                  <button
+                    className="branch-menu__row"
+                    data-current={worktree.current || undefined}
+                    disabled={Boolean(busy)}
+                    aria-label={`${name}, ${branch}${dirtyLabel ? `, ${dirtyLabel}` : ''}`}
+                    title={dirtyLabel ? `${worktree.path} · ${dirtyLabel}` : worktree.path}
+                    onClick={() => void openWorktree(worktree.path, close)}
+                  >
+                    <GitFork size={12} className="branch-menu__icon" />
+                    <span className="branch-menu__name">{name}</span>
+                    <span className="branch-menu__meta">{branch}</span>
+                    {dirty ? (
+                      <span className="branch-menu__dirty" aria-hidden="true">
+                        {worktree.dirty}
+                      </span>
+                    ) : null}
+                    {worktree.current ? <Check size={12} className="branch-menu__check" /> : null}
+                  </button>
+                  {!worktree.current ? (
+                    <button
+                      type="button"
+                      className="branch-menu__worktree-remove"
+                      data-dirty={dirty || undefined}
+                      aria-disabled={Boolean(busy) || dirty}
+                      aria-label={`${t('Remove worktree')}: ${name}${
+                        dirty ? `, ${t('Commit or discard changes before removing')}` : ''
+                      }`}
+                      title={
+                        dirty
+                          ? t('Commit or discard changes before removing')
+                          : busy
+                            ? t('Working…')
+                            : `${t('Remove worktree')}: ${worktree.path}`
+                      }
+                      onClick={() => {
+                        if (!busy && !dirty) setWorktreeToRemove(worktree)
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
                   ) : null}
-                  {worktree.current ? <Check size={12} className="branch-menu__check" /> : null}
-                </button>
+                </div>
               )
             })}
             <button
@@ -343,6 +466,22 @@ export function BranchMenu({ onOpenChanges }: { onOpenChanges: () => void }) {
           ) : null}
         </div>
       )}
-    </Popover>
-  )
+    </Popover>,
+    worktreeToRemove ? (
+      <ConfirmDialog
+        key="remove-worktree"
+        title={`${t('Remove worktree')}: ${basename(worktreeToRemove.path)}`}
+        body={t('The worktree folder will be removed from disk. Its branch will remain.')}
+        confirmLabel={busy === 'remove-worktree' ? 'Working…' : 'Remove worktree'}
+        tone="danger"
+        onCancel={() => {
+          if (!busy) {
+            setWorktreeToRemove(undefined)
+            restoreFocus()
+          }
+        }}
+        onConfirm={() => void removeWorktree()}
+      />
+    ) : null
+  ]
 }

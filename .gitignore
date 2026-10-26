@@ -10,3 +10,11 @@ Thumbs.db
 .idea/
 .vscode/
 *.tsbuildinfo
+
+# Screenshot harness output and the browser-automation scratch profile: both
+# are regenerated on demand and together they outweigh the source.
+output/
+.playwright-cli/
+
+# Design explorations: visual references, not part of the build.
+docs/ui-design/

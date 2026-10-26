@@ -20,6 +20,7 @@ asarUnpack:
   - node_modules/quickjs-wasi/**/*
 
 win:
+  icon: build/icon-pixel.png
   target:
     - target: nsis
       arch: [x64, arm64]

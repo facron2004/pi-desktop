@@ -20,8 +20,8 @@ import { CodeSnippet } from './CodeSnippet'
 import { useT } from '../lib/i18n'
 import '../styles/file-viewer.css'
 
-/** Where the viewer remembers whether long lines wrap. */
-const WRAP_KEY = 'pi-desktop.file-viewer-wrap'
+/** Apply the new default once, then preserve subsequent manual choices. */
+const WRAP_KEY = 'pi-desktop.file-viewer-wrap-v2'
 
 /** A file is not worth tens of thousands of ranges; the count stops here. */
 const MAX_MATCHES = 2000
@@ -129,9 +129,9 @@ function collectMatches(host: HTMLElement | null, value: string): FileMatch[] {
 /** Read the wrap preference without letting a locked profile break the viewer. */
 function readWrap(): boolean {
   try {
-    return localStorage.getItem(WRAP_KEY) === 'true'
+    return localStorage.getItem(WRAP_KEY) !== 'false'
   } catch {
-    return false
+    return true
   }
 }
 
@@ -153,6 +153,13 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
   const [active, setActive] = useState(0)
   const [jump, setJump] = useState('')
   const [wrap, setWrap] = useState(readWrap)
+  const [selectedRange, setSelectedRange] = useState<{
+    start: number
+    end: number
+    anchor: number
+  } | null>(null)
+  const selectedRangeRef = useRef<{ start: number; end: number; anchor: number } | null>(null)
+  selectedRangeRef.current = selectedRange
   const codeRef = useRef<HTMLElement | null>(null)
   const lineRef = useRef(line)
   const findInputRef = useRef<HTMLInputElement>(null)
@@ -164,6 +171,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
   const markTimerRef = useRef<number | undefined>(undefined)
   const markedRef = useRef<HTMLElement | null>(null)
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
+  const showToast = useAppStore((state) => state.showToast)
   lineRef.current = line
 
   useEffect(() => {
@@ -200,6 +208,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     setCount(0)
     setActive(0)
     setJump('')
+    setSelectedRange(null)
     clearHighlights()
   }, [file])
 
@@ -304,12 +313,33 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     })
   }, [])
 
+  const paintSelectedLines = useCallback(
+    (range: { start: number; end: number } | null = selectedRangeRef.current) => {
+      const lines = codeRef.current?.querySelectorAll<HTMLElement>('.line')
+      if (!lines) return
+      lines.forEach((node, index) => {
+        const lineNumber = index + 1
+        if (range && lineNumber >= range.start && lineNumber <= range.end) {
+          node.setAttribute('data-selected', 'true')
+        } else {
+          node.removeAttribute('data-selected')
+        }
+      })
+    },
+    []
+  )
+
+  useEffect(() => {
+    paintSelectedLines(selectedRange)
+  }, [selectedRange, paintSelectedLines])
+
   // The code is highlighted asynchronously, so the lines the find bar points
   // at are replaced once more after the first render.
   const handleReady = useCallback(() => {
     if (lineRef.current) revealLine(lineRef.current)
     if (findOpenRef.current) refreshFind()
-  }, [revealLine, refreshFind])
+    paintSelectedLines(selectedRangeRef.current)
+  }, [revealLine, refreshFind, paintSelectedLines])
 
   // The find bar searches as it is typed, and the first hit is scrolled to.
   useEffect(() => {
@@ -343,12 +373,32 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     if (node) node.tabIndex = 0
   }, [])
 
-  /**
-   * Copy the file or the place it lives.
-   *
-   * The crumb shows the path inside the project, and a command that runs from
-   * the workspace root wants exactly that, so the path is copied relative.
-   */
+  const handleCodeClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (window.getSelection()?.toString()) return
+    const target = event.target instanceof HTMLElement ? event.target : null
+    const lineNode = target?.closest<HTMLElement>('.line')
+    if (!lineNode || !codeRef.current) return
+    const rect = lineNode.getBoundingClientRect()
+    // Only clicks on the line-number gutter select lines so normal code selection is untouched.
+    if (event.clientX - rect.left > 48) return
+    const lines = Array.from(codeRef.current.querySelectorAll<HTMLElement>('.line'))
+    const lineNumber = lines.indexOf(lineNode) + 1
+    if (lineNumber < 1) return
+    event.preventDefault()
+    setSelectedRange((current) => {
+      if (event.shiftKey && current) {
+        return {
+          start: Math.min(current.anchor, lineNumber),
+          end: Math.max(current.anchor, lineNumber),
+          anchor: current.anchor
+        }
+      }
+      if (current && current.start === lineNumber && current.end === lineNumber) {
+        return null
+      }
+      return { start: lineNumber, end: lineNumber, anchor: lineNumber }
+    })
+  }, [])
   const copy = async (what: 'file' | 'path') => {
     if (!content) return
     const text = what === 'file' ? content.content : relativePath(root ?? '', content.path)
@@ -357,7 +407,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
       setCopied(what)
       window.setTimeout(() => setCopied((current) => (current === what ? null : current)), 1600)
     } catch {
-      /* clipboard may be unavailable */
+      showToast(t('The clipboard is not available'), 'error')
     }
   }
 
@@ -407,7 +457,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
           <span className="viewer__crumb-root">{root ? basename(root) : ''}</span>
           <span className="viewer__crumb-path" title={content.path}>
             <span className="tree__icon" data-tone={fileTone(content.path.split(/[\\/]/).pop() ?? '')}>
-              <FileIcon />
+              <FileIcon size={14} />
             </span>
             <span className="viewer__crumb-text">{relativePath(root ?? '', content.path)}</span>
           </span>
@@ -470,18 +520,45 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
           >
             {copied === 'path' ? <Check size={14} /> : <Link2 size={14} />}
           </button>
+          {selectedRange ? (
+            <button
+              className="ghost-btn fv-range-btn"
+              data-active="true"
+              title={t('Insert selected lines into composer')}
+              aria-label={t('Insert selected lines into composer')}
+              onClick={() => {
+                const rel = relativePath(root ?? '', content.path).replace(/\\/g, '/')
+                const suffix =
+                  selectedRange.start === selectedRange.end
+                    ? `#L${selectedRange.start}`
+                    : `#L${selectedRange.start}-L${selectedRange.end}`
+                insertIntoComposer(`@${rel}${suffix} `)
+              }}
+            >
+              <MessageSquarePlus size={13} />
+              <span>
+                {selectedRange.start === selectedRange.end
+                  ? `L${selectedRange.start}`
+                  : `L${selectedRange.start}–L${selectedRange.end}`}
+              </span>
+            </button>
+          ) : null}
           <button
             className="ghost-btn"
             title={t('Ask Pi about this file')}
             aria-label={t('Ask Pi about this file')}
-            onClick={() =>
-              insertIntoComposer(
-                t('Take a look at {file} and tell me').replace(
-                  '{file}',
-                  relativePath(root ?? '', content.path)
-                )
-              )
-            }
+            onClick={() => {
+              const rel = relativePath(root ?? '', content.path).replace(/\\/g, '/')
+              if (selectedRange) {
+                const suffix =
+                  selectedRange.start === selectedRange.end
+                    ? `#L${selectedRange.start}`
+                    : `#L${selectedRange.start}-L${selectedRange.end}`
+                insertIntoComposer(`@${rel}${suffix} `)
+                return
+              }
+              insertIntoComposer(t('Take a look at {file} and tell me').replace('{file}', rel))
+            }}
           >
             <MessageSquarePlus size={14} />
           </button>
@@ -555,13 +632,15 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
         </div>
       ) : null}
 
-      <CodeSnippet
-        code={content.content}
-        language={content.language}
-        className="viewer__code"
-        onHost={handleHost}
-        onReady={handleReady}
-      />
+      <div className="viewer__code-wrap" onClick={handleCodeClick}>
+        <CodeSnippet
+          code={content.content}
+          language={content.language}
+          className="viewer__code"
+          onHost={handleHost}
+          onReady={handleReady}
+        />
+      </div>
     </div>
   )
 }

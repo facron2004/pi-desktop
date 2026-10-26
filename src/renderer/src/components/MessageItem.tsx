@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Brain,
   Check,
@@ -36,20 +36,22 @@ export function UserMessage({
   const t = useT()
   return (
     <div className="user-msg">
-      <div className="user-msg__bubble">
-        {item.images.length > 0 ? (
-          <div className="user-msg__images">
-            {item.images.map((image, index) => (
-              <ImageButton
-                key={index}
-                src={`data:${image.mimeType};base64,${image.data}`}
-                alt="attachment"
-                inline={{ data: image.data, mimeType: image.mimeType }}
-              />
-            ))}
-          </div>
-        ) : null}
-        {item.text ? <Markdown>{item.text}</Markdown> : null}
+      <div className="user-msg__content">
+        <div className="user-msg__bubble">
+          {item.images.length > 0 ? (
+            <div className="user-msg__images">
+              {item.images.map((image, index) => (
+                <ImageButton
+                  key={`${item.id}-${index}`}
+                  src={`data:${image.mimeType};base64,${image.data}`}
+                  alt="attachment"
+                  inline={{ data: image.data, mimeType: image.mimeType }}
+                />
+              ))}
+            </div>
+          ) : null}
+          {item.text ? <Markdown>{item.text}</Markdown> : null}
+        </div>
         <div className="user-msg__actions">
           <span className="user-msg__time">{formatClock(item.timestamp)}</span>
           {forkEntryId && onFork ? (
@@ -124,36 +126,70 @@ export function AssistantImage({ data, mimeType }: { data: string; mimeType: str
   )
 }
 
-export function ThinkingBlock({ text, streaming }: { text: string; streaming?: boolean }) {
-  const [open, setOpen] = useState(false)
-  // A click wins over the automatic behaviour for good.
-  const [touched, setTouched] = useState(false)
+export function ThinkingBlock({
+  text,
+  streaming,
+  expanded,
+  onExpandedChange
+}: {
+  text: string
+  streaming?: boolean
+  expanded?: boolean
+  onExpandedChange?: (expanded: boolean) => void
+}) {
+  const [manualOpen, setManualOpen] = useState(false)
+  const open = expanded ?? manualOpen
+  const toggleOpen = () => {
+    if (onExpandedChange) onExpandedChange(!open)
+    else setManualOpen(!open)
+  }
+  const startedAtRef = useRef<number | null>(null)
+  const [elapsedSec, setElapsedSec] = useState(0)
   const t = useT()
 
-  // While the model is still reasoning, that text is the only thing that is
-  // happening, so it is shown. It folds away once the answer arrives.
   useEffect(() => {
-    if (touched) return
-    setOpen(streaming === true)
-  }, [streaming, touched])
+    if (!streaming) return
+    if (startedAtRef.current === null) {
+      startedAtRef.current = Date.now()
+    }
+    const tick = () => {
+      if (startedAtRef.current !== null) {
+        setElapsedSec(Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000)))
+      }
+    }
+    tick()
+    const timer = window.setInterval(tick, 1000)
+    return () => window.clearInterval(timer)
+  }, [streaming])
 
   if (!text.trim()) return null
   return (
     <div className="thinking" data-open={open}>
       <button
+        type="button"
         className="thinking__head"
         aria-expanded={open}
-        onClick={() => {
-          setTouched(true)
-          setOpen((value) => !value)
-        }}
+        onClick={toggleOpen}
       >
         <ChevronRight size={13} className="caret" data-open={open} />
         <Brain size={13} />
-        <span className="thinking__title">{t('Thinking')}</span>
+        <span className="thinking__title">
+          {streaming
+            ? t('Thinking')
+            : elapsedSec > 0
+              ? `${t('Thought for')} ${elapsedSec}${t('s')}`
+              : t('Thought')}
+        </span>
+        {streaming && elapsedSec > 0 ? (
+          <span className="thinking__duration">{elapsedSec}{t('s')}</span>
+        ) : null}
         <span className="thinking__hint">{open ? t('hide') : t('show')}</span>
       </button>
-      {open ? <div className="thinking__body">{text}</div> : null}
+      {open ? (
+        <div className="thinking__body" role="region" aria-label={t('Thinking')} tabIndex={0}>
+          {text}
+        </div>
+      ) : null}
     </div>
   )
 }

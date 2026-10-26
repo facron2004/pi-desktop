@@ -1,56 +1,101 @@
 import { useState } from 'react'
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, CircleAlert, ListChecks } from 'lucide-react'
 import type { ToolItem } from '../lib/thread'
 import { describeTool } from '../lib/tools'
+import { useSearchQuery } from '../lib/search-context'
 import { useAppStore } from '../store/useAppStore'
-import { ToolCard, TOOL_ICONS } from './ToolCard'
+import { ThinkingBlock } from './MessageItem'
+import { ToolCard } from './ToolCard'
 import { useT } from '../lib/i18n'
 
-/**
- * Several calls of the same tool in a row, folded into one card.
- *
- * A run of reads or searches says much more in a single line than in a dozen
- * separate cards. Edits and writes carry their own diff or content, so a
- * group that holds one of those starts open.
- */
-export function ToolGroup({ items }: { items: ToolItem[] }) {
+export type ToolGroupItem =
+  | ToolItem
+  | { kind: 'thinking'; id: string; text: string; streaming: boolean }
+
+/** Keep a continuous run of tools and thinking compact until its details are requested. */
+export function ToolGroup({ items }: { items: ToolGroupItem[] }) {
   const workspace = useAppStore((state) => state.workspace)
-  const descriptor = describeTool(items[0].toolName)
+  const query = useSearchQuery().trim().toLowerCase()
   const t = useT()
-  const tone = items.some((item) => item.status === 'error') ? 'error' : descriptor.tone
-  const Icon = TOOL_ICONS[tone]
+  const tools = items.filter((item) => item.kind === 'tool')
+  const thoughtCount = items.length - tools.length
+  const failed = tools.some((item) => item.status === 'error')
+  // A tool that was named but never ran is not a failure either: the group
+  // says so rather than marking the whole batch red.
+  const running = items.some((item) => item.kind === 'tool' ? item.status === 'running' : item.streaming)
+  const proposed = tools.some((item) => item.status === 'proposed')
+  const status = failed ? 'error' : running ? 'running' : proposed ? 'proposed' : 'ok'
+  const Icon = failed ? CircleAlert : ListChecks
+  const searchMatch = Boolean(query) && tools.some((item) =>
+    `${item.toolName} ${describeTool(item.toolName).summary(item.args ?? {}, workspace?.path)}`
+      .toLowerCase().includes(query)
+  )
 
-  // A group that hides a running tool would hide the progress, and one that
-  // hides an edit would hide the diff.
-  const showDetail =
-    items.some((item) => item.status === 'running') ||
-    items.some((item) => item.toolName === 'edit' || item.toolName === 'write')
-  const [open, setOpen] = useState(showDetail)
+  const [manualOpen, setManualOpen] = useState<boolean>()
+  const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({})
+  const open = searchMatch || (manualOpen ?? (failed || items.some((item) => expandedItems[item.id] === true)))
+  const toggleOpen = () => setManualOpen(!open)
+  const setItemExpanded = (id: string, expanded: boolean) =>
+    setExpandedItems((current) => ({ ...current, [id]: expanded }))
 
-  const summary = items
-    .map((item) => descriptor.summary(item.args ?? {}, workspace?.path))
+  const renderItem = (item: ToolGroupItem) =>
+    item.kind === 'tool' ? (
+      <ToolCard
+        key={item.id}
+        item={item}
+        expanded={expandedItems[item.id]}
+        onExpandedChange={(expanded) => setItemExpanded(item.id, expanded)}
+      />
+    ) : (
+      <ThinkingBlock
+        key={item.id}
+        text={item.text}
+        streaming={item.streaming}
+        expanded={expandedItems[item.id]}
+        onExpandedChange={(expanded) => setItemExpanded(item.id, expanded)}
+      />
+    )
+
+  if (items.length === 1) return renderItem(items[0])
+
+  const summary = [
+    tools.length ? `${tools.length} ${t('tool calls')}` : '',
+    thoughtCount ? `${thoughtCount} ${t('thinking steps')}` : ''
+  ]
     .filter(Boolean)
     .join(' · ')
 
   return (
-    <div className="tool tool--group" data-tone={tone}>
+    <div className="tool tool--group" data-tone="generic" data-status={status}>
       <div className="tool__head">
         <button
           className="tool__head-main"
           aria-expanded={open}
-          onClick={() => setOpen((value) => !value)}
+          onClick={toggleOpen}
         >
           <span className="tool__icon">
             <Icon size={12} strokeWidth={2.2} />
           </span>
           <span className="tool__name">
-            {items.length} {t(descriptor.plural)}
+            {t('Execution details')}
           </span>
           <span className="tool__summary">{summary}</span>
+          {running ? <span className="spinner" /> : null}
+          <span className="tool__state" data-state={status}>
+            {t(
+              failed
+                ? 'Failed'
+                : running
+                  ? 'Running'
+                  : proposed
+                    ? 'Not run'
+                    : 'Completed'
+            )}
+          </span>
         </button>
         <button
           className="tool__caret"
-          onClick={() => setOpen((value) => !value)}
+          onClick={toggleOpen}
           aria-label={open ? t('Collapse') : t('Expand')}
           aria-expanded={open}
         >
@@ -60,9 +105,7 @@ export function ToolGroup({ items }: { items: ToolItem[] }) {
 
       {open ? (
         <div className="tool__body tool__body--group">
-          {items.map((item) => (
-            <ToolCard key={item.id} item={item} />
-          ))}
+          {items.map(renderItem)}
         </div>
       ) : null}
     </div>

@@ -6,7 +6,6 @@ import {
   Copy,
   ListChecks,
   MessageSquarePlus,
-  Pencil,
   X
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
@@ -23,6 +22,7 @@ interface StripPreference {
   sourceId: string
   collapsed: boolean
   dismissed: boolean
+  completionHandled: boolean
 }
 
 function readPreference(): StripPreference | null {
@@ -33,8 +33,9 @@ function readPreference(): StripPreference | null {
     if (!stored || typeof stored.sourceId !== 'string') return null
     return {
       sourceId: stored.sourceId,
-      collapsed: stored.collapsed === true,
-      dismissed: stored.dismissed === true
+      collapsed: stored.collapsed !== false,
+      dismissed: stored.dismissed === true,
+      completionHandled: stored.completionHandled === true
     }
   } catch {
     // An unreadable value is the same as no value at all.
@@ -64,7 +65,7 @@ function checklistMarkdown(entries: PlanEntry[]): string {
  * The plan is markdown the agent already wrote, so the strip reads it back out
  * of the thread instead of asking for a channel of its own. Collapsing and
  * dismissing are view preferences and live here, tied to the message the plan
- * came from — a new plan opens again on its own.
+ * came from — a new plan returns as a compact summary.
  */
 export function PlanStrip() {
   const items = useAppStore((state) => state.items)
@@ -77,6 +78,7 @@ export function PlanStrip() {
   // copy buttons in the app do.
   const [copied, setCopied] = useState(false)
   const copyTimer = useRef<number | null>(null)
+  const toggleRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (preference) writePreference(preference)
@@ -89,8 +91,9 @@ export function PlanStrip() {
   }, [])
 
   const sourceId = plan?.sourceId
+  const complete = plan !== null && plan.done === plan.total
   const own = preference && preference.sourceId === sourceId ? preference : null
-  const collapsed = own?.collapsed === true
+  const collapsed = own?.collapsed !== false
   const dismissed = own?.dismissed === true
 
   const change = useCallback(
@@ -100,17 +103,29 @@ export function PlanStrip() {
         const base: StripPreference =
           current && current.sourceId === sourceId
             ? current
-            : { sourceId, collapsed: false, dismissed: false }
+            : { sourceId, collapsed: true, dismissed: false, completionHandled: false }
         return { ...base, ...patch }
       })
     },
     [sourceId]
   )
 
+  useEffect(() => {
+    if (complete && !own?.completionHandled) {
+      // A completion folds once; a manual reopen must survive later renders.
+      const focused = document.activeElement
+      if (focused instanceof HTMLElement && focused.closest('.plan-strip__entries, .plan-strip__actions')) {
+        toggleRef.current?.focus()
+      }
+      change({ collapsed: true, completionHandled: true })
+    } else if (!complete && own?.completionHandled) {
+      change({ completionHandled: false })
+    }
+  }, [complete, own?.completionHandled, change])
+
   if (!plan || dismissed) return null
 
   const currentIndex = plan.entries.findIndex((entry) => !entry.done)
-  const complete = currentIndex === -1
   const progress = `${Math.round((plan.done / plan.total) * 100)}%`
 
   const copyPlan = async () => {
@@ -140,6 +155,7 @@ export function PlanStrip() {
       <div className="plan-strip__inner">
         <div className="plan-strip__head" role="status">
           <button
+            ref={toggleRef}
             className="plan-strip__toggle"
             aria-expanded={!collapsed}
             aria-controls={LIST_ID}

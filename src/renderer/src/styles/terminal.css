@@ -12,12 +12,13 @@
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  height: clamp(240px, 32vh, 320px);
+  height: calc(100vh / 3);
   min-height: 160px;
   max-height: 65vh;
-  border-top: 1px solid var(--border);
-  background: var(--bg-deep);
-  animation: terminal-rise 0.16s var(--ease);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-canvas);
+  container: terminal-panel / inline-size;
+animation: terminal-rise var(--dur-fast) var(--ease);
 }
 
 /* The top edge of the drawer is the resize handle. Its hit area is wider than
@@ -41,7 +42,7 @@
   right: 0;
   height: 2px;
   background: transparent;
-  transition: background 0.14s var(--ease);
+transition: background var(--dur-fast) var(--ease);
 }
 
 .terminal__resizer:hover::after,
@@ -84,11 +85,13 @@ body.terminal-resizing {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 8px 0 13px;
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--bg-elevated);
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  height: auto;
+  min-height: 36px;
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-canvas);
 }
 
 .terminal__head-icon {
@@ -98,7 +101,7 @@ body.terminal-resizing {
 
 .terminal__title {
   flex: 0 0 auto;
-  font-size: calc(11.5px * var(--font-scale, 1));
+  font-size: var(--text-sm);
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--text-muted);
@@ -107,15 +110,15 @@ body.terminal-resizing {
 .terminal__folder {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-2);
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 260px;
-  margin-left: 2px;
-  padding-left: 9px;
+  max-width: 180px;
+  margin-left: var(--sp-hair);
+  padding-left: var(--sp-3);
   border-left: 1px solid var(--border-soft);
   font-family: var(--font-mono);
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   color: var(--text-faint);
 }
 
@@ -128,9 +131,9 @@ body.terminal-resizing {
 .terminal__running {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   flex: 0 0 auto;
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   color: var(--text-muted);
 }
 
@@ -160,24 +163,21 @@ body.terminal-resizing {
   }
 }
 
-.terminal__spacer {
-  flex: 1 1 auto;
-}
-
 /* Filter box: narrows the log to the commands whose text matches. */
 .terminal__filter {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  flex: 0 1 170px;
+  gap: var(--sp-2);
+  flex: 0 1 150px;
+  margin-left: auto;
   min-width: 84px;
   height: 28px;
-  padding: 0 6px;
+  padding: 0 var(--sp-2);
   border: 1px solid var(--border-soft);
-  border-radius: 999px;
-  background: var(--bg-deep);
+  border-radius: var(--r-sm);
+  background: var(--surface-chrome);
   color: var(--text-faint);
-  transition: border-color 0.12s var(--ease), background 0.12s var(--ease);
+transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 
 .terminal__filter:focus-within {
@@ -198,7 +198,7 @@ body.terminal-resizing {
   outline: none;
   background: transparent;
   font-family: var(--font-ui);
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   color: var(--text);
 }
 
@@ -224,12 +224,12 @@ body.terminal-resizing {
 .terminal__actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-hair);
   flex: 0 0 auto;
 }
 
 .terminal__actions .ghost-btn {
-  height: 24px;
+  height: var(--ctl-sm);
   color: var(--text-muted);
 }
 
@@ -266,36 +266,36 @@ body.terminal-resizing {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 6px 16px 10px;
+  padding: var(--sp-2) var(--sp-5);
   font-family: var(--font-mono);
-  font-size: calc(12px * var(--font-scale, 1));
+  font-size: var(--text-xs);
   line-height: 1.6;
   scrollbar-gutter: stable;
 }
 
 .terminal__empty {
-  padding: 14px 2px;
+  padding: var(--sp-5) var(--sp-hair);
   font-family: var(--font-ui);
-  font-size: calc(12px * var(--font-scale, 1));
+  font-size: var(--text-xs);
   color: var(--text-faint);
 }
 
 .terminal__notice {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-1);
   max-width: 640px;
-  margin: 10px 0;
-  padding: 10px 12px;
+  margin: var(--sp-4) 0;
+  padding: var(--sp-4) var(--sp-4);
   border: 1px dashed var(--border-strong);
-  border-radius: var(--radius);
+  border-radius: var(--r-md);
   background: var(--bg-elevated);
   font-family: var(--font-ui);
-  font-size: calc(12px * var(--font-scale, 1));
+  font-size: var(--text-xs);
 }
 
 .terminal__notice-title {
-  font-weight: 560;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
@@ -309,8 +309,8 @@ body.terminal-resizing {
  * ------------------------------------------------------------------ */
 
 .terminal__block {
-  padding: 7px 0 10px;
-  border-bottom: 1px dashed var(--border-soft);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .terminal__block:last-child {
@@ -320,7 +320,7 @@ body.terminal-resizing {
 .terminal__command {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--sp-3);
 }
 
 .terminal__prompt {
@@ -342,11 +342,11 @@ body.terminal-resizing {
 .terminal__meta {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-3);
   flex: 0 0 auto;
   padding-top: 1px;
   font-family: var(--font-ui);
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   white-space: nowrap;
@@ -369,18 +369,18 @@ body.terminal-resizing {
 }
 
 .terminal__badge {
-  padding: 0 5px;
-  border-radius: 4px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-xs);
   background: var(--bg-active);
   color: var(--text-muted);
 }
 
 .terminal__output {
-  margin: 3px 0 0;
-  padding: 0 0 0 8px;
-  border-left: 1px solid var(--border-soft);
+  margin: var(--sp-2) 0 0 var(--sp-6);
+  padding: 0;
+  border-left: 0;
   font-family: var(--font-mono);
-  font-size: calc(12px * var(--font-scale, 1));
+  font-size: var(--text-xs);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
@@ -492,16 +492,16 @@ body.terminal-resizing {
   z-index: 2;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--r-full);
   background: var(--bg-elevated);
   color: var(--text-muted);
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   box-shadow: var(--shadow-sm);
-  animation: terminal-rise 0.14s var(--ease);
-  transition: color 0.12s var(--ease), background 0.12s var(--ease);
+animation: terminal-rise var(--dur-fast) var(--ease);
+transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 
 .terminal__jump:hover {
@@ -523,21 +523,21 @@ body.terminal-resizing {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 16px;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-5);
   border-top: 1px solid var(--border-soft);
-  background: var(--bg-elevated);
+  background: var(--surface-canvas);
 }
 
 .terminal__input {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 3px 0;
+  padding: var(--sp-1) 0;
   border: none;
   outline: none;
   background: transparent;
   font-family: var(--font-mono);
-  font-size: calc(12.5px * var(--font-scale, 1));
+  font-size: var(--text-xs);
   color: var(--text);
 }
 
@@ -552,9 +552,64 @@ body.terminal-resizing {
 
 .terminal__hint {
   flex: 0 0 auto;
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   color: var(--text-faint);
   user-select: none;
+}
+
+@container terminal-panel (max-width: 640px) {
+  .terminal__head {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+
+  .terminal__head-icon {
+    grid-area: 1 / 1;
+  }
+
+  .terminal__title {
+    grid-area: 1 / 2;
+  }
+
+  .terminal__folder {
+    grid-area: 1 / 3;
+    max-width: none;
+    margin-left: 0;
+  }
+
+  .terminal__running {
+    grid-area: 1 / 4;
+    justify-self: end;
+  }
+
+  .terminal__filter {
+    grid-area: 2 / 1 / 3 / 4;
+    margin-left: 0;
+    min-width: 0;
+  }
+
+  .terminal__actions {
+    grid-area: 2 / 4;
+    justify-self: end;
+    margin-left: 0;
+  }
+
+  .terminal__hint {
+    display: none;
+  }
+
+  .terminal__command {
+    flex-wrap: wrap;
+  }
+
+  .terminal__cmd {
+    flex: 1 1 calc(100% - 32px);
+  }
+
+  .terminal__meta {
+    flex: 1 0 100%;
+    padding-left: var(--sp-6);
+  }
 }
 
 @media (max-width: 760px) {

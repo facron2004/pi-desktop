@@ -74,7 +74,10 @@ export function CodeSnippet({
   return (
     <pre className={`snippet snippet--plain ${className}`.trim()} ref={onHost}>
       {code.split('\n').map((text, index) => (
-        <span className="line" key={index}>
+        // The same element is reused for the next block of code, so the line
+        // itself is the stable part of the key and the index only keeps two
+        // identical lines apart.
+        <span className="line" key={`${text}-${index}`}>
           {text}
           {'\n'}
         </span>

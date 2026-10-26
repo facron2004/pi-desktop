@@ -5,26 +5,86 @@
 /* The toolbar carries more tools now, so it wraps instead of clipping them. */
 .viewer .viewer__bar {
   flex-wrap: wrap;
-  row-gap: 4px;
+  row-gap: var(--sp-2);
+  background: var(--surface-canvas);
+}
+
+.viewer__crumb-root {
+  display: none;
+}
+
+.viewer__crumb-path .tree__icon {
+  width: 14px;
+  height: 14px;
 }
 
 /* Give the compact toolbar controls a little more room to hit. */
 .viewer .viewer__actions > .ghost-btn {
   min-width: 28px;
-  height: 28px;
+  height: var(--ctl-sm);
 }
 
 .viewer__actions {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
+  gap: var(--sp-1);
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+@container inspector-content (max-width: 360px) {
+  .viewer__meta {
+    flex-basis: 100%;
+  }
 }
 
 /* The scrolling code is focusable, so it can take Ctrl+F right after a click. */
+.viewer__code-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .viewer__code:focus-visible {
-  outline: 1px solid var(--accent-line);
-  outline-offset: -1px;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.viewer .viewer__code pre.shiki,
+.viewer .viewer__code.snippet--plain,
+.viewer .line::before {
+  background: var(--surface-canvas) !important;
+}
+
+.viewer .line::before {
+  cursor: pointer;
+}
+
+.viewer .line:hover::before {
+  color: var(--text);
+}
+
+.viewer .line[data-selected='true'] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.viewer .line[data-selected='true']::before {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.fv-range-btn {
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
 }
 
 .viewer .ghost-btn[data-active='true'] {
@@ -37,17 +97,17 @@
 .fv-jump {
   flex: 0 0 auto;
   width: 58px;
-  height: 28px;
-  padding: 0 6px;
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--bg-elevated);
   color: var(--text);
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
   text-align: center;
   outline: none;
-  transition: border-color 0.12s var(--ease);
+transition: border-color var(--dur-fast) var(--ease);
 }
 
 .fv-jump::placeholder {
@@ -62,13 +122,13 @@
 .fv-find {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   flex: 0 0 auto;
-  padding: 5px 10px;
+  padding: var(--sp-2) var(--sp-4);
   border-bottom: 1px solid var(--border-soft);
   background: var(--bg-panel);
   color: var(--text-faint);
-  animation: fv-find-in 0.12s var(--ease);
+animation: fv-find-in var(--dur-fast) var(--ease);
 }
 
 @keyframes fv-find-in {
@@ -81,15 +141,15 @@
 .fv-find__input {
   flex: 1 1 auto;
   min-width: 0;
-  height: 28px;
-  padding: 0 8px;
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-3);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--bg-elevated);
   color: var(--text);
-  font-size: calc(12px * var(--font-scale, 1));
+  font-size: var(--text-xs);
   outline: none;
-  transition: border-color 0.12s var(--ease);
+transition: border-color var(--dur-fast) var(--ease);
 }
 
 .fv-find__input::placeholder {
@@ -104,7 +164,7 @@
   flex: 0 0 auto;
   min-width: 56px;
   text-align: right;
-  font-size: calc(11px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   white-space: nowrap;
@@ -113,7 +173,7 @@
 .fv-find .icon-btn {
   flex: 0 0 auto;
   width: 28px;
-  height: 28px;
+  height: var(--ctl-sm);
 }
 
 .fv-find .icon-btn:disabled {
@@ -133,8 +193,31 @@
 }
 
 .viewer[data-wrap='true'] .viewer__code pre.shiki code {
+  display: block;
   width: 100%;
   min-width: 0;
+}
+
+/* Keep inter-line whitespace out of the layout and reserve the gutter on every visual row. */
+.viewer[data-wrap='true'] .viewer__code pre.shiki code,
+.viewer[data-wrap='true'] .viewer__code.snippet--plain {
+  white-space: normal;
+}
+
+.viewer[data-wrap='true'] .viewer__code .line {
+  position: relative;
+  display: block;
+  min-height: 1.6em;
+  padding-left: 3.4em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.viewer[data-wrap='true'] .viewer__code .line::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin-right: 0;
 }
 
 /* Matches are painted by the browser's highlight registry, so the rendered

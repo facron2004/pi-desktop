@@ -312,6 +312,35 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
                 </span>
                 {totals.added ? <span data-kind="add">+{totals.added}</span> : null}
                 {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
+                <div className="commit-detail__comparison">
+                  <span>{t('Compare')}</span>
+                  <div
+                    className="segmented segmented--tight"
+                    role="group"
+                    aria-label={t('Diff comparison')}
+                  >
+                    <button
+                      type="button"
+                      data-active={!worktreeMode}
+                      aria-label={t('Compare with the parent commit')}
+                      aria-pressed={!worktreeMode}
+                      title={t('Compare with the parent commit')}
+                      onClick={() => setWorktreeMode(false)}
+                    >
+                      {t('Parent commit')}
+                    </button>
+                    <button
+                      type="button"
+                      data-active={worktreeMode}
+                      aria-label={t('Compare with the current working tree')}
+                      aria-pressed={worktreeMode}
+                      title={t('Compare with the current working tree')}
+                      onClick={() => setWorktreeMode(true)}
+                    >
+                      {t('Working tree')}
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {detail.files.length > FILTER_THRESHOLD ? (

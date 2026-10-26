@@ -1,0 +1,94 @@
+/* Shared chrome for the chosen lightweight desktop direction. */
+:root .modal,
+:root .popover:has(.branch-menu) {
+  background: var(--surface-canvas);
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-md);
+}
+
+:root .modal__head,
+:root .modal__foot {
+  padding: var(--sp-4) var(--sp-6);
+  border-color: var(--border-subtle);
+  background: var(--surface-canvas);
+}
+
+:root .modal__body {
+  gap: var(--sp-5);
+}
+
+:root .settings-content {
+  overflow-wrap: anywhere;
+  padding: var(--sp-6);
+}
+
+:root .settings-nav {
+  background: var(--surface-chrome);
+  border-color: var(--border-subtle);
+}
+
+:root .settings-nav button {
+  border-radius: var(--r-sm);
+}
+
+:root .settings-card,
+:root .mcp__server {
+  background: transparent;
+  box-shadow: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: var(--sp-4) 0;
+}
+
+:root .settings-card[data-active='true'] {
+  background: var(--bg-hover);
+  border-radius: var(--r-sm);
+  padding-left: var(--sp-3);
+  padding-right: var(--sp-3);
+}
+
+:root .welcome {
+  overflow-y: auto;
+}
+
+:root .welcome__recent-title {
+  min-width: 0;
+}
+
+:root .welcome__starters {
+  grid-template-columns: 1fr;
+  gap: var(--sp-1);
+}
+
+:root .welcome__starter {
+  flex-direction: row;
+  align-items: center;
+  min-height: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+:root .welcome__starter-icon {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+:root .session-tree__row {
+  border-radius: var(--r-sm);
+  min-height: 32px;
+}
+
+:root .branch-menu__row {
+  padding-top: var(--sp-2);
+  padding-bottom: var(--sp-2);
+  border-radius: var(--r-sm);
+}
+
+@media (max-width: 900px) {
+  :root .settings-content {
+    padding: var(--sp-5);
+  }
+}

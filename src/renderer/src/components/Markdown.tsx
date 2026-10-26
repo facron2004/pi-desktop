@@ -2,13 +2,78 @@ import { isValidElement, memo, useEffect, useState, type ReactNode } from 'react
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Check, Copy, MessageSquarePlus } from 'lucide-react'
+import { Check, Code, Copy, Eye, FileCode2, MessageSquarePlus } from 'lucide-react'
+import type { InspectorRequest } from '@shared/types'
 import { highlightCode } from '../lib/highlight'
+import { resolveAgainst } from '../lib/path'
 import { useSearchQuery } from '../lib/search-context'
 import { useIsDark } from '../lib/theme'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { ImageButton } from './Lightbox'
+
+const FILE_EXTS = new Set([
+  'ts',
+  'tsx',
+  'js',
+  'jsx',
+  'mjs',
+  'cjs',
+  'json',
+  'css',
+  'scss',
+  'less',
+  'html',
+  'md',
+  'mdx',
+  'py',
+  'rs',
+  'go',
+  'java',
+  'kt',
+  'c',
+  'cpp',
+  'h',
+  'hpp',
+  'cs',
+  'rb',
+  'php',
+  'sh',
+  'bash',
+  'zsh',
+  'ps1',
+  'yml',
+  'yaml',
+  'toml',
+  'sql',
+  'vue',
+  'svelte',
+  'astro',
+  'svg',
+  'xml',
+  'txt'
+])
+
+function parseFileReference(raw: string): { path: string; line?: number } | null {
+  const trimmed = raw.trim()
+  if (!trimmed || trimmed.length > 180 || /\s/.test(trimmed)) return null
+  if (/^(https?:|mailto:|\/\/)/i.test(trimmed) || trimmed.includes('..')) return null
+  const match =
+    /^([a-zA-Z0-9_@.-]+(?:[\\/][a-zA-Z0-9_@.-]+)*\.([a-zA-Z0-9]{1,8}))(?::(\d+)|#L(\d+)(?:-L?\d+)?)?$/.exec(
+      trimmed
+    )
+  if (!match) return null
+  const filePath = match[1]
+  const ext = match[2].toLowerCase()
+  if (!FILE_EXTS.has(ext)) return null
+  // Bare filenames without directory separators must be well-known or have a line number,
+  // or be a common source file name so ordinary object properties (`foo.js` vs `window.pi`) are distinguished.
+  const hasSlash = filePath.includes('/') || filePath.includes('\\')
+  const lineStr = match[3] ?? match[4]
+  const line = lineStr ? Number.parseInt(lineStr, 10) : undefined
+  if (!hasSlash && !line && !/^[A-Za-z0-9_-]+\.[a-z0-9]+$/.test(filePath)) return null
+  return { path: filePath, line: Number.isFinite(line) ? line : undefined }
+}
 
 /** Wrap every occurrence of the search query in a `<mark>`. */
 function Highlight({ children, query }: { children?: ReactNode; query: string }) {
@@ -19,7 +84,14 @@ function Highlight({ children, query }: { children?: ReactNode; query: string })
   return (
     <>
       {parts.map((part, index) =>
-        part.toLowerCase() === needle ? <mark key={index}>{part}</mark> : part
+        part.toLowerCase() === needle ? (
+          // The text is re-split on every streamed delta, so the match itself
+          // is the stable part of the key; the index only keeps two identical
+          // matches apart.
+          <mark key={`${part}-${index}`}>{part}</mark>
+        ) : (
+          part
+        )
       )}
     </>
   )
@@ -51,6 +123,40 @@ const markdownComponents: Components = {
       return <CodeBlock code={text} language={match?.[1]} />
     }
     return <pre>{content}</pre>
+  },
+  code({ className, children, ...rest }) {
+    const raw = String(children ?? '')
+    if (!className && !raw.includes('\n')) {
+      const ref = parseFileReference(raw)
+      if (ref) {
+        return (
+          <button
+            type="button"
+            className="md-file-link"
+            title={ref.line ? `${ref.path}:${ref.line}` : ref.path}
+            onClick={() => {
+              const root = useAppStore.getState().workspace?.path
+              const resolved = resolveAgainst(root, ref.path)
+              window.dispatchEvent(
+                new CustomEvent<InspectorRequest>('pi:open-inspector', {
+                  detail: { tab: 'files', file: resolved, line: ref.line }
+                })
+              )
+            }}
+          >
+            <FileCode2 size={11} />
+            <span>
+              <Marked>{raw}</Marked>
+            </span>
+          </button>
+        )
+      }
+    }
+    return (
+      <code className={className} {...rest}>
+        {children}
+      </code>
+    )
   },
   p({ children: content, ...rest }) {
     return (
@@ -138,9 +244,18 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
     html: string
   } | null>(null)
   const [copied, setCopied] = useState(false)
+  const [preview, setPreview] = useState(false)
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const isDark = useIsDark()
   const t = useT()
+
+  const lang = (language ?? '').toLowerCase()
+  const isSvg = lang === 'svg' || (lang === 'xml' && code.trimStart().startsWith('<svg'))
+  const isHtml = lang === 'html'
+  const canPreview = isSvg || isHtml
+  const previewDoc = isSvg
+    ? `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;display:grid;place-items:center;background:transparent;font-family:system-ui,sans-serif;}svg{max-width:100%;max-height:280px;height:auto;}</style></head><body>${code}</body></html>`
+    : code
 
   useEffect(() => {
     let cancelled = false
@@ -183,6 +298,17 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
       <div className="code-block__bar">
         <span className="code-block__lang">{language ?? 'text'}</span>
         <span className="code-block__tools">
+          {canPreview ? (
+            <button
+              className="code-block__tool"
+              data-active={preview ? 'true' : undefined}
+              onClick={() => setPreview((value) => !value)}
+              title={preview ? t('Show source code') : t('Preview rendered output')}
+            >
+              {preview ? <Code size={11} /> : <Eye size={11} />}
+              {preview ? t('Code') : t('Preview')}
+            </button>
+          ) : null}
           <button className="code-block__tool" onClick={ask} title={t('Ask Pi about this code')}>
             <MessageSquarePlus size={11} />
             {t('Ask Pi')}
@@ -193,7 +319,16 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
           </button>
         </span>
       </div>
-      {html ? (
+      {preview && canPreview ? (
+        <div className="code-block__preview-wrap">
+          <iframe
+            className="code-block__preview"
+            sandbox=""
+            title={t('Preview')}
+            srcDoc={previewDoc}
+          />
+        </div>
+      ) : html ? (
         <div className="shiki-host" dangerouslySetInnerHTML={{ __html: html }} />
       ) : (
         <pre>

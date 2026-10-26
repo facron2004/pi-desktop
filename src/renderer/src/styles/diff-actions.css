@@ -16,9 +16,9 @@
   right: 4px;
   z-index: 1;
   display: flex;
-  gap: 4px;
+  gap: var(--sp-1);
   opacity: 0;
-  transition: opacity 0.12s var(--ease);
+transition: opacity var(--dur-fast) var(--ease);
 }
 
 .diff__block--patchable:hover .diff__hunk-actions,
@@ -29,18 +29,18 @@
 .diff__hunk-copy {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
+  gap: var(--sp-1);
+  padding: 1px var(--sp-2);
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-sm);
   background: var(--bg-elevated);
   color: var(--text-muted);
   font-family: var(--font-ui);
-  font-size: calc(10.5px * var(--font-scale, 1));
+  font-size: var(--text-2xs);
   line-height: 1.6;
   white-space: nowrap;
   box-shadow: var(--shadow-sm);
-  transition: background 0.12s var(--ease), border-color 0.12s var(--ease), color 0.12s var(--ease);
+transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .diff__hunk-copy:hover {
@@ -76,13 +76,13 @@
   .diff__hunk-actions {
     position: static;
     justify-content: flex-end;
-    margin: 2px 4px 4px;
+    margin: var(--sp-hair) var(--sp-1) var(--sp-1);
     opacity: 1;
   }
 
   .diff__hunk-copy {
     min-height: 30px;
-    padding: 4px 8px;
+    padding: var(--sp-1) var(--sp-3);
   }
 }
 

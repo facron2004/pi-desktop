@@ -1,22 +1,22 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import {
   Check,
   ChevronRight,
   CircleAlert,
   Copy,
   CornerDownLeft,
-  FilePlus,
   FileSearch,
   FileText,
   Pencil,
   Play,
   Search,
   SquareTerminal,
-  Wrench
+  Wrench,
+  Ban
 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import type { BashItem, ToolItem } from '../lib/thread'
-import { describeTool, editPairs, type ToolTone } from '../lib/tools'
+import { diffableEdits, summarizeTool, writtenContent } from '../lib/tool-renderers'
 import { formatDuration } from '../lib/format'
 import { buildDiff } from '../lib/diff-fold'
 import { formatDiff } from '../lib/diff-text'
@@ -27,15 +27,13 @@ import { CodeSnippet } from './CodeSnippet'
 import { DiffView } from './DiffView'
 import { useT } from '../lib/i18n'
 
-export const TOOL_ICONS: Record<ToolTone | 'error', typeof FileText> = {
+const TONE_ICONS = {
   read: FileText,
   edit: Pencil,
-  exec: SquareTerminal,
-  write: FilePlus,
+  command: SquareTerminal,
   search: Search,
-  generic: Wrench,
-  error: CircleAlert
-}
+  generic: Wrench
+} as const
 
 /** Results longer than this are collapsed behind a "show more" control. */
 const RESULT_PREVIEW = 1200
@@ -90,24 +88,40 @@ function runInTerminal(command: string): void {
  * The output arrives in chunks while the command runs, so the card keeps the
  * body closed until it is asked for.
  */
-export function BashCard({ item }: { item: BashItem }) {
-  const [open, setOpen] = useState(false)
+export const BashCard = memo(function BashCard({ item }: { item: BashItem }) {
+  const [manualOpen, setManualOpen] = useState<boolean>()
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const t = useT()
+  const running = item.exitCode === undefined
   const failed = item.exitCode !== undefined && item.exitCode !== 0
+  const status = failed ? 'error' : running ? 'running' : 'ok'
+  const open = manualOpen ?? failed
+  const toggleOpen = () => setManualOpen(!open)
 
   return (
-    <div className="tool" data-tone={failed ? 'error' : 'exec'}>
+    <div className="tool" data-tone="command" data-status={status}>
       <div className="tool__head">
-        <button className="tool__head-main" onClick={() => setOpen((value) => !value)}>
+        <button className="tool__head-main" aria-expanded={open} onClick={toggleOpen}>
           <span className="tool__icon">
             <SquareTerminal size={12} strokeWidth={2.2} />
           </span>
-          <span className="tool__name">bash</span>
+          <span className="tool__name">{item.excludeFromContext ? '!!bash' : 'bash'}</span>
           <span className="tool__summary">{item.command || t('running…')}</span>
-          {item.exitCode !== undefined ? (
-            <span className="tool__status">{failed ? `${t('exit')} ${item.exitCode}` : t('ok')}</span>
+          {item.excludeFromContext ? (
+            <span className="tool__status" title={t('Excluded from model context')}>
+              {t('no context')}
+            </span>
           ) : null}
+          {running ? (
+            <span className="spinner" />
+          ) : failed ? (
+            <span className="tool__status">
+              {t('exit')} {item.exitCode}
+            </span>
+          ) : null}
+          <span className="tool__state" data-state={status}>
+            {t(failed ? 'Failed' : running ? 'Running' : 'Completed')}
+          </span>
         </button>
         {item.command ? (
           <>
@@ -115,7 +129,11 @@ export function BashCard({ item }: { item: BashItem }) {
               className="tool__reuse-icon"
               title={t('Reuse this command')}
               aria-label={t('Reuse this command')}
-              onClick={() => insertIntoComposer(item.command)}
+              onClick={() =>
+                insertIntoComposer(
+                  item.excludeFromContext ? `!!${item.command}` : `!${item.command}`
+                )
+              }
             >
               <CornerDownLeft size={12} />
             </button>
@@ -132,8 +150,9 @@ export function BashCard({ item }: { item: BashItem }) {
         <CopyButton text={item.output} label={t('Copy the output')} />
         <button
           className="tool__caret"
-          onClick={() => setOpen((value) => !value)}
+          onClick={toggleOpen}
           aria-label={open ? t('Collapse') : t('Expand')}
+          aria-expanded={open}
         >
           <ChevronRight size={13} className="caret" data-open={open} />
         </button>
@@ -150,26 +169,48 @@ export function BashCard({ item }: { item: BashItem }) {
       ) : null}
     </div>
   )
-}
+})
 
-export function ToolCard({ item }: { item: ToolItem }) {
-  // Edits are the interesting part, so their diff starts expanded.
-  const [open, setOpen] = useState(item.toolName === 'edit')
+/**
+ * One tool call as a row in the execution stream.
+ *
+ * The row is the whole story of the call in 32–40 pixels: what it touched,
+ * how it ended and how long it took. Everything else — arguments, output,
+ * a diff — is behind the caret, so a turn with a dozen calls stays scannable.
+ *
+ * The status comes from the node, which the reducer moves through
+ * proposed → running → ok/error/aborted. A call that was named but never
+ * executed stays `proposed` and says so: it did not succeed.
+ */
+export const ToolCard = memo(function ToolCard({
+  item,
+  expanded,
+  onExpandedChange
+}: {
+  item: ToolItem
+  expanded?: boolean
+  onExpandedChange?: (expanded: boolean) => void
+}) {
+  const [manualOpen, setManualOpen] = useState<boolean>()
+  const open = expanded ?? manualOpen ?? item.status === 'error'
+  const toggleOpen = () => {
+    if (onExpandedChange) onExpandedChange(!open)
+    else setManualOpen(!open)
+  }
   const [full, setFull] = useState(false)
   const diffSplit = useAppStore((state) => state.settings.diffSplit === true)
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const workspace = useAppStore((state) => state.workspace)
   const t = useT()
-  const descriptor = describeTool(item.toolName)
-  const tone = item.status === 'error' ? 'error' : descriptor.tone
-  const Icon = TOOL_ICONS[tone]
 
-  const diffs = useMemo(() => {
-    if (item.toolName !== 'edit') return []
-    return editPairs(item.args ?? {}).map((pair) => buildDiff(pair.oldText, pair.newText))
-  }, [item.args, item.toolName])
+  const summary = useMemo(() => summarizeTool(item), [item])
+  const Icon = TONE_ICONS[summary.tone]
+  const diffs = useMemo(
+    () => diffableEdits(item).map((pair) => buildDiff(pair.oldText, pair.newText)),
+    [item]
+  )
+  const content = useMemo(() => writtenContent(item), [item])
 
-  const summary = descriptor.summary(item.args ?? {}, workspace?.path)
   const result = item.result ?? ''
   const truncated = result.length > RESULT_PREVIEW
   const visibleResult = truncated && !full ? result.slice(0, RESULT_PREVIEW) : result
@@ -182,11 +223,13 @@ export function ToolCard({ item }: { item: ToolItem }) {
    * that is nowhere on the screen.
    */
   const copyable =
-    item.toolName === 'edit' && diffs.length > 0
-      ? { label: 'Copy the diff', text: formatDiff(diffs) }
-      : item.toolName === 'write'
-        ? { label: 'Copy the file', text: String(item.args?.content ?? '') }
-        : { label: 'Copy the result', text: result }
+    item.status === 'error'
+      ? { label: 'Copy the result', text: result }
+      : diffs.length > 0
+        ? { label: 'Copy the diff', text: formatDiff(diffs) }
+        : content
+          ? { label: 'Copy the file', text: content }
+          : { label: 'Copy the result', text: result }
 
   // A command or a file path can be handed back to the composer, so the
   // user can build on it without copying it by hand.
@@ -229,23 +272,45 @@ export function ToolCard({ item }: { item: ToolItem }) {
       ? String(item.args?.path ?? '')
       : ''
 
+  // The state of a call is its own; the icon follows it rather than the
+  // tone, so a failed read still looks like a read that failed.
+  const state =
+    item.status === 'error'
+      ? 'error'
+      : item.status === 'aborted'
+        ? 'aborted'
+        : item.status === 'proposed'
+          ? 'proposed'
+          : item.status === 'running'
+            ? 'running'
+            : 'ok'
+  const StateIcon =
+    item.status === 'error'
+      ? CircleAlert
+      : item.status === 'aborted'
+        ? Ban
+        : null
+
   return (
-    <div className="tool" data-tone={tone}>
+    <div className="tool" data-tone={summary.tone} data-status={state}>
       <div className="tool__head">
-        <button className="tool__head-main" onClick={() => setOpen((value) => !value)}>
+        <button className="tool__head-main" aria-expanded={open} onClick={toggleOpen}>
           <span className="tool__icon">
             <Icon size={12} strokeWidth={2.2} />
           </span>
-          <span className="tool__name">{item.toolName}</span>
-          <span className="tool__summary">{summary}</span>
+          <span className="tool__name">{summary.label}</span>
+          <span className="tool__summary">{summary.detail}</span>
           {item.status === 'running' ? (
             <span className="spinner" />
-          ) : item.status === 'error' ? (
-            <CircleAlert size={13} color="var(--red)" />
+          ) : StateIcon ? (
+            <StateIcon size={13} color={item.status === 'error' ? 'var(--red)' : undefined} />
           ) : null}
           {item.durationMs !== undefined ? (
             <span className="tool__status">{formatDuration(item.durationMs)}</span>
           ) : null}
+          <span className="tool__state" data-state={state}>
+            {t(stateLabel(item.status))}
+          </span>
         </button>
 
         {viewedFile ? (
@@ -291,8 +356,9 @@ export function ToolCard({ item }: { item: ToolItem }) {
 
         <button
           className="tool__caret"
-          onClick={() => setOpen((value) => !value)}
+          onClick={toggleOpen}
           aria-label={open ? t('Collapse') : t('Expand')}
+          aria-expanded={open}
         >
           <ChevronRight size={13} className="caret" data-open={open} />
         </button>
@@ -300,6 +366,10 @@ export function ToolCard({ item }: { item: ToolItem }) {
 
       {open ? (
         <div className="tool__body">
+          {item.status === 'error' && visibleResult ? (
+            <pre className="tool__pre tool__error">{visibleResult}</pre>
+          ) : null}
+
           {diffs.length > 0 ? (
             <DiffView
               diffs={diffs}
@@ -308,9 +378,7 @@ export function ToolCard({ item }: { item: ToolItem }) {
             />
           ) : null}
 
-          {item.toolName === 'write' ? (
-            <CodeSnippet code={String(item.args?.content ?? '')} language={language} />
-          ) : null}
+          {content ? <CodeSnippet code={content} language={language} /> : null}
 
           {item.toolName === 'bash' || item.toolName === 'powershell'
             ? // The header already shows the first line of the command, so
@@ -320,13 +388,11 @@ export function ToolCard({ item }: { item: ToolItem }) {
               )
             : null}
 
-          {visibleResult ? (
-            item.toolName === 'read' && item.status !== 'error' ? (
+          {visibleResult && item.status !== 'error' ? (
+            item.toolName === 'read' ? (
               <CodeSnippet code={visibleResult} language={language} />
             ) : (
-              <pre className={`tool__pre${item.status === 'error' ? ' tool__error' : ''}`}>
-                {visibleResult}
-              </pre>
+              <pre className="tool__pre">{visibleResult}</pre>
             )
           ) : null}
 
@@ -338,11 +404,27 @@ export function ToolCard({ item }: { item: ToolItem }) {
             </button>
           ) : null}
 
-          {!diffs.length && !visibleResult && item.toolName !== 'write' ? (
+          {!diffs.length && !visibleResult && !content ? (
             <pre className="tool__pre">{JSON.stringify(item.args ?? {}, null, 2)}</pre>
           ) : null}
         </div>
       ) : null}
     </div>
   )
+})
+
+/** The word for a tool status, in one place. */
+function stateLabel(status: ToolItem['status']): string {
+  switch (status) {
+    case 'proposed':
+      return 'Not run'
+    case 'running':
+      return 'Running'
+    case 'error':
+      return 'Failed'
+    case 'aborted':
+      return 'Stopped'
+    default:
+      return 'Completed'
+  }
 }
