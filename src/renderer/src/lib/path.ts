@@ -21,11 +21,14 @@ export function basename(value: string): string {
   return parts[parts.length - 1] ?? value
 }
 
+/** Normalise a path to a canonical lowercase forward-slash key for comparisons and maps. */
+export function normalisePathKey(value: string): string {
+  return value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
 /** True when two paths point at the same directory. */
 export function samePath(left: string, right: string): boolean {
-  const normalise = (value: string) =>
-    value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-  return normalise(left) === normalise(right)
+  return normalisePathKey(left) === normalisePathKey(right)
 }
 
 /**

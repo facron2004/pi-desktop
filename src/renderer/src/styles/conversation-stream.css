@@ -30,7 +30,7 @@
 }
 
 .run-status[data-phase='tool_running'] .run-status__icon {
-  color: var(--accent);
+  color: var(--text-secondary);
 }
 
 /* The agent cannot move until the dialog is answered, so the line is the
@@ -61,7 +61,7 @@
   text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
 .run-status__elapsed {
@@ -79,28 +79,26 @@
   min-height: var(--ctl-sm);
   padding: var(--sp-2) 0;
   font-size: var(--text-xs);
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  margin: var(--sp-3) 0;
+  white-space: nowrap;
 }
 
-.run-outcome__icon {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  border-radius: var(--r-full);
-  background: var(--status-success-soft);
-  color: var(--status-success);
+.run-outcome::before,
+.run-outcome::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border-subtle);
 }
 
-.run-outcome[data-outcome='aborted'] .run-outcome__icon {
-  background: var(--status-warning-soft);
+.run-outcome[data-outcome='aborted'] {
   color: var(--status-warning);
 }
 
 .run-outcome__meta {
   font-size: var(--text-2xs);
-  color: var(--text-faint);
+  color: inherit;
   font-variant-numeric: tabular-nums;
 }
 
@@ -133,6 +131,112 @@
 
 .assistant__text .md > *:last-child {
   margin-bottom: 0;
+}
+
+/* Activity is a disclosure in the document, with a guide only when opened. */
+.assistant__body > .tool--group,
+.assistant__body > .tool[data-status='running'] {
+  border-color: transparent;
+}
+
+.assistant__body > .tool--group:hover {
+  background: transparent;
+}
+
+.tool--group > .tool__head {
+  justify-content: flex-start;
+  padding-left: 0;
+}
+
+.tool--group > .tool__head .tool__head-main {
+  flex: 0 1 auto;
+}
+
+.tool--group > .tool__head .tool__icon {
+  display: none;
+}
+
+.tool--group > .tool__head .tool__name {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.tool--group > .tool__head .tool__summary {
+  flex: 0 1 auto;
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+}
+
+.tool--group > .tool__head .tool__caret {
+  order: -1;
+}
+
+.tool--group > .tool__body--group {
+  max-height: none;
+  margin-left: var(--sp-4);
+  padding: var(--sp-1) 0 var(--sp-1) var(--sp-4);
+  border: 0;
+  border-left: 1px solid var(--border-default);
+  border-radius: 0;
+  background: transparent;
+}
+
+.assistant__body > .tool + .assistant__text {
+  margin-top: var(--sp-3);
+}
+
+/* Usage stays opt-in behind the caret, so this row is one small control wide. */
+.assistant__response-actions {
+  display: flex;
+  align-items: flex-start;
+  min-height: var(--ctl-sm);
+  color: var(--text-secondary);
+}
+
+.assistant__details > summary {
+  display: inline-grid;
+  place-items: center;
+  width: var(--ctl-sm);
+  height: var(--ctl-sm);
+  padding: 0;
+  color: var(--text-secondary);
+  border-radius: var(--r-sm);
+}
+
+.assistant__details {
+  min-width: 0;
+}
+
+.assistant__details > summary {
+  float: left;
+  list-style: none;
+  cursor: pointer;
+}
+
+.assistant__details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.assistant__details > summary:hover,
+.assistant__details[open] > summary {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.assistant__details > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.assistant__details .assistant__footer {
+  min-height: var(--ctl-sm);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-secondary);
+}
+
+.assistant__body > .notice[role='alert'] > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* A lost transport is a warning, not a verdict: the run may still be going

@@ -20,10 +20,15 @@ asarUnpack:
   - node_modules/quickjs-wasi/**/*
 
 win:
-  icon: build/icon-pixel.png
+  icon: build/icon-pixel.ico
   target:
     - target: nsis
       arch: [x64, arm64]
+    # A folder that is unpacked and zipped: the portable copy. It needs no
+    # installation, so it can live on a stick or in a folder that is not the
+    # user's profile.
+    - target: dir
+      arch: [x64]
   artifactName: ${productName}-${version}-${arch}.${ext}
 
 nsis:

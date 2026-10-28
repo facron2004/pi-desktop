@@ -1,7 +1,15 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { SessionMeta, SessionSearchHit } from '@shared/types'
+import type {
+  AggregatedUsageStats,
+  DailyUsageStat,
+  ModelUsageStat,
+  PeriodUsage,
+  SessionMeta,
+  SessionSearchHit,
+  TokenUsageMetrics
+} from '@shared/types'
 
 const MAX_SESSION_BYTES = 24 * 1024 * 1024
 
@@ -24,7 +32,8 @@ function homeDir(): string {
 }
 
 /** Where Pi stores session files. Mirrors the CLI precedence rules. */
-export function resolveSessionRoot(): string {
+export function resolveSessionRoot(customDir?: string): string {
+  if (customDir && customDir.trim()) return path.resolve(customDir.trim())
   const fromEnv = process.env.PI_CODING_AGENT_SESSION_DIR
   if (fromEnv && fromEnv.trim()) return path.resolve(fromEnv.trim())
 
@@ -387,4 +396,231 @@ function searchSessionFile(
     if (hits.length >= Math.min(remaining, 2)) break
   }
   return hits
+}
+
+function emptyMetrics(): TokenUsageMetrics {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: 0
+  }
+}
+
+function emptyPeriod(period: 'today' | 'week' | 'month' | 'allTime'): PeriodUsage {
+  return {
+    period,
+    tokens: emptyMetrics(),
+    conversationsCount: 0,
+    messageCount: 0
+  }
+}
+
+/**
+ * Aggregate token usage and conversation records across all sessions on disk
+ * for Today, This Week, This Month, and All-Time.
+ */
+export function getAggregatedUsage(customRoot?: string): AggregatedUsageStats {
+  const root = resolveSessionRoot(customRoot)
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const day = now.getDay()
+  const diffToMonday = day === 0 ? 6 : day - 1
+  const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diffToMonday).getTime()
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+
+  const today = emptyPeriod('today')
+  const week = emptyPeriod('week')
+  const month = emptyPeriod('month')
+  const allTime = emptyPeriod('allTime')
+
+  const activeInToday = new Set<string>()
+  const activeInWeek = new Set<string>()
+  const activeInMonth = new Set<string>()
+  const activeInAllTime = new Set<string>()
+
+  const modelStats = new Map<string, ModelUsageStat>()
+
+  // Recent 7 days buckets
+  const recentDaysMap = new Map<string, { totalTokens: number; conversations: Set<string>; messageCount: number }>()
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    recentDaysMap.set(key, { totalTokens: 0, conversations: new Set(), messageCount: 0 })
+  }
+
+  if (!existsSync(root)) {
+    return {
+      today,
+      week,
+      month,
+      allTime,
+      byModel: [],
+      recentDays: Array.from(recentDaysMap.entries()).map(([date, d]) => ({
+        date,
+        totalTokens: d.totalTokens,
+        conversationsCount: d.conversations.size,
+        messageCount: d.messageCount
+      })),
+      updatedAt: Date.now()
+    }
+  }
+
+  let workspaceDirs: string[] = []
+  try {
+    workspaceDirs = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+  } catch {
+    workspaceDirs = []
+  }
+
+  for (const dir of workspaceDirs) {
+    const dirPath = path.join(root, dir)
+    let files: string[] = []
+    try {
+      files = readdirSync(dirPath).filter((f) => f.endsWith('.jsonl'))
+    } catch {
+      continue
+    }
+
+    for (const file of files) {
+      const fullPath = path.join(dirPath, file)
+      let content = ''
+      try {
+        const stats = statSync(fullPath)
+        if (stats.size > MAX_SESSION_BYTES) continue
+        content = readFileSync(fullPath, 'utf8')
+      } catch {
+        continue
+      }
+
+      const sessionId = file.replace(/\.jsonl$/, '')
+      activeInAllTime.add(sessionId)
+
+      const lines = content.split('\n')
+      for (const line of lines) {
+        if (!line.trim() || !line.includes('"message"')) continue
+        try {
+          const record = JSON.parse(line) as {
+            type?: string
+            timestamp?: string
+            message?: {
+              role?: string
+              timestamp?: string | number
+              model?: string
+              usage?: {
+                input?: number
+                output?: number
+                cacheRead?: number
+                cacheWrite?: number
+                totalTokens?: number
+                cost?: number | { total?: number }
+              }
+            }
+          }
+
+          if (record.type !== 'message' || !record.message) continue
+          const msg = record.message
+          const ts =
+            Date.parse(record.timestamp ?? '') ||
+            (typeof msg.timestamp === 'number'
+              ? msg.timestamp
+              : Date.parse(String(msg.timestamp ?? ''))) ||
+            0
+
+          if (ts >= startOfToday) activeInToday.add(sessionId)
+          if (ts >= startOfWeek) activeInWeek.add(sessionId)
+          if (ts >= startOfMonth) activeInMonth.add(sessionId)
+
+          if (msg.role === 'assistant' && msg.usage) {
+            const u = msg.usage
+            const input = typeof u.input === 'number' ? u.input : 0
+            const output = typeof u.output === 'number' ? u.output : 0
+            const cacheRead = typeof u.cacheRead === 'number' ? u.cacheRead : 0
+            const cacheWrite = typeof u.cacheWrite === 'number' ? u.cacheWrite : 0
+            const total =
+              typeof u.totalTokens === 'number' && u.totalTokens > 0
+                ? u.totalTokens
+                : input + output + cacheRead + cacheWrite
+            const cost =
+              typeof u.cost === 'number'
+                ? u.cost
+                : typeof u.cost?.total === 'number'
+                  ? u.cost.total
+                  : 0
+
+            const addMetrics = (target: PeriodUsage) => {
+              target.tokens.input += input
+              target.tokens.output += output
+              target.tokens.cacheRead += cacheRead
+              target.tokens.cacheWrite += cacheWrite
+              target.tokens.totalTokens += total
+              target.tokens.cost += cost
+              target.messageCount += 1
+            }
+
+            addMetrics(allTime)
+            if (ts >= startOfMonth) addMetrics(month)
+            if (ts >= startOfWeek) addMetrics(week)
+            if (ts >= startOfToday) addMetrics(today)
+
+            const modelName = msg.model || 'Unknown'
+            const existingModel = modelStats.get(modelName) || {
+              model: modelName,
+              totalTokens: 0,
+              input: 0,
+              output: 0,
+              messageCount: 0,
+              cost: 0
+            }
+            existingModel.totalTokens += total
+            existingModel.input += input
+            existingModel.output += output
+            existingModel.messageCount += 1
+            existingModel.cost += cost
+            modelStats.set(modelName, existingModel)
+
+            if (ts > 0) {
+              const d = new Date(ts)
+              const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+              const dayBucket = recentDaysMap.get(dateKey)
+              if (dayBucket) {
+                dayBucket.totalTokens += total
+                dayBucket.messageCount += 1
+                dayBucket.conversations.add(sessionId)
+              }
+            }
+          }
+        } catch {
+          // ignore malformed lines
+        }
+      }
+    }
+  }
+
+  today.conversationsCount = activeInToday.size
+  week.conversationsCount = activeInWeek.size
+  month.conversationsCount = activeInMonth.size
+  allTime.conversationsCount = activeInAllTime.size
+
+  const byModel = Array.from(modelStats.values()).sort((a, b) => b.totalTokens - a.totalTokens)
+  const recentDays: DailyUsageStat[] = Array.from(recentDaysMap.entries()).map(([date, d]) => ({
+    date,
+    totalTokens: d.totalTokens,
+    conversationsCount: d.conversations.size,
+    messageCount: d.messageCount
+  }))
+
+  return {
+    today,
+    week,
+    month,
+    allTime,
+    byModel,
+    recentDays,
+    updatedAt: Date.now()
+  }
 }

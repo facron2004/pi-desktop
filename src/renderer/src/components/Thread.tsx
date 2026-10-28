@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowDown, Check, ChevronDown, ChevronRight, ChevronUp, Copy, List, Search, X } from 'lucide-react'
+import { ArrowDown, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Info, List, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../lib/thread'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
@@ -13,9 +13,9 @@ import { summarizeTool } from '../lib/tool-renderers'
 import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
 import { SearchContext } from '../lib/search-context'
-import { AssistantImage, AssistantText, NoticeMessage, UserMessage } from './MessageItem'
+import { AssistantImage, AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
-import { ToolGroup, type ToolGroupItem } from './ToolGroup'
+import { ToolGroup } from './ToolGroup'
 import { FileChangeSummary } from './FileChangeSummary'
 import { RunOutcome, RunStatusRow } from './RunStatusRow'
 import { useT } from '../lib/i18n'
@@ -138,6 +138,8 @@ export function Thread() {
   const forkFrom = useAppStore((state) => state.forkFrom)
   const t = useT()
   const forking = useAppStore((state) => state.forking)
+  const error = useAppStore((state) => state.error)
+  const dismissError = useAppStore((state) => state.dismissError)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   const previousItemsRef = useRef(items)
@@ -641,7 +643,6 @@ export function Thread() {
             const turnIndex = firstVisibleTurn + index
             const userId = turn.user?.id
             const isLastTurn = turnIndex === turns.length - 1
-            const showStreamingFooter = isStreaming && isLastTurn
             return (
               <ThreadTurnView
                 key={turn.id}
@@ -650,38 +651,35 @@ export function Thread() {
                 t={t}
                 onCopy={copy}
                 userCopied={copied === userId}
-                assistantCopied={copied === `${turn.id}:assistant`}
                 forkEntryId={userId ? forkByUserId.get(userId) : undefined}
                 onFork={forkFrom}
                 forking={Boolean(userId && forkByUserId.has(userId) && forking)}
-                isStreaming={isStreaming}
-                showStreamingFooter={showStreamingFooter}
-                activity={showStreamingFooter ? activity : ''}
                 run={run}
-                transport={transport}
                 isLastTurn={isLastTurn}
               />
             )
           })}
         </SearchContext.Provider>
 
-        {runOpen && items.length === 0 ? (
-          <div className="assistant">
-            <div className="assistant__body">
-              <RunStatusRow
-                run={run}
-                transport={transport}
-                activity={activity || undefined}
-              />
-            </div>
-          </div>
+        {runOpen ? (
+          <RunStatusRow run={run} transport={transport} activity={activity || undefined} />
         ) : null}
 
-        {/* The run state is repeated at the end of the stream, where the eye
-            already is: the footer of the last turn shows it too, and this one
-            covers the case where the run outlives the last turn. */}
-        {runOpen && items.length > 0 ? (
-          <RunStatusRow run={run} transport={transport} activity={activity || undefined} />
+        {error ? (
+          <div className="thread-error-banner" role="alert">
+            <div className="thread-error-banner__content">
+              <CircleAlert size={16} className="thread-error-banner__icon" />
+              <span className="thread-error-banner__text">{error}</span>
+            </div>
+            <button
+              className="icon-btn thread-error-banner__dismiss"
+              onClick={dismissError}
+              aria-label={t('Dismiss')}
+              title={t('Dismiss')}
+            >
+              <X size={14} />
+            </button>
+          </div>
         ) : null}
       </div>
 
@@ -707,15 +705,10 @@ interface ThreadTurnViewProps {
   t: (text: string) => string
   onCopy: (id: string, text: string) => void
   userCopied: boolean
-  assistantCopied: boolean
   forkEntryId?: string
   onFork: (entryId: string) => void
   forking: boolean
-  isStreaming: boolean
-  showStreamingFooter: boolean
-  activity: string
   run: RunState
-  transport: 'connected' | 'disconnected'
   /** The turn that is last in the conversation, where a run summary belongs. */
   isLastTurn: boolean
 }
@@ -745,15 +738,10 @@ function equalThreadTurnViewProps(
     previous.t === next.t &&
     previous.onCopy === next.onCopy &&
     previous.userCopied === next.userCopied &&
-    previous.assistantCopied === next.assistantCopied &&
     previous.forkEntryId === next.forkEntryId &&
     previous.onFork === next.onFork &&
     previous.forking === next.forking &&
-    previous.isStreaming === next.isStreaming &&
-    previous.showStreamingFooter === next.showStreamingFooter &&
-    previous.activity === next.activity &&
     previous.run === next.run &&
-    previous.transport === next.transport &&
     previous.isLastTurn === next.isLastTurn
   )
 }
@@ -764,15 +752,10 @@ const ThreadTurnView = memo(function ThreadTurnView({
   t,
   onCopy,
   userCopied,
-  assistantCopied,
   forkEntryId,
   onFork,
   forking,
-  isStreaming,
-  showStreamingFooter,
-  activity,
   run,
-  transport,
   isLastTurn
 }: ThreadTurnViewProps) {
   const toolMap = new Map(turn.tools.map((tool) => [tool.toolCallId, tool]))
@@ -786,15 +769,13 @@ const ThreadTurnView = memo(function ThreadTurnView({
   // block; a tool whose call was never seen (a resumed run) is drawn on its
   // own, at the position it was created in.
   const orphanTools = turn.tools.filter((tool) => !referenced.has(tool.toolCallId))
-  const assistantText = turn.assistants
-    .flatMap((assistant) =>
-      assistant.blocks
-        .filter((block) => block.type === 'text')
-        .map((block) => (block.type === 'text' ? block.text : ''))
-    )
-    .join('\n\n')
-    .trim()
-  const assistantCopyId = `${turn.id}:assistant`
+  const lastAssistant = turn.assistants.at(-1)
+  const hasFinalReply = lastAssistant?.stopReason !== 'error' &&
+    lastAssistant?.blocks.some((block) => block.type === 'text' && block.text.trim()) &&
+    !lastAssistant.blocks.some((block) => block.type === 'toolCall')
+  const outcome = isLastTurn && run.settled && run.outcome ? run : undefined
+  const replyOutcome = outcome?.outcome === 'completed' && hasFinalReply ? outcome : undefined
+  const replySettled = lastAssistant && !lastAssistant.streaming && (!isLastTurn || run.settled)
   const turnChanges = useMemo(() => collectChanges(turn.tools), [turn.tools])
   const turnDiffTotals = useMemo(() => {
     let added = 0
@@ -825,10 +806,10 @@ const ThreadTurnView = memo(function ThreadTurnView({
         />
       ) : null}
 
-      {turn.assistants.length > 0 || turn.notices.length > 0 || turn.bash.length > 0 ? (
+      {turn.assistants.length > 0 || turn.tools.length > 0 || turn.notices.length > 0 || turn.bash.length > 0 ? (
         <div className="assistant">
           <div className="assistant__body">
-            {renderTurn(turn, toolMap, models, t)}
+            {renderTurn(turn, toolMap, replyOutcome)}
 
             {turn.bash.map((item) => (
               <BashCard key={item.id} item={item} />
@@ -857,28 +838,32 @@ const ThreadTurnView = memo(function ThreadTurnView({
               />
             ) : null}
 
-            {showStreamingFooter ? (
-              <RunStatusRow
-                run={run}
-                transport={transport}
-                activity={activity || undefined}
-              />
-            ) : run.settled && run.outcome && isLastTurn ? (
-              // One line at the end of the run: how it ended, how many turns
-              // it took and how long it was. It is a summary, not a card.
-              <RunOutcome run={run} />
+            {outcome && !replyOutcome ? <RunOutcome run={outcome} /> : null}
+
+            {lastAssistant?.stopReason === 'error' ? (
+              <div className="notice" data-level="error" role="alert">
+                <CircleAlert size={14} className="notice__icon" />
+                <span>{lastAssistant.error ?? t('error')}</span>
+              </div>
             ) : null}
 
-            {!isStreaming && assistantText ? (
-              <div className="assistant__actions">
-                <button
-                  className="ghost-btn"
-                  onClick={() => onCopy(assistantCopyId, assistantText)}
-                  title={t("Copy the assistant's answer")}
-                >
-                  {assistantCopied ? <Check size={12} /> : <Copy size={12} />}
-                  {assistantCopied ? t('Copied') : t('Copy')}
-                </button>
+            {replySettled && (lastAssistant.model || lastAssistant.usage) ? (
+              <div className="assistant__response-actions">
+                <details className="assistant__details">
+                  <summary title={t('Response details')} aria-label={t('Response details')}>
+                    <Info size={14} />
+                  </summary>
+                  <div className="assistant__footer">
+                    {lastAssistant.model ? <span>{modelName(models, lastAssistant.model)}</span> : null}
+                    {lastAssistant.usage ? (
+                      <>
+                        <span>{formatTokens(lastAssistant.usage.totalTokens)} {t('tokens')}</span>
+                        {lastAssistant.usage.cost ? <span>{formatCost(lastAssistant.usage.cost.total)}</span> : null}
+                      </>
+                    ) : null}
+                    <span>{formatClock(lastAssistant.timestamp)}</span>
+                  </div>
+                </details>
               </div>
             ) : null}
           </div>
@@ -892,18 +877,18 @@ const ThreadTurnView = memo(function ThreadTurnView({
  * Render a whole turn.
  *
  * The blocks of every reply in the turn are laid out in one sequence, so
- * tools and thinking stay in one group until visible reply text or an image
- * interrupts them, even when they span several assistant messages.
+ * tools stay in one group until text, thinking or an image interrupts them,
+ * even when they span several assistant messages.
  */
 function renderTurn(
   turn: Turn,
   toolMap: Map<string, ToolItem>,
-  models: ModelInfo[],
-  t: (text: string) => string
+  replyOutcome?: RunState
 ): ReactNode[] {
   const nodes: ReactNode[] = []
-  let group: ToolGroupItem[] = []
-  let lastAssistant: AssistantItem | undefined
+  let group: ToolItem[] = []
+  const lastAssistant = turn.assistants.at(-1)
+  let outcomeShown = false
 
   const flush = () => {
     if (!group.length) return
@@ -912,7 +897,6 @@ function renderTurn(
   }
 
   for (const assistant of turn.assistants) {
-    lastAssistant = assistant
     const lastTextIndex = assistant.blocks.reduce(
       (found, block, index) => (block.type === 'text' ? index : found),
       -1
@@ -922,6 +906,10 @@ function renderTurn(
       if (block.type === 'text') {
         if (!block.text.trim()) return
         flush()
+        if (replyOutcome && assistant === lastAssistant && !outcomeShown) {
+          nodes.push(<RunOutcome key="run-outcome" run={replyOutcome} />)
+          outcomeShown = true
+        }
         nodes.push(
           <AssistantText
             key={`${assistant.id}-${index}`}
@@ -933,12 +921,14 @@ function renderTurn(
       }
       if (block.type === 'thinking') {
         if (!block.text.trim()) return
-        group.push({
-          kind: 'thinking',
-          id: `${assistant.id}-${index}`,
-          text: block.text,
-          streaming: assistant.streaming
-        })
+        flush()
+        nodes.push(
+          <ThinkingBlock
+            key={`${assistant.id}-${index}`}
+            text={block.text}
+            streaming={assistant.streaming && index === assistant.blocks.length - 1}
+          />
+        )
         return
       }
       if (block.type === 'image') {
@@ -958,26 +948,6 @@ function renderTurn(
     })
   }
   flush()
-
-  if (lastAssistant && !lastAssistant.streaming && (lastAssistant.usage || lastAssistant.model)) {
-    nodes.push(
-      <div className="assistant__footer" key="turn-footer">
-        {lastAssistant.model ? <span>{modelName(models, lastAssistant.model)}</span> : null}
-        {lastAssistant.usage ? (
-          <>
-            <span>{formatTokens(lastAssistant.usage.totalTokens)} {t('tokens')}</span>
-            {lastAssistant.usage.cost ? (
-              <span>{formatCost(lastAssistant.usage.cost.total)}</span>
-            ) : null}
-          </>
-        ) : null}
-        {lastAssistant.stopReason === 'error' ? (
-          <span style={{ color: 'var(--red)' }}>{lastAssistant.error ?? t('error')}</span>
-        ) : null}
-        <span>{formatClock(lastAssistant.timestamp)}</span>
-      </div>
-    )
-  }
 
   return nodes
 }

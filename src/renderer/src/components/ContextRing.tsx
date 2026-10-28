@@ -13,8 +13,11 @@ import { ContextPanel } from './ContextPanel'
  * the numbers are in the panel behind it.
  */
 export function ContextRing() {
+  const showContextUsage = useAppStore((state) => state.settings.showContextUsage !== false)
   const context = useAppStore((state) => state.stats?.contextUsage)
   const t = useT()
+
+  if (!showContextUsage) return null
 
   const tokens = context?.tokens ?? 0
   const window = context?.contextWindow ?? 0

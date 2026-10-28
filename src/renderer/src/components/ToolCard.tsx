@@ -298,7 +298,7 @@ export const ToolCard = memo(function ToolCard({
           <span className="tool__icon">
             <Icon size={12} strokeWidth={2.2} />
           </span>
-          <span className="tool__name">{summary.label}</span>
+          <span className="tool__name">{t(summary.label)}</span>
           <span className="tool__summary">{summary.detail}</span>
           {item.status === 'running' ? (
             <span className="spinner" />

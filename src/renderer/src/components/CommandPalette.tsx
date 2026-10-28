@@ -54,6 +54,13 @@ export function CommandPalette({
           {commands.map((command, index) => {
             const meta = COMMAND_SOURCE[command.source] ?? COMMAND_SOURCE.extension
             const Icon = meta.Icon
+            const desc = command.description
+              ? command.source === 'app'
+                ? t(command.description)
+                : command.description
+              : undefined
+            const tooltip = desc ? `/${command.name} — ${desc}` : `/${command.name}`
+
             return (
               <button
                 key={`${command.source}-${command.name}`}
@@ -63,14 +70,15 @@ export function CommandPalette({
                 data-active={index === activeIndex}
                 onMouseEnter={() => onActiveChange(index)}
                 onClick={() => onSelect(command)}
+                title={tooltip}
               >
                 <span className="palette__icon">
                   <Icon size={12} />
                 </span>
                 <span className="palette__name">/{command.name}</span>
-                {command.description ? (
-                  <span className="palette__desc">
-                    {command.source === 'app' ? t(command.description) : command.description}
+                {desc ? (
+                  <span className="palette__desc" title={desc}>
+                    {desc}
                   </span>
                 ) : null}
                 <span className={`palette__badge ${meta.className}`}>{meta.label}</span>

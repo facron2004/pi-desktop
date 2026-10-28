@@ -94,19 +94,27 @@ export interface TerminalRunRequest {
 let rememberedHistory: string[] = []
 
 /**
- * The command drawer under the conversation.
+ * The command drawer.
  *
  * Every command goes through Pi's RPC `bash` command with an id prefixed
  * `terminal-`, so the streamed `bash_execution_update` events can be matched
  * here. The output of these commands is excluded from the model context — the
  * drawer is the user's terminal, not a conversation message.
+ *
+ * It runs in two places: horizontally under the thread, and vertically inside
+ * the side panel. `embedded` is that difference — the height, the resize edge
+ * and the Close button belong to the drawer, while the panel draws its own
+ * header and closing.
  */
 export function TerminalPanel({
   onClose,
-  request
+  request,
+  embedded = false
 }: {
   onClose: () => void
   request?: TerminalRunRequest | null
+  /** Draw as a column inside the side panel rather than a drawer. */
+  embedded?: boolean
 }) {
   const t = useT()
   const status = useAppStore((state) => state.status)
@@ -557,7 +565,10 @@ export function TerminalPanel({
   return (
     <section
       className="terminal"
-      style={{ height: `${height}px` }}
+      data-embedded={embedded || undefined}
+      // The drawer sets its own height and is dragged by its top edge; inside
+      // the panel the column is the panel's height and the edge is not there.
+      style={embedded ? undefined : { height: `${height}px` }}
       aria-label={t('Terminal')}
       onKeyDown={(event) => {
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
@@ -584,10 +595,11 @@ export function TerminalPanel({
         aria-valuemin={MIN_TERMINAL_HEIGHT}
         aria-valuemax={Math.max(MIN_TERMINAL_HEIGHT, Math.round(window.innerHeight * MAX_TERMINAL_HEIGHT_RATIO))}
         title={t('Drag to resize · double-click to reset')}
-        tabIndex={0}
-        onPointerDown={startResize}
-        onKeyDown={resizeFromKeyboard}
-        onDoubleClick={resetHeight}
+        tabIndex={embedded ? -1 : 0}
+        onPointerDown={embedded ? undefined : startResize}
+        onKeyDown={embedded ? undefined : resizeFromKeyboard}
+        onDoubleClick={embedded ? undefined : resetHeight}
+        hidden={embedded || undefined}
       />
       <header className="terminal__head">
         <SquareTerminal size={13} className="terminal__head-icon" />
@@ -663,9 +675,11 @@ export function TerminalPanel({
           >
             <Eraser size={13} />
           </button>
-          <button className="icon-btn" title={t('Close')} aria-label={t('Close')} onClick={onClose}>
-            <X size={14} />
-          </button>
+          {embedded ? null : (
+            <button className="icon-btn" title={t('Close')} aria-label={t('Close')} onClick={onClose}>
+              <X size={14} />
+            </button>
+          )}
         </div>
       </header>
 

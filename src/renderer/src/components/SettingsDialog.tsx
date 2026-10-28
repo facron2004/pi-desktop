@@ -107,7 +107,7 @@ export function SettingsDialog({
     (defaultThinking.trim() || undefined) !== (settings.thinkingLevel?.trim() || undefined) ||
     (customInstructions.trim() || undefined) !==
       (settings.customInstructions?.trim() || undefined)
-  const draftPage = page === 'general' || page === 'models' || page === 'personalization'
+  const draftPage = page === 'models' || page === 'personalization'
 
   const save = async () => {
     await updateSettings({
@@ -148,8 +148,14 @@ export function SettingsDialog({
       >
         <div className="modal__head">
           <h2 id="settings-title" className="modal__title">{t('Settings')}</h2>
-          <button className="icon-btn" onClick={onClose} aria-label={t('Close')}>
-            <X size={15} />
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={onClose}
+            aria-label={t('Close')}
+            title={t('Close')}
+          >
+            <X size={16} />
           </button>
         </div>
 
@@ -240,11 +246,9 @@ export function SettingsDialog({
                     : 'Changes are saved automatically'
             )}
           </span>
-          <button className="btn" onClick={onClose}>
-            {t('Close')}
-          </button>
           {draftPage || hasDraftChanges ? (
             <button
+              type="button"
               className="btn btn--primary"
               disabled={!hasDraftChanges}
               onClick={() => void save()}

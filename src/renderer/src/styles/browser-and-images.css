@@ -1,0 +1,230 @@
+/* ------------------------------------------------------------------ *
+ * Browser tab
+ *
+ * A page of its own in the inspector: the bar above, the page below. The
+ * page is the `<webview>`'s, so the frame around it only has to get out of
+ * its way.
+ * ------------------------------------------------------------------ */
+
+.browser-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.browser-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-hair);
+  flex: 0 0 auto;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.browser-bar .icon-btn {
+  width: 26px;
+  flex: 0 0 auto;
+}
+
+.browser-bar__address {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg-deep);
+  color: var(--text-faint);
+}
+
+.browser-bar__address:focus-within {
+  border-color: var(--accent-line);
+}
+
+.browser-bar__address input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-xs);
+}
+
+.browser-pane__view {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--surface-canvas);
+}
+
+.browser-pane__view webview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.browser-pane__note {
+  flex: 0 0 auto;
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border-soft);
+  color: var(--amber);
+  font-size: var(--text-2xs);
+}
+
+/* ------------------------------------------------------------------ *
+ * Image tab
+ * ------------------------------------------------------------------ */
+
+.image-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.image-viewer__stage {
+  display: grid;
+  place-items: center;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--sp-5);
+  /* A checkerboard, so a transparent PNG reads as transparent rather than as
+   * the panel's own colour. */
+  background-color: var(--bg-deep);
+  background-image:
+    linear-gradient(45deg, var(--bg-active) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--bg-active) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--bg-active) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--bg-active) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  overflow: auto;
+}
+
+.image-viewer__stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-md);
+}
+
+.image-viewer__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border-radius: var(--r-md);
+  background: var(--surface-canvas);
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+
+.image-viewer__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border-soft);
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+}
+
+.image-viewer__name {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+
+.image-viewer__dim {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.image-viewer__spacer {
+  flex: 1 1 auto;
+}
+
+.image-viewer__strip {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border-soft);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.image-viewer__thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+  width: 64px;
+  padding: var(--sp-1);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+}
+
+.image-viewer__thumb:hover {
+  background: var(--bg-hover);
+}
+
+.image-viewer__thumb[data-active='true'] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.image-viewer__thumb img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: var(--r-xs);
+  background: var(--bg-deep);
+}
+
+.image-viewer__thumb-blank {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--r-xs);
+  background: var(--bg-active);
+}
+
+.image-viewer__thumb-name {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.image-viewer__more {
+  flex: 0 0 auto;
+  align-self: center;
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-full);
+  background: var(--bg-active);
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}

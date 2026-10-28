@@ -236,6 +236,7 @@ export interface Workspace {
   path: string
   name: string
   lastOpenedAt: number
+  folders?: string[]
 }
 
 export interface SessionMeta {
@@ -276,6 +277,48 @@ export interface SessionSearchHit {
   matchStart: number
   matchLength: number
   messageIndex: number
+}
+
+export interface TokenUsageMetrics {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  totalTokens: number
+  cost: number
+}
+
+export interface PeriodUsage {
+  period: 'today' | 'week' | 'month' | 'allTime'
+  tokens: TokenUsageMetrics
+  conversationsCount: number
+  messageCount: number
+}
+
+export interface ModelUsageStat {
+  model: string
+  totalTokens: number
+  input: number
+  output: number
+  messageCount: number
+  cost: number
+}
+
+export interface DailyUsageStat {
+  date: string
+  totalTokens: number
+  conversationsCount: number
+  messageCount: number
+}
+
+export interface AggregatedUsageStats {
+  today: PeriodUsage
+  week: PeriodUsage
+  month: PeriodUsage
+  allTime: PeriodUsage
+  byModel: ModelUsageStat[]
+  recentDays: DailyUsageStat[]
+  updatedAt: number
 }
 
 /* ------------------------------------------------------------------ *
@@ -488,6 +531,12 @@ export interface AppSettings {
   /** User instructions appended to Pi's system prompt when the runtime starts. */
   customInstructions?: string
   theme: ThemePreference
+  themePreset?: string
+  themeTone?: string
+  accentColor?: string
+  customBg?: string
+  customFg?: string
+  fontFamily?: string
   language: AppLanguage
   fontScale: number
   /** Show diffs side by side instead of unified. */
@@ -502,6 +551,26 @@ export interface AppSettings {
   trustProject: boolean
   /** Send a system notification when a background turn finishes or needs input. */
   desktopNotifications?: boolean
+  /** Default storage location for chats outside workspaces. */
+  externalChatFolder?: string
+  /** Default location to open files and folders: 'vscode' | 'cursor' | 'windsurf' | 'system'. */
+  defaultFileOpener?: string
+  /** Agent environment on Windows: 'windows' | 'wsl'. */
+  agentEnvironment?: string
+  /** Integrated terminal shell: 'powershell' | 'cmd' | 'gitbash' | 'wsl'. */
+  terminalShell?: string
+  /** Compact older local chat history. */
+  compactChatHistory?: boolean
+  /** Allow using installed plugins. */
+  pluginsEnabled?: boolean
+  /** Plain text editor mode in composer. */
+  plainTextEditor?: boolean
+  /** Show context window usage ring/indicator. */
+  showContextUsage?: boolean
+  /** Send shortcut key: 'enter' (Enter to send) or 'ctrlEnter' (Ctrl+Enter to send). */
+  sendShortcut?: 'enter' | 'ctrlEnter'
+  /** Follow-up handling method: 'queue' or 'steer'. */
+  followUpMode?: 'queue' | 'steer'
 }
 
 export interface PiLaunchInfo {
@@ -533,6 +602,24 @@ export interface AuthStatus {
   detail?: string
 }
 
+export interface VersionItemStatus {
+  current: string
+  latest?: string
+  hasUpdate: boolean
+  error?: string
+}
+
+export interface VersionCheckResult {
+  app: VersionItemStatus
+  piCli: VersionItemStatus
+}
+
+export interface UpgradeResult {
+  success: boolean
+  version?: string
+  error?: string
+}
+
 /* ------------------------------------------------------------------ *
  * Renderer bridge
  * ------------------------------------------------------------------ */
@@ -542,6 +629,17 @@ export interface PiDesktopBridge {
     info(): Promise<AppInfo>
     /** Sync the native window controls with the current theme. */
     setTheme(theme: 'dark' | 'light'): Promise<void>
+    /** Query the font families installed on the operating system. */
+    getSystemFonts(): Promise<string[]>
+    /** Check for updates for the application and Pi CLI. */
+    checkUpdate(): Promise<VersionCheckResult>
+    /** Upgrade Pi CLI to the latest version. */
+    upgradePiCli(): Promise<UpgradeResult>
+    /** Pull latest updates for the application. */
+    upgradeApp(): Promise<UpgradeResult>
+  }
+  dialog: {
+    pickDirectory(defaultPath?: string): Promise<string | null>
   }
   settings: {
     get(): Promise<AppSettings>
@@ -559,6 +657,8 @@ export interface PiDesktopBridge {
     remove(file: string): Promise<boolean>
     /** Search the text of every conversation on disk. */
     search(query: string, limit?: number): Promise<SessionSearchHit[]>
+    /** Aggregate token consumption and conversation records across all sessions. */
+    usageStats(customDir?: string): Promise<AggregatedUsageStats>
   }
   runtime: {
     start(options: RuntimeStartOptions): Promise<{ ok: boolean; error?: string }>
@@ -627,6 +727,7 @@ export interface PiDesktopBridge {
   }
   shell: {
     openPath(target: string): Promise<string>
+    openInExplorer(target: string): Promise<string>
     openExternal(url: string): Promise<void>
   }
   fs: {
@@ -644,6 +745,8 @@ export interface PiDesktopBridge {
     saveImage(data: string, mimeType: string): Promise<string | null>
     /** Resolve the filesystem path of a dropped File object. */
     pathForFile(file: File): string
+    /** A picture of the open project as a data URL, for the image viewer. */
+    readImageDataUrl(file: string): Promise<string | null>
   }
 }
 

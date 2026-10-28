@@ -56,6 +56,24 @@ export function buildDiff(oldText: string, newText: string): DiffBlock {
   return { rows }
 }
 
+/** Match Git's normalized working-tree counts without hiding real line-ending changes. */
+export function buildWorkingTreeDiff(
+  oldText: string,
+  newText: string,
+  added: number | undefined,
+  removed: number | undefined
+): DiffBlock {
+  const direct = buildDiff(oldText, newText)
+  if (added === undefined || removed === undefined) return direct
+  const matches = (block: DiffBlock) => {
+    const counts = diffStats(block)
+    return counts.added === added && counts.removed === removed
+  }
+  if (matches(direct)) return direct
+  const normalized = buildDiff(oldText.replace(/\r\n/g, '\n'), newText.replace(/\r\n/g, '\n'))
+  return matches(normalized) ? normalized : direct
+}
+
 function gapRow(hidden: DiffRow[], key: string): DiffRow {
   const first = hidden[0]
   return {
@@ -106,9 +124,10 @@ export function foldDiff(rows: DiffRow[], context = CONTEXT_LINES, scope = '0'):
       head = run.slice(0, keep)
       hidden = run.slice(keep)
     } else {
+      const tailKeep = Math.min(keep, run.length - keep)
       head = run.slice(0, keep)
-      hidden = run.slice(keep, run.length - keep)
-      tail = run.slice(run.length - keep)
+      hidden = run.slice(keep, run.length - tailKeep)
+      tail = run.slice(run.length - tailKeep)
     }
 
     out.push(...head)

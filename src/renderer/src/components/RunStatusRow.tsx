@@ -37,7 +37,7 @@ export const RunStatusRow = memo(function RunStatusRow({
   const running = run.phase !== 'idle' || transport === 'disconnected'
 
   return (
-    <div className="run-status" data-phase={run.phase} data-transport={transport}>
+    <div className="run-status" data-phase={run.phase} data-transport={transport} role="status">
       <span className="run-status__icon" aria-hidden="true">
         <StatusIcon phase={run.phase} transport={transport} retrying={Boolean(retry)} />
       </span>
@@ -142,15 +142,8 @@ export const RunOutcome = memo(function RunOutcome({ run }: { run: RunState }) {
   const aborted = run.outcome === 'aborted'
   return (
     <div className="run-outcome" data-outcome={run.outcome}>
-      <span className="run-outcome__icon" aria-hidden="true">
-        {aborted ? <X size={12} /> : <Check size={12} />}
-      </span>
-      <span>{t(aborted ? 'Stopped by you' : 'Finished')}</span>
-      {run.turns > 1 ? (
-        <span className="run-outcome__meta">
-          {run.turns} {run.turns === 1 ? 'turn' : 'turns'}
-        </span>
-      ) : null}
+      {aborted ? <X size={12} aria-hidden="true" /> : null}
+      <span>{t(aborted ? 'Stopped by you' : run.durationMs !== undefined ? 'Worked for' : 'Finished')}</span>
       {run.durationMs !== undefined ? (
         <span className="run-outcome__meta">{formatElapsed(run.durationMs)}</span>
       ) : null}

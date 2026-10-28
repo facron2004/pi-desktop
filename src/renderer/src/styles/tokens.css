@@ -9,6 +9,11 @@
  * bottom of each block are kept as aliases so the stylesheets that were
  * written before the rename keep working; new code should use the semantic
  * name directly.
+ *
+ * The contract these numbers come from is `docs/design-contract.md`: four
+ * layers (surface → chrome → raised → overlay), one radius per layer, one
+ * type step per role. A number that is not in this file is a bug in the
+ * component that wrote it.
  * ------------------------------------------------------------------ */
 
 :root {
@@ -60,6 +65,11 @@
   --status-warning-soft: rgba(245, 158, 11, 0.14);
   --status-danger: #f87171;
   --status-danger-soft: rgba(248, 113, 113, 0.14);
+  /* Ink that sits on a filled danger surface. It has to differ per theme:
+     white on the dark theme's #f87171 measures 2.77:1, while black on it is
+     7.59:1. The light theme's #dc2626 goes the other way (white 4.83:1, black
+     4.35:1). A single value would be wrong in one of the two. */
+  --status-danger-ink: #0b0d11;
 
   /* ---- diff ------------------------------------------------------ */
   --diff-add-bg: #112a1d;
@@ -102,14 +112,21 @@
   --sp-8: 48px;
   --sp-hair: 2px;
 
-  /* ---- radii ------------------------------------------------------ */
+  /* ---- radii ------------------------------------------------------ *
+   * One radius per layer, so a thing's depth is readable from its shape:
+   *   r-lg  a panel of the shell (sidebar, main column, drawer)
+   *   r-md  something that floats over the canvas (popover, dialog, menu)
+   *   r-sm  something you can click (button, input, row)
+   *   r-xs  a mark inside a line of text
+   * A conversation bubble and the box you type in are the two soft layers
+   * and carry radii of their own below — that is the whole vocabulary.  */
   --r-xs: 4px;
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 14px;
-  --r-xl: 16px;
   --r-full: 999px;
-  --composer-radius: 24px;
+  --bubble-radius: var(--r-lg);
+  --composer-radius: 20px;
 
   /* ---- control sizes ---------------------------------------------- *
    * Three heights. A control that is not one of them does not belong
@@ -139,7 +156,10 @@
   /* ---- layout ----------------------------------------------------- */
   --rail-w: 48px;
   --sidebar-w: 240px;
-  --content-w: 740px;
+  /* The reading measure. Chinese text at 14px needs a shorter line than
+   * Latin to stay readable, and a wide window does not make a line easier
+   * to follow past ~40 characters. */
+  --content-w: 720px;
   --drawer-w: 420px;
   --shell-inset: var(--sp-3);
   --titlebar-h: 44px;
@@ -191,7 +211,6 @@
   --radius-sm: var(--r-sm);
   --radius: var(--r-md);
   --radius-lg: var(--r-lg);
-  --radius-xl: var(--r-xl);
 
   /* A pill is a shape, not a size: it is the full radius under the name
    * the older stylesheets use.                                        */
@@ -200,6 +219,11 @@
   --composer-max: var(--content-w);
   /* One step below --ctl-sm, for the inline chips inside a tool row. */
   --ctl-xs: 24px;
+
+  /* A tool row is 32–40px by design. The two steps are named so the row
+   * and the actions inside it cannot drift apart. */
+  --tool-row-h: 34px;
+  --tool-action: 24px;
 
   --sidebar-bg: var(--surface-chrome);
   --sidebar-hover: #1b1e25;
@@ -246,6 +270,7 @@
   --status-warning-soft: rgba(217, 119, 6, 0.1);
   --status-danger: #dc2626;
   --status-danger-soft: rgba(220, 38, 38, 0.1);
+  --status-danger-ink: #ffffff;
 
   --diff-add-bg: #e6f6ec;
   --diff-add-text: #15803d;

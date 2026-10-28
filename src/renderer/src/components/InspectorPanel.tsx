@@ -6,16 +6,18 @@ import {
   ChevronsUpDown,
   Columns2,
   Copy,
+  Ellipsis,
   ExternalLink,
   FileDiff,
-  FilePlus,
   Files,
   GitCommit,
   GitCompare,
+  Globe,
+  Images,
   MessageSquare,
-  Pencil,
   Rows3,
   Search,
+  SquareArrowOutUpRight,
   X
 } from 'lucide-react'
 import { collectChanges, countChangedFiles, type FileChange } from '../lib/changes'
@@ -30,11 +32,16 @@ import { FileViewer } from './FileViewer'
 import { CommitDialog } from './CommitDialog'
 import { CommitDetailDialog } from './CommitDetailDialog'
 import { ReviewView } from './ReviewView'
+import { DiffScope } from './DiffScope'
+import { Popover } from './Popover'
 import { TextSearch } from './TextSearch'
+import { BrowserView } from './BrowserView'
+import { ImageViewer } from './ImageViewer'
 import { useT } from '../lib/i18n'
 import { useDialogFocus } from '../hooks/useDialogFocus'
+import '../styles/browser-and-images.css'
 
-type Tab = 'changes' | 'files' | 'review'
+type Tab = 'changes' | 'files' | 'review' | 'browser' | 'images'
 
 const MIN_WIDTH = 300
 const MAX_WIDTH = 920
@@ -49,7 +56,8 @@ export function InspectorPanel({
   file,
   onOpenFile,
   onResize,
-  onResizeEnd
+  onResizeEnd,
+  embedded = false
 }: {
   onClose: () => void
   overlay: boolean
@@ -60,10 +68,16 @@ export function InspectorPanel({
   onOpenFile: (file: { path: string; line?: number } | null) => void
   onResize?: (width: number) => void
   onResizeEnd?: (width: number) => void
+  /**
+   * Draw inside the side panel: the panel owns the header and the width, so
+   * the tabs, the close button and the resize edge are not drawn here.
+   */
+  embedded?: boolean
 }) {
   const panelRef = useRef<HTMLElement>(null)
   useDialogFocus(panelRef, onClose, overlay)
   const [tab, setTab] = useState<Tab>(initialTab)
+  const [changeScope, setChangeScope] = useState<'auto' | 'local' | 'conversation'>('auto')
   const changeTab = (next: Tab) => {
     setTab(next)
     onTabChange?.(next)
@@ -88,7 +102,8 @@ export function InspectorPanel({
     [items, showingChanges]
   )
   const showingGitFallback =
-    tab === 'changes' && changes.length === 0 && Boolean(git?.isRepo && git.files.length > 0)
+    tab === 'changes' && Boolean(git?.isRepo) &&
+    (changeScope === 'local' || (changeScope === 'auto' && changes.length === 0))
   const effectiveChangesCount =
     changedFileCount > 0 ? changedFileCount : git?.isRepo ? git.files.length : 0
   const [commitOpen, setCommitOpen] = useState(false)
@@ -133,20 +148,15 @@ export function InspectorPanel({
 
   // The files the agent touched, narrowed down by a search on the path.
   const [fileFilter, setFileFilter] = useState('')
+  const [fileFilterOpen, setFileFilterOpen] = useState(false)
   const fileFilterRef = useRef<HTMLInputElement>(null)
   // `undefined` means the reader decides, one run at a time.
   const [expandAll, setExpandAll] = useState<boolean | undefined>(undefined)
   const [openChanges, setOpenChanges] = useState<ReadonlySet<string>>(() => new Set())
-  const changesInitialized = useRef(false)
   useEffect(() => {
-    changesInitialized.current = false
     setOpenChanges(new Set())
+    setChangeScope('auto')
   }, [activeSessionFile, workspace?.path])
-  useEffect(() => {
-    if (changesInitialized.current || changes.length === 0) return
-    changesInitialized.current = true
-    setOpenChanges(new Set([changes[0].path]))
-  }, [changes, activeSessionFile, workspace?.path])
   // The Files tab browses the tree or searches inside the files. The tree stays
   // mounted while the search is on, so its open folders survive a look.
   const [filesMode, setFilesMode] = useState<'tree' | 'text'>('tree')
@@ -165,6 +175,30 @@ export function InspectorPanel({
       .map((change, index) => ({ change, stat: stats[index], path: relativePaths[index] }))
       .filter((entry) => !needle || entry.path.toLowerCase().includes(needle))
   }, [changes, stats, relativePaths, fileFilter])
+  const visibleTotals = useMemo(
+    () => entries.reduce((acc, entry) => ({ added: acc.added + entry.stat.added, removed: acc.removed + entry.stat.removed }), { added: 0, removed: 0 }),
+    [entries]
+  )
+  const allVisibleOpen = entries.length > 0 && entries.every((entry) => openChanges.has(entry.change.path))
+  const toggleAllChanges = () => {
+    setOpenChanges((previous) => {
+      const next = new Set(previous)
+      for (const entry of entries) {
+        if (allVisibleOpen) next.delete(entry.change.path)
+        else next.add(entry.change.path)
+      }
+      return next
+    })
+  }
+  const scopeControl = git?.isRepo ? (
+    <DiffScope
+      value={showingGitFallback || tab === 'review' ? 'local' : 'conversation'}
+      onChange={(scope) => {
+        setChangeScope(scope)
+        if (tab === 'review') changeTab('changes')
+      }}
+    />
+  ) : <span className="review__scope">{t('Conversation changes')}</span>
 
   const copyPaths = useCallback(async () => {
     try {
@@ -281,20 +315,23 @@ export function InspectorPanel({
     <>
       <aside
         ref={panelRef}
-        className="drawer"
+        className={embedded ? 'drawer drawer--embedded' : 'drawer'}
         role={overlay ? 'dialog' : undefined}
         aria-modal={overlay ? true : undefined}
         tabIndex={overlay ? -1 : undefined}
         aria-label={t('Project inspector')}
       >
-        <div
-          className="drawer__resizer"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label={t('Resize the panel')}
-          onPointerDown={startResize}
-        />
-        <header className="drawer__head">
+        {embedded ? null : (
+          <div
+            className="drawer__resizer"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t('Resize the panel')}
+            onPointerDown={startResize}
+          />
+        )}
+        {embedded ? null : (
+          <header className="drawer__head">
           <div className="drawer__tabs">
             <button
               className="drawer__tab"
@@ -335,62 +372,34 @@ export function InspectorPanel({
                 <span className="drawer__count">{git.files.length}</span>
               ) : null}
             </button>
+            <button
+              className="drawer__tab"
+              data-active={tab === 'browser'}
+              aria-pressed={tab === 'browser'}
+              aria-label={t('Browser')}
+              title={t('Browse a page without leaving the app')}
+              onClick={() => changeTab('browser')}
+            >
+              <Globe size={14} />
+              <span className="drawer__tab-label">{t('Browser')}</span>
+            </button>
+            <button
+              className="drawer__tab"
+              data-active={tab === 'images'}
+              aria-pressed={tab === 'images'}
+              aria-label={t('Images')}
+              title={t('Pictures in this project')}
+              onClick={() => changeTab('images')}
+            >
+              <Images size={14} />
+              <span className="drawer__tab-label">{t('Images')}</span>
+            </button>
           </div>
           <button className="icon-btn" onClick={onClose} title={t('Close')} aria-label={t('Close')}>
             <X size={16} />
           </button>
-        </header>
-        {tab !== 'files' && (git?.isRepo || changedFileCount > 0) ? (
-          <div className="drawer__toolbar">
-            {showingChanges && changedFileCount > 0 && (totals.added || totals.removed) ? (
-              <span className="drawer__stats" title={t('Lines added and removed over all files')}>
-                {totals.added ? <span data-kind="add">+{totals.added}</span> : null}
-                {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
-              </span>
-            ) : null}
-            <span className="drawer__toolbar-spacer" />
-            {git?.isRepo ? (
-              <button
-                className="ghost-btn drawer__commit"
-                onClick={() => setCommitOpen(true)}
-                disabled={git.clean}
-                aria-label={git.clean ? t('Committed') : t('Commit')}
-                title={
-                  git.clean
-                    ? t('There is nothing to commit')
-                    : t('Review the working tree and commit it')
-                }
-              >
-                <GitCommit size={12} />
-                <span>{git.clean ? t('Committed') : t('Commit')}</span>
-                {git.clean ? null : <span className="drawer__count">{git.files.length}</span>}
-              </button>
-            ) : null}
-            {tab === 'review' || showingGitFallback || changedFileCount > 0 ? (
-              <div className="segmented segmented--tight" title={t('Diff layout')}>
-                <button
-                  data-active={!diffSplit}
-                  aria-label={t('Unified diff')}
-                  aria-pressed={!diffSplit}
-                  onClick={() => void updateSettings({ diffSplit: false })}
-                  title={t('Unified diff')}
-                >
-                  <Rows3 size={12} />
-                </button>
-                <button
-                  data-active={diffSplit}
-                  aria-label={t('Side-by-side diff')}
-                  aria-pressed={diffSplit}
-                  onClick={() => void updateSettings({ diffSplit: true })}
-                  title={t('Side-by-side diff')}
-                >
-                  <Columns2 size={12} />
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
+          </header>
+        )}
         {/* The panes stay mounted, so the file tree keeps the folders the user
             opened while a file is on screen. */}
         <div className="drawer__stack">
@@ -434,6 +443,8 @@ export function InspectorPanel({
             <ReviewView
               key={workspace?.path}
               onOpenFile={setOpenFile}
+              onCommit={() => setCommitOpen(true)}
+              scopeControl={scopeControl}
               active={!openFile && (tab === 'review' || showingGitFallback)}
             />
           </div>
@@ -442,96 +453,96 @@ export function InspectorPanel({
             className="drawer__pane"
             data-active={!openFile && tab === 'changes' && !showingGitFallback}
           >
-            {changes.length === 0 ? (
-              <div className="drawer__empty">
-                {git?.isRepo && git.files.length > 0
-                  ? t('This conversation has not changed any files.')
-                  : t('No files have been changed yet.')}
-                <br />
-                {git?.isRepo && git.files.length > 0
-                  ? t('The working tree has changes from outside this conversation.')
-                  : t('Edits and new files show up here as Pi works.')}
-                {git?.isRepo && git.files.length > 0 ? (
-                  <div className="drawer__empty-action">
-                    <button className="btn" onClick={() => setCommitOpen(true)}>
-                      <GitCommit size={12} />
-                      {git.files.length} {git.files.length === 1 ? t('file to commit') : t('files to commit')}
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : (
               <div className="drawer__body drawer__body--changes">
-                <div className="drawer__bar">
-                  {changes.length >= 3 ? (
-                    <div className="drawer__filter">
+                <div className="review__bar">
+                  {scopeControl}
+                  <span className="review__totals" title={t('Lines added and removed over all files')}>
+                    {totals.added ? <span data-kind="add">+{totals.added}</span> : null}
+                    {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
+                  </span>
+                  <div className="review__actions">
+                    <button className="icon-btn" onClick={() => { if (fileFilterOpen) setFileFilter(''); setFileFilterOpen((value) => !value) }} title={t('Filter the changed files')} aria-label={t('Filter the changed files')} aria-pressed={fileFilterOpen} data-active={fileFilterOpen}>
+                      <Search size={14} />
+                    </button>
+                    <button className="icon-btn" onClick={toggleAllChanges} disabled={entries.length === 0} title={allVisibleOpen ? t('Collapse all files') : t('Expand all files')} aria-label={allVisibleOpen ? t('Collapse all files') : t('Expand all files')}>
+                      {allVisibleOpen ? <ChevronsDownUp size={14} /> : <ChevronsUpDown size={14} />}
+                    </button>
+                    <button className="icon-btn" onClick={() => void updateSettings({ diffSplit: !diffSplit })} title={diffSplit ? t('Unified diff') : t('Side-by-side diff')} aria-label={diffSplit ? t('Unified diff') : t('Side-by-side diff')}>
+                      {diffSplit ? <Rows3 size={14} /> : <Columns2 size={14} />}
+                    </button>
+                    <Popover
+                      align="right"
+                      width={220}
+                      renderTrigger={({ open, toggle }) => (
+                        <button className="icon-btn" type="button" aria-label={t('More actions')} title={t('More actions')} aria-haspopup="menu" aria-expanded={open} onClick={toggle}>
+                          <Ellipsis size={15} />
+                        </button>
+                      )}
+                    >
+                      {(close) => (
+                        <div role="menu" aria-label={t('More actions')}>
+                          <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); void copyDiff() }}>
+                            <FileDiff size={13} /> {t('Copy the diff')}
+                          </button>
+                          <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); void copyPaths() }}>
+                            <Copy size={13} /> {t('Copy paths')}
+                          </button>
+                          <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); askAboutChanges() }}>
+                            <MessageSquare size={13} /> {t('Ask Pi')}
+                          </button>
+                          <button className="popover__item" role="menuitem" onClick={() => { close(); setExpandAll((value) => value !== true) }}>
+                            {expandAll === true ? <ChevronsDownUp size={13} /> : <ChevronsUpDown size={13} />}
+                            {expandAll === true ? t('Fold the unchanged lines') : t('Show the unchanged lines')}
+                          </button>
+                          {git?.isRepo ? (
+                            <button className="popover__item" role="menuitem" disabled={git.clean} onClick={() => { close(); setCommitOpen(true) }}>
+                              <GitCommit size={13} /> {t('Commit')}
+                            </button>
+                          ) : null}
+                        </div>
+                      )}
+                    </Popover>
+                  </div>
+                </div>
+                {fileFilterOpen ? (
+                  <div className="review__filter-row">
+                    <div className="review__filter">
                       <Search size={12} />
                       <input
                         ref={fileFilterRef}
+                        autoFocus
                         value={fileFilter}
                         aria-label={t('Filter the changed files')}
                         placeholder={t('Filter the changed files')}
                         onChange={(event) => setFileFilter(event.target.value)}
                       />
                       {fileFilter ? (
-                        <button
-                          className="icon-btn"
-                          onClick={() => {
-                            setFileFilter('')
-                            fileFilterRef.current?.focus()
-                          }}
-                          title={t('Clear the filter')}
-                          aria-label={t('Clear the filter')}
-                        >
+                        <button className="icon-btn" onClick={() => { setFileFilter(''); fileFilterRef.current?.focus() }} title={t('Clear the filter')} aria-label={t('Clear the filter')}>
                           <X size={11} />
                         </button>
                       ) : null}
                     </div>
-                  ) : null}
-
-                  <div className="drawer__actions">
-                    <button
-                      className="ghost-btn"
-                      onClick={() => void copyDiff()}
-                      title={t('Copy the diff of every changed file')}
-                    >
-                      <FileDiff size={12} />
-                      {t('Copy the diff')}
-                    </button>
-                    <button
-                      className="ghost-btn"
-                      onClick={() => void copyPaths()}
-                      title={t('Copy the paths of the changed files')}
-                    >
-                      <Copy size={12} />
-                      {t('Copy paths')}
-                    </button>
-                    <button
-                      className="ghost-btn"
-                      onClick={askAboutChanges}
-                      title={t('Put the list of changed files in the composer')}
-                    >
-                      <MessageSquare size={12} />
-                      {t('Ask Pi')}
-                    </button>
-                    <span style={{ flex: 1 }} />
-                    <button
-                      className="icon-btn"
-                      onClick={() => setExpandAll((value) => value !== true)}
-                      title={expandAll === true ? t('Fold the unchanged lines') : t('Show the unchanged lines')}
-                      aria-label={expandAll === true ? t('Fold the unchanged lines') : t('Show the unchanged lines')}
-                      aria-pressed={expandAll === true}
-                    >
-                      {expandAll === true ? (
-                        <ChevronsDownUp size={13} />
-                      ) : (
-                        <ChevronsUpDown size={13} />
-                      )}
-                    </button>
                   </div>
+                ) : null}
+                <div className="review__summary">
+                  <span>{entries.length} {entries.length === 1 ? t('file') : t('files')}</span>
+                  <span className="review__totals">
+                    {visibleTotals.added ? <span data-kind="add">+{visibleTotals.added}</span> : null}
+                    {visibleTotals.removed ? <span data-kind="del">−{visibleTotals.removed}</span> : null}
+                  </span>
                 </div>
 
-                {entries.length === 0 ? (
+                {changes.length === 0 ? (
+                  <div className="drawer__empty">
+                    {git?.isRepo && git.files.length > 0
+                      ? t('This conversation has not changed any files.')
+                      : t('No files have been changed yet.')}
+                    <br />
+                    {git?.isRepo && git.files.length > 0
+                      ? t('The working tree has changes from outside this conversation.')
+                      : t('Edits and new files show up here as Pi works.')}
+                  </div>
+                ) : entries.length === 0 ? (
                   <div className="drawer__empty">{t('No changed file matches')} “{fileFilter}”.</div>
                 ) : null}
 
@@ -541,12 +552,11 @@ export function InspectorPanel({
                     <section className="change" key={change.path} data-open={isOpen}>
                       <header className="change__head">
                         <button
-                          className="icon-btn change__toggle"
+                          className="change__toggle"
                           aria-expanded={isOpen}
                           aria-label={`${isOpen ? t('Collapse this file') : t('Show the changes of this file')}: ${path}`}
                           title={isOpen ? t('Collapse this file') : t('Show the changes of this file')}
                           onClick={() => {
-                            changesInitialized.current = true
                             setOpenChanges((previous) => {
                               const next = new Set(previous)
                               if (next.has(change.path)) next.delete(change.path)
@@ -556,34 +566,25 @@ export function InspectorPanel({
                           }}
                         >
                           <ChevronRight size={12} />
+                          <span className="change__path" title={change.path}>{path}</span>
+                          {one.added || one.removed ? (
+                            <span className="change__stats">
+                              {one.added ? <span data-kind="add">+{one.added}</span> : null}
+                              {one.removed ? <span data-kind="del">−{one.removed}</span> : null}
+                            </span>
+                          ) : null}
+                          {change.edits > 1 ? (
+                            <span className="change__badge">{change.edits} {t('edits')}</span>
+                          ) : null}
                         </button>
-                        <span className="change__icon" data-kind={change.kind}>
-                          {change.kind === 'edit' ? <Pencil size={12} /> : <FilePlus size={12} />}
-                        </span>
-                        <button
-                          className="change__path"
-                          title={`${t('Open')} ${change.path}`}
-                          onClick={() => setOpenFile({ path: change.path })}
-                        >
-                          {path}
-                        </button>
-                        {one.added || one.removed ? (
-                          <span className="change__stats">
-                            {one.added ? <span data-kind="add">+{one.added}</span> : null}
-                            {one.removed ? <span data-kind="del">−{one.removed}</span> : null}
-                          </span>
-                        ) : null}
-                        {change.edits > 1 ? (
-                          <span className="change__badge">{change.edits} {t('edits')}</span>
-                        ) : null}
-                        <button
-                          className="change__reveal"
-                          title={t('Reveal in the file manager')}
-                          aria-label={`${t('Reveal in the file manager')}: ${change.path}`}
-                          onClick={() => void window.pi.fs.reveal(change.path)}
-                        >
-                          <ExternalLink size={12} />
-                        </button>
+                        <div className="change__file-actions">
+                          <button className="icon-btn" title={t('Open the file')} aria-label={`${t('Open the file')}: ${change.path}`} onClick={() => setOpenFile({ path: change.path })}>
+                            <SquareArrowOutUpRight size={12} />
+                          </button>
+                          <button className="icon-btn" title={t('Reveal in the file manager')} aria-label={`${t('Reveal in the file manager')}: ${change.path}`} onClick={() => void window.pi.fs.reveal(change.path)}>
+                            <ExternalLink size={12} />
+                          </button>
+                        </div>
                       </header>
 
                       {isOpen ? (
@@ -611,7 +612,14 @@ export function InspectorPanel({
                   )
                 })}
               </div>
-            )}
+          </div>
+
+          <div className="drawer__pane" data-active={!openFile && tab === 'browser'}>
+            <BrowserView />
+          </div>
+
+          <div className="drawer__pane" data-active={!openFile && tab === 'images'}>
+            <ImageViewer />
           </div>
 
           <div className="drawer__pane" data-active={Boolean(openFile)}>

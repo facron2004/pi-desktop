@@ -173,6 +173,7 @@ export interface AppStore {
   bootstrap: () => Promise<void>
   openWorkspace: (workspace: Workspace, sessionFile?: string) => Promise<void>
   pickWorkspace: () => Promise<void>
+  closeWorkspace: () => Promise<void>
   /**
    * Make the project at `path` the active one and run Pi there.
    *
@@ -219,6 +220,7 @@ export interface AppStore {
   /** How follow-up messages are delivered: one at a time or all at once. */
   setFollowUpMode: (mode: 'all' | 'one-at-a-time') => Promise<void>
   refreshState: () => Promise<void>
+  refreshInfo: () => Promise<void>
   /** Remember the conversation that is open in the current project. */
   rememberSession: (file: string) => Promise<void>
   reloadMessages: () => Promise<void>
@@ -340,10 +342,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
     const target = active ?? settings.workspaces[0]
     if (target) {
-      // The conversation that was open in this project is opened again, so
-      // the user comes back to the work rather than to an empty screen.
-      const remembered = settings.lastSessions?.[target.path]
-      await get().openWorkspace(target, remembered)
+      // The project is reopened so Pi is ready where the user works, but the
+      // conversation is not: a start stays a new chat. The last conversation is
+      // still remembered for the next one and offered by name on the welcome
+      // screen, and a click there is the reader asking for it.
+      await get().openWorkspace(target)
     }
   },
 
@@ -353,6 +356,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
     // Picking a folder is an explicit request for a new project: it may
     // replace the running one, unlike a click that only wanted to look.
     await get().switchProject(workspace.path, { allowWhileRunning: true })
+  },
+
+  async closeWorkspace() {
+    drainPending()
+    pendingProjectPath = undefined
+    set({ pendingProject: undefined })
+    await window.pi.runtime.stop()
+    const settings = await window.pi.settings.patch({ activeWorkspaceId: undefined })
+    set({ workspace: undefined, items: [], status: { phase: 'stopped' }, settings })
   },
 
   async switchProject(path, options) {
@@ -502,9 +514,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
         await get().openWorkspace(target, session.file)
         return
       }
-      await window.pi.runtime.request('switch_session', { sessionPath: session.file })
-      await get().refreshState()
-      await get().reloadMessages()
+      if (get().status.phase !== 'ready') {
+        await get().openWorkspace(workspace, session.file)
+        return
+      }
+      try {
+        await window.pi.runtime.request('switch_session', { sessionPath: session.file })
+        await get().refreshState()
+        await get().reloadMessages()
+      } catch {
+        // If switch_session failed (e.g. transport died), reboot Pi with this session.
+        await get().openWorkspace(workspace, session.file)
+      }
     } catch (error) {
       set({ error: messageOf(error) })
     }
@@ -953,10 +974,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
+  async refreshInfo() {
+    try {
+      const info = await window.pi.app.info()
+      set({ info })
+    } catch {
+      /* ignore */
+    }
+  },
+
   /**
    * Remember which conversation was open in a project.
-   *
-   * The next start of the app opens it again, so the user does not lose the
    * thread of the work they were in the middle of.
    */
   async rememberSession(file) {
@@ -1375,6 +1403,102 @@ export function applyAppearance(
   const dark = theme === 'dark' || (theme === 'system' && prefersDark)
   root.dataset.theme = dark ? 'dark' : 'light'
   root.style.setProperty('--font-scale', String(settings.fontScale ?? 1))
+
+  const remove = (prop: string) => {
+    if (typeof root.style?.removeProperty === 'function') {
+      root.style.removeProperty(prop)
+    } else if (typeof root.style?.setProperty === 'function') {
+      root.style.setProperty(prop, '')
+    }
+  }
+
+  // Tone
+  if (settings.themeTone && settings.themeTone !== 'neutral') {
+    root.dataset.tone = settings.themeTone
+  } else {
+    delete root.dataset.tone
+  }
+
+  // Accent color
+  if (settings.accentColor) {
+    root.style.setProperty('--accent', settings.accentColor)
+    root.style.setProperty('--focus-ring', settings.accentColor)
+    root.style.setProperty('--accent-hover', `color-mix(in srgb, var(--accent) 88%, ${dark ? '#ffffff' : '#000000'})`)
+    root.style.setProperty('--accent-soft', `color-mix(in srgb, var(--accent) 15%, transparent)`)
+    root.style.setProperty('--accent-line', `color-mix(in srgb, var(--accent) 35%, transparent)`)
+    root.style.setProperty('--accent-glow', `0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent)`)
+  } else {
+    remove('--accent')
+    remove('--focus-ring')
+    remove('--accent-hover')
+    remove('--accent-soft')
+    remove('--accent-line')
+    remove('--accent-glow')
+  }
+
+  // Custom Background
+  if (settings.customBg) {
+    root.style.setProperty('--surface-canvas', settings.customBg)
+    root.style.setProperty('--surface-raised', settings.customBg)
+    root.style.setProperty('--surface-overlay', settings.customBg)
+    root.style.setProperty('--bg', settings.customBg)
+    root.style.setProperty('--surface-chrome', `color-mix(in srgb, var(--surface-canvas) 92%, ${dark ? '#000000' : '#e8e8e8'})`)
+    root.style.setProperty('--chrome-bg', `color-mix(in srgb, var(--surface-canvas) 90%, ${dark ? '#000000' : '#e0e0e0'})`)
+    root.style.setProperty('--sidebar-bg', `color-mix(in srgb, var(--surface-canvas) 94%, ${dark ? '#000000' : '#f0f0f0'})`)
+    root.style.setProperty('--surface-sunken', `color-mix(in srgb, var(--surface-canvas) 85%, ${dark ? '#000000' : '#dedede'})`)
+    root.style.setProperty('--bg-hover', `color-mix(in srgb, var(--surface-canvas) 88%, ${dark ? '#ffffff' : '#000000'})`)
+    root.style.setProperty('--bg-active', `color-mix(in srgb, var(--surface-canvas) 80%, ${dark ? '#ffffff' : '#000000'})`)
+  } else {
+    remove('--surface-canvas')
+    remove('--surface-raised')
+    remove('--surface-overlay')
+    remove('--bg')
+    remove('--surface-chrome')
+    remove('--chrome-bg')
+    remove('--sidebar-bg')
+    remove('--surface-sunken')
+    remove('--bg-hover')
+    remove('--bg-active')
+  }
+
+  // Custom Foreground
+  if (settings.customFg) {
+    root.style.setProperty('--text-primary', settings.customFg)
+    root.style.setProperty('--text', settings.customFg)
+    root.style.setProperty('--text-secondary', `color-mix(in srgb, var(--text-primary) 68%, transparent)`)
+    root.style.setProperty('--text-tertiary', `color-mix(in srgb, var(--text-primary) 48%, transparent)`)
+    root.style.setProperty('--text-muted', `color-mix(in srgb, var(--text-primary) 58%, transparent)`)
+    root.style.setProperty('--text-faint', `color-mix(in srgb, var(--text-primary) 36%, transparent)`)
+  } else {
+    remove('--text-primary')
+    remove('--text')
+    remove('--text-secondary')
+    remove('--text-tertiary')
+    remove('--text-muted')
+    remove('--text-faint')
+  }
+
+  // Custom Font
+  if (settings.fontFamily && settings.fontFamily !== 'system') {
+    const fontMap: Record<string, string> = {
+      sans: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      chinese: "'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif",
+      mono: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace",
+      serif: "'Newsreader', 'Georgia', 'Songti SC', 'SimSun', serif"
+    }
+    const mapped = fontMap[settings.fontFamily]
+    const fontVal =
+      mapped ??
+      (settings.fontFamily.includes(',') || settings.fontFamily.includes('"') || settings.fontFamily.includes("'")
+        ? settings.fontFamily
+        : `"${settings.fontFamily}", sans-serif`)
+    root.style.setProperty('--font-ui', fontVal)
+    root.style.setProperty('--font-sidebar', fontVal)
+  } else {
+    remove('--font-ui')
+    remove('--font-sidebar')
+  }
+
   void window.pi.app.setTheme(dark ? 'dark' : 'light')
 }
 

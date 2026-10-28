@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Notification, dialog, ipcMain, shell } from 'electron'
+import { exec } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from 'node:fs'
 import path from 'node:path'
@@ -12,6 +13,9 @@ import type {
   RuntimeStartOptions,
   RuntimeStatus,
   TextSearchHit,
+  UpgradeResult,
+  VersionCheckResult,
+  VersionItemStatus,
   Workspace
 } from '@shared/types'
 import { checkAuth, piVersion } from './pi/cli'
@@ -42,7 +46,8 @@ import {
   pullBranch
 } from './git'
 import { SettingsStore } from './settings'
-import { listSessions, resolveSessionRoot, searchSessions } from './sessions'
+import { getAggregatedUsage, listSessions, resolveSessionRoot, searchSessions } from './sessions'
+import { querySystemFonts } from './fonts'
 
 export interface IpcContext {
   runtime: PiRuntime
@@ -152,6 +157,41 @@ function isInside(root: string, target: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
+/** The picture types the inspector's viewer can draw, by file extension. */
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.avif': 'image/avif'
+}
+
+/**
+ * A picture of the open project as a data URL.
+ *
+ * The renderer may not read the disk, so the bytes come across as a data URL
+ * the viewer can paint. Anything that is not an image inside the project, or
+ * that is too large to hand to a `<img>`, is `null` rather than an error.
+ */
+function readImageDataUrl(context: IpcContext, file: string): string | null {
+  const root = workspaceRoot(context)
+  const target = path.resolve(root, file)
+  if (!isInside(root, target)) return null
+  const type = IMAGE_MIME[path.extname(target).toLowerCase()]
+  if (!type) return null
+  try {
+    const stats = statSync(target)
+    if (!stats.isFile() || stats.size > 24 * 1024 * 1024) return null
+    return `data:${type};base64,${readFileSync(target).toString('base64')}`
+  } catch {
+    return null
+  }
+}
+
 function workspaceName(dir: string): string {
   const base = path.basename(dir)
   return base || dir
@@ -219,6 +259,43 @@ function searchFileText(file: string, needle: string, remaining: number): TextSe
   return hits
 }
 
+function isNewerVersion(latest: string, current: string): boolean {
+  const l = latest.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const c = current.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(l.length, c.length); i++) {
+    const li = l[i] ?? 0
+    const ci = c[i] ?? 0
+    if (li > ci) return true
+    if (li < ci) return false
+  }
+  return false
+}
+
+function fetchLatestPiCliVersion(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+    exec(`${npmCmd} view @earendil-works/pi-coding-agent version`, { timeout: 8_000 }, (err, stdout) => {
+      if (err) return reject(err)
+      const v = stdout.trim()
+      if (v) resolve(v)
+      else reject(new Error('No version returned by npm'))
+    })
+  })
+}
+
+function runNpmInstall(cwd: string, pkg: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+    exec(`${npmCmd} install ${pkg}`, { cwd, timeout: 180_000 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr || stdout || error.message))
+      } else {
+        resolve()
+      }
+    })
+  })
+}
+
 /** The theme a development flag forces for this run, if any. */
 function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
   const value = process.env.PI_DESKTOP_THEME
@@ -235,7 +312,7 @@ export function registerIpc(context: IpcContext): void {
     return {
       // `npm_package_version` only exists when npm launched the app; a
       // packaged build reads the version it was built with instead.
-      version: process.env.npm_package_version ?? app.getVersion() ?? '0.2.0',
+      version: process.env.npm_package_version ?? app.getVersion() ?? '0.3.0',
       electron: process.versions.electron,
       node: process.versions.node,
       platform: process.platform,
@@ -246,9 +323,26 @@ export function registerIpc(context: IpcContext): void {
         display: launch.display,
         version
       },
-      sessionRoot: resolveSessionRoot(),
+      sessionRoot: resolveSessionRoot(settings.get().externalChatFolder),
       forcedTheme: forcedTheme()
     }
+  })
+
+  ipcMain.handle('dialog:pickDirectory', async (_event, defaultPath?: string): Promise<string | null> => {
+    const window = getWindow()
+    const result = window
+      ? await dialog.showOpenDialog(window, {
+          title: 'Select folder',
+          defaultPath: defaultPath || undefined,
+          properties: ['openDirectory', 'createDirectory']
+        })
+      : await dialog.showOpenDialog({
+          title: 'Select folder',
+          defaultPath: defaultPath || undefined,
+          properties: ['openDirectory', 'createDirectory']
+        })
+    if (result.canceled || !result.filePaths.length) return null
+    return result.filePaths[0]
   })
 
   ipcMain.handle('app:setTheme', (_event, theme: 'dark' | 'light') => {
@@ -263,6 +357,67 @@ export function registerIpc(context: IpcContext): void {
       )
     } catch {
       /* the platform may not support a title bar overlay */
+    }
+  })
+
+  ipcMain.handle('app:getSystemFonts', async (): Promise<string[]> => {
+    return querySystemFonts()
+  })
+
+  ipcMain.handle('app:checkUpdate', async (): Promise<VersionCheckResult> => {
+    const currentPiVersion = (await piVersion(settings.get().piPath)) || '1.4.0'
+    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.3.0'
+
+    let piCliStatus: VersionItemStatus = {
+      current: currentPiVersion,
+      hasUpdate: false
+    }
+
+    try {
+      const latestPi = await fetchLatestPiCliVersion()
+      piCliStatus = {
+        current: currentPiVersion,
+        latest: latestPi,
+        hasUpdate: isNewerVersion(latestPi, currentPiVersion)
+      }
+    } catch (err: unknown) {
+      piCliStatus.error = err instanceof Error ? err.message : 'Failed to check Pi CLI updates'
+    }
+
+    const appStatus: VersionItemStatus = {
+      current: currentAppVersion,
+      latest: currentAppVersion,
+      hasUpdate: false
+    }
+
+    return {
+      app: appStatus,
+      piCli: piCliStatus
+    }
+  })
+
+  ipcMain.handle('app:upgradePiCli', async (): Promise<UpgradeResult> => {
+    try {
+      const cwd = app.getAppPath()
+      await runNpmInstall(cwd, '@earendil-works/pi-coding-agent@latest')
+      const updatedVersion = await piVersion(settings.get().piPath)
+      return { success: true, version: updatedVersion || undefined }
+    } catch (err: unknown) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('app:upgradeApp', async (): Promise<UpgradeResult> => {
+    try {
+      const root = app.getAppPath()
+      const res = await pullBranch(root)
+      if (!res.ok) {
+        return { success: false, error: res.error || 'Failed to pull update' }
+      }
+      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.3.0'
+      return { success: true, version: current }
+    } catch (err: unknown) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
     }
   })
 
@@ -323,6 +478,11 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('sessions:search', (_event, query: string, limit?: number) =>
     searchSessions(query, limit)
   )
+
+  ipcMain.handle('sessions:usageStats', (_event, customDir?: string) => {
+    const userDir = customDir?.trim() || settings.get().externalChatFolder?.trim()
+    return getAggregatedUsage(userDir || undefined)
+  })
 
   // Git is read from the folder Pi runs in: the review panel and the branch
   // chip describe the work tree the agent is actually editing.
@@ -632,6 +792,37 @@ export function registerIpc(context: IpcContext): void {
   )
 
   ipcMain.handle('shell:openPath', async (_event, target: string) => {
+    const opener = settings.get().defaultFileOpener
+    if (opener === 'vscode') {
+      try {
+        const { spawn } = await import('node:child_process')
+        spawn('code', [target], { shell: true, detached: true })
+        return ''
+      } catch {
+        /* fallback to system default */
+      }
+    } else if (opener === 'cursor') {
+      try {
+        const { spawn } = await import('node:child_process')
+        spawn('cursor', [target], { shell: true, detached: true })
+        return ''
+      } catch {
+        /* fallback to system default */
+      }
+    } else if (opener === 'windsurf') {
+      try {
+        const { spawn } = await import('node:child_process')
+        spawn('windsurf', [target], { shell: true, detached: true })
+        return ''
+      } catch {
+        /* fallback to system default */
+      }
+    }
+    const error = await shell.openPath(target)
+    return error
+  })
+
+  ipcMain.handle('shell:openInExplorer', async (_event, target: string) => {
     const error = await shell.openPath(target)
     return error
   })
@@ -640,6 +831,13 @@ export function registerIpc(context: IpcContext): void {
     if (!/^https?:\/\//i.test(url)) return
     await shell.openExternal(url)
   })
+
+  // A picture from the project, read as a data URL. The inspector's viewer
+  // draws the project's images, and it may not touch the disk itself.
+  ipcMain.handle(
+    'fs:readImageDataUrl',
+    (_event, file: string) => readImageDataUrl(context, file)
+  )
 }
 
 /**

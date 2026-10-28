@@ -3,7 +3,6 @@ import {
   ArrowUp,
   ChevronLeft,
   ChevronRight,
-  CornerDownLeft,
   FolderOpen,
   ListFilter,
   Paperclip,
@@ -21,8 +20,10 @@ import { relativePath } from '../lib/path'
 import { useT } from '../lib/i18n'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
-import { ModelControls } from './TopBar'
+import { ModelPicker } from './TopBar'
 import { Popover } from './Popover'
+import { ProjectSelector } from './ProjectSelector'
+import { BranchMenu } from './BranchMenu'
 
 interface SlashMatch {
   query: string
@@ -34,30 +35,6 @@ interface MentionMatch {
   query: string
   start: number
   cursor: number
-}
-
-/**
- * An image waiting in the composer.
- *
- * The store's payload is `{ data, mimeType }` and the same picture can be
- * attached twice, so the chip carries an id of its own: the list is keyed by
- * it and the remove button names the attachment by it. It never leaves this
- * component — the id is mapped away at the `send(...)` call site.
- */
-interface ComposerImage {
-  id: string
-  data: string
-  mimeType: string
-}
-
-// A counter is enough here: the id only has to tell the chips on screen apart,
-// including two attachments of the same picture, and it is minted once when
-// the file is read rather than on every render.
-let imageCounter = 0
-
-function nextImageId(): string {
-  imageCounter += 1
-  return `image-${imageCounter}`
 }
 
 type AddMenuPage = 'actions' | 'skills' | 'plugins'
@@ -90,9 +67,8 @@ function detectMention(text: string, cursor: number): MentionMatch | null {
 export function Composer() {
   const send = useAppStore((state) => state.send)
   const stop = useAppStore((state) => state.stop)
-  const clearQueue = useAppStore((state) => state.clearQueue)
   const isStreaming = useAppStore((state) => state.isStreaming)
-  const run = useAppStore((state) => state.run)
+  const aborting = useAppStore((state) => state.run.phase === 'aborting')
   const queue = useAppStore((state) => state.queue)
   const status = useAppStore((state) => state.status)
   const workspace = useAppStore((state) => state.workspace)
@@ -101,16 +77,23 @@ export function Composer() {
   const composerText = useAppStore((state) => state.composerText)
   const clearComposerText = useAppStore((state) => state.clearComposerText)
   const composerInsert = useAppStore((state) => state.composerInsert)
-  const error = useAppStore((state) => state.error)
-  const dismissError = useAppStore((state) => state.dismissError)
-  const pendingProject = useAppStore((state) => state.pendingProject)
   const fontScale = useAppStore((state) => state.settings.fontScale ?? 1)
+  const sendShortcut = useAppStore((state) => state.settings.sendShortcut ?? 'enter')
+  const defaultFollowUpMode = useAppStore((state) => state.settings.followUpMode ?? 'steer')
+  const plainTextEditor = useAppStore((state) => state.settings.plainTextEditor === true)
+  const hasDialogue = useAppStore(
+    (state) => state.items.length > 0 || Boolean(state.activeSessionFile)
+  )
   const t = useT()
   const toast = useAppStore((state) => state.toast)
 
   const [text, setText] = useState('')
-  const [images, setImages] = useState<ComposerImage[]>([])
-  const [kind, setKind] = useState<QueueKind>('steer')
+  const [images, setImages] = useState<{ data: string; mimeType: string }[]>([])
+  const [kind, setKind] = useState<QueueKind>(defaultFollowUpMode === 'queue' ? 'followUp' : 'steer')
+
+  useEffect(() => {
+    setKind(defaultFollowUpMode === 'queue' ? 'followUp' : 'steer')
+  }, [defaultFollowUpMode])
   const [slash, setSlash] = useState<SlashMatch | null>(null)
   const [mention, setMention] = useState<MentionMatch | null>(null)
   const [mentionFiles, setMentionFiles] = useState<FileEntry[]>([])
@@ -125,9 +108,6 @@ export function Composer() {
   const mentionListRef = useRef<HTMLDivElement>(null)
 
   const ready = status.phase === 'ready'
-  // While Pi is being asked to stop, the run has not settled yet: the button
-  // stays live so a second press is possible, but it says what is happening.
-  const aborting = run.phase === 'aborting'
   const inputPrompt = ready
     ? t('Describe a task, or use @ to reference project files…')
     : !workspace
@@ -335,13 +315,7 @@ export function Composer() {
 
   const submit = useCallback(() => {
     if (!text.trim() && !images.length) return
-    // The chip id is local bookkeeping; the store still receives plain
-    // `{ data, mimeType }` attachments.
-    void send(
-      text,
-      images.map(({ data, mimeType }) => ({ data, mimeType })),
-      kind
-    )
+    void send(text, images, kind)
     setHistory((current) => [text, ...current.filter((entry) => entry !== text)].slice(0, 50))
     setHistoryIndex(-1)
     setText('')
@@ -349,13 +323,6 @@ export function Composer() {
     closePalette()
     setMention(null)
   }, [text, images, kind, send, closePalette])
-
-  const hasDraft = Boolean(text.trim() || images.length)
-  // One button, two meanings: while nothing runs it sends, while the agent
-  // works it stops — unless the user has typed something, in which case
-  // sending is what the round button is for and the stop sits in the hint row.
-  const shouldStop = isStreaming && !hasDraft
-  const primaryAction = shouldStop ? () => void stop() : submit
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
@@ -409,10 +376,28 @@ export function Composer() {
       }
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-      submit()
-      return
+    const isEnter = event.key === 'Enter'
+    const isCtrlEnter = isEnter && (event.ctrlKey || event.metaKey)
+    const isPlainEnter = isEnter && !event.shiftKey && !event.ctrlKey && !event.metaKey
+
+    if (sendShortcut === 'ctrlEnter') {
+      if (isCtrlEnter) {
+        event.preventDefault()
+        submit()
+        return
+      }
+    } else {
+      if (isPlainEnter) {
+        event.preventDefault()
+        submit()
+        return
+      }
+      if (isCtrlEnter) {
+        event.preventDefault()
+        setKind((current) => (current === 'steer' ? 'followUp' : 'steer'))
+        submit()
+        return
+      }
     }
 
     // Recall previous prompts with the arrow keys when the composer is empty.
@@ -432,49 +417,17 @@ export function Composer() {
     }
   }
 
-  const insertFilePath = useCallback(
-    (rawPath: string) => {
-      if (!rawPath) return
-      const rel = workspace?.path
-        ? relativePath(workspace.path, rawPath).replace(/\\/g, '/')
-        : rawPath.replace(/\\/g, '/')
-      const ref = `@${rel} `
-      setText((current) => {
-        if (!current) return ref
-        return /\s$/.test(current) ? `${current}${ref}` : `${current} ${ref}`
-      })
-      requestAnimationFrame(() => {
-        const target = textareaRef.current
-        if (!target) return
-        target.focus()
-        const end = target.value.length
-        target.setSelectionRange(end, end)
-      })
-    },
-    [workspace?.path]
-  )
-
   const onFiles = (files: FileList | null) => {
     if (!files) return
     for (const file of Array.from(files)) {
-      if (file.type.startsWith('image/')) {
-        const reader = new FileReader()
-        reader.onload = () => {
-          const result = String(reader.result ?? '')
-          const base64 = result.split(',')[1]
-          if (base64)
-            setImages((current) => [
-              ...current,
-              { id: nextImageId(), data: base64, mimeType: file.type }
-            ])
-        }
-        reader.readAsDataURL(file)
-        continue
+      if (!file.type.startsWith('image/')) continue
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = String(reader.result ?? '')
+        const base64 = result.split(',')[1]
+        if (base64) setImages((current) => [...current, { data: base64, mimeType: file.type }])
       }
-      const filePath = window.pi.fs.pathForFile(file)
-      if (filePath) {
-        insertFilePath(filePath)
-      }
+      reader.readAsDataURL(file)
     }
   }
 
@@ -530,18 +483,11 @@ export function Composer() {
     [text]
   )
 
-  // The runtime queue is a list of strings, so two byte-identical queued
-  // messages are indistinguishable and share a key. Content plus kind is
-  // still better than the index: recalling or clearing the queue removes
-  // entries and would otherwise re-key every row that follows.
   const pendingQueue = [
     ...queue.steering.map((value) => ({ kind: 'steer' as const, text: value })),
     ...queue.followUp.map((value) => ({ kind: 'followUp' as const, text: value }))
   ]
   const addMenuCommands = addMenuPage === 'skills' ? skillCommands : pluginCommands
-  const trimmedStart = text.trimStart()
-  const isShell = images.length === 0 && trimmedStart.startsWith('!')
-  const isShellNoContext = isShell && trimmedStart.startsWith('!!')
 
   return (
     <div className="composer-wrap">
@@ -567,103 +513,42 @@ export function Composer() {
           />
         ) : null}
 
+        {!hasDialogue ? (
+          <div className="composer__top-selectors">
+            <ProjectSelector placement="top" align="left" />
+            {workspace ? (
+              <BranchMenu
+                placement="top"
+                align="left"
+                onOpenChanges={() => {
+                  window.dispatchEvent(
+                    new CustomEvent('pi:open-inspector', { detail: { tab: 'changes' } })
+                  )
+                }}
+              />
+            ) : null}
+          </div>
+        ) : null}
+
         <div
           className="composer"
           data-streaming={isStreaming}
           data-has-content={Boolean(text.trim() || images.length > 0)}
-          data-shell={isShell ? 'true' : undefined}
-          onDragOver={(event) => {
-            if (
-              event.dataTransfer?.types.includes('application/x-pi-file') ||
-              event.dataTransfer?.types.includes('Files')
-            ) {
-              event.preventDefault()
-              event.dataTransfer.dropEffect = 'copy'
-            }
-          }}
-          onDrop={(event) => {
-            const customFile = event.dataTransfer?.getData('application/x-pi-file')
-            if (customFile) {
-              event.preventDefault()
-              insertFilePath(customFile)
-              return
-            }
-            if (event.dataTransfer?.files?.length) {
-              event.preventDefault()
-              onFiles(event.dataTransfer.files)
-            }
-          }}
         >
-          {/* The app's own messages sit in the box, so they never cover the
-              text the user is writing. */}
-          {error ? (
-            <div className="composer__notice" data-level="error" role="alert">
-              <span>{error}</span>
-              <button
-                className="icon-btn"
-                onClick={dismissError}
-                aria-label={t('Dismiss')}
-                title={t('Dismiss')}
-              >
-                <X size={12} />
-              </button>
-            </div>
-          ) : toast ? (
+          {toast ? (
             <div className="composer__notice" data-level={toast.level}>
               {t(toast.text)}
-            </div>
-          ) : null}
-
-          {/* A project the user asked for while the agent is working is not
-              opened yet: the run keeps its session. The chip says so, so the
-              wait is visible instead of looking like a dropped click. */}
-          {pendingProject ? (
-            <div className="composer__notice" data-level="info" role="status">
-              <span>
-                {t('Opening {project} when this run is done').replace(
-                  '{project}',
-                  pendingProject.name
-                )}
-              </span>
             </div>
           ) : null}
 
           {pendingQueue.length > 0 ? (
             <div className="composer__queue">
               {pendingQueue.map((entry, index) => (
-                <div
-                  className="composer__queue-item"
-                  data-kind={entry.kind}
-                  key={`${entry.kind}:${entry.text}`}
-                >
+                <div className="composer__queue-item" data-kind={entry.kind} key={index}>
                   <span className="composer__queue-tag">
                     {entry.kind === 'steer' ? t('Steer') : t('Queue')}
                   </span>
                   <span className="composer__queue-text">{entry.text}</span>
-                  {index === 0 ? (
-                    <div className="composer__queue-actions">
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        style={{ width: 20, height: 20 }}
-                        onClick={() => void clearQueue(true)}
-                        title={t('Recall queued messages to editor')}
-                        aria-label={t('Recall queued messages to editor')}
-                      >
-                        <CornerDownLeft size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        style={{ width: 20, height: 20 }}
-                        onClick={() => void clearQueue(false)}
-                        title={t('Clear queued messages')}
-                        aria-label={t('Clear queued messages')}
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  ) : null}
                 </div>
               ))}
             </div>
@@ -673,10 +558,7 @@ export function Composer() {
             <div className="composer__queue">
               <div className="composer__queue-item">
                 {images.map((image, index) => (
-                  <span
-                    key={image.id}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                  >
+                  <span key={index} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <img
                       src={`data:${image.mimeType};base64,${image.data}`}
                       alt=""
@@ -685,9 +567,7 @@ export function Composer() {
                     <button
                       className="icon-btn"
                       style={{ width: 20, height: 20 }}
-                      onClick={() =>
-                        setImages((current) => current.filter((entry) => entry.id !== image.id))
-                      }
+                      onClick={() => setImages((current) => current.filter((_, i) => i !== index))}
                       aria-label={`${t('Remove image')} ${index + 1}`}
                       title={`${t('Remove image')} ${index + 1}`}
                     >
@@ -729,6 +609,14 @@ export function Composer() {
               }, 120)
             }}
             onPaste={(event) => {
+              if (plainTextEditor) {
+                const textOnly = event.clipboardData?.getData('text/plain')
+                if (textOnly && !event.clipboardData?.files?.length) {
+                  event.preventDefault()
+                  document.execCommand('insertText', false, textOnly)
+                  return
+                }
+              }
               const files = event.clipboardData?.files
               if (files && files.length) {
                 event.preventDefault()
@@ -736,37 +624,12 @@ export function Composer() {
               }
             }}
             onDrop={(event) => {
-              const customFile = event.dataTransfer?.getData('application/x-pi-file')
-              if (customFile) {
-                event.preventDefault()
-                event.stopPropagation()
-                insertFilePath(customFile)
-                return
-              }
-              if (event.dataTransfer?.files?.length) {
-                event.preventDefault()
-                event.stopPropagation()
-                onFiles(event.dataTransfer.files)
-              }
+              event.preventDefault()
+              onFiles(event.dataTransfer?.files ?? null)
             }}
           />
 
           <div className="composer__bar" data-streaming={isStreaming} data-ready={ready}>
-            {isShell ? (
-              <span
-                className="composer__shell-badge"
-                title={
-                  isShellNoContext
-                    ? t('Runs in shell and excludes output from model context')
-                    : t('Runs in shell and includes output in model context')
-                }
-              >
-                <Terminal size={12} />
-                <span>
-                  {isShellNoContext ? t('!! Shell (no context)') : t('! Shell (in context)')}
-                </span>
-              </span>
-            ) : null}
             <Popover
               placement="top"
               width={270}
@@ -894,11 +757,9 @@ export function Composer() {
               }}
             />
 
-            {ready ? (
-              <div className="composer__models">
-                <ModelControls />
-              </div>
-            ) : null}
+            <div className="composer__bar-spacer" />
+
+            {ready ? <ModelPicker /> : null}
 
             {isStreaming ? (
               <Popover
@@ -961,71 +822,20 @@ export function Composer() {
             ) : null}
 
             {isStreaming ? (
-              <div className="composer__hint">
-                <div className="segmented" title={t('How the next message is delivered')}>
-                  <button
-                    data-active={kind === 'steer'}
-                    aria-pressed={kind === 'steer'}
-                    onClick={() => setKind('steer')}
-                    title={t('Deliver after the current tool calls finish')}
-                  >
-                    {t('Steer')}
-                  </button>
-                  <button
-                    data-active={kind === 'followUp'}
-                    aria-pressed={kind === 'followUp'}
-                    onClick={() => setKind('followUp')}
-                    title={t('Deliver when the current run is done')}
-                  >
-                    {t('Queue')}
-                  </button>
-                </div>
-                {/* The same switch as the round button, kept within reach for
-                    the moment a draft turns that button back into "send". */}
-                {!shouldStop ? (
-                  <button
-                    type="button"
-                    className="composer__stop-link"
-                    data-aborting={aborting || undefined}
-                    onClick={() => void stop()}
-                    title={t('Stop the current run (Esc)')}
-                  >
-                    <Square size={8} fill="currentColor" strokeWidth={0} />
-                    {aborting ? t('Stopping…') : t('Stop')}
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-
-            {isStreaming ? (
               <button
-                className="btn btn--primary composer__send composer__send--stop"
-                data-stop={Boolean(shouldStop)}
+                type="button"
+                className="btn composer__send composer__send--stop"
                 data-aborting={aborting || undefined}
-                onClick={primaryAction}
-                // Stopping is always possible, whether or not there is a draft.
-                disabled={!ready || (!shouldStop && !text.trim() && !images.length)}
-                aria-label={shouldStop ? t('Stop the current run (Esc)') : t('Send message')}
-                title={
-                  shouldStop
-                    ? aborting
-                      ? t('Stopping…')
-                      : t('Stop the current run (Esc)')
-                    : kind === 'steer'
-                      ? t('Send now — Pi applies it after the current tool calls finish')
-                      : t('Queue — Pi applies it when the current run is done')
-                }
+                disabled={aborting}
+                onClick={() => void stop()}
+                aria-label={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
+                title={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
               >
-                {shouldStop ? (
-                  aborting ? undefined : (
-                    <Square size={12} fill="currentColor" strokeWidth={0} />
-                  )
-                ) : (
-                  <ArrowUp size={18} strokeWidth={2.6} />
-                )}
+                <Square size={12} fill="currentColor" strokeWidth={0} />
               </button>
             ) : (
               <button
+                type="button"
                 className="btn btn--primary composer__send"
                 onClick={submit}
                 disabled={!ready || (!text.trim() && !images.length)}

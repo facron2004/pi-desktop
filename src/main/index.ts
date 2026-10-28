@@ -45,6 +45,9 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // The inspector's browser tab is a <webview>: an isolated, sandboxed view
+      // of the page the reader typed, with no preload and no node access.
+      webviewTag: true,
       spellcheck: true,
       additionalArguments: [
         ...(process.env.PI_DESKTOP_PREFILL
@@ -100,6 +103,24 @@ function createWindow(): BrowserWindow {
     window.webContents.on('preload-error', (_event, preloadPath, error) => {
       console.error('[renderer] preload error:', preloadPath, error)
     })
+
+    // Allow toggling DevTools via F12 or Ctrl+Shift+I (Cmd+Option+I on macOS)
+    window.webContents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return
+      const isF12 = input.key === 'F12'
+      const isDevToolsCombo =
+        (input.control || input.meta) &&
+        (input.shift || input.alt) &&
+        input.key.toLowerCase() === 'i'
+      if (isF12 || isDevToolsCombo) {
+        window.webContents.toggleDevTools()
+        event.preventDefault()
+      }
+    })
+
+    if (!process.env.PI_DESKTOP_SCREENSHOT) {
+      window.webContents.openDevTools({ mode: 'detach' })
+    }
   }
 
   window.webContents.setWindowOpenHandler(({ url }) => {

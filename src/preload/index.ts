@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
+  AggregatedUsageStats,
   AppInfo,
   AppSettings,
   AuthStatus,
@@ -23,6 +24,8 @@ import type {
   SessionMeta,
   SessionSearchHit,
   TextSearchHit,
+  UpgradeResult,
+  VersionCheckResult,
   Workspace
 } from '@shared/types'
 
@@ -37,7 +40,15 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
 const bridge: PiDesktopBridge = {
   app: {
     info: (): Promise<AppInfo> => ipcRenderer.invoke('app:info'),
-    setTheme: (theme: 'dark' | 'light'): Promise<void> => ipcRenderer.invoke('app:setTheme', theme)
+    setTheme: (theme: 'dark' | 'light'): Promise<void> => ipcRenderer.invoke('app:setTheme', theme),
+    getSystemFonts: (): Promise<string[]> => ipcRenderer.invoke('app:getSystemFonts'),
+    checkUpdate: (): Promise<VersionCheckResult> => ipcRenderer.invoke('app:checkUpdate'),
+    upgradePiCli: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:upgradePiCli'),
+    upgradeApp: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:upgradeApp')
+  },
+  dialog: {
+    pickDirectory: (defaultPath?: string): Promise<string | null> =>
+      ipcRenderer.invoke('dialog:pickDirectory', defaultPath)
   },
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
@@ -54,7 +65,9 @@ const bridge: PiDesktopBridge = {
     list: (cwd?: string): Promise<SessionMeta[]> => ipcRenderer.invoke('sessions:list', cwd),
     remove: (file: string): Promise<boolean> => ipcRenderer.invoke('sessions:remove', file),
     search: (query: string, limit?: number): Promise<SessionSearchHit[]> =>
-      ipcRenderer.invoke('sessions:search', query, limit)
+      ipcRenderer.invoke('sessions:search', query, limit),
+    usageStats: (customDir?: string): Promise<AggregatedUsageStats> =>
+      ipcRenderer.invoke('sessions:usageStats', customDir)
   },
   runtime: {
     start: (options: RuntimeStartOptions) => ipcRenderer.invoke('runtime:start', options),
@@ -117,6 +130,7 @@ const bridge: PiDesktopBridge = {
   },
   shell: {
     openPath: (target: string): Promise<string> => ipcRenderer.invoke('shell:openPath', target),
+    openInExplorer: (target: string): Promise<string> => ipcRenderer.invoke('shell:openInExplorer', target),
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:openExternal', url)
   },
   fs: {
@@ -135,7 +149,9 @@ const bridge: PiDesktopBridge = {
       } catch {
         return ''
       }
-    }
+    },
+    readImageDataUrl: (file: string): Promise<string | null> =>
+      ipcRenderer.invoke('fs:readImageDataUrl', file)
   }
 }
 

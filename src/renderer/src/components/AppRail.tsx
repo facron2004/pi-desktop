@@ -1,6 +1,7 @@
 import {
   FolderOpen,
   Clock3,
+  Square,
   SquareTerminal,
   Settings,
   GitBranch,
@@ -12,7 +13,6 @@ import {
 } from 'lucide-react'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
-import { BranchMenu } from './BranchMenu'
 
 type AppRailProps = {
   newChatActive: boolean
@@ -80,7 +80,9 @@ export function AppRail({
   onOpenLauncher
 }: AppRailProps) {
   const t = useT()
-  const isRepo = useAppStore((state) => state.git?.isRepo ?? false)
+  const isStreaming = useAppStore((state) => state.isStreaming)
+  const aborting = useAppStore((state) => state.run.phase === 'aborting')
+  const stop = useAppStore((state) => state.stop)
 
   return (
     <nav className="app-rail" aria-label={t('Application menu')}>
@@ -100,22 +102,34 @@ export function AppRail({
           onClick={onOpenTerminal}
           active={terminalOpen}
         />
+
+        {/* Stopping a run belongs with the app's own controls, not in the
+            message being written: the column is always there, so the run can
+            be stopped whether or not the composer has a draft in it. */}
+        {isStreaming ? (
+          <button
+            type="button"
+            className="app-rail__stop"
+            data-aborting={aborting || undefined}
+            aria-label={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
+            title={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
+            onClick={() => void stop()}
+          >
+            <Square size={12} fill="currentColor" strokeWidth={0} />
+          </button>
+        ) : null}
       </div>
 
       <div className="app-rail__divider" />
 
       <div className="app-rail__group app-rail__group--bottom">
-        {isRepo ? (
-          <div className="app-rail__branch">
-            <BranchMenu onOpenChanges={onOpenChanges} iconOnly />
-          </div>
-        ) : (
-          <RailAction
-            icon={GitBranch}
-            label={t('Review the files Pi changed')}
-            onClick={onOpenChanges}
-          />
-        )}
+        {/* The branch itself is in the line under the composer; the rail only
+            offers the way into the review, in both cases. */}
+        <RailAction
+          icon={GitBranch}
+          label={t('Review the files Pi changed')}
+          onClick={onOpenChanges}
+        />
         <RailAction icon={LayoutGrid} label={t('Open the launcher')} onClick={onOpenLauncher} active={launcherOpen} />
         <RailAction icon={Puzzle} label={t('MCP servers')} onClick={onOpenMcp} active={mcpOpen} />
         <RailAction icon={Settings} label={t('Settings')} onClick={onOpenSettings} active={settingsOpen} />

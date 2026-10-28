@@ -4,6 +4,9 @@ A native desktop GUI for the [Pi coding agent](https://github.com/earendil-works
 the same agent that powers the `pi` CLI, wrapped in a window that feels like Codex or
 Claude Desktop.
 
+[Download v0.3.0](https://github.com/facron2004/pi-desktop/releases/tag/v0.3.0) ·
+[更新说明](docs/releases/v0.3.0.md) · [Changelog](CHANGELOG.md)
+
 ![Pi Desktop](docs/shots/02-conversation.png)
 
 *Real run: Pi reads a file, edits it, and the diff renders inline.*
@@ -14,8 +17,8 @@ Claude Desktop.
   your own permissions — reading files, running commands, editing code.
 - **Streaming conversation.** Assistant text, reasoning ("thinking") blocks, tool calls
   and tool output all stream in live, with a caret marking the end of the reply. The
-  reasoning opens itself while the model is still thinking and folds away when the
-  answer arrives.
+  reasoning and tool output stay collapsed until opened. Consecutive tool calls
+  share an activity summary, while failures open their details automatically.
 - **Tool cards with diffs.** Every tool call is a collapsible card. File edits render
   as a line diff, so you can see exactly what changed. Long stretches of untouched
   lines collapse into a single row you can open, a run of the same call folds into one
@@ -98,12 +101,13 @@ Claude Desktop.
   offers the last conversations of the project, so a run can be picked up again
   without walking through the sidebar. A conversation can be pinned, and pinned ones
   float to the top of the sidebar no matter which project they belong to. The app
-  also reopens the conversation that was open last, so a restart does not lose the
-  thread of the work.
-- **Several projects at once.** The sidebar lists every project that was opened. Clicking
-  one runs Pi there, `Ctrl+1` … `Ctrl+9` jump to the n-th project, and the title bar
-  says which project the open conversation belongs to.
-- **Branch from any prompt.** Every message you sent is a branch point. "Branch" opens a
+  reopens the last project with a new chat; opening a saved conversation is a
+  deliberate action.
+- **Several projects at once.** The sidebar lists every project that was opened.
+  Clicking a project expands its conversations; the project picker and
+  `Ctrl+1` … `Ctrl+9` deliberately switch projects.
+- **Edit from any prompt.** Hover over a message to reveal its time, copy icon and
+  edit icon. Editing opens a
   new conversation that keeps the earlier history and hands the prompt back to the
   composer, so you can try a different approach without losing the run-up. The copy
   button in the title bar duplicates the whole conversation instead.

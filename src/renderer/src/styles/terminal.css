@@ -21,6 +21,18 @@
 animation: terminal-rise var(--dur-fast) var(--ease);
 }
 
+/* Inside the side panel the terminal is the column: it takes the height it is
+   given instead of a third of the window, and it has no resize edge because
+   the panel's own edge is the only one there. */
+.terminal[data-embedded] {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  border-top: 0;
+  animation: none;
+}
+
 /* The top edge of the drawer is the resize handle. Its hit area is wider than
    the line it draws so the grab is easy and the line stays quiet at rest. */
 .terminal__resizer {
@@ -555,6 +567,13 @@ transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--
   font-size: var(--text-2xs);
   color: var(--text-faint);
   user-select: none;
+}
+
+/* In the side panel there is no title line to repeat: the panel already says
+   "Terminal", so the head keeps only what acts on the output. */
+.terminal[data-embedded] .terminal__head-icon,
+.terminal[data-embedded] .terminal__title {
+  display: none;
 }
 
 @container terminal-panel (max-width: 640px) {

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import os from 'node:os'
@@ -95,11 +96,13 @@ export async function readStatus(root: string): Promise<GitStatus> {
   ])
 
   const files = parsePorcelain(porcelain.stdout)
-  const counts = await Promise.all([
-    lineCounts(root, ['diff', '--numstat']),
-    lineCounts(root, ['diff', '--cached', '--numstat'])
-  ])
-  const stats = new Map([...counts[0], ...counts[1]])
+  // The review compares HEAD with the working tree, so staged and unstaged
+  // edits to the same file must be counted together against that same base.
+  const objectFormat = head.code === 0 ? null : await git(root, ['rev-parse', '--show-object-format'])
+  const emptyTree = createHash(objectFormat?.stdout.trim() === 'sha256' ? 'sha256' : 'sha1')
+    .update('tree 0\0')
+    .digest('hex')
+  const stats = await lineCounts(root, ['diff', '--numstat', '-z', '-M', head.code === 0 ? 'HEAD' : emptyTree, '--'])
   for (const file of files) {
     const known = stats.get(file.path)
     if (known) {
@@ -302,7 +305,13 @@ export async function readFileDiff(root: string, filePath: string): Promise<GitF
   if (!target) return { ...blank, error: 'The file is outside the project.' }
 
   const status = await git(root, ['status', '--porcelain=v1', '-z', '--', filePath])
-  const entry = parsePorcelain(status.stdout)[0]
+  let entry = parsePorcelain(status.stdout)[0]
+  // A pathspec can turn a staged rename into an addition. Resolve that
+  // ambiguous status against the whole tree before reading the old side.
+  if (entry?.index === 'A' && !entry.oldPath) {
+    const wholeStatus = await git(root, ['status', '--porcelain=v1', '--untracked-files=all', '-z'])
+    entry = parsePorcelain(wholeStatus.stdout).find((file) => file.path === filePath) ?? entry
+  }
   const letters = entry ? `${entry.index}${entry.worktree}` : ' M'
   const untracked = entry?.untracked ?? letters === '??'
   // A renamed file's old content lives under the old path in HEAD.
@@ -453,8 +462,12 @@ function parseNumstatZ(raw: string): GitCommitFile[] {
   for (let index = 0; index < fields.length; index += 1) {
     const field = fields[index]
     if (!field) continue
-    const [addedRaw = '', removedRaw = '', third = ''] = field.split('\t')
-    let path = third
+    const firstTab = field.indexOf('\t')
+    const secondTab = field.indexOf('\t', firstTab + 1)
+    if (firstTab < 0 || secondTab < 0) continue
+    const addedRaw = field.slice(0, firstTab)
+    const removedRaw = field.slice(firstTab + 1, secondTab)
+    let path = field.slice(secondTab + 1)
     let oldPath: string | undefined
     if (!path && index + 2 < fields.length) {
       oldPath = fields[index + 1]
@@ -944,25 +957,13 @@ function parsePorcelain(raw: string): GitFileStatus[] {
   return files
 }
 
-/** Parse `git diff --numstat` into per-path added/removed counts. */
+/** Parse `git diff --numstat -z` into per-path added/removed counts. */
 async function lineCounts(root: string, args: string[]): Promise<Map<string, { added: number; removed: number }>> {
   const result = await git(root, args)
   const counts = new Map<string, { added: number; removed: number }>()
   if (result.code !== 0) return counts
-  for (const line of result.stdout.split('\n')) {
-    if (!line.trim()) continue
-    const [addedRaw, removedRaw, ...rest] = line.split('\t')
-    const filePath = rest.join('\t')
-    if (!filePath) continue
-    // A rename is written as "old => new"; the status list already says it
-    // was renamed, so the line counts are left to the files it replaced.
-    if (filePath.includes('=>')) continue
-    const added = Number(addedRaw)
-    const removed = Number(removedRaw)
-    counts.set(filePath, {
-      added: Number.isFinite(added) ? added : 0,
-      removed: Number.isFinite(removed) ? removed : 0
-    })
+  for (const file of parseNumstatZ(result.stdout)) {
+    counts.set(file.path, { added: file.added, removed: file.removed })
   }
   return counts
 }

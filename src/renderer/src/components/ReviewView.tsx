@@ -1,24 +1,31 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   ClipboardCopy,
+  Columns2,
   Copy,
+  Ellipsis,
   FileWarning,
+  GitCommit,
   MessageSquarePlus,
   Minus,
   Plus,
   RefreshCw,
   RotateCcw,
+  Rows3,
   Search,
   SquareArrowOutUpRight,
   X
 } from 'lucide-react'
 import type { GitFileDiff, GitFileStatus } from '@shared/types'
-import { buildDiff, CONTEXT_LINES, type DiffBlock, type DiffRow } from '../lib/diff-fold'
+import { buildWorkingTreeDiff, CONTEXT_LINES, type DiffBlock, type DiffRow } from '../lib/diff-fold'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { ConfirmDialog } from './ConfirmDialog'
 import { DiffView } from './DiffView'
+import { Popover } from './Popover'
 import '../styles/review.css'
 
 type DiffState =
@@ -35,9 +42,13 @@ type DiffState =
  */
 export function ReviewView({
   onOpenFile,
+  onCommit,
+  scopeControl,
   active
 }: {
   onOpenFile: (file: { path: string; line?: number }) => void
+  onCommit: () => void
+  scopeControl: ReactNode
   active: boolean
 }) {
   const git = useAppStore((state) => state.git)
@@ -51,21 +62,22 @@ export function ReviewView({
   const showToast = useAppStore((state) => state.showToast)
   const language = useAppStore((state) => state.settings.language)
   const diffSplit = useAppStore((state) => state.settings.diffSplit === true)
+  const updateSettings = useAppStore((state) => state.updateSettings)
   const t = useT()
 
   const [filter, setFilter] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set())
   const [diffs, setDiffs] = useState<Record<string, DiffState>>({})
   const [refreshing, setRefreshing] = useState(false)
   const [revertTarget, setRevertTarget] = useState<string | null>(null)
   const openRef = useRef(open)
   openRef.current = open
-  const initialized = useRef(false)
 
   // The panel is opened when the user wants to review, so it reads git then.
   useEffect(() => {
-    void refreshGit()
-  }, [refreshGit, workspace?.path])
+    if (active) void refreshGit()
+  }, [active, refreshGit, workspace?.path])
 
   const files = git?.files ?? []
 
@@ -79,18 +91,8 @@ export function ReviewView({
     }
   }, [])
 
-  const firstPath = files.find((file) => file.staged)?.path ?? files[0]?.path
-  useEffect(() => {
-    if (!active || initialized.current || !firstPath) return
-    initialized.current = true
-    setOpen(new Set([firstPath]))
-    void load(firstPath)
-  }, [active, firstPath, load])
-
   const toggle = useCallback(
     (path: string) => {
-      // Refreshes and newly arriving files must not override the reader's choice.
-      initialized.current = true
       setOpen((previous) => {
         const next = new Set(previous)
         if (next.has(path)) {
@@ -162,8 +164,6 @@ export function ReviewView({
     )
   }, [files, filter])
 
-  const stagedFiles = useMemo(() => visible.filter((file) => file.staged), [visible])
-  const unstagedFiles = useMemo(() => visible.filter((file) => !file.staged), [visible])
   const [stageBusy, setStageBusy] = useState(false)
 
   const toggleStage = useCallback(
@@ -207,6 +207,31 @@ export function ReviewView({
       ),
     [files]
   )
+  const visibleTotals = useMemo(
+    () =>
+      visible.reduce(
+        (acc, file) => ({
+          added: acc.added + (file.added ?? 0),
+          removed: acc.removed + (file.removed ?? 0)
+        }),
+        { added: 0, removed: 0 }
+      ),
+    [visible]
+  )
+  const allVisibleOpen = visible.length > 0 && visible.every((file) => open.has(file.path))
+  const toggleAllFiles = () => {
+    setOpen((previous) => {
+      const next = new Set(previous)
+      for (const file of visible) {
+        if (allVisibleOpen) next.delete(file.path)
+        else next.add(file.path)
+      }
+      return next
+    })
+    if (!allVisibleOpen) {
+      for (const file of visible) if (!diffs[file.path]) void load(file.path)
+    }
+  }
 
   const copyPaths = useCallback(async () => {
     if (!files.length) {
@@ -270,97 +295,116 @@ export function ReviewView({
   return (
     <div className="review">
       {git?.isRepo ? (
-        <div className="review__bar">
-          <div className="review__filter">
-            <Search size={12} />
-            <input
-              value={filter}
-              placeholder={t('Filter files')}
-              aria-label={t('Filter the working tree')}
-              onChange={(event) => setFilter(event.target.value)}
-            />
-            {filter ? (
-              <button
-                className="icon-btn"
-                onClick={() => setFilter('')}
-                title={t('Clear the filter')}
-                aria-label={t('Clear the filter')}
-              >
-                <X size={11} />
-              </button>
-            ) : null}
-          </div>
-
-          <div className="review__actions">
+        <>
+          <div className="review__bar">
+            {scopeControl}
             <span className="review__totals" title={t('Lines added and removed in the working tree')}>
               {totals.added ? <span data-kind="add">+{totals.added}</span> : null}
               {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
             </span>
-            {git && git.staged > 0 ? (
-              <button
-                className="ghost-btn review__bulk"
-                onClick={() => void unstageEverything()}
-                disabled={stageBusy}
-                title={t('Unstage every file')}
-              >
-                <Minus size={11} />
-                {t('Unstage all')}
-              </button>
-            ) : null}
-            {git && git.unstaged > 0 ? (
-              <button
-                className="ghost-btn review__bulk"
-                onClick={() => void stageEverything()}
-                disabled={stageBusy}
-                title={t('Stage every file')}
-              >
-                <Plus size={11} />
-                {t('Stage all')}
-              </button>
-            ) : null}
-            {git && !git.clean ? (
+            <div className="review__actions">
               <button
                 className="icon-btn"
-                onClick={() =>
-                  insertIntoComposer(
-                    t(
-                      'Review the uncommitted git changes in this repository, point out any bugs or edge cases, and suggest improvements.'
-                    )
-                  )
-                }
-                title={t('Ask Pi to review uncommitted changes')}
-                aria-label={t('Ask Pi to review uncommitted changes')}
+                onClick={() => {
+                  if (filterOpen) setFilter('')
+                  setFilterOpen((value) => !value)
+                }}
+                aria-label={t('Filter the working tree')}
+                title={t('Filter the working tree')}
+                aria-pressed={filterOpen}
+                data-active={filterOpen}
               >
-                <MessageSquarePlus size={12} />
+                <Search size={14} />
               </button>
-            ) : null}
-            <button
-              className="icon-btn"
-              onClick={() => void copyPatch()}
-              title={t('Copy the patch of the whole working tree')}
-              aria-label={t('Copy the patch of the whole working tree')}
-            >
-              <ClipboardCopy size={12} />
-            </button>
-            <button
-              className="icon-btn"
-              onClick={() => void copyPaths()}
-              title={t('Copy the paths of the changed files')}
-              aria-label={t('Copy the paths of the changed files')}
-            >
-              <Copy size={12} />
-            </button>
-            <button
-              className="icon-btn"
-              onClick={() => void refresh()}
-              title={t('Refresh the working tree')}
-              aria-label={t('Refresh the working tree')}
-              disabled={refreshing}
-            >
-              <RefreshCw size={12} className={refreshing ? 'spin' : undefined} />
-            </button>
+              <button
+                className="icon-btn"
+                onClick={toggleAllFiles}
+                disabled={visible.length === 0}
+                aria-label={allVisibleOpen ? t('Collapse all files') : t('Expand all files')}
+                title={allVisibleOpen ? t('Collapse all files') : t('Expand all files')}
+              >
+                {allVisibleOpen ? <ChevronsDownUp size={14} /> : <ChevronsUpDown size={14} />}
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => void updateSettings({ diffSplit: !diffSplit })}
+                aria-label={diffSplit ? t('Unified diff') : t('Side-by-side diff')}
+                title={diffSplit ? t('Unified diff') : t('Side-by-side diff')}
+              >
+                {diffSplit ? <Rows3 size={14} /> : <Columns2 size={14} />}
+              </button>
+              <Popover
+                align="right"
+                width={220}
+                renderTrigger={({ open: menuOpen, toggle: toggleMenu }) => (
+                  <button
+                    className="icon-btn"
+                    type="button"
+                    aria-label={t('More actions')}
+                    title={t('More actions')}
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    onClick={toggleMenu}
+                  >
+                    <Ellipsis size={15} />
+                  </button>
+                )}
+              >
+                {(close) => (
+                  <div role="menu" aria-label={t('More actions')}>
+                    <button className="popover__item" role="menuitem" disabled={git.clean} onClick={() => { close(); onCommit() }}>
+                      <GitCommit size={13} /> {t('Commit')}
+                    </button>
+                    <button className="popover__item" role="menuitem" disabled={stageBusy || git.staged === 0} onClick={() => { close(); void unstageEverything() }}>
+                      <Minus size={13} /> {t('Unstage all')}
+                    </button>
+                    <button className="popover__item" role="menuitem" disabled={stageBusy || !files.some((file) => file.untracked || (file.worktree !== ' ' && file.worktree !== '?'))} onClick={() => { close(); void stageEverything() }}>
+                      <Plus size={13} /> {t('Stage all')}
+                    </button>
+                    <button className="popover__item" role="menuitem" disabled={git.clean} onClick={() => { close(); insertIntoComposer(t('Review the uncommitted git changes in this repository, point out any bugs or edge cases, and suggest improvements.')) }}>
+                      <MessageSquarePlus size={13} /> {t('Ask Pi to review uncommitted changes')}
+                    </button>
+                    <button className="popover__item" role="menuitem" onClick={() => { close(); void copyPatch() }}>
+                      <ClipboardCopy size={13} /> {t('Copy the patch of the whole working tree')}
+                    </button>
+                    <button className="popover__item" role="menuitem" onClick={() => { close(); void copyPaths() }}>
+                      <Copy size={13} /> {t('Copy paths')}
+                    </button>
+                    <button className="popover__item" role="menuitem" disabled={refreshing} onClick={() => { close(); void refresh() }}>
+                      <RefreshCw size={13} /> {t('Refresh the working tree')}
+                    </button>
+                  </div>
+                )}
+              </Popover>
+            </div>
           </div>
-        </div>
+          {filterOpen ? (
+            <div className="review__filter-row">
+              <div className="review__filter">
+                <Search size={12} />
+                <input
+                  autoFocus
+                  value={filter}
+                  placeholder={t('Filter files')}
+                  aria-label={t('Filter the working tree')}
+                  onChange={(event) => setFilter(event.target.value)}
+                />
+                {filter ? (
+                  <button className="icon-btn" onClick={() => setFilter('')} title={t('Clear the filter')} aria-label={t('Clear the filter')}>
+                    <X size={11} />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+          <div className="review__summary">
+            <span>{visible.length} {visible.length === 1 ? t('file') : t('files')}</span>
+            <span className="review__totals">
+              {visibleTotals.added ? <span data-kind="add">+{visibleTotals.added}</span> : null}
+              {visibleTotals.removed ? <span data-kind="del">−{visibleTotals.removed}</span> : null}
+            </span>
+          </div>
+        </>
       ) : null}
 
       {!git ? (
@@ -388,38 +432,22 @@ export function ReviewView({
         </div>
       ) : (
         <div className="review__list">
-          {stagedFiles.length > 0 ? (
-            <ReviewGroup
-              label={t('Staged')}
-              count={stagedFiles.length}
-              files={stagedFiles}
-              open={open}
-              diffs={diffs}
+          {visible.map((file) => (
+            <ReviewFile
+              key={file.path}
+              file={file}
+              isOpen={open.has(file.path)}
+              state={diffs[file.path]}
               split={diffSplit}
-              onToggle={(path) => toggle(path)}
-              onOpen={onOpenFile}
-              onToggleStage={(file) => void toggleStage(file)}
-              onCopyPatch={(file) => void copyPatch(file.path)}
-              onRevert={setRevertTarget}
-              onHunkReverted={(path) => void reloadAfterHunk(path)}
+              onToggle={() => toggle(file.path)}
+              onOpen={() => onOpenFile({ path: file.path })}
+              onReveal={() => void window.pi.fs.reveal(file.path)}
+              onToggleStage={() => void toggleStage(file)}
+              onCopyPatch={() => void copyPatch(file.path)}
+              onRevert={() => setRevertTarget(file.path)}
+              onHunkReverted={() => void reloadAfterHunk(file.path)}
             />
-          ) : null}
-          {unstagedFiles.length > 0 ? (
-            <ReviewGroup
-              label={t('Unstaged')}
-              count={unstagedFiles.length}
-              files={unstagedFiles}
-              open={open}
-              diffs={diffs}
-              split={diffSplit}
-              onToggle={(path) => toggle(path)}
-              onOpen={onOpenFile}
-              onToggleStage={(file) => void toggleStage(file)}
-              onCopyPatch={(file) => void copyPatch(file.path)}
-              onRevert={setRevertTarget}
-              onHunkReverted={(path) => void reloadAfterHunk(path)}
-            />
-          ) : null}
+          ))}
         </div>
       )}
 
@@ -433,59 +461,6 @@ export function ReviewView({
           onConfirm={() => void revert()}
         />
       ) : null}
-    </div>
-  )
-}
-
-function ReviewGroup({
-  label,
-  count,
-  files,
-  open,
-  diffs,
-  split,
-  onToggle,
-  onOpen,
-  onToggleStage,
-  onCopyPatch,
-  onRevert,
-  onHunkReverted
-}: {
-  label: string
-  count: number
-  files: GitFileStatus[]
-  open: ReadonlySet<string>
-  diffs: Record<string, DiffState>
-  split: boolean
-  onToggle: (path: string) => void
-  onOpen: (file: { path: string; line?: number }) => void
-  onToggleStage: (file: GitFileStatus) => void
-  onCopyPatch: (file: GitFileStatus) => void
-  onRevert: (path: string) => void
-  onHunkReverted: (path: string) => void
-}) {
-  return (
-    <div className="review__group">
-      <div className="review__group-head">
-        <span>{label}</span>
-        <span className="review__group-count">{count}</span>
-      </div>
-      {files.map((file) => (
-        <ReviewFile
-          key={file.path}
-          file={file}
-          isOpen={open.has(file.path)}
-          state={diffs[file.path]}
-          split={split}
-          onToggle={() => onToggle(file.path)}
-          onOpen={() => onOpen({ path: file.path })}
-          onReveal={() => void window.pi.fs.reveal(file.path)}
-          onToggleStage={() => onToggleStage(file)}
-          onCopyPatch={() => onCopyPatch(file)}
-          onRevert={() => onRevert(file.path)}
-          onHunkReverted={() => onHunkReverted(file.path)}
-        />
-      ))}
     </div>
   )
 }
@@ -580,8 +555,8 @@ function ReviewFile({
 
   const blocks = useMemo(() => {
     if (!state || state.status !== 'ready' || state.diff.binary) return []
-    return splitHunks(buildDiff(state.diff.oldText, state.diff.newText).rows)
-  }, [state])
+    return splitHunks(buildWorkingTreeDiff(state.diff.oldText, state.diff.newText, file.added, file.removed).rows)
+  }, [state, file.added, file.removed])
 
   return (
     <section className="review__file" data-open={isOpen} data-staged={file.staged || undefined}>
@@ -590,12 +565,10 @@ function ReviewFile({
           className="review__toggle"
           onClick={onToggle}
           aria-expanded={isOpen}
+          aria-label={`${isOpen ? t('Collapse this file') : t('Show the changes of this file')}: ${file.path} (${status.label}${file.staged ? `, ${t('Staged')}` : ''})`}
           title={isOpen ? t('Collapse this file') : t('Show the changes of this file')}
         >
           <ChevronRight size={12} className="review__chevron" />
-          <span className="review__status" data-kind={status.kind}>
-            {status.label}
-          </span>
           <span
             className="review__path"
             title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
@@ -614,61 +587,53 @@ function ReviewFile({
             {file.added ? <span data-kind="add">+{file.added}</span> : null}
             {file.removed ? <span data-kind="del">−{file.removed}</span> : null}
           </span>
+          {file.staged ? <span className="review__staged">{t('Staged')}</span> : null}
         </button>
 
         <div className="review__file-actions">
-          <button
-            className="icon-btn review__stage"
-            onClick={onToggleStage}
-            title={file.staged ? t('Unstage this file') : t('Stage this file')}
-            aria-label={file.staged ? t('Unstage this file') : t('Stage this file')}
+          <Popover
+            align="right"
+            width={220}
+            renderTrigger={({ open: menuOpen, toggle: toggleMenu }) => (
+              <button
+                className="icon-btn"
+                type="button"
+                title={t('More actions')}
+                aria-label={`${t('More actions')}: ${file.path}`}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                onClick={toggleMenu}
+              >
+                <Ellipsis size={14} />
+              </button>
+            )}
           >
-            {file.staged ? <Minus size={12} /> : <Plus size={12} />}
-          </button>
-          <button
-            className="icon-btn"
-            onClick={() =>
-              insertIntoComposer(
-                t('Review the uncommitted changes in @{file} and check for potential issues.').replace(
-                  '{file}',
-                  file.path.replace(/\\/g, '/')
-                )
-              )
-            }
-            title={t('Ask Pi to review this file')}
-            aria-label={t('Ask Pi to review this file')}
-          >
-            <MessageSquarePlus size={12} />
-          </button>
-          <button
-            className="icon-btn"
-            onClick={onCopyPatch}
-            title={t('Copy this patch')}
-            aria-label={t('Copy this patch')}
-          >
-            <ClipboardCopy size={12} />
-          </button>
-          <button className="icon-btn" onClick={onOpen} title={t('Open the file')} aria-label={t('Open the file')}>
-            <SquareArrowOutUpRight size={12} />
-          </button>
-          <button
-            className="icon-btn"
-            onClick={onReveal}
-            title={t('Reveal in the file manager')}
-            aria-label={t('Reveal in the file manager')}
-          >
-            <FileWarning size={12} />
-          </button>
-          {file.untracked ? null : (
-            <button
-              className="icon-btn review__revert"
-              onClick={onRevert}
-              title={t('Revert this file')}
-              aria-label={t('Revert this file')}
-            >
-              <RotateCcw size={12} />
-            </button>
-          )}
+            {(close) => (
+              <div role="menu" aria-label={`${t('More actions')}: ${file.path}`}>
+                <button className="popover__item" role="menuitem" onClick={() => { close(); onToggleStage() }}>
+                  {file.staged ? <Minus size={13} /> : <Plus size={13} />}
+                  {file.staged ? t('Unstage this file') : t('Stage this file')}
+                </button>
+                <button className="popover__item" role="menuitem" onClick={() => { close(); insertIntoComposer(t('Review the uncommitted changes in @{file} and check for potential issues.').replace('{file}', file.path.replace(/\\/g, '/'))) }}>
+                  <MessageSquarePlus size={13} /> {t('Ask Pi to review this file')}
+                </button>
+                <button className="popover__item" role="menuitem" onClick={() => { close(); onCopyPatch() }}>
+                  <ClipboardCopy size={13} /> {t('Copy this patch')}
+                </button>
+                <button className="popover__item" role="menuitem" onClick={() => { close(); onOpen() }}>
+                  <SquareArrowOutUpRight size={13} /> {t('Open the file')}
+                </button>
+                <button className="popover__item" role="menuitem" onClick={() => { close(); onReveal() }}>
+                  <FileWarning size={13} /> {t('Reveal in the file manager')}
+                </button>
+                {file.untracked ? null : (
+                  <button className="popover__item" role="menuitem" onClick={() => { close(); onRevert() }}>
+                    <RotateCcw size={13} /> {t('Revert this file')}
+                  </button>
+                )}
+              </div>
+            )}
+          </Popover>
         </div>
       </div>
 

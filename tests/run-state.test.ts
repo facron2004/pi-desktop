@@ -23,7 +23,8 @@ const style = new Map<string, string>()
   documentElement: {
     dataset: {} as Record<string, string>,
     style: {
-      setProperty: (name: string, value: string) => void style.set(name, value)
+      setProperty: (name: string, value: string) => void style.set(name, value),
+      removeProperty: (name: string) => void style.delete(name)
     }
   }
 }
@@ -45,7 +46,11 @@ const ok = <T,>(value: T) => Promise.resolve(value)
 let promptResult: Record<string, unknown> = {}
 
 const bridge = {
-  app: { info: () => ok({ forcedTheme: undefined }), setTheme: () => ok(undefined) },
+  app: {
+    info: () => ok({ forcedTheme: undefined }),
+    setTheme: () => ok(undefined),
+    getSystemFonts: () => ok([])
+  },
   settings: { get: () => ok({ workspaces: [] }), patch: (p: unknown) => ok(p) },
   runtime: {
     onEvent: (handler: Handler) => {
@@ -184,4 +189,33 @@ test('P05 — a retry is reported as retrying, not as a finished run', () => {
   emit({ type: 'auto_retry_end' })
   assert.equal(phase(), 'working')
   assert.equal(useAppStore.getState().retry, undefined)
+})
+
+test('P06 — a search hit never stops or switches a running conversation', async () => {
+  const previous = useAppStore.getState()
+  let stops = 0
+  let switches = 0
+  let warning = ''
+  useAppStore.setState({
+    isStreaming: true,
+    activeSessionFile: 'active.jsonl',
+    pendingJump: undefined,
+    stop: async () => { stops += 1 },
+    selectSession: async () => { switches += 1 },
+    showToast: (message) => { warning = message }
+  })
+  try {
+    await useAppStore.getState().openSearchHit({
+      sessionId: 'other', file: 'other.jsonl', cwd: 'C:/project',
+      preview: 'Another conversation', updatedAt: 0,
+      role: 'assistant', snippet: 'search result', matchStart: 0, matchLength: 6, messageIndex: 0
+    }, 'search')
+    assert.equal(stops, 0)
+    assert.equal(switches, 0)
+    assert.equal(useAppStore.getState().activeSessionFile, 'active.jsonl')
+    assert.equal(useAppStore.getState().pendingJump, undefined)
+    assert.equal(warning, 'Stop the current run to open another conversation')
+  } finally {
+    useAppStore.setState(previous)
+  }
 })

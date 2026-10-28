@@ -7,7 +7,7 @@ import {
   CircleAlert,
   CircleCheck,
   Download,
-  GitBranch,
+  Pencil,
   Info,
   TriangleAlert
 } from 'lucide-react'
@@ -54,25 +54,27 @@ export function UserMessage({
         </div>
         <div className="user-msg__actions">
           <span className="user-msg__time">{formatClock(item.timestamp)}</span>
-          {forkEntryId && onFork ? (
-            <button
-              className="ghost-btn ghost-btn--branch"
-              onClick={() => onFork(forkEntryId)}
-              disabled={forking}
-              title={t('Branch from here — a new conversation that keeps the earlier history')}
-            >
-              <GitBranch size={12} />
-              {forking ? t('Branching…') : t('Branch')}
-            </button>
-          ) : null}
           <button
+            type="button"
             className="ghost-btn"
             onClick={() => onCopy(item.id, item.text)}
-            title={t('Copy your message')}
+            title={t(copied === item.id ? 'Copied' : 'Copy your message')}
+            aria-label={t(copied === item.id ? 'Copied' : 'Copy your message')}
           >
-            {copied === item.id ? <Check size={12} /> : <Copy size={12} />}
-            {copied === item.id ? t('Copied') : t('Copy')}
+            {copied === item.id ? <Check size={14} /> : <Copy size={14} />}
           </button>
+          {forkEntryId && onFork ? (
+            <button
+              type="button"
+              className="ghost-btn ghost-btn--edit"
+              onClick={() => onFork(forkEntryId)}
+              disabled={forking}
+              title={t('Edit message')}
+              aria-label={t('Edit message')}
+            >
+              <Pencil size={14} />
+            </button>
+          ) : null}
         </div>
       </div>
     </div>
@@ -183,7 +185,6 @@ export function ThinkingBlock({
         {streaming && elapsedSec > 0 ? (
           <span className="thinking__duration">{elapsedSec}{t('s')}</span>
         ) : null}
-        <span className="thinking__hint">{open ? t('hide') : t('show')}</span>
       </button>
       {open ? (
         <div className="thinking__body" role="region" aria-label={t('Thinking')} tabIndex={0}>

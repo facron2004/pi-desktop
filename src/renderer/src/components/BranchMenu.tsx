@@ -1,16 +1,16 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
   ArrowDown,
   ArrowUp,
   Check,
-  ChevronDown,
   FileDiff,
   GitBranch,
   GitFork,
   Loader2,
   Plus,
   RefreshCw,
-  Trash2
+  Search,
+  X
 } from 'lucide-react'
 import type { GitBranches, GitWorktree } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
@@ -21,18 +21,21 @@ import { ConfirmDialog } from './ConfirmDialog'
 import '../styles/branch-menu.css'
 
 /**
- * The branch chip, and the menu behind it.
+ * The branch chip and direct branch switcher menu.
  *
- * Switching a branch or adding a worktree changes the files under the agent,
- * so the menu stays read-only until the user picks one of those two actions;
- * everything else (the dirty count, the review) is just a way in.
+ * Structure:
+ * - Top: Instant search box with clear button
+ * - Middle: Branch list with changed files count badge on the SAME line as the branch
+ * - Bottom: "Create and checkout new branch" button & inline creation form
  */
 export function BranchMenu({
   onOpenChanges,
-  iconOnly = false
+  placement = 'top',
+  align = 'left'
 }: {
   onOpenChanges: () => void
-  iconOnly?: boolean
+  placement?: 'top' | 'bottom' | 'right'
+  align?: 'left' | 'right'
 }) {
   const gitChipRef = useRef<HTMLButtonElement>(null)
   const git = useAppStore((state) => state.git)
@@ -48,11 +51,9 @@ export function BranchMenu({
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [busy, setBusy] = useState<string | undefined>(undefined)
+  const [searchQuery, setSearchQuery] = useState('')
   const [showNew, setShowNew] = useState(false)
   const [newBranch, setNewBranch] = useState('')
-  const [showWorktree, setShowWorktree] = useState(false)
-  const [worktreeBranch, setWorktreeBranch] = useState('')
-  const [worktreePath, setWorktreePath] = useState('')
   const [worktreeToRemove, setWorktreeToRemove] = useState<GitWorktree | undefined>()
 
   const restoreFocus = () => requestAnimationFrame(() => gitChipRef.current?.focus())
@@ -69,6 +70,24 @@ export function BranchMenu({
       setLoading(false)
     }
   }, [])
+
+  const filteredBranches = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!data?.branches) return []
+    if (!q) return data.branches
+    return data.branches.filter((b) => b.name.toLowerCase().includes(q))
+  }, [data?.branches, searchQuery])
+
+  const filteredWorktrees = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!data?.worktrees) return []
+    if (!q) return data.worktrees
+    return data.worktrees.filter(
+      (w) =>
+        basename(w.path).toLowerCase().includes(q) ||
+        (w.branch && w.branch.toLowerCase().includes(q))
+    )
+  }, [data?.worktrees, searchQuery])
 
   if (!git?.isRepo) return null
 
@@ -123,29 +142,7 @@ export function BranchMenu({
     }
     setBusy(target)
     try {
-      // Asking for a worktree is asking for that folder, run and all.
       await switchProject(target, { allowWhileRunning: true })
-      close()
-    } finally {
-      setBusy(undefined)
-    }
-  }
-
-  const createWorktree = async (close: () => void) => {
-    const branch = worktreeBranch.trim()
-    if (!branch || busy) return
-    setBusy('worktree')
-    try {
-      const result = await window.pi.git.addWorktree(worktreePath.trim(), branch, true)
-      if (!result.ok) {
-        showToast(result.error ?? t('Could not add the worktree'), 'error')
-        return
-      }
-      setWorktreeBranch('')
-      setWorktreePath('')
-      setShowWorktree(false)
-      showToast(`${t('Worktree created at')} ${result.path ?? ''}`)
-      if (result.path) await switchProject(result.path, { allowWhileRunning: true })
       close()
     } finally {
       setBusy(undefined)
@@ -199,61 +196,61 @@ export function BranchMenu({
   return [
     <Popover
       key="branch-menu"
-      placement={iconOnly ? 'right' : 'bottom'}
-      className={iconOnly ? 'branch-menu--rail' : undefined}
-      width={340}
+      placement={placement}
+      align={align}
+      className="branch-menu--docked"
+      width={232}
       renderTrigger={({ open, toggle }) => (
         <button
           ref={gitChipRef}
-          className={iconOnly ? 'icon-btn git-chip git-chip--icon no-drag' : 'pill git-chip no-drag'}
-          data-dirty={!git.clean}
+          className="session-bar__item git-chip"
           data-active={open}
-          aria-label={iconOnly ? t('Branches') : undefined}
           aria-expanded={open}
+          aria-label={t('Configure local environment')}
           onClick={(event) => {
+            if (!open) {
+              setSearchQuery('')
+              setShowNew(false)
+              setNewBranch('')
+              void load()
+            }
             toggle(event)
-            if (!open) void load()
           }}
-          title={
-            git.clean
-              ? `${git.branch ?? t('Repository')} — ${t('no uncommitted changes')}`
-              : `${git.branch ?? t('Repository')} — ${git.files.length} ${t('uncommitted')}. ${t('Review and commit')}`
-          }
+          title={git.branch ? `${t('Branch')}: ${git.branch}` : t('Configure local environment')}
         >
-          <GitBranch size={iconOnly ? 16 : 13} />
-          {iconOnly ? null : (
-            <>
-              <span className="git-chip__branch">
-                {git.branch ?? (git.head ? `#${git.head}` : t('Repository'))}
-              </span>
-              {git.detached ? <span className="git-chip__tag">{t('detached')}</span> : null}
-              {git.ahead > 0 ? <span className="git-chip__delta">↑{git.ahead}</span> : null}
-              {git.behind > 0 ? <span className="git-chip__delta">↓{git.behind}</span> : null}
-              {git.clean ? (
-                <Check size={12} className="git-chip__clean" />
-              ) : (
-                <span className="git-chip__dirty">{git.files.length}</span>
-              )}
-              <ChevronDown size={11} className="pill__caret" />
-            </>
-          )}
+          <GitBranch size={11} className="git-chip__icon" />
+          <span className="git-chip__branch">
+            {git.branch ?? (git.head ? `#${git.head}` : t('Repository'))}
+          </span>
         </button>
       )}
     >
       {(close) => (
-        <div className="branch-menu">
-          <div className="branch-menu__head">
-            <span className="popover__label">{t('Branches')}</span>
-            <button
-              className="icon-btn"
-              onClick={() => void load()}
-              aria-label={t('Refresh')}
-              title={t('Refresh')}
-              disabled={loading}
-            >
-              <RefreshCw size={11} className={loading ? 'spin' : undefined} />
-            </button>
+        <div className="branch-menu" role="menu">
+          {/* Top Search Bar */}
+          <div className="branch-menu__search">
+            <Search size={13} className="branch-menu__search-icon" />
+            <input
+              type="text"
+              className="branch-menu__search-input"
+              placeholder={t('Search branches')}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              autoFocus
+            />
+            {searchQuery ? (
+              <button
+                type="button"
+                className="branch-menu__search-clear"
+                onClick={() => setSearchQuery('')}
+                aria-label="Clear"
+              >
+                <X size={11} />
+              </button>
+            ) : null}
           </div>
+
+          <div className="branch-menu__divider" />
 
           {git.detached ? (
             <p className="branch-menu__note">
@@ -267,202 +264,182 @@ export function BranchMenu({
             </p>
           ) : null}
 
+          {/* Branch List */}
           <div className="branch-menu__list">
-            {data?.branches.map((branch) => (
-              <button
-                key={branch.name}
-                className="branch-menu__row"
-                data-current={branch.current || undefined}
-                disabled={Boolean(busy)}
-                onClick={() => void chooseBranch(branch.name, close)}
-                title={branch.subject ?? branch.name}
-              >
-                <GitBranch size={12} className="branch-menu__icon" />
-                <span className="branch-menu__name">{branch.name}</span>
-                {branch.current ? <Check size={12} className="branch-menu__check" /> : null}
-              </button>
-            ))}
-            {!loading && data && data.branches.length === 0 ? (
-              <p className="branch-menu__note">{t('This repository has no branches yet.')}</p>
-            ) : null}
-            {loading && !data ? (
-              <p className="branch-menu__note">
-                <Loader2 size={11} className="spin" /> {t('Reading the branches…')}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="branch-menu__actions">
-            <button
-              className="ghost-btn"
-              aria-expanded={showNew}
-              onClick={() => setShowNew((value) => !value)}
-            >
-              <Plus size={11} />
-              {t('New branch…')}
-            </button>
-            <button
-              className="ghost-btn"
-              disabled={Boolean(busy) || git.detached}
-              onClick={() => void runPull()}
-              title={t('Pull latest changes from remote')}
-            >
-              <ArrowDown size={11} />
-              {t('Pull')}
-              {git.behind > 0 ? ` (${git.behind})` : ''}
-            </button>
-            <button
-              className="ghost-btn"
-              disabled={Boolean(busy) || git.detached}
-              onClick={() => void runPush()}
-              title={t('Push commits to remote')}
-            >
-              <ArrowUp size={11} />
-              {t('Push')}
-              {git.ahead > 0 ? ` (${git.ahead})` : ''}
-            </button>
-            <button
-              className="ghost-btn"
-              onClick={() => {
-                close()
-                onOpenChanges()
-              }}
-            >
-              <FileDiff size={11} />
-              {t('Review changes')}
-            </button>
-          </div>
-
-          {showNew ? (
-            <form
-              className="branch-menu__form"
-              onSubmit={(event) => {
-                event.preventDefault()
-                void createNewBranch(close)
-              }}
-            >
-              <label className="branch-menu__field">
-                <span className="branch-menu__field-label">{t('Branch name')}</span>
-                <input
-                  autoFocus
-                  value={newBranch}
-                  spellCheck={false}
-                  onChange={(event) => setNewBranch(event.target.value)}
-                />
-              </label>
-              <button
-                type="submit"
-                className="btn btn--primary btn--sm"
-                disabled={!newBranch.trim() || Boolean(busy)}
-              >
-                {t('Create and switch')}
-              </button>
-            </form>
-          ) : null}
-
-          <div className="branch-menu__section">
-            <div className="popover__label">{t('Worktrees')}</div>
-            {data?.worktrees.map((worktree) => {
-              const name = basename(worktree.path)
-              const branch = worktree.branch ?? t('detached')
-              const dirty = typeof worktree.dirty === 'number' && worktree.dirty > 0
-              const dirtyLabel = dirty ? `${worktree.dirty} ${t('Uncommitted files')}` : ''
+            {filteredBranches.map((branch) => {
+              const isCurrent = Boolean(branch.current)
+              const hasUncommitted = isCurrent && git.files.length > 0
               return (
-                <div className="branch-menu__worktree" key={worktree.path}>
-                  <button
-                    className="branch-menu__row"
-                    data-current={worktree.current || undefined}
-                    disabled={Boolean(busy)}
-                    aria-label={`${name}, ${branch}${dirtyLabel ? `, ${dirtyLabel}` : ''}`}
-                    title={dirtyLabel ? `${worktree.path} · ${dirtyLabel}` : worktree.path}
-                    onClick={() => void openWorktree(worktree.path, close)}
-                  >
-                    <GitFork size={12} className="branch-menu__icon" />
-                    <span className="branch-menu__name">{name}</span>
-                    <span className="branch-menu__meta">{branch}</span>
-                    {dirty ? (
-                      <span className="branch-menu__dirty" aria-hidden="true">
-                        {worktree.dirty}
-                      </span>
-                    ) : null}
-                    {worktree.current ? <Check size={12} className="branch-menu__check" /> : null}
-                  </button>
-                  {!worktree.current ? (
-                    <button
-                      type="button"
-                      className="branch-menu__worktree-remove"
-                      data-dirty={dirty || undefined}
-                      aria-disabled={Boolean(busy) || dirty}
-                      aria-label={`${t('Remove worktree')}: ${name}${
-                        dirty ? `, ${t('Commit or discard changes before removing')}` : ''
-                      }`}
-                      title={
-                        dirty
-                          ? t('Commit or discard changes before removing')
-                          : busy
-                            ? t('Working…')
-                            : `${t('Remove worktree')}: ${worktree.path}`
-                      }
-                      onClick={() => {
-                        if (!busy && !dirty) setWorktreeToRemove(worktree)
+                <button
+                  key={branch.name}
+                  className="branch-menu__row"
+                  data-current={isCurrent || undefined}
+                  disabled={Boolean(busy)}
+                  onClick={() => void chooseBranch(branch.name, close)}
+                  title={branch.subject ?? branch.name}
+                >
+                  <GitBranch size={12} className="branch-menu__icon" />
+                  <span className="branch-menu__name">{branch.name}</span>
+
+                  {/* Branch & changed files on the exact SAME line */}
+                  {hasUncommitted ? (
+                    <span
+                      className="branch-menu__changes-badge"
+                      role="button"
+                      tabIndex={0}
+                      title={`${git.files.length} ${t('uncommitted files')} · ${t('Review changes')}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        close()
+                        onOpenChanges()
                       }}
                     >
-                      <Trash2 size={12} />
-                    </button>
+                      <FileDiff size={11} />
+                      <span>{git.files.length}</span>
+                    </span>
                   ) : null}
-                </div>
+
+                  {isCurrent ? <Check size={12} className="branch-menu__check" /> : null}
+                </button>
               )
             })}
-            <button
-              className="ghost-btn"
-              aria-expanded={showWorktree}
-              onClick={() => setShowWorktree((value) => !value)}
-            >
-              <Plus size={11} />
-              {t('Add worktree…')}
-            </button>
-            {showWorktree ? (
-              <form
-                className="branch-menu__form branch-menu__form--column"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  void createWorktree(close)
-                }}
-              >
-                <label className="branch-menu__field">
-                  <span className="branch-menu__field-label">{t('Branch for the worktree')}</span>
-                  <input
-                    autoFocus
-                    value={worktreeBranch}
-                    spellCheck={false}
-                    onChange={(event) => setWorktreeBranch(event.target.value)}
-                  />
-                </label>
-                <label className="branch-menu__field">
-                  <span className="branch-menu__field-label">{t('Folder')}</span>
-                  <input
-                    value={worktreePath}
-                    placeholder={t('Folder (empty for a sibling folder)')}
-                    spellCheck={false}
-                    onChange={(event) => setWorktreePath(event.target.value)}
-                  />
-                </label>
-                <button
-                  type="submit"
-                  className="btn btn--primary btn--sm"
-                  disabled={!worktreeBranch.trim() || Boolean(busy)}
-                >
-                  {t('Create worktree')}
-                </button>
-              </form>
+
+            {!loading && filteredBranches.length === 0 ? (
+              <div className="branch-menu__empty">{t('No matching branches')}</div>
+            ) : null}
+
+            {loading && !data ? (
+              <div className="branch-menu__note">
+                <Loader2 size={11} className="spin" /> {t('Reading the branches…')}
+              </div>
             ) : null}
           </div>
 
-          {busy ? (
-            <p className="branch-menu__busy">
+          {/* Worktrees if present */}
+          {filteredWorktrees.length > 1 ? (
+            <>
+              <div className="branch-menu__divider" />
+              <div className="branch-menu__section-title">{t('Worktrees')}</div>
+              <div className="branch-menu__list">
+                {filteredWorktrees.map((worktree) => {
+                  const name = basename(worktree.path)
+                  const branch = worktree.branch ?? t('detached')
+                  return (
+                    <button
+                      key={worktree.path}
+                      className="branch-menu__row"
+                      data-current={worktree.current || undefined}
+                      disabled={Boolean(busy)}
+                      onClick={() => void openWorktree(worktree.path, close)}
+                    >
+                      <GitFork size={12} className="branch-menu__icon" />
+                      <span className="branch-menu__name">{name}</span>
+                      <span className="branch-menu__meta">{branch}</span>
+                      {worktree.current ? <Check size={12} className="branch-menu__check" /> : null}
+                    </button>
+                  )
+                })}
+              </div>
+            </>
+          ) : null}
+
+          <div className="branch-menu__divider" />
+
+          {/* Bottom Actions: Create and checkout new branch at bottom */}
+          <div className="branch-menu__footer">
+            {showNew ? (
+              <form
+                className="branch-menu__create-form"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void createNewBranch(close)
+                }}
+              >
+                <div className="branch-menu__create-row">
+                  <input
+                    type="text"
+                    className="branch-menu__create-input"
+                    autoFocus
+                    placeholder={t('Branch name')}
+                    value={newBranch}
+                    spellCheck={false}
+                    onChange={(event) => setNewBranch(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Escape') {
+                        event.stopPropagation()
+                        setShowNew(false)
+                        setNewBranch('')
+                      }
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    className="branch-menu__create-btn branch-menu__create-btn--submit"
+                    disabled={!newBranch.trim() || Boolean(busy)}
+                    title={t('Create and checkout branch')}
+                  >
+                    {busy === 'create' ? <Loader2 size={11} className="spin" /> : <Check size={12} />}
+                  </button>
+                  <button
+                    type="button"
+                    className="branch-menu__create-btn branch-menu__create-btn--cancel"
+                    onClick={() => {
+                      setShowNew(false)
+                      setNewBranch('')
+                    }}
+                    title={t('Cancel')}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="branch-menu__footer-row">
+                <button
+                  className="branch-menu__action-btn branch-menu__action-btn--primary"
+                  type="button"
+                  onClick={() => setShowNew(true)}
+                >
+                  <Plus size={13} strokeWidth={1.8} />
+                  <span>{t('Create and checkout branch')}</span>
+                </button>
+                <div className="branch-menu__remote-actions">
+                  <button
+                    className="branch-menu__remote-btn"
+                    disabled={Boolean(busy) || git.detached}
+                    onClick={() => void runPull()}
+                    title={t('Pull latest changes from remote')}
+                  >
+                    <ArrowDown size={11} />
+                    {git.behind > 0 ? <span className="branch-menu__count-sub">{git.behind}</span> : null}
+                  </button>
+                  <button
+                    className="branch-menu__remote-btn"
+                    disabled={Boolean(busy) || git.detached}
+                    onClick={() => void runPush()}
+                    title={t('Push commits to remote')}
+                  >
+                    <ArrowUp size={11} />
+                    {git.ahead > 0 ? <span className="branch-menu__count-sub">{git.ahead}</span> : null}
+                  </button>
+                  <button
+                    className="branch-menu__remote-btn"
+                    disabled={loading}
+                    onClick={() => void load()}
+                    title={t('Refresh')}
+                  >
+                    <RefreshCw size={11} className={loading ? 'spin' : undefined} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {busy && busy !== 'create' ? (
+            <div className="branch-menu__busy">
               <Loader2 size={11} className="spin" />
-              {t('Working…')}
-            </p>
+              <span>{t('Working…')}</span>
+            </div>
           ) : null}
         </div>
       )}

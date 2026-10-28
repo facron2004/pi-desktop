@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Download,
   FileJson,
-  FolderOpen,
-  Minimize2,
+  MessageSquare,
   RefreshCw,
   Search,
   Server,
@@ -13,10 +16,17 @@ import {
   Wrench,
   X
 } from 'lucide-react'
-import type { AuthStatus, McpConfig, McpServerInfo, ModelInfo } from '@shared/types'
+import '../styles/appearance.css'
+import type {
+  AggregatedUsageStats,
+  AuthStatus,
+  McpConfig,
+  McpServerInfo,
+  ModelInfo,
+  VersionCheckResult
+} from '@shared/types'
 import { formatCost, formatTokens } from '../lib/format'
 import { useT } from '../lib/i18n'
-import { formatPlatformShortcut } from '../lib/shortcuts'
 import { useAppStore } from '../store/useAppStore'
 import { Switch } from './Switch'
 
@@ -57,13 +67,13 @@ export interface GeneralSettingsForm {
 }
 
 interface GeneralSettingsProps {
-  form: GeneralSettingsForm
-  onChange: (patch: Partial<GeneralSettingsForm>) => void
-  auth: AuthStatus | null
-  checking: boolean
-  onCheck: (providerOverride?: string) => void
-  onOpenProject: () => void
-  onResetPiPath: () => void
+  form?: GeneralSettingsForm
+  onChange?: (patch: Partial<GeneralSettingsForm>) => void
+  auth?: AuthStatus | null
+  checking?: boolean
+  onCheck?: (providerOverride?: string) => void
+  onOpenProject?: () => void
+  onResetPiPath?: () => void
 }
 
 const THINKING_LEVELS = ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -75,169 +85,222 @@ function formatContextWindow(value: number | undefined): string | null {
   return String(value)
 }
 
-export function GeneralSettings({
-  form,
-  onChange,
-  auth,
-  checking,
-  onCheck,
-  onOpenProject,
-  onResetPiPath
-}: GeneralSettingsProps) {
-  const models = useAppStore((state) => state.models)
-  const language = useAppStore((state) => state.settings.language)
-  const platform = useAppStore((state) => state.info?.platform)
+export function GeneralSettings(_props: GeneralSettingsProps = {}) {
+  const settings = useAppStore((state) => state.settings)
+  const updateSettings = useAppStore((state) => state.updateSettings)
+  const info = useAppStore((state) => state.info)
+  const showToast = useAppStore((state) => state.showToast)
   const t = useT()
-  const selectedModel = models.find(
-    (model) =>
-      form.defaultModel === model.id || form.defaultModel === `${model.provider}/${model.id}`
-  )
-  const selectedModelValue = selectedModel
-    ? `${selectedModel.provider}/${selectedModel.id}`
-    : form.defaultModel
+
+  const currentChatFolder = settings.externalChatFolder || info?.sessionRoot || ''
+
+  const handlePickChatFolder = async () => {
+    try {
+      const selected = await window.pi.dialog.pickDirectory(currentChatFolder)
+      if (selected) {
+        await updateSettings({ externalChatFolder: selected })
+        showToast(t('Settings saved'))
+      }
+    } catch {
+      showToast(t('Could not pick directory'), 'error')
+    }
+  }
 
   return (
-    <div className="settings-page">
-      <PageIntro
-        title={t('General')}
-        description={t('Configure Pi Desktop defaults and the Pi connection.')}
-      />
-
-      <SettingsGroup title={t('Projects')}>
-        <div className="field">
-          <div className="field__row">
-            <button className="btn" onClick={onOpenProject}>
-              <FolderOpen size={13} />
-              {t('Open a folder')}
-            </button>
-            <span className="field__hint" style={{ flex: 1 }}>
-              {formatPlatformShortcut(
-                t('Every folder you open is listed in the sidebar, and you can jump to it with Ctrl 1 … 9.'),
-                platform
-              )}
+    <div className="settings-page settings-page--compact">
+      <SettingsGroup title={t('General')}>
+        {/* 1. 项目外聊天文件夹 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Out-of-project chat folder')}</span>
+            <span className="settings-item-row__desc">
+              {t('Default storage location for data from new chats started outside a project.')}
             </span>
           </div>
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup title={t('Pi CLI')}>
-        <div className="field">
-          <label className="field__label" htmlFor="pi-path">
-            {t('Pi CLI path')}
-          </label>
-          <div className="field__row">
-            <input
-              id="pi-path"
-              className="input"
-              value={form.piPath}
-              placeholder={t('Leave empty to use the bundled Pi')}
-              onChange={(event) => onChange({ piPath: event.target.value })}
-            />
-            <button className="btn" onClick={onResetPiPath}>
-              {t('Reset')}
+          <div className="settings-folder-picker">
+            <span className="settings-folder-path" title={currentChatFolder}>
+              {currentChatFolder}
+            </span>
+            <button type="button" className="btn btn--sm" onClick={handlePickChatFolder}>
+              {t('Change')}
             </button>
           </div>
-          <span className="field__hint">
-            {t('Point this at a `pi` executable or at the CLI script of a checkout. When empty, Pi Desktop uses the copy bundled with the app.')}
-          </span>
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup title={t('Agent defaults')}>
-        <div className="field">
-          <label className="field__label" htmlFor="default-model">
-            {t('Default model')}
-          </label>
-          {models.length > 0 ? (
-            <select
-              id="default-model"
-              className="input settings-select"
-              value={selectedModelValue}
-              onChange={(event) => onChange({ defaultModel: event.target.value })}
-            >
-              <option value="">{t('Automatic (Pi default)')}</option>
-              {form.defaultModel && !selectedModel ? (
-                <option value={form.defaultModel}>
-                  {t('Saved model')}: {form.defaultModel}
-                </option>
-              ) : null}
-              {models.map((model) => (
-                <option key={`${model.provider}/${model.id}`} value={`${model.provider}/${model.id}`}>
-                  {model.name || model.id} · {model.provider}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              id="default-model"
-              className="input"
-              value={form.defaultModel}
-              placeholder={t('Automatic (Pi default)')}
-              onChange={(event) => onChange({ defaultModel: event.target.value })}
-            />
-          )}
-          <span className="field__hint">
-            {models.length > 0
-              ? t('Choose the model Pi should start with. Select Automatic to use Pi’s configured default.')
-              : t('Open a project to load Pi’s model list, or enter a model ID such as provider/model.')}
-          </span>
         </div>
 
-        <div className="field">
-          <label className="field__label" htmlFor="default-thinking">
-            {t('Default reasoning effort')}
-          </label>
+        {/* 2. 默认文件打开位置 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Default file opening location')}</span>
+            <span className="settings-item-row__desc">{t('Default location to open files and folders')}</span>
+          </div>
           <select
-            id="default-thinking"
             className="input settings-select"
-            value={form.defaultThinking}
-            onChange={(event) => onChange({ defaultThinking: event.target.value })}
+            aria-label={t('Default file opening location')}
+            value={settings.defaultFileOpener ?? 'vscode'}
+            onChange={(e) => void updateSettings({ defaultFileOpener: e.target.value })}
           >
-            {THINKING_LEVELS.map((level) => (
-              <option key={level || 'automatic'} value={level}>
-                {level ? t(level[0].toUpperCase() + level.slice(1)) : t('Automatic (Pi default)')}
-              </option>
-            ))}
+            <option value="vscode">VS Code</option>
+            <option value="cursor">Cursor</option>
+            <option value="windsurf">Windsurf</option>
+            <option value="system">{t('System default')}</option>
           </select>
-          <span className="field__hint">
-            {t('Used the next time the Pi runtime starts. The open conversation is not changed.')}
-          </span>
+        </div>
+
+        {/* 3. 智能体环境 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Agent environment')}</span>
+            <span className="settings-item-row__desc">{t('Choose where the agent runs on Windows')}</span>
+          </div>
+          <select
+            className="input settings-select"
+            aria-label={t('Agent environment')}
+            value={settings.agentEnvironment ?? 'windows'}
+            onChange={(e) => void updateSettings({ agentEnvironment: e.target.value })}
+          >
+            <option value="windows">{t('Windows Native')}</option>
+            <option value="wsl">WSL</option>
+          </select>
+        </div>
+
+        {/* 4. 集成终端 Shell */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Integrated terminal shell')}</span>
+            <span className="settings-item-row__desc">{t('Choose the shell to open in the integrated terminal')}</span>
+          </div>
+          <select
+            className="input settings-select"
+            aria-label={t('Integrated terminal shell')}
+            value={settings.terminalShell ?? 'powershell'}
+            onChange={(e) => void updateSettings({ terminalShell: e.target.value })}
+          >
+            <option value="powershell">PowerShell</option>
+            <option value="cmd">Command Prompt (CMD)</option>
+            <option value="gitbash">Git Bash</option>
+            <option value="wsl">WSL (Bash)</option>
+          </select>
+        </div>
+
+        {/* 5. 语言 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Language')}</span>
+            <span className="settings-item-row__desc">{t('Application interface language')}</span>
+          </div>
+          <select
+            className="input settings-select"
+            aria-label={t('Language')}
+            value={settings.language ?? 'zh-CN'}
+            onChange={(e) => void updateSettings({ language: e.target.value as 'zh-CN' | 'en' })}
+          >
+            <option value="zh-CN">简体中文</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+
+        {/* 6. 压缩本地保存的聊天历史记录 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Compact locally saved chat history')}</span>
+            <span className="settings-item-row__desc">
+              {t('Compact older local chat history to save disk space. Changes take effect after restarting.')}
+            </span>
+          </div>
+          <Switch
+            checked={settings.compactChatHistory !== false}
+            onChange={(checked) => void updateSettings({ compactChatHistory: checked })}
+            label={t('Compact locally saved chat history')}
+          />
+        </div>
+
+        {/* 7. 插件 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Plugins')}</span>
+            <span className="settings-item-row__desc">{t('Allow using installed plugins')}</span>
+          </div>
+          <Switch
+            checked={settings.pluginsEnabled !== false}
+            onChange={(checked) => void updateSettings({ pluginsEnabled: checked })}
+            label={t('Plugins')}
+          />
         </div>
       </SettingsGroup>
 
-      <SettingsGroup title={t('Provider credentials')}>
-        <div className="field">
-          <label className="field__label" htmlFor="provider-name">
-            {t('Provider name')}
-          </label>
-          <div className="field__row">
-            <input
-              id="provider-name"
-              className="input"
-              value={form.provider}
-              placeholder={t('e.g. anthropic')}
-              onChange={(event) => onChange({ provider: event.target.value })}
-            />
-            <button className="btn" onClick={() => onCheck()} disabled={checking}>
-              {checking ? <span className="spinner" /> : <Check size={13} />}
-              {t('Check')}
+      <SettingsGroup title={t('Editor')}>
+        {/* 纯文本编辑器 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Plain text editor')}</span>
+            <span className="settings-item-row__desc">
+              {t('When composing messages, keep code, Markdown, and tables as plain text only')}
+            </span>
+          </div>
+          <Switch
+            checked={Boolean(settings.plainTextEditor)}
+            onChange={(checked) => void updateSettings({ plainTextEditor: checked })}
+            label={t('Plain text editor')}
+          />
+        </div>
+
+        {/* 显示上下文窗口使用情况 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Show context window usage')}</span>
+          </div>
+          <Switch
+            checked={settings.showContextUsage !== false}
+            onChange={(checked) => void updateSettings({ showContextUsage: checked })}
+            label={t('Show context window usage')}
+          />
+        </div>
+
+        {/* 发送快捷键 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Send shortcut')}</span>
+            <span className="settings-item-row__desc">{t('Choose whether pressing Enter sends or inserts a new line')}</span>
+          </div>
+          <select
+            className="input settings-select"
+            aria-label={t('Send shortcut')}
+            value={settings.sendShortcut ?? 'enter'}
+            onChange={(e) =>
+              void updateSettings({ sendShortcut: e.target.value as 'enter' | 'ctrlEnter' })
+            }
+          >
+            <option value="enter">{t('Press Enter')}</option>
+            <option value="ctrlEnter">{t('Press Ctrl+Enter')}</option>
+          </select>
+        </div>
+
+        {/* 跟进处理方式 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Follow-up handling method')}</span>
+            <span className="settings-item-row__desc">
+              {t('Queue follow-up messages while the agent is running, or steer subsequent actions. Press Ctrl+Enter to fine-tune this setting.')}
+            </span>
+          </div>
+          <div className="segmented">
+            <button
+              type="button"
+              data-active={(settings.followUpMode ?? 'steer') === 'queue'}
+              aria-pressed={(settings.followUpMode ?? 'steer') === 'queue'}
+              onClick={() => void updateSettings({ followUpMode: 'queue' })}
+            >
+              {t('Queue')}
+            </button>
+            <button
+              type="button"
+              data-active={(settings.followUpMode ?? 'steer') === 'steer'}
+              aria-pressed={(settings.followUpMode ?? 'steer') === 'steer'}
+              onClick={() => void updateSettings({ followUpMode: 'steer' })}
+            >
+              {t('Steer')}
             </button>
           </div>
-          {auth ? (
-            <span className="field__hint" style={{ color: auth.ready ? 'var(--green)' : 'var(--red)' }}>
-              {auth.ready
-                ? language === 'zh-CN'
-                  ? `${auth.provider} 已就绪。`
-                  : `${auth.provider} is ready to use.`
-                : language === 'zh-CN'
-                  ? `${auth.provider ?? '供应商'} 尚未就绪${auth.detail ? `：${auth.detail}` : '。'}`
-                  : `${auth.provider ?? 'provider'} is not ready${auth.detail ? `: ${auth.detail}` : '.'}`}
-            </span>
-          ) : (
-            <span className="field__hint">
-              {t('Runs pi auth check to confirm the provider can be used.')}
-            </span>
-          )}
         </div>
       </SettingsGroup>
     </div>
@@ -598,261 +661,846 @@ export function ModelsSettings({
   )
 }
 
+interface ThemePreset {
+  id: string
+  name: string
+  accent: string
+  light: { bg: string; fg: string }
+  dark: { bg: string; fg: string }
+}
+
+const THEME_PRESETS: ThemePreset[] = [
+  {
+    id: 'chatgpt',
+    name: 'ChatGPT',
+    accent: '#D97757',
+    light: { bg: '#FAF9F5', fg: '#141413' },
+    dark: { bg: '#212121', fg: '#ECECEC' }
+  },
+  {
+    id: 'claude',
+    name: 'Claude',
+    accent: '#D97757',
+    light: { bg: '#FBF9F5', fg: '#1F1E1D' },
+    dark: { bg: '#18181B', fg: '#F4F4F5' }
+  },
+  {
+    id: 'pi',
+    name: 'Pi Classic',
+    accent: '#D95B26',
+    light: { bg: '#FFFFFF', fg: '#242424' },
+    dark: { bg: '#16181D', fg: '#F2F4F8' }
+  },
+  {
+    id: 'github',
+    name: 'GitHub',
+    accent: '#0969DA',
+    light: { bg: '#FFFFFF', fg: '#1F2328' },
+    dark: { bg: '#0D1117', fg: '#E6EDF3' }
+  },
+  {
+    id: 'vitesse',
+    name: 'Vitesse',
+    accent: '#4D9375',
+    light: { bg: '#FAFAFA', fg: '#374151' },
+    dark: { bg: '#121212', fg: '#DBDBDB' }
+  },
+  {
+    id: 'nord',
+    name: 'Nord',
+    accent: '#88C0D0',
+    light: { bg: '#ECEFF4', fg: '#2E3440' },
+    dark: { bg: '#2E3440', fg: '#ECEFF4' }
+  }
+]
+
+const ACCENT_PRESETS = [
+  { label: '自定义', value: 'custom' },
+  { label: '陶土橙 (ChatGPT)', value: '#D97757' },
+  { label: '经典橙 (Pi)', value: '#D95B26' },
+  { label: '翡翠绿 (OpenAI)', value: '#10A37F' },
+  { label: '天蓝色 (Ocean)', value: '#3B82F6' },
+  { label: '极客紫 (Violet)', value: '#8B5CF6' },
+  { label: '玫瑰粉 (Rose)', value: '#EC4899' },
+  { label: '琥珀黄 (Amber)', value: '#F59E0B' },
+  { label: '青蓝色 (Cyan)', value: '#06B6D4' }
+]
+
+const TONE_PRESETS = [
+  { id: 'neutral', label: '默认' },
+  { id: 'warm', label: '暖色' },
+  { id: 'cool', label: '冷色' },
+  { id: 'slate', label: '灰青' },
+  { id: 'contrast', label: '高对比' }
+]
+
+const FONT_DISPLAY_NAMES: Record<string, string> = {
+  system: '系统默认',
+  sans: '现代无衬线 (Sans)',
+  chinese: '中文优先 (Chinese)',
+  mono: '等宽代码 (Mono)',
+  serif: '经典衬线 (Serif)',
+  'Microsoft YaHei': '微软雅黑 (Microsoft YaHei)',
+  'Microsoft YaHei UI': '微软雅黑 UI',
+  SimSun: '宋体 (SimSun)',
+  NSimSun: '新宋体 (NSimSun)',
+  SimHei: '黑体 (SimHei)',
+  KaiTi: '楷体 (KaiTi)',
+  FangSong: '仿宋 (FangSong)',
+  DengXian: '等线 (DengXian)',
+  'PingFang SC': '苹方 (PingFang SC)',
+  'Hiragino Sans GB': '冬青黑体 (Hiragino Sans GB)',
+  'Segoe UI': 'Segoe UI',
+  'Cascadia Code': 'Cascadia Code',
+  Consolas: 'Consolas',
+  'JetBrains Mono': 'JetBrains Mono',
+  'Fira Code': 'Fira Code',
+  'Source Code Pro': 'Source Code Pro',
+  Arial: 'Arial',
+  'Helvetica Neue': 'Helvetica Neue',
+  Inter: 'Inter',
+  Roboto: 'Roboto'
+}
+
+const POPULAR_FONT_FAMILIES = [
+  'Microsoft YaHei',
+  'PingFang SC',
+  'Segoe UI',
+  'Cascadia Code',
+  'Consolas',
+  'JetBrains Mono',
+  'Fira Code',
+  'DengXian',
+  'SimHei',
+  'KaiTi',
+  'Arial',
+  'Inter'
+]
+
 export function AppearanceSettings() {
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
+  const showToast = useAppStore((state) => state.showToast)
   const t = useT()
 
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [systemFonts, setSystemFonts] = useState<string[]>([])
+
+  useEffect(() => {
+    let active = true
+    window.pi.app
+      .getSystemFonts()
+      .then((fonts) => {
+        if (active && Array.isArray(fonts) && fonts.length > 0) {
+          setSystemFonts(fonts)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const isDark =
+    settings.theme === 'dark' ||
+    (settings.theme === 'system' &&
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches)
+
+  const currentPresetObj = THEME_PRESETS.find((p) => p.id === (settings.themePreset ?? 'chatgpt'))
+
+  const effectiveAccent =
+    settings.accentColor ??
+    currentPresetObj?.accent ??
+    (isDark ? '#4C9AFF' : '#D97757')
+
+  const effectiveBg =
+    settings.customBg ??
+    (currentPresetObj
+      ? (isDark ? currentPresetObj.dark.bg : currentPresetObj.light.bg)
+      : (isDark ? '#16181D' : '#FAF9F5'))
+
+  const effectiveFg =
+    settings.customFg ??
+    (currentPresetObj
+      ? (isDark ? currentPresetObj.dark.fg : currentPresetObj.light.fg)
+      : (isDark ? '#F2F4F8' : '#141413'))
+
+  const matchedAccentPreset = ACCENT_PRESETS.find(
+    (p) => p.value.toLowerCase() === effectiveAccent.toLowerCase()
+  )
+
+  const matchedTone = TONE_PRESETS.find((t) => t.id === (settings.themeTone ?? 'neutral'))
+  const currentFontVal = settings.fontFamily ?? 'system'
+  const currentFontLabel =
+    FONT_DISPLAY_NAMES[currentFontVal] ??
+    (currentFontVal === 'system' ? t('System') : currentFontVal)
+
+  const popularOnSystem = useMemo(() => {
+    if (systemFonts.length === 0) return []
+    return POPULAR_FONT_FAMILIES.filter((font) => systemFonts.includes(font))
+  }, [systemFonts])
+
+  const otherSystemFonts = useMemo(() => {
+    if (systemFonts.length === 0) return []
+    const popSet = new Set(POPULAR_FONT_FAMILIES)
+    return systemFonts.filter((font) => !popSet.has(font))
+  }, [systemFonts])
+
+  const handleModeChange = (mode: 'system' | 'light' | 'dark') => {
+    const nextDark =
+      mode === 'dark' ||
+      (mode === 'system' &&
+        typeof window !== 'undefined' &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches)
+
+    const preset = THEME_PRESETS.find((p) => p.id === (settings.themePreset ?? 'chatgpt'))
+    if (preset) {
+      void updateSettings({
+        theme: mode,
+        accentColor: preset.accent,
+        customBg: nextDark ? preset.dark.bg : preset.light.bg,
+        customFg: nextDark ? preset.dark.fg : preset.light.fg
+      })
+    } else {
+      void updateSettings({ theme: mode })
+    }
+  }
+
+  const handlePresetChange = (presetId: string) => {
+    const preset = THEME_PRESETS.find((p) => p.id === presetId)
+    if (!preset) {
+      void updateSettings({ themePreset: 'custom' })
+      return
+    }
+    void updateSettings({
+      themePreset: preset.id,
+      accentColor: preset.accent,
+      customBg: isDark ? preset.dark.bg : preset.light.bg,
+      customFg: isDark ? preset.dark.fg : preset.light.fg
+    })
+  }
+
+  const handleResetDefaults = () => {
+    void updateSettings({
+      theme: 'dark',
+      themePreset: undefined,
+      themeTone: 'neutral',
+      accentColor: undefined,
+      customBg: undefined,
+      customFg: undefined,
+      fontFamily: 'system',
+      fontScale: 1,
+      diffSplit: false
+    })
+    showToast(t('Appearance reset to defaults'))
+  }
+
+  const copyThemeJson = () => {
+    const config = {
+      theme: settings.theme,
+      themePreset: settings.themePreset ?? 'chatgpt',
+      accentColor: effectiveAccent,
+      customBg: effectiveBg,
+      customFg: effectiveFg,
+      themeTone: settings.themeTone ?? 'neutral',
+      fontFamily: settings.fontFamily ?? 'system'
+    }
+    void navigator.clipboard.writeText(JSON.stringify(config, null, 2))
+    showToast(t('Theme copied to clipboard'))
+  }
+
+  const exportThemeJson = () => {
+    const config = {
+      name: currentPresetObj?.name ?? 'Custom',
+      theme: settings.theme,
+      themePreset: settings.themePreset ?? 'chatgpt',
+      accentColor: effectiveAccent,
+      customBg: effectiveBg,
+      customFg: effectiveFg,
+      themeTone: settings.themeTone ?? 'neutral',
+      fontFamily: settings.fontFamily ?? 'system'
+    }
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `pi-theme-${config.themePreset}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
-    <div className="settings-page">
-      <PageIntro
-        title={t('Appearance')}
-        description={t('Choose how Pi Desktop looks and how code changes are shown.')}
-      />
+    <div className="appearance-container">
+      {/* 标题与副标题 */}
+      <h2 className="appearance-title">{t('Appearance')}</h2>
+      <div className="appearance-subtitle">{t('Visual style')}</div>
 
-      <SettingsGroup title={t('Language')}>
-        <div className="segmented" role="group" aria-label={t('Language')}>
-          {([
-            { label: 'English', value: 'en' },
-            { label: '简体中文', value: 'zh-CN' }
-          ] as const).map((option) => (
-            <button
-              key={option.value}
-              aria-pressed={(settings.language ?? 'en') === option.value}
-              data-active={(settings.language ?? 'en') === option.value}
-              onClick={() => void updateSettings({ language: option.value })}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup title={t('Theme')}>
-        <div className="segmented" role="group" aria-label={t('Theme')}>
-          {(['dark', 'light', 'system'] as const).map((theme) => (
-            <button
-              key={theme}
-              aria-pressed={settings.theme === theme}
-              data-active={settings.theme === theme}
-              onClick={() => void updateSettings({ theme })}
-            >
-              {t(theme[0].toUpperCase() + theme.slice(1))}
-            </button>
-          ))}
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup title={t('Text size')}>
-        <div className="segmented settings-text-size" role="group" aria-label={t('Text size')}>
-          {[
-            { label: 'Small', value: 0.92 },
-            { label: 'Default', value: 1 },
-            { label: 'Large', value: 1.1 },
-            { label: 'XL', value: 1.22 }
-          ].map((option) => (
-            <button
-              key={option.label}
-              data-size={option.label.toLowerCase()}
-              aria-pressed={Math.abs((settings.fontScale ?? 1) - option.value) < 0.01}
-              data-active={Math.abs((settings.fontScale ?? 1) - option.value) < 0.01}
-              onClick={() => void updateSettings({ fontScale: option.value })}
-            >
-              {t(option.label)}
-            </button>
-          ))}
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup title={t('Diff layout')}>
-        <div className="segmented" role="group" aria-label={t('Diff layout')}>
+      {/* 模式选择卡片 */}
+      <div className="appearance-card appearance-card--mode">
+        <div className="appearance-row__label">{t('Mode')}</div>
+        <div className="appearance-mode-picker" role="radiogroup" aria-label={t('Mode')}>
+          {/* 跟随系统 */}
           <button
-            aria-pressed={!settings.diffSplit}
-            data-active={!settings.diffSplit}
-            onClick={() => void updateSettings({ diffSplit: false })}
+            type="button"
+            className="appearance-mode-btn"
+            data-active={settings.theme === 'system'}
+            onClick={() => handleModeChange('system')}
+            title={t('System')}
+            aria-label={t('System')}
           >
-            {t('Unified')}
+            <div className="mini-preview-system">
+              <div className="mini-preview-system__left">
+                <div className="mini-line mini-line--top-light" />
+                <div className="mini-line mini-line--text-light" />
+                <div className="mini-line mini-line--text-light" style={{ width: '60%' }} />
+              </div>
+              <div className="mini-preview-system__right">
+                <div className="mini-line mini-line--top-dark" />
+                <div className="mini-line mini-line--accent" />
+                <div className="mini-line mini-line--text-dark" style={{ width: '70%' }} />
+              </div>
+            </div>
           </button>
+
+          {/* 浅色模式 */}
           <button
-            aria-pressed={settings.diffSplit === true}
-            data-active={settings.diffSplit === true}
-            onClick={() => void updateSettings({ diffSplit: true })}
+            type="button"
+            className="appearance-mode-btn"
+            data-active={settings.theme === 'light'}
+            onClick={() => handleModeChange('light')}
+            title={t('Light')}
+            aria-label={t('Light')}
           >
-            {t('Side by side')}
+            <div className="mini-preview-light">
+              <div className="mini-line mini-line--top-light" />
+              <div className="mini-line mini-line--text-light" />
+              <div className="mini-line mini-line--accent" />
+              <div className="mini-line mini-line--text-light" style={{ width: '65%' }} />
+            </div>
+          </button>
+
+          {/* 深色模式 */}
+          <button
+            type="button"
+            className="appearance-mode-btn"
+            data-active={settings.theme === 'dark'}
+            onClick={() => handleModeChange('dark')}
+            title={t('Dark')}
+            aria-label={t('Dark')}
+          >
+            <div className="mini-preview-dark">
+              <div className="mini-line mini-line--top-dark" />
+              <div className="mini-line mini-line--text-dark" />
+              <div className="mini-line mini-line--accent" />
+              <div className="mini-line mini-line--text-dark" style={{ width: '65%' }} />
+            </div>
           </button>
         </div>
-      </SettingsGroup>
+      </div>
 
-      <SettingsGroup title={t('Notifications')}>
-        <div className="field">
-          <div className="field__row settings-switch-row">
-            <Switch
-              checked={settings.desktopNotifications !== false}
-              onChange={(value) => void updateSettings({ desktopNotifications: value })}
-              label={t('Desktop notifications')}
-            />
-            <span className="field__hint">
-              {t('Notify when Pi finishes a turn or needs confirmation while the window is in the background.')}
-            </span>
+      {/* 视觉配置详情卡片 */}
+      <div className="appearance-card appearance-group-card">
+        {/* 主题 */}
+        <div className="appearance-row">
+          <div className="appearance-row__label">{t('Theme')}</div>
+          <div className="appearance-row__right">
+            <button
+              type="button"
+              className="appearance-action-btn"
+              title={t('Export this conversation as HTML')}
+              onClick={exportThemeJson}
+            >
+              <Download size={14} />
+            </button>
+            <button
+              type="button"
+              className="appearance-action-btn"
+              title={t('Theme copied to clipboard')}
+              onClick={copyThemeJson}
+            >
+              <Copy size={14} />
+            </button>
+            <div className="appearance-select-pill">
+              <Sparkles size={13} className="appearance-select-pill__icon" />
+              <span>{currentPresetObj?.name ?? t('Custom')}</span>
+              <ChevronDown size={13} className="appearance-select-pill__chevron" />
+              <select
+                className="appearance-select-native"
+                aria-label={t('Theme')}
+                value={settings.themePreset ?? 'chatgpt'}
+                onChange={(e) => handlePresetChange(e.target.value)}
+              >
+                {THEME_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+                <option value="custom">{t('Custom')}</option>
+              </select>
+            </div>
           </div>
         </div>
-      </SettingsGroup>
+
+        {/* 强调色 */}
+        <div className="appearance-row">
+          <div className="appearance-row__label">{t('Accent color')}</div>
+          <div className="appearance-row__right">
+            <div className="appearance-select-pill">
+              <span>{matchedAccentPreset ? t(matchedAccentPreset.label) : t('Custom')}</span>
+              <ChevronDown size={13} className="appearance-select-pill__chevron" />
+              <select
+                className="appearance-select-native"
+                aria-label={t('Accent color')}
+                value={matchedAccentPreset ? matchedAccentPreset.value : 'custom'}
+                onChange={(e) => {
+                  if (e.target.value !== 'custom') {
+                    void updateSettings({ accentColor: e.target.value, themePreset: 'custom' })
+                  }
+                }}
+              >
+                {ACCENT_PRESETS.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="appearance-swatch-pill" title={t('Accent color')}>
+              <span className="appearance-swatch-dot" style={{ backgroundColor: effectiveAccent }} />
+              <span className="appearance-swatch-hex">{effectiveAccent.toUpperCase()}</span>
+              <input
+                type="color"
+                className="appearance-swatch-native"
+                value={effectiveAccent}
+                onChange={(e) => {
+                  void updateSettings({ accentColor: e.target.value, themePreset: 'custom' })
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 背景 */}
+        <div className="appearance-row">
+          <div className="appearance-row__label">{t('Background')}</div>
+          <div className="appearance-row__right">
+            <div className="appearance-swatch-pill" title={t('Background')}>
+              <span className="appearance-swatch-dot" style={{ backgroundColor: effectiveBg }} />
+              <span className="appearance-swatch-hex">{effectiveBg.toUpperCase()}</span>
+              <input
+                type="color"
+                className="appearance-swatch-native"
+                value={effectiveBg}
+                onChange={(e) => {
+                  void updateSettings({ customBg: e.target.value, themePreset: 'custom' })
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 前景 */}
+        <div className="appearance-row">
+          <div className="appearance-row__label">{t('Foreground')}</div>
+          <div className="appearance-row__right">
+            <div className="appearance-swatch-pill" title={t('Foreground')}>
+              <span className="appearance-swatch-dot" style={{ backgroundColor: effectiveFg }} />
+              <span className="appearance-swatch-hex">{effectiveFg.toUpperCase()}</span>
+              <input
+                type="color"
+                className="appearance-swatch-native"
+                value={effectiveFg}
+                onChange={(e) => {
+                  void updateSettings({ customFg: e.target.value, themePreset: 'custom' })
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 色调 */}
+        <div className="appearance-row">
+          <div className="appearance-row__label">{t('Tone')}</div>
+          <div className="appearance-row__right">
+            <div className="appearance-select-pill">
+              <span>{t(matchedTone?.label ?? 'Default')}</span>
+              <ChevronDown size={13} className="appearance-select-pill__chevron" />
+              <select
+                className="appearance-select-native"
+                aria-label={t('Tone')}
+                value={settings.themeTone ?? 'neutral'}
+                onChange={(e) => void updateSettings({ themeTone: e.target.value })}
+              >
+                {TONE_PRESETS.map((tone) => (
+                  <option key={tone.id} value={tone.id}>
+                    {t(tone.label)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* 字体 */}
+        <div className="appearance-row">
+          <div className="appearance-row__label">{t('Font')}</div>
+          <div className="appearance-row__right">
+            <div className="appearance-select-pill">
+              <span>{currentFontLabel}</span>
+              <ChevronDown size={13} className="appearance-select-pill__chevron" />
+              <select
+                className="appearance-select-native"
+                aria-label={t('Font')}
+                value={currentFontVal}
+                onChange={(e) => void updateSettings({ fontFamily: e.target.value })}
+              >
+                <option value="system">{t('System')}</option>
+                {popularOnSystem.length > 0 && (
+                  <optgroup label={settings.language === 'zh-CN' ? '常用推荐' : 'Recommended'}>
+                    {popularOnSystem.map((font) => (
+                      <option key={`pop-${font}`} value={font} style={{ fontFamily: `"${font}", sans-serif` }}>
+                        {FONT_DISPLAY_NAMES[font] ?? font}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {otherSystemFonts.length > 0 ? (
+                  <optgroup
+                    label={
+                      settings.language === 'zh-CN'
+                        ? `系统字体 (${systemFonts.length})`
+                        : `System Fonts (${systemFonts.length})`
+                    }
+                  >
+                    {otherSystemFonts.map((font) => (
+                      <option key={`sys-${font}`} value={font} style={{ fontFamily: `"${font}", sans-serif` }}>
+                        {FONT_DISPLAY_NAMES[font] ?? font}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : (
+                  systemFonts.length === 0 && (
+                    <optgroup label={settings.language === 'zh-CN' ? '字体预设' : 'Presets'}>
+                      <option value="sans">{t('现代无衬线')}</option>
+                      <option value="chinese">{t('中文优先')}</option>
+                      <option value="mono">{t('等宽代码')}</option>
+                      <option value="serif">{t('经典衬线')}</option>
+                    </optgroup>
+                  )
+                )}
+                {currentFontVal !== 'system' &&
+                  !popularOnSystem.includes(currentFontVal) &&
+                  !otherSystemFonts.includes(currentFontVal) && (
+                    <option value={currentFontVal}>{currentFontLabel}</option>
+                  )}
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 底部动作链接 */}
+      <div className="appearance-footer">
+        <button
+          type="button"
+          className="appearance-text-btn"
+          onClick={() => setShowAdvanced((v) => !v)}
+        >
+          <span>{t('Advanced')}</span>
+          {showAdvanced ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        </button>
+        <button
+          type="button"
+          className="appearance-text-btn appearance-text-btn--reset"
+          onClick={handleResetDefaults}
+        >
+          {t('Reset to default settings')}
+        </button>
+      </div>
+
+      {/* 高级展开项 */}
+      {showAdvanced ? (
+        <div className="appearance-advanced">
+          <SettingsGroup title={t('Language')}>
+            <div className="segmented" role="group" aria-label={t('Language')}>
+              {([
+                { label: 'English', value: 'en' },
+                { label: '简体中文', value: 'zh-CN' }
+              ] as const).map((option) => (
+                <button
+                  key={option.value}
+                  aria-pressed={(settings.language ?? 'en') === option.value}
+                  data-active={(settings.language ?? 'en') === option.value}
+                  onClick={() => void updateSettings({ language: option.value })}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </SettingsGroup>
+
+          <SettingsGroup title={t('Text size')}>
+            <div className="segmented settings-text-size" role="group" aria-label={t('Text size')}>
+              {[
+                { label: 'Small', value: 0.92 },
+                { label: 'Default', value: 1 },
+                { label: 'Large', value: 1.1 },
+                { label: 'XL', value: 1.22 }
+              ].map((option) => (
+                <button
+                  key={option.label}
+                  data-size={option.label.toLowerCase()}
+                  aria-pressed={Math.abs((settings.fontScale ?? 1) - option.value) < 0.01}
+                  data-active={Math.abs((settings.fontScale ?? 1) - option.value) < 0.01}
+                  onClick={() => void updateSettings({ fontScale: option.value })}
+                >
+                  {t(option.label)}
+                </button>
+              ))}
+            </div>
+          </SettingsGroup>
+
+          <SettingsGroup title={t('Diff layout')}>
+            <div className="segmented" role="group" aria-label={t('Diff layout')}>
+              <button
+                aria-pressed={!settings.diffSplit}
+                data-active={!settings.diffSplit}
+                onClick={() => void updateSettings({ diffSplit: false })}
+              >
+                {t('Unified')}
+              </button>
+              <button
+                aria-pressed={settings.diffSplit === true}
+                data-active={settings.diffSplit === true}
+                onClick={() => void updateSettings({ diffSplit: true })}
+              >
+                {t('Side by side')}
+              </button>
+            </div>
+          </SettingsGroup>
+
+          <SettingsGroup title={t('Notifications')}>
+            <div className="field">
+              <div className="field__row settings-switch-row">
+                <Switch
+                  checked={settings.desktopNotifications !== false}
+                  onChange={(value) => void updateSettings({ desktopNotifications: value })}
+                  label={t('Desktop notifications')}
+                />
+                <span className="field__hint">
+                  {t(
+                    'Notify when Pi finishes a turn or needs confirmation while the window is in the background.'
+                  )}
+                </span>
+              </div>
+            </div>
+          </SettingsGroup>
+        </div>
+      ) : null}
     </div>
   )
 }
 
 export function UsageSettings() {
-  const stats = useAppStore((state) => state.stats)
-  const piState = useAppStore((state) => state.piState)
-  const sessions = useAppStore((state) => state.sessions)
   const settings = useAppStore((state) => state.settings)
-  const ready = useAppStore((state) => state.status.phase === 'ready')
-  const refreshState = useAppStore((state) => state.refreshState)
-  const compact = useAppStore((state) => state.compact)
+  const piState = useAppStore((state) => state.piState)
   const setAutoCompaction = useAppStore((state) => state.setAutoCompaction)
   const setAutoRetry = useAppStore((state) => state.setAutoRetry)
   const t = useT()
 
-  const [refreshing, setRefreshing] = useState(false)
-  const [compacting, setCompacting] = useState(false)
+  const [usageStats, setUsageStats] = useState<AggregatedUsageStats | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [selectedPeriod, setSelectedPeriod] = useState<'today' | 'week' | 'month' | 'allTime'>('today')
 
-  const context = stats?.contextUsage
-  const tokens = stats?.tokens
-  const percent = context?.percent ?? 0
-  const level = percent >= 80 ? 'high' : percent >= 50 ? 'mid' : 'low'
-
-  const handleRefresh = async () => {
-    setRefreshing(true)
+  const loadStats = useCallback(async () => {
+    setLoading(true)
     try {
-      await refreshState()
+      const res = await window.pi.sessions.usageStats(settings.externalChatFolder)
+      setUsageStats(res)
+    } catch (err) {
+      console.error('Failed to load usage stats:', err)
     } finally {
-      setRefreshing(false)
+      setLoading(false)
     }
-  }
+  }, [settings.externalChatFolder])
 
-  const handleCompact = async () => {
-    setCompacting(true)
-    try {
-      await compact()
-    } finally {
-      setCompacting(false)
-    }
-  }
+  useEffect(() => {
+    void loadStats()
+  }, [loadStats])
+
+  const periods: Array<{ key: 'today' | 'week' | 'month' | 'allTime'; title: string }> = [
+    { key: 'today', title: t('Period Day') },
+    { key: 'week', title: t('Period Week') },
+    { key: 'month', title: t('Period Month') },
+    { key: 'allTime', title: t('Period All') }
+  ]
+
+  const activeData = usageStats ? usageStats[selectedPeriod] : null
+  const activeTokens = activeData?.tokens
+  const activeConvs = activeData?.conversationsCount ?? 0
+  const activeMsgs = activeData?.messageCount ?? 0
+  const avgTokens = activeConvs > 0 && activeTokens ? Math.round(activeTokens.totalTokens / activeConvs) : 0
 
   return (
     <div className="settings-page">
       <PageIntro
         title={t('Usage')}
-        description={t('View token consumption, context window status, and session activity.')}
+        description={t('Global token consumption statistics and conversation activity across time horizons.')}
       />
 
+      {/* 4 Overview Period Cards */}
       <SettingsGroup
-        title={t('Context window')}
+        title={t('Token usage overview')}
         action={
-          <div className="settings-inline-actions">
-            <button
-              type="button"
-              className="btn btn--sm"
-              disabled={!ready || refreshing}
-              onClick={() => void handleRefresh()}
-            >
-              <RefreshCw size={12} className={refreshing ? 'spin' : undefined} />
-              {t('Refresh')}
-            </button>
-            <button
-              type="button"
-              className="btn btn--sm"
-              disabled={!ready || compacting}
-              onClick={() => void handleCompact()}
-            >
-              <Minimize2 size={12} />
-              {compacting ? t('Compacting…') : t('Compact now')}
-            </button>
-          </div>
+          <button
+            type="button"
+            className="btn btn--sm"
+            disabled={loading}
+            onClick={() => void loadStats()}
+          >
+            <RefreshCw size={12} className={loading ? 'spin' : undefined} />
+            {t('Refresh')}
+          </button>
         }
       >
-        <div className="settings-context-card">
-          <div className="ctx__headline">
-            <span className="ctx__big">{formatTokens(context?.tokens)}</span>
-            <span className="ctx__muted">
-              {' '}
-              {t('of')} {formatTokens(context?.contextWindow)}
-            </span>
-            {context?.percent !== null && context?.percent !== undefined ? (
-              <span className="ctx__muted"> · {Math.round(context.percent)}%</span>
-            ) : null}
+        <div className="usage-period-grid">
+          {periods.map(({ key, title }) => {
+            const periodData = usageStats ? usageStats[key] : null
+            const tokens = periodData?.tokens.totalTokens ?? 0
+            const convs = periodData?.conversationsCount ?? 0
+            const msgs = periodData?.messageCount ?? 0
+            const isSelected = selectedPeriod === key
+
+            return (
+              <button
+                key={key}
+                type="button"
+                className="usage-period-card"
+                data-active={isSelected}
+                onClick={() => setSelectedPeriod(key)}
+              >
+                <div className="usage-period-card__header">
+                  <span>{title}</span>
+                  {isSelected && <span className="usage-period-badge">{t('Selected')}</span>}
+                </div>
+                <div className="usage-period-card__tokens">
+                  {formatTokens(tokens)}
+                </div>
+                <div className="usage-period-card__footer">
+                  <span className="usage-period-badge">
+                    <MessageSquare size={10} />
+                    {convs} {t('Conversations')}
+                  </span>
+                  <span>· {msgs} {t('turns')}</span>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </SettingsGroup>
+
+      {/* Selected Period Detailed Breakdown */}
+      <SettingsGroup
+        title={`${periods.find((p) => p.key === selectedPeriod)?.title ?? ''} - ${t('Detailed breakdown')}`}
+      >
+        <div className="usage-detail-grid">
+          <div className="usage-detail-metric">
+            <span className="usage-detail-metric__label">{t('Total tokens')}</span>
+            <span className="usage-detail-metric__value">{formatTokens(activeTokens?.totalTokens)}</span>
           </div>
-          <span className="ctx__bar">
-            <span
-              className="ctx__fill"
-              data-level={level}
-              style={{ width: `${Math.min(100, percent)}%` }}
-            />
-          </span>
-          {!context ? (
-            <span className="field__hint">{t('Waiting for Pi statistics')}</span>
+          <div className="usage-detail-metric">
+            <span className="usage-detail-metric__label">{t('Input tokens')}</span>
+            <span className="usage-detail-metric__value">{formatTokens(activeTokens?.input)}</span>
+          </div>
+          <div className="usage-detail-metric">
+            <span className="usage-detail-metric__label">{t('Output tokens')}</span>
+            <span className="usage-detail-metric__value">{formatTokens(activeTokens?.output)}</span>
+          </div>
+          <div className="usage-detail-metric">
+            <span className="usage-detail-metric__label">{t('Cache read')}</span>
+            <span className="usage-detail-metric__value">{formatTokens(activeTokens?.cacheRead)}</span>
+          </div>
+          <div className="usage-detail-metric">
+            <span className="usage-detail-metric__label">{t('Cache write')}</span>
+            <span className="usage-detail-metric__value">{formatTokens(activeTokens?.cacheWrite)}</span>
+          </div>
+          <div className="usage-detail-metric">
+            <span className="usage-detail-metric__label">{t('Conversations')}</span>
+            <span className="usage-detail-metric__value">{activeConvs}</span>
+          </div>
+          <div className="usage-detail-metric">
+            <span className="usage-detail-metric__label">{t('Message turns')}</span>
+            <span className="usage-detail-metric__value">{activeMsgs}</span>
+          </div>
+          <div className="usage-detail-metric">
+            <span className="usage-detail-metric__label">{t('Avg / conversation')}</span>
+            <span className="usage-detail-metric__value">{formatTokens(avgTokens)}</span>
+          </div>
+          {activeTokens?.cost && activeTokens.cost > 0 ? (
+            <div className="usage-detail-metric">
+              <span className="usage-detail-metric__label">{t('Estimated cost')}</span>
+              <span className="usage-detail-metric__value">{formatCost(activeTokens.cost)}</span>
+            </div>
           ) : null}
         </div>
       </SettingsGroup>
 
-      <SettingsGroup title={t('Token consumption & cost')}>
-        <div className="settings-metrics">
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Input')}</span>
-            <span className="settings-metric__value">{formatTokens(tokens?.input)}</span>
+      {/* Model Distribution */}
+      {usageStats && usageStats.byModel.length > 0 && (
+        <SettingsGroup title={t('Model distribution')}>
+          <div className="usage-model-list">
+            {usageStats.byModel.map((m) => {
+              const allTimeTotal = usageStats.allTime.tokens.totalTokens || 1
+              const pct = Math.min(100, Math.round((m.totalTokens / allTimeTotal) * 100))
+              return (
+                <div key={m.model} className="usage-model-row">
+                  <div className="usage-model-row__head">
+                    <span className="usage-model-row__name">{m.model}</span>
+                    <div className="usage-model-row__stats">
+                      <span>{formatTokens(m.totalTokens)}</span>
+                      <span>{pct}%</span>
+                      <span>{m.messageCount} {t('turns')}</span>
+                      {m.cost > 0 && <span>{formatCost(m.cost)}</span>}
+                    </div>
+                  </div>
+                  <div className="usage-model-row__bar">
+                    <div className="usage-model-row__bar-fill" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              )
+            })}
           </div>
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Output')}</span>
-            <span className="settings-metric__value">{formatTokens(tokens?.output)}</span>
-          </div>
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Cache read')}</span>
-            <span className="settings-metric__value">{formatTokens(tokens?.cacheRead)}</span>
-          </div>
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Cache write')}</span>
-            <span className="settings-metric__value">{formatTokens(tokens?.cacheWrite)}</span>
-          </div>
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Total')}</span>
-            <span className="settings-metric__value">{formatTokens(tokens?.total)}</span>
-          </div>
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Cost')}</span>
-            <span className="settings-metric__value">{formatCost(stats?.cost)}</span>
-          </div>
-        </div>
-      </SettingsGroup>
+        </SettingsGroup>
+      )}
 
-      <SettingsGroup title={t('Session & workspace activity')}>
-        <div className="settings-metrics">
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Prompts')}</span>
-            <span className="settings-metric__value">{stats?.userMessages ?? '—'}</span>
-          </div>
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Replies')}</span>
-            <span className="settings-metric__value">{stats?.assistantMessages ?? '—'}</span>
-          </div>
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Tool calls')}</span>
-            <span className="settings-metric__value">{stats?.toolCalls ?? '—'}</span>
-          </div>
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Saved conversations')}</span>
-            <span className="settings-metric__value">{sessions.length}</span>
-          </div>
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Projects')}</span>
-            <span className="settings-metric__value">{settings.workspaces.length}</span>
-          </div>
-          <div className="settings-metric">
-            <span className="settings-metric__label">{t('Pinned')}</span>
-            <span className="settings-metric__value">{(settings.pinnedSessions ?? []).length}</span>
-          </div>
-        </div>
-      </SettingsGroup>
+      {/* Recent 7 Days Trend */}
+      {usageStats && usageStats.recentDays.some((d) => d.totalTokens > 0 || d.conversationsCount > 0) && (
+        <SettingsGroup title={t('Recent daily trend')}>
+          <table className="usage-days-table">
+            <thead>
+              <tr>
+                <th>{t('Date')}</th>
+                <th>{t('Token consumption')}</th>
+                <th>{t('Active conversations')}</th>
+                <th>{t('Message turns')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usageStats.recentDays.map((d) => (
+                <tr key={d.date}>
+                  <td>{d.date}</td>
+                  <td>{formatTokens(d.totalTokens)}</td>
+                  <td>{d.conversationsCount}</td>
+                  <td>{d.messageCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </SettingsGroup>
+      )}
 
+      {/* Automation & context policy */}
       <SettingsGroup title={t('Automation & context policy')}>
         <div className="field">
           <div className="field__row settings-switch-row">
@@ -1329,31 +1977,176 @@ export function ProjectSafetySettings() {
 
 export function AboutSettings() {
   const info = useAppStore((state) => state.info)
+  const refreshInfo = useAppStore((state) => state.refreshInfo)
+  const showToast = useAppStore((state) => state.showToast)
   const t = useT()
 
+  const [checking, setChecking] = useState(false)
+  const [upgradingCli, setUpgradingCli] = useState(false)
+  const [upgradingApp, setUpgradingApp] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState<VersionCheckResult | null>(null)
+
+  const handleCheck = async (silent = false) => {
+    setChecking(true)
+    try {
+      const result = await window.pi.app.checkUpdate()
+      setUpdateStatus(result)
+      if (!silent && !result.app.hasUpdate && !result.piCli.hasUpdate) {
+        showToast(t('Up to date'))
+      }
+    } catch {
+      if (!silent) {
+        showToast(t('Check failed'), 'error')
+      }
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  useEffect(() => {
+    void handleCheck(true)
+  }, [])
+
+  const handleUpgradeCli = async () => {
+    setUpgradingCli(true)
+    try {
+      const res = await window.pi.app.upgradePiCli()
+      if (res.success) {
+        showToast(t('Upgrade completed'))
+        await refreshInfo()
+        const result = await window.pi.app.checkUpdate()
+        setUpdateStatus(result)
+      } else {
+        showToast(res.error ? `${t('Upgrade failed')}: ${res.error}` : t('Upgrade failed'), 'error')
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      showToast(`${t('Upgrade failed')}: ${msg}`, 'error')
+    } finally {
+      setUpgradingCli(false)
+    }
+  }
+
+  const handleUpgradeApp = async () => {
+    setUpgradingApp(true)
+    try {
+      const res = await window.pi.app.upgradeApp()
+      if (res.success) {
+        showToast(t('Upgrade completed'))
+        await refreshInfo()
+        const result = await window.pi.app.checkUpdate()
+        setUpdateStatus(result)
+      } else {
+        showToast(res.error ? `${t('Upgrade failed')}: ${res.error}` : t('Upgrade failed'), 'error')
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      showToast(`${t('Upgrade failed')}: ${msg}`, 'error')
+    } finally {
+      setUpgradingApp(false)
+    }
+  }
+
+  const appCurrent = info?.version ?? '0.3.0'
+  const piCliCurrent = info?.pi.version ?? '—'
+
   return (
-    <div className="settings-page">
+    <div className="settings-page settings-page--compact">
       <PageIntro
         title={t('About')}
-        description={t('Pi Desktop and runtime versions for diagnostics.')}
+        description={t('Version information and update checking.')}
       />
 
-      <SettingsGroup title={t('Environment')}>
-        <div className="kv settings-environment">
-          <span className="kv__key">{t('Application version')}</span>
-          <span className="kv__value">{info?.version ?? '—'}</span>
-          <span className="kv__key">{t('Pi CLI')}</span>
-          <span className="kv__value">{info?.pi.display ?? '—'}</span>
-          <span className="kv__key">{t('Pi version')}</span>
-          <span className="kv__value">{info?.pi.version ?? '—'}</span>
-          <span className="kv__key">{t('Session folder')}</span>
-          <span className="kv__value">{info?.sessionRoot ?? '—'}</span>
-          <span className="kv__key">{t('Operating system')}</span>
-          <span className="kv__value">{info?.platform ?? '—'}</span>
-          <span className="kv__key">{t('Electron')}</span>
-          <span className="kv__value">{info?.electron ?? '—'}</span>
-          <span className="kv__key">{t('Node')}</span>
-          <span className="kv__value">{info?.node ?? '—'}</span>
+      <SettingsGroup
+        title={t('Version info')}
+        action={
+          <button
+            type="button"
+            className="btn btn--sm"
+            disabled={checking || upgradingCli || upgradingApp}
+            onClick={() => void handleCheck()}
+          >
+            <RefreshCw size={12} className={checking ? 'spin' : ''} />
+            {checking ? t('Checking...') : t('Check for updates')}
+          </button>
+        }
+      >
+        {/* 1. 应用版本 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Application version')}</span>
+            <span className="settings-item-row__desc">
+              Pi Desktop v{appCurrent}
+            </span>
+          </div>
+          <div className="settings-version-actions">
+            {checking ? (
+              <span className="settings-badge">
+                <RefreshCw size={10} className="spin" style={{ marginRight: 4 }} />
+                {t('Checking...')}
+              </span>
+            ) : updateStatus?.app.hasUpdate ? (
+              <>
+                <span className="settings-badge" data-tone="amber">
+                  <Sparkles size={11} style={{ marginRight: 4 }} />
+                  {t('New version')} v{updateStatus.app.latest}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn--primary btn--sm"
+                  disabled={upgradingApp}
+                  onClick={() => void handleUpgradeApp()}
+                >
+                  <Download size={12} className={upgradingApp ? 'spin' : ''} />
+                  {upgradingApp ? t('Upgrading...') : t('Pull update')}
+                </button>
+              </>
+            ) : updateStatus?.app ? (
+              <span className="settings-badge" data-tone="green">
+                <Check size={11} style={{ marginRight: 4 }} />
+                {t('Up to date')}
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {/* 2. Pi CLI 版本 */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Pi CLI version')}</span>
+            <span className="settings-item-row__desc">
+              @earendil-works/pi-coding-agent v{piCliCurrent}
+            </span>
+          </div>
+          <div className="settings-version-actions">
+            {checking ? (
+              <span className="settings-badge">
+                <RefreshCw size={10} className="spin" style={{ marginRight: 4 }} />
+                {t('Checking...')}
+              </span>
+            ) : updateStatus?.piCli.hasUpdate ? (
+              <>
+                <span className="settings-badge" data-tone="amber">
+                  <Sparkles size={11} style={{ marginRight: 4 }} />
+                  {t('New version')} v{updateStatus.piCli.latest}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn--primary btn--sm"
+                  disabled={upgradingCli}
+                  onClick={() => void handleUpgradeCli()}
+                >
+                  <Download size={12} className={upgradingCli ? 'spin' : ''} />
+                  {upgradingCli ? t('Upgrading...') : t('Reinstall & Upgrade')}
+                </button>
+              </>
+            ) : updateStatus?.piCli ? (
+              <span className="settings-badge" data-tone="green">
+                <Check size={11} style={{ marginRight: 4 }} />
+                {t('Up to date')}
+              </span>
+            ) : null}
+          </div>
         </div>
       </SettingsGroup>
     </div>

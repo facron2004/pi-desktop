@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Bell,
-  ChevronDown,
   Clock,
+  Copy,
   Ellipsis,
   Folder,
+  FolderEdit,
   FolderOpen,
   Loader2,
   Pencil,
@@ -23,7 +23,9 @@ import { samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
+import { EditProjectDialog } from './EditProjectDialog'
 import { Popover } from './Popover'
+import { PiLogo } from './PiLogo'
 import { useT } from '../lib/i18n'
 import {
   MIN_SESSION_SEARCH_LENGTH,
@@ -65,18 +67,20 @@ export function Sidebar({
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const status = useAppStore((state) => state.status)
   const isStreaming = useAppStore((state) => state.isStreaming)
-  const error = useAppStore((state) => state.error)
-  const toast = useAppStore((state) => state.toast)
   const settings = useAppStore((state) => state.settings)
   const pickWorkspace = useAppStore((state) => state.pickWorkspace)
   const pendingProject = useAppStore((state) => state.pendingProject)
   const selectSession = useAppStore((state) => state.selectSession)
+  const stop = useAppStore((state) => state.stop)
   const newChat = useAppStore((state) => state.newChat)
   const removeWorkspace = useAppStore((state) => state.removeWorkspace)
   const renameSessionFile = useAppStore((state) => state.renameSessionFile)
   const deleteSession = useAppStore((state) => state.deleteSession)
   const togglePin = useAppStore((state) => state.togglePin)
   const openSearchHit = useAppStore((state) => state.openSearchHit)
+  const updateSettings = useAppStore((state) => state.updateSettings)
+  const switchProject = useAppStore((state) => state.switchProject)
+  const showToast = useAppStore((state) => state.showToast)
   const t = useT()
 
   const [query, setQuery] = useState('')
@@ -86,7 +90,10 @@ export function Sidebar({
   const searchInputRef = useRef<HTMLInputElement>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
+  const [projectDraft, setProjectDraft] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
+  const [editingProject, setEditingProject] = useState<Project | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const [recentsOpen, setRecentsOpen] = useState(false)
   const [recentIndex, setRecentIndex] = useState(-1)
@@ -307,14 +314,12 @@ export function Sidebar({
         project={showProject && session.cwd ? basename(session.cwd) : undefined}
         onSelect={(file) => {
           if (renaming === file) return
-          // Opening another conversation replaces the one Pi is running in.
-          // Stopping is the user's decision, not a side effect of a click.
-          if (isStreaming && file !== activeSessionFile) {
-            window.dispatchEvent(
-              new CustomEvent('pi:confirm-switch-session', {
-                detail: { file, title: session.name || session.preview || t('Untitled session') }
-              })
-            )
+          if (file === activeSessionFile) return
+          if (isStreaming) {
+            void (async () => {
+              await stop()
+              await selectSession(session)
+            })()
             return
           }
           void selectSession(session)
@@ -405,83 +410,11 @@ export function Sidebar({
         onKeyUp={finishKeyboardResize}
       />
       <div className="sidebar__head drag-region">
-        <Popover
-          className="sidebar__menu"
-          renderTrigger={({ open, toggle }) => (
-            <button
-              className="sidebar__brand no-drag"
-              aria-label={t('Application menu')}
-              aria-expanded={open}
-              onClick={toggle}
-            >
-              <span>Pi Desktop</span>
-              <ChevronDown size={12} strokeWidth={1.5} />
-            </button>
-          )}
-        >
-          {(close) => (
-            <>
-              <button
-                className="popover__item"
-                onClick={() => {
-                  close()
-                  onOpenSettings()
-                }}
-              >
-                <Settings size={15} />
-                {t('Settings')}
-              </button>
-              <button
-                className="popover__item"
-                onClick={() => {
-                  close()
-                  void pickWorkspace()
-                }}
-              >
-                <FolderOpen size={15} />
-                {t('Open a folder')}
-              </button>
-            </>
-          )}
-        </Popover>
+        <div className="sidebar__brand no-drag" title="Pi Desktop">
+          <PiLogo size={16} />
+          <span>Pi Desktop</span>
+        </div>
         <div className="sidebar__head-actions no-drag">
-          <Popover
-            align="right"
-            className="sidebar__notifications"
-            renderTrigger={({ open, toggle }) => (
-              <button
-                className="sidebar__head-btn"
-                aria-label={t('Notifications')}
-                title={t('Notifications')}
-                aria-expanded={open}
-                data-unread={Boolean(error || toast)}
-                onClick={toggle}
-              >
-                <Bell size={16} strokeWidth={1.5} />
-              </button>
-            )}
-          >
-            {() => (
-              <>
-                <div className="popover__label">{t('Notifications')}</div>
-                <div className="runtime-chip" data-phase={status.phase}>
-                  <span className="runtime-chip__dot" />
-                  <span>
-                    {status.phase === 'ready'
-                      ? t('Pi connected')
-                      : status.phase === 'starting'
-                        ? t('Starting Pi…')
-                        : status.phase === 'error'
-                          ? t('Pi unavailable')
-                          : t('Pi stopped')}
-                  </span>
-                </div>
-                <div className="sidebar__notice">
-                  {error || toast?.text || t('No new notifications')}
-                </div>
-              </>
-            )}
-          </Popover>
           <button
             className="sidebar__head-btn"
             aria-label={t('Filter conversations')}
@@ -709,22 +642,166 @@ export function Sidebar({
                           )}
                         </span>
                         <span className="project__text">
-                          <span className="project__name">{project.name}</span>
-                        </span>
-                        <span className="project__caret">
-                          <ChevronDown size={13} strokeWidth={1.8} />
+                          {renamingProjectId === projectId ? (
+                            <input
+                              className="project__rename-input"
+                              autoFocus
+                              value={projectDraft}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => setProjectDraft(e.target.value)}
+                              onKeyDown={async (e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault()
+                                  const trimmed = projectDraft.trim()
+                                  if (trimmed && projectId) {
+                                    const workspaces = (await window.pi.settings.get()).workspaces
+                                    const updated = workspaces.map((w) =>
+                                      w.id === projectId ? { ...w, name: trimmed } : w
+                                    )
+                                    await updateSettings({ workspaces: updated })
+                                    if (workspace?.id === projectId) {
+                                      useAppStore.setState({ workspace: { ...workspace, name: trimmed } })
+                                    }
+                                  }
+                                  setRenamingProjectId(null)
+                                } else if (e.key === 'Escape') {
+                                  setRenamingProjectId(null)
+                                }
+                              }}
+                              onBlur={async () => {
+                                const trimmed = projectDraft.trim()
+                                if (trimmed && projectId && trimmed !== project.name) {
+                                  const workspaces = (await window.pi.settings.get()).workspaces
+                                  const updated = workspaces.map((w) =>
+                                    w.id === projectId ? { ...w, name: trimmed } : w
+                                  )
+                                  await updateSettings({ workspaces: updated })
+                                  if (workspace?.id === projectId) {
+                                    useAppStore.setState({ workspace: { ...workspace, name: trimmed } })
+                                  }
+                                }
+                                setRenamingProjectId(null)
+                              }}
+                            />
+                          ) : (
+                            <span className="project__name">{project.name}</span>
+                          )}
                         </span>
                       </button>
-                      {project.registered && projectId ? (
-                        <button
-                          className="project__remove"
-                          aria-label={t('Remove project')}
-                          title={t('Remove project')}
-                          onClick={() => void removeWorkspace(projectId)}
+
+                      <div className="project__actions">
+                        <Popover
+                          placement="bottom"
+                          align="right"
+                          className="project-actions-menu"
+                          renderTrigger={({ open, toggle }) => (
+                            <button
+                              className="icon-btn project__action-btn"
+                              aria-label={t('Project actions')}
+                              title={t('Project actions')}
+                              data-active={open}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                toggle(e)
+                              }}
+                            >
+                              <Ellipsis size={13} />
+                            </button>
+                          )}
                         >
-                          <Trash2 size={12} />
+                          {(close) => (
+                            <div className="project-action-menu" role="menu">
+                              {project.registered && projectId ? (
+                                <button
+                                  className="popover__item"
+                                  type="button"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    close()
+                                    setProjectDraft(project.name)
+                                    setRenamingProjectId(projectId)
+                                  }}
+                                >
+                                  <Pencil size={13} />
+                                  <span>{t('Rename')}</span>
+                                </button>
+                              ) : null}
+                              <button
+                                className="popover__item"
+                                type="button"
+                                role="menuitem"
+                                onClick={async () => {
+                                  close()
+                                  if (!workspace || !samePath(workspace.path, project.path)) {
+                                    await switchProject(project.path, { allowWhileRunning: true })
+                                  }
+                                  void window.pi.shell.openInExplorer(project.path)
+                                }}
+                              >
+                                <FolderOpen size={13} />
+                                <span>{t('Open project')}</span>
+                              </button>
+                              <button
+                                className="popover__item"
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  close()
+                                  setEditingProject(project)
+                                }}
+                              >
+                                <FolderEdit size={13} />
+                                <span>{t('Edit project')}</span>
+                              </button>
+                              <button
+                                className="popover__item"
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  close()
+                                  void navigator.clipboard.writeText(project.path)
+                                  showToast(t('Path copied to clipboard'))
+                                }}
+                              >
+                                <Copy size={13} />
+                                <span>{t('Copy path')}</span>
+                              </button>
+                              {project.registered && projectId ? (
+                                <>
+                                  <div className="popover__divider" />
+                                  <button
+                                    className="popover__item popover__item--danger"
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => {
+                                      close()
+                                      void removeWorkspace(projectId)
+                                    }}
+                                  >
+                                    <Trash2 size={13} />
+                                    <span>{t('Remove project')}</span>
+                                  </button>
+                                </>
+                              ) : null}
+                            </div>
+                          )}
+                        </Popover>
+
+                        <button
+                          className="icon-btn project__action-btn project__action-btn--new-chat"
+                          aria-label={t('New chat in this project')}
+                          title={t('New chat in this project')}
+                          onClick={async (e) => {
+                            e.stopPropagation()
+                            if (!workspace || !samePath(workspace.path, project.path)) {
+                              await switchProject(project.path, { allowWhileRunning: true })
+                            }
+                            await newChat()
+                          }}
+                        >
+                          <SquarePen size={13} strokeWidth={1.6} />
                         </button>
-                      ) : null}
+                      </div>
                     </div>
                     {expanded ? (
                       <div className="session-list">
@@ -794,6 +871,13 @@ export function Sidebar({
             setPendingDelete(null)
             void deleteSession(target.file)
           }}
+        />
+      ) : null}
+
+      {editingProject ? (
+        <EditProjectDialog
+          project={editingProject}
+          onClose={() => setEditingProject(null)}
         />
       ) : null}
     </aside>

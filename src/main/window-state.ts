@@ -85,6 +85,7 @@ export function watchWindowState(window: BrowserWindow): void {
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
       timer = null
+      if (window.isDestroyed()) return
       const bounds = window.getNormalBounds()
       write({
         width: bounds.width,
@@ -100,6 +101,9 @@ export function watchWindowState(window: BrowserWindow): void {
   window.on('move', save)
   window.on('maximize', save)
   window.on('unmaximize', save)
+  window.on('closed', () => {
+    if (timer) clearTimeout(timer)
+  })
   window.on('close', () => {
     if (timer) clearTimeout(timer)
     const bounds = window.getNormalBounds()

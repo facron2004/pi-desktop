@@ -12,7 +12,16 @@ const DEFAULT_SETTINGS: AppSettings = {
   diffSplit: false,
   drawerWidth: 420,
   trustProject: true,
-  desktopNotifications: true
+  desktopNotifications: true,
+  defaultFileOpener: 'vscode',
+  agentEnvironment: 'windows',
+  terminalShell: 'powershell',
+  compactChatHistory: true,
+  pluginsEnabled: true,
+  plainTextEditor: false,
+  showContextUsage: true,
+  sendShortcut: 'enter',
+  followUpMode: 'steer'
 }
 
 /**

@@ -1,11 +1,19 @@
 /* Shared chrome for the chosen lightweight desktop direction. */
+
+/* A dialog is a sheet laid over the canvas, not another panel of the shell:
+ * one hairline, one radius (--r-md, the floating layer), and no second
+ * shadow stacked on the scrim that is already behind it. */
 :root .modal,
-:root .popover:has(.branch-menu) {
+:root .popover:has(.branch-menu),
+:root .popover.session-bar__picker {
   background: var(--surface-canvas);
-  border-color: var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-md);
 }
 
+/* The head is the only part of a dialog that keeps the canvas's own colour;
+ * everything below it is the sheet. */
 :root .modal__head,
 :root .modal__foot {
   padding: var(--sp-4) var(--sp-6);
@@ -50,30 +58,6 @@
 
 :root .welcome {
   overflow-y: auto;
-}
-
-:root .welcome__recent-title {
-  min-width: 0;
-}
-
-:root .welcome__starters {
-  grid-template-columns: 1fr;
-  gap: var(--sp-1);
-}
-
-:root .welcome__starter {
-  flex-direction: row;
-  align-items: center;
-  min-height: 0;
-  padding: var(--sp-3) var(--sp-4);
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-:root .welcome__starter-icon {
-  background: transparent;
-  color: var(--text-muted);
 }
 
 :root .session-tree__row {

@@ -169,17 +169,43 @@ switch sessions, route it through one of those two doors.
 
 ## The composer
 
+The bar inside the box holds the same two controls in every state: `+` (the add
+menu) on the left and the round send button on the right. Nothing about the
+composer is conditional on a run — the model, reasoning and session controls
+used to live in this bar, which is why starting or sending used to rearrange it.
+
 One round button, two meanings: it sends when the run is settled, and it stops
 when the agent is working. It stops only while there is no draft — with text in
 the box the button is the way to send (steer or queue), so the stop moves into
-the hint row as `composer__stop-link`. Both call the same `stop()`; there is no
-second abort path.
+the row under the box as `session-bar__stop`. Both call the same `stop()`; there
+is no second abort path.
+
+## The session bar
+
+`SessionBar` is the row under the composer, and it is the only place where the
+conversation's settings live: the project (a menu of every known project, which
+switches through `switchProject(..., { allowWhileRunning: true })` — the same
+deliberate door the launcher uses), the branch and its dirty count
+(`BranchMenu`), the reasoning effort, the model and the context ring
+(`ContextRing`). While a run is going it also carries the steer/queue switch and
+the stop link.
+
+The title bar does not repeat any of it: it keeps the conversation's name and
+the app's actions. A project or branch chip in two places is two things to keep
+in sync, and the one in the header had no room to say what it was.
 
 The context window is a ring (`ContextRing`), not a gauge icon and not a bar.
 The arc length is the whole reading — the percentage of the window in use — and
 it is drawn in one colour, the control's own foreground. Do not add a colour
 scale: the length says how much, and the numbers stay in the `ContextPanel`
 popover behind it, which reads Pi's `get_session_stats`.
+
+## Starting the app
+
+`bootstrap()` reopens the *project* that was active, never the conversation.
+`lastSessions` is still written by `rememberSession` and still feeds the welcome
+screen's "recent in this project" list, but only a click there opens a session —
+a start is a new chat.
 
 ## The launcher
 
@@ -283,8 +309,9 @@ touched, so a staged hunk stays staged while the file on disk changes.
 understand `%x1f`) and `git worktree list --porcelain`. `switchBranch`/`createBranch`
 validate the name and use `git switch`; `addWorktree` always creates a new branch by
 default because a branch already checked out here cannot be checked out twice, and an
-empty path means a sibling folder. The branch chip in the top bar is `BranchMenu`; a
-worktree row switches the app to that folder (the store registers it as a workspace).
+empty path means a sibling folder. The branch chip in the session bar is
+`BranchMenu`; a worktree row switches the app to that folder (the store registers
+it as a workspace).
 
 ## MCP
 

@@ -108,3 +108,130 @@ This section records the latest sidebar acceptance. The preceding composer/proje
 - [x] Preserve unrelated WIP and document the pre-existing typecheck failure.
 
 final result: passed
+# Design QA: global quality and conversation stream (2026-10-27)
+
+Scope: the whole surface set, driven by `agent-desktop-design-system` (SKILL.md body
+principles) and the project's own tokens. The one-page contract this pass was held to is
+[`docs/design-contract.md`](docs/design-contract.md); section 11 of it records the
+per-item result, the items deliberately not done, and the unverified list.
+
+The skill's companion files (`references/*.md`, `assets/agent-desktop-tokens.css`) are not
+present on this machine, so the rules were taken from the SKILL.md body and mapped onto the
+existing token layer instead of importing an external palette.
+
+## Evidence
+
+| Reference | Capture | Image size | CSS viewport | State |
+|---|---|---|---|---|
+| baseline | `output/audit/before-S1.png` … `before-S10.png` (S7 absent, see below) | 2220–2241 × 1413–1452 px | ~1480 × 942 | before this pass |
+| accepted | `output/audit/after-S1.png` … `after-S10.png` | 2223–2246 × 1416–1458 px | ~1480 × 942 | after this pass, same scenarios |
+| settings | `output/audit/after-settings-dark.png`, `after-settings-light.png` | 2244 × 1458 / 2238 × 1446 | ~1480 × 942 | settings dialog, both themes |
+
+All ten `after-*` captures were taken at 12:12–12:14 on 2026-10-27, after the last source
+edit (12:00), so none of them is stale. Earlier per-region `-col` crops from an intermediate
+pass were deleted once they no longer matched the final source — an out-of-date crop is worse
+than no crop, because it looks like evidence.
+
+Scenarios: S1/S2 new chat, S3/S4 conversation from the top, S5/S6 conversation at the
+composer, S8 execution details opened, S9 900 × 800, S10 1024 × 768 — all nine with a
+before/after pair. Fixture is a real recorded session
+(`2026-10-26T05-51-47-329Z_01a176c3…jsonl`), so the tool rows, thinking blocks and error
+footer are real shapes rather than mock-ups.
+
+S7 (a long tool output opened and scrolled halfway) has an **after capture only**, and that
+is deliberate. The first version of it scrolled `.thread` to 25%, which produced a file
+byte-identical to S5 (100%) — the column only overflows by ~120px, so both fractions clamp
+to the same position and the scenario contributed no evidence. It was rebuilt to scroll
+inside an expanded group body using a second real session
+(`2026-10-26T09-13-31-001Z_01a1777c…jsonl`, 5600px of output), and the stale `before-S7.png`
+was deleted rather than kept as a pair that would not be comparing the same state. The
+expanded-body change is already covered by S8, whose pair is valid (11.88% changed pixels).
+Hashing the set now proves the nine pairs are distinct and the ten after captures are all
+different from each other.
+
+**The before/after pairs were verified, not assumed.** `output/audit/verify-pairs.py` measures
+the changed-pixel fraction of each pair (2.5–12.2%, mean delta 2.1–16.0, changes spanning
+88–95% of frame height — i.e. whole-layout restyling, not one stray control), and
+`verify-baseline.py` proves the `before-*` set really predates the work: the welcome
+composer's vertical centre of mass moved from 0.723 → 0.634 (dark) and 0.745 → 0.627 (light),
+which is the `flex-end` → centred change measured in the pixels themselves.
+
+**The screenshots were not reviewed by eye.** Image reading returns "image omitted" for the
+model driving this pass, so acceptance was done by measuring the live DOM instead
+(`output/audit/measure.js`, `responsive.js`). Every number below comes from the real
+renderer, which is a stricter check than looking at a picture.
+
+## Review
+
+- Token layer: the reading measure is one token (`--content-w` 720px) and the composer, run
+  status, run outcome, plan strip and welcome column all resolve to it. Measured 720 / 720 /
+  719 / 595 px at 1440 / 1280 / 1024 / 900 window widths — the text column does **not**
+  narrow to make room, which is what the skill requires.
+- Radius vocabulary: four layers, one each — shell `--r-lg`, floating `--r-md`, control
+  `--r-sm`, pill `--r-full`; the bubble and the composer carry the two soft shapes of their
+  own. Measured: main `0 14 14 0`, sidebar `14 0 0 14`, bubble `14 14 6 14`, composer `20`,
+  tool row `6`.
+- Type scale: every rendered size in the thread, composer, sidebar and title bar is one of
+  the seven steps (`offScale: []` in both themes). Two relative sizes were on the drift path
+  and were folded back: `.md h2` literal `15px` → `--text-lg`, and `.md code` `0.9em` (which
+  rendered 12.6px, a size in no token) → `--text-sm`.
+- Contrast: the tool row's object text measured 3.73:1 in dark and 3.19:1 in light against
+  an 11px requirement of 4.5:1 — below AA. It was returned to `--text-secondary` and now
+  measures 7.09:1 / 5.57:1. The session bar had the same defect at the same size (3.7:1 /
+  3.2:1) and got the same fix. Body text is 16.13:1 / 15.52:1.
+- The filled stop control was the last hard-coded colour in the repository, and fixing it
+  exposed a real legibility bug: `--status-danger` is a *light* red (`#f87171`) in the dark
+  theme, where white ink measures only 2.77:1 — under even the 3:1 threshold for a glyph.
+  A `--status-danger-ink` token now resolves per theme and measures 7.03:1 dark / 4.83:1
+  light. There are now zero colour literals outside `tokens.css`.
+- The title bar was repeating the session bar: it rendered the project and branch while
+  `SessionBar` already carried both *with* the controls to change them. AGENTS.md forbids
+  exactly this ("a project or branch chip in two places is two things to keep in sync"), so
+  the header block and its CSS were removed; measured `duplicated: false` afterwards.
+- Tool rows stay compact: every `.tool__head` measured 34px, inside the 32–40px band the
+  repository requires. The state word is hidden for a completed call and spoken only for
+  running / failed / stopped / never-ran, so a column of finished calls reads as a list of
+  steps rather than a status table.
+- Two light-theme invisibility bugs were introduced by this pass and then fixed:
+  `--surface-raised` and `--surface-overlay` are `#ffffff` in the light theme, the same as
+  the canvas, so a "raised" sheet is invisible there. The expanded tool body now falls back
+  to `--surface-sunken` in light, and the tool hover uses the semantic `--bg-hover`. Verified
+  distinguishable in both themes (dark `rgb(13,15,19)` on `rgb(22,24,29)`; light
+  `rgb(242,242,242)` on `rgb(255,255,255)`).
+- A pre-existing overflow was found and fixed: at 1280px and below the model error text in
+  `.assistant__footer` pushed the row past the window (a flex item will not shrink below its
+  content). The row now wraps and the error is the one part that truncates. This also removed
+  the last inline `style={{ color: 'var(--red)' }}` in the React tree.
+- Horizontal overflow is now zero at 1440 / 1280 / 1024 / 900 in both themes.
+
+## Interaction and build evidence
+
+- `npm run build`: passed.
+- `npm run typecheck`: **0 errors**. The `PlanStrip.tsx` unused-import failure recorded in the
+  section above no longer occurs; that file was not touched by this pass.
+- `npm test`: 19 / 19 reducer tests pass.
+- `output/audit/measure-final.txt` holds the full before/after measurement dump for both
+  themes; `output/audit/responsive.mjs` reproduces the four-width sweep.
+- Keyboard and pointer contracts were not modified: the composer's two fixed controls are
+  still `+` on the left and the round button on the right (measured at the same x positions
+  before and after), `SessionBar` remains the only home for conversation settings, and no
+  store state was added.
+- Reduced motion: a global `prefers-reduced-motion` block now collapses animation and
+  transition durations while keeping progress spinners turning, because a stopped spinner is
+  a false statement about the run.
+
+## Implementation checklist
+
+- [x] Fix the contract before touching styles (`docs/design-contract.md`).
+- [x] One reading measure, one radius per layer, one type step per role.
+- [x] Tool rows 32–40px; thinking and tool output read a step below the answer.
+- [x] Composer loses the gradient mask, keeps both fixed controls, radius 20px.
+- [x] New chat sits above the middle instead of pinned to the bottom.
+- [x] Both themes measured; the light-theme surface collisions fixed and verified.
+- [x] No off-scale font sizes, no inline colour literals, no dead radius token.
+- [x] Title bar keeps only the conversation name and the app's actions; the session bar is
+      the only home for the project, branch and run settings.
+- [x] Narrow widths checked without narrowing the text column.
+- [x] Existing WIP preserved; only styles, one footer span and a duplicated interface touched.
+
+final result: passed

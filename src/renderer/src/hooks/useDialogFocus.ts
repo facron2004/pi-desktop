@@ -38,6 +38,12 @@ export function useDialogFocus<T extends HTMLElement>(
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229 || topModalDialog() !== dialog) return
       if (event.key === 'Escape') {
+        // A popover opened from this dialog handles Escape before the dialog.
+        if (dialog.querySelector('.popover-wrap [aria-expanded="true"]')) return
+        if (dialog.querySelector('select:open')) {
+          event.stopImmediatePropagation()
+          return
+        }
         event.preventDefault()
         event.stopImmediatePropagation()
         closeRef.current()

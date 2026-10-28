@@ -1,19 +1,15 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Download,
   Ellipsis,
-  Folder,
   GitBranch,
-  GitCompare,
   PanelRight,
   Pencil,
-  SquareTerminal,
   RefreshCw,
   TriangleAlert
 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { applyAppearance, useAppStore } from './store/useAppStore'
-import { countChangedFiles } from './lib/changes'
 import { collectProjects, sortProjects } from './lib/projects'
 import { Sidebar } from './components/Sidebar'
 import { Thread } from './components/Thread'
@@ -21,8 +17,11 @@ import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
 import { SettingsDialog } from './components/SettingsDialog'
 import { AppMenuBar } from './components/AppMenuBar'
-import { BranchMenu } from './components/BranchMenu'
 import { InspectorPanel } from './components/InspectorPanel'
+import { BrowserView } from './components/BrowserView'
+import { ImageViewer } from './components/ImageViewer'
+import { TaskPanel } from './components/TaskPanel'
+import { ToolPanel, type ToolPanelView } from './components/ToolPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
 import { Launcher, useLauncherActions } from './components/Launcher'
@@ -31,15 +30,12 @@ import { PlanStrip } from './components/PlanStrip'
 import { SessionTreeDialog } from './components/SessionTreeDialog'
 import { McpDialog } from './components/McpDialog'
 import { Popover } from './components/Popover'
-import { ConfirmDialog } from './components/ConfirmDialog'
 import { useT } from './lib/i18n'
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
   const info = useAppStore((state) => state.info)
   const hasItems = useAppStore((state) => state.items.length > 0)
-  const changedFileCount = useAppStore((state) => countChangedFiles(state.items))
-  const git = useAppStore((state) => state.git)
   const isStreaming = useAppStore((state) => state.isStreaming)
   const status = useAppStore((state) => state.status)
   const sessionName = useAppStore((state) => state.piState?.sessionName)
@@ -73,21 +69,20 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sidebarSearchSignal] = useState(0)
   const [launcherOpen, setLauncherOpen] = useState(false)
-  const [terminalOpen, setTerminalOpen] = useState(false)
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
-  /**
-   * A conversation the reader picked while Pi is still working. Opening it
-   * would end the run, so the stop is asked for rather than taken — the click
-   * itself must never interrupt the agent.
-   */
-  const [switchRequest, setSwitchRequest] = useState<{ file: string; title: string } | null>(null)
   // A command headed for the drawer. `seq` makes the same command twice two
   // requests instead of one the drawer already ran.
   const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
   const terminalSeqRef = useRef(0)
   const [changesOpen, setChangesOpen] = useState(false)
-  const [inspectorTab, setInspectorTab] = useState<'changes' | 'files' | 'review'>('changes')
+  const [panelView, setPanelView] = useState<ToolPanelView>('start')
+  /**
+   * Which tool of the side panel is showing. The old tab model is gone: the
+   * panel opens on a menu, and a request picks one tool out of it.
+   */
+  const inspectorTab: 'changes' | 'files' =
+    panelView === 'files' ? 'files' : 'changes'
   const [inspectorFile, setInspectorFile] = useState<{ path: string; line?: number } | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
@@ -98,30 +93,47 @@ export default function App() {
   const drawerWidth = draggedWidth ?? settings.drawerWidth ?? 420
   const [draggedSidebar, setDraggedSidebar] = useState<number | null>(null)
   const sidebarWidth = draggedSidebar ?? settings.sidebarWidth ?? 240
-  const mainRef = useRef<HTMLElement>(null)
-  const [mainWidth, setMainWidth] = useState(0)
-  const inspectorOverlay = mainWidth < drawerWidth + 480
+  const [windowWidth, setWindowWidth] = useState(
+    typeof window !== 'undefined' ? window.innerWidth : 1280
+  )
 
-  // Sidebar resizing changes the space available without resizing the window.
-  useLayoutEffect(() => {
-    const main = mainRef.current
-    if (!main) return
-    setMainWidth(main.clientWidth)
-    const observer = new ResizeObserver(([entry]) => setMainWidth(entry.contentRect.width))
-    observer.observe(main)
-    return () => observer.disconnect()
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth)
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
   }, [])
+
+  // The panel is a column of the grid; it only floats over the conversation
+  // when the window is too narrow to give it a column of its own.
+  const neededWidth = (sidebarOpen ? sidebarWidth : 0) + drawerWidth + 480
+  const inspectorOverlay = windowWidth < neededWidth
 
   const toggleSidebar = useCallback(() => setSidebarOpen((value) => !value), [])
   const openSettings = useCallback(() => setSettingsOpen(true), [])
   const openShortcuts = useCallback(() => setShortcutsOpen(true), [])
-  const openInspector = useCallback((tab: 'changes' | 'files' | 'review') => {
-    setInspectorTab(tab)
+  /**
+   * Open one tool of the side panel.
+   *
+   * `files` is not a view of its own any more: the panel's menu has it, and a
+   * request for a changed file lands in the changes tool, so the file viewer
+   * still has a panel to be drawn in.
+   */
+  const openInspector = useCallback((view: ToolPanelView) => {
+    setPanelView(view)
     setInspectorFile(null)
     setChangesOpen(true)
   }, [])
-  const gitChangeCount =
-    git?.isRepo && git.files.length > 0 ? git.files.length : changedFileCount
+  const openChanges = useCallback(() => openInspector('changes'), [openInspector])
+  const openFiles = useCallback(() => openInspector('files'), [openInspector])
+  /** `Ctrl+\`` and the title bar: show the terminal, or close it if it is up. */
+  const toggleTerminal = useCallback(() => {
+    if (changesOpen && panelView === 'terminal') {
+      setChangesOpen(false)
+      return
+    }
+    setPanelView('terminal')
+    setChangesOpen(true)
+  }, [changesOpen, panelView])
   const launcherActions = useLauncherActions({
     sidebarOpen,
     toggleSidebar,
@@ -129,10 +141,32 @@ export default function App() {
     openShortcuts
   })
 
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.file === activeSessionFile),
+    [sessions, activeSessionFile]
+  )
+  const title =
+    sessionName ||
+    activeSession?.name ||
+    activeSession?.preview ||
+    workspace?.name ||
+    'Pi Desktop'
+
+  const canRename = Boolean(hasItems || activeSessionFile || sessionName)
+
   const startRename = useCallback(() => {
-    setDraft(sessionName ?? '')
+    setDraft(sessionName || activeSession?.name || activeSession?.preview || '')
     setRenaming(true)
-  }, [sessionName])
+  }, [sessionName, activeSession])
+
+  const handleSaveRename = useCallback(() => {
+    setRenaming(false)
+    const trimmed = draft.trim()
+    const currentName = sessionName || activeSession?.name || activeSession?.preview || ''
+    if (trimmed && trimmed !== currentName) {
+      void renameSession(trimmed)
+    }
+  }, [draft, sessionName, activeSession, renameSession])
 
   useEffect(() => {
     void bootstrap()
@@ -172,9 +206,9 @@ export default function App() {
         }
       }
     ).__piDesktopDev
-    if (dev?.openTerminal) setTerminalOpen(true)
+    if (dev?.openTerminal) openInspector('terminal')
     if (dev?.commit) {
-      setInspectorTab('changes')
+      setPanelView('changes')
       setChangesOpen(true)
       useAppStore.getState().requestCommit()
     }
@@ -183,17 +217,20 @@ export default function App() {
       return
     }
     if (dev?.openFile) {
-      setInspectorTab('files')
+      setPanelView('files')
       setChangesOpen(true)
       return
     }
     if (dev?.openFiles) {
-      setInspectorTab('files')
+      setPanelView('files')
       setChangesOpen(true)
       return
     }
-    if (dev?.openChanges) setChangesOpen(true)
-  }, [])
+    if (dev?.openChanges) {
+      setPanelView('changes')
+      setChangesOpen(true)
+    }
+  }, [openInspector])
 
   // Development aid: resume a specific session so screenshots can show a
   // conversation that already has content.
@@ -238,10 +275,11 @@ export default function App() {
         window.dispatchEvent(new CustomEvent('pi:focus-composer'))
         return
       }
-      // `Ctrl+\`` is the terminal drawer, in every editor that has one.
+      // `Ctrl+\`` is the terminal, in every editor that has one: the side
+      // panel opens on it, or closes when it is already showing.
       if (mod && !event.shiftKey && (event.key === '`' || event.code === 'Backquote')) {
         event.preventDefault()
-        setTerminalOpen((value) => !value)
+        toggleTerminal()
         return
       }
       if (mod && event.key === '/') {
@@ -291,16 +329,17 @@ export default function App() {
     window.addEventListener('pi:show-shortcuts', onShowShortcuts)
     const onRenameSession = () => startRename()
     window.addEventListener('pi:rename-session', onRenameSession)
-    // The command palette and the thread can ask for the inspector.
+    // The command palette and the thread can ask for one tool of the panel.
     const onOpenInspector = (event: Event) => {
       const request = (event as CustomEvent<InspectorRequest>).detail
-      setInspectorTab(request?.tab === 'files' ? 'files' : 'changes')
+      setPanelView(request?.tab === 'files' ? 'files' : 'changes')
       if (request?.file) setInspectorFile({ path: request.file, line: request.line })
       setChangesOpen(true)
     }
     window.addEventListener('pi:open-inspector', onOpenInspector)
     // The command palette and the shortcuts dialog can open the drawer too.
-    const onToggleTerminal = () => setTerminalOpen((value) => !value)
+    // The command palette and the shortcuts dialog can open the terminal too.
+    const onToggleTerminal = () => toggleTerminal()
     window.addEventListener('pi:toggle-terminal', onToggleTerminal)
     // A card in the transcript can hand a command to the drawer: the drawer is
     // mounted here, so the card announces the command instead of calling it.
@@ -309,7 +348,8 @@ export default function App() {
       if (typeof command !== 'string' || !command.trim()) return
       terminalSeqRef.current += 1
       setTerminalRequest({ command, seq: terminalSeqRef.current })
-      setTerminalOpen(true)
+      setPanelView('terminal')
+      setChangesOpen(true)
     }
     window.addEventListener('pi:terminal-run', onTerminalRun)
     // The launcher and the `/tree` command ask for the branch dialog.
@@ -317,6 +357,9 @@ export default function App() {
     window.addEventListener('pi:open-session-tree', onOpenSessionTree)
     const onOpenLauncher = () => setLauncherOpen(true)
     window.addEventListener('pi:open-launcher', onOpenLauncher)
+    // The composer's add menu leads to the app's settings, which the shell owns.
+    const onOpenSettingsEvent = () => setSettingsOpen(true)
+    window.addEventListener('pi:open-settings', onOpenSettingsEvent)
     // The launcher and the `/mcp` command ask for the server list.
     const onOpenMcp = () => setMcpOpen(true)
     window.addEventListener('pi:open-mcp', onOpenMcp)
@@ -325,7 +368,13 @@ export default function App() {
     const onConfirmSwitchSession = (event: Event) => {
       const detail = (event as CustomEvent<{ file?: string; title?: string }>).detail
       if (!detail?.file) return
-      setSwitchRequest({ file: detail.file, title: detail.title ?? '' })
+      const targetSession = sessions.find((entry) => entry.file === detail.file)
+      if (targetSession) {
+        void (async () => {
+          await stop()
+          await selectSession(targetSession)
+        })()
+      }
     }
     window.addEventListener('pi:confirm-switch-session', onConfirmSwitchSession)
     return () => {
@@ -337,6 +386,7 @@ export default function App() {
       window.removeEventListener('pi:terminal-run', onTerminalRun)
       window.removeEventListener('pi:open-session-tree', onOpenSessionTree)
       window.removeEventListener('pi:open-launcher', onOpenLauncher)
+      window.removeEventListener('pi:open-settings', onOpenSettingsEvent)
       window.removeEventListener('pi:open-mcp', onOpenMcp)
       window.removeEventListener('pi:confirm-switch-session', onConfirmSwitchSession)
     }
@@ -353,25 +403,13 @@ export default function App() {
     startRename
   ])
 
-  // The handed-over command is a one-shot. Once the drawer is closed, the
-  // request is dropped so reopening it later does not replay the command.
+  // The handed-over command is a one-shot. Once the terminal is no longer the
+  // panel's tool, the request is dropped so coming back to it later does not
+  // replay the command.
   useEffect(() => {
-    if (!terminalOpen) setTerminalRequest(null)
-  }, [terminalOpen])
+    if (!changesOpen || panelView !== 'terminal') setTerminalRequest(null)
+  }, [changesOpen, panelView])
 
-  // The title of a conversation is its name, and the first line of it when
-  // it was never named. The project is shown next to it, so two conversations
-  // of the same project do not look alike.
-  const activeSession = useMemo(
-    () => sessions.find((session) => session.file === activeSessionFile),
-    [sessions, activeSessionFile]
-  )
-  const title =
-    sessionName ||
-    activeSession?.name ||
-    activeSession?.preview ||
-    workspace?.name ||
-    'Pi Desktop'
   // An extension can rename the session window through `setTitle`.
   useEffect(() => {
     document.title = uiTitle ? `${uiTitle} — Pi Desktop` : 'Pi Desktop'
@@ -399,11 +437,11 @@ export default function App() {
         onToggleSidebar={toggleSidebar}
         onNewChat={() => void newChat()}
         onOpenProject={() => void pickWorkspace()}
-        onOpenChanges={() => openInspector('changes')}
-        onOpenFiles={() => openInspector('files')}
+        onOpenChanges={openChanges}
+        onOpenFiles={openFiles}
         onCompact={() => void compact()}
         canCompact={hasItems && status.phase === 'ready'}
-        onToggleTerminal={() => setTerminalOpen((value) => !value)}
+        onToggleTerminal={toggleTerminal}
         onOpenSettings={openSettings}
         onOpenShortcuts={openShortcuts}
         onOpenLauncher={() => setLauncherOpen(true)}
@@ -422,7 +460,7 @@ export default function App() {
         />
       ) : null}
 
-      <main ref={mainRef} className="main">
+      <main className="main">
         <div className="titlebar drag-region">
           <div className="titlebar__identity">
             {renaming ? (
@@ -430,18 +468,15 @@ export default function App() {
                 className="titlebar__rename no-drag"
                 value={draft}
                 autoFocus
+                onFocus={(event) => event.currentTarget.select()}
                 aria-label={t('Rename this conversation')}
                 onChange={(event) => setDraft(event.target.value)}
-                onBlur={() => {
-                  setRenaming(false)
-                  void renameSession(draft)
-                }}
+                onBlur={handleSaveRename}
                 onKeyDown={(event) => {
                   if (event.nativeEvent.isComposing) return
                   if (event.key === 'Enter') {
                     event.preventDefault()
-                    setRenaming(false)
-                    void renameSession(draft)
+                    handleSaveRename()
                   }
                   if (event.key === 'Escape') {
                     event.preventDefault()
@@ -449,71 +484,26 @@ export default function App() {
                   }
                 }}
               />
+            ) : canRename ? (
+              <button
+                type="button"
+                className="titlebar__title titlebar__title--editable no-drag"
+                onClick={startRename}
+                title={`${title} (${t('Click to rename')})`}
+                aria-label={`${title} (${t('Click to rename')})`}
+              >
+                <span className="titlebar__title-text">{title}</span>
+              </button>
             ) : (
               <span className="titlebar__title" title={title}>{title}</span>
             )}
-            <div className="titlebar__context">
-              {workspace ? (
-                <span className="titlebar__project" title={workspace.path}>
-                  <Folder size={13} />
-                  <span>{workspace.name}</span>
-                </span>
-              ) : null}
-              {workspace && git?.isRepo ? (
-                <span className="titlebar__separator" aria-hidden="true">/</span>
-              ) : null}
-              <BranchMenu onOpenChanges={() => openInspector('changes')} />
-            </div>
+            {/* The project and the branch are not repeated here. SessionBar
+                already carries both — with a project menu that can switch and a
+                BranchMenu that can act — so a second copy in the header was two
+                things to keep in sync and had no room to say what it was. The
+                header keeps the conversation's name and the app's actions. */}
           </div>
           <div className="titlebar__actions no-drag">
-            <button
-              className="titlebar__action"
-              data-action="changes"
-              aria-label={t('Git changes')}
-              title={`${t('Git changes')}${gitChangeCount > 0 ? ` · ${gitChangeCount}` : ''}`}
-              aria-expanded={changesOpen && inspectorTab !== 'files'}
-              data-active={changesOpen && inspectorTab !== 'files'}
-              onClick={() => {
-                if (changesOpen && inspectorTab !== 'files') {
-                  setChangesOpen(false)
-                } else {
-                  openInspector('changes')
-                }
-              }}
-            >
-              <GitCompare size={16} strokeWidth={1.7} />
-              {gitChangeCount > 0 ? (
-                <span className="titlebar__badge">{gitChangeCount}</span>
-              ) : null}
-            </button>
-            <button
-              className="titlebar__action"
-              data-action="files"
-              aria-label={t('Files')}
-              title={t('Files')}
-              aria-expanded={changesOpen && inspectorTab === 'files'}
-              data-active={changesOpen && inspectorTab === 'files'}
-              onClick={() => {
-                if (changesOpen && inspectorTab === 'files') {
-                  setChangesOpen(false)
-                } else {
-                  openInspector('files')
-                }
-              }}
-            >
-              <PanelRight size={16} strokeWidth={1.7} />
-            </button>
-            <button
-              className="titlebar__action"
-              data-action="terminal"
-              aria-label={t('Open or close the terminal')}
-              title={t('Terminal')}
-              aria-expanded={terminalOpen}
-              data-active={terminalOpen}
-              onClick={() => setTerminalOpen((value) => !value)}
-            >
-              <SquareTerminal size={16} strokeWidth={1.7} />
-            </button>
             {hasItems ? (
               <Popover
                 align="right"
@@ -573,6 +563,18 @@ export default function App() {
                   </div>
                   )}
                 </Popover>
+              ) : null}
+              {!changesOpen ? (
+                <button
+                  className="icon-btn"
+                  type="button"
+                  aria-label={t('Show tools panel')}
+                  title={t('Show tools panel')}
+                  aria-expanded={false}
+                  onClick={() => openInspector(panelView)}
+                >
+                  <PanelRight size={16} strokeWidth={1.7} />
+                </button>
               ) : null}
             </div>
         </div>
@@ -655,12 +657,6 @@ export default function App() {
               ))}
             </div>
           ))}
-          {terminalOpen ? (
-            <TerminalPanel
-              request={terminalRequest}
-              onClose={() => setTerminalOpen(false)}
-            />
-          ) : null}
         </div>
       </main>
 
@@ -674,19 +670,45 @@ export default function App() {
               onClick={() => setChangesOpen(false)}
             />
           ) : null}
-          <InspectorPanel
+          <ToolPanel
+            view={panelView}
+            onViewChange={(view) => {
+              setPanelView(view)
+              setInspectorFile(null)
+            }}
+            className={inspectorOverlay ? 'tool-panel--overlay' : undefined}
             overlay={inspectorOverlay}
-            initialTab={inspectorTab}
-            onTabChange={setInspectorTab}
-            file={inspectorFile}
-            onOpenFile={setInspectorFile}
+            width={drawerWidth}
             onClose={() => setChangesOpen(false)}
             onResize={setDraggedWidth}
             onResizeEnd={(width) => {
               setDraggedWidth(null)
               void updateSettings({ drawerWidth: width })
             }}
-          />
+          >
+            {panelView === 'terminal' ? (
+              <TerminalPanel
+                embedded
+                request={terminalRequest}
+                onClose={() => setChangesOpen(false)}
+              />
+            ) : panelView === 'browser' ? (
+              <BrowserView />
+            ) : panelView === 'images' ? (
+              <ImageViewer />
+            ) : panelView === 'tasks' ? (
+              <TaskPanel />
+            ) : panelView === 'files' || panelView === 'changes' ? (
+              <InspectorPanel
+                embedded
+                overlay={false}
+                initialTab={inspectorTab}
+                file={inspectorFile}
+                onOpenFile={setInspectorFile}
+                onClose={() => setChangesOpen(false)}
+              />
+            ) : null}
+          </ToolPanel>
         </>
       ) : null}
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
@@ -698,28 +720,6 @@ export default function App() {
         <SessionTreeDialog onClose={() => setSessionTreeOpen(false)} />
       ) : null}
       {mcpOpen ? <McpDialog onClose={() => setMcpOpen(false)} /> : null}
-      {switchRequest ? (
-        <ConfirmDialog
-          title={t('Stop the current run?')}
-          body={
-            settings.language === 'zh-CN'
-              ? `Pi 正在运行。打开“${switchRequest.title}”需要先停止这次运行。`
-              : `Pi is working on this conversation. Opening “${switchRequest.title}” means stopping the current run.`
-          }
-          confirmLabel={t('Stop and open')}
-          tone="danger"
-          onCancel={() => setSwitchRequest(null)}
-          onConfirm={() => {
-            const target = switchRequest
-            setSwitchRequest(null)
-            void (async () => {
-              await stop()
-              const session = sessions.find((entry) => entry.file === target.file)
-              if (session) await selectSession(session)
-            })()
-          }}
-        />
-      ) : null}
       <ExtensionDialog />
     </div>
   )
