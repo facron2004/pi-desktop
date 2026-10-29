@@ -567,7 +567,7 @@ transition: background var(--dur-fast) var(--ease);
   font-size: var(--text-sm);
   font-weight: 400;
   line-height: 1.35;
-  color: var(--sidebar-text);
+  color: var(--text-strong);
   overflow-wrap: anywhere;
 }
 
@@ -606,9 +606,9 @@ transition: background var(--dur-fast) var(--ease);
   display: flex;
   align-items: center;
   gap: 2px;
-  padding-left: var(--sp-1);
-  background: var(--sidebar-hover);
-  border-radius: var(--r-sm);
+  /* No fill here. A rounded backing behind the two icons reads as a bubble
+     on the row; the icons themselves are the control. */
+  background: transparent;
   visibility: hidden;
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);
@@ -622,7 +622,7 @@ transition: background var(--dur-fast) var(--ease);
 }
 
 .project__action-btn[data-active='true'] {
-  background: var(--sidebar-hover);
+  background: transparent;
   color: var(--sidebar-text);
 }
 
@@ -642,13 +642,16 @@ transition: background var(--dur-fast) var(--ease);
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
-.project__action-btn:hover {
-  background: var(--sidebar-hover);
+.project__action-btn:hover,
+.project__action-btn[data-active='true']:hover {
+  background: transparent;
   color: var(--sidebar-text);
 }
 
+/* The icon is the control. Turning it accent is the on-state; a second
+   rounded fill behind it reads as a bubble and is not part of the cue. */
 .project__action-btn--new-chat:hover {
-  background: var(--accent-soft);
+  background: transparent;
   color: var(--accent);
 }
 
@@ -716,9 +719,18 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   flex: 1 1 auto;
   min-width: 0;
   min-height: 32px;
+  gap: 6px;
   padding: var(--sp-2) 0;
   text-align: left;
   border-radius: var(--r-sm);
+}
+
+/* The running mark sits in front of the conversation name, not after it. */
+.session-item__status {
+  display: grid;
+  place-items: center;
+  flex: 0 0 14px;
+  color: var(--sidebar-muted);
 }
 
 .session-item__title {
@@ -783,6 +795,16 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+/* The menu is read as a list of actions, not as muted chrome. In the light
+   theme the ordinary labels are pure black; remove stays the danger colour. */
+:root[data-theme='light'] .project-action-menu .popover__item:not(.popover__item--danger),
+:root[data-theme='light'] .project-action-menu .popover__item:not(.popover__item--danger):hover,
+:root[data-theme='light'] .project-action-menu .popover__item:not(.popover__item--danger) svg,
+:root[data-theme='light'] .project-action-menu .popover__item:not(.popover__item--danger):hover svg {
+  color: #000;
+  opacity: 1;
 }
 
 .sidebar__search {
@@ -1739,7 +1761,7 @@ transition: background var(--dur-fast) var(--ease);
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  gap: var(--sp-6);
+  gap: var(--sp-5);
 }
 
 .thread__inner[data-history-collapsed='true'] {
@@ -1774,7 +1796,7 @@ transition: background var(--dur-fast) var(--ease);
 .turn {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
+  gap: var(--sp-3);
   animation: rise var(--dur-slow) var(--ease);
 }
 
@@ -2007,7 +2029,7 @@ transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--e
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
+  gap: var(--sp-1);
 }
 
 .assistant__footer {
@@ -2050,16 +2072,11 @@ transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--e
 /* thinking block */
 
 .thinking {
-  display: inline-block;
-  align-self: flex-start;
-  width: fit-content;
+  display: block;
+  align-self: stretch;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
-  vertical-align: top;
-}
-
-.thinking[data-open='true'] {
-  width: 100%;
 }
 
 .thinking__head {
@@ -2067,9 +2084,9 @@ transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--e
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
-  min-height: var(--ctl-sm);
-  padding: var(--sp-1) 0;
-  font-size: var(--text-2xs);
+  min-height: 22px;
+  padding: 0;
+  font-size: var(--text-xs);
   color: var(--text-tertiary);
   transition: color var(--dur-fast) var(--ease);
 }
@@ -3142,17 +3159,20 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--text);
 }
 
+/* Folder and branch sit next to the project name. They take that ink,
+   not the accent, so a custom accent colour cannot recolour them. */
 .project-chip__icon,
 .git-chip__icon {
   flex: 0 0 auto;
-  color: var(--accent);
-  opacity: 0.9;
+  color: var(--text-strong);
+  opacity: 1;
 }
 
 .project-chip__name {
   flex: 1 1 auto;
   min-width: 0;
   font-weight: 500;
+  color: var(--text-strong);
   max-width: min(40ch, 48vw);
   white-space: nowrap;
   overflow: hidden;
@@ -3296,7 +3316,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   min-width: 0;
   font-size: 12px;
   font-weight: 450;
-  color: var(--text);
+  color: var(--text-strong);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4028,7 +4048,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .welcome__greeting {
   max-width: 100%;
   margin: 0;
-  color: var(--text-muted);
+  color: var(--text-pure);
   font-size: var(--text-2xl);
   font-weight: 500;
   line-height: 1.45;

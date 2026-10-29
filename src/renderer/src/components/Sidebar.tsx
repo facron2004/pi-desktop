@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Clock,
-  Copy,
   Ellipsis,
   Folder,
   FolderEdit,
@@ -78,7 +77,6 @@ export function Sidebar({
   const openSearchHit = useAppStore((state) => state.openSearchHit)
   const updateSettings = useAppStore((state) => state.updateSettings)
   const switchProject = useAppStore((state) => state.switchProject)
-  const showToast = useAppStore((state) => state.showToast)
   const t = useT()
 
   const [query, setQuery] = useState('')
@@ -91,6 +89,7 @@ export function Sidebar({
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
   const [projectDraft, setProjectDraft] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
+  const [pendingRemove, setPendingRemove] = useState<{ id?: string; path: string; name: string } | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const [recentsOpen, setRecentsOpen] = useState(false)
   const [recentIndex, setRecentIndex] = useState(-1)
@@ -243,13 +242,13 @@ export function Sidebar({
   }
 
   const projects = useMemo(() => {
-    const list = collectProjects(settings.workspaces, sessions)
+    const list = collectProjects(settings.workspaces, sessions, settings.hiddenProjects)
     if (!needle) return list
     for (const project of list) {
       project.sessions = project.sessions.filter((session) => matches(session, needle))
     }
     return list
-  }, [settings.workspaces, sessions, needle])
+  }, [settings.workspaces, settings.hiddenProjects, sessions, needle])
 
   const ordered = useMemo(() => sortProjects(projects), [projects])
 
@@ -767,36 +766,19 @@ export function Sidebar({
                                 <FolderEdit size={13} />
                                 <span>{t('Edit project')}</span>
                               </button>
+                              <div className="popover__divider" />
                               <button
-                                className="popover__item"
+                                className="popover__item popover__item--danger"
                                 type="button"
                                 role="menuitem"
                                 onClick={() => {
                                   close()
-                                  void navigator.clipboard.writeText(project.path)
-                                  showToast(t('Path copied to clipboard'))
+                                  setPendingRemove({ id: projectId, path: project.path, name: project.name })
                                 }}
                               >
-                                <Copy size={13} />
-                                <span>{t('Copy path')}</span>
+                                <Trash2 size={13} />
+                                <span>{t('Remove project')}</span>
                               </button>
-                              {project.registered && projectId ? (
-                                <>
-                                  <div className="popover__divider" />
-                                  <button
-                                    className="popover__item popover__item--danger"
-                                    type="button"
-                                    role="menuitem"
-                                    onClick={() => {
-                                      close()
-                                      void removeWorkspace(projectId)
-                                    }}
-                                  >
-                                    <Trash2 size={13} />
-                                    <span>{t('Remove project')}</span>
-                                  </button>
-                                </>
-                              ) : null}
                             </div>
                           )}
                         </Popover>
@@ -869,6 +851,24 @@ export function Sidebar({
         </button>
       </div>
 
+      {pendingRemove ? (
+        <ConfirmDialog
+          title={t('Remove project')}
+          body={
+            settings.language === 'zh-CN'
+              ? `要从列表中移除“${pendingRemove.name}”吗？文件夹和已有对话都会保留，只是不再显示在项目列表里。`
+              : `Remove “${pendingRemove.name}” from the list? The folder and its conversations stay on disk.`
+          }
+          confirmLabel="Remove project"
+          tone="danger"
+          onCancel={() => setPendingRemove(null)}
+          onConfirm={() => {
+            const target = pendingRemove
+            setPendingRemove(null)
+            void removeWorkspace({ id: target.id, path: target.path })
+          }}
+        />
+      ) : null}
       {pendingDelete ? (
         <ConfirmDialog
           title={t('Delete conversation')}
@@ -970,20 +970,17 @@ function SessionRow({
           title={project ? `${project} · ${title}` : title}
           aria-current={active ? 'page' : undefined}
         >
+          {running ? (
+            <span className="session-item__status" role="status" aria-label={t('running')}>
+              <Loader2 size={12} strokeWidth={1.5} className="spin" />
+            </span>
+          ) : null}
           <span className="session-item__title">{title}</span>
         </button>
       )}
-      {running || pinned ? (
-        <span
-          className="session-item__activity"
-          role={running ? 'status' : undefined}
-          aria-label={running ? t('running') : t('Pinned')}
-        >
-          {running ? (
-            <Loader2 size={12} strokeWidth={1.5} className="spin" />
-          ) : (
-            <Pin size={11} />
-          )}
+      {pinned ? (
+        <span className="session-item__activity" aria-label={t('Pinned')}>
+          <Pin size={11} />
         </span>
       ) : null}
       {!renaming ? (

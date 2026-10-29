@@ -532,6 +532,12 @@ export interface AppSettings {
   activeWorkspaceId?: string | null
   /** Session files the user pinned to the top of the sidebar. */
   pinnedSessions?: string[]
+  /**
+   * Project paths the user removed from the sidebar. Conversations on disk
+   * would otherwise put the folder back. A project that is opened again is
+   * registered and shows up despite being listed here.
+   */
+  hiddenProjects?: string[]
   /** The conversation that was open in a project, by project path. */
   lastSessions?: Record<string, string>
   /** Absolute path to a custom `pi` executable or CLI script. */
@@ -643,6 +649,7 @@ export interface PiDesktopBridge {
     models(connection: ProviderConnection): Promise<ProviderModel[]>
     probe(connection: ProviderConnection, modelId?: string): Promise<ProviderProbeResult>
     save(input: SaveProviderInput): Promise<{ provider: ProviderProfile; settings: AppSettings; applied: boolean; applyError?: string }>
+    remove(id: string): Promise<{ settings: AppSettings }>
   }
   app: {
     info(): Promise<AppInfo>

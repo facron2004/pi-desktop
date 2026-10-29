@@ -3,6 +3,25 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import path from 'node:path'
 import type { AppSettings, Workspace } from '@shared/types'
 
+/** Same folder, whatever slash style or drive-letter case it was opened with. */
+function workspaceKey(value: string): string {
+  return path.resolve(value).replace(/[/\\]+$/, '').toLowerCase()
+}
+
+/** One entry per folder. A later open of the same path replaces the earlier one. */
+function dedupeWorkspaces(workspaces: Workspace[]): Workspace[] {
+  const map = new Map<string, Workspace>()
+  for (const item of workspaces) {
+    if (!item?.path) continue
+    const key = workspaceKey(item.path)
+    const existing = map.get(key)
+    if (!existing || (item.lastOpenedAt || 0) >= (existing.lastOpenedAt || 0)) {
+      map.set(key, item)
+    }
+  }
+  return [...map.values()].sort((a, b) => (b.lastOpenedAt || 0) - (a.lastOpenedAt || 0))
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
   pinnedSessions: [],
@@ -49,7 +68,7 @@ export class SettingsStore {
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
-        workspaces: Array.isArray(parsed.workspaces) ? parsed.workspaces : [],
+        workspaces: dedupeWorkspaces(Array.isArray(parsed.workspaces) ? parsed.workspaces : []),
         pinnedSessions: Array.isArray(parsed.pinnedSessions) ? parsed.pinnedSessions : []
       }
     } catch {
@@ -65,14 +84,15 @@ export class SettingsStore {
     this.data = {
       ...this.data,
       ...patch,
-      workspaces: patch.workspaces ?? this.data.workspaces
+      workspaces: dedupeWorkspaces(patch.workspaces ?? this.data.workspaces)
     }
     this.write()
     return this.get()
   }
 
   addWorkspace(workspace: Workspace): AppSettings {
-    const workspaces = this.data.workspaces.filter((w) => w.path !== workspace.path)
+    const key = workspaceKey(workspace.path)
+    const workspaces = this.data.workspaces.filter((item) => workspaceKey(item.path) !== key)
     workspaces.push(workspace)
     workspaces.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
     return this.patch({ workspaces, activeWorkspaceId: workspace.id })

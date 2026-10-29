@@ -2,13 +2,22 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--sp-4);
+}
+
+/* The title must be allowed to shrink. A nowrap button next to a flex item
+   whose min-width is the default `auto` paints over the heading instead of
+   wrapping. The control-size tokens are not what overlaps them. */
+.provider-page-head > div {
+  flex: 1 1 16rem;
+  min-width: 0;
 }
 
 .provider-page-head .btn,
 .provider-card__icon,
-.provider-card__chevron {
-  flex-shrink: 0;
+.provider-card__actions {
+  flex: 0 0 auto;
 }
 
 .provider-list,
@@ -79,17 +88,22 @@
   font-size: var(--text-xs);
 }
 
-.provider-card__meta {
+.provider-card__actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  font-size: var(--text-xs);
-  color: var(--text-faint);
+  align-items: center;
+  gap: var(--sp-1);
 }
 
-.provider-card__chevron,
-.provider-editor__kind {
+.provider-card__actions .icon-btn {
+  width: var(--ctl-sm);
+  height: var(--ctl-sm);
+  flex: 0 0 var(--ctl-sm);
   color: var(--text-muted);
+}
+
+.provider-card__delete:hover:not(:disabled) {
+  color: var(--status-danger);
+  background: var(--status-danger-soft);
 }
 
 .provider-editor__head,
@@ -99,7 +113,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--sp-3);
+}
+
+.provider-editor__footer .field__hint {
+  flex: 1 1 12rem;
+  min-width: 0;
 }
 
 .provider-section-head h4 {
@@ -108,14 +128,33 @@
   font-weight: 600;
 }
 
+/* The settings page is at most 620px, and a native select's min-content is
+   the longest option. `1fr` still lets that minimum widen the track until the
+   second control is painted past the page and clipped. `min(100%, 16rem)`
+   caps the track at the grid itself, so a narrow pane stacks instead of
+   overlapping the next field. */
 .provider-form-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
   gap: var(--sp-4);
+}
+
+.provider-editor,
+.provider-settings {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .provider-editor .field,
 .provider-form-grid > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.provider-editor .input,
+.provider-editor select {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
 }
 
@@ -139,6 +178,15 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-3);
+}
+
+/* nowrap buttons shrink by default and their labels paint across each other.
+   Keep each button at least as wide as its label and let the row wrap. */
+.provider-connection__actions > .btn,
+.provider-editor__footer > .btn,
+.provider-page-head > .btn {
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .provider-notice,
@@ -170,8 +218,7 @@
 
 .provider-model-choice,
 .provider-parameters,
-.provider-editor__footer,
-.provider-default-thinking {
+.provider-editor__footer {
   padding-top: var(--sp-4);
   border-top: 1px solid var(--border-soft);
 }
@@ -191,21 +238,7 @@
 }
 
 .provider-editor__footer .btn {
-  flex-shrink: 0;
-}
-
-.provider-default-thinking {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-4);
-  margin-top: var(--sp-6);
-  font-size: var(--text-sm);
-}
-
-.provider-default-thinking select {
-  width: auto;
-  max-width: 55%;
+  flex: 0 0 auto;
 }
 
 .provider-empty {
@@ -224,7 +257,5 @@
 }
 
 @media (max-width: 960px) {
-  .provider-form-grid { grid-template-columns: minmax(0, 1fr); }
-  .provider-page-head { flex-wrap: wrap; }
   .provider-editor__footer { align-items: flex-start; }
 }

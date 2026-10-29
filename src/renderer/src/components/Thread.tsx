@@ -15,10 +15,11 @@ import { scrollBehavior } from '../lib/motion'
 import { SearchContext } from '../lib/search-context'
 import { AssistantImage, AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
-import { ToolGroup } from './ToolGroup'
+import { ProcessTrail } from './ProcessTrail'
 import { FileChangeSummary } from './FileChangeSummary'
 import { RunOutcome, RunStatusRow } from './RunStatusRow'
 import { useT } from '../lib/i18n'
+import { isRateLimitError } from '../lib/provider-error'
 import type { RunState } from '../store/useAppStore'
 import '../styles/conversation-stream.css'
 
@@ -776,6 +777,9 @@ const ThreadTurnView = memo(function ThreadTurnView({
   const outcome = isLastTurn && run.settled && run.outcome ? run : undefined
   const replyOutcome = outcome?.outcome === 'completed' && hasFinalReply ? outcome : undefined
   const replySettled = lastAssistant && !lastAssistant.streaming && (!isLastTurn || run.settled)
+  // The tail stays open only while this turn is the one still being written.
+  // A finished turn, including every earlier stretch of a long run, folds.
+  const liveTail = isLastTurn && !run.settled
   const turnChanges = useMemo(() => collectChanges(turn.tools), [turn.tools])
   const turnDiffTotals = useMemo(() => {
     let added = 0
@@ -809,15 +813,25 @@ const ThreadTurnView = memo(function ThreadTurnView({
       {turn.assistants.length > 0 || turn.tools.length > 0 || turn.notices.length > 0 || turn.bash.length > 0 ? (
         <div className="assistant">
           <div className="assistant__body">
-            {renderTurn(turn, toolMap, replyOutcome)}
+            {renderTurn(turn, toolMap, replyOutcome, liveTail)}
 
             {turn.bash.map((item) => (
               <BashCard key={item.id} item={item} />
             ))}
 
-            {orphanTools.map((tool) => (
-              <ToolCard key={tool.id} item={tool} />
-            ))}
+            {orphanTools.length > 0 ? (
+              <ProcessTrail
+                key="process-orphans"
+                tools={orphanTools}
+                thoughts={0}
+                searchText=""
+                live={liveTail && orphanTools.some((tool) => tool.status === 'running')}
+              >
+                {orphanTools.map((tool) => (
+                  <ToolCard key={tool.id} item={tool} presentation="link" />
+                ))}
+              </ProcessTrail>
+            ) : null}
 
             {turn.notices.map((notice) => (
               <NoticeMessage key={notice.id} item={notice} />
@@ -840,10 +854,15 @@ const ThreadTurnView = memo(function ThreadTurnView({
 
             {outcome && !replyOutcome ? <RunOutcome run={outcome} /> : null}
 
-            {lastAssistant?.stopReason === 'error' ? (
-              <div className="notice" data-level="error" role="alert">
+            {lastAssistant?.stopReason === 'error' &&
+            !(isLastTurn && !run.settled && isRateLimitError(lastAssistant.error)) ? (
+              <div className="notice" data-level="error" role="alert" title={lastAssistant.error}>
                 <CircleAlert size={14} className="notice__icon" />
-                <span>{lastAssistant.error ?? t('error')}</span>
+                <span>
+                  {isRateLimitError(lastAssistant.error)
+                    ? t('Rate limit reached. This conversation is paused until the limit resets — it was not discarded.')
+                    : (lastAssistant.error ?? t('error'))}
+                </span>
               </div>
             ) : null}
 
@@ -873,27 +892,65 @@ const ThreadTurnView = memo(function ThreadTurnView({
   )
 }, equalThreadTurnViewProps)
 
+interface ProcessBuffer {
+  key: string
+  tools: ToolItem[]
+  thoughts: number
+  searchText: string
+  children: ReactNode[]
+}
+
+type TurnSegment = { kind: 'node'; node: ReactNode } | { kind: 'process'; buffer: ProcessBuffer }
+
 /**
  * Render a whole turn.
  *
- * The blocks of every reply in the turn are laid out in one sequence, so
- * tools stay in one group until text, thinking or an image interrupts them,
+ * Spoken text keeps the column. Thinking and tool calls between two stretches
+ * of text are one process: open and indented while it is the live tail,
+ * collapsed to a single indented line once that stretch has finished. Tools
+ * stay grouped inside it until text, thinking or an image interrupts them,
  * even when they span several assistant messages.
  */
 function renderTurn(
   turn: Turn,
   toolMap: Map<string, ToolItem>,
-  replyOutcome?: RunState
+  replyOutcome: RunState | undefined,
+  liveTail: boolean
 ): ReactNode[] {
-  const nodes: ReactNode[] = []
+  const segments: TurnSegment[] = []
   let group: ToolItem[] = []
+  let trace: ProcessBuffer | null = null
   const lastAssistant = turn.assistants.at(-1)
   let outcomeShown = false
 
-  const flush = () => {
+  const ensureProcess = (key: string) => {
+    if (!trace) {
+      trace = { key, tools: [], thoughts: 0, searchText: '', children: [] }
+    }
+  }
+
+  const flushTools = () => {
     if (!group.length) return
-    nodes.push(<ToolGroup key={`group-${group[0].id}`} items={group} />)
+    const items = group
     group = []
+    ensureProcess(`process-${items[0].id}`)
+    if (!trace) return
+    trace.tools.push(...items)
+    // The fold already names the batch. Each call is a link, not another
+    // "Activity" row wrapped around a card.
+    for (const item of items) {
+      trace.children.push(<ToolCard key={item.id} item={item} presentation="link" />)
+    }
+  }
+
+  const flushProcess = () => {
+    flushTools()
+    if (!trace || trace.children.length === 0) {
+      trace = null
+      return
+    }
+    segments.push({ kind: 'process', buffer: trace })
+    trace = null
   }
 
   for (const assistant of turn.assistants) {
@@ -905,24 +962,31 @@ function renderTurn(
     assistant.blocks.forEach((block, index) => {
       if (block.type === 'text') {
         if (!block.text.trim()) return
-        flush()
+        flushProcess()
         if (replyOutcome && assistant === lastAssistant && !outcomeShown) {
-          nodes.push(<RunOutcome key="run-outcome" run={replyOutcome} />)
+          segments.push({ kind: 'node', node: <RunOutcome key="run-outcome" run={replyOutcome} /> })
           outcomeShown = true
         }
-        nodes.push(
-          <AssistantText
-            key={`${assistant.id}-${index}`}
-            text={block.text}
-            streaming={assistant.streaming && index === lastTextIndex}
-          />
-        )
+        segments.push({
+          kind: 'node',
+          node: (
+            <AssistantText
+              key={`${assistant.id}-${index}`}
+              text={block.text}
+              streaming={assistant.streaming && index === lastTextIndex}
+            />
+          )
+        })
         return
       }
       if (block.type === 'thinking') {
         if (!block.text.trim()) return
-        flush()
-        nodes.push(
+        flushTools()
+        ensureProcess(`process-${assistant.id}-${index}`)
+        if (!trace) return
+        trace.thoughts += 1
+        trace.searchText += `\n${block.text}`
+        trace.children.push(
           <ThinkingBlock
             key={`${assistant.id}-${index}`}
             text={block.text}
@@ -932,14 +996,17 @@ function renderTurn(
         return
       }
       if (block.type === 'image') {
-        flush()
-        nodes.push(
-          <AssistantImage
-            key={`${assistant.id}-${index}`}
-            data={block.data}
-            mimeType={block.mimeType}
-          />
-        )
+        flushProcess()
+        segments.push({
+          kind: 'node',
+          node: (
+            <AssistantImage
+              key={`${assistant.id}-${index}`}
+              data={block.data}
+              mimeType={block.mimeType}
+            />
+          )
+        })
         return
       }
       const tool = toolMap.get(block.id)
@@ -947,7 +1014,24 @@ function renderTurn(
       group.push(tool)
     })
   }
-  flush()
+  flushProcess()
 
-  return nodes
+  return segments.map((segment, index) => {
+    if (segment.kind === 'node') return segment.node
+    const { buffer } = segment
+    return (
+      <ProcessTrail
+        key={buffer.key}
+        tools={buffer.tools}
+        thoughts={buffer.thoughts}
+        searchText={buffer.searchText}
+        live={
+          liveTail &&
+          (index === segments.length - 1 || buffer.tools.some((tool) => tool.status === 'running'))
+        }
+      >
+        {buffer.children}
+      </ProcessTrail>
+    )
+  })
 }

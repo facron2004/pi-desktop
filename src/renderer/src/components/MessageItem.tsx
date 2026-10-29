@@ -203,11 +203,12 @@ const NOTICE_ICONS = {
 } as const
 
 export function NoticeMessage({ item }: { item: NoticeItem }) {
+  const t = useT()
   const Icon = NOTICE_ICONS[item.level]
   return (
     <div className="notice" data-level={item.level}>
       <Icon size={14} className="notice__icon" />
-      <span>{item.text}</span>
+      <span>{t(item.text)}</span>
     </div>
   )
 }

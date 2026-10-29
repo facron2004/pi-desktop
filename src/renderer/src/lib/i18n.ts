@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import type { AppLanguage } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
+import { basename } from './path'
 
 const zhCN: Record<string, string> = {
   Providers: '提供商',
@@ -52,6 +53,11 @@ const zhCN: Record<string, string> = {
   'Provider saved and activated': '提供商已保存，当前模型已切换',
   'Provider saved for new conversations': '提供商已保存，将用于新对话',
   'Provider saved, but the current session could not switch': '提供商已保存，当前对话未能切换模型',
+  'Delete provider': '删除提供商',
+  'Delete this provider?': '删除这个提供商？',
+  'The saved connection is removed. Pi sign-in is left as Pi stored it.': '已保存的连接会被删掉。Pi 自己的登录不会动。',
+  'Provider removed': '提供商已删除',
+  'This provider is managed by Pi': '这个提供商由 Pi 管理',
   'Edit a provider and save to apply changes': '在提供商内编辑并保存配置',
   'Configure local environment': '配置本地环境',
   'New worktree': '新建工作树',
@@ -404,6 +410,7 @@ const zhCN: Record<string, string> = {
   'Pi could not start.': 'Pi 无法启动。',
   'Recent conversations': '最近的对话',
   'Starting the Pi runtime…': '正在启动 Pi…',
+  'Opening {project}…': '正在打开 {project}…',
   commands: '命令',
   'Open the launcher': '打开操作面板',
   'focus composer': '聚焦输入框',
@@ -635,6 +642,9 @@ const zhCN: Record<string, string> = {
   'e.g. anthropic': '例如 anthropic',
   'Resize the sidebar': '调整侧边栏宽度',
   'Pi is retrying': 'Pi 正在重试',
+  'Rate limit reached. This conversation is paused until the limit resets — it was not discarded.':
+    '已触发速率限制。对话先停在这里，等限额恢复后可以继续，内容没有被丢弃。',
+  'Retry failed: still rate limited': '重试结束：仍在速率限制中',
   attempt: '第',
   'Stop retrying': '停止重试',
   'Branching…': '正在创建分支…',
@@ -1097,6 +1107,10 @@ export function translate(text: string, language: AppLanguage): string {
   if (onlyModel) return `仅 ${onlyModel[1]} 可用`
   const earlierMessages = /^Up (\d+) messages$/.exec(text)
   if (earlierMessages) return `上 ${earlierMessages[1]} 条消息`
+  const rateWait = /^Rate limit reached\. Waiting (\d+)s before retrying — this conversation stays open\.$/.exec(text)
+  if (rateWait) return `已触发速率限制。将等待 ${rateWait[1]} 秒后重试，对话保持打开。`
+  const rateNotice = /^Retrying \(attempt (\d+)\/(\d+)\) — rate limit, next try in (\d+)s$/.exec(text)
+  if (rateNotice) return `正在重试（第 ${rateNotice[1]}/${rateNotice[2]} 次），速率限制，${rateNotice[3]} 秒后再试`
   const activity = /^(\d+) (file reads?|search(?:es)?|edits?|commands? run|tool calls?)$/.exec(text)
   if (activity) {
     const units: Record<string, string> = {
@@ -1113,4 +1127,14 @@ export function translate(text: string, language: AppLanguage): string {
 export function useT() {
   const language = useAppStore((state) => state.settings.language ?? 'en')
   return useCallback((text: string) => translate(text, language), [language])
+}
+
+/** What the composer and the welcome screen say while a project is coming up. */
+export function openingLabel(
+  workspace: { name?: string; path?: string } | undefined,
+  t: (text: string) => string
+): string {
+  const name = workspace?.name?.trim() || (workspace?.path ? basename(workspace.path) : '')
+  if (!name) return t('Starting the Pi runtime…')
+  return t('Opening {project}…').replace('{project}', () => name)
 }

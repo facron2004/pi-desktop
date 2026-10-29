@@ -127,6 +127,19 @@ export function useProviders() {
     }
   }
 
-  return { providers, loading, draft, busy, probe, error, edit, cancel, change, changeModel,
+  const remove = async (provider: ProviderProfile) => {
+    if (!provider.revision) return
+    setError('')
+    try {
+      const result = await window.pi.providers.remove(provider.id)
+      setConfigured(current => current.filter(item => item.id !== provider.id))
+      useAppStore.setState({ settings: result.settings })
+      useAppStore.getState().showToast(t('Provider removed'))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  return { providers, loading, draft, busy, probe, error, edit, cancel, change, changeModel, remove,
     fetchModels: () => void run('models'), test: () => void run('probe'), save: () => void run('save') }
 }

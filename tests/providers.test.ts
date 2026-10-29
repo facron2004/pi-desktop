@@ -149,6 +149,23 @@ test('explicit connection changes replace old model endpoints and the effective 
   assert.equal(JSON.parse(readFileSync(path.join(root, 'auth.json'), 'utf8')).untouched.key, 'leave-alone')
 })
 
+test('removing a provider drops its models.json entry and api key, and leaves other credentials', t => {
+  const root = directory(t)
+  const store = new ProviderStore(root)
+  const saved = store.save(input())
+  writeFileSync(path.join(root, 'auth.json'), JSON.stringify({
+    [saved.id]: { type: 'api_key', key: 'secret-key' },
+    oauth: { type: 'oauth', access: 'keep-access' }
+  }))
+  store.remove(saved.id)
+  const document = JSON.parse(readFileSync(store.file, 'utf8'))
+  assert.equal(document.providers[saved.id], undefined)
+  const auth = JSON.parse(readFileSync(path.join(root, 'auth.json'), 'utf8'))
+  assert.equal(auth[saved.id], undefined)
+  assert.equal(auth.oauth.access, 'keep-access')
+  assert.throws(() => store.remove(saved.id), /managed by Pi/)
+})
+
 async function server(t: { after: (cleanup: () => Promise<void>) => void }, handler: (request: IncomingMessage, response: ServerResponse, body: Record<string, unknown>) => void) {
   const instance = createServer(async (request, response) => {
     let text = ''

@@ -9,7 +9,9 @@
 .icon-btn {
   display: grid;
   place-items: center;
-  width: 28px;
+  /* Both axes follow the control token. A fixed 28px next to a changed
+     --ctl-sm is how two icon buttons end up sharing one box. */
+  width: var(--ctl-sm);
   height: var(--ctl-sm);
   border-radius: var(--r-sm);
   color: var(--text-muted);
@@ -118,7 +120,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .btn--primary {
   background: var(--accent);
   border-color: var(--accent);
-  box-shadow: var(--border-specular);
+  box-shadow: none;
   color: var(--accent-contrast);
   font-weight: 600;
 }

@@ -43,7 +43,8 @@ const bridge: PiDesktopBridge = {
     list: () => ipcRenderer.invoke('providers:list'),
     models: (connection: ProviderConnection) => ipcRenderer.invoke('providers:models', connection),
     probe: (connection: ProviderConnection, modelId?: string) => ipcRenderer.invoke('providers:probe', connection, modelId),
-    save: (input: SaveProviderInput) => ipcRenderer.invoke('providers:save', input)
+    save: (input: SaveProviderInput) => ipcRenderer.invoke('providers:save', input),
+    remove: (id: string) => ipcRenderer.invoke('providers:remove', id)
   },
   app: {
     info: (): Promise<AppInfo> => ipcRenderer.invoke('app:info'),

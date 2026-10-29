@@ -16,6 +16,7 @@ export function ProjectSelector({
   const workspace = useAppStore((state) => state.workspace)
   const noProject = useAppStore((state) => !state.workspace && state.settings.activeWorkspaceId === null)
   const workspaces = useAppStore((state) => state.settings.workspaces)
+  const hiddenProjects = useAppStore((state) => state.settings.hiddenProjects)
   const sessions = useAppStore((state) => state.sessions)
   const switchProject = useAppStore((state) => state.switchProject)
   const openProjectDialog = useAppStore((state) => state.openProjectDialog)
@@ -25,7 +26,7 @@ export function ProjectSelector({
 
   // Deduplicate strictly by canonical path key so no duplicate projects can ever appear.
   const projects = useMemo(() => {
-    const raw = collectProjects(workspaces, sessions)
+    const raw = collectProjects(workspaces, sessions, hiddenProjects)
     const sorted = sortProjects(raw, workspace?.path)
     const seen = new Set<string>()
     return sorted.filter((p) => {
@@ -34,7 +35,7 @@ export function ProjectSelector({
       seen.add(key)
       return true
     })
-  }, [workspaces, sessions, workspace?.path])
+  }, [workspaces, sessions, hiddenProjects, workspace?.path])
 
   const filteredProjects = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()

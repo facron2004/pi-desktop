@@ -1808,7 +1808,7 @@ export function AboutSettings() {
     }
   }
 
-  const appCurrent = info?.version ?? '0.4.0'
+  const appCurrent = info?.version ?? '0.5.0'
   const piCliCurrent = info?.pi.version ?? '—'
 
   return (

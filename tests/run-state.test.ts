@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { AppSettings, PiEvent, RuntimeStartOptions } from '@shared/types'
+import type { AppSettings, PiEvent, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
 
 /* ------------------------------------------------------------------ *
  * A stand-in for the preload bridge.
@@ -39,6 +39,7 @@ const style = new Map<string, string>()
 type Handler = (event: PiEvent) => void
 
 let emit: Handler = () => {}
+let emitStatus: (status: RuntimeStatus) => void = () => {}
 
 const ok = <T,>(value: T) => Promise.resolve(value)
 
@@ -58,7 +59,10 @@ const bridge = {
       emit = handler
       return () => {}
     },
-    onStatus: () => () => {},
+    onStatus: (handler: (status: RuntimeStatus) => void) => {
+      emitStatus = handler
+      return () => {}
+    },
     request: (command: string) => ok(command === 'prompt' ? promptResult : {}),
     respondUi: () => ok(undefined)
   },
@@ -325,6 +329,69 @@ test('a queued no-project selection waits until the current run settles', async 
     assert.deepEqual(selections, [null])
     assert.equal(useAppStore.getState().pendingProject, undefined)
   } finally {
+    useAppStore.setState(previous)
+  }
+})
+
+test('a project switch does not report a lost connection', async () => {
+  const previous = useAppStore.getState()
+  const originalStart = bridge.runtime.start
+  const kept = {
+    id: 'keep',
+    kind: 'notice' as const,
+    level: 'info' as const,
+    text: 'stay',
+    timestamp: 1,
+    order: 1
+  }
+  let release: (value: { ok: boolean; error?: string }) => void = () => {}
+  bridge.runtime.start = () =>
+    new Promise((resolve) => {
+      release = resolve
+    })
+  useAppStore.setState({
+    items: [kept],
+    status: { phase: 'ready', cwd: 'C:/old' },
+    transport: 'connected',
+    isStreaming: false,
+    workspace: { id: 'old', path: 'C:/old', name: 'Old', lastOpenedAt: 1 }
+  })
+  const pending = useAppStore.getState().openWorkspace({
+    id: 'new',
+    path: 'C:/new',
+    name: 'New',
+    lastOpenedAt: 2
+  })
+  try {
+    const mid = useAppStore.getState()
+    assert.equal(mid.status.phase, 'starting')
+    assert.equal(mid.transport, 'connected')
+    assert.equal(mid.workspace?.name, 'New')
+    assert.equal(mid.items.length, 1)
+    assert.equal(mid.items[0]?.id, 'keep', 'the transcript stays up while Pi hands off')
+
+    emitStatus({ phase: 'stopped' })
+    assert.equal(useAppStore.getState().status.phase, 'starting')
+    assert.equal(useAppStore.getState().transport, 'connected', 'the old process exiting is not a lost connection')
+
+    emit({ type: 'client_notice', level: 'info', text: 'from the process that is leaving' })
+    assert.equal(useAppStore.getState().items.length, 1, 'events from the retiring process are not painted')
+
+    emitStatus({ phase: 'ready', cwd: 'C:/new' })
+    assert.equal(useAppStore.getState().status.phase, 'starting', 'ready waits until the new transcript is in place')
+
+    release({ ok: true })
+    await pending
+    assert.equal(useAppStore.getState().items.length, 0)
+    assert.equal(useAppStore.getState().status.phase, 'ready')
+    assert.equal(useAppStore.getState().transport, 'connected')
+
+    emitStatus({ phase: 'stopped' })
+    assert.equal(useAppStore.getState().transport, 'disconnected', 'a real exit after the handoff is still a lost connection')
+  } finally {
+    release({ ok: true })
+    await pending.catch(() => {})
+    bridge.runtime.start = originalStart
     useAppStore.setState(previous)
   }
 })

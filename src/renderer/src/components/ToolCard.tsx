@@ -185,14 +185,22 @@ export const BashCard = memo(function BashCard({ item }: { item: BashItem }) {
 export const ToolCard = memo(function ToolCard({
   item,
   expanded,
-  onExpandedChange
+  onExpandedChange,
+  presentation = 'card'
 }: {
   item: ToolItem
   expanded?: boolean
   onExpandedChange?: (expanded: boolean) => void
+  /**
+   * `link` is the stream row: a verb and a target, the way a file or a
+   * command is a link rather than a card with its own toolbar.
+   */
+  presentation?: 'card' | 'link'
 }) {
   const [manualOpen, setManualOpen] = useState<boolean>()
-  const open = expanded ?? manualOpen ?? item.status === 'error'
+  // A link stays one line until it is opened. A card still opens itself on
+  // failure, because there the failure is the whole of what the row is for.
+  const open = expanded ?? manualOpen ?? (presentation !== 'link' && item.status === 'error')
   const toggleOpen = () => {
     if (onExpandedChange) onExpandedChange(!open)
     else setManualOpen(!open)
@@ -291,6 +299,102 @@ export const ToolCard = memo(function ToolCard({
         ? Ban
         : null
 
+  const openViewedFile = () => {
+    if (!viewedFile) return
+    window.dispatchEvent(
+      new CustomEvent<InspectorRequest>('pi:open-inspector', {
+        detail: { tab: 'files', file: viewedFile }
+      })
+    )
+  }
+  const linkText = viewedFile
+    ? relativePath(workspace?.path ?? '', viewedFile) || summary.detail
+    : summary.detail
+
+  const details = open ? (
+    <div className="tool__body">
+      {item.status === 'error' && visibleResult ? (
+        <pre className="tool__pre tool__error">{visibleResult}</pre>
+      ) : null}
+
+      {diffs.length > 0 ? (
+        <DiffView
+          diffs={diffs}
+          mode={diffSplit ? 'split' : 'unified'}
+          onOpenLine={editedFile ? openLine : undefined}
+        />
+      ) : null}
+
+      {content ? <CodeSnippet code={content} language={language} /> : null}
+
+      {item.toolName === 'bash' || item.toolName === 'powershell'
+        ? String(item.args?.command ?? '').includes('\n') && (
+            <pre className="tool__pre">{String(item.args?.command ?? '')}</pre>
+          )
+        : null}
+
+      {visibleResult && item.status !== 'error' ? (
+        item.toolName === 'read' ? (
+          <CodeSnippet code={visibleResult} language={language} />
+        ) : (
+          <pre className="tool__pre">{visibleResult}</pre>
+        )
+      ) : null}
+
+      {truncated ? (
+        <button className="tool__more" onClick={() => setFull((value) => !value)}>
+          {full
+            ? t('Show less')
+            : `${t('Show')} ${(result.length - RESULT_PREVIEW).toLocaleString()} ${t('more characters')}`}
+        </button>
+      ) : null}
+
+      {!diffs.length && !visibleResult && !content ? (
+        <pre className="tool__pre">{JSON.stringify(item.args ?? {}, null, 2)}</pre>
+      ) : null}
+    </div>
+  ) : null
+
+  if (presentation === 'link') {
+    return (
+      <div className="tool tool--link" data-tone={summary.tone} data-status={state}>
+        <div className="tool-link">
+          <button
+            type="button"
+            className="tool-link__toggle"
+            aria-expanded={open}
+            onClick={toggleOpen}
+          >
+            <ChevronRight size={13} className="caret" data-open={open} />
+            <span className="tool-link__verb">{t(summary.label)}</span>
+          </button>
+          {viewedFile ? (
+            <button
+              type="button"
+              className="tool-link__target"
+              title={t('Open this file')}
+              onClick={openViewedFile}
+            >
+              {linkText}
+            </button>
+          ) : (
+            <button type="button" className="tool-link__target" onClick={toggleOpen}>
+              {linkText}
+            </button>
+          )}
+          {item.status === 'running' ? <span className="spinner" /> : null}
+          {StateIcon ? (
+            <StateIcon size={13} color={item.status === 'error' ? 'var(--status-danger)' : undefined} />
+          ) : null}
+          {item.durationMs !== undefined && item.status !== 'running' ? (
+            <span className="tool-link__time">{formatDuration(item.durationMs)}</span>
+          ) : null}
+        </div>
+        {details}
+      </div>
+    )
+  }
+
   return (
     <div className="tool" data-tone={summary.tone} data-status={state}>
       <div className="tool__head">
@@ -318,13 +422,7 @@ export const ToolCard = memo(function ToolCard({
             className="tool__reuse-icon"
             title={t('Open this file')}
             aria-label={t('Open this file')}
-            onClick={() =>
-              window.dispatchEvent(
-                new CustomEvent<InspectorRequest>('pi:open-inspector', {
-                  detail: { tab: 'files', file: viewedFile }
-                })
-              )
-            }
+            onClick={openViewedFile}
           >
             <FileSearch size={12} />
           </button>
@@ -364,51 +462,7 @@ export const ToolCard = memo(function ToolCard({
         </button>
       </div>
 
-      {open ? (
-        <div className="tool__body">
-          {item.status === 'error' && visibleResult ? (
-            <pre className="tool__pre tool__error">{visibleResult}</pre>
-          ) : null}
-
-          {diffs.length > 0 ? (
-            <DiffView
-              diffs={diffs}
-              mode={diffSplit ? 'split' : 'unified'}
-              onOpenLine={editedFile ? openLine : undefined}
-            />
-          ) : null}
-
-          {content ? <CodeSnippet code={content} language={language} /> : null}
-
-          {item.toolName === 'bash' || item.toolName === 'powershell'
-            ? // The header already shows the first line of the command, so
-              // only a command that runs over several lines is repeated.
-              String(item.args?.command ?? '').includes('\n') && (
-                <pre className="tool__pre">{String(item.args?.command ?? '')}</pre>
-              )
-            : null}
-
-          {visibleResult && item.status !== 'error' ? (
-            item.toolName === 'read' ? (
-              <CodeSnippet code={visibleResult} language={language} />
-            ) : (
-              <pre className="tool__pre">{visibleResult}</pre>
-            )
-          ) : null}
-
-          {truncated ? (
-            <button className="tool__more" onClick={() => setFull((value) => !value)}>
-              {full
-                ? t('Show less')
-                : `${t('Show')} ${(result.length - RESULT_PREVIEW).toLocaleString()} ${t('more characters')}`}
-            </button>
-          ) : null}
-
-          {!diffs.length && !visibleResult && !content ? (
-            <pre className="tool__pre">{JSON.stringify(item.args ?? {}, null, 2)}</pre>
-          ) : null}
-        </div>
-      ) : null}
+      {details}
     </div>
   )
 })

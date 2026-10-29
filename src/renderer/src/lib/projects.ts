@@ -20,12 +20,19 @@ export interface Project {
  * A project is either registered in the settings, or known because it has
  * conversations on disk. The second kind shows up in the sidebar so that a
  * conversation can always be found, and it is registered the first time it
- * is opened.
+ * is opened. A path in `hiddenPaths` is one the user already removed: its
+ * conversations must not bring the row back. Registering the folder again
+ * wins over that list.
  *
  * Paths are canonicalised by `normalisePathKey` so case, slashes or trailing
  * slashes never cause duplicate entries.
  */
-export function collectProjects(workspaces: Workspace[], sessions: SessionMeta[]): Project[] {
+export function collectProjects(
+  workspaces: Workspace[],
+  sessions: SessionMeta[],
+  hiddenPaths: readonly string[] = []
+): Project[] {
+  const hidden = new Set(hiddenPaths.map((path) => normalisePathKey(path)))
   const map = new Map<string, Project>()
 
   for (const item of workspaces) {
@@ -60,6 +67,7 @@ export function collectProjects(workspaces: Workspace[], sessions: SessionMeta[]
     const key = normalisePathKey(session.cwd)
     let project = map.get(key)
     if (!project) {
+      if (hidden.has(key)) continue
       project = {
         path: session.cwd,
         name: basename(session.cwd) || 'Unknown project',

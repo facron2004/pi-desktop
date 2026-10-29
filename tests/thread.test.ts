@@ -520,3 +520,15 @@ test('compaction and retry notices are recorded, not swallowed', () => {
   assert.ok(retry.kind === 'notice' && retry.level === 'warn')
   assert.match(retry.text, /attempt 2\/3/)
 })
+
+test('a rate-limit retry notice does not paste the provider payload', () => {
+  const payload =
+    'sensetime API error (429): {"message":"RPM (Requests Per Minute) limit of the model is exceeded","code":"ModelAccountRpmRateLimitExceeded"}'
+  const items = applyEvents([], [
+    { type: 'auto_retry_start', attempt: 1, maxAttempts: 8, delayMs: 20_000, errorMessage: payload }
+  ])
+  const notice = items[items.length - 1]
+  assert.ok(notice.kind === 'notice')
+  assert.match(notice.text, /rate limit, next try in 20s/)
+  assert.doesNotMatch(notice.text, /ModelAccountRpmRateLimitExceeded/)
+})

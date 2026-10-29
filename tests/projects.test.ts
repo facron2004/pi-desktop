@@ -62,6 +62,21 @@ test('sortProjects prioritises active project regardless of path separator diffe
   assert.equal(sorted[0].name, 'Pi Desktop')
 })
 
+test('a removed project stays gone even when its conversations are still on disk', () => {
+  const sessions = [
+    { id: 's', file: 's.jsonl', cwd: 'E:\\Work\\demo', preview: 'hi', updatedAt: 1, messageCount: 1 }
+  ]
+  assert.equal(collectProjects([], sessions, ['e:/work/demo']).length, 0)
+  const broughtBack = collectProjects(
+    [{ id: 'w', path: 'E:\\Work\\demo', name: 'demo', lastOpenedAt: 1 }],
+    sessions,
+    ['e:/work/demo']
+  )
+  assert.equal(broughtBack.length, 1)
+  assert.equal(broughtBack[0].registered, true)
+  assert.equal(broughtBack[0].sessions.length, 1)
+})
+
 test('chats without a project do not create a project entry', () => {
   const sessions = [
     { id: 'chat', file: 'chat.jsonl', cwd: '', preview: 'General chat', updatedAt: 1, messageCount: 1 }

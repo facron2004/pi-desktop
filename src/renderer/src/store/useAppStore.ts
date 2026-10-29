@@ -30,7 +30,7 @@ import {
   nextOrder,
   type ThreadItem
 } from '../lib/thread'
-import { basename, resolveAgainst, samePath } from '../lib/path'
+import { basename, normalisePathKey, resolveAgainst, samePath } from '../lib/path'
 import { collectProjects, type Project } from '../lib/projects'
 import { APP_COMMANDS } from '../lib/app-commands'
 
@@ -197,7 +197,8 @@ export interface AppStore {
    * once the run settles.
    */
   queueProjectSwitch: (path: string | null) => Promise<void>
-  removeWorkspace: (id: string) => Promise<void>
+  /** Drop a project from the sidebar, whether or not it was registered. */
+  removeWorkspace: (target: { id?: string; path: string }) => Promise<void>
   refreshSessions: () => Promise<void>
   selectSession: (session: SessionMeta) => Promise<void>
   renameSession: (name: string) => Promise<void>
@@ -297,12 +298,26 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null
  */
 let pendingProjectPath: string | null | undefined
 
+/**
+ * The openWorkspace call that owns the screen.
+ *
+ * A slower switch must not paint over a newer one. Live events are dropped
+ * until the new transcript is in place — they belong to a process that is
+ * going away — and `ready` is held for the same reason, so the composer
+ * cannot send into a conversation that is still the previous one.
+ */
+let workspaceEpoch = 0
+let handoffEpoch: number | null = null
+let deferredReady: RuntimeStatus | undefined
+
 /** The name a project is shown with, for a folder the user has not opened yet. */
 function projectNameOf(state: AppStore, path: string | null): string {
   if (path === null) return 'Work without a project'
-  const known = collectProjects(state.settings.workspaces, state.sessions).find((project) =>
-    samePath(project.path, path)
-  )
+  const known = collectProjects(
+    state.settings.workspaces,
+    state.sessions,
+    state.settings.hiddenProjects
+  ).find((project) => samePath(project.path, path))
   return known?.name ?? basename(path) ?? path
 }
 
@@ -364,19 +379,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     window.pi.runtime.onEvent((event) => handleEvent(set, get, event))
     window.pi.runtime.onStatus((status) => {
-      set({ status })
-      if (status.phase === 'error' && status.error) set({ error: status.error })
-      if (status.phase === 'ready') {
-        // A fresh process means a fresh event channel, whatever happened to
-        // the previous one.
-        set({ transport: 'connected' })
-        void get().refreshCommands()
+      // `stopped` during a project switch is the old process leaving, not a
+      // connection the user lost. `ready` waits until the new transcript is
+      // on screen, so a send cannot land in the conversation still showing.
+      if (handoffEpoch !== null) {
+        if (status.phase === 'stopped') {
+          // Before the replacement is ready, `stopped` is the process we
+          // just retired. Once it is ready, this is the new process dying.
+          if (!deferredReady) return
+          deferredReady = undefined
+          applyRuntimeStatus(set, get, status)
+          return
+        }
+        if (status.phase === 'ready') {
+          deferredReady = status
+          return
+        }
       }
-      if (status.phase === 'stopped' || status.phase === 'error') {
-        // The Pi process is gone. That is a lost transport, not proof that
-        // the run failed, so the run state is left for the events to settle.
-        set({ transport: 'disconnected' })
-      }
+      applyRuntimeStatus(set, get, status)
     })
 
     await get().refreshSessions()
@@ -459,16 +479,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async openWorkspace(workspace, sessionFile) {
-    // The previous project's process is about to be replaced; events that
-    // were still queued for a frame belong to it. A queued switch is what
-    // brought the app here, so it is dropped rather than waiting for a run
-    // this project has not started.
+    const epoch = ++workspaceEpoch
+    handoffEpoch = epoch
+    deferredReady = undefined
+    // Events queued for a frame belong to the project we are leaving. They
+    // are painted now, while that transcript is still what is on screen.
     drainPending()
     pendingProjectPath = undefined
     set({
       workspace,
       agentMode: 'default',
-      items: [],
+      // The transcript stays up through the handoff. Clearing it here is
+      // what made every switch a blank page under a "lost connection" banner.
       activeSessionFile: sessionFile,
       error: undefined,
       isStreaming: false,
@@ -484,6 +506,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       pendingJump: undefined,
       pendingProject: undefined,
       run: IDLE_RUN,
+      status: { phase: 'starting', cwd: workspace?.path },
       transport: 'connected',
       retry: undefined
     })
@@ -496,33 +519,56 @@ export const useAppStore = create<AppStore>((set, get) => ({
       thinkingLevel: settings.thinkingLevel
     })
 
+    if (epoch !== workspaceEpoch) return
+
     if (!result.ok) {
       // A start that was superseded by a newer one reports no error, and the
-      // newer runtime owns the status.
+      // newer runtime owns the status. A real failure takes the old
+      // transcript down: it is not this project's conversation.
+      cancelHandoff(epoch)
       if (result.error) {
-        set({ error: result.error, status: { phase: 'error', cwd: workspace?.path, error: result.error } })
+        set({
+          items: [],
+          error: result.error,
+          status: { phase: 'error', cwd: workspace?.path, error: result.error },
+          transport: 'disconnected'
+        })
       }
       return
     }
     await get().refreshState()
+    if (epoch !== workspaceEpoch) return
+    set({ isStreaming: false })
     await get().reloadMessages()
+    if (epoch !== workspaceEpoch) return
+    finishHandoff(epoch, set, get)
     await get().refreshSessions()
+    if (epoch !== workspaceEpoch) return
     await get().refreshGit()
   },
 
-  async removeWorkspace(id) {
+  async removeWorkspace(target) {
     const current = get().workspace
-    const target = get().settings.workspaces.find((item) => item.id === id)
+    const settings = get().settings
+    const path = target.path
+    if (!path) return
     // Removing a project that is not the active one must not move the user
     // somewhere else; only the project that goes away needs a replacement.
-    const wasActive = Boolean(current && target && samePath(current.path, target.path))
-    const settings = await window.pi.workspaces.remove(id)
-    set({ settings })
-    applyAppearance(settings, get().info?.forcedTheme)
+    const wasActive = Boolean(current && samePath(current.path, path))
+    const workspaces = settings.workspaces.filter((item) => !samePath(item.path, path))
+    const hidden = new Set((settings.hiddenProjects ?? []).map((item) => normalisePathKey(item)))
+    hidden.add(normalisePathKey(path))
+    const next = await window.pi.settings.patch({
+      workspaces,
+      hiddenProjects: [...hidden],
+      ...(wasActive ? { activeWorkspaceId: workspaces[0]?.id ?? null } : {})
+    })
+    set({ settings: next })
+    applyAppearance(next, get().info?.forcedTheme)
     if (!wasActive) return
-    const next = settings.workspaces[0]
-    if (next) {
-      await get().openWorkspace(next)
+    const replacement = workspaces[0]
+    if (replacement) {
+      await get().openWorkspace(replacement)
     } else {
       await window.pi.runtime.stop()
       set({ workspace: undefined, items: [], status: { phase: 'stopped' } })
@@ -530,7 +576,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async refreshSessions() {
+    const epoch = workspaceEpoch
     const sessions = await window.pi.sessions.list()
+    // A switch that started while this list was being read owns the screen.
+    if (epoch !== workspaceEpoch) return
     set({ sessions })
   },
 
@@ -1020,6 +1069,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async refreshState() {
+    const epoch = workspaceEpoch
     try {
       const [state, models, levels, stats] = await Promise.all([
         window.pi.runtime.request<PiState>('get_state'),
@@ -1035,12 +1085,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
           .request<SessionStats>('get_session_stats')
           .catch(() => undefined as SessionStats | undefined)
       ])
+      if (epoch !== workspaceEpoch) return
       set({ piState: state, models, thinkingLevels: levels, stats })
       if (state?.sessionFile) {
         set({ activeSessionFile: state.sessionFile })
         void get().rememberSession(state.sessionFile)
       }
     } catch (error) {
+      if (epoch !== workspaceEpoch) return
       set({ error: messageOf(error) })
     }
   },
@@ -1059,6 +1111,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
    * thread of the work they were in the middle of.
    */
   async rememberSession(file) {
+    const epoch = workspaceEpoch
     const workspace = get().workspace
     if (!workspace || !file) return
     const last = get().settings.lastSessions ?? {}
@@ -1066,27 +1119,34 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const settings = await window.pi.settings.patch({
       lastSessions: { ...last, [workspace.path]: file }
     })
+    if (epoch !== workspaceEpoch) return
     set({ settings })
   },
 
   async reloadMessages() {
     if (get().isStreaming) return
+    const epoch = workspaceEpoch
     try {
       const data = await window.pi.runtime.request<{ messages: AgentMessage[] }>('get_messages')
+      if (epoch !== workspaceEpoch) return
       set({ items: itemsFromMessages(data?.messages ?? []) })
       await get().refreshForkTargets()
     } catch (error) {
+      if (epoch !== workspaceEpoch) return
       set({ error: messageOf(error) })
     }
   },
 
   async refreshCommands() {
+    const epoch = workspaceEpoch
     try {
       const data = await window.pi.runtime.request<{ commands?: PiCommand[] }>('get_commands')
+      if (epoch !== workspaceEpoch) return
       // The app's own commands come first — they are few, and they are the
       // ones the desktop app is for.
       set({ commands: [...APP_COMMANDS, ...(data?.commands ?? []).filter((command) => command.name !== 'desktop-mode')] })
     } catch {
+      if (epoch !== workspaceEpoch) return
       set({ commands: APP_COMMANDS })
     }
   },
@@ -1271,10 +1331,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async refreshForkTargets() {
+    const epoch = workspaceEpoch
     try {
       const data = await window.pi.runtime.request<{ messages?: ForkTarget[] }>('get_fork_messages')
+      if (epoch !== workspaceEpoch) return
       set({ forkTargets: data?.messages ?? [] })
     } catch {
+      if (epoch !== workspaceEpoch) return
       set({ forkTargets: [] })
     }
   },
@@ -1331,9 +1394,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async refreshGit() {
+    const epoch = workspaceEpoch
     try {
-      set({ git: await window.pi.git.status() })
+      const git = await window.pi.git.status()
+      if (epoch !== workspaceEpoch) return
+      set({ git })
     } catch {
+      if (epoch !== workspaceEpoch) return
       // A folder that is not a repository is a normal state, not an error.
       set({ git: undefined })
     }
@@ -1587,6 +1654,35 @@ export function applyAppearance(
 type SetState = (partial: Partial<AppStore> | ((state: AppStore) => Partial<AppStore>)) => void
 type GetState = () => AppStore
 
+function applyRuntimeStatus(set: SetState, get: GetState, status: RuntimeStatus): void {
+  set({ status })
+  if (status.phase === 'error' && status.error) set({ error: status.error })
+  if (status.phase === 'ready' || status.phase === 'starting') {
+    // A fresh process means a fresh event channel, whatever happened to
+    // the previous one. "starting" is that handoff, not a dropped connection.
+    set({ transport: 'connected' })
+    if (status.phase === 'ready') void get().refreshCommands()
+  } else if (status.phase === 'stopped' || status.phase === 'error') {
+    // The Pi process is gone. That is a lost transport, not proof that
+    // the run failed, so the run state is left for the events to settle.
+    set({ transport: 'disconnected' })
+  }
+}
+
+function finishHandoff(epoch: number, set: SetState, get: GetState): void {
+  if (handoffEpoch !== epoch) return
+  handoffEpoch = null
+  const ready = deferredReady
+  deferredReady = undefined
+  if (ready) applyRuntimeStatus(set, get, ready)
+}
+
+function cancelHandoff(epoch: number): void {
+  if (handoffEpoch !== epoch) return
+  handoffEpoch = null
+  deferredReady = undefined
+}
+
 /* ------------------------------------------------------------------ *
  * Event ingestion
  *
@@ -1675,6 +1771,9 @@ function phaseFor(state: AppStore, next: RunPhase): RunPhase {
 }
 
 function handleEvent(set: SetState, get: GetState, event: PiEvent): void {
+  // The process these belong to is being replaced. Painting them would mix
+  // the project on screen with the one that is leaving.
+  if (handoffEpoch !== null) return
   switch (event.type) {
     case 'agent_start': {
       // One run per prompt. A follow-up prompt that arrives while a run is

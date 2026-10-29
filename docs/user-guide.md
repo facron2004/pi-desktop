@@ -2,7 +2,7 @@
 
 [返回项目首页](../README.md) · [开发文档](development.md) · [更新日志](../CHANGELOG.md)
 
-本文对应 Pi Desktop v0.4.0。界面示例见 [浅色工作台](screenshots/workbench-light.png)、[深色工作台](screenshots/workbench-dark.png) 和 [外观设置](screenshots/appearance-settings.png)；示例截图保留自 v0.3.0。
+本文对应 Pi Desktop v0.5.0。界面示例见 [浅色工作台](screenshots/workbench-light.png)、[深色工作台](screenshots/workbench-dark.png) 和 [外观设置](screenshots/appearance-settings.png)；示例截图保留自 v0.3.0。
 
 ## 安装与启动
 
@@ -22,14 +22,14 @@
 4. 点击「检测连通性」。未选择模型时检测模型列表接口；选择后发起最小模型请求验证推理调用。
 5. 点击「保存并使用」。空闲会话会刷新 Pi 模型配置并切换模型；正在运行的对话保持运行，新配置用于新对话。
 
-配置沿用 Pi 原生的 `models.json`。API Key 保存在本机；重新编辑时不会回传已保存的密钥，留空保留原值。
+配置沿用 Pi 原生的 `models.json`。API Key 保存在本机；点击提供商右侧的编辑图标修改，重新编辑时不会回传已保存的密钥，留空保留原值。删除图标经确认后移除该提供商的模型配置与 API Key，保留其他提供商和 Pi 登录。
 
 已有的 Pi 登录和扩展认证仍由 Pi 管理：
 
 - 已使用 Pi 的用户可以复用现有登录或配置。
 - 如果已安装独立 Pi CLI，可运行 `pi`，输入 `/login` 并按提示完成供应商登录或 API Key 配置。
 - 也可以按照 [Pi 供应商文档](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md) 配置环境变量或其他认证方式。
-- 返回应用，在「设置 → 模型管理」进入对应提供商并选择模型。默认推理强度位于提供商列表下方，对话中的模型控件仍可切换当前模型。
+- 返回应用，在「设置 → 模型管理」编辑对应提供商并选择模型。对话中的模型和推理强度控件可调整当前会话。
 
 模型价格、上下文长度与推理选项以 Pi 返回的内容为准。请勿把 `auth.json`、API Key 或包含凭证的日志提交到仓库。
 

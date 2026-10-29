@@ -16,7 +16,6 @@ export function ProviderEditor({ controller }: { controller: ReturnType<typeof u
     <form className="provider-editor" onSubmit={event => { event.preventDefault(); save() }}>
       <div className="provider-editor__head">
         <button className="btn btn--sm" type="button" onClick={cancel}><ArrowLeft size={13} />{t('Providers')}</button>
-        <span className="provider-editor__kind">{draft.id ? t('Edit provider') : t('Add provider')}</span>
       </div>
       {draft.external ? <p className="provider-notice">{t('This provider uses Pi-managed authentication. Choose a model here, or add an API-key provider for another endpoint.')}</p> : null}
       <section className="provider-connection" aria-label={t('Provider connection')}>

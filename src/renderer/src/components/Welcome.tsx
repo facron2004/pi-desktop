@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { CircleAlert, FolderOpen, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import { useT } from '../lib/i18n'
+import { openingLabel, useT } from '../lib/i18n'
 import { basename } from '../lib/path'
 import { ProjectSelector } from './ProjectSelector'
 import { PiLogo } from './PiLogo'
@@ -29,7 +29,7 @@ export function Welcome({ onPick, children }: { onPick: () => void; children: Re
         {status === 'starting' ? (
           <div className="welcome__pending" role="status">
             <span className="spinner" />
-            <span>{t('Starting the Pi runtime…')}</span>
+            <span>{openingLabel(workspace, t)}</span>
           </div>
         ) : null}
 

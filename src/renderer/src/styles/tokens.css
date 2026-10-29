@@ -195,6 +195,10 @@
   --text: var(--text-primary);
   --text-muted: var(--text-secondary);
   --text-faint: var(--text-tertiary);
+  /* Body text is softened (#242424 in light). A project name is a label,
+     and that gray reads as "not quite black". Ink is the darker step. */
+  --text-strong: var(--text-primary);
+  --text-pure: var(--text-primary);
   --blue: var(--accent);
   --blue-soft: var(--accent-soft);
   --green: var(--status-success);
@@ -253,6 +257,10 @@
   --border-specular: inset 0 1px 0 rgba(255, 255, 255, 0.85);
 
   --text-primary: #242424;
+  /* Near-black, not #000: pure black on the light canvas blooms. This is
+     the step the project name uses so it reads as ink. */
+  --text-strong: #111111;
+  --text-pure: #000000;
   --text-secondary: #686868;
   --text-tertiary: #909090;
   --text-disabled: #94a3b8;

@@ -156,4 +156,21 @@ export class ProviderStore {
     }
     return this.profile(id, next)
   }
+
+  /** Drop a provider written into models.json. Pi sign-in credentials stay. */
+  remove(id: string): void {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(id)) throw new Error('Invalid provider ID')
+    const document = readObject(this.file)
+    const providers = providerMap(document)
+    if (!Object.hasOwn(providers, id)) throw new Error('This provider is managed by Pi')
+    const rest = { ...providers }
+    delete rest[id]
+    writeObject(this.file, { ...document, providers: rest })
+    if (!existsSync(this.authFile)) return
+    const credentials = readObject(this.authFile)
+    if (record(credentials[id]).type !== 'api_key') return
+    const remaining = { ...credentials }
+    delete remaining[id]
+    writeObject(this.authFile, remaining)
+  }
 }

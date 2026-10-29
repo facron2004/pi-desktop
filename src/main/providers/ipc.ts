@@ -43,4 +43,11 @@ export function registerProviderIpc({ runtime, settings }: IpcContext): void {
     }
     return { provider, settings: updated, applied, applyError }
   })
+  ipcMain.handle('providers:remove', (_event, id: string) => {
+    if (typeof id !== 'string') throw new Error('Invalid provider ID')
+    store.remove(id)
+    const current = settings.get()
+    const selected = current.provider === id || Boolean(current.model?.startsWith(`${id}/`))
+    return { settings: selected ? settings.patch({ provider: undefined, model: undefined }) : current }
+  })
 }

@@ -31,8 +31,8 @@ export function SessionBar({ showProject }: { showProject: boolean }) {
   // The active project first, then the ones used most recently, so the menu
   // reads like the sidebar rather than in the order the folders were opened.
   const projects = useMemo(
-    () => sortProjects(collectProjects(settings.workspaces, sessions), workspace?.path),
-    [settings.workspaces, sessions, workspace?.path]
+    () => sortProjects(collectProjects(settings.workspaces, sessions, settings.hiddenProjects), workspace?.path),
+    [settings.workspaces, settings.hiddenProjects, sessions, workspace?.path]
   )
 
   const openInspector = () =>

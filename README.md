@@ -49,15 +49,15 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 
 ## 下载与安装
 
-当前发布版本为 **v0.4.0**，内置 **Pi 1.4.0**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
+当前发布版本为 **v0.5.0**，内置 **Pi 1.4.0**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.4.0/Pi-Desktop-0.4.0-x64-setup.exe) |
-| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.4.0/Pi-Desktop-0.4.0-arm64-setup.exe) |
-| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.4.0/Pi-Desktop-0.4.0-portable-x64.zip) |
+| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.5.0/Pi-Desktop-0.5.0-x64-setup.exe) |
+| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.5.0/Pi-Desktop-0.5.0-arm64-setup.exe) |
+| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.5.0/Pi-Desktop-0.5.0-portable-x64.zip) |
 
-免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.4.0/SHA256SUMS.txt)，版本说明见 [v0.4.0 更新说明](docs/releases/v0.4.0.md)。
+免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.5.0/SHA256SUMS.txt)，版本说明见 [v0.5.0 更新说明](docs/releases/v0.5.0.md)。
 
 ## 快速上手
 

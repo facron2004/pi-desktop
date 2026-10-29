@@ -5,7 +5,6 @@ import {
   ChevronRight,
   Copy,
   Eye,
-  GitBranch,
   GitCommit,
   Info,
   RefreshCw
@@ -13,6 +12,7 @@ import {
 import type { GitCommit as GitCommitEntry, GitFileStatus } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
+import { BranchMark } from './BranchMark'
 import { formatRelativeTime } from '../lib/format'
 import { useT } from '../lib/i18n'
 import '../styles/commit-history.css'
@@ -408,7 +408,7 @@ export function CommitDialog({
           </h2>
           {git?.branch ? (
             <span className="commit__branch" title={t('The branch the commit lands on')}>
-              <GitBranch size={12} />
+              <BranchMark size={13} />
               {git.branch}
             </span>
           ) : null}

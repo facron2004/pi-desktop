@@ -4,7 +4,6 @@ import {
   ArrowUp,
   Check,
   FileDiff,
-  GitBranch,
   GitFork,
   Loader2,
   Plus,
@@ -18,6 +17,7 @@ import { basename } from '../lib/path'
 import { useT } from '../lib/i18n'
 import { Popover } from './Popover'
 import { ConfirmDialog } from './ConfirmDialog'
+import { BranchMark } from './BranchMark'
 import '../styles/branch-menu.css'
 
 /**
@@ -218,7 +218,7 @@ export function BranchMenu({
           }}
           title={git.branch ? `${t('Branch')}: ${git.branch}` : t('Configure local environment')}
         >
-          <GitBranch size={11} className="git-chip__icon" />
+          <BranchMark size={13} className="git-chip__icon" />
           <span className="git-chip__branch">
             {git.branch ?? (git.head ? `#${git.head}` : t('Repository'))}
           </span>
@@ -278,7 +278,7 @@ export function BranchMenu({
                   onClick={() => void chooseBranch(branch.name, close)}
                   title={branch.subject ?? branch.name}
                 >
-                  <GitBranch size={12} className="branch-menu__icon" />
+                  <BranchMark size={13} className="branch-menu__icon" />
                   <span className="branch-menu__name">{branch.name}</span>
 
                   {/* Branch & changed files on the exact SAME line */}

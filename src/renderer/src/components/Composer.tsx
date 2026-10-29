@@ -11,7 +11,7 @@ import { useAppStore, type QueueKind } from '../store/useAppStore'
 import type { FileEntry, PiCommand } from '@shared/types'
 import { filterCommands } from '../lib/commands'
 import { relativePath } from '../lib/path'
-import { useT } from '../lib/i18n'
+import { openingLabel, useT } from '../lib/i18n'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
 import { ModelPicker } from './TopBar'
@@ -99,6 +99,9 @@ export function Composer() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const mentionListRef = useRef<HTMLDivElement>(null)
+  // Enter repeats while it is held, and a double-click can land before React
+  // has cleared the draft. Either one used to send the same prompt again.
+  const submitLock = useRef(false)
 
   const ready = status.phase === 'ready'
   const inputPrompt = ready
@@ -106,7 +109,7 @@ export function Composer() {
       ? t('Describe a task, or use @ to reference project files…')
       : t('Describe a task…')
     : status.phase === 'starting'
-      ? t('Starting the Pi runtime…')
+      ? openingLabel(workspace, t)
       : status.phase === 'error'
         ? t('Pi unavailable')
         : !workspace
@@ -309,7 +312,9 @@ export function Composer() {
   )
 
   const submit = useCallback(() => {
+    if (submitLock.current) return
     if (!text.trim() && !images.length) return
+    submitLock.current = true
     void send(text, images, kind)
     setHistory((current) => [text, ...current.filter((entry) => entry !== text)].slice(0, 50))
     setHistoryIndex(-1)
@@ -319,8 +324,17 @@ export function Composer() {
     setMention(null)
   }, [text, images, kind, send, closePalette])
 
+  useEffect(() => {
+    if (!text && images.length === 0) submitLock.current = false
+  }, [text, images])
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+    // A held Enter repeats. The first one already sent the draft.
+    if (event.repeat && event.key === 'Enter') {
+      event.preventDefault()
+      return
+    }
     // The file list comes first: an `@` in the text means the user is
     // pointing at a file, not at a command.
     if (mention) {

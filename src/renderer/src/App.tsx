@@ -32,7 +32,8 @@ import { McpDialog } from './components/McpDialog'
 import { EditProjectDialog } from './components/EditProjectDialog'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { Popover } from './components/Popover'
-import { useT } from './lib/i18n'
+import { openingLabel, useT } from './lib/i18n'
+import { retryBannerDetail } from './lib/provider-error'
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
@@ -60,6 +61,7 @@ export default function App() {
   const stop = useAppStore((state) => state.stop)
   const selectSession = useAppStore((state) => state.selectSession)
   const retry = useAppStore((state) => state.retry)
+  const retryDetail = retry ? retryBannerDetail(retry.errorMessage, retry.delayMs) : undefined
   const abortRetry = useAppStore((state) => state.abortRetry)
   const run = useAppStore((state) => state.run)
   const transport = useAppStore((state) => state.transport)
@@ -326,7 +328,9 @@ export default function App() {
       // `Ctrl+1` … `Ctrl+9` jump to the n-th project of the sidebar.
       if (mod && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
         const index = Number(event.key) - 1
-        const projects = sortProjects(collectProjects(settings.workspaces, sessions))
+        const projects = sortProjects(
+          collectProjects(settings.workspaces, sessions, settings.hiddenProjects)
+        )
         const target = projects[index]
         if (!target) return
         event.preventDefault()
@@ -397,6 +401,7 @@ export default function App() {
     newChat,
     toggleSidebar,
     settings.workspaces,
+    settings.hiddenProjects,
     sessions,
     workspace?.path,
     switchProject,
@@ -596,14 +601,14 @@ export default function App() {
 
           {retry ? (
             <div className="retry-wrap">
-              <div className="retry" role="status">
+              <div className="retry" role="status" title={retry.errorMessage}>
                 <RefreshCw size={13} className="spin" />
                 <span className="retry__text">
                   {t('Pi is retrying')}
                   {retry.maxAttempts
                     ? ` (${t('attempt')} ${retry.attempt} ${t('of')} ${retry.maxAttempts})`
                     : ` (${t('attempt')} ${retry.attempt})`}
-                  {retry.errorMessage ? ` — ${retry.errorMessage}` : ''}
+                  {retryDetail ? ` — ${t(retryDetail)}` : ''}
                 </span>
                 <button className="ghost-btn" onClick={() => void abortRetry()}>
                   {t('Stop retrying')}
@@ -612,10 +617,21 @@ export default function App() {
             </div>
           ) : null}
 
+          {/* A project switch keeps the previous transcript up. This is the
+              handoff, not a failure — the connection was not lost. */}
+          {status.phase === 'starting' && hasItems ? (
+            <div className="retry-wrap">
+              <div className="retry" data-kind="handoff" role="status">
+                <span className="spinner" aria-hidden="true" />
+                <span className="retry__text">{openingLabel(workspace, t)}</span>
+              </div>
+            </div>
+          ) : null}
+
           {/* The transport is not the run: Pi can still be working behind a
               broken channel, so this says what is known rather than declaring
-              the run failed. */}
-          {transport === 'disconnected' && status.phase !== 'ready' ? (
+              the run failed. "starting" is a switch in progress. */}
+          {transport === 'disconnected' && status.phase !== 'ready' && status.phase !== 'starting' ? (
             <div className="retry-wrap">
               <div className="retry" data-kind="transport" role="status">
                 <TriangleAlert size={13} />

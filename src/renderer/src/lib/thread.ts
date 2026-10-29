@@ -1,4 +1,5 @@
 import type { AgentMessage, ContentBlock, ForkTarget, PiEvent, Usage } from '@shared/types'
+import { isRateLimitError } from './provider-error'
 
 /* ------------------------------------------------------------------ *
  * Run / turn identity
@@ -696,18 +697,29 @@ export function applyEvent(
     }
 
     case 'auto_retry_start': {
+      const raw = String(event.errorMessage ?? 'transient error')
+      const wait = Math.max(1, Math.round(Number(event.delayMs ?? 0) / 1000))
+      // A rate-limit payload is a page of JSON. The transcript only needs to
+      // say that the turn is waiting, not paste the provider body in.
+      const detail = isRateLimitError(raw)
+        ? `rate limit, next try in ${wait}s`
+        : raw.replace(/\s+/g, ' ').trim().slice(0, 180)
       return [
         ...items,
         notice(
           'warn',
-          `Retrying (attempt ${String(event.attempt ?? 1)}/${String(event.maxAttempts ?? '?')}) — ${String(event.errorMessage ?? 'transient error')}`
+          `Retrying (attempt ${String(event.attempt ?? 1)}/${String(event.maxAttempts ?? '?')}) — ${detail}`
         )
       ]
     }
 
     case 'auto_retry_end': {
       if (event.success) return [...items, notice('success', 'Retry succeeded')]
-      return [...items, notice('error', `Retry failed: ${String(event.finalError ?? 'unknown error')}`)]
+      const raw = String(event.finalError ?? 'unknown error')
+      const detail = isRateLimitError(raw)
+        ? 'still rate limited'
+        : raw.replace(/\s+/g, ' ').trim().slice(0, 180)
+      return [...items, notice('error', `Retry failed: ${detail}`)]
     }
 
     case 'extension_error': {

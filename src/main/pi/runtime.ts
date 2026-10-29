@@ -15,6 +15,7 @@ import type {
 import { resolvePiLaunch } from './locate'
 import { PiRpcClient } from './rpc-client'
 import { canAutoApprove, parseToolApproval, permissionExtension } from './permissions'
+import { ensurePatientRetrySettings } from './retry-policy'
 import { taskModesExtension } from './task-modes'
 import { providerControlsExtension } from './provider-controls'
 
@@ -31,12 +32,21 @@ export interface RuntimeOptions {
  * One process per workspace keeps Pi's own "sessions are grouped by working
  * directory" model intact while still allowing the UI to switch between
  * conversations with the `switch_session` command.
+ *
+ * Switching projects replaces that process. The replacement is a handoff,
+ * not a disconnect: `stopped` is what the UI reads as a lost connection, and
+ * a switch the user asked for is not one. The next process boots while the
+ * previous one exits.
  */
 export class PiRuntime extends EventEmitter {
   private client: PiRpcClient | null = null
   private status: RuntimeStatus = { phase: 'stopped' }
   private pendingApprovalId?: string
   private aborting = false
+  /** Bumped on every start and stop so a superseded launch cannot publish status. */
+  private generation = 0
+  /** Scripts written for one process, removed once that process has exited. */
+  private scratch = new Map<PiRpcClient, string[]>()
 
   constructor(private readonly options: RuntimeOptions = {}) {
     super()
@@ -51,12 +61,22 @@ export class PiRuntime extends EventEmitter {
   }
 
   async start(options: RuntimeStartOptions): Promise<{ ok: boolean; error?: string }> {
-    await this.stop()
+    const generation = ++this.generation
+    this.pendingApprovalId = undefined
+    this.aborting = false
+    // "starting" goes out before the old process is touched. Waiting for it
+    // to exit, and publishing "stopped" while we wait, is the flash of
+    // "Lost connection" on every project switch.
+    this.setStatus({ phase: 'starting', cwd: options.cwd })
+    const previous = this.client
+    this.client = null
+    if (previous) void this.dispose(previous)
 
     const launch = resolvePiLaunch(this.options.customPiPath)
     if (launch.source === 'none') {
       const error =
         'Could not find the Pi CLI. Install it with "npm i -g @earendil-works/pi-coding-agent" or set a custom path in Settings.'
+      if (generation !== this.generation) return { ok: false }
       this.setStatus({ phase: 'error', cwd: options.cwd, error })
       return { ok: false, error }
     }
@@ -65,23 +85,30 @@ export class PiRuntime extends EventEmitter {
     const sessionFile =
       options.sessionFile && existsSync(options.sessionFile) ? options.sessionFile : undefined
 
-    const customInstructionsFile = path.join(app.getPath('userData'), 'pi-desktop-instructions.md')
-    const permissionFile = path.join(app.getPath('userData'), 'pi-desktop-permissions.mjs')
-    const modeFile = path.join(app.getPath('userData'), 'pi-desktop-task-modes.mjs')
-    const providerFile = path.join(app.getPath('userData'), 'pi-desktop-providers.mjs')
-    const permissionTitle = `pi-desktop-permissions-${randomUUID()}`
+    // A fresh path per process. Reusing one file makes the new launch wait
+    // until the process that still has it open — the one we just retired —
+    // lets go of it, which on Windows is the whole shutdown.
+    const scratchId = randomUUID()
+    const userData = app.getPath('userData')
+    const customInstructionsFile = path.join(userData, `pi-desktop-instructions-${scratchId}.md`)
+    const permissionFile = path.join(userData, `pi-desktop-permissions-${scratchId}.mjs`)
+    const modeFile = path.join(userData, `pi-desktop-task-modes-${scratchId}.mjs`)
+    const providerFile = path.join(userData, `pi-desktop-providers-${scratchId}.mjs`)
+    const permissionTitle = `pi-desktop-permissions-${scratchId}`
+    const files: string[] = []
     try {
-      mkdirSync(path.dirname(permissionFile), { recursive: true })
+      mkdirSync(userData, { recursive: true })
+      files.push(permissionFile, modeFile, providerFile)
       writeFileSync(permissionFile, permissionExtension(permissionTitle), 'utf8')
       writeFileSync(modeFile, taskModesExtension(), 'utf8')
       writeFileSync(providerFile, providerControlsExtension(), 'utf8')
       if (options.customInstructions?.trim()) {
-        mkdirSync(path.dirname(customInstructionsFile), { recursive: true })
+        files.push(customInstructionsFile)
         writeFileSync(customInstructionsFile, options.customInstructions.trim(), 'utf8')
-      } else if (existsSync(customInstructionsFile)) {
-        unlinkSync(customInstructionsFile)
       }
     } catch (error) {
+      this.deleteFiles(files)
+      if (generation !== this.generation) return { ok: false }
       const message = `Could not prepare runtime configuration: ${error instanceof Error ? error.message : String(error)}`
       this.setStatus({ phase: 'error', cwd: options.cwd, error: message })
       return { ok: false, error: message }
@@ -99,7 +126,13 @@ export class PiRuntime extends EventEmitter {
       )
     ]
 
-    this.setStatus({ phase: 'starting', cwd: options.cwd })
+    // A 429 has to outlast the provider's rate window. Pi reads the budget
+    // once, when this process starts, so it has to be in place before launch.
+    try {
+      ensurePatientRetrySettings()
+    } catch {
+      /* an unreadable settings file keeps Pi's own budget */
+    }
 
     const client = new PiRpcClient({
       command: launch.command,
@@ -112,6 +145,8 @@ export class PiRuntime extends EventEmitter {
     let modesReady = false
     this.aborting = false
     client.on('event', (event: PiEvent) => {
+      // A newer launch owns the wire. This process is only still exiting.
+      if (this.generation !== generation) return
       if (event.type === 'agent_start') this.aborting = false
       if (event.type === 'extension_ui_request') {
         const request = event as unknown as ExtensionUiRequest
@@ -151,12 +186,17 @@ export class PiRuntime extends EventEmitter {
         text: `Unparsable record from pi: ${payload.line.slice(0, 200)}`
       })
     })
+    this.scratch.set(client, files)
     client.on('error', (error: Error) => {
+      if (this.generation !== generation || this.client !== client) return
       this.setStatus({ phase: 'error', cwd: options.cwd, error: error.message })
     })
     client.on('exit', ({ code, signal }: { code: number | null; signal: string | null }) => {
       // A client that was replaced or stopped on purpose exits on purpose.
-      if (this.client !== client) return
+      if (this.client !== client || this.generation !== generation) return
+      // Still coming up: the failed request below reports the error.
+      // Publishing "stopped" here is what the UI reads as a lost connection.
+      if (this.status.phase === 'starting') return
       this.setStatus({
         phase: 'stopped',
         cwd: options.cwd,
@@ -169,12 +209,17 @@ export class PiRuntime extends EventEmitter {
 
     try {
       client.start()
+      if (generation !== this.generation) {
+        void this.dispose(client)
+        return { ok: false }
+      }
       this.client = client
       const state = await client.request<PiState>({ type: 'get_state' }, 30_000)
       // A newer start may have replaced this client while it was coming up.
-      if (this.client !== client) return { ok: false }
+      if (generation !== this.generation || this.client !== client) return { ok: false }
       if (!permissionsReady) throw new Error('Pi did not load its tool approval controls. Restart the runtime to try again.')
       if (!modesReady) throw new Error('Pi did not load its task mode controls. Restart the runtime to try again.')
+      if (generation !== this.generation || this.client !== client) return { ok: false }
       this.setStatus({
         phase: 'ready',
         cwd: options.cwd,
@@ -185,14 +230,18 @@ export class PiRuntime extends EventEmitter {
     } catch (error) {
       // The client was replaced while it was starting: the newer one owns
       // the status now, so this failure is not worth reporting.
-      if (this.client !== client) return { ok: false }
+      if (generation !== this.generation || (this.client !== null && this.client !== client)) {
+        return { ok: false }
+      }
       const message = error instanceof Error ? error.message : String(error)
-      await this.stop()
       // Pi usually explains itself on stderr before it gives up.
       const tail = client.stderrTail
         .map((line) => line.trim())
         .filter(Boolean)
         .slice(-2)
+      if (this.client === client) this.client = null
+      await this.dispose(client)
+      if (generation !== this.generation) return { ok: false }
       this.setStatus({
         phase: 'error',
         cwd: options.cwd,
@@ -230,18 +279,47 @@ export class PiRuntime extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    const generation = ++this.generation
     this.pendingApprovalId = undefined
     const client = this.client
     this.client = null
-    if (client) {
-      // Pi can still emit records while it shuts down. Detach the forwarders
-      // first so late output never reaches a window that may be closing.
-      client.removeAllListeners('event')
-      client.removeAllListeners('stderr')
-      client.removeAllListeners('exit')
-      await client.stop()
-    }
+    if (client) await this.dispose(client)
+    // A start() that began while this process was exiting owns the status now.
+    if (this.generation !== generation) return
     this.setStatus({ phase: 'stopped' })
+  }
+
+  /**
+   * Drop a process without telling the UI it disconnected.
+   *
+   * Listeners come off first: Pi keeps writing for a moment after it is
+   * asked to stop, and that must not land on the project that replaced it.
+   */
+  private async dispose(client: PiRpcClient): Promise<void> {
+    this.detach(client)
+    const files = this.scratch.get(client)
+    this.scratch.delete(client)
+    await client.stop()
+    this.deleteFiles(files ?? [])
+    this.deleteFiles(LEGACY_RUNTIME_FILES.map((name) => path.join(app.getPath('userData'), name)))
+  }
+
+  private detach(client: PiRpcClient): void {
+    client.removeAllListeners('event')
+    client.removeAllListeners('stderr')
+    client.removeAllListeners('protocol-error')
+    client.removeAllListeners('error')
+    client.removeAllListeners('exit')
+  }
+
+  private deleteFiles(files: string[]): void {
+    for (const file of files) {
+      try {
+        if (existsSync(file)) unlinkSync(file)
+      } catch {
+        // The process may still be releasing the file. Nothing reads it again.
+      }
+    }
   }
 
   private setStatus(status: RuntimeStatus): void {
@@ -256,6 +334,14 @@ export class PiRuntime extends EventEmitter {
  * The exit code alone is useless; the diagnostics Pi wrote to stderr say what
  * actually went wrong, so the last few lines are passed on to the UI.
  */
+/** The fixed names older builds wrote. Removed once the process that held them has exited. */
+const LEGACY_RUNTIME_FILES = [
+  'pi-desktop-instructions.md',
+  'pi-desktop-permissions.mjs',
+  'pi-desktop-task-modes.mjs',
+  'pi-desktop-providers.mjs'
+]
+
 function describeExit(stderr: string[], code: number | null, signal: string | null): string {
   const tail = stderr
     .map((line) => line.trim())

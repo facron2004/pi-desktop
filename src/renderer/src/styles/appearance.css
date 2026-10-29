@@ -352,8 +352,29 @@
     visibility: hidden;
   }
 
+  /* Option padding belongs to the open list. On the closed control it
+     becomes the label's top padding, so the text sits high in the box. */
+  .settings-select {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    line-height: 1;
+  }
+
+  /* The UA icon is a filled triangle. Two hairline borders, turned, are the
+     same hollow chevron the rest of the app uses. */
   .settings-select::picker-icon {
-    color: var(--text-muted);
+    content: "";
+    width: 7px;
+    height: 7px;
+    margin-inline-start: auto;
+    margin-inline-end: 2px;
+    align-self: center;
+    background: none;
+    border-right: 1.5px solid var(--text-muted);
+    border-bottom: 1.5px solid var(--text-muted);
+    border-radius: 1px;
+    transform: rotate(45deg);
   }
 
   .appearance-select-native:focus-visible {
@@ -380,8 +401,8 @@
     overflow-y: auto;
   }
 
-  .settings-select option,
-  .appearance-select-native option {
+  .settings-select::picker(select) option,
+  .appearance-select-native::picker(select) option {
     gap: 10px;
     padding: 7px 10px;
     border-radius: var(--r-sm);
@@ -394,16 +415,16 @@
     cursor: pointer;
   }
 
-  .settings-select option:hover,
-  .settings-select option:focus,
-  .appearance-select-native option:hover,
-  .appearance-select-native option:focus {
+  .settings-select::picker(select) option:hover,
+  .settings-select::picker(select) option:focus,
+  .appearance-select-native::picker(select) option:hover,
+  .appearance-select-native::picker(select) option:focus {
     outline: none;
     background: var(--bg-hover);
   }
 
-  .settings-select option:checked,
-  .appearance-select-native option:checked {
+  .settings-select::picker(select) option:checked,
+  .appearance-select-native::picker(select) option:checked {
     background: var(--bg-active);
     font-weight: 600;
   }
