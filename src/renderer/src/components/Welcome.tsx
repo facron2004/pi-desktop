@@ -2,17 +2,26 @@ import type { ReactNode } from 'react'
 import { CircleAlert, FolderOpen, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
+import { basename } from '../lib/path'
 import { ProjectSelector } from './ProjectSelector'
+import { PiLogo } from './PiLogo'
 
 /**
  * A new chat: project & branch selectors above the composer.
  */
 export function Welcome({ onPick, children }: { onPick: () => void; children: ReactNode }) {
   const workspace = useAppStore((state) => state.workspace)
+  const noProject = useAppStore((state) => state.settings.activeWorkspaceId === null)
   const status = useAppStore((state) => state.status.phase)
   const error = useAppStore((state) => state.error)
   const dismissError = useAppStore((state) => state.dismissError)
   const t = useT()
+  const greeting = workspace
+    ? t('What would you like to do in {project} today?').replace(
+        '{project}',
+        () => workspace.name.trim() || basename(workspace.path)
+      )
+    : t('What would you like to do with Pi today?')
 
   return (
     <div className="welcome">
@@ -41,13 +50,18 @@ export function Welcome({ onPick, children }: { onPick: () => void; children: Re
           </div>
         ) : null}
 
-        {!workspace ? (
+        {!workspace && !noProject ? (
           <div className="welcome__top-selectors">
             <ProjectSelector placement="bottom" align="left" />
           </div>
         ) : null}
 
-        {workspace ? (
+        <div className="welcome__hero">
+          <PiLogo size={56} />
+          <h1 className="welcome__greeting">{greeting}</h1>
+        </div>
+
+        {workspace || noProject ? (
           <div className="welcome__composer">{children}</div>
         ) : (
           <div className="welcome__composer">

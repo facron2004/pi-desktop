@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type {
   AgentMessage,
+  AgentMode,
   AppInfo,
   AppSettings,
   ExtensionUiRequest,
@@ -19,6 +20,7 @@ import type {
   SessionStats,
   Workspace
 } from '@shared/types'
+import type { ProviderProfile, SaveProviderInput } from '@shared/providers'
 import {
   applyEvent,
   itemsFromMessages,
@@ -29,7 +31,7 @@ import {
   type ThreadItem
 } from '../lib/thread'
 import { basename, resolveAgainst, samePath } from '../lib/path'
-import { collectProjects } from '../lib/projects'
+import { collectProjects, type Project } from '../lib/projects'
 import { APP_COMMANDS } from '../lib/app-commands'
 
 export type QueueKind = 'steer' | 'followUp'
@@ -110,6 +112,8 @@ export interface AppStore {
   workspace?: Workspace
   sessions: SessionMeta[]
   status: RuntimeStatus
+  agentMode: AgentMode
+  setAgentMode: (mode: AgentMode) => Promise<void>
   isStreaming: boolean
   piState?: PiState
   models: ModelInfo[]
@@ -157,7 +161,7 @@ export interface AppStore {
    * A project the user asked for while a run was going. The run is never
    * ended for it: the switch happens once `agent_settled` arrives.
    */
-  pendingProject?: { path: string; name: string }
+  pendingProject?: { path: string | null; name: string }
 
   /** A blocking extension dialog waiting for an answer. */
   uiRequest?: ExtensionUiRequest
@@ -170,8 +174,13 @@ export interface AppStore {
   /** Text to append to the composer, e.g. a command the user wants to reuse. */
   composerInsert?: { text: string; seq: number; mode?: 'append' | 'replace' }
 
+  /** Project edit / create dialog state */
+  projectDialog: { open: boolean; mode: 'create' | 'edit'; project?: Project } | null
+  openProjectDialog: (options?: { mode?: 'create' | 'edit'; project?: Project }) => void
+  closeProjectDialog: () => void
+
   bootstrap: () => Promise<void>
-  openWorkspace: (workspace: Workspace, sessionFile?: string) => Promise<void>
+  openWorkspace: (workspace: Workspace | undefined, sessionFile?: string) => Promise<void>
   pickWorkspace: () => Promise<void>
   closeWorkspace: () => Promise<void>
   /**
@@ -181,13 +190,13 @@ export interface AppStore {
    * a worktree, the launcher). A project row in the sidebar only expands and
    * collapses, so it never has to ask, and expanding never ends a run.
    */
-  switchProject: (path: string, options?: { allowWhileRunning?: boolean }) => Promise<void>
+  switchProject: (path: string | null, options?: { allowWhileRunning?: boolean }) => Promise<void>
   /**
    * Make the project at `path` the active one without ending a run that is
    * still going: the conversation stays on screen, and the project is opened
    * once the run settles.
    */
-  queueProjectSwitch: (path: string) => Promise<void>
+  queueProjectSwitch: (path: string | null) => Promise<void>
   removeWorkspace: (id: string) => Promise<void>
   refreshSessions: () => Promise<void>
   selectSession: (session: SessionMeta) => Promise<void>
@@ -228,6 +237,7 @@ export interface AppStore {
   /** Run one of the commands the app itself provides. */
   runAppCommand: (name: string) => Promise<void>
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>
+  saveProvider: (input: SaveProviderInput) => Promise<{ provider: ProviderProfile; applied: boolean; applyError?: string }>
   /** Pin a conversation to the top of the sidebar, or unpin it. */
   togglePin: (file: string) => Promise<void>
   dismissError: () => void
@@ -274,6 +284,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   diffSplit: false,
   drawerWidth: 420,
   trustProject: true,
+  permissionMode: 'ask',
   desktopNotifications: true
 }
 
@@ -284,10 +295,11 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null
  * checked from inside the store's own callbacks, and a state field would make
  * every one of those reads depend on the last render.
  */
-let pendingProjectPath: string | undefined
+let pendingProjectPath: string | null | undefined
 
 /** The name a project is shown with, for a folder the user has not opened yet. */
-function projectNameOf(state: AppStore, path: string): string {
+function projectNameOf(state: AppStore, path: string | null): string {
+  if (path === null) return 'Work without a project'
   const known = collectProjects(state.settings.workspaces, state.sessions).find((project) =>
     samePath(project.path, path)
   )
@@ -298,6 +310,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   sessions: [],
   status: { phase: 'stopped' },
+  agentMode: 'default',
   isStreaming: false,
   models: [],
   thinkingLevels: [],
@@ -311,6 +324,35 @@ export const useAppStore = create<AppStore>((set, get) => ({
   uiWidgets: [],
   run: IDLE_RUN,
   transport: 'connected',
+  projectDialog: null,
+
+  openProjectDialog(options) {
+    set({
+      projectDialog: {
+        open: true,
+        mode: options?.mode ?? (options?.project ? 'edit' : 'create'),
+        project: options?.project
+      }
+    })
+  },
+
+  closeProjectDialog() {
+    set({ projectDialog: null })
+  },
+
+  async setAgentMode(mode) {
+    if (get().status.phase !== 'ready') return
+    if (get().isStreaming) {
+      get().showToast('Stop the current run before changing modes', 'warning')
+      return
+    }
+    try {
+      await window.pi.runtime.request('prompt', { message: `/desktop-mode ${mode}` })
+      await get().refreshState()
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
 
   async bootstrap() {
     const [info, settings] = await Promise.all([
@@ -341,7 +383,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
     const target = active ?? settings.workspaces[0]
-    if (target) {
+    if (settings.activeWorkspaceId === null) {
+      await get().openWorkspace(undefined)
+    } else if (target) {
       // The project is reopened so Pi is ready where the user works, but the
       // conversation is not: a start stays a new chat. The last conversation is
       // still remembered for the next one and offered by name on the welcome
@@ -351,11 +395,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async pickWorkspace() {
-    const workspace = await window.pi.workspaces.pick()
-    if (!workspace) return
-    // Picking a folder is an explicit request for a new project: it may
-    // replace the running one, unlike a click that only wanted to look.
-    await get().switchProject(workspace.path, { allowWhileRunning: true })
+    get().openProjectDialog({ mode: 'create' })
   },
 
   async closeWorkspace() {
@@ -369,7 +409,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async switchProject(path, options) {
     const current = get().workspace
-    const same = Boolean(current && samePath(current.path, path))
+    const same = path === null
+      ? !current && get().settings.activeWorkspaceId === null
+      : Boolean(current && samePath(current.path, path))
     // Opening a project replaces the Pi process, and with it the session that
     // is open — a run in it would be killed. Only a switch the user asked for
     // explicitly may do that; anything else waits for the run to settle.
@@ -378,7 +420,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return
     }
     if (same) {
-      if (pendingProjectPath) {
+      if (pendingProjectPath !== undefined) {
         // A queued switch is moot if the same project is opened right now.
         pendingProjectPath = undefined
         set({ pendingProject: undefined })
@@ -387,6 +429,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
     pendingProjectPath = undefined
     set({ pendingProject: undefined })
+    if (path === null) {
+      const settings = await window.pi.settings.patch({ activeWorkspaceId: null })
+      set({ settings })
+      await get().openWorkspace(undefined)
+      return
+    }
     const { workspace, settings } = await window.pi.workspaces.add(path)
     const now = Date.now()
     const workspaces = settings.workspaces.map((item) =>
@@ -419,6 +467,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     pendingProjectPath = undefined
     set({
       workspace,
+      agentMode: 'default',
       items: [],
       activeSessionFile: sessionFile,
       error: undefined,
@@ -441,7 +490,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     const settings = get().settings
     const result = await window.pi.runtime.start({
-      cwd: workspace.path,
+      cwd: workspace?.path ?? '',
       sessionFile,
       model: settings.model,
       thinkingLevel: settings.thinkingLevel
@@ -451,7 +500,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // A start that was superseded by a newer one reports no error, and the
       // newer runtime owns the status.
       if (result.error) {
-        set({ error: result.error, status: { phase: 'error', cwd: workspace.path, error: result.error } })
+        set({ error: result.error, status: { phase: 'error', cwd: workspace?.path, error: result.error } })
       }
       return
     }
@@ -487,30 +536,33 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async selectSession(session) {
     const workspace = get().workspace
-    if (!workspace) return
     // Events that were still waiting for a frame belong to the conversation
     // that is being left behind; painting them into the new one would mix
     // two sessions in one thread.
     drainPending()
     set({ items: [], activeSessionFile: session.file, error: undefined })
     try {
-      if (session.cwd && session.cwd !== workspace.path) {
+      if (!session.cwd && (workspace || get().status.phase !== 'ready')) {
+        const settings = await window.pi.settings.patch({ activeWorkspaceId: null })
+        set({ settings })
+        await get().openWorkspace(undefined, session.file)
+        return
+      }
+      if (session.cwd && (!workspace || !samePath(session.cwd, workspace.path))) {
         // The session belongs to another project: make sure that project is
         // registered, then run Pi there instead of here.
-        const known = get().settings.workspaces.find((item) => item.path === session.cwd)
+        const known = get().settings.workspaces.find((item) => samePath(item.path, session.cwd))
         const target: Workspace = known ?? {
           id: `session-${session.id.slice(0, 8)}`,
           path: session.cwd,
           name: session.cwd.split(/[\\/]/).filter(Boolean).pop() ?? session.cwd,
           lastOpenedAt: Date.now()
         }
-        if (!known) {
-          const settings = await window.pi.settings.patch({
-            workspaces: [target, ...get().settings.workspaces],
-            activeWorkspaceId: target.id
-          })
-          set({ settings })
-        }
+        const settings = await window.pi.settings.patch({
+          ...(known ? {} : { workspaces: [target, ...get().settings.workspaces] }),
+          activeWorkspaceId: target.id
+        })
+        set({ settings })
         await get().openWorkspace(target, session.file)
         return
       }
@@ -564,25 +616,44 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     const session = get().sessions.find((entry) => entry.file === file)
-    const workspacePath = get().workspace?.path ?? ''
-    if (session && session.cwd && !samePath(session.cwd, workspacePath)) {
+    const currentWorkspace = get().workspace
+    const sessionMatchesWorkspace = session
+      ? session.cwd
+        ? Boolean(currentWorkspace && samePath(session.cwd, currentWorkspace.path))
+        : !currentWorkspace
+      : true
+    if (!sessionMatchesWorkspace) {
       get().showToast('Open that project to rename the conversation', 'warning')
       return
     }
 
     const previous = get().activeSessionFile
+    let switched = false
+    let restored = false
     try {
       await window.pi.runtime.request('switch_session', { sessionPath: file })
+      switched = true
       await window.pi.runtime.request('set_session_name', { name: trimmed })
     } catch (error) {
       set({ error: messageOf(error) })
     } finally {
+      if (!switched) {
+        await get().refreshSessions()
+        return
+      }
       if (previous) {
         try {
           await window.pi.runtime.request('switch_session', { sessionPath: previous })
+          restored = true
         } catch {
           /* the previous session may have been removed in the meantime */
         }
+      }
+      if (!restored) {
+        // A fresh runtime has no session to switch back to. Reopen the original
+        // workspace so Pi does not remain attached to the temporary target.
+        await get().openWorkspace(currentWorkspace)
+        return
       }
       await get().refreshState()
       await get().refreshSessions()
@@ -598,7 +669,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         return
       }
       // Pi reports a bare file name relative to the session's working directory.
-      const target = resolveAgainst(get().workspace?.path, raw)
+      const target = resolveAgainst(get().workspace?.path ?? get().status.cwd, raw)
       await window.pi.shell.openPath(target)
       get().showToast(`Exported ${basename(target)}`)
     } catch (error) {
@@ -1014,7 +1085,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const data = await window.pi.runtime.request<{ commands?: PiCommand[] }>('get_commands')
       // The app's own commands come first — they are few, and they are the
       // ones the desktop app is for.
-      set({ commands: [...APP_COMMANDS, ...(data?.commands ?? [])] })
+      set({ commands: [...APP_COMMANDS, ...(data?.commands ?? []).filter((command) => command.name !== 'desktop-mode')] })
     } catch {
       set({ commands: APP_COMMANDS })
     }
@@ -1094,6 +1165,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const settings = await window.pi.settings.patch(patch)
     set({ settings })
     applyAppearance(settings, get().info?.forcedTheme)
+  },
+
+  async saveProvider(input) {
+    const result = await window.pi.providers.save(input)
+    set({ settings: result.settings })
+    if (get().status.phase === 'ready') await get().refreshState()
+    return result
   },
 
   dismissError() {
@@ -1482,16 +1560,20 @@ export function applyAppearance(
   if (settings.fontFamily && settings.fontFamily !== 'system') {
     const fontMap: Record<string, string> = {
       sans: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-      chinese: "'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif",
+      chinese: "'PingFang SC', '苹方', '苹方-简', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif",
       mono: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace",
       serif: "'Newsreader', 'Georgia', 'Songti SC', 'SimSun', serif"
     }
     const mapped = fontMap[settings.fontFamily]
+    // The installed copy is registered as 苹方; keep both names so either one resolves.
+    const pingfang = `"PingFang SC", "苹方", "苹方-简", sans-serif`
     const fontVal =
       mapped ??
-      (settings.fontFamily.includes(',') || settings.fontFamily.includes('"') || settings.fontFamily.includes("'")
-        ? settings.fontFamily
-        : `"${settings.fontFamily}", sans-serif`)
+      (settings.fontFamily === 'PingFang SC'
+        ? pingfang
+        : settings.fontFamily.includes(',') || settings.fontFamily.includes('"') || settings.fontFamily.includes("'")
+          ? settings.fontFamily
+          : `"${settings.fontFamily}", sans-serif`)
     root.style.setProperty('--font-ui', fontVal)
     root.style.setProperty('--font-sidebar', fontVal)
   } else {
@@ -1665,7 +1747,7 @@ function handleEvent(set: SetState, get: GetState, event: PiEvent): void {
       void get().refreshForkTargets()
       // A project the user asked for while the agent was working is opened
       // now that nothing is running in the current one.
-      if (pendingProjectPath) {
+      if (pendingProjectPath !== undefined) {
         const target = pendingProjectPath
         pendingProjectPath = undefined
         set({ pendingProject: undefined })
@@ -1831,6 +1913,11 @@ function handleExtensionUi(
     case 'setStatus': {
       const key = request.statusKey
       if (!key) break
+      if (key === 'pi-desktop-mode') {
+        const mode = request.statusText
+        if (mode === 'default' || mode === 'goal' || mode === 'plan') set({ agentMode: mode })
+        break
+      }
       set((state) => ({
         uiStatuses: request.statusText
           ? [...state.uiStatuses.filter((entry) => entry.key !== key), { key, text: request.statusText! }]

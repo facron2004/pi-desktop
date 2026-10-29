@@ -29,6 +29,8 @@ import { TerminalPanel, type TerminalRunRequest } from './components/TerminalPan
 import { PlanStrip } from './components/PlanStrip'
 import { SessionTreeDialog } from './components/SessionTreeDialog'
 import { McpDialog } from './components/McpDialog'
+import { EditProjectDialog } from './components/EditProjectDialog'
+import { ConfirmDialog } from './components/ConfirmDialog'
 import { Popover } from './components/Popover'
 import { useT } from './lib/i18n'
 
@@ -39,7 +41,9 @@ export default function App() {
   const isStreaming = useAppStore((state) => state.isStreaming)
   const status = useAppStore((state) => state.status)
   const sessionName = useAppStore((state) => state.piState?.sessionName)
-  const pickWorkspace = useAppStore((state) => state.pickWorkspace)
+  const projectDialog = useAppStore((state) => state.projectDialog)
+  const openProjectDialog = useAppStore((state) => state.openProjectDialog)
+  const closeProjectDialog = useAppStore((state) => state.closeProjectDialog)
   const newChat = useAppStore((state) => state.newChat)
   const openWorkspace = useAppStore((state) => state.openWorkspace)
   const renameSession = useAppStore((state) => state.renameSession)
@@ -71,6 +75,11 @@ export default function App() {
   const [launcherOpen, setLauncherOpen] = useState(false)
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
+  /**
+   * A conversation the reader asked to open while a run is going.
+   * The click itself must never interrupt the agent.
+   */
+  const [switchRequest, setSwitchRequest] = useState<{ file: string; title: string } | null>(null)
   // A command headed for the drawer. `seq` makes the same command twice two
   // requests instead of one the drawer already ran.
   const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
@@ -368,13 +377,7 @@ export default function App() {
     const onConfirmSwitchSession = (event: Event) => {
       const detail = (event as CustomEvent<{ file?: string; title?: string }>).detail
       if (!detail?.file) return
-      const targetSession = sessions.find((entry) => entry.file === detail.file)
-      if (targetSession) {
-        void (async () => {
-          await stop()
-          await selectSession(targetSession)
-        })()
-      }
+      setSwitchRequest({ file: detail.file, title: detail.title ?? '' })
     }
     window.addEventListener('pi:confirm-switch-session', onConfirmSwitchSession)
     return () => {
@@ -436,7 +439,7 @@ export default function App() {
         sidebarOpen={sidebarOpen}
         onToggleSidebar={toggleSidebar}
         onNewChat={() => void newChat()}
-        onOpenProject={() => void pickWorkspace()}
+        onOpenProject={() => openProjectDialog({ mode: 'create' })}
         onOpenChanges={openChanges}
         onOpenFiles={openFiles}
         onCompact={() => void compact()}
@@ -463,7 +466,7 @@ export default function App() {
       <main className="main">
         <div className="titlebar drag-region">
           <div className="titlebar__identity">
-            {renaming ? (
+            {!hasItems ? null : renaming ? (
               <input
                 className="titlebar__rename no-drag"
                 value={draft}
@@ -584,7 +587,7 @@ export default function App() {
             conversation actually has to read in. */}
         <div className="main__body">
           {!hasItems ? (
-            <Welcome onPick={() => void pickWorkspace()}>
+            <Welcome onPick={() => openProjectDialog({ mode: 'create' })}>
               <Composer />
             </Welcome>
           ) : (
@@ -720,6 +723,33 @@ export default function App() {
         <SessionTreeDialog onClose={() => setSessionTreeOpen(false)} />
       ) : null}
       {mcpOpen ? <McpDialog onClose={() => setMcpOpen(false)} /> : null}
+      {projectDialog?.open ? (
+        <EditProjectDialog
+          mode={projectDialog.mode}
+          project={projectDialog.project}
+          onClose={closeProjectDialog}
+        />
+      ) : null}
+      {switchRequest ? (
+        <ConfirmDialog
+          title={t('Stop the current run?')}
+          body={t(
+            'Pi is working on this conversation. Opening “{title}” means stopping the current run.'
+          ).replace('{title}', switchRequest.title)}
+          confirmLabel={t('Stop and open')}
+          tone="danger"
+          onCancel={() => setSwitchRequest(null)}
+          onConfirm={() => {
+            const target = switchRequest
+            setSwitchRequest(null)
+            void (async () => {
+              await stop()
+              const session = sessions.find((entry) => entry.file === target.file)
+              if (session) await selectSession(session)
+            })()
+          }}
+        />
+      ) : null}
       <ExtensionDialog />
     </div>
   )

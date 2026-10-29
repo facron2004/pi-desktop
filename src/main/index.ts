@@ -181,7 +181,8 @@ app.whenReady().then(() => {
 
   runtime = new PiRuntime({
     customPiPath: settings.get().piPath,
-    trustProject: settings.get().trustProject
+    trustProject: settings.get().trustProject,
+    getPermissionMode: () => settings?.get().permissionMode ?? 'ask'
   })
 
   mainWindow = createWindow()

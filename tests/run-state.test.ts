@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { PiEvent } from '@shared/types'
+import type { AppSettings, PiEvent, RuntimeStartOptions } from '@shared/types'
 
 /* ------------------------------------------------------------------ *
  * A stand-in for the preload bridge.
@@ -53,6 +53,7 @@ const bridge = {
   },
   settings: { get: () => ok({ workspaces: [] }), patch: (p: unknown) => ok(p) },
   runtime: {
+    start: (_options: RuntimeStartOptions) => ok({ ok: true }),
     onEvent: (handler: Handler) => {
       emit = handler
       return () => {}
@@ -215,6 +216,114 @@ test('P06 — a search hit never stops or switches a running conversation', asyn
     assert.equal(useAppStore.getState().activeSessionFile, 'active.jsonl')
     assert.equal(useAppStore.getState().pendingJump, undefined)
     assert.equal(warning, 'Stop the current run to open another conversation')
+  } finally {
+    useAppStore.setState(previous)
+  }
+})
+
+test('project selection supports starting, restoring and reopening chats without a project', async () => {
+  const previous = useAppStore.getState()
+  const originalBridge = { get: bridge.settings.get, patch: bridge.settings.patch, start: bridge.runtime.start }
+  const workspace = { id: 'project', path: 'C:/project', name: 'Project', lastOpenedAt: 1 }
+  let saved: AppSettings = { ...previous.settings, workspaces: [workspace], activeWorkspaceId: workspace.id }
+  const starts: RuntimeStartOptions[] = []
+  bridge.settings.get = () => ok(saved)
+  bridge.settings.patch = (patch: unknown) => {
+    saved = { ...saved, ...patch as Partial<AppSettings> }
+    return ok(saved)
+  }
+  bridge.runtime.start = (options) => {
+    starts.push(options)
+    return ok({ ok: true })
+  }
+  useAppStore.setState({ workspace, settings: saved, isStreaming: false })
+  try {
+    await useAppStore.getState().switchProject(null, { allowWhileRunning: true })
+    assert.equal(useAppStore.getState().workspace, undefined)
+    assert.equal(saved.activeWorkspaceId, null, 'the no-project choice must survive serialization')
+    assert.deepEqual(saved.workspaces, [workspace], 'existing projects must remain registered')
+    assert.equal(starts.at(-1)?.cwd, '', 'no-project work must not inherit the previous project')
+
+    useAppStore.setState({ workspace, settings: previous.settings })
+    await useAppStore.getState().bootstrap()
+    assert.equal(useAppStore.getState().workspace, undefined, 'startup must respect the no-project choice')
+    assert.equal(starts.at(-1)?.cwd, '')
+
+    useAppStore.setState({ workspace, settings: { ...saved, activeWorkspaceId: workspace.id } })
+    await useAppStore.getState().selectSession({
+      id: 'chat', file: 'chat.jsonl', cwd: '', preview: 'General chat', updatedAt: 1, messageCount: 1
+    })
+    assert.equal(useAppStore.getState().workspace, undefined)
+    assert.equal(starts.at(-1)?.sessionFile, 'chat.jsonl')
+    assert.equal(saved.activeWorkspaceId, null)
+
+    await useAppStore.getState().selectSession({
+      id: 'project-chat', file: 'project.jsonl', cwd: workspace.path,
+      preview: 'Project chat', updatedAt: 1, messageCount: 1
+    })
+    assert.equal(useAppStore.getState().workspace?.id, workspace.id)
+    assert.equal(saved.activeWorkspaceId, workspace.id, 'returning to a project restores its selection')
+    assert.equal(starts.at(-1)?.cwd, workspace.path)
+  } finally {
+    bridge.settings.get = originalBridge.get
+    bridge.settings.patch = originalBridge.patch
+    bridge.runtime.start = originalBridge.start
+    useAppStore.setState(previous)
+  }
+})
+
+test('renaming a projectless conversation never switches an active project runtime', async () => {
+  const previous = useAppStore.getState()
+  const originalRequest = bridge.runtime.request
+  const workspace = { id: 'project', path: 'C:/project', name: 'Project', lastOpenedAt: 1 }
+  const requests: string[] = []
+  let warning = ''
+  bridge.runtime.request = (command: string) => {
+    requests.push(command)
+    return ok({})
+  }
+  useAppStore.setState({
+    workspace,
+    activeSessionFile: undefined,
+    status: { phase: 'ready', cwd: workspace.path },
+    sessions: [{
+      id: 'chat',
+      file: 'chat.jsonl',
+      cwd: '',
+      preview: 'General chat',
+      updatedAt: 1,
+      messageCount: 1
+    }],
+    showToast: (message) => { warning = message }
+  })
+  try {
+    await useAppStore.getState().renameSessionFile('chat.jsonl', 'Renamed chat')
+    assert.deepEqual(requests, [], 'a cross-workspace rename must not switch Pi sessions')
+    assert.equal(warning, 'Open that project to rename the conversation')
+    assert.equal(useAppStore.getState().activeSessionFile, undefined)
+    assert.equal(useAppStore.getState().workspace?.path, workspace.path)
+  } finally {
+    bridge.runtime.request = originalRequest
+    useAppStore.setState(previous)
+  }
+})
+
+test('a queued no-project selection waits until the current run settles', async () => {
+  const previous = useAppStore.getState()
+  const selections: (string | null)[] = []
+  const workspace = { id: 'project', path: 'C:/project', name: 'Project', lastOpenedAt: 1 }
+  useAppStore.setState({ workspace, isStreaming: true, showToast: () => {} })
+  try {
+    await useAppStore.getState().switchProject(null)
+    assert.equal(useAppStore.getState().workspace, workspace)
+    assert.equal(useAppStore.getState().pendingProject?.path, null)
+    useAppStore.setState({ switchProject: async (path) => { selections.push(path) } })
+
+    emit({ type: 'agent_end' })
+    assert.deepEqual(selections, [], 'agent_end must not end the active work')
+    emit({ type: 'agent_settled', aborted: false })
+    assert.deepEqual(selections, [null])
+    assert.equal(useAppStore.getState().pendingProject, undefined)
   } finally {
     useAppStore.setState(previous)
   }

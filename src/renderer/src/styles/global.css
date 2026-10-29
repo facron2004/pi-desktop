@@ -1,3 +1,9 @@
+/* Some standalone copies expose Bold only by full face name, not family name. */
+@font-face {
+  font-family: 'PingFang SC Bold';
+  src: local('PingFang SC Bold'), local('PingFangSC-Bold'), local('苹方 粗体');
+}
+
 /* ------------------------------------------------------------------ *
  * App shell
  * ------------------------------------------------------------------ */
@@ -560,11 +566,9 @@ transition: background var(--dur-fast) var(--ease);
   display: block;
   font-size: var(--text-sm);
   font-weight: 400;
-  line-height: 20px;
+  line-height: 1.35;
   color: var(--sidebar-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 /* A project row is a folder that opens and closes its list. The caret says so
@@ -602,6 +606,9 @@ transition: background var(--dur-fast) var(--ease);
   display: flex;
   align-items: center;
   gap: 2px;
+  padding-left: var(--sp-1);
+  background: var(--sidebar-hover);
+  border-radius: var(--r-sm);
   visibility: hidden;
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);
@@ -1856,24 +1863,14 @@ transition: background var(--dur-fast) var(--ease);
 .user-msg__bubble {
   min-width: 0;
   max-width: 100%;
-  padding: 10px 16px;
-  border-radius: 18px 18px 4px 18px;
-  background: var(--surface-raised);
+  padding: var(--sp-3) var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
   word-break: break-word;
+  overflow-wrap: anywhere;
   color: var(--text);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-
-:root[data-theme='light'] .user-msg__bubble {
-  background: #f4f4f5;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  color: #18181b;
-}
-
-:root[data-theme='dark'] .user-msg__bubble {
-  background: #27272a;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: #f4f4f5;
+  box-shadow: var(--shadow-sm);
 }
 
 .user-msg__bubble .md {
@@ -3152,7 +3149,16 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   opacity: 0.9;
 }
 
-.project-chip__name,
+.project-chip__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 500;
+  max-width: min(40ch, 48vw);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .git-chip__branch {
   font-weight: 500;
   max-width: 22ch;
@@ -3845,6 +3851,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   gap: var(--sp-2);
   flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   height: 24px;
   padding: 0 var(--sp-2);
   border-radius: var(--r-sm);
@@ -3866,9 +3873,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .session-bar__text {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 20ch;
+  max-width: min(32ch, 50vw);
 }
 
 .session-bar__changes {
@@ -3995,12 +4004,36 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .welcome__inner {
   width: 100%;
   max-width: var(--content-w);
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 2px;
   margin: 0 auto;
   text-align: center;
+}
+
+.welcome__hero {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-5);
+  padding: var(--sp-7) 0;
+}
+
+.welcome__greeting {
+  max-width: 100%;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-2xl);
+  font-weight: 500;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
 }
 
 .welcome .composer-wrap {

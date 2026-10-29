@@ -61,3 +61,10 @@ test('sortProjects prioritises active project regardless of path separator diffe
   const sorted = sortProjects(projects, 'e:/Program/Pi Desktop/')
   assert.equal(sorted[0].name, 'Pi Desktop')
 })
+
+test('chats without a project do not create a project entry', () => {
+  const sessions = [
+    { id: 'chat', file: 'chat.jsonl', cwd: '', preview: 'General chat', updatedAt: 1, messageCount: 1 }
+  ]
+  assert.deepEqual(collectProjects([], sessions), [])
+})

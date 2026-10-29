@@ -77,7 +77,7 @@ export interface LauncherShell {
 export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const runAppCommand = useAppStore((state) => state.runAppCommand)
   const switchProject = useAppStore((state) => state.switchProject)
-  const pickWorkspace = useAppStore((state) => state.pickWorkspace)
+  const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const cycleModel = useAppStore((state) => state.cycleModel)
   const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
   const togglePin = useAppStore((state) => state.togglePin)
@@ -235,7 +235,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       title: 'Open another project…',
       group: 'Project',
       icon: FolderOpen,
-      run: () => pickWorkspace()
+      run: () => openProjectDialog({ mode: 'create' })
     },
     {
       id: 'sidebar',

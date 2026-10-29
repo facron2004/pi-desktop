@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { ProviderConnection, SaveProviderInput } from '@shared/providers'
 import type {
   AggregatedUsageStats,
   AppInfo,
@@ -38,6 +39,12 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
 }
 
 const bridge: PiDesktopBridge = {
+  providers: {
+    list: () => ipcRenderer.invoke('providers:list'),
+    models: (connection: ProviderConnection) => ipcRenderer.invoke('providers:models', connection),
+    probe: (connection: ProviderConnection, modelId?: string) => ipcRenderer.invoke('providers:probe', connection, modelId),
+    save: (input: SaveProviderInput) => ipcRenderer.invoke('providers:save', input)
+  },
   app: {
     info: (): Promise<AppInfo> => ipcRenderer.invoke('app:info'),
     setTheme: (theme: 'dark' | 'light'): Promise<void> => ipcRenderer.invoke('app:setTheme', theme),
@@ -48,7 +55,9 @@ const bridge: PiDesktopBridge = {
   },
   dialog: {
     pickDirectory: (defaultPath?: string): Promise<string | null> =>
-      ipcRenderer.invoke('dialog:pickDirectory', defaultPath)
+      ipcRenderer.invoke('dialog:pickDirectory', defaultPath),
+    pickPaths: (kind: 'files' | 'folders', defaultPath?: string): Promise<string[]> =>
+      ipcRenderer.invoke('dialog:pickPaths', kind, defaultPath)
   },
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),

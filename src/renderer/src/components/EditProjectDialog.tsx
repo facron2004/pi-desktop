@@ -8,30 +8,41 @@ import { basename, samePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import '../styles/project-edit.css'
 
-interface EditProjectDialogProps {
-  project: Project
+export interface EditProjectDialogProps {
+  mode?: 'create' | 'edit'
+  project?: Project | null
   onClose: () => void
 }
 
-export function EditProjectDialog({ project, onClose }: EditProjectDialogProps) {
+export function EditProjectDialog({
+  mode = 'edit',
+  project,
+  onClose
+}: EditProjectDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocus(dialogRef, onClose)
 
   const t = useT()
   const showToast = useAppStore((state) => state.showToast)
   const updateSettings = useAppStore((state) => state.updateSettings)
+  const switchProject = useAppStore((state) => state.switchProject)
   const workspace = useAppStore((state) => state.workspace)
 
-  const [name, setName] = useState(project.name)
+  const isCreate = mode === 'create' || !project
+
+  const [name, setName] = useState(project?.name ?? '')
   const [folders, setFolders] = useState<string[]>(() => {
-    if (project.folders && project.folders.length > 0) {
+    if (project?.folders && project.folders.length > 0) {
       return [...project.folders]
     }
-    return [project.path]
+    if (project?.path) {
+      return [project.path]
+    }
+    return []
   })
 
   const handleAddFolder = async () => {
-    const defaultPath = folders[0] ?? project.path
+    const defaultPath = folders[0] ?? project?.path
     const selected = await window.pi.dialog.pickDirectory(defaultPath)
     if (!selected) return
 
@@ -41,6 +52,10 @@ export function EditProjectDialog({ project, onClose }: EditProjectDialogProps) 
     }
 
     setFolders((prev) => [...prev, selected])
+
+    if (!name.trim()) {
+      setName(basename(selected))
+    }
   }
 
   const handleRemoveFolder = (targetFolder: string) => {
@@ -62,31 +77,33 @@ export function EditProjectDialog({ project, onClose }: EditProjectDialogProps) 
 
     const trimmedName = name.trim() || basename(folders[0]) || 'Project'
     const workspaces = (await window.pi.settings.get()).workspaces
-    const existingIndex = workspaces.findIndex(
-      (w) => w.id === project.id || samePath(w.path, project.path)
-    )
+    const existingIndex = project
+      ? workspaces.findIndex((w) => w.id === project.id || samePath(w.path, project.path))
+      : workspaces.findIndex((w) => samePath(w.path, folders[0]))
 
     let updatedWorkspaces: Workspace[]
+    let targetWorkspace: Workspace
+
     if (existingIndex >= 0) {
+      targetWorkspace = {
+        ...workspaces[existingIndex],
+        name: trimmedName,
+        path: folders[0],
+        folders,
+        lastOpenedAt: Date.now()
+      }
       updatedWorkspaces = workspaces.map((w, idx) =>
-        idx === existingIndex
-          ? {
-              ...w,
-              name: trimmedName,
-              path: folders[0],
-              folders
-            }
-          : w
+        idx === existingIndex ? targetWorkspace : w
       )
     } else {
-      const newWs: Workspace = {
+      targetWorkspace = {
         id: crypto.randomUUID(),
         name: trimmedName,
         path: folders[0],
         folders,
         lastOpenedAt: Date.now()
       }
-      updatedWorkspaces = [newWs, ...workspaces]
+      updatedWorkspaces = [targetWorkspace, ...workspaces]
     }
 
     await updateSettings({ workspaces: updatedWorkspaces })
@@ -94,6 +111,7 @@ export function EditProjectDialog({ project, onClose }: EditProjectDialogProps) 
     // Update active workspace in store if this project is currently active
     if (
       workspace &&
+      project &&
       (workspace.id === project.id || samePath(workspace.path, project.path))
     ) {
       useAppStore.setState({
@@ -106,7 +124,13 @@ export function EditProjectDialog({ project, onClose }: EditProjectDialogProps) 
       })
     }
 
-    showToast(t('Project updated'))
+    if (isCreate) {
+      await switchProject(targetWorkspace.path, { allowWhileRunning: true })
+      showToast(t('Project created'))
+    } else {
+      showToast(t('Project updated'))
+    }
+
     onClose()
   }
 
@@ -123,7 +147,7 @@ export function EditProjectDialog({ project, onClose }: EditProjectDialogProps) 
       >
         <div className="modal__head">
           <h2 id="project-edit-title" className="modal__title">
-            {t('Edit project')}
+            {isCreate ? t('New project') : t('Edit project')}
           </h2>
           <button
             type="button"
@@ -169,8 +193,20 @@ export function EditProjectDialog({ project, onClose }: EditProjectDialogProps) 
             </div>
 
             {folders.length === 0 ? (
-              <div className="project-edit__empty">
-                {t('No folders in this project. Click "+ Add folder" above.')}
+              <div
+                className="project-edit__empty"
+                role="button"
+                tabIndex={0}
+                onClick={() => void handleAddFolder()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    void handleAddFolder()
+                  }
+                }}
+              >
+                <Plus size={14} />
+                <span>{t('Click to add project folder')}</span>
               </div>
             ) : (
               <div className="project-edit__folder-list">
@@ -178,23 +214,19 @@ export function EditProjectDialog({ project, onClose }: EditProjectDialogProps) 
                   const isPrimary = index === 0
                   return (
                     <div className="project-edit__folder-item" key={folderPath}>
-                      <div className="project-edit__folder-info">
-                        <Folder size={16} className="project-edit__folder-icon" />
-                        <div className="project-edit__folder-texts">
-                          <div className="project-edit__folder-top">
-                            <span className="project-edit__folder-name">
-                              {basename(folderPath)}
-                            </span>
-                            {isPrimary ? (
-                              <span className="project-edit__primary-chip">
-                                {t('Primary')}
-                              </span>
-                            ) : null}
-                          </div>
-                          <span className="project-edit__folder-path" title={folderPath}>
-                            {folderPath}
+                      <div className="project-edit__folder-info" title={folderPath}>
+                        <Folder size={15} className="project-edit__folder-icon" />
+                        <span className="project-edit__folder-name">
+                          {basename(folderPath)}
+                        </span>
+                        <span className="project-edit__folder-path">
+                          {folderPath}
+                        </span>
+                        {isPrimary ? (
+                          <span className="project-edit__primary-chip">
+                            {t('Primary')}
                           </span>
-                        </div>
+                        ) : null}
                       </div>
 
                       <div className="project-edit__folder-actions">
@@ -236,7 +268,7 @@ export function EditProjectDialog({ project, onClose }: EditProjectDialogProps) 
             onClick={() => void handleSave()}
             disabled={folders.length === 0}
           >
-            {t('Save')}
+            {isCreate ? t('Create') : t('Save')}
           </button>
         </div>
       </div>

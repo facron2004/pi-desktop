@@ -2,6 +2,7 @@
  * Shared type contracts between the Electron main process, the preload bridge
  * and the renderer. Everything crossing the IPC boundary is described here.
  */
+import type { ProviderConnection, ProviderModel, ProviderProbeResult, ProviderProfile, SaveProviderInput } from './providers'
 
 /* ------------------------------------------------------------------ *
  * Pi RPC protocol
@@ -195,6 +196,8 @@ export interface ExtensionUiRequest {
   method: ExtensionUiMethod
   title?: string
   message?: string
+  /** Added by main for tool calls awaiting the user's approval. */
+  approval?: ToolApproval
   placeholder?: string
   prefill?: string
   options?: string[]
@@ -244,7 +247,7 @@ export interface SessionMeta {
   id: string
   /** Absolute path of the .jsonl session file. */
   file: string
-  /** Working directory the session belongs to. */
+  /** Working directory the session belongs to; empty for chats without a project. */
   cwd: string
   /** User-assigned session name, when present. */
   name?: string
@@ -515,10 +518,18 @@ export interface GitFileDiff {
 
 export type ThemePreference = 'dark' | 'light' | 'system'
 export type AppLanguage = 'en' | 'zh-CN'
+export type PermissionMode = 'ask' | 'auto' | 'full'
+export type AgentMode = 'default' | 'goal' | 'plan'
+
+export interface ToolApproval {
+  toolName: string
+  input: Record<string, unknown>
+}
 
 export interface AppSettings {
   workspaces: Workspace[]
-  activeWorkspaceId?: string
+  /** Null explicitly selects working without a project. */
+  activeWorkspaceId?: string | null
   /** Session files the user pinned to the top of the sidebar. */
   pinnedSessions?: string[]
   /** The conversation that was open in a project, by project path. */
@@ -530,6 +541,8 @@ export interface AppSettings {
   thinkingLevel?: string
   /** User instructions appended to Pi's system prompt when the runtime starts. */
   customInstructions?: string
+  /** Approval policy for agent tool calls, independent of project trust. */
+  permissionMode?: PermissionMode
   theme: ThemePreference
   themePreset?: string
   themeTone?: string
@@ -625,6 +638,12 @@ export interface UpgradeResult {
  * ------------------------------------------------------------------ */
 
 export interface PiDesktopBridge {
+  providers: {
+    list(): Promise<ProviderProfile[]>
+    models(connection: ProviderConnection): Promise<ProviderModel[]>
+    probe(connection: ProviderConnection, modelId?: string): Promise<ProviderProbeResult>
+    save(input: SaveProviderInput): Promise<{ provider: ProviderProfile; settings: AppSettings; applied: boolean; applyError?: string }>
+  }
   app: {
     info(): Promise<AppInfo>
     /** Sync the native window controls with the current theme. */
@@ -640,6 +659,7 @@ export interface PiDesktopBridge {
   }
   dialog: {
     pickDirectory(defaultPath?: string): Promise<string | null>
+    pickPaths(kind: 'files' | 'folders', defaultPath?: string): Promise<string[]>
   }
   settings: {
     get(): Promise<AppSettings>
@@ -786,6 +806,7 @@ export interface TextSearchHit {
 }
 
 export interface RuntimeStartOptions {
+  /** Empty uses the app's working directory for chats without a project. */
   cwd: string
   /** Resume a specific session file instead of starting a new one. */
   sessionFile?: string

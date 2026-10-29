@@ -1,0 +1,68 @@
+.composer__add-popover .popover__item {
+  min-height: var(--ctl-md);
+}
+
+.composer__add-popover .popover__item-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.composer__add-sep {
+  height: 1px;
+  margin: var(--sp-1) var(--sp-2);
+  background: var(--border-subtle);
+}
+
+.composer__add-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  margin-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.composer__add-head .popover__label {
+  padding: 0;
+}
+
+.composer__add-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.composer__add-popover .composer__add-command {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  white-space: normal;
+}
+
+.composer__add-command-description,
+.composer__add-empty {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.composer__add-empty {
+  padding: var(--sp-3);
+}
+
+.composer__mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  height: var(--ctl-sm);
+  border-radius: var(--r-sm);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.composer__mode:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}

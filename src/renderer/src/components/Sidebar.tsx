@@ -23,7 +23,6 @@ import { samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
-import { EditProjectDialog } from './EditProjectDialog'
 import { Popover } from './Popover'
 import { PiLogo } from './PiLogo'
 import { useT } from '../lib/i18n'
@@ -68,10 +67,9 @@ export function Sidebar({
   const status = useAppStore((state) => state.status)
   const isStreaming = useAppStore((state) => state.isStreaming)
   const settings = useAppStore((state) => state.settings)
-  const pickWorkspace = useAppStore((state) => state.pickWorkspace)
+  const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const pendingProject = useAppStore((state) => state.pendingProject)
   const selectSession = useAppStore((state) => state.selectSession)
-  const stop = useAppStore((state) => state.stop)
   const newChat = useAppStore((state) => state.newChat)
   const removeWorkspace = useAppStore((state) => state.removeWorkspace)
   const renameSessionFile = useAppStore((state) => state.renameSessionFile)
@@ -93,7 +91,6 @@ export function Sidebar({
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
   const [projectDraft, setProjectDraft] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
-  const [editingProject, setEditingProject] = useState<Project | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const [recentsOpen, setRecentsOpen] = useState(false)
   const [recentIndex, setRecentIndex] = useState(-1)
@@ -279,6 +276,11 @@ export function Sidebar({
     [sessions, pinned, needle]
   )
 
+  const projectlessSessions = useMemo(
+    () => sessions.filter((session) => !session.cwd && !pinned.has(session.file) && matches(session, needle)),
+    [sessions, pinned, needle]
+  )
+
   const openProject = async (project: Project) => {
     // A project row is a folder: it opens and closes the list of its
     // conversations. It never changes what Pi is running, so a conversation
@@ -315,11 +317,14 @@ export function Sidebar({
         onSelect={(file) => {
           if (renaming === file) return
           if (file === activeSessionFile) return
+          // Opening another conversation replaces the one Pi is running in.
+          // Stopping is the user's decision, not a side effect of a click.
           if (isStreaming) {
-            void (async () => {
-              await stop()
-              await selectSession(session)
-            })()
+            window.dispatchEvent(
+              new CustomEvent('pi:confirm-switch-session', {
+                detail: { file, title: session.name || session.preview || t('Untitled session') }
+              })
+            )
             return
           }
           void selectSession(session)
@@ -354,7 +359,7 @@ export function Sidebar({
   const renderContentHits = (items: SessionSearchHit[]) =>
     items.map((hit) => {
       const parts = snippetParts(hit)
-      const project = projectNameForHit(hit)
+      const project = hit.cwd ? projectNameForHit(hit) : t('Chats without a project')
       return (
         <div
           key={`${hit.file}:${hit.messageIndex}`}
@@ -587,13 +592,22 @@ export function Sidebar({
           </div>
         ) : null}
 
+        {projectlessSessions.length > 0 ? (
+          <div className="sidebar__section">
+            <div className="sidebar__section-head">
+              <span>{t('Chats without a project')}</span>
+            </div>
+            <div className="session-list">{renderSessions(projectlessSessions)}</div>
+          </div>
+        ) : null}
+
         <div className="sidebar__section sidebar__projects">
           <div className="sidebar__section-head">
             <span>{t('Projects')}</span>
             <button
-              aria-label={t('Open a folder')}
-              title={t('Open a folder')}
-              onClick={() => void pickWorkspace()}
+              aria-label={t('New project')}
+              title={t('New project')}
+              onClick={() => openProjectDialog({ mode: 'create' })}
             >
               <Plus size={15} strokeWidth={1.5} />
             </button>
@@ -621,7 +635,7 @@ export function Sidebar({
                     data-active={active}
                     data-expanded={expanded}
                     data-pending={
-                      pendingProject
+                      pendingProject?.path != null
                         ? samePath(pendingProject.path, project.path)
                         : undefined
                     }
@@ -747,7 +761,7 @@ export function Sidebar({
                                 role="menuitem"
                                 onClick={() => {
                                   close()
-                                  setEditingProject(project)
+                                  openProjectDialog({ mode: 'edit', project })
                                 }}
                               >
                                 <FolderEdit size={13} />
@@ -871,13 +885,6 @@ export function Sidebar({
             setPendingDelete(null)
             void deleteSession(target.file)
           }}
-        />
-      ) : null}
-
-      {editingProject ? (
-        <EditProjectDialog
-          project={editingProject}
-          onClose={() => setEditingProject(null)}
         />
       ) : null}
     </aside>

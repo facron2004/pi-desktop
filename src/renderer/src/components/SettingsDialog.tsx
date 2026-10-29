@@ -12,7 +12,6 @@ import {
   UserRound,
   X
 } from 'lucide-react'
-import type { AuthStatus } from '@shared/types'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
@@ -20,13 +19,13 @@ import {
   AboutSettings,
   AppearanceSettings,
   GeneralSettings,
-  ModelsSettings,
   PanelsSettings,
   PersonalizationSettings,
   PluginsSettings,
   ProjectSafetySettings,
   UsageSettings
 } from './SettingsSections'
+import { ModelsSettings } from './models/ModelsSettings'
 
 export type SettingsPage =
   | 'general'
@@ -59,84 +58,37 @@ export function SettingsDialog({
   initialPage?: SettingsPage
 }) {
   const settings = useAppStore((state) => state.settings)
-  const models = useAppStore((state) => state.models)
   const updateSettings = useAppStore((state) => state.updateSettings)
   const showToast = useAppStore((state) => state.showToast)
-  const pickWorkspace = useAppStore((state) => state.pickWorkspace)
   const t = useT()
   const dialogRef = useRef<HTMLDivElement>(null)
   useDialogFocus(dialogRef, onClose)
 
   const [page, setPage] = useState<SettingsPage>(initialPage)
-  const [piPath, setPiPath] = useState(settings.piPath ?? '')
-  const [provider, setProvider] = useState(settings.provider ?? '')
-  const [defaultModel, setDefaultModel] = useState(settings.model ?? '')
-  const [defaultThinking, setDefaultThinking] = useState(settings.thinkingLevel ?? '')
   const [customInstructions, setCustomInstructions] = useState(settings.customInstructions ?? '')
-  const [auth, setAuth] = useState<AuthStatus | null>(null)
-  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     setPage(initialPage)
   }, [initialPage])
 
   useEffect(() => {
-    setPiPath(settings.piPath ?? '')
-    setProvider(settings.provider ?? '')
-    setDefaultModel(settings.model ?? '')
-    setDefaultThinking(settings.thinkingLevel ?? '')
     setCustomInstructions(settings.customInstructions ?? '')
-  }, [settings.piPath, settings.provider, settings.model, settings.thinkingLevel, settings.customInstructions])
+  }, [settings.customInstructions])
 
-  const selectedModel = models.find(
-    (model) => defaultModel === model.id || defaultModel === `${model.provider}/${model.id}`
-  )
-  const savedModel = models.find(
-    (model) => settings.model === model.id || settings.model === `${model.provider}/${model.id}`
-  )
-  const modelValue = selectedModel
-    ? `${selectedModel.provider}/${selectedModel.id}`
-    : defaultModel.trim() || undefined
-  const savedModelValue = savedModel
-    ? `${savedModel.provider}/${savedModel.id}`
-    : settings.model?.trim() || undefined
   const hasDraftChanges =
-    (piPath.trim() || undefined) !== (settings.piPath?.trim() || undefined) ||
-    (provider.trim() || undefined) !== (settings.provider?.trim() || undefined) ||
-    modelValue !== savedModelValue ||
-    (defaultThinking.trim() || undefined) !== (settings.thinkingLevel?.trim() || undefined) ||
     (customInstructions.trim() || undefined) !==
       (settings.customInstructions?.trim() || undefined)
-  const draftPage = page === 'models' || page === 'personalization'
+  const draftPage = page === 'personalization'
 
   const save = async () => {
     await updateSettings({
-      piPath: piPath.trim() || undefined,
-      provider: provider.trim() || undefined,
-      model: modelValue,
-      thinkingLevel: defaultThinking || undefined,
       customInstructions: customInstructions.trim() || undefined
     })
     showToast(t('Settings saved'))
   }
 
-  const check = async (providerOverride?: string) => {
-    const target = (providerOverride ?? provider).trim()
-    if (!target) {
-      showToast(t('Enter a provider first, e.g. anthropic'))
-      return
-    }
-    setChecking(true)
-    try {
-      const result = await window.pi.auth.check(target)
-      setAuth(result)
-    } finally {
-      setChecking(false)
-    }
-  }
-
   return (
-    <div className="modal-layer" onMouseDown={onClose}>
+    <div className="modal-layer no-drag" onMouseDown={onClose}>
       <div
         ref={dialogRef}
         className="modal settings-modal"
@@ -176,49 +128,8 @@ export function SettingsDialog({
           </nav>
 
           <main className="settings-content">
-            {page === 'general' ? (
-              <GeneralSettings
-                form={{
-                  piPath,
-                  provider,
-                  defaultModel,
-                  defaultThinking
-                }}
-                onChange={(patch) => {
-                  if ('piPath' in patch) setPiPath(patch.piPath ?? '')
-                  if ('provider' in patch) setProvider(patch.provider ?? '')
-                  if ('defaultModel' in patch) setDefaultModel(patch.defaultModel ?? '')
-                  if ('defaultThinking' in patch) setDefaultThinking(patch.defaultThinking ?? '')
-                }}
-                auth={auth}
-                checking={checking}
-                onCheck={(p) => void check(p)}
-                onOpenProject={() => void pickWorkspace()}
-                onResetPiPath={() => {
-                  setPiPath('')
-                  void updateSettings({ piPath: undefined })
-                }}
-              />
-            ) : null}
-            {page === 'models' ? (
-              <ModelsSettings
-                form={{
-                  piPath,
-                  provider,
-                  defaultModel,
-                  defaultThinking
-                }}
-                onChange={(patch) => {
-                  if ('piPath' in patch) setPiPath(patch.piPath ?? '')
-                  if ('provider' in patch) setProvider(patch.provider ?? '')
-                  if ('defaultModel' in patch) setDefaultModel(patch.defaultModel ?? '')
-                  if ('defaultThinking' in patch) setDefaultThinking(patch.defaultThinking ?? '')
-                }}
-                auth={auth}
-                checking={checking}
-                onCheck={(p) => void check(p)}
-              />
-            ) : null}
+            {page === 'general' ? <GeneralSettings /> : null}
+            {page === 'models' ? <ModelsSettings /> : null}
             {page === 'appearance' ? <AppearanceSettings /> : null}
             {page === 'usage' ? <UsageSettings /> : null}
             {page === 'plugins' ? <PluginsSettings onClose={onClose} /> : null}
@@ -241,9 +152,11 @@ export function SettingsDialog({
                 ? 'You have unsaved changes'
                 : draftPage
                   ? 'Save to apply your changes'
-                  : page === 'about'
-                    ? 'Version and runtime information'
-                    : 'Changes are saved automatically'
+                  : page === 'models'
+                    ? 'Edit a provider and save to apply changes'
+                    : page === 'about'
+                      ? 'Version and runtime information'
+                      : 'Changes are saved automatically'
             )}
           </span>
           {draftPage || hasDraftChanges ? (

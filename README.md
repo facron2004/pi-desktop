@@ -30,7 +30,8 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 | 项目与历史 | 按项目组织会话，支持搜索、重命名、置顶、HTML 导出、会话树和从消息处重开分支。 |
 | Git 工作流 | 查看分支、工作区与逐文件差异，暂存、提交、回退改动，管理分支和 worktree。 |
 | 文件与终端 | 文件名及全文搜索、语法高亮、图片预览、内置终端和网页查看。 |
-| 模型与上下文 | 选择 Pi 提供的模型和推理强度，查看上下文占用，支持压缩、任务引导与后续消息排队。 |
+| 模型与上下文 | 按提供商配置 Base URL、API Key，拉取模型与参数并检测连通性；选择模型和推理强度，查看上下文占用。 |
+| 权限与任务模式 | 请求批准、帮我批准和完全访问三档权限；普通、Goal 与 Plan 任务模式。 |
 | 外观与扩展 | 简体中文与英文、深浅主题、字体和颜色配置、本地用量统计、MCP 配置查看及扩展对话框。 |
 
 <details>
@@ -48,20 +49,20 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 
 ## 下载与安装
 
-当前发布版本为 **v0.3.0**，内置 **Pi 1.4.0**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
+当前发布版本为 **v0.4.0**，内置 **Pi 1.4.0**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.3.0/Pi-Desktop-0.3.0-x64-setup.exe) |
-| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.3.0/Pi-Desktop-0.3.0-arm64-setup.exe) |
-| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.3.0/Pi-Desktop-0.3.0-portable-x64.zip) |
+| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.4.0/Pi-Desktop-0.4.0-x64-setup.exe) |
+| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.4.0/Pi-Desktop-0.4.0-arm64-setup.exe) |
+| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.4.0/Pi-Desktop-0.4.0-portable-x64.zip) |
 
-免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.3.0/SHA256SUMS.txt)，版本说明见 [v0.3.0 更新说明](docs/releases/v0.3.0.md)。
+免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.4.0/SHA256SUMS.txt)，版本说明见 [v0.4.0 更新说明](docs/releases/v0.4.0.md)。
 
 ## 快速上手
 
 1. 启动应用，打开希望 Pi 处理的项目文件夹。
-2. 准备好模型供应商认证；已有的 Pi 登录或配置可复用。在「设置 → 模型管理」检查认证并选择模型，配置方式见 [认证说明](docs/user-guide.md#模型与认证)。
+2. 在「设置 → 模型管理」添加提供商，填写 Base URL 和 API Key，拉取模型、检测连通性后保存。已有的 Pi 登录或配置可复用，详见 [认证说明](docs/user-guide.md#模型与认证)。
 3. 输入任务，或用 `@` 引用项目文件，发送后查看回复与工具过程。
 4. 在工具面板查看文件和 Git 更改，确认后再提交需要保留的修改。
 

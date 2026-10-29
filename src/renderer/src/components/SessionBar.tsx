@@ -24,7 +24,7 @@ export function SessionBar({ showProject }: { showProject: boolean }) {
   const git = useAppStore((state) => state.git)
   const settings = useAppStore((state) => state.settings)
   const sessions = useAppStore((state) => state.sessions)
-  const pickWorkspace = useAppStore((state) => state.pickWorkspace)
+  const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const switchProject = useAppStore((state) => state.switchProject)
   const t = useT()
 
@@ -102,11 +102,11 @@ export function SessionBar({ showProject }: { showProject: boolean }) {
                   className="popover__item"
                   onClick={() => {
                     close()
-                    void pickWorkspace()
+                    openProjectDialog({ mode: 'create' })
                   }}
                 >
                   <FolderSearch size={14} />
-                  <span className="popover__item-text">{t('Open a folder')}</span>
+                  <span className="popover__item-text">{t('New project')}</span>
                 </button>
               </div>
             </div>

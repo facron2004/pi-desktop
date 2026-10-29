@@ -22,12 +22,12 @@ import type {
   AuthStatus,
   McpConfig,
   McpServerInfo,
-  ModelInfo,
   VersionCheckResult
 } from '@shared/types'
 import { formatCost, formatTokens } from '../lib/format'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
+import { Popover } from './Popover'
 import { Switch } from './Switch'
 
 function PageIntro({ title, description }: { title: string; description: string }) {
@@ -74,15 +74,6 @@ interface GeneralSettingsProps {
   onCheck?: (providerOverride?: string) => void
   onOpenProject?: () => void
   onResetPiPath?: () => void
-}
-
-const THINKING_LEVELS = ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
-
-function formatContextWindow(value: number | undefined): string | null {
-  if (value === undefined || !Number.isFinite(value) || value <= 0) return null
-  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`
-  if (value >= 1_000) return `${Math.round(value / 1_000)}K`
-  return String(value)
 }
 
 export function GeneralSettings(_props: GeneralSettingsProps = {}) {
@@ -307,360 +298,6 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
   )
 }
 
-export function ModelsSettings({
-  form,
-  onChange,
-  auth,
-  checking,
-  onCheck
-}: {
-  form: GeneralSettingsForm
-  onChange: (patch: Partial<GeneralSettingsForm>) => void
-  auth: AuthStatus | null
-  checking: boolean
-  onCheck: (providerOverride?: string) => void
-}) {
-  const models = useAppStore((state) => state.models)
-  const currentModel = useAppStore((state) => state.piState?.model)
-  const currentLevel = useAppStore((state) => state.piState?.thinkingLevel)
-  const thinkingLevels = useAppStore((state) => state.thinkingLevels)
-  const ready = useAppStore((state) => state.status.phase === 'ready')
-  const setModel = useAppStore((state) => state.setModel)
-  const setThinkingLevel = useAppStore((state) => state.setThinkingLevel)
-  const updateSettings = useAppStore((state) => state.updateSettings)
-  const showToast = useAppStore((state) => state.showToast)
-  const language = useAppStore((state) => state.settings.language)
-  const t = useT()
-
-  const [query, setQuery] = useState('')
-  const [providerFilter, setProviderFilter] = useState('')
-
-  const providers = useMemo(() => {
-    const set = new Set<string>()
-    for (const model of models) {
-      if (model.provider) set.add(model.provider)
-    }
-    return [...set].sort((a, b) => a.localeCompare(b))
-  }, [models])
-
-  const quickProviders = providers.length > 0 ? providers : ['anthropic', 'openai', 'google', 'deepseek']
-
-  const selectedModel = models.find(
-    (model) =>
-      form.defaultModel === model.id || form.defaultModel === `${model.provider}/${model.id}`
-  )
-  const selectedModelValue = selectedModel
-    ? `${selectedModel.provider}/${selectedModel.id}`
-    : form.defaultModel
-
-  const filteredModels = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    return models.filter((model) => {
-      if (providerFilter && model.provider !== providerFilter) return false
-      if (!needle) return true
-      return (
-        (model.name ?? '').toLowerCase().includes(needle) ||
-        model.id.toLowerCase().includes(needle) ||
-        model.provider.toLowerCase().includes(needle)
-      )
-    })
-  }, [models, query, providerFilter])
-
-  const applyDefaultModel = (model: ModelInfo) => {
-    const value = `${model.provider}/${model.id}`
-    onChange({ defaultModel: value })
-    void updateSettings({ model: value })
-    showToast(t('Default model updated'))
-  }
-
-  return (
-    <div className="settings-page">
-      <PageIntro
-        title={t('Model management')}
-        description={t('Manage default models, provider credentials, and available models.')}
-      />
-
-      {ready && models.length > 0 ? (
-        <SettingsGroup title={t('Current session model')}>
-          <div className="field">
-            <label className="field__label" htmlFor="session-active-model">
-              {t('Active model')}
-            </label>
-            <select
-              id="session-active-model"
-              className="input settings-select"
-              value={currentModel ? `${currentModel.provider}/${currentModel.id}` : ''}
-              onChange={(event) => {
-                const target = models.find(
-                  (m) => `${m.provider}/${m.id}` === event.target.value
-                )
-                if (target) void setModel(target)
-              }}
-            >
-              {models.map((model) => (
-                <option key={`${model.provider}/${model.id}`} value={`${model.provider}/${model.id}`}>
-                  {model.name || model.id} · {model.provider}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {thinkingLevels.length > 0 ? (
-            <div className="field">
-              <span className="field__label">{t('Active reasoning effort')}</span>
-              <div className="segmented" role="group" aria-label={t('Active reasoning effort')}>
-                {thinkingLevels.map((level) => (
-                  <button
-                    key={level}
-                    type="button"
-                    data-active={currentLevel === level}
-                    aria-pressed={currentLevel === level}
-                    onClick={() => void setThinkingLevel(level)}
-                  >
-                    {t(level[0].toUpperCase() + level.slice(1))}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </SettingsGroup>
-      ) : null}
-
-      <SettingsGroup title={t('Agent defaults')}>
-        <div className="field">
-          <label className="field__label" htmlFor="models-default-model">
-            {t('Default model')}
-          </label>
-          {models.length > 0 ? (
-            <select
-              id="models-default-model"
-              className="input settings-select"
-              value={selectedModelValue}
-              onChange={(event) => onChange({ defaultModel: event.target.value })}
-            >
-              <option value="">{t('Automatic (Pi default)')}</option>
-              {form.defaultModel && !selectedModel ? (
-                <option value={form.defaultModel}>
-                  {t('Saved model')}: {form.defaultModel}
-                </option>
-              ) : null}
-              {models.map((model) => (
-                <option key={`${model.provider}/${model.id}`} value={`${model.provider}/${model.id}`}>
-                  {model.name || model.id} · {model.provider}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              id="models-default-model"
-              className="input"
-              value={form.defaultModel}
-              placeholder={t('Automatic (Pi default)')}
-              onChange={(event) => onChange({ defaultModel: event.target.value })}
-            />
-          )}
-          <span className="field__hint">
-            {models.length > 0
-              ? t('Choose the model Pi should start with. Select Automatic to use Pi’s configured default.')
-              : t('Open a project to load Pi’s model list, or enter a model ID such as provider/model.')}
-          </span>
-        </div>
-
-        <div className="field">
-          <label className="field__label" htmlFor="models-default-thinking">
-            {t('Default reasoning effort')}
-          </label>
-          <select
-            id="models-default-thinking"
-            className="input settings-select"
-            value={form.defaultThinking}
-            onChange={(event) => onChange({ defaultThinking: event.target.value })}
-          >
-            {THINKING_LEVELS.map((level) => (
-              <option key={level || 'automatic'} value={level}>
-                {level ? t(level[0].toUpperCase() + level.slice(1)) : t('Automatic (Pi default)')}
-              </option>
-            ))}
-          </select>
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup title={t('Provider credentials')}>
-        <div className="field">
-          <div className="settings-pills">
-            {quickProviders.map((item) => (
-              <button
-                key={item}
-                type="button"
-                className="pill"
-                data-active={form.provider.trim() === item}
-                onClick={() => {
-                  onChange({ provider: item })
-                  onCheck(item)
-                }}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
-          <div className="field__row">
-            <input
-              id="models-provider-name"
-              className="input"
-              value={form.provider}
-              aria-label={t('Provider name')}
-              placeholder={t('e.g. anthropic')}
-              onChange={(event) => onChange({ provider: event.target.value })}
-            />
-            <button className="btn" onClick={() => onCheck()} disabled={checking}>
-              {checking ? <span className="spinner" /> : <Check size={13} />}
-              {t('Check')}
-            </button>
-          </div>
-          {auth ? (
-            <span className="field__hint" style={{ color: auth.ready ? 'var(--green)' : 'var(--red)' }}>
-              {auth.ready
-                ? language === 'zh-CN'
-                  ? `${auth.provider} 已就绪。`
-                  : `${auth.provider} is ready to use.`
-                : language === 'zh-CN'
-                  ? `${auth.provider ?? '供应商'} 尚未就绪${auth.detail ? `：${auth.detail}` : '。'}`
-                  : `${auth.provider ?? 'provider'} is not ready${auth.detail ? `: ${auth.detail}` : '.'}`}
-            </span>
-          ) : (
-            <span className="field__hint">
-              {t('Runs pi auth check to confirm the provider can be used.')}
-            </span>
-          )}
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup
-        title={t('Available models')}
-        action={
-          models.length > 0 ? (
-            <span className="settings-badge">{filteredModels.length} / {models.length}</span>
-          ) : null
-        }
-      >
-        {models.length === 0 ? (
-          <div className="settings-empty">{t('Open a project to load available models from Pi.')}</div>
-        ) : (
-          <>
-            <div className="settings-filter-bar">
-              <div className="settings-search">
-                <Search size={13} />
-                <input
-                  value={query}
-                  placeholder={t('Search models by name, ID, or provider…')}
-                  aria-label={t('Filter models')}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-                {query ? (
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    onClick={() => setQuery('')}
-                    aria-label={t('Clear the filter')}
-                  >
-                    <X size={12} />
-                  </button>
-                ) : null}
-              </div>
-              {providers.length > 1 ? (
-                <div className="settings-pills">
-                  <button
-                    type="button"
-                    className="pill"
-                    data-active={!providerFilter}
-                    onClick={() => setProviderFilter('')}
-                  >
-                    {t('All providers')}
-                  </button>
-                  {providers.map((item) => (
-                    <button
-                      key={item}
-                      type="button"
-                      className="pill"
-                      data-active={providerFilter === item}
-                      onClick={() => setProviderFilter(item === providerFilter ? '' : item)}
-                    >
-                      {item}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-
-            {filteredModels.length === 0 ? (
-              <div className="settings-empty">
-                {t('No model matches')} “{query}”
-              </div>
-            ) : (
-              <div className="settings-card-list">
-                {filteredModels.map((model) => {
-                  const fullId = `${model.provider}/${model.id}`
-                  const isCurrent =
-                    currentModel?.id === model.id && currentModel?.provider === model.provider
-                  const isDefault =
-                    selectedModelValue === fullId || form.defaultModel === model.id
-                  const ctx = formatContextWindow(model.contextWindow)
-                  const acceptsImg = Array.isArray(model.input) && model.input.includes('image')
-
-                  return (
-                    <div
-                      key={fullId}
-                      className="settings-card"
-                      data-active={isCurrent || undefined}
-                    >
-                      <div className="settings-card__main">
-                        <div className="settings-card__title-row">
-                          <span className="settings-card__title">{model.name || model.id}</span>
-                          <span className="settings-tag">{model.provider}</span>
-                          {ctx ? <span className="settings-tag">{ctx} {t('ctx')}</span> : null}
-                          {model.reasoning ? (
-                            <span className="settings-tag" data-tone="accent">
-                              {t('Reasoning')}
-                            </span>
-                          ) : null}
-                          {acceptsImg ? (
-                            <span className="settings-tag">{t('Images')}</span>
-                          ) : null}
-                        </div>
-                        <span className="settings-card__sub">{fullId}</span>
-                      </div>
-                      <div className="settings-card__actions">
-                        {ready ? (
-                          <button
-                            type="button"
-                            className={isCurrent ? 'btn btn--sm btn--primary' : 'btn btn--sm'}
-                            disabled={isCurrent}
-                            onClick={() => void setModel(model)}
-                          >
-                            {isCurrent ? t('Current') : t('Use now')}
-                          </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="btn btn--sm"
-                          disabled={isDefault}
-                          onClick={() => applyDefaultModel(model)}
-                        >
-                          {isDefault ? t('Default') : t('Set default')}
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </>
-        )}
-      </SettingsGroup>
-    </div>
-  )
-}
-
 interface ThemePreset {
   id: string
   name: string
@@ -749,6 +386,9 @@ const FONT_DISPLAY_NAMES: Record<string, string> = {
   FangSong: '仿宋 (FangSong)',
   DengXian: '等线 (DengXian)',
   'PingFang SC': '苹方 (PingFang SC)',
+  'PingFang SC Regular': '苹方 (PingFang SC Regular)',
+  'PingFang SC Medium': '苹方 (PingFang SC Medium)',
+  'PingFang SC Bold': '苹方 (PingFang SC Bold)',
   'Hiragino Sans GB': '冬青黑体 (Hiragino Sans GB)',
   'Segoe UI': 'Segoe UI',
   'Cascadia Code': 'Cascadia Code',
@@ -765,6 +405,9 @@ const FONT_DISPLAY_NAMES: Record<string, string> = {
 const POPULAR_FONT_FAMILIES = [
   'Microsoft YaHei',
   'PingFang SC',
+  'PingFang SC Regular',
+  'PingFang SC Medium',
+  'PingFang SC Bold',
   'Segoe UI',
   'Cascadia Code',
   'Consolas',
@@ -785,6 +428,8 @@ export function AppearanceSettings() {
 
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [systemFonts, setSystemFonts] = useState<string[]>([])
+  const [fontsLoading, setFontsLoading] = useState(true)
+  const [fontQuery, setFontQuery] = useState('')
 
   useEffect(() => {
     let active = true
@@ -796,6 +441,9 @@ export function AppearanceSettings() {
         }
       })
       .catch(() => {})
+      .finally(() => {
+        if (active) setFontsLoading(false)
+      })
     return () => {
       active = false
     }
@@ -846,6 +494,64 @@ export function AppearanceSettings() {
     const popSet = new Set(POPULAR_FONT_FAMILIES)
     return systemFonts.filter((font) => !popSet.has(font))
   }, [systemFonts])
+
+  const fontChoices = useMemo(() => {
+    const normalize = (value: string) => value.toLowerCase().replace(/[\s_-]+/g, '')
+    const needle = normalize(fontQuery)
+    const labelOf = (font: string) => FONT_DISPLAY_NAMES[font] ?? font
+    const matches = (value: string, label: string) =>
+      !needle || normalize(value).includes(needle) || normalize(label).includes(needle)
+    const choices: { value: string; label: string; group: string }[] = []
+    const systemLabel = FONT_DISPLAY_NAMES.system
+    if (matches('system', systemLabel)) {
+      choices.push({ value: 'system', label: systemLabel, group: '' })
+    }
+    const recommended = settings.language === 'zh-CN' ? '常用推荐' : 'Recommended'
+    for (const font of popularOnSystem) {
+      const label = labelOf(font)
+      if (matches(font, label)) choices.push({ value: font, label, group: recommended })
+    }
+    if (otherSystemFonts.length > 0) {
+      const group =
+        settings.language === 'zh-CN'
+          ? `系统字体 (${systemFonts.length})`
+          : `System Fonts (${systemFonts.length})`
+      for (const font of otherSystemFonts) {
+        const label = labelOf(font)
+        if (matches(font, label)) choices.push({ value: font, label, group })
+      }
+    } else if (systemFonts.length === 0) {
+      const group = settings.language === 'zh-CN' ? '字体预设' : 'Presets'
+      const presets = [
+        ['sans', t('现代无衬线')],
+        ['chinese', t('中文优先')],
+        ['mono', t('等宽代码')],
+        ['serif', t('经典衬线')]
+      ] as const
+      for (const [value, label] of presets) {
+        if (matches(value, label)) choices.push({ value, label, group })
+      }
+    }
+    if (
+      currentFontVal !== 'system' &&
+      !popularOnSystem.includes(currentFontVal) &&
+      !otherSystemFonts.includes(currentFontVal) &&
+      !choices.some((choice) => choice.value === currentFontVal) &&
+      matches(currentFontVal, currentFontLabel)
+    ) {
+      choices.push({ value: currentFontVal, label: currentFontLabel, group: '' })
+    }
+    return choices
+  }, [
+    currentFontLabel,
+    currentFontVal,
+    fontQuery,
+    otherSystemFonts,
+    popularOnSystem,
+    settings.language,
+    systemFonts.length,
+    t
+  ])
 
   const handleModeChange = (mode: 'system' | 'light' | 'dark') => {
     const nextDark =
@@ -1146,56 +852,111 @@ export function AppearanceSettings() {
         <div className="appearance-row">
           <div className="appearance-row__label">{t('Font')}</div>
           <div className="appearance-row__right">
-            <div className="appearance-select-pill">
-              <span>{currentFontLabel}</span>
-              <ChevronDown size={13} className="appearance-select-pill__chevron" />
-              <select
-                className="appearance-select-native"
-                aria-label={t('Font')}
-                value={currentFontVal}
-                onChange={(e) => void updateSettings({ fontFamily: e.target.value })}
-              >
-                <option value="system">{t('System')}</option>
-                {popularOnSystem.length > 0 && (
-                  <optgroup label={settings.language === 'zh-CN' ? '常用推荐' : 'Recommended'}>
-                    {popularOnSystem.map((font) => (
-                      <option key={`pop-${font}`} value={font} style={{ fontFamily: `"${font}", sans-serif` }}>
-                        {FONT_DISPLAY_NAMES[font] ?? font}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                {otherSystemFonts.length > 0 ? (
-                  <optgroup
-                    label={
-                      settings.language === 'zh-CN'
-                        ? `系统字体 (${systemFonts.length})`
-                        : `System Fonts (${systemFonts.length})`
-                    }
-                  >
-                    {otherSystemFonts.map((font) => (
-                      <option key={`sys-${font}`} value={font} style={{ fontFamily: `"${font}", sans-serif` }}>
-                        {FONT_DISPLAY_NAMES[font] ?? font}
-                      </option>
-                    ))}
-                  </optgroup>
-                ) : (
-                  systemFonts.length === 0 && (
-                    <optgroup label={settings.language === 'zh-CN' ? '字体预设' : 'Presets'}>
-                      <option value="sans">{t('现代无衬线')}</option>
-                      <option value="chinese">{t('中文优先')}</option>
-                      <option value="mono">{t('等宽代码')}</option>
-                      <option value="serif">{t('经典衬线')}</option>
-                    </optgroup>
-                  )
-                )}
-                {currentFontVal !== 'system' &&
-                  !popularOnSystem.includes(currentFontVal) &&
-                  !otherSystemFonts.includes(currentFontVal) && (
-                    <option value={currentFontVal}>{currentFontLabel}</option>
-                  )}
-              </select>
-            </div>
+            <Popover
+              align="right"
+              width={280}
+              className="font-menu-popover"
+              renderTrigger={({ open, toggle }) => (
+                <button
+                  type="button"
+                  className="appearance-select-pill"
+                  aria-label={t('Font')}
+                  aria-haspopup="listbox"
+                  aria-expanded={open}
+                  onClick={(event) => {
+                    if (!open) setFontQuery('')
+                    toggle(event)
+                  }}
+                >
+                  <span>{currentFontLabel}</span>
+                  <ChevronDown size={13} className="appearance-select-pill__chevron" />
+                </button>
+              )}
+            >
+              {(close) => {
+                let lastGroup = ''
+                return (
+                  <div className="font-menu" role="listbox" aria-label={t('Font')}>
+                    <div className="font-menu__search">
+                      <Search size={13} />
+                      <input
+                        autoFocus
+                        value={fontQuery}
+                        placeholder={t('Search fonts')}
+                        aria-label={t('Search fonts')}
+                        onChange={(event) => setFontQuery(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.nativeEvent.isComposing || event.keyCode === 229) return
+                          if (event.key === 'ArrowDown') {
+                            event.preventDefault()
+                            event.currentTarget
+                              .closest('.font-menu')
+                              ?.querySelector<HTMLButtonElement>('.font-menu__list .popover__item')
+                              ?.focus()
+                            return
+                          }
+                          if (event.key === 'Enter' && fontChoices.length === 1) {
+                            event.preventDefault()
+                            void updateSettings({ fontFamily: fontChoices[0].value })
+                            close()
+                          }
+                        }}
+                      />
+                      {fontQuery ? (
+                        <button
+                          type="button"
+                          className="font-menu__clear"
+                          aria-label={t('Clear the filter')}
+                          onClick={() => setFontQuery('')}
+                        >
+                          <X size={12} />
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="font-menu__list">
+                      {fontsLoading ? (
+                        <div className="font-menu__empty" role="status">{t('Loading fonts…')}</div>
+                      ) : null}
+                      {fontChoices.length === 0 && !fontsLoading ? (
+                        <div className="font-menu__empty">
+                          {t('No matching fonts')}
+                        </div>
+                      ) : (
+                        fontChoices.map((choice) => {
+                          const header =
+                            choice.group && choice.group !== lastGroup ? (
+                              <div className="popover__label" key={`group-${choice.group}`}>
+                                {choice.group}
+                              </div>
+                            ) : null
+                          lastGroup = choice.group
+                          const selected = choice.value === currentFontVal
+                          return (
+                            <div key={choice.value}>
+                              {header}
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={selected}
+                                className="popover__item font-menu__item"
+                                data-selected={selected}
+                                onClick={() => {
+                                  void updateSettings({ fontFamily: choice.value })
+                                  close()
+                                }}
+                              >
+                                <span className="popover__item-text">{choice.label}</span>
+                                {selected ? <Check size={14} /> : null}
+                              </button>
+                            </div>
+                          )
+                        })
+                      )}
+                    </div>
+                  </div>
+                )
+              }}
+            </Popover>
           </div>
         </div>
       </div>
@@ -2047,7 +1808,7 @@ export function AboutSettings() {
     }
   }
 
-  const appCurrent = info?.version ?? '0.3.0'
+  const appCurrent = info?.version ?? '0.4.0'
   const piCliCurrent = info?.pi.version ?? '—'
 
   return (
@@ -2073,7 +1834,7 @@ export function AboutSettings() {
       >
         {/* 1. 应用版本 */}
         <div className="settings-item-row">
-          <div className="settings-item-row__info">
+          <div className="settings-item-row__info settings-version-info">
             <span className="settings-item-row__title">{t('Application version')}</span>
             <span className="settings-item-row__desc">
               Pi Desktop v{appCurrent}
@@ -2112,7 +1873,7 @@ export function AboutSettings() {
 
         {/* 2. Pi CLI 版本 */}
         <div className="settings-item-row">
-          <div className="settings-item-row__info">
+          <div className="settings-item-row__info settings-version-info">
             <span className="settings-item-row__title">{t('Pi CLI version')}</span>
             <span className="settings-item-row__desc">
               @earendil-works/pi-coding-agent v{piCliCurrent}

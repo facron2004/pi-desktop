@@ -14,6 +14,17 @@ function topModalDialog(): HTMLElement | undefined {
     .at(-1)
 }
 
+/** A menu opened from this dialog is portaled to `document.body`, so it is not a child. */
+function insideDialog(dialog: HTMLElement, node: Node | null): boolean {
+  if (!node) return false
+  if (dialog.contains(node)) return true
+  return (
+    node instanceof Element &&
+    Boolean(node.closest('.popover')) &&
+    Boolean(dialog.querySelector('.popover-wrap [aria-expanded="true"]'))
+  )
+}
+
 /** Keep keyboard focus inside a modal and return it to its opener on close. */
 export function useDialogFocus<T extends HTMLElement>(
   dialogRef: RefObject<T | null>,
@@ -59,10 +70,10 @@ export function useDialogFocus<T extends HTMLElement>(
       }
       const first = nodes[0]
       const last = nodes[nodes.length - 1]
-      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+      if (event.shiftKey && (document.activeElement === first || !insideDialog(dialog, document.activeElement))) {
         event.preventDefault()
         last.focus()
-      } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+      } else if (!event.shiftKey && (document.activeElement === last || !insideDialog(dialog, document.activeElement))) {
         event.preventDefault()
         first.focus()
       }

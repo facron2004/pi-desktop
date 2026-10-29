@@ -1,5 +1,5 @@
 .modal--project-edit {
-  width: min(540px, calc(100vw - 32px));
+  width: min(560px, calc(100vw - 32px));
   max-height: min(620px, calc(100vh - 64px));
   background: var(--surface-overlay);
   border: 1px solid var(--border-strong);
@@ -45,7 +45,7 @@
 
 .project-edit__input {
   width: 100%;
-  height: 32px;
+  height: 34px;
   padding: 0 var(--sp-3);
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
@@ -93,8 +93,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
+  gap: var(--sp-2);
+  height: 38px;
+  padding: 0 var(--sp-3);
   background: var(--bg-panel);
   border: 1px solid var(--border-soft);
   border-radius: var(--r-sm);
@@ -109,9 +110,10 @@
 .project-edit__folder-info {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   min-width: 0;
   flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .project-edit__folder-icon {
@@ -119,45 +121,34 @@
   color: var(--text-muted);
 }
 
-.project-edit__folder-texts {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: 2px;
-}
-
-.project-edit__folder-top {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-
 .project-edit__folder-name {
-  font-size: var(--text-sm);
-  font-weight: 500;
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  font-weight: 600;
   color: var(--text);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.project-edit__primary-chip {
-  font-size: var(--text-2xs);
-  padding: 1px 6px;
-  border-radius: var(--r-xs);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 500;
-  flex-shrink: 0;
 }
 
 .project-edit__folder-path {
+  flex: 1 1 auto;
   font-size: var(--text-2xs);
   color: var(--text-faint);
   font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.project-edit__primary-chip {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .project-edit__folder-actions {
@@ -178,6 +169,7 @@
   gap: 2px;
   background: transparent;
   cursor: pointer;
+  white-space: nowrap;
   transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 
@@ -195,6 +187,7 @@
   place-items: center;
   background: transparent;
   cursor: pointer;
+  flex: 0 0 auto;
   transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 
@@ -204,11 +197,23 @@
 }
 
 .project-edit__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
   padding: var(--sp-5) var(--sp-3);
-  text-align: center;
   font-size: var(--text-xs);
   color: var(--text-faint);
   border: 1px dashed var(--border);
   border-radius: var(--r-sm);
   background: var(--bg-deep);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.project-edit__empty:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
 }

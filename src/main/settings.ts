@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   diffSplit: false,
   drawerWidth: 420,
   trustProject: true,
+  permissionMode: 'ask',
   desktopNotifications: true,
   defaultFileOpener: 'vscode',
   agentEnvironment: 'windows',

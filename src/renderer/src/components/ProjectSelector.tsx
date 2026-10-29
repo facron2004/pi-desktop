@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Check, Folder, Plus, Search, X } from 'lucide-react'
+import { Check, Folder, MessageSquare, Plus, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
 import { basename, normalisePathKey, samePath } from '../lib/path'
@@ -14,10 +14,11 @@ export function ProjectSelector({
   align?: 'left' | 'right'
 }) {
   const workspace = useAppStore((state) => state.workspace)
+  const noProject = useAppStore((state) => !state.workspace && state.settings.activeWorkspaceId === null)
   const workspaces = useAppStore((state) => state.settings.workspaces)
   const sessions = useAppStore((state) => state.sessions)
   const switchProject = useAppStore((state) => state.switchProject)
-  const pickWorkspace = useAppStore((state) => state.pickWorkspace)
+  const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const t = useT()
 
   const [searchQuery, setSearchQuery] = useState('')
@@ -48,7 +49,9 @@ export function ProjectSelector({
     ? basename(workspace.name)
     : workspace?.path
       ? basename(workspace.path)
-      : t('Select project')
+      : noProject
+        ? t('Work without a project')
+        : t('Select project')
 
   return (
     <Popover
@@ -65,9 +68,13 @@ export function ProjectSelector({
             if (!open) setSearchQuery('')
             toggle(e)
           }}
-          title={workspace?.path ?? t('Select project')}
+          title={workspace?.path ?? displayName}
         >
-          <Folder size={11} className="project-chip__icon" />
+          {noProject ? (
+            <MessageSquare size={11} className="project-chip__icon" />
+          ) : (
+            <Folder size={11} className="project-chip__icon" />
+          )}
           <span className="project-chip__name">{displayName}</span>
         </button>
       )}
@@ -137,13 +144,28 @@ export function ProjectSelector({
             <button
               className="project-menu__action-btn project-menu__action-btn--primary"
               type="button"
-              onClick={async () => {
+              onClick={() => {
                 close()
-                await pickWorkspace()
+                openProjectDialog({ mode: 'create' })
               }}
             >
               <Plus size={13} strokeWidth={1.8} />
               <span>{t('New project')}</span>
+            </button>
+            <button
+              type="button"
+              className="project-menu__row"
+              data-active={noProject || undefined}
+              role="menuitemradio"
+              aria-checked={noProject}
+              onClick={() => {
+                close()
+                if (!noProject) void switchProject(null, { allowWhileRunning: true })
+              }}
+            >
+              <MessageSquare size={13} strokeWidth={1.5} className="project-menu__icon" />
+              <span className="project-menu__name">{t('Work without a project')}</span>
+              {noProject ? <Check size={13} strokeWidth={1.8} className="project-menu__check" /> : null}
             </button>
           </div>
         </div>

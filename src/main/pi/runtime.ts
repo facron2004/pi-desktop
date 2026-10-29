@@ -1,9 +1,12 @@
 import { app } from 'electron'
 import { EventEmitter } from 'node:events'
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type {
   ExtensionUiResponse,
+  ExtensionUiRequest,
+  PermissionMode,
   PiEvent,
   PiState,
   RuntimeStartOptions,
@@ -11,11 +14,15 @@ import type {
 } from '@shared/types'
 import { resolvePiLaunch } from './locate'
 import { PiRpcClient } from './rpc-client'
+import { canAutoApprove, parseToolApproval, permissionExtension } from './permissions'
+import { taskModesExtension } from './task-modes'
+import { providerControlsExtension } from './provider-controls'
 
 export interface RuntimeOptions {
   customPiPath?: string
   /** Trust project-local configuration such as `.pi/settings.json`. */
   trustProject?: boolean
+  getPermissionMode?: () => PermissionMode
 }
 
 /**
@@ -28,6 +35,8 @@ export interface RuntimeOptions {
 export class PiRuntime extends EventEmitter {
   private client: PiRpcClient | null = null
   private status: RuntimeStatus = { phase: 'stopped' }
+  private pendingApprovalId?: string
+  private aborting = false
 
   constructor(private readonly options: RuntimeOptions = {}) {
     super()
@@ -57,7 +66,15 @@ export class PiRuntime extends EventEmitter {
       options.sessionFile && existsSync(options.sessionFile) ? options.sessionFile : undefined
 
     const customInstructionsFile = path.join(app.getPath('userData'), 'pi-desktop-instructions.md')
+    const permissionFile = path.join(app.getPath('userData'), 'pi-desktop-permissions.mjs')
+    const modeFile = path.join(app.getPath('userData'), 'pi-desktop-task-modes.mjs')
+    const providerFile = path.join(app.getPath('userData'), 'pi-desktop-providers.mjs')
+    const permissionTitle = `pi-desktop-permissions-${randomUUID()}`
     try {
+      mkdirSync(path.dirname(permissionFile), { recursive: true })
+      writeFileSync(permissionFile, permissionExtension(permissionTitle), 'utf8')
+      writeFileSync(modeFile, taskModesExtension(), 'utf8')
+      writeFileSync(providerFile, providerControlsExtension(), 'utf8')
       if (options.customInstructions?.trim()) {
         mkdirSync(path.dirname(customInstructionsFile), { recursive: true })
         writeFileSync(customInstructionsFile, options.customInstructions.trim(), 'utf8')
@@ -65,7 +82,7 @@ export class PiRuntime extends EventEmitter {
         unlinkSync(customInstructionsFile)
       }
     } catch (error) {
-      const message = `Could not prepare custom instructions: ${error instanceof Error ? error.message : String(error)}`
+      const message = `Could not prepare runtime configuration: ${error instanceof Error ? error.message : String(error)}`
       this.setStatus({ phase: 'error', cwd: options.cwd, error: message })
       return { ok: false, error: message }
     }
@@ -75,7 +92,10 @@ export class PiRuntime extends EventEmitter {
       ...buildRpcArgs(
         { ...options, sessionFile },
         this.options.trustProject,
-        options.customInstructions?.trim() ? customInstructionsFile : undefined
+        options.customInstructions?.trim() ? customInstructionsFile : undefined,
+        permissionFile,
+        modeFile,
+        providerFile
       )
     ]
 
@@ -88,7 +108,41 @@ export class PiRuntime extends EventEmitter {
       env: launch.env
     })
 
-    client.on('event', (event: PiEvent) => this.emit('event', event))
+    let permissionsReady = false
+    let modesReady = false
+    this.aborting = false
+    client.on('event', (event: PiEvent) => {
+      if (event.type === 'agent_start') this.aborting = false
+      if (event.type === 'extension_ui_request') {
+        const request = event as unknown as ExtensionUiRequest
+        if (request.method === 'setStatus' && request.statusKey === 'pi-desktop-mode') modesReady = true
+        if (request.method === 'setStatus' && request.statusKey === permissionTitle) {
+          permissionsReady = request.statusText === 'ready'
+          return
+        }
+        if (request.method === 'confirm' && request.title === permissionTitle) {
+          const approval = parseToolApproval(request.message)
+          if (!approval || this.aborting) {
+            client.respondUi(request.id, { confirmed: false })
+            return
+          }
+          const mode = this.options.getPermissionMode?.() ?? 'ask'
+          if (mode === 'full' || (mode === 'auto' && canAutoApprove(approval, options.cwd))) {
+            client.respondUi(request.id, { confirmed: true })
+            return
+          }
+          this.pendingApprovalId = request.id
+          this.emit('event', {
+            ...request,
+            title: 'Approve tool operation?',
+            message: 'Pi is waiting for your approval before running this tool.',
+            approval
+          })
+          return
+        }
+      }
+      this.emit('event', event)
+    })
     client.on('stderr', (line: string) => this.emit('stderr', line))
     client.on('protocol-error', (payload: { line: string }) => {
       this.emit('event', {
@@ -119,6 +173,8 @@ export class PiRuntime extends EventEmitter {
       const state = await client.request<PiState>({ type: 'get_state' }, 30_000)
       // A newer start may have replaced this client while it was coming up.
       if (this.client !== client) return { ok: false }
+      if (!permissionsReady) throw new Error('Pi did not load its tool approval controls. Restart the runtime to try again.')
+      if (!modesReady) throw new Error('Pi did not load its task mode controls. Restart the runtime to try again.')
       this.setStatus({
         phase: 'ready',
         cwd: options.cwd,
@@ -154,6 +210,13 @@ export class PiRuntime extends EventEmitter {
     if (!this.client || !this.client.running) {
       throw new Error('Pi is not running. Open a workspace to start a session.')
     }
+    if (command === 'abort' || command === 'abort_retry') {
+      this.aborting = true
+      if (this.pendingApprovalId) {
+        this.client.respondUi(this.pendingApprovalId, { confirmed: false })
+        this.pendingApprovalId = undefined
+      }
+    }
     return this.client.request<T>({ type: command, ...payload }, timeoutMs)
   }
 
@@ -162,10 +225,12 @@ export class PiRuntime extends EventEmitter {
    * Silently ignored when the runtime is already gone.
    */
   respondUi(id: string, response: ExtensionUiResponse): void {
+    if (id === this.pendingApprovalId) this.pendingApprovalId = undefined
     this.client?.respondUi(id, response)
   }
 
   async stop(): Promise<void> {
+    this.pendingApprovalId = undefined
     const client = this.client
     this.client = null
     if (client) {
@@ -204,9 +269,15 @@ function describeExit(stderr: string[], code: number | null, signal: string | nu
 export function buildRpcArgs(
   options: RuntimeStartOptions,
   trustProject = true,
-  customInstructionsFile?: string
+  customInstructionsFile?: string,
+  permissionFile?: string,
+  modeFile?: string,
+  providerFile?: string
 ): string[] {
   const args = ['--mode', 'rpc']
+  if (providerFile) args.push('--extension', providerFile)
+  if (modeFile) args.push('--extension', modeFile)
+  if (permissionFile) args.push('--extension', permissionFile)
   if (options.sessionFile) {
     args.push('--session', options.sessionFile)
   }

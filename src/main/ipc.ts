@@ -1,7 +1,7 @@
-import { app, BrowserWindow, Notification, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, Notification, dialog, ipcMain, shell, type OpenDialogOptions } from 'electron'
 import { exec } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from 'node:fs'
 import path from 'node:path'
 import type {
   AppInfo,
@@ -48,6 +48,7 @@ import {
 import { SettingsStore } from './settings'
 import { getAggregatedUsage, listSessions, resolveSessionRoot, searchSessions } from './sessions'
 import { querySystemFonts } from './fonts'
+import { registerProviderIpc } from './providers/ipc'
 
 export interface IpcContext {
   runtime: PiRuntime
@@ -141,11 +142,23 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   dockerfile: 'dockerfile'
 }
 
+function projectlessRoot(): string {
+  return path.join(app.getPath('userData'), 'chats')
+}
+
+/** Keep the default working directory out of the user's project list. */
+function withoutProjectFolder<T extends { cwd: string }>(session: T): T {
+  return session.cwd && path.relative(projectlessRoot(), session.cwd) === ''
+    ? { ...session, cwd: '' }
+    : session
+}
+
 /** The working directory Pi is currently running in. */
 function workspaceRoot(context: IpcContext): string {
   const cwd = context.runtime.currentStatus.cwd
   if (cwd) return cwd
   const settings = context.settings.get()
+  if (settings.activeWorkspaceId === null) return projectlessRoot()
   const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
   return active?.path ?? settings.workspaces[0]?.path ?? ''
 }
@@ -304,6 +317,7 @@ function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
 
 export function registerIpc(context: IpcContext): void {
   const { runtime, settings, getWindow } = context
+  registerProviderIpc(context)
 
   ipcMain.handle('app:info', async (): Promise<AppInfo> => {
     const current = settings.get()
@@ -312,7 +326,7 @@ export function registerIpc(context: IpcContext): void {
     return {
       // `npm_package_version` only exists when npm launched the app; a
       // packaged build reads the version it was built with instead.
-      version: process.env.npm_package_version ?? app.getVersion() ?? '0.3.0',
+      version: process.env.npm_package_version ?? app.getVersion() ?? '0.4.0',
       electron: process.versions.electron,
       node: process.versions.node,
       platform: process.platform,
@@ -345,6 +359,20 @@ export function registerIpc(context: IpcContext): void {
     return result.filePaths[0]
   })
 
+  ipcMain.handle('dialog:pickPaths', async (_event, kind: 'files' | 'folders', defaultPath?: string): Promise<string[]> => {
+    if (kind !== 'files' && kind !== 'folders') throw new Error('Unknown attachment kind')
+    const options: OpenDialogOptions = {
+      title: kind === 'files' ? 'Add files' : 'Add folders',
+      defaultPath: defaultPath || undefined,
+      properties: kind === 'files' ? ['openFile', 'multiSelections'] : ['openDirectory', 'multiSelections']
+    }
+    const window = getWindow()
+    const result = window && !window.isDestroyed()
+      ? await dialog.showOpenDialog(window, options)
+      : await dialog.showOpenDialog(options)
+    return result.canceled ? [] : result.filePaths
+  })
+
   ipcMain.handle('app:setTheme', (_event, theme: 'dark' | 'light') => {
     const window = getWindow()
     if (!window || window.isDestroyed() || process.platform === 'darwin') return
@@ -366,7 +394,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('app:checkUpdate', async (): Promise<VersionCheckResult> => {
     const currentPiVersion = (await piVersion(settings.get().piPath)) || '1.4.0'
-    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.3.0'
+    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.4.0'
 
     let piCliStatus: VersionItemStatus = {
       current: currentPiVersion,
@@ -414,7 +442,7 @@ export function registerIpc(context: IpcContext): void {
       if (!res.ok) {
         return { success: false, error: res.error || 'Failed to pull update' }
       }
-      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.3.0'
+      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.4.0'
       return { success: true, version: current }
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
@@ -473,10 +501,12 @@ export function registerIpc(context: IpcContext): void {
     }
   )
 
-  ipcMain.handle('sessions:list', (_event, cwd?: string) => listSessions(cwd))
+  ipcMain.handle('sessions:list', (_event, cwd?: string) =>
+    listSessions(cwd).map(withoutProjectFolder)
+  )
 
   ipcMain.handle('sessions:search', (_event, query: string, limit?: number) =>
-    searchSessions(query, limit)
+    searchSessions(query, limit).map(withoutProjectFolder)
   )
 
   ipcMain.handle('sessions:usageStats', (_event, customDir?: string) => {
@@ -752,8 +782,11 @@ export function registerIpc(context: IpcContext): void {
   )
 
   ipcMain.handle('runtime:start', async (_event, options: RuntimeStartOptions) => {
+    const cwd = options.cwd || projectlessRoot()
+    if (!options.cwd) mkdirSync(cwd, { recursive: true })
     return runtime.start({
       ...options,
+      cwd,
       customInstructions: settings.get().customInstructions
     })
   })

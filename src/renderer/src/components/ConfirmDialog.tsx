@@ -4,6 +4,7 @@ import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 
 interface ConfirmDialogProps {
+  className?: string
   title: string
   body: string
   confirmLabel?: string
@@ -13,6 +14,7 @@ interface ConfirmDialogProps {
 }
 
 export function ConfirmDialog({
+  className,
   title,
   body,
   confirmLabel = 'Confirm',
@@ -27,7 +29,7 @@ export function ConfirmDialog({
     <div className="modal-layer" onMouseDown={onCancel}>
       <div
         ref={dialogRef}
-        className="modal modal--narrow"
+        className={className ? `modal modal--narrow ${className}` : 'modal modal--narrow'}
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-title"

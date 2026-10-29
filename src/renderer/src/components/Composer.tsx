@@ -1,16 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
-  ChevronLeft,
-  ChevronRight,
-  FolderOpen,
   ListFilter,
-  Paperclip,
-  Plus,
-  Sparkles,
+  ListChecks,
+  Target,
   Square,
-  Terminal,
-  Wrench,
   X
 } from 'lucide-react'
 import { useAppStore, type QueueKind } from '../store/useAppStore'
@@ -24,6 +18,8 @@ import { ModelPicker } from './TopBar'
 import { Popover } from './Popover'
 import { ProjectSelector } from './ProjectSelector'
 import { BranchMenu } from './BranchMenu'
+import { PermissionPicker } from './PermissionPicker'
+import { AddMenu } from './AddMenu'
 
 interface SlashMatch {
   query: string
@@ -36,8 +32,6 @@ interface MentionMatch {
   start: number
   cursor: number
 }
-
-type AddMenuPage = 'actions' | 'skills' | 'plugins'
 
 /** Detect a `/command` token that ends at the caret. */
 function detectSlash(text: string, cursor: number): SlashMatch | null {
@@ -72,6 +66,8 @@ export function Composer() {
   const queue = useAppStore((state) => state.queue)
   const status = useAppStore((state) => state.status)
   const workspace = useAppStore((state) => state.workspace)
+  const agentMode = useAppStore((state) => state.agentMode)
+  const setAgentMode = useAppStore((state) => state.setAgentMode)
   const commands = useAppStore((state) => state.commands)
   const runAppCommand = useAppStore((state) => state.runAppCommand)
   const composerText = useAppStore((state) => state.composerText)
@@ -81,9 +77,7 @@ export function Composer() {
   const sendShortcut = useAppStore((state) => state.settings.sendShortcut ?? 'enter')
   const defaultFollowUpMode = useAppStore((state) => state.settings.followUpMode ?? 'steer')
   const plainTextEditor = useAppStore((state) => state.settings.plainTextEditor === true)
-  const hasDialogue = useAppStore(
-    (state) => state.items.length > 0 || Boolean(state.activeSessionFile)
-  )
+  const hasDialogue = useAppStore((state) => state.items.length > 0)
   const t = useT()
   const toast = useAppStore((state) => state.toast)
 
@@ -101,7 +95,6 @@ export function Composer() {
   const [paletteIndex, setPaletteIndex] = useState(0)
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
-  const [addMenuPage, setAddMenuPage] = useState<AddMenuPage>('actions')
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -109,13 +102,15 @@ export function Composer() {
 
   const ready = status.phase === 'ready'
   const inputPrompt = ready
-    ? t('Describe a task, or use @ to reference project files…')
-    : !workspace
-      ? t('Open a project folder to start')
-      : status.phase === 'starting'
-        ? t('Starting the Pi runtime…')
-        : status.phase === 'error'
-          ? t('Pi unavailable')
+    ? workspace
+      ? t('Describe a task, or use @ to reference project files…')
+      : t('Describe a task…')
+    : status.phase === 'starting'
+      ? t('Starting the Pi runtime…')
+      : status.phase === 'error'
+        ? t('Pi unavailable')
+        : !workspace
+          ? t('Open a project folder to start')
           : t('Pi stopped')
 
   useEffect(() => {
@@ -431,40 +426,16 @@ export function Composer() {
     }
   }
 
-  const openPaletteManually = () => {
-    const node = textareaRef.current
-    const cursor = node?.selectionStart ?? text.length
-    const prefix = text.slice(0, cursor)
-    const startsClean = prefix === '' || /\s$/.test(prefix)
-    const next = startsClean ? `${prefix}/` : `${prefix} /`
-    setText(next)
-    requestAnimationFrame(() => {
-      const target = textareaRef.current
-      if (!target) return
-      const position = next.length
-      target.focus()
-      target.setSelectionRange(position, position)
-      setSlash(detectSlash(next, position))
-    })
-  }
-
-  const insertProjectFile = useCallback(() => {
-    const node = textareaRef.current
-    const cursor = node?.selectionStart ?? text.length
-    const before = text.slice(0, cursor)
-    const marker = before === '' || /\s$/.test(before) ? '@' : ' @'
-    const next = `${before}${marker}${text.slice(cursor)}`
-    const position = cursor + marker.length
-    setText(next)
-    setSlash(null)
-    setMention(detectMention(next, position))
-    requestAnimationFrame(() => {
-      const target = textareaRef.current
-      if (!target) return
-      target.focus()
-      target.setSelectionRange(position, position)
-    })
-  }, [text])
+  const pickPaths = useCallback(async (kind: 'files' | 'folders') => {
+    try {
+      const paths = await window.pi.dialog.pickPaths(kind, workspace?.path ?? status.cwd)
+      if (!paths.length) return
+      const references = paths.map((file) => '@' + JSON.stringify(file.replace(/\\/g, '/'))).join('\n')
+      useAppStore.getState().insertIntoComposer(references)
+    } catch {
+      useAppStore.getState().showToast('Could not add files or folders', 'error')
+    }
+  }, [workspace?.path, status.cwd])
 
   const insertMenuCommand = useCallback(
     (command: PiCommand) => {
@@ -487,7 +458,6 @@ export function Composer() {
     ...queue.steering.map((value) => ({ kind: 'steer' as const, text: value })),
     ...queue.followUp.map((value) => ({ kind: 'followUp' as const, text: value }))
   ]
-  const addMenuCommands = addMenuPage === 'skills' ? skillCommands : pluginCommands
 
   return (
     <div className="composer-wrap">
@@ -630,121 +600,32 @@ export function Composer() {
           />
 
           <div className="composer__bar" data-streaming={isStreaming} data-ready={ready}>
-            <Popover
-              placement="top"
-              width={270}
-              className="composer__add-popover"
-              renderTrigger={({ open, toggle }) => (
-                <button
-                  className="icon-btn composer__add-trigger"
-                  aria-label={t('Add to message')}
-                  title={t('Add to message')}
-                  aria-expanded={open}
-                  disabled={!ready}
-                  onClick={(event) => {
-                    if (!open) setAddMenuPage('actions')
-                    toggle(event)
-                  }}
-                >
-                  <Plus size={17} />
-                </button>
-              )}
-            >
-              {(close) =>
-                addMenuPage === 'actions' ? (
-                  <div>
-                    <div className="popover__label">{t('Add to message')}</div>
-                    <button
-                      className="popover__item"
-                      onClick={() => {
-                        close()
-                        openPaletteManually()
-                      }}
-                    >
-                      <Terminal size={14} />
-                      <span className="popover__item-text">{t('Browse commands')}</span>
-                    </button>
-                    <button
-                      className="popover__item"
-                      onClick={() => {
-                        close()
-                        fileRef.current?.click()
-                      }}
-                    >
-                      <Paperclip size={14} />
-                      <span className="popover__item-text">{t('Add image attachment')}</span>
-                    </button>
-                    <button
-                      className="popover__item"
-                      onClick={() => {
-                        close()
-                        insertProjectFile()
-                      }}
-                    >
-                      <FolderOpen size={14} />
-                      <span className="popover__item-text">{t('Insert a project file')}</span>
-                    </button>
-                    <button className="popover__item" onClick={() => setAddMenuPage('skills')}>
-                      <Sparkles size={14} />
-                      <span className="popover__item-text">{t('Skills')}</span>
-                      <span className="composer__add-count">{skillCommands.length}</span>
-                      <ChevronRight size={13} />
-                    </button>
-                    <button className="popover__item" onClick={() => setAddMenuPage('plugins')}>
-                      <Wrench size={14} />
-                      <span className="popover__item-text">{t('Plugins')}</span>
-                      <span className="composer__add-count">{pluginCommands.length}</span>
-                      <ChevronRight size={13} />
-                    </button>
-                  </div>
-                ) : (
-                  <div>
-                    <div className="composer__add-head">
-                      <button
-                        className="icon-btn composer__add-back"
-                        aria-label={t('Back')}
-                        title={t('Back')}
-                        onClick={() => setAddMenuPage('actions')}
-                      >
-                        <ChevronLeft size={14} />
-                      </button>
-                      <div className="popover__label">
-                        {t(addMenuPage === 'skills' ? 'Skills' : 'Plugins')}
-                      </div>
-                      <span className="composer__add-count">
-                        {addMenuPage === 'skills' ? skillCommands.length : pluginCommands.length}
-                      </span>
-                    </div>
-                    {addMenuCommands.length ? (
-                      <div className="composer__add-list">
-                        {addMenuCommands.map((command) => (
-                          <button
-                            key={`${command.source}-${command.name}`}
-                            className="popover__item composer__add-command"
-                            title={command.description}
-                            onClick={() => {
-                              close()
-                              insertMenuCommand(command)
-                            }}
-                          >
-                            <span className="composer__add-command-name">/{command.name}</span>
-                            {command.description ? (
-                              <span className="composer__add-command-description">
-                                {command.description}
-                              </span>
-                            ) : null}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="composer__add-empty">
-                        {t(addMenuPage === 'skills' ? 'No skills available' : 'No plugins available')}
-                      </div>
-                    )}
-                  </div>
-                )
-              }
-            </Popover>
+            <AddMenu
+              ready={ready}
+              busy={isStreaming}
+              mode={agentMode}
+              fileRef={fileRef}
+              skillCommands={skillCommands}
+              pluginCommands={pluginCommands}
+              onModeChange={setAgentMode}
+              onPickPaths={pickPaths}
+              onInsertCommand={insertMenuCommand}
+            />
+            {agentMode !== 'default' ? (
+              <button
+                type="button"
+                className="composer__mode"
+                title={t('Exit task mode')}
+                aria-label={t('Exit task mode')}
+                disabled={isStreaming || !ready}
+                onClick={() => void setAgentMode('default')}
+              >
+                {agentMode === 'goal' ? <Target size={13} /> : <ListChecks size={13} />}
+                <span>{agentMode === 'goal' ? 'Goal Mode' : 'Plan Mode'}</span>
+                <X size={11} />
+              </button>
+            ) : null}
+            <PermissionPicker />
             <input
               ref={fileRef}
               type="file"

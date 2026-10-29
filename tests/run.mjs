@@ -30,7 +30,7 @@ const esbuild = require('esbuild')
  * decides from the same events. Both matter for the conversation, so both
  * run here rather than in separate commands nobody remembers to call.
  */
-const suites = ['thread.test.ts', 'run-state.test.ts', 'projects.test.ts', 'git-status.test.ts', 'diff-fold.test.ts']
+const suites = ['thread.test.ts', 'run-state.test.ts', 'projects.test.ts', 'git-status.test.ts', 'diff-fold.test.ts', 'permissions.test.ts', 'task-modes.test.ts', 'fonts.test.ts', 'providers.test.ts']
 const debug = process.argv[2] === '--debug'
 
 const out = mkdtempSync(path.join(tmpdir(), 'pi-desktop-tests-'))

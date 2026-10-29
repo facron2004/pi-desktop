@@ -108,11 +108,18 @@ export function ExtensionDialog() {
             <h2 id="extension-dialog-title" className="modal__title">{title}</h2>
             {request.message ? (
               <p id="extension-dialog-message" className="modal__message">
-                {request.message}
+                {request.approval ? t(request.message) : request.message}
               </p>
             ) : null}
           </div>
         </header>
+
+        {request.approval ? (
+          <div className="modal__approval">
+            <strong>{request.approval.toolName}</strong>
+            <pre>{JSON.stringify(request.approval.input, null, 2)}</pre>
+          </div>
+        ) : null}
 
         {request.method === 'select' ? (
           <div
@@ -205,10 +212,10 @@ export function ExtensionDialog() {
                 className="btn"
                 onClick={() => void respondUi({ confirmed: false })}
               >
-                {t('No')}
+                {t(request.approval ? 'Deny' : 'No')}
               </button>
               <button className="btn btn--primary" onClick={submit}>
-                {t('Yes')}
+                {t(request.approval ? 'Approve' : 'Yes')}
               </button>
             </>
           ) : (

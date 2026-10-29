@@ -217,6 +217,71 @@
   color: var(--text-primary);
 }
 
+/* Font menu: the search stays above the scrolling list, and the menu
+   itself has to clear the settings dialog it is opened from. */
+.popover.font-menu-popover {
+  z-index: calc(var(--z-modal) + 1);
+}
+
+.font-menu__search {
+  position: sticky;
+  top: calc(var(--sp-2) * -1);
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin: calc(var(--sp-2) * -1) calc(var(--sp-2) * -1) 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-glass);
+  color: var(--text-muted);
+}
+
+.font-menu__search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.font-menu__search input::placeholder {
+  color: var(--text-faint);
+}
+
+.font-menu__clear {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--text-faint);
+}
+
+.font-menu__clear:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.font-menu__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.font-menu__item {
+  justify-content: space-between;
+}
+
+.font-menu__empty {
+  padding: 10px 8px 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 /* Select Dropdown Pill */
 .appearance-select-pill {
   position: relative;
@@ -569,6 +634,23 @@
   font-size: 11px;
   border-radius: 4px;
   font-weight: 500;
+}
+
+.settings-version-info {
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.settings-version-info .settings-item-row__title {
+  flex-shrink: 0;
+}
+
+.settings-version-info .settings-item-row__desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-version-actions {

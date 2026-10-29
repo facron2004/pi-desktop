@@ -121,12 +121,20 @@
   color: var(--status-warning);
 }
 
-/* The assistant text is a document, not a bubble: no background, no
-   padding, no border. The tool rows sit in the same column and the whole
-   turn reads as one continuous page. */
+/* Assistant replies share the rounded message surface; tool rows stay inline
+   with the turn so activity remains distinct from spoken text. */
 .assistant__text {
+  align-self: flex-start;
+  width: fit-content;
+  max-width: min(760px, 85%);
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-full);
+  background: var(--surface-chrome);
   font-size: var(--text-md);
   line-height: 1.62;
+  overflow-wrap: anywhere;
 }
 
 .assistant__text .md > *:last-child {
