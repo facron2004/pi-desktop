@@ -4,6 +4,7 @@ import type { ToolItem } from '../lib/thread'
 import { describeTool } from '../lib/tools'
 import { useSearchQuery } from '../lib/search-context'
 import { useAppStore } from '../store/useAppStore'
+import { readProcessOpen, writeProcessOpen } from '../lib/view-state'
 import { activityHeadline } from './ToolGroup'
 import { useT } from '../lib/i18n'
 
@@ -31,10 +32,20 @@ export function ProcessTrail({
 }) {
   const t = useT()
   const workspace = useAppStore((state) => state.workspace)
+  const threadKey = useAppStore((state) => state.activeSessionFile ?? state.draftId ?? 'draft')
   const query = useSearchQuery().trim().toLowerCase()
   const activity = activityHeadline(tools, t)
   const thought = thoughts > 0 ? t('Thought') : ''
   const title = tools.length === 0 ? thought : activity.title
+  const processId = tools[0]?.id ?? `${title}-${searchText.length}`
+  const [manualOpen, setManualOpen] = useState<boolean | undefined>(() =>
+    readProcessOpen(threadKey, processId)
+  )
+  const toggleOpen = () => {
+    const next = !open
+    setManualOpen(next)
+    writeProcessOpen(threadKey, processId, next)
+  }
   const summary = [
     tools.length > 0 ? thought : '',
     activity.summary,
@@ -48,7 +59,6 @@ export function ProcessTrail({
     .map((item) => `${item.toolName} ${describeTool(item.toolName).summary(item.args ?? {}, workspace?.path)}`)
     .join('\n')
   const searchMatch = Boolean(query) && `${searchText}\n${toolText}`.toLowerCase().includes(query)
-  const [manualOpen, setManualOpen] = useState<boolean>()
   const open = live || searchMatch || (manualOpen ?? false)
 
   if (live) {
@@ -61,7 +71,7 @@ export function ProcessTrail({
         type="button"
         className="process__head"
         aria-expanded={open}
-        onClick={() => setManualOpen(!open)}
+        onClick={toggleOpen}
       >
         <ChevronRight size={13} className="caret" data-open={open} />
         <span className="process__label">{title}</span>

@@ -3,8 +3,8 @@
   align-items: center;
   gap: var(--sp-1);
   height: var(--ctl-sm);
-  padding: 0 var(--sp-2);
-  border-radius: var(--r-sm);
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-full);
   color: var(--text-muted);
   font-size: var(--text-xs);
   white-space: nowrap;

@@ -2,11 +2,13 @@
 export function Switch({
   checked,
   onChange,
-  label
+  label,
+  disabled = false
 }: {
   checked: boolean
   onChange: (value: boolean) => void
   label: string
+  disabled?: boolean
 }) {
   return (
     <button
@@ -16,6 +18,7 @@ export function Switch({
       aria-checked={checked}
       aria-label={label}
       title={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
     >
       <span className="switch__thumb" />

@@ -217,7 +217,8 @@ export function describeEntry(entry: SessionEntry): Description | null {
     return { role: 'meta', title: entry.name ? `Named “${shorten(entry.name, 80)}”` : 'Session info' }
   }
   if (entry.type === 'model_change') {
-    return { role: 'meta', title: `Model: ${shorten(String(entry.modelId ?? 'unknown'), 60)}` }
+    const model = entry.provider && entry.modelId ? `${entry.provider}/${entry.modelId}` : entry.modelId
+    return { role: 'meta', title: `Model: ${shorten(String(model ?? 'unknown'), 80)}` }
   }
   if (entry.type === 'thinking_level_change') {
     return { role: 'meta', title: `Reasoning: ${String(entry.thinkingLevel ?? 'unknown')}` }

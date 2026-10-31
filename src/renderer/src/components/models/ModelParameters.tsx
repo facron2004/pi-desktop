@@ -5,10 +5,12 @@ const SOURCE_LABELS: Record<ParameterSource, string> = {
   upstream: 'From upstream', catalog: 'Pi catalog reference', saved: 'Configured', manual: 'Edited manually'
 }
 
-export function ModelParameters({ model, disabled, onChange }: {
+export function ModelParameters({ model, disabled, onChange, nested = false }: {
   model: ProviderModel
   disabled: boolean
   onChange: (field: ModelParameter, value: ProviderModel[ModelParameter]) => void
+  /** Inside an expanded model row the id and display name are already on the row. */
+  nested?: boolean
 }) {
   const t = useT()
   const source = (field: ModelParameter) => (
@@ -25,13 +27,13 @@ export function ModelParameters({ model, disabled, onChange }: {
     </label>
   )
   return (
-    <section className="provider-parameters" aria-label={t('Model parameters')}>
-      <div className="provider-section-head"><h4>{t('Model parameters')}</h4></div>
-      <label className="field">
+    <section className={nested ? 'provider-parameters provider-parameters--nested' : 'provider-parameters'} aria-label={t('Model parameters')}>
+      {nested ? null : <div className="provider-section-head"><h4>{t('Model parameters')}</h4></div>}
+      {nested ? null : <label className="field">
         <span className="provider-field-label">{t('Display name')}{source('name')}</span>
         <input className="input" value={model.name ?? ''} disabled={disabled} placeholder={model.id}
           onChange={event => onChange('name', event.target.value || undefined)} />
-      </label>
+      </label>}
       <div className="provider-form-grid">
         {number('contextWindow', 'Context window (tokens)')}
         {number('maxTokens', 'Maximum output (tokens)')}
@@ -49,6 +51,24 @@ export function ModelParameters({ model, disabled, onChange }: {
             onChange={event => onChange('input', event.target.value === '' ? undefined : event.target.value === 'image' ? ['text', 'image'] : ['text'])}>
             <option value="">{t('Use Pi default')}</option>
             <option value="text">{t('Text')}</option><option value="image">{t('Text and images')}</option>
+          </select>
+        </label>
+        <label className="field">
+          <span className="provider-field-label">{t('Output types')}{source('output')}</span>
+          <select className="input settings-select" value={!model.output ? '' : model.output.includes('image') && model.output.includes('text') ? 'both' : model.output.includes('image') ? 'image' : 'text'} disabled={disabled}
+            onChange={event => onChange('output', event.target.value === '' ? undefined : event.target.value === 'both' ? ['text', 'image'] : event.target.value === 'image' ? ['image'] : ['text'])}>
+            <option value="">{t('Use Pi default')}</option>
+            <option value="text">{t('Text')}</option>
+            <option value="image">{t('Images only')}</option>
+            <option value="both">{t('Text and images')}</option>
+          </select>
+        </label>
+        <label className="field">
+          <span className="provider-field-label">{t('Tool support')}{source('tools')}</span>
+          <select className="input settings-select" value={model.tools === undefined ? '' : String(model.tools)} disabled={disabled}
+            onChange={event => onChange('tools', event.target.value === '' ? undefined : event.target.value === 'true')}>
+            <option value="">{t('Use Pi default')}</option>
+            <option value="true">{t('Supported')}</option><option value="false">{t('Not supported')}</option>
           </select>
         </label>
       </div>

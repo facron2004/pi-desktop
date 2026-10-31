@@ -1,9 +1,8 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import {
-  Check,
+  Ban,
   ChevronRight,
   CircleAlert,
-  Copy,
   CornerDownLeft,
   FileSearch,
   FileText,
@@ -11,20 +10,20 @@ import {
   Play,
   Search,
   SquareTerminal,
-  Wrench,
-  Ban
+  Wrench
 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
-import type { BashItem, ToolItem } from '../lib/thread'
+import type { ToolItem } from '../lib/thread'
 import { diffableEdits, summarizeTool, writtenContent } from '../lib/tool-renderers'
 import { formatDuration } from '../lib/format'
 import { buildDiff } from '../lib/diff-fold'
 import { formatDiff } from '../lib/diff-text'
-import { languageOf } from '../lib/files'
-import { basename, relativePath } from '../lib/path'
+import { relativePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
-import { CodeSnippet } from './CodeSnippet'
-import { DiffView } from './DiffView'
+import { readToolFull, readToolOpen, writeToolFull, writeToolOpen } from '../lib/view-state'
+import { CopyButton } from './conversation/CopyButton'
+import { ToolResultPanel } from './conversation/ToolResultPanel'
+import { runInTerminal } from './conversation/tool-actions'
 import { useT } from '../lib/i18n'
 
 const TONE_ICONS = {
@@ -35,141 +34,9 @@ const TONE_ICONS = {
   generic: Wrench
 } as const
 
-/** Results longer than this are collapsed behind a "show more" control. */
-const RESULT_PREVIEW = 1200
-
-/**
- * A button that copies a text and says so for a moment.
- *
- * The output of a command is often worth keeping, and copying it by hand
- * out of a long log is a nuisance.
- */
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false)
-  const showToast = useAppStore((state) => state.showToast)
-  const t = useT()
-  if (!text) return null
-  return (
-    <button
-      className="tool__reuse-icon"
-      title={t(label)}
-      aria-label={t(label)}
-      onClick={() => {
-        void navigator.clipboard
-          .writeText(text)
-          .then(() => {
-            setCopied(true)
-            window.setTimeout(() => setCopied(false), 1600)
-          })
-          .catch(() => {
-            showToast(t('The clipboard is not available'), 'error')
-          })
-      }}
-    >
-      {copied ? <Check size={12} /> : <Copy size={12} />}
-    </button>
-  )
-}
-
-/**
- * Hands a command to the terminal drawer.
- *
- * The drawer is mounted by the app rather than by the card, so a card cannot
- * call the drawer's run path directly; the hand-off goes through the window
- * event the app listens for.
- */
-function runInTerminal(command: string): void {
-  window.dispatchEvent(new CustomEvent('pi:terminal-run', { detail: { command } }))
-}
-
-/**
- * A command Pi ran itself, rather than through a tool call.
- *
- * The output arrives in chunks while the command runs, so the card keeps the
- * body closed until it is asked for.
- */
-export const BashCard = memo(function BashCard({ item }: { item: BashItem }) {
-  const [manualOpen, setManualOpen] = useState<boolean>()
-  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
-  const t = useT()
-  const running = item.exitCode === undefined
-  const failed = item.exitCode !== undefined && item.exitCode !== 0
-  const status = failed ? 'error' : running ? 'running' : 'ok'
-  const open = manualOpen ?? failed
-  const toggleOpen = () => setManualOpen(!open)
-
-  return (
-    <div className="tool" data-tone="command" data-status={status}>
-      <div className="tool__head">
-        <button className="tool__head-main" aria-expanded={open} onClick={toggleOpen}>
-          <span className="tool__icon">
-            <SquareTerminal size={12} strokeWidth={2.2} />
-          </span>
-          <span className="tool__name">{item.excludeFromContext ? '!!bash' : 'bash'}</span>
-          <span className="tool__summary">{item.command || t('running…')}</span>
-          {item.excludeFromContext ? (
-            <span className="tool__status" title={t('Excluded from model context')}>
-              {t('no context')}
-            </span>
-          ) : null}
-          {running ? (
-            <span className="spinner" />
-          ) : failed ? (
-            <span className="tool__status">
-              {t('exit')} {item.exitCode}
-            </span>
-          ) : null}
-          <span className="tool__state" data-state={status}>
-            {t(failed ? 'Failed' : running ? 'Running' : 'Completed')}
-          </span>
-        </button>
-        {item.command ? (
-          <>
-            <button
-              className="tool__reuse-icon"
-              title={t('Reuse this command')}
-              aria-label={t('Reuse this command')}
-              onClick={() =>
-                insertIntoComposer(
-                  item.excludeFromContext ? `!!${item.command}` : `!${item.command}`
-                )
-              }
-            >
-              <CornerDownLeft size={12} />
-            </button>
-            <button
-              className="tool__reuse-icon"
-              title={t('Run in terminal')}
-              aria-label={t('Run in terminal')}
-              onClick={() => runInTerminal(item.command)}
-            >
-              <Play size={12} />
-            </button>
-          </>
-        ) : null}
-        <CopyButton text={item.output} label={t('Copy the output')} />
-        <button
-          className="tool__caret"
-          onClick={toggleOpen}
-          aria-label={open ? t('Collapse') : t('Expand')}
-          aria-expanded={open}
-        >
-          <ChevronRight size={13} className="caret" data-open={open} />
-        </button>
-      </div>
-
-      {open ? (
-        <div className="tool__body">
-          {item.output ? (
-            <pre className={`tool__pre${failed ? ' tool__error' : ''}`}>{item.output}</pre>
-          ) : (
-            <pre className="tool__pre">{t('No output.')}</pre>
-          )}
-        </div>
-      ) : null}
-    </div>
-  )
-})
+// A bash execution card is one of the stream's leaves now; the stream still
+// imports it from this module, so the old name is re-exported.
+export { CommandOutput as BashCard } from './conversation/CommandOutput'
 
 /**
  * One tool call as a row in the execution stream.
@@ -197,16 +64,31 @@ export const ToolCard = memo(function ToolCard({
    */
   presentation?: 'card' | 'link'
 }) {
-  const [manualOpen, setManualOpen] = useState<boolean>()
+  const threadKey = useAppStore((state) => state.activeSessionFile ?? state.draftId ?? 'draft')
+  const [manualOpen, setManualOpen] = useState<boolean | undefined>(() =>
+    readToolOpen(threadKey, item.id)
+  )
+  useEffect(() => {
+    setManualOpen(readToolOpen(threadKey, item.id))
+  }, [threadKey, item.id])
+  const setOpen = (open: boolean | undefined) => {
+    setManualOpen(open)
+    writeToolOpen(threadKey, item.id, open)
+  }
   // A link stays one line until it is opened. A card still opens itself on
   // failure, because there the failure is the whole of what the row is for.
   const open = expanded ?? manualOpen ?? (presentation !== 'link' && item.status === 'error')
   const toggleOpen = () => {
-    if (onExpandedChange) onExpandedChange(!open)
-    else setManualOpen(!open)
+    if (onExpandedChange) {
+      onExpandedChange(!open)
+      writeToolOpen(threadKey, item.id, !open)
+    } else setOpen(!open)
   }
-  const [full, setFull] = useState(false)
-  const diffSplit = useAppStore((state) => state.settings.diffSplit === true)
+  const [full, setFullState] = useState(() => readToolFull(threadKey, item.id))
+  const setFull = (value: boolean) => {
+    setFullState(value)
+    writeToolFull(threadKey, item.id, value)
+  }
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const workspace = useAppStore((state) => state.workspace)
   const t = useT()
@@ -220,8 +102,6 @@ export const ToolCard = memo(function ToolCard({
   const content = useMemo(() => writtenContent(item), [item])
 
   const result = item.result ?? ''
-  const truncated = result.length > RESULT_PREVIEW
-  const visibleResult = truncated && !full ? result.slice(0, RESULT_PREVIEW) : result
 
   /**
    * What the copy button takes.
@@ -270,10 +150,6 @@ export const ToolCard = memo(function ToolCard({
     )
   }
 
-  // The file a card is about, so its content can be highlighted as code.
-  const fileName = basename(String(item.args?.path ?? ''))
-  const language = languageOf(fileName)
-
   // A card about a file can open that file in the viewer.
   const viewedFile =
     item.toolName === 'read' || item.toolName === 'edit' || item.toolName === 'write'
@@ -311,49 +187,17 @@ export const ToolCard = memo(function ToolCard({
     ? relativePath(workspace?.path ?? '', viewedFile) || summary.detail
     : summary.detail
 
-  const details = open ? (
-    <div className="tool__body">
-      {item.status === 'error' && visibleResult ? (
-        <pre className="tool__pre tool__error">{visibleResult}</pre>
-      ) : null}
-
-      {diffs.length > 0 ? (
-        <DiffView
-          diffs={diffs}
-          mode={diffSplit ? 'split' : 'unified'}
-          onOpenLine={editedFile ? openLine : undefined}
-        />
-      ) : null}
-
-      {content ? <CodeSnippet code={content} language={language} /> : null}
-
-      {item.toolName === 'bash' || item.toolName === 'powershell'
-        ? String(item.args?.command ?? '').includes('\n') && (
-            <pre className="tool__pre">{String(item.args?.command ?? '')}</pre>
-          )
-        : null}
-
-      {visibleResult && item.status !== 'error' ? (
-        item.toolName === 'read' ? (
-          <CodeSnippet code={visibleResult} language={language} />
-        ) : (
-          <pre className="tool__pre">{visibleResult}</pre>
-        )
-      ) : null}
-
-      {truncated ? (
-        <button className="tool__more" onClick={() => setFull((value) => !value)}>
-          {full
-            ? t('Show less')
-            : `${t('Show')} ${(result.length - RESULT_PREVIEW).toLocaleString()} ${t('more characters')}`}
-        </button>
-      ) : null}
-
-      {!diffs.length && !visibleResult && !content ? (
-        <pre className="tool__pre">{JSON.stringify(item.args ?? {}, null, 2)}</pre>
-      ) : null}
-    </div>
-  ) : null
+  const details = (
+    <ToolResultPanel
+      item={item}
+      open={open}
+      full={full}
+      onFullChange={setFull}
+      diffs={diffs}
+      content={content}
+      onOpenLine={editedFile ? openLine : undefined}
+    />
+  )
 
   if (presentation === 'link') {
     return (
@@ -366,6 +210,9 @@ export const ToolCard = memo(function ToolCard({
             onClick={toggleOpen}
           >
             <ChevronRight size={13} className="caret" data-open={open} />
+            <span className="tool-link__icon">
+              <Icon size={12} strokeWidth={2.2} />
+            </span>
             <span className="tool-link__verb">{t(summary.label)}</span>
           </button>
           {viewedFile ? (
@@ -385,6 +232,11 @@ export const ToolCard = memo(function ToolCard({
           {item.status === 'running' ? <span className="spinner" /> : null}
           {StateIcon ? (
             <StateIcon size={13} color={item.status === 'error' ? 'var(--status-danger)' : undefined} />
+          ) : null}
+          {item.status === 'proposed' || item.status === 'error' || item.status === 'aborted' ? (
+            <span className="tool-link__state" data-state={state}>
+              {t(stateLabel(item.status))}
+            </span>
           ) : null}
           {item.durationMs !== undefined && item.status !== 'running' ? (
             <span className="tool-link__time">{formatDuration(item.durationMs)}</span>

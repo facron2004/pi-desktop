@@ -50,6 +50,12 @@
   padding: var(--sp-3);
 }
 
+/* Square control: a capsule radius closes into a circle, so the hover
+   fill matches the text chips beside it instead of a small rounded box. */
+.icon-btn.composer__add-trigger {
+  border-radius: var(--r-full);
+}
+
 .composer__mode {
   display: inline-flex;
   align-items: center;

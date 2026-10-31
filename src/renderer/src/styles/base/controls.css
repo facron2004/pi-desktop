@@ -252,6 +252,11 @@ transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) va
   background: var(--accent);
 }
 
+.switch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* Only the chrome stops moving: the state changes above stay instant, but
    progress spinners are animation, not transition, and must keep spinning. */
 @media (prefers-reduced-motion: reduce) {

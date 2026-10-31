@@ -9,8 +9,10 @@ import {
   Loader,
   X
 } from 'lucide-react'
-import type { RunState } from '../store/useAppStore'
+import type { RetryState, RunState } from '../store/useAppStore'
+import type { ToolActivity } from '../lib/activity'
 import { useT } from '../lib/i18n'
+import { isRateLimitError } from '../lib/provider-error'
 
 /**
  * The line that says what the agent is doing.
@@ -24,16 +26,19 @@ export const RunStatusRow = memo(function RunStatusRow({
   run,
   transport,
   retry,
+  onStopRetry,
   activity
 }: {
   run: RunState
   transport: 'connected' | 'disconnected'
-  retry?: { attempt: number; maxAttempts: number; delayMs: number; errorMessage?: string }
+  retry?: RetryState
+  onStopRetry?: () => void
   /** The tool call in flight, when there is one. */
-  activity?: string
+  activity?: ToolActivity
 }) {
   const t = useT()
   const label = statusLabel(run, transport, Boolean(retry), Boolean(activity))
+  const waiting = retry && label === 'Retrying'
   const running = run.phase !== 'idle' || transport === 'disconnected'
 
   return (
@@ -41,8 +46,26 @@ export const RunStatusRow = memo(function RunStatusRow({
       <span className="run-status__icon" aria-hidden="true">
         <StatusIcon phase={run.phase} transport={transport} retrying={Boolean(retry)} />
       </span>
-      <span className="run-status__label">{t(label)}</span>
-      {activity ? <span className="run-status__activity">{activity}</span> : null}
+      <span className="run-status__label" title={waiting ? retry.errorMessage : undefined}>
+        {t(waiting && isRateLimitError(retry.errorMessage) ? 'Rate limit reached' : label)}
+      </span>
+      {waiting ? (
+        <>
+          <RetryProgress retry={retry} />
+          {onStopRetry ? (
+            <button className="run-status__stop" type="button" onClick={onStopRetry}>
+              {t('Stop retrying')}
+            </button>
+          ) : null}
+        </>
+      ) : activity ? (
+        <span className="run-status__activity">
+          <span className="run-status__activity-label">{t(activity.label)}</span>
+          {activity.detail ? (
+            <span className="run-status__activity-detail">{activity.detail}</span>
+          ) : null}
+        </span>
+      ) : null}
       {running && run.startedAt !== undefined ? <Elapsed since={run.startedAt} /> : null}
     </div>
   )
@@ -58,11 +81,11 @@ function StatusIcon({
   retrying: boolean
 }) {
   if (transport === 'disconnected') return <AlertTriangle size={13} />
-  if (retrying || phase === 'retrying') return <Loader size={13} className="spin" />
+  if (phase === 'aborting') return <X size={13} />
   if (phase === 'waiting_approval') return <Hand size={13} />
+  if (retrying || phase === 'retrying') return <Loader size={13} className="spin" />
   if (phase === 'queued') return <Clock size={13} />
   if (phase === 'tool_running') return <CircleDot size={13} className="pulse" />
-  if (phase === 'aborting') return <X size={13} />
   if (phase === 'idle') return <Check size={13} />
   return <Loader size={13} className="spin" />
 }
@@ -75,27 +98,48 @@ export function statusLabel(
   hasActivity: boolean
 ): string {
   if (transport === 'disconnected') return 'Lost connection to Pi'
+  if (run.phase === 'aborting') return 'Stopping…'
+  if (run.phase === 'waiting_approval') return 'Waiting for your answer'
   if (retrying || run.phase === 'retrying') return 'Retrying'
   switch (run.phase) {
-    case 'waiting_approval':
-      // Not "thinking": the agent is blocked on a dialog and cannot move
-      // until it is answered, so the line says exactly that.
-      return 'Waiting for your answer'
     case 'queued':
       return 'Queued'
     case 'tool_running':
       return hasActivity ? 'Running a tool' : 'Running tools'
     case 'generating':
       return 'Writing a reply…'
-    case 'aborting':
-      return 'Stopping…'
     case 'working':
       return 'Working…'
     case 'idle':
-      return run.outcome === 'aborted' ? 'Stopped' : 'Done'
+      return run.outcome === 'aborted'
+        ? 'Stopped'
+        : run.outcome === 'failed'
+          ? 'Failed'
+          : 'Done'
     default:
       return 'Working…'
   }
+}
+
+function RetryProgress({ retry }: { retry: RetryState }) {
+  const t = useT()
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [retry.retryAt])
+  const seconds = Math.max(0, Math.ceil((retry.retryAt - now) / 1000))
+  return (
+    <span className="run-status__retry" title={retry.errorMessage} aria-live="off">
+      <span>
+        {seconds > 0 ? `${t('Retry in')} ${seconds}${t('seconds-short')}` : t('Waiting for retry…')}
+      </span>
+      <span className="run-status__attempt">
+        {t('attempt')} {retry.attempt}{retry.maxAttempts > 0 ? ` / ${retry.maxAttempts}` : ''}
+      </span>
+    </span>
+  )
 }
 
 /** A counter that ticks once a second while a run is open. */
@@ -135,24 +179,5 @@ export const NewContentHint = memo(function NewContentHint({
   )
 })
 
-/** The one-line record of how a run ended. */
-export const RunOutcome = memo(function RunOutcome({ run }: { run: RunState }) {
-  const t = useT()
-  if (!run.settled) return null
-  const aborted = run.outcome === 'aborted'
-  return (
-    <div className="run-outcome" data-outcome={run.outcome}>
-      {aborted ? <X size={12} aria-hidden="true" /> : null}
-      <span>{t(aborted ? 'Stopped by you' : run.durationMs !== undefined ? 'Worked for' : 'Finished')}</span>
-      {run.durationMs !== undefined ? (
-        <span className="run-outcome__meta">{formatElapsed(run.durationMs)}</span>
-      ) : null}
-    </div>
-  )
-})
-
-function formatElapsed(ms: number): string {
-  const seconds = Math.round(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-}
+/** The one-line record of how a run ended lives in the conversation leaf set. */
+export { RunSummary as RunOutcome } from './conversation/RunSummary'

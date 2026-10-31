@@ -1,11 +1,11 @@
 import { app, type BrowserWindow } from 'electron'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import type { PiRuntime } from './pi/runtime'
+import type { SessionSupervisor } from './pi/supervisor'
 
 export interface CaptureContext {
   window: BrowserWindow
-  runtime: PiRuntime
+  supervisor?: SessionSupervisor
 }
 
 /**
@@ -64,24 +64,35 @@ export function scheduleCapture(context: CaptureContext): void {
     app.exit(0)
   }
 
+  let booting = false
   const waitForReady = async () => {
-    if (context.runtime.currentStatus.phase === 'ready') {
-      if (prompt) {
-        // Not awaited: a prompt that opens a dialog (an extension asking for
-        // input) never resolves until the user answers, and the capture delay
-        // has to run alongside it.
-        void context.runtime
-          .request('prompt', { message: prompt })
+    const hot = context.supervisor?.runningKeys() ?? []
+    if (prompt && hot.length === 0 && !booting && context.supervisor && process.env.PI_DESKTOP_WORKSPACE) {
+      booting = true
+      const started = await context.supervisor.ensure({
+        sessionKey: 'draft:screenshot',
+        cwd: process.env.PI_DESKTOP_WORKSPACE,
+        trace: { sourceAction: 'screenshot' }
+      })
+      booting = false
+      if (!started.ok) {
+        setTimeout(() => void capture(), 1500)
+        return
+      }
+    }
+    const ready = context.supervisor?.runningKeys() ?? []
+    if (!prompt || ready.length > 0) {
+      if (prompt && ready[0]) {
+        // Not awaited: a prompt that opens a dialog never resolves until the
+        // user answers, and the capture delay has to run alongside it.
+        void context.supervisor
+          ?.request(ready[0], 'prompt', { message: prompt }, undefined, { sourceAction: 'screenshot' })
           .then(() => console.log('[pi-desktop] prompt accepted'))
           .catch((error: unknown) => {
             console.error('[pi-desktop] prompt failed:', error)
           })
       }
       setTimeout(() => void capture(), delay)
-      return
-    }
-    if (context.runtime.currentStatus.phase === 'error') {
-      setTimeout(() => void capture(), 1500)
       return
     }
     setTimeout(() => void waitForReady(), 300)
@@ -100,7 +111,7 @@ export function scheduleCapture(context: CaptureContext): void {
  * Environment:
  *   PI_DESKTOP_CLOSE_AFTER_MS  ms after start at which the window closes
  */
-export function scheduleWindowClose(context: CaptureContext): void {
+export function scheduleWindowClose(context: { window: BrowserWindow }): void {
   const closeAfter = Number(process.env.PI_DESKTOP_CLOSE_AFTER_MS ?? 0)
   if (closeAfter <= 0) return
   setTimeout(() => {

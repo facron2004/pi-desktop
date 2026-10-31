@@ -8,10 +8,13 @@ import { Popover } from './Popover'
 
 export function ProjectSelector({
   placement = 'bottom',
-  align = 'left'
+  align = 'left',
+  variant = 'chip'
 }: {
   placement?: 'top' | 'bottom' | 'right'
   align?: 'left' | 'right'
+  /** `inline` is the project name inside the welcome sentence. */
+  variant?: 'chip' | 'inline'
 }) {
   const workspace = useAppStore((state) => state.workspace)
   const noProject = useAppStore((state) => !state.workspace && state.settings.activeWorkspaceId === null)
@@ -62,21 +65,28 @@ export function ProjectSelector({
       className="project-menu-popover"
       renderTrigger={({ open, toggle }) => (
         <button
-          className="session-bar__item project-chip"
+          type="button"
+          className={variant === 'inline' ? 'welcome__project' : 'session-bar__item project-chip'}
           data-active={open}
           aria-expanded={open}
+          aria-haspopup="menu"
+          aria-label={variant === 'inline' ? t('Projects') : undefined}
           onClick={(e) => {
             if (!open) setSearchQuery('')
             toggle(e)
           }}
           title={workspace?.path ?? displayName}
         >
-          {noProject ? (
-            <MessageSquare size={11} className="project-chip__icon" />
-          ) : (
-            <Folder size={11} className="project-chip__icon" />
+          {variant === 'inline' ? displayName : (
+            <>
+              {noProject ? (
+                <MessageSquare size={11} className="project-chip__icon" />
+              ) : (
+                <Folder size={11} className="project-chip__icon" />
+              )}
+              <span className="project-chip__name">{displayName}</span>
+            </>
           )}
-          <span className="project-chip__name">{displayName}</span>
         </button>
       )}
     >

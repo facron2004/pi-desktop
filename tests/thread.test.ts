@@ -226,7 +226,7 @@ test('a tool call that is never executed stays proposed', () => {
   ])
   items = markAborted(items)
   const node = tools(items)[0]
-  assert.equal(node.status, 'aborted')
+  assert.equal(node.status, 'proposed')
   assert.notEqual(node.status, 'ok')
 })
 
@@ -467,6 +467,25 @@ test('a replayed history and a live stream produce the same node kinds', () => {
   assert.equal(texts(live), texts(hydrated))
 })
 
+test('a replayed call without a result is still a proposed node', () => {
+  const hydrated = itemsFromMessages([
+    { role: 'user', content: [{ type: 'text', text: 'hi' }], timestamp: 1 },
+    {
+      role: 'assistant',
+      content: [{ type: 'toolCall', id: 'never-ran', name: 'bash', arguments: { command: 'sleep 5' } }],
+      timestamp: 2
+    }
+  ] as never)
+  const nodes = tools(hydrated)
+  assert.equal(nodes.length, 1)
+  assert.equal(nodes[0].toolCallId, 'never-ran')
+  assert.equal(nodes[0].status, 'proposed')
+  assert.deepEqual(nodes[0].args, { command: 'sleep 5' })
+
+  const afterAbort = markAborted(hydrated)
+  assert.equal(tools(afterAbort)[0].status, 'proposed')
+})
+
 /* ------------------------------------------------------------------ *
  * T12 — long conversations
  * ------------------------------------------------------------------ */
@@ -531,4 +550,18 @@ test('a rate-limit retry notice does not paste the provider payload', () => {
   assert.ok(notice.kind === 'notice')
   assert.match(notice.text, /rate limit, next try in 20s/)
   assert.doesNotMatch(notice.text, /ModelAccountRpmRateLimitExceeded/)
+})
+
+test('a cancelled retry is a stopped attempt, and retry results use stream notices', () => {
+  for (const [success, finalError, level, text] of [
+    [false, 'Retry cancelled', 'warn', 'Retry cancelled'],
+    [true, undefined, 'success', 'Retry succeeded'],
+    [false, '429 RPM limit', 'error', 'Retry failed: still rate limited']
+  ] as const) {
+    const [item] = applyEvents([], [{ type: 'auto_retry_end', success, finalError }])
+    assert.ok(item.kind === 'notice')
+    assert.equal(item.source, 'retry')
+    assert.equal(item.level, level)
+    assert.equal(item.text, text)
+  }
 })

@@ -2,7 +2,6 @@ import type { ReactNode } from 'react'
 import { CircleAlert, FolderOpen, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { openingLabel, useT } from '../lib/i18n'
-import { basename } from '../lib/path'
 import { ProjectSelector } from './ProjectSelector'
 import { PiLogo } from './PiLogo'
 
@@ -17,11 +16,9 @@ export function Welcome({ onPick, children }: { onPick: () => void; children: Re
   const dismissError = useAppStore((state) => state.dismissError)
   const t = useT()
   const greeting = workspace
-    ? t('What would you like to do in {project} today?').replace(
-        '{project}',
-        () => workspace.name.trim() || basename(workspace.path)
-      )
+    ? t('What would you like to do in {project} today?')
     : t('What would you like to do with Pi today?')
+  const projectAt = workspace ? greeting.indexOf('{project}') : -1
 
   return (
     <div className="welcome">
@@ -58,7 +55,17 @@ export function Welcome({ onPick, children }: { onPick: () => void; children: Re
 
         <div className="welcome__hero">
           <PiLogo size={56} />
-          <h1 className="welcome__greeting">{greeting}</h1>
+          <div className="welcome__greeting" role="heading" aria-level={1}>
+            {projectAt >= 0 ? (
+              <>
+                {greeting.slice(0, projectAt)}
+                <ProjectSelector variant="inline" placement="bottom" align="left" />
+                {greeting.slice(projectAt + '{project}'.length)}
+              </>
+            ) : (
+              greeting
+            )}
+          </div>
         </div>
 
         {workspace || noProject ? (

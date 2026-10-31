@@ -20,6 +20,17 @@ function supported(value: unknown): boolean | undefined {
     ? record(value).supported as boolean : undefined
 }
 
+function strings(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : undefined
+}
+
+function modalities(value: unknown): ('text' | 'image')[] | undefined {
+  const names = strings(value)
+  if (!names) return undefined
+  const list = [...new Set(names.filter((entry): entry is 'text' | 'image' => entry === 'text' || entry === 'image'))]
+  return list.length ? list : undefined
+}
+
 function price(value: unknown): number | undefined {
   if (typeof value !== 'number' && typeof value !== 'string') return undefined
   if (value === '') return undefined
@@ -54,24 +65,30 @@ export function parseModel(value: unknown, source: ParameterSource = 'upstream')
   const name = raw.display_name ?? raw.displayName ?? raw.name
   if (typeof name === 'string' && name.trim() && !name.startsWith('models/')) model.name = name.trim()
   model.contextWindow = positive(raw.contextWindow, raw.context_length, raw.context_window, raw.max_input_tokens, raw.inputTokenLimit, top.context_length, limits.context)
-  model.maxTokens = positive(raw.maxTokens, raw.max_output_tokens, raw.max_completion_tokens, raw.max_tokens, raw.outputTokenLimit, top.max_completion_tokens, limits.output)
-  const parameters = Array.isArray(raw.supported_parameters) ? raw.supported_parameters : undefined
+  // SenseNova names the output cap `max_output_length`, not `max_output_tokens`.
+  model.maxTokens = positive(raw.maxTokens, raw.max_output_tokens, raw.max_completion_tokens, raw.max_tokens, raw.max_output_length, raw.outputTokenLimit, top.max_completion_tokens, limits.output)
+  const parameters = strings(raw.supported_parameters)
+  const features = strings(raw.supported_features)
   const thinking = record(capabilities.thinking)
   model.reasoning = supported(raw.reasoning) ?? supported(capabilities.reasoning) ?? supported(thinking)
   if (model.reasoning === undefined && Object.keys(record(thinking.types)).length) {
     model.reasoning = Object.entries(record(thinking.types)).some(([type, support]) => type !== 'disabled' && supported(support) === true)
   }
-  if (model.reasoning === undefined && parameters) model.reasoning = parameters.some(p => p === 'reasoning' || p === 'reasoning_effort')
-  const modalities = raw.input ?? architecture.input_modalities ?? raw.input_modalities
-  if (Array.isArray(modalities)) {
-    const input = modalities.filter((entry): entry is 'text' | 'image' => entry === 'text' || entry === 'image')
-    if (input.length) model.input = [...new Set(input)]
-  } else if (supported(capabilities.vision) !== undefined || supported(capabilities.image_input) !== undefined) {
+  // A feature list that omits reasoning is a real "no", not a missing field. Pi ignores thinkingLevelMap unless this is true.
+  if (model.reasoning === undefined && (parameters || features)) {
+    model.reasoning = [...(parameters ?? []), ...(features ?? [])].some(name => name === 'reasoning' || name === 'reasoning_effort')
+  }
+  const inputModalities = modalities(raw.input) ?? modalities(architecture.input_modalities) ?? modalities(raw.input_modalities)
+  if (inputModalities) model.input = inputModalities
+  else if (supported(capabilities.vision) !== undefined || supported(capabilities.image_input) !== undefined) {
     model.input = supported(capabilities.vision) || supported(capabilities.image_input) ? ['text', 'image'] : ['text']
   }
+  model.output = modalities(raw.output) ?? modalities(raw.output_modalities) ?? modalities(architecture.output_modalities)
+  model.tools = typeof raw.tools === 'boolean' ? raw.tools
+    : features ? features.some(name => name === 'tools' || name === 'function_calling' || name === 'tool_choice') : undefined
   model.cost = parseCost(raw)
   model.sources = {}
-  for (const field of ['name', 'contextWindow', 'maxTokens', 'reasoning', 'input', 'cost'] as const) {
+  for (const field of ['name', 'contextWindow', 'maxTokens', 'reasoning', 'input', 'output', 'tools', 'cost'] as const) {
     if (model[field] !== undefined) model.sources[field] = source
     else delete model[field]
   }
@@ -86,11 +103,19 @@ export function enrichModels(values: unknown[], catalog: ProviderModel[]): Provi
     if (!model || unique.has(model.id)) continue
     const reference = known.get(model.id)
     // A proxy's prices are its own. Never fill pricing from another provider's catalog.
-    for (const field of ['name', 'contextWindow', 'maxTokens', 'reasoning', 'input'] as const) {
+    for (const field of ['name', 'contextWindow', 'maxTokens', 'reasoning', 'output', 'tools'] as const) {
       if (model[field] === undefined && reference?.[field] !== undefined) {
         Object.assign(model, { [field]: reference[field] })
         model.sources![field] = 'catalog'
       }
+    }
+    // Image support is additive. SenseNova's list has dropped `image` for models that still accept it.
+    if (reference?.input?.includes('image') && !model.input?.includes('image')) {
+      model.input = [...new Set<'text' | 'image'>([...(model.input ?? ['text']), 'image'])]
+      model.sources!.input = model.sources!.input === 'upstream' ? 'catalog' : (model.sources!.input ?? 'catalog')
+    } else if (model.input === undefined && reference?.input !== undefined) {
+      model.input = reference.input
+      model.sources!.input = 'catalog'
     }
     unique.set(model.id, model)
   }

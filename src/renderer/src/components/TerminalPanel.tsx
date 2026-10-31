@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, Copy, Eraser, Folder, Search, Square, SquareTerminal, X } from 'lucide-react'
-import type { PiEvent } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { formatDuration } from '../lib/format'
 import { formatPlatformShortcut } from '../lib/shortcuts'
@@ -145,6 +144,7 @@ export function TerminalPanel({
   const stickRef = useRef(true)
   const draftRef = useRef('')
   const runningRef = useRef<string | null>(null)
+  const ownerRef = useRef<string | undefined>(undefined)
   const sequenceRef = useRef(0)
   const heightRef = useRef(height)
   const draggingRef = useRef(false)
@@ -202,7 +202,7 @@ export function TerminalPanel({
   // The streamed output is the full text; the final response may be the
   // truncated version of it, so the events are appended as they arrive.
   useEffect(() => {
-    return window.pi.runtime.onEvent((event: PiEvent) => {
+    return window.pi.runtime.onEvent(({ event }) => {
       if (event.type !== 'bash_execution_update') return
       const id = typeof event.id === 'string' ? event.id : ''
       if (!id.startsWith('terminal-') || !activeRef.current.has(id)) return
@@ -238,9 +238,15 @@ export function TerminalPanel({
   useEffect(
     () => () => {
       if (!runningRef.current) return
-      void window.pi.runtime.request('abort_bash').catch(() => {
-        /* the runtime may be gone already */
-      })
+      const sessionKey = ownerRef.current
+      void window.pi.runtime
+        .request('abort_bash', undefined, undefined, {
+          sourceAction: 'terminal-close',
+          uiSessionId: sessionKey
+        }, sessionKey)
+        .catch(() => {
+          /* the runtime may be gone already */
+        })
     },
     []
   )
@@ -374,10 +380,25 @@ export function TerminalPanel({
 
     void (async () => {
       try {
+        const state = useAppStore.getState()
+        const sessionKey = state.activeSessionFile ?? state.draftId
+        ownerRef.current = sessionKey
+        if (sessionKey && typeof window.pi.runtime.ensure === 'function') {
+          const ensured = await window.pi.runtime.ensure({
+            sessionKey,
+            cwd: state.workspace?.path ?? '',
+            sessionFile: sessionKey.startsWith('draft:') ? undefined : sessionKey,
+            trace: { sourceAction: 'terminal-bash', uiSessionId: sessionKey }
+          })
+          if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start')
+        }
+        if (!aliveRef.current || stoppedRef.current.has(id)) return
         const result = await window.pi.runtime.request<BashResult>(
           'bash',
           { command, id, excludeFromContext: true },
-          0
+          0,
+          { sourceAction: 'terminal-bash', uiSessionId: sessionKey },
+          sessionKey
         )
         const started = startedRef.current.get(id)
         // The streamed text is the complete output; the response may carry
@@ -477,7 +498,11 @@ export function TerminalPanel({
     stoppedRef.current.add(id)
     setStopping(true)
     try {
-      await window.pi.runtime.request('abort_bash')
+      const sessionKey = ownerRef.current
+      await window.pi.runtime.request('abort_bash', undefined, undefined, {
+        sourceAction: 'terminal-stop',
+        uiSessionId: sessionKey
+      }, sessionKey)
       setBlocks((previous) =>
         previous.map((block) => (block.id === id ? { ...block, cancelled: true } : block))
       )

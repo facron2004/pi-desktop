@@ -5,6 +5,7 @@ import { describeTool } from '../lib/tools'
 import { summarizeTool } from '../lib/tool-renderers'
 import { useSearchQuery } from '../lib/search-context'
 import { useAppStore } from '../store/useAppStore'
+import { readToolOpen, writeToolOpen } from '../lib/view-state'
 import { ToolCard } from './ToolCard'
 import { useT } from '../lib/i18n'
 
@@ -24,7 +25,9 @@ export function activityHeadline(
   const failed = items.some((item) => item.status === 'error')
   const running = items.some((item) => item.status === 'running')
   const aborted = items.some((item) => item.status === 'aborted')
-  const proposed = items.some((item) => item.status === 'proposed')
+  // A mixed batch is not "Not run": only a batch in which every call never
+  // started gets that label. Individual proposed rows still say so.
+  const proposed = items.length > 0 && items.every((item) => item.status === 'proposed')
   const status: ActivityStatus = failed
     ? 'error'
     : running
@@ -53,6 +56,7 @@ export function activityHeadline(
 /** Consecutive calls share an activity summary; full records stay one click away. */
 export function ToolGroup({ items }: { items: ToolItem[] }) {
   const workspace = useAppStore((state) => state.workspace)
+  const threadKey = useAppStore((state) => state.activeSessionFile ?? state.draftId ?? 'draft')
   const query = useSearchQuery().trim().toLowerCase()
   const t = useT()
   const { title, summary, status } = activityHeadline(items, t)
@@ -64,10 +68,17 @@ export function ToolGroup({ items }: { items: ToolItem[] }) {
       .toLowerCase().includes(query)
   )
 
-  const [manualOpen, setManualOpen] = useState<boolean>()
+  const groupId = `group-${items[0]?.id ?? 'empty'}`
+  const [manualOpen, setManualOpenState] = useState<boolean | undefined>(() =>
+    readToolOpen(threadKey, groupId)
+  )
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({})
   const open = searchMatch || (manualOpen ?? (status === 'error' || items.some((item) => expandedItems[item.id] === true)))
-  const toggleOpen = () => setManualOpen(!open)
+  const toggleOpen = () => {
+    const next = !open
+    setManualOpenState(next)
+    writeToolOpen(threadKey, groupId, next)
+  }
   const setItemExpanded = (id: string, expanded: boolean) =>
     setExpandedItems((current) => ({ ...current, [id]: expanded }))
 

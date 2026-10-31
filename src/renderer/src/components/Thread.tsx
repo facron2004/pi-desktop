@@ -1,7 +1,9 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowDown, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Info, List, Search, X } from 'lucide-react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDown, ChevronDown, ChevronRight, ChevronUp, Info, List, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../lib/thread'
+import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
+import type { Turn } from '../lib/turns'
+import { buildTurns } from '../lib/turns'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
 import { diffStats } from '../lib/diff-fold'
@@ -9,56 +11,32 @@ import { formatClock, formatCost, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
 import { pairForkTargets } from '../lib/thread'
 import { describeTool } from '../lib/tools'
-import { summarizeTool } from '../lib/tool-renderers'
 import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
+import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition } from '../lib/scroll-memory'
+import { readHistoryExpanded, writeHistoryExpanded } from '../lib/view-state'
 import { SearchContext } from '../lib/search-context'
-import { AssistantImage, AssistantText, NoticeMessage, ThinkingBlock, UserMessage } from './MessageItem'
+import { NoticeMessage, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
 import { ProcessTrail } from './ProcessTrail'
 import { FileChangeSummary } from './FileChangeSummary'
-import { RunOutcome, RunStatusRow } from './RunStatusRow'
+import { RunStatusRow } from './RunStatusRow'
+import { AssistantMessage } from './conversation/AssistantMessage'
+import { RunSummary } from './conversation/RunSummary'
+import { ErrorNotice, ThreadErrorBanner } from './conversation/ErrorNotice'
+import { activityOf } from '../lib/activity'
 import { useT } from '../lib/i18n'
 import { isRateLimitError } from '../lib/provider-error'
 import type { RunState } from '../store/useAppStore'
 import '../styles/conversation-stream.css'
-
-interface Turn {
-  id: string
-  user?: UserItem
-  assistants: AssistantItem[]
-  tools: ToolItem[]
-  notices: NoticeItem[]
-  bash: Extract<ThreadItem, { kind: 'bash' }>[]
-}
 
 const VISIBLE_RECENT_TURNS = 3
 const MIN_HIDDEN_MESSAGES = 12
 /** How far from the bottom still counts as "following the output". */
 const FOLLOW_RANGE = 80
 
-/** Group the flat item list into turns: a user message and everything it produced. */
-function buildTurns(items: ThreadItem[]): Turn[] {
-  const turns: Turn[] = []
-  let current: Turn | null = null
-
-  for (const item of items) {
-    if (item.kind === 'user') {
-      current = { id: item.id, user: item, assistants: [], tools: [], notices: [], bash: [] }
-      turns.push(current)
-      continue
-    }
-    if (!current) {
-      current = { id: `turn-${item.id}`, assistants: [], tools: [], notices: [], bash: [] }
-      turns.push(current)
-    }
-    if (item.kind === 'assistant') current.assistants.push(item)
-    else if (item.kind === 'tool') current.tools.push(item)
-    else if (item.kind === 'notice') current.notices.push(item)
-    else if (item.kind === 'bash') current.bash.push(item)
-  }
-
-  return turns
+function scrollKeyOf(sessionFile: string | undefined): string {
+  return sessionFile ?? 'draft'
 }
 
 /** The text of a turn that the search bar looks through. */
@@ -124,6 +102,8 @@ export function Thread() {
   const isStreaming = useAppStore((state) => state.isStreaming)
   const run = useAppStore((state) => state.run)
   const transport = useAppStore((state) => state.transport)
+  const retry = useAppStore((state) => state.retry)
+  const stop = useAppStore((state) => state.stop)
   /**
    * Whether a run is open, as opposed to whether Pi has started streaming.
    *
@@ -134,6 +114,7 @@ export function Thread() {
   const runOpen = isStreaming || (run.phase !== 'idle' && !run.settled)
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
+  const draftId = useAppStore((state) => state.draftId)
   const models = useAppStore((state) => state.models)
   const forkTargets = useAppStore((state) => state.forkTargets)
   const forkFrom = useAppStore((state) => state.forkFrom)
@@ -144,12 +125,21 @@ export function Thread() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   const previousItemsRef = useRef(items)
-  const initialScrollRef = useRef({ sessionFile: activeSessionFile, done: false })
-  if (initialScrollRef.current.sessionFile !== activeSessionFile) {
-    initialScrollRef.current = { sessionFile: activeSessionFile, done: false }
+  // A conversation keeps its own reading position even before Pi has written
+  // its first file: draft ids are unique, and a draft becomes a file path
+  // when the runtime rekeys it.
+  const sessionKey = scrollKeyOf(activeSessionFile ?? draftId)
+  const previousScrollKeyRef = useRef(sessionKey)
+  /** A conversation switch that still has to place the viewport. */
+  const pendingRestoreRef = useRef<string | null>(sessionKey)
+  if (previousScrollKeyRef.current !== sessionKey) {
+    previousScrollKeyRef.current = sessionKey
+    pendingRestoreRef.current = sessionKey
   }
   const [atBottom, setAtBottom] = useState(true)
-  const [expandedHistorySession, setExpandedHistorySession] = useState<string | null>(null)
+  const [expandedHistorySession, setExpandedHistorySession] = useState<string | null>(() =>
+    readHistoryExpanded(sessionKey) ? sessionKey : null
+  )
   const pendingTurnJumpRef = useRef<string | null>(null)
   const { copied, copy } = useCopy()
 
@@ -168,8 +158,15 @@ export function Thread() {
   }, [])
 
   const turns = useMemo(() => buildTurns(items), [items])
-  const historySessionKey = activeSessionFile ?? ''
+  const historySessionKey = sessionKey
   const historyExpanded = expandedHistorySession === historySessionKey
+  const expandHistory = useCallback(() => {
+    writeHistoryExpanded(sessionKey, true)
+    setExpandedHistorySession(sessionKey)
+  }, [sessionKey])
+  useEffect(() => {
+    setExpandedHistorySession(readHistoryExpanded(sessionKey) ? sessionKey : null)
+  }, [sessionKey])
   const hiddenTurnCount = Math.max(0, turns.length - VISIBLE_RECENT_TURNS)
   const hiddenMessageCount = useMemo(
     () =>
@@ -203,7 +200,7 @@ export function Thread() {
    */
   const activity = useMemo(() => {
     const last = turns[turns.length - 1]
-    if (!last) return ''
+    if (!last) return undefined
     // A running tool is the one that is executing; a proposed one has not
     // started, so it is not what the agent is doing this second.
     let tool: ToolItem | undefined
@@ -221,32 +218,48 @@ export function Thread() {
         }
       }
     }
-    if (!tool) return ''
-    const summary = summarizeTool(tool)
-    return summary.detail ? `${summary.label} ${summary.detail}` : summary.label
+    return tool ? activityOf(tool) : undefined
   }, [turns])
 
   useLayoutEffect(() => {
     const node = scrollRef.current
+    if (!node) return
     const itemsChanged = previousItemsRef.current !== items
     previousItemsRef.current = items
-    if (!node || (!itemsChanged && initialScrollRef.current.done) || !stickRef.current || items.length === 0) return
-    if (!initialScrollRef.current.done) {
-      initialScrollRef.current.done = true
-      if (historyCollapsed) {
+
+    // A conversation switch has priority over following the live edge: put
+    // the reader back where they left that conversation, or at the bottom
+    // when it is the first visit. If the transcript is still hydrating, the
+    // restore waits for the first items instead of anchoring to an empty box.
+    const restoreKey = pendingRestoreRef.current
+    if (restoreKey) {
+      if (items.length === 0) return
+      pendingRestoreRef.current = null
+      const entry = readScrollMemory(restoreKey)
+      if (!entry && historyCollapsed) {
+        // A long replayed conversation opens at its tail, not halfway up a
+        // collapse control.
         node.scrollTo({ top: 0, behavior: 'instant' })
         const nearBottom = node.scrollHeight - node.clientHeight < FOLLOW_RANGE
         stickRef.current = nearBottom
         setAtBottom(nearBottom)
         return
       }
+      const restored = applyScroll(node, entry, FOLLOW_RANGE)
+      stickRef.current = restored.stick
+      setAtBottom(restored.atBottom)
+      node.scrollTo({ top: restored.top, behavior: 'instant' })
+      return
     }
+
+    if (!itemsChanged || !stickRef.current || items.length === 0) return
     node.scrollTo({ top: node.scrollHeight, behavior: 'instant' })
-  }, [items, historyCollapsed])
+  }, [items, historyCollapsed, sessionKey])
 
   // A reader who scrolls up is reading, not watching: the follow stops and
   // only a click brings it back. The window is generous enough that a
-  // half-line of layout does not switch the mode.
+  // half-line of layout does not switch the mode. Every scroll also records
+  // the position for the conversation it belongs to.
   useEffect(() => {
     const node = scrollRef.current
     if (!node) return
@@ -254,9 +267,23 @@ export function Thread() {
       const distance = node.scrollHeight - node.scrollTop - node.clientHeight
       stickRef.current = distance < FOLLOW_RANGE
       setAtBottom(stickRef.current)
+      rememberScrollMemory(sessionKey, node, FOLLOW_RANGE)
     }
     node.addEventListener('scroll', onScroll, { passive: true })
     return () => node.removeEventListener('scroll', onScroll)
+  }, [sessionKey])
+
+  // The composer is a sibling, so growing it reduces the transcript's
+  // client height without a scroll event. A reader who is following must
+  // stay pinned to the newest row instead of being left behind the box.
+  useEffect(() => {
+    const node = scrollRef.current
+    if (!node || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => {
+      if (stickRef.current) node.scrollTop = node.scrollHeight
+    })
+    observer.observe(node)
+    return () => observer.disconnect()
   }, [])
 
   // `Ctrl+F` searches the conversation, the way every other editor does.
@@ -298,7 +325,7 @@ export function Thread() {
       if (turnIndex < 0) return
       if (turnIndex < firstVisibleTurn) {
         pendingTurnJumpRef.current = turnId
-        setExpandedHistorySession(historySessionKey)
+        expandHistory()
         return
       }
       const node = scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${turnId}"]`)
@@ -311,7 +338,7 @@ export function Thread() {
       node.classList.add('turn--flash')
       window.setTimeout(() => node.classList.remove('turn--flash'), 1400)
     },
-    [firstVisibleTurn, historySessionKey, turns]
+    [firstVisibleTurn, expandHistory, turns]
   )
 
   const jumpToHit = useCallback(
@@ -372,7 +399,7 @@ export function Thread() {
         const previous = turns[firstVisibleTurn - 1]
         if (previous) {
           pendingTurnJumpRef.current = previous.id
-          setExpandedHistorySession(historySessionKey)
+          expandHistory()
         }
       }
       return
@@ -385,7 +412,7 @@ export function Thread() {
     void entry.turn.offsetWidth
     entry.turn.classList.add('turn--flash')
     window.setTimeout(() => entry.turn.classList.remove('turn--flash'), 1400)
-  }, [firstVisibleTurn, historySessionKey, turns])
+  }, [firstVisibleTurn, expandHistory, turns])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -410,6 +437,7 @@ export function Thread() {
     stickRef.current = true
     setAtBottom(true)
     node.scrollTo({ top: node.scrollHeight, behavior: scrollBehavior() })
+    rememberScrollPosition(sessionKey, { top: node.scrollHeight, atBottom: true })
   }
 
   // A conversation-search hit from the sidebar asks for a message, and the
@@ -482,7 +510,7 @@ export function Thread() {
       pendingJumpTargetRef.current = turnId
         ? { turnId, query: pendingJump.query }
         : null
-      if (hidden) setExpandedHistorySession(historySessionKey)
+      if (hidden) expandHistory()
       setQuery(pendingJump.query)
       setSearchResultsOpen(false)
       setSearchOpen(true)
@@ -498,10 +526,10 @@ export function Thread() {
       window.setTimeout(() => node.classList.remove('turn--flash'), 1600)
     } else if (turnId && hidden) {
       pendingTurnJumpRef.current = turnId
-      setExpandedHistorySession(historySessionKey)
+      expandHistory()
     }
     consumeJump()
-  }, [pendingJump, activeSessionFile, historySessionKey, items, turns, firstVisibleTurn, workspace?.path, query, consumeJump, showToast])
+  }, [pendingJump, activeSessionFile, expandHistory, items, turns, firstVisibleTurn, workspace?.path, query, consumeJump, showToast])
 
   useEffect(() => {
     const target = pendingJumpTargetRef.current
@@ -632,7 +660,7 @@ export function Thread() {
               type="button"
               aria-expanded={false}
               aria-label={t(`Up ${hiddenMessageCount} messages`)}
-              onClick={() => setExpandedHistorySession(historySessionKey)}
+              onClick={expandHistory}
             >
               <span>{t(`Up ${hiddenMessageCount} messages`)}</span>
               <ChevronRight size={15} strokeWidth={1.6} />
@@ -663,25 +691,16 @@ export function Thread() {
         </SearchContext.Provider>
 
         {runOpen ? (
-          <RunStatusRow run={run} transport={transport} activity={activity || undefined} />
+          <RunStatusRow
+            run={run}
+            transport={transport}
+            retry={retry}
+            onStopRetry={stop}
+            activity={activity}
+          />
         ) : null}
 
-        {error ? (
-          <div className="thread-error-banner" role="alert">
-            <div className="thread-error-banner__content">
-              <CircleAlert size={16} className="thread-error-banner__icon" />
-              <span className="thread-error-banner__text">{error}</span>
-            </div>
-            <button
-              className="icon-btn thread-error-banner__dismiss"
-              onClick={dismissError}
-              aria-label={t('Dismiss')}
-              title={t('Dismiss')}
-            >
-              <X size={14} />
-            </button>
-          </div>
-        ) : null}
+        {error ? <ThreadErrorBanner message={error} onDismiss={dismissError} /> : null}
       </div>
 
       {!atBottom ? (
@@ -813,7 +832,12 @@ const ThreadTurnView = memo(function ThreadTurnView({
       {turn.assistants.length > 0 || turn.tools.length > 0 || turn.notices.length > 0 || turn.bash.length > 0 ? (
         <div className="assistant">
           <div className="assistant__body">
-            {renderTurn(turn, toolMap, replyOutcome, liveTail)}
+            <AssistantMessage
+              turn={turn}
+              toolMap={toolMap}
+              replyOutcome={replyOutcome}
+              liveTail={liveTail}
+            />
 
             {turn.bash.map((item) => (
               <BashCard key={item.id} item={item} />
@@ -852,18 +876,18 @@ const ThreadTurnView = memo(function ThreadTurnView({
               />
             ) : null}
 
-            {outcome && !replyOutcome ? <RunOutcome run={outcome} /> : null}
+            {outcome && !replyOutcome ? <RunSummary run={outcome} /> : null}
 
             {lastAssistant?.stopReason === 'error' &&
-            !(isLastTurn && !run.settled && isRateLimitError(lastAssistant.error)) ? (
-              <div className="notice" data-level="error" role="alert" title={lastAssistant.error}>
-                <CircleAlert size={14} className="notice__icon" />
-                <span>
-                  {isRateLimitError(lastAssistant.error)
+            !(isLastTurn && (run.outcome === 'aborted' || (!run.settled && isRateLimitError(lastAssistant.error)))) ? (
+              <ErrorNotice
+                title={lastAssistant.error}
+                message={
+                  isRateLimitError(lastAssistant.error)
                     ? t('Rate limit reached. This conversation is paused until the limit resets — it was not discarded.')
-                    : (lastAssistant.error ?? t('error'))}
-                </span>
-              </div>
+                    : (lastAssistant.error ?? t('error'))
+                }
+              />
             ) : null}
 
             {replySettled && (lastAssistant.model || lastAssistant.usage) ? (
@@ -891,147 +915,3 @@ const ThreadTurnView = memo(function ThreadTurnView({
     </section>
   )
 }, equalThreadTurnViewProps)
-
-interface ProcessBuffer {
-  key: string
-  tools: ToolItem[]
-  thoughts: number
-  searchText: string
-  children: ReactNode[]
-}
-
-type TurnSegment = { kind: 'node'; node: ReactNode } | { kind: 'process'; buffer: ProcessBuffer }
-
-/**
- * Render a whole turn.
- *
- * Spoken text keeps the column. Thinking and tool calls between two stretches
- * of text are one process: open and indented while it is the live tail,
- * collapsed to a single indented line once that stretch has finished. Tools
- * stay grouped inside it until text, thinking or an image interrupts them,
- * even when they span several assistant messages.
- */
-function renderTurn(
-  turn: Turn,
-  toolMap: Map<string, ToolItem>,
-  replyOutcome: RunState | undefined,
-  liveTail: boolean
-): ReactNode[] {
-  const segments: TurnSegment[] = []
-  let group: ToolItem[] = []
-  let trace: ProcessBuffer | null = null
-  const lastAssistant = turn.assistants.at(-1)
-  let outcomeShown = false
-
-  const ensureProcess = (key: string) => {
-    if (!trace) {
-      trace = { key, tools: [], thoughts: 0, searchText: '', children: [] }
-    }
-  }
-
-  const flushTools = () => {
-    if (!group.length) return
-    const items = group
-    group = []
-    ensureProcess(`process-${items[0].id}`)
-    if (!trace) return
-    trace.tools.push(...items)
-    // The fold already names the batch. Each call is a link, not another
-    // "Activity" row wrapped around a card.
-    for (const item of items) {
-      trace.children.push(<ToolCard key={item.id} item={item} presentation="link" />)
-    }
-  }
-
-  const flushProcess = () => {
-    flushTools()
-    if (!trace || trace.children.length === 0) {
-      trace = null
-      return
-    }
-    segments.push({ kind: 'process', buffer: trace })
-    trace = null
-  }
-
-  for (const assistant of turn.assistants) {
-    const lastTextIndex = assistant.blocks.reduce(
-      (found, block, index) => (block.type === 'text' ? index : found),
-      -1
-    )
-
-    assistant.blocks.forEach((block, index) => {
-      if (block.type === 'text') {
-        if (!block.text.trim()) return
-        flushProcess()
-        if (replyOutcome && assistant === lastAssistant && !outcomeShown) {
-          segments.push({ kind: 'node', node: <RunOutcome key="run-outcome" run={replyOutcome} /> })
-          outcomeShown = true
-        }
-        segments.push({
-          kind: 'node',
-          node: (
-            <AssistantText
-              key={`${assistant.id}-${index}`}
-              text={block.text}
-              streaming={assistant.streaming && index === lastTextIndex}
-            />
-          )
-        })
-        return
-      }
-      if (block.type === 'thinking') {
-        if (!block.text.trim()) return
-        flushTools()
-        ensureProcess(`process-${assistant.id}-${index}`)
-        if (!trace) return
-        trace.thoughts += 1
-        trace.searchText += `\n${block.text}`
-        trace.children.push(
-          <ThinkingBlock
-            key={`${assistant.id}-${index}`}
-            text={block.text}
-            streaming={assistant.streaming && index === assistant.blocks.length - 1}
-          />
-        )
-        return
-      }
-      if (block.type === 'image') {
-        flushProcess()
-        segments.push({
-          kind: 'node',
-          node: (
-            <AssistantImage
-              key={`${assistant.id}-${index}`}
-              data={block.data}
-              mimeType={block.mimeType}
-            />
-          )
-        })
-        return
-      }
-      const tool = toolMap.get(block.id)
-      if (!tool) return
-      group.push(tool)
-    })
-  }
-  flushProcess()
-
-  return segments.map((segment, index) => {
-    if (segment.kind === 'node') return segment.node
-    const { buffer } = segment
-    return (
-      <ProcessTrail
-        key={buffer.key}
-        tools={buffer.tools}
-        thoughts={buffer.thoughts}
-        searchText={buffer.searchText}
-        live={
-          liveTail &&
-          (index === segments.length - 1 || buffer.tools.some((tool) => tool.status === 'running'))
-        }
-      >
-        {buffer.children}
-      </ProcessTrail>
-    )
-  })
-}

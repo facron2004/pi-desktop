@@ -89,7 +89,14 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
   const load = useCallback(async () => {
     setState({ status: 'loading' })
     try {
-      const raw = await window.pi.runtime.request<unknown>('get_tree')
+      const key = await useAppStore.getState().ensureRuntime(activeSessionFile, 'session-tree')
+      const raw = await window.pi.runtime.request<unknown>(
+        'get_tree',
+        undefined,
+        undefined,
+        { sourceAction: 'session-tree', uiSessionId: key },
+        key
+      )
       const tree = normalizeTree(raw)
       setState({ status: 'ready', tree })
       // The folds the reader left last time come back by node id; a

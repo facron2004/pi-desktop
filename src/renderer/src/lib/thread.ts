@@ -1,5 +1,7 @@
 import type { AgentMessage, ContentBlock, ForkTarget, PiEvent, Usage } from '@shared/types'
-import { isRateLimitError } from './provider-error'
+import { normalizePiEvent, type StreamContext, type StreamEvent } from './stream-events'
+
+export type { StreamContext } from './stream-events'
 
 /* ------------------------------------------------------------------ *
  * Run / turn identity
@@ -8,15 +10,9 @@ import { isRateLimitError } from './provider-error'
  * them: one run per `agent_start` (a prompt plus the automatic work that
  * follows it) and one turn per `turn_start`. They are what makes a live
  * stream and a replayed history comparable, and they are the key the
- * session-isolation guard uses.
+ * session-isolation guard uses. `StreamContext` lives in the adapter now;
+ * it is re-exported here because `applyEvent` is the public entry point.
  * ------------------------------------------------------------------ */
-
-export interface StreamContext {
-  /** Session file the events belong to; events from another one are dropped. */
-  sessionKey: string
-  runId?: string
-  turnId?: string
-}
 
 /* ------------------------------------------------------------------ *
  * Thread items
@@ -43,8 +39,14 @@ export interface UserItem {
   images: { data: string; mimeType: string }[]
   timestamp: number
   order: number
+  /** Adapter-minted message identity, used to ignore a duplicated start. */
+  messageId?: string
   runId?: string
   turnId?: string
+  /** Session key of the normalized event that created the item. */
+  threadId?: string
+  /** Sequence of that event, monotonic per thread. */
+  sequence?: number
 }
 
 export interface AssistantItem {
@@ -58,8 +60,12 @@ export interface AssistantItem {
   streaming: boolean
   timestamp: number
   order: number
+  /** Adapter-minted message identity, used to ignore a duplicated start. */
+  messageId?: string
   runId?: string
   turnId?: string
+  threadId?: string
+  sequence?: number
 }
 
 export interface ToolItem {
@@ -88,6 +94,8 @@ export interface ToolItem {
   order: number
   runId?: string
   turnId?: string
+  threadId?: string
+  sequence?: number
 }
 
 export interface BashItem {
@@ -99,6 +107,8 @@ export interface BashItem {
   excludeFromContext?: boolean
   timestamp: number
   order: number
+  threadId?: string
+  sequence?: number
 }
 
 export interface NoticeItem {
@@ -109,6 +119,9 @@ export interface NoticeItem {
   timestamp: number
   order: number
   runId?: string
+  source?: 'retry'
+  threadId?: string
+  sequence?: number
 }
 
 export type ThreadItem = UserItem | AssistantItem | ToolItem | BashItem | NoticeItem
@@ -242,6 +255,19 @@ function findTool(items: ThreadItem[], toolCallId: string): ToolItem | undefined
   )
 }
 
+/**
+ * A finished tool node is terminal.
+ *
+ * Pi can repeat or reorder records around a session boundary. A late
+ * `tool_execution_start` must not turn a completed read back into a spinner,
+ * and a late proposal must not hide a real result. Terminal states win.
+ */
+type FinishedToolItem = ToolItem & { status: 'ok' | 'error' | 'aborted' }
+
+function isFinishedTool(item: ToolItem | undefined): item is FinishedToolItem {
+  return item !== undefined && (item.status === 'ok' || item.status === 'error' || item.status === 'aborted')
+}
+
 function notice(level: NoticeItem['level'], text: string, runId?: string): NoticeItem {
   return {
     id: nextId('notice'),
@@ -254,16 +280,7 @@ function notice(level: NoticeItem['level'], text: string, runId?: string): Notic
   }
 }
 
-/** The `message_update` payload Pi wraps around a stream event. */
-interface AssistantMessageEventPayload {
-  type: string
-  contentIndex?: number
-  delta?: string
-  content?: string
-  id?: string
-  toolName?: string
-  toolCall?: { id: string; name: string; arguments: Record<string, unknown> }
-}
+/** The `message_update` payload lives in the adapter; the reducer never sees it. */
 
 /* ------------------------------------------------------------------ *
  * Hydration
@@ -291,6 +308,9 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
     }
   }
 
+  /** Position of each tool node, so a later result updates it instead of adding one. */
+  const toolNodes = new Map<string, number>()
+
   for (const message of messages) {
     switch (message.role) {
       case 'user': {
@@ -305,10 +325,11 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
         break
       }
       case 'assistant': {
+        const blocks = blocksFromContent(message.content)
         items.push({
           id: nextId('assistant'),
           kind: 'assistant',
-          blocks: blocksFromContent(message.content),
+          blocks,
           usage: message.usage,
           model: message.model,
           stopReason: message.stopReason,
@@ -317,21 +338,56 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
           timestamp: message.timestamp ?? Date.now(),
           order: nextOrder()
         })
+        // A call the model named but that never produced a result must still
+        // be visible after a replay. The node starts `proposed`; a later
+        // toolResult message updates the same node in place.
+        for (const block of blocks) {
+          if (block.type !== 'toolCall' || toolNodes.has(block.id)) continue
+          toolNodes.set(block.id, items.length)
+          items.push({
+            id: nextId('tool'),
+            kind: 'tool',
+            toolCallId: block.id,
+            toolName: block.name,
+            args: block.args ?? {},
+            status: 'proposed',
+            timestamp: message.timestamp ?? Date.now(),
+            order: nextOrder()
+          })
+        }
         break
       }
       case 'toolResult': {
         // A tool result is the same node the live stream updates; the
         // message is the authoritative final state of it.
-        const call = calls.get(message.toolCallId ?? '')
+        const toolCallId = message.toolCallId ?? ''
+        const call = calls.get(toolCallId)
         const result = textOf(message.content)
         // The duration travels on the message when Pi recorded it, so a
         // replayed card shows the same timing a live one did.
         const raw = message as unknown as { durationMs?: unknown }
         const duration = typeof raw.durationMs === 'number' ? raw.durationMs : undefined
+        const existingIndex = toolNodes.get(toolCallId)
+        if (existingIndex !== undefined) {
+          const existing = items[existingIndex]
+          if (existing && existing.kind === 'tool') {
+            items[existingIndex] = {
+              ...existing,
+              toolName: message.toolName ?? call?.name ?? existing.toolName,
+              args: call?.args ?? existing.args,
+              status: message.isError ? 'error' : 'ok',
+              result,
+              isError: message.isError,
+              durationMs: duration ?? existing.durationMs
+            }
+            break
+          }
+        }
+        toolNodes.set(toolCallId, items.length)
         items.push({
           id: nextId('tool'),
           kind: 'tool',
-          toolCallId: message.toolCallId ?? '',
+          toolCallId,
           toolName: message.toolName ?? call?.name ?? 'tool',
           args: call?.args ?? {},
           status: message.isError ? 'error' : 'ok',
@@ -390,6 +446,9 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
  * Fold one Pi session event into the thread.
  * Returns a new array when something changed.
  *
+ * The wire shape is understood by `normalizePiEvent`; this function only
+ * hands the resulting semantic event to `applyStreamEvent`, so the live
+ * reducer and any other consumer of the adapter share one projection.
  * `context` carries the run and turn the event belongs to. Without it the
  * items are still updated, but they cannot be attributed to a run — which
  * is what a replayed history needs anyway.
@@ -399,10 +458,63 @@ export function applyEvent(
   event: PiEvent,
   context?: StreamContext
 ): ThreadItem[] {
+  const streamEvent = normalizePiEvent(event, context)
+  if (!streamEvent) return items
+  return applyStreamEvent(items, streamEvent)
+}
+
+/** The identity a normalized event stamps on the item it creates. */
+function identityOf(event: StreamEvent): { threadId?: string; sequence: number } {
+  return event.threadId
+    ? { threadId: event.threadId, sequence: event.sequence }
+    : { sequence: event.sequence }
+}
+
+/** A notice created by a normalized event rather than by session hydration. */
+function noticeFor(
+  event: StreamEvent,
+  level: NoticeItem['level'],
+  text: string,
+  source?: NoticeItem['source']
+): NoticeItem {
+  return {
+    id: nextId('notice'),
+    kind: 'notice',
+    level,
+    text,
+    timestamp: Date.now(),
+    order: nextOrder(),
+    ...identityOf(event),
+    ...(source ? { source } : {})
+  }
+}
+
+/**
+ * Project one normalized event onto the thread.
+ *
+ * This is the only writer of the transcript; `applyEvent` normalizes first.
+ * The switch is on semantic event types, not Pi's wire names, and each case
+ * preserves the reducer's original rules exactly — the tool node is keyed by
+ * `toolCallId`, `text_end`/`message_end` are authoritative, and a partial
+ * tool result replaces the previous snapshot instead of extending it.
+ */
+export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): ThreadItem[] {
   switch (event.type) {
-    case 'message_start': {
-      const message = event.message as AgentMessage | undefined
+    case 'message.started': {
+      const message = event.message
       if (!message) return items
+      // Pi replays session records on resume; a repeated `message_start`
+      // for the same adapter-minted id must not create a second bubble.
+      if (
+        event.messageId &&
+        items.some(
+          (item) =>
+            (item.kind === 'user' || item.kind === 'assistant') &&
+            item.messageId === event.messageId
+        )
+      ) {
+        return items
+      }
       if (message.role === 'user') {
         return [
           ...items,
@@ -413,8 +525,10 @@ export function applyEvent(
             images: imagesOf(message.content),
             timestamp: message.timestamp ?? Date.now(),
             order: nextOrder(),
-            runId: context?.runId,
-            turnId: context?.turnId
+            messageId: event.messageId,
+            runId: event.runId,
+            turnId: event.turnId,
+            ...identityOf(event)
           }
         ]
       }
@@ -428,131 +542,181 @@ export function applyEvent(
             streaming: true,
             timestamp: message.timestamp ?? Date.now(),
             order: nextOrder(),
-            runId: context?.runId,
-            turnId: context?.turnId
+            messageId: event.messageId,
+            runId: event.runId,
+            turnId: event.turnId,
+            ...identityOf(event)
           }
         ]
       }
       return items
     }
 
-    case 'message_update': {
-      const payload = event.assistantMessageEvent as AssistantMessageEventPayload | undefined
-      if (!payload) return items
+    case 'message.block.started': {
       const assistant = lastStreamingAssistant(items)
       if (!assistant) return items
-
       const blocks = assistant.blocks.slice()
-      const index = payload.contentIndex ?? blocks.length
-
-      const ensure = (): AssistantBlock => {
-        if (!blocks[index]) {
-          blocks[index] = { type: 'text', text: '' }
-        }
-        return blocks[index]
-      }
-
-      switch (payload.type) {
-        case 'text_start': {
-          blocks[index] = { type: 'text', text: '' }
-          break
-        }
-        case 'text_delta': {
-          const block = ensure()
-          if (block.type === 'text') block.text += payload.delta ?? ''
-          break
-        }
-        case 'text_end': {
-          // `text_end` is the authoritative content of the block, so the
-          // deltas are replaced rather than added to.
-          const block = ensure()
-          if (block.type === 'text') block.text = payload.content ?? block.text
-          break
-        }
-        case 'thinking_start': {
-          blocks[index] = { type: 'thinking', text: '' }
-          break
-        }
-        case 'thinking_delta': {
-          const block = ensure()
-          if (block.type === 'thinking') block.text += payload.delta ?? ''
-          break
-        }
-        case 'thinking_end': {
-          const block = ensure()
-          if (block.type === 'thinking') block.text = payload.content ?? block.text
-          break
-        }
-        case 'toolcall_start': {
-          // The model named a tool. It is not running yet — the node exists
-          // from here on so a call that never executes is still visible.
-          const toolCallId = payload.id ?? nextId('call')
-          blocks[index] = {
-            type: 'toolCall',
-            id: toolCallId,
-            name: payload.toolName ?? 'tool',
-            argsText: ''
+      const index = event.contentIndex ?? blocks.length
+      if (event.blockType === 'toolCall') {
+        // The adapter emits `tool.proposed` for a tool-call block; this keeps
+        // a hand-built event consistent with that node.
+        const toolCallId = event.toolCallId ?? nextId('call')
+        const toolName = event.toolName ?? 'tool'
+        blocks[index] = { type: 'toolCall', id: toolCallId, name: toolName, argsText: '' }
+        return patchTool(
+          replaceItem(items, assistant.id, { ...assistant, blocks }),
+          toolCallId,
+          { status: 'proposed', toolName },
+          {
+            toolName,
+            args: {},
+            status: 'proposed',
+            runId: event.runId,
+            turnId: event.turnId,
+            ...identityOf(event)
           }
-          return patchTool(
-            replaceItem(items, assistant.id, { ...assistant, blocks }),
-            toolCallId,
-            { status: 'proposed', toolName: payload.toolName ?? 'tool' },
-            {
-              toolName: payload.toolName ?? 'tool',
-              args: {},
-              status: 'proposed',
-              runId: context?.runId,
-              turnId: context?.turnId
-            }
-          )
-        }
-        case 'toolcall_delta': {
-          // Arguments arrive as a JSON string. They are buffered, never
-          // parsed mid-flight: a half-written object is not an argument.
-          const block = ensure()
-          if (block.type === 'toolCall') block.argsText += payload.delta ?? ''
-          break
-        }
-        case 'toolcall_end': {
-          const call = payload.toolCall
-          const previous = blocks[index]
-          const previousId = previous && previous.type === 'toolCall' ? previous.id : undefined
-          const toolCallId = call?.id ?? previousId ?? nextId('call')
-          const toolName =
-            call?.name ?? (previous && previous.type === 'toolCall' ? previous.name : 'tool')
-          blocks[index] = {
-            type: 'toolCall',
-            id: toolCallId,
-            name: toolName,
-            argsText: JSON.stringify(call?.arguments ?? {}, null, 2),
-            args: call?.arguments ?? {}
-          }
-          return patchTool(
-            replaceItem(items, assistant.id, { ...assistant, blocks }),
-            toolCallId,
-            {
-              status: 'proposed',
-              toolName,
-              args: call?.arguments ?? {}
-            },
-            {
-              toolName,
-              args: call?.arguments ?? {},
-              status: 'proposed',
-              runId: context?.runId,
-              turnId: context?.turnId
-            }
-          )
-        }
-        default:
-          break
+        )
       }
-
+      blocks[index] = { type: event.blockType, text: '' }
       return replaceItem(items, assistant.id, { ...assistant, blocks })
     }
 
-    case 'message_end': {
-      const message = event.message as AgentMessage | undefined
+    case 'message.delta': {
+      const assistant = lastStreamingAssistant(items)
+      if (!assistant) return items
+      const blocks = assistant.blocks.slice()
+      const index = event.contentIndex ?? blocks.length
+      let block = blocks[index]
+      if (!block) {
+        block = { type: 'text', text: '' }
+        blocks[index] = block
+      }
+      if (event.blockType === 'text' && block.type === 'text') {
+        blocks[index] = { ...block, text: block.text + event.delta }
+      } else if (event.blockType === 'thinking' && block.type === 'thinking') {
+        blocks[index] = { ...block, text: block.text + event.delta }
+      }
+      return replaceItem(items, assistant.id, { ...assistant, blocks })
+    }
+
+    case 'message.block.completed': {
+      const assistant = lastStreamingAssistant(items)
+      if (!assistant) return items
+      const blocks = assistant.blocks.slice()
+      const index = event.contentIndex ?? blocks.length
+      let block = blocks[index]
+      if (!block) {
+        block = { type: 'text', text: '' }
+        blocks[index] = block
+      }
+      // The completed block is the authority, so the deltas are replaced
+      // rather than added to.
+      if (event.blockType === 'text' && block.type === 'text') {
+        blocks[index] = { ...block, text: event.content ?? block.text }
+      } else if (event.blockType === 'thinking' && block.type === 'thinking') {
+        blocks[index] = { ...block, text: event.content ?? block.text }
+      }
+      return replaceItem(items, assistant.id, { ...assistant, blocks })
+    }
+
+    case 'tool.proposed': {
+      // The model named a tool. It is not running yet — the node exists from
+      // here on so a call that never executes is still visible.
+      const assistant = lastStreamingAssistant(items)
+      if (!assistant) return items
+      const toolCallId = event.toolCallId ?? nextId('call')
+      const toolName = event.toolName
+      const existing = findTool(items, toolCallId)
+      if (isFinishedTool(existing)) {
+        // A duplicate proposal arriving after the result must not erase the
+        // result or downgrade the row to "not run".
+        return items
+      }
+      const status: ToolStatus = existing?.status === 'running' ? 'running' : 'proposed'
+      const blocks = assistant.blocks.slice()
+      const index = event.contentIndex ?? blocks.length
+      blocks[index] = { type: 'toolCall', id: toolCallId, name: toolName, argsText: '' }
+      return patchTool(
+        replaceItem(items, assistant.id, { ...assistant, blocks }),
+        toolCallId,
+        { status, toolName },
+        {
+          toolName,
+          args: {},
+          status,
+          runId: event.runId,
+          turnId: event.turnId,
+          ...identityOf(event)
+        }
+      )
+    }
+
+    case 'tool.args': {
+      const assistant = lastStreamingAssistant(items)
+      if (!assistant) return items
+      const toolCallId = event.toolCallId ?? ''
+      const existing = findTool(items, toolCallId)
+      if (isFinishedTool(existing)) {
+        // The result is terminal, but a late `toolcall_end` may still carry
+        // the arguments the node was created without. Fill them in without
+        // changing the status.
+        const args = event.args
+        if (args && Object.keys(existing.args ?? {}).length === 0) {
+          return patchTool(items, toolCallId, {
+            toolName: event.toolName || existing.toolName,
+            args
+          })
+        }
+        return items
+      }
+      const blocks = assistant.blocks.slice()
+      const index = event.contentIndex ?? blocks.length
+      const previous = blocks[index]
+
+      if (!event.complete) {
+        // Arguments arrive as a JSON string. They are buffered, never parsed
+        // mid-flight: a half-written object is not an argument.
+        let block = previous
+        if (!block) {
+          block = { type: 'text', text: '' }
+          blocks[index] = block
+        }
+        if (block.type === 'toolCall') {
+          blocks[index] = { ...block, argsText: block.argsText + (event.delta ?? '') }
+        }
+        return replaceItem(items, assistant.id, { ...assistant, blocks })
+      }
+
+      const previousId = previous && previous.type === 'toolCall' ? previous.id : undefined
+      const resolvedId = event.toolCallId ?? previousId ?? nextId('call')
+      const toolName =
+        event.toolName ?? (previous && previous.type === 'toolCall' ? previous.name : 'tool')
+      const args = event.args ?? {}
+      const status: ToolStatus = existing?.status === 'running' ? 'running' : 'proposed'
+      blocks[index] = {
+        type: 'toolCall',
+        id: resolvedId,
+        name: toolName,
+        argsText: JSON.stringify(args, null, 2),
+        args
+      }
+      return patchTool(
+        replaceItem(items, assistant.id, { ...assistant, blocks }),
+        resolvedId,
+        { status, toolName, args },
+        {
+          toolName,
+          args,
+          status,
+          runId: event.runId,
+          turnId: event.turnId,
+          ...identityOf(event)
+        }
+      )
+    }
+
+    case 'message.completed': {
+      const message = event.message
       if (!message) return items
       if (message.role === 'assistant') {
         const assistant = lastStreamingAssistant(items)
@@ -575,36 +739,39 @@ export function applyEvent(
       return items
     }
 
-    case 'tool_execution_start': {
-      const toolCallId = String(event.toolCallId ?? '')
+    case 'tool.started': {
+      const toolCallId = event.toolCallId ?? ''
       if (!toolCallId) return items
       const existing = findTool(items, toolCallId)
+      if (isFinishedTool(existing)) return items
+      const startedAt = Date.now()
       return patchTool(
         items,
         toolCallId,
         {
           status: 'running',
-          toolName: String(event.toolName ?? existing?.toolName ?? 'tool'),
-          startedAt: Date.now()
+          toolName: event.toolName || existing?.toolName || 'tool',
+          startedAt
         },
         {
-          toolName: String(event.toolName ?? 'tool'),
-          args: (event.args as Record<string, unknown>) ?? {},
+          toolName: event.toolName || 'tool',
+          args: event.args,
           status: 'running',
-          startedAt: Date.now(),
-          runId: context?.runId,
-          turnId: context?.turnId
+          startedAt,
+          runId: event.runId,
+          turnId: event.turnId,
+          ...identityOf(event)
         }
       )
     }
 
-    case 'tool_execution_update': {
-      const toolCallId = String(event.toolCallId ?? '')
+    case 'tool.output.delta': {
+      const toolCallId = event.toolCallId ?? ''
       const target = toolCallId ? findTool(items, toolCallId) : undefined
-      if (!target) return items
+      if (!target || isFinishedTool(target)) return items
       // `partialResult` is the newest partial result of the tool, so it
-      // replaces what was there. Appending it would repeat the whole
-      // output on every update.
+      // replaces what was there. Appending it would repeat the whole output
+      // on every update.
       const progress = extractToolResult(event.partialResult)
       return patchTool(items, toolCallId, {
         status: 'running',
@@ -612,41 +779,44 @@ export function applyEvent(
       })
     }
 
-    case 'tool_execution_end': {
-      const toolCallId = String(event.toolCallId ?? '')
+    case 'tool.finished': {
+      const toolCallId = event.toolCallId ?? ''
       if (!toolCallId) return items
       const existing = findTool(items, toolCallId)
-      const isError = Boolean(event.isError)
+      // A repeated end (or an end after an abort) must not overwrite the
+      // terminal state the client already showed.
+      if (isFinishedTool(existing)) return items
+      const isError = event.isError
+      const result = extractToolResult(event.result)
       return patchTool(
         items,
         toolCallId,
         {
           status: isError ? 'error' : 'ok',
           isError,
-          result: extractToolResult(event.result) ?? existing?.result,
+          result: result ?? existing?.result,
           exitCode: exitCodeOf(event.result) ?? existing?.exitCode,
-          durationMs:
-            typeof event.durationMs === 'number' ? event.durationMs : existing?.durationMs,
+          durationMs: event.durationMs ?? existing?.durationMs,
           finishedAt: Date.now(),
           progress: undefined
         },
         {
-          toolName: String(event.toolName ?? 'tool'),
-          args: (event.args as Record<string, unknown>) ?? {},
+          toolName: event.toolName || 'tool',
+          args: event.args ?? {},
           status: isError ? 'error' : 'ok',
           isError,
-          durationMs:
-            typeof event.durationMs === 'number' ? (event.durationMs as number) : undefined,
+          durationMs: event.durationMs,
           finishedAt: Date.now(),
-          runId: context?.runId,
-          turnId: context?.turnId
+          runId: event.runId,
+          turnId: event.turnId,
+          ...identityOf(event)
         }
       )
     }
 
-    case 'bash_execution_update': {
-      const delta = String(event.delta ?? '')
-      const targetId = typeof event.id === 'string' ? event.id : undefined
+    case 'command.output.delta': {
+      const delta = event.delta
+      const targetId = event.commandId
       let existing: BashItem | undefined
       if (targetId) {
         existing = items.find((item) => item.kind === 'bash' && item.id === targetId) as
@@ -673,62 +843,18 @@ export function applyEvent(
           command: '',
           output: delta,
           timestamp: Date.now(),
-          order: nextOrder()
+          order: nextOrder(),
+          ...identityOf(event)
         }
       ]
     }
 
-    case 'compaction_start': {
-      const reason = String(event.reason ?? 'manual')
-      return [...items, notice('info', `Compacting context (${reason})…`)]
+    case 'notice': {
+      return [...items, noticeFor(event, event.level, event.text, event.noticeSource)]
     }
 
-    case 'compaction_end': {
-      const aborted = Boolean(event.aborted)
-      if (aborted) return [...items, notice('warn', 'Compaction aborted')]
-      if (event.errorMessage) {
-        return [...items, notice('error', `Compaction failed: ${String(event.errorMessage)}`)]
-      }
-      const result = event.result as { tokensBefore?: number; estimatedTokensAfter?: number } | undefined
-      const before = result?.tokensBefore
-      const after = result?.estimatedTokensAfter
-      const detail = before && after ? ` (${before} → ~${after} tokens)` : ''
-      return [...items, notice('success', `Context compacted${detail}`)]
-    }
-
-    case 'auto_retry_start': {
-      const raw = String(event.errorMessage ?? 'transient error')
-      const wait = Math.max(1, Math.round(Number(event.delayMs ?? 0) / 1000))
-      // A rate-limit payload is a page of JSON. The transcript only needs to
-      // say that the turn is waiting, not paste the provider body in.
-      const detail = isRateLimitError(raw)
-        ? `rate limit, next try in ${wait}s`
-        : raw.replace(/\s+/g, ' ').trim().slice(0, 180)
-      return [
-        ...items,
-        notice(
-          'warn',
-          `Retrying (attempt ${String(event.attempt ?? 1)}/${String(event.maxAttempts ?? '?')}) — ${detail}`
-        )
-      ]
-    }
-
-    case 'auto_retry_end': {
-      if (event.success) return [...items, notice('success', 'Retry succeeded')]
-      const raw = String(event.finalError ?? 'unknown error')
-      const detail = isRateLimitError(raw)
-        ? 'still rate limited'
-        : raw.replace(/\s+/g, ' ').trim().slice(0, 180)
-      return [...items, notice('error', `Retry failed: ${detail}`)]
-    }
-
-    case 'extension_error': {
-      return [...items, notice('error', `Extension error: ${String(event.error ?? '')}`)]
-    }
-
-    case 'client_notice': {
-      const level = (event.level as NoticeItem['level']) ?? 'warn'
-      return [...items, notice(level, String(event.text ?? ''))]
+    case 'error': {
+      return [...items, noticeFor(event, 'error', event.text)]
     }
 
     default:
@@ -756,9 +882,11 @@ export function applyEvents(
  */
 export function markAborted(items: ThreadItem[]): ThreadItem[] {
   return items.map((item) => {
-    if (item.kind === 'tool' && (item.status === 'running' || item.status === 'proposed')) {
+    if (item.kind === 'tool' && item.status === 'running') {
       return { ...item, status: 'aborted' as const, finishedAt: Date.now(), progress: undefined }
     }
+    // A proposed call never started. "Not run" is the truth; turning it into
+    // "stopped" would imply an execution that did not happen.
     if (item.kind === 'assistant' && item.streaming) {
       return { ...item, streaming: false }
     }

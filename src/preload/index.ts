@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { ProviderConnection, SaveProviderInput } from '@shared/providers'
 import type {
   AggregatedUsageStats,
+  AgentMessage,
   AppInfo,
   AppSettings,
   AuthStatus,
@@ -18,10 +19,14 @@ import type {
   GitStatus,
   GitWorktreeResult,
   McpConfig,
+  PickedFile,
   PiDesktopBridge,
-  PiEvent,
+  RpcTraceHint,
+  RuntimeEnsureOptions,
   RuntimeStartOptions,
-  RuntimeStatus,
+  RuntimeEvent,
+  RuntimeRekey,
+  RuntimeStatusEvent,
   SessionMeta,
   SessionSearchHit,
   TextSearchHit,
@@ -41,9 +46,10 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
 const bridge: PiDesktopBridge = {
   providers: {
     list: () => ipcRenderer.invoke('providers:list'),
+    savedKey: (id: string) => ipcRenderer.invoke('providers:savedKey', id),
     models: (connection: ProviderConnection) => ipcRenderer.invoke('providers:models', connection),
     probe: (connection: ProviderConnection, modelId?: string) => ipcRenderer.invoke('providers:probe', connection, modelId),
-    save: (input: SaveProviderInput) => ipcRenderer.invoke('providers:save', input),
+    save: (input: SaveProviderInput, sessionKey?: string) => ipcRenderer.invoke('providers:save', input, sessionKey),
     remove: (id: string) => ipcRenderer.invoke('providers:remove', id)
   },
   app: {
@@ -57,8 +63,8 @@ const bridge: PiDesktopBridge = {
   dialog: {
     pickDirectory: (defaultPath?: string): Promise<string | null> =>
       ipcRenderer.invoke('dialog:pickDirectory', defaultPath),
-    pickPaths: (kind: 'files' | 'folders', defaultPath?: string): Promise<string[]> =>
-      ipcRenderer.invoke('dialog:pickPaths', kind, defaultPath)
+    pickFiles: (defaultPath?: string): Promise<PickedFile[]> =>
+      ipcRenderer.invoke('dialog:pickFiles', defaultPath)
   },
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
@@ -74,6 +80,9 @@ const bridge: PiDesktopBridge = {
   sessions: {
     list: (cwd?: string): Promise<SessionMeta[]> => ipcRenderer.invoke('sessions:list', cwd),
     remove: (file: string): Promise<boolean> => ipcRenderer.invoke('sessions:remove', file),
+    hydrate: (file: string): Promise<AgentMessage[]> => ipcRenderer.invoke('sessions:hydrate', file),
+    rename: (file: string, name: string): Promise<boolean> =>
+      ipcRenderer.invoke('sessions:rename', file, name),
     search: (query: string, limit?: number): Promise<SessionSearchHit[]> =>
       ipcRenderer.invoke('sessions:search', query, limit),
     usageStats: (customDir?: string): Promise<AggregatedUsageStats> =>
@@ -81,17 +90,25 @@ const bridge: PiDesktopBridge = {
   },
   runtime: {
     start: (options: RuntimeStartOptions) => ipcRenderer.invoke('runtime:start', options),
-    stop: (): Promise<void> => ipcRenderer.invoke('runtime:stop'),
+    ensure: (options: RuntimeEnsureOptions) => ipcRenderer.invoke('runtime:ensure', options),
+    has: (sessionKey: string): Promise<boolean> => ipcRenderer.invoke('runtime:has', sessionKey),
+    stop: (sessionKey?: string): Promise<void> => ipcRenderer.invoke('runtime:stop', sessionKey),
+    stopCwd: (cwd: string): Promise<void> => ipcRenderer.invoke('runtime:stopCwd', cwd),
     request: <T = unknown>(
       command: string,
       payload?: Record<string, unknown>,
-      timeoutMs?: number
-    ): Promise<T> => ipcRenderer.invoke('runtime:request', command, payload ?? {}, timeoutMs),
-    onEvent: (handler: (event: PiEvent) => void) => subscribe<PiEvent>('runtime:event', handler),
-    onStatus: (handler: (status: RuntimeStatus) => void) =>
-      subscribe<RuntimeStatus>('runtime:status', handler),
-    respondUi: (id: string, response: ExtensionUiResponse): Promise<void> =>
-      ipcRenderer.invoke('runtime:respondUi', id, response)
+      timeoutMs?: number,
+      trace?: RpcTraceHint,
+      sessionKey?: string
+    ): Promise<T> =>
+      ipcRenderer.invoke('runtime:request', command, payload ?? {}, timeoutMs, trace, sessionKey),
+    onEvent: (handler: (event: RuntimeEvent) => void) => subscribe<RuntimeEvent>('runtime:event', handler),
+    onStatus: (handler: (status: RuntimeStatusEvent) => void) =>
+      subscribe<RuntimeStatusEvent>('runtime:status', handler),
+    onRekey: (handler: (change: RuntimeRekey) => void) =>
+      subscribe<RuntimeRekey>('runtime:rekey', handler),
+    respondUi: (id: string, response: ExtensionUiResponse, sessionKey?: string): Promise<void> =>
+      ipcRenderer.invoke('runtime:respondUi', id, response, sessionKey)
   },
   auth: {
     check: (provider?: string): Promise<AuthStatus> => ipcRenderer.invoke('auth:check', provider)

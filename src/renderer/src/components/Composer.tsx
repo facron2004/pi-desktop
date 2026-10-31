@@ -97,7 +97,6 @@ export function Composer() {
   const [historyIndex, setHistoryIndex] = useState(-1)
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
   const mentionListRef = useRef<HTMLDivElement>(null)
   // Enter repeats while it is held, and a double-click can land before React
   // has cleared the draft. Either one used to send the same prompt again.
@@ -314,19 +313,23 @@ export function Composer() {
   const submit = useCallback(() => {
     if (submitLock.current) return
     if (!text.trim() && !images.length) return
+    // Hold the lock until Pi accepts the prompt. Releasing it when the box
+    // clears lets a second Enter send the same draft again while the first
+    // request is still starting.
     submitLock.current = true
-    void send(text, images, kind)
-    setHistory((current) => [text, ...current.filter((entry) => entry !== text)].slice(0, 50))
+    const draft = text
+    const shots = images
+    const delivery = kind
+    void send(draft, shots, delivery).finally(() => {
+      submitLock.current = false
+    })
+    setHistory((current) => [draft, ...current.filter((entry) => entry !== draft)].slice(0, 50))
     setHistoryIndex(-1)
     setText('')
     setImages([])
     closePalette()
     setMention(null)
   }, [text, images, kind, send, closePalette])
-
-  useEffect(() => {
-    if (!text && images.length === 0) submitLock.current = false
-  }, [text, images])
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
@@ -426,28 +429,36 @@ export function Composer() {
     }
   }
 
-  const onFiles = (files: FileList | null) => {
+  const addFiles = (files: FileList | null) => {
     if (!files) return
+    const references: string[] = []
     for (const file of Array.from(files)) {
-      if (!file.type.startsWith('image/')) continue
-      const reader = new FileReader()
-      reader.onload = () => {
-        const result = String(reader.result ?? '')
-        const base64 = result.split(',')[1]
-        if (base64) setImages((current) => [...current, { data: base64, mimeType: file.type }])
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const result = String(reader.result ?? '')
+          const base64 = result.split(',')[1]
+          if (base64) setImages((current) => [...current, { data: base64, mimeType: file.type }])
+        }
+        reader.readAsDataURL(file)
+        continue
       }
-      reader.readAsDataURL(file)
+      const filePath = window.pi.fs.pathForFile(file)
+      if (!filePath) continue
+      references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
     }
+    if (references.length) useAppStore.getState().insertIntoComposer(references.join('\n'))
   }
 
-  const pickPaths = useCallback(async (kind: 'files' | 'folders') => {
+  const pickFiles = useCallback(async () => {
     try {
-      const paths = await window.pi.dialog.pickPaths(kind, workspace?.path ?? status.cwd)
-      if (!paths.length) return
-      const references = paths.map((file) => '@' + JSON.stringify(file.replace(/\\/g, '/'))).join('\n')
-      useAppStore.getState().insertIntoComposer(references)
+      const picked = await window.pi.dialog.pickFiles(workspace?.path || status.cwd || undefined)
+      const images = picked.flatMap((item) => item.kind === 'image' ? [{ data: item.data, mimeType: item.mimeType }] : [])
+      const references = picked.flatMap((item) => item.kind === 'path' ? ['@' + JSON.stringify(item.path.replace(/\\/g, '/'))] : [])
+      if (images.length) setImages((current) => [...current, ...images])
+      if (references.length) useAppStore.getState().insertIntoComposer(references.join('\n'))
     } catch {
-      useAppStore.getState().showToast('Could not add files or folders', 'error')
+      useAppStore.getState().showToast('Could not add files', 'error')
     }
   }, [workspace?.path, status.cwd])
 
@@ -604,12 +615,12 @@ export function Composer() {
               const files = event.clipboardData?.files
               if (files && files.length) {
                 event.preventDefault()
-                onFiles(files)
+                addFiles(files)
               }
             }}
             onDrop={(event) => {
               event.preventDefault()
-              onFiles(event.dataTransfer?.files ?? null)
+              addFiles(event.dataTransfer?.files ?? null)
             }}
           />
 
@@ -618,11 +629,10 @@ export function Composer() {
               ready={ready}
               busy={isStreaming}
               mode={agentMode}
-              fileRef={fileRef}
               skillCommands={skillCommands}
               pluginCommands={pluginCommands}
               onModeChange={setAgentMode}
-              onPickPaths={pickPaths}
+              onPickFiles={pickFiles}
               onInsertCommand={insertMenuCommand}
             />
             {agentMode !== 'default' ? (
@@ -635,26 +645,17 @@ export function Composer() {
                 onClick={() => void setAgentMode('default')}
               >
                 {agentMode === 'goal' ? <Target size={13} /> : <ListChecks size={13} />}
-                <span>{agentMode === 'goal' ? 'Goal Mode' : 'Plan Mode'}</span>
+                <span>{t(agentMode === 'goal' ? 'Goal Mode' : 'Plan Mode')}</span>
                 <X size={11} />
               </button>
             ) : null}
             <PermissionPicker />
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              multiple
-              hidden
-              onChange={(event) => {
-                onFiles(event.target.files)
-                event.target.value = ''
-              }}
-            />
 
             <div className="composer__bar-spacer" />
 
-            {ready ? <ModelPicker /> : null}
+            {/* Kept mounted when Pi is cold or restarting. Unmounting it on
+                anything but `ready` is what made the model control vanish. */}
+            <ModelPicker />
 
             {isStreaming ? (
               <Popover

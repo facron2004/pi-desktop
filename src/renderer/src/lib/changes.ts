@@ -20,12 +20,16 @@ function pathOf(args: Record<string, unknown> | undefined): string {
   return typeof value === 'string' ? value : ''
 }
 
-/** Count distinct files changed by edit/write tool calls without building diffs. */
+/** Count distinct files changed by successful edit/write tool calls without building diffs. */
 export function countChangedFiles(items: ThreadItem[]): number {
   const paths = new Set<string>()
 
   for (const item of items) {
     if (item.kind !== 'tool') continue
+    // A proposed call is only arguments the model wrote; an error or abort
+    // never produced a file change. Counting those would claim work that did
+    // not happen.
+    if (item.status !== 'ok') continue
     if (item.toolName !== 'edit' && item.toolName !== 'write') continue
     const path = pathOf(item.args)
     if (path) paths.add(path)
@@ -45,6 +49,7 @@ export function collectChanges(items: ThreadItem[]): FileChange[] {
 
   for (const item of items) {
     if (item.kind !== 'tool') continue
+    if (item.status !== 'ok') continue
     if (item.toolName !== 'edit' && item.toolName !== 'write') continue
     const path = pathOf(item.args)
     if (!path) continue

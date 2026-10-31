@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { AppSettings, Workspace } from '@shared/types'
+import { forgetDefaultModel, rememberDefaultModel, rememberDefaultThinkingLevel } from './pi/retry-policy'
 
 /** Same folder, whatever slash style or drive-letter case it was opened with. */
 function workspaceKey(value: string): string {
@@ -87,6 +88,15 @@ export class SettingsStore {
       workspaces: dedupeWorkspaces(patch.workspaces ?? this.data.workspaces)
     }
     this.write()
+    // Pi reads its own startup model from the agent directory, not from this
+    // file. A selection that never lands there is gone on the next launch.
+    if ('model' in patch) {
+      if (this.data.model) rememberDefaultModel(this.data.model)
+      else forgetDefaultModel()
+    }
+    if ('thinkingLevel' in patch && this.data.thinkingLevel) {
+      rememberDefaultThinkingLevel(this.data.thinkingLevel)
+    }
     return this.get()
   }
 

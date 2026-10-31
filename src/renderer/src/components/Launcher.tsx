@@ -27,6 +27,7 @@ import {
   Type
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import { selectableModels } from '@shared/provider-models'
 import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
 import { samePath } from '../lib/path'
@@ -97,7 +98,13 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     )
   )
   const pinned = useAppStore((state) => state.settings.pinnedSessions ?? [])
-  const models = useAppStore((state) => state.models)
+  const threadModels = useAppStore((state) => state.models)
+  const catalogModels = useAppStore((state) => state.catalogModels)
+  const disabledModelSpecs = useAppStore((state) => state.disabledModelSpecs)
+  const models = useMemo(
+    () => selectableModels(threadModels, catalogModels, disabledModelSpecs),
+    [threadModels, catalogModels, disabledModelSpecs]
+  )
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
   const fontScale = useAppStore((state) => state.settings.fontScale ?? 1)
   const showToast = useAppStore((state) => state.showToast)
@@ -274,7 +281,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Project',
       icon: RefreshCw,
       run: () => {
-        if (workspace) void useAppStore.getState().openWorkspace(workspace)
+        if (workspace) void useAppStore.getState().openWorkspace(workspace, undefined, 'runtime-restart')
       }
     },
     {

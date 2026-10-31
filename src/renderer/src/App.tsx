@@ -5,7 +5,6 @@ import {
   GitBranch,
   PanelRight,
   Pencil,
-  RefreshCw,
   TriangleAlert
 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
@@ -30,10 +29,8 @@ import { PlanStrip } from './components/PlanStrip'
 import { SessionTreeDialog } from './components/SessionTreeDialog'
 import { McpDialog } from './components/McpDialog'
 import { EditProjectDialog } from './components/EditProjectDialog'
-import { ConfirmDialog } from './components/ConfirmDialog'
 import { Popover } from './components/Popover'
 import { openingLabel, useT } from './lib/i18n'
-import { retryBannerDetail } from './lib/provider-error'
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
@@ -58,11 +55,6 @@ export default function App() {
   const sessions = useAppStore((state) => state.sessions)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const switchProject = useAppStore((state) => state.switchProject)
-  const stop = useAppStore((state) => state.stop)
-  const selectSession = useAppStore((state) => state.selectSession)
-  const retry = useAppStore((state) => state.retry)
-  const retryDetail = retry ? retryBannerDetail(retry.errorMessage, retry.delayMs) : undefined
-  const abortRetry = useAppStore((state) => state.abortRetry)
   const run = useAppStore((state) => state.run)
   const transport = useAppStore((state) => state.transport)
   const cycleModel = useAppStore((state) => state.cycleModel)
@@ -77,11 +69,6 @@ export default function App() {
   const [launcherOpen, setLauncherOpen] = useState(false)
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
-  /**
-   * A conversation the reader asked to open while a run is going.
-   * The click itself must never interrupt the agent.
-   */
-  const [switchRequest, setSwitchRequest] = useState<{ file: string; title: string } | null>(null)
   // A command headed for the drawer. `seq` makes the same command twice two
   // requests instead of one the drawer already ran.
   const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
@@ -248,7 +235,7 @@ export default function App() {
   useEffect(() => {
     const dev = (window as unknown as { __piDesktopDev?: { session?: string } }).__piDesktopDev
     if (!dev?.session || !workspace) return
-    void openWorkspace(workspace, dev.session)
+    void openWorkspace(workspace, dev.session, 'screenshot-resume')
   }, [workspace, openWorkspace])
 
   // Development aid: exercise the export path once the session has content.
@@ -376,14 +363,6 @@ export default function App() {
     // The launcher and the `/mcp` command ask for the server list.
     const onOpenMcp = () => setMcpOpen(true)
     window.addEventListener('pi:open-mcp', onOpenMcp)
-    // The sidebar found a conversation the reader wants while a run is going.
-    // Only this component may end that run, so the sidebar asks here.
-    const onConfirmSwitchSession = (event: Event) => {
-      const detail = (event as CustomEvent<{ file?: string; title?: string }>).detail
-      if (!detail?.file) return
-      setSwitchRequest({ file: detail.file, title: detail.title ?? '' })
-    }
-    window.addEventListener('pi:confirm-switch-session', onConfirmSwitchSession)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
@@ -395,7 +374,6 @@ export default function App() {
       window.removeEventListener('pi:open-launcher', onOpenLauncher)
       window.removeEventListener('pi:open-settings', onOpenSettingsEvent)
       window.removeEventListener('pi:open-mcp', onOpenMcp)
-      window.removeEventListener('pi:confirm-switch-session', onConfirmSwitchSession)
     }
   }, [
     newChat,
@@ -436,7 +414,8 @@ export default function App() {
       style={
         {
           '--drawer-w': `${drawerWidth}px`,
-          '--sidebar-w': `${sidebarWidth}px`
+          '--sidebar-w': `${sidebarWidth}px`,
+          '--sidebar-track': sidebarOpen ? `${sidebarWidth}px` : '0px'
         } as React.CSSProperties
       }
     >
@@ -455,18 +434,17 @@ export default function App() {
         onOpenLauncher={() => setLauncherOpen(true)}
       />
 
-      {sidebarOpen ? (
-        <Sidebar
-          onOpenSettings={() => setSettingsOpen(true)}
-          focusSearchSignal={sidebarSearchSignal}
-          width={sidebarWidth}
-          onResize={setDraggedSidebar}
-          onResizeEnd={(width) => {
-            setDraggedSidebar(null)
-            void updateSettings({ sidebarWidth: width })
-          }}
-        />
-      ) : null}
+      <Sidebar
+        onOpenSettings={() => setSettingsOpen(true)}
+        focusSearchSignal={sidebarSearchSignal}
+        width={sidebarWidth}
+        open={sidebarOpen}
+        onResize={setDraggedSidebar}
+        onResizeEnd={(width) => {
+          setDraggedSidebar(null)
+          void updateSettings({ sidebarWidth: width })
+        }}
+      />
 
       <main className="main">
         <div className="titlebar drag-region">
@@ -599,24 +577,6 @@ export default function App() {
             <Thread />
           )}
 
-          {retry ? (
-            <div className="retry-wrap">
-              <div className="retry" role="status" title={retry.errorMessage}>
-                <RefreshCw size={13} className="spin" />
-                <span className="retry__text">
-                  {t('Pi is retrying')}
-                  {retry.maxAttempts
-                    ? ` (${t('attempt')} ${retry.attempt} ${t('of')} ${retry.maxAttempts})`
-                    : ` (${t('attempt')} ${retry.attempt})`}
-                  {retryDetail ? ` — ${t(retryDetail)}` : ''}
-                </span>
-                <button className="ghost-btn" onClick={() => void abortRetry()}>
-                  {t('Stop retrying')}
-                </button>
-              </div>
-            </div>
-          ) : null}
-
           {/* A project switch keeps the previous transcript up. This is the
               handoff, not a failure — the connection was not lost. */}
           {status.phase === 'starting' && hasItems ? (
@@ -744,26 +704,6 @@ export default function App() {
           mode={projectDialog.mode}
           project={projectDialog.project}
           onClose={closeProjectDialog}
-        />
-      ) : null}
-      {switchRequest ? (
-        <ConfirmDialog
-          title={t('Stop the current run?')}
-          body={t(
-            'Pi is working on this conversation. Opening “{title}” means stopping the current run.'
-          ).replace('{title}', switchRequest.title)}
-          confirmLabel={t('Stop and open')}
-          tone="danger"
-          onCancel={() => setSwitchRequest(null)}
-          onConfirm={() => {
-            const target = switchRequest
-            setSwitchRequest(null)
-            void (async () => {
-              await stop()
-              const session = sessions.find((entry) => entry.file === target.file)
-              if (session) await selectSession(session)
-            })()
-          }}
         />
       ) : null}
       <ExtensionDialog />

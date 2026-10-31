@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Notification, dialog, ipcMain, shell, type OpenDialogOptions } from 'electron'
+import { app, BrowserWindow, Notification, dialog, ipcMain, shell } from 'electron'
 import { exec } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from 'node:fs'
@@ -9,7 +9,11 @@ import type {
   ExtensionUiResponse,
   FileContent,
   FileEntry,
+  GitCommitResult,
+  PickedFile,
   PiEvent,
+  RuntimeEnsureOptions,
+  RuntimeRekey,
   RuntimeStartOptions,
   RuntimeStatus,
   TextSearchHit,
@@ -20,7 +24,8 @@ import type {
 } from '@shared/types'
 import { checkAuth, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
-import { PiRuntime } from './pi/runtime'
+import { readTraceHint } from './pi/trace'
+import type { SessionSupervisor } from './pi/supervisor'
 import { readMcpConfig } from './mcp'
 import {
   addWorktree,
@@ -46,12 +51,19 @@ import {
   pullBranch
 } from './git'
 import { SettingsStore } from './settings'
-import { getAggregatedUsage, listSessions, resolveSessionRoot, searchSessions } from './sessions'
+import {
+  getAggregatedUsage,
+  invalidateSessionCache,
+  listSessions,
+  readSessionMessages,
+  resolveSessionRoot,
+  searchSessions
+} from './sessions'
 import { querySystemFonts } from './fonts'
 import { registerProviderIpc } from './providers/ipc'
 
 export interface IpcContext {
-  runtime: PiRuntime
+  supervisor: SessionSupervisor
   settings: SettingsStore
   getWindow: () => BrowserWindow | null
 }
@@ -153,14 +165,28 @@ function withoutProjectFolder<T extends { cwd: string }>(session: T): T {
     : session
 }
 
-/** The working directory Pi is currently running in. */
+/**
+ * The workspace the user is looking at.
+ * A background conversation keeps its own cwd inside its process; git and
+ * files follow the view, not whichever agent happens to be running.
+ */
 function workspaceRoot(context: IpcContext): string {
-  const cwd = context.runtime.currentStatus.cwd
-  if (cwd) return cwd
   const settings = context.settings.get()
   if (settings.activeWorkspaceId === null) return projectlessRoot()
   const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
   return active?.path ?? settings.workspaces[0]?.path ?? ''
+}
+
+async function gitWrite<T extends GitCommitResult>(
+  context: IpcContext,
+  action: (root: string) => Promise<T>
+): Promise<T | GitCommitResult> {
+  const root = workspaceRoot(context)
+  try {
+    return await context.supervisor.withCwdLock(root, () => action(root))
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 /** Keep file access inside the open workspace. */
@@ -316,7 +342,7 @@ function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
 }
 
 export function registerIpc(context: IpcContext): void {
-  const { runtime, settings, getWindow } = context
+  const { supervisor, settings, getWindow } = context
   registerProviderIpc(context)
 
   ipcMain.handle('app:info', async (): Promise<AppInfo> => {
@@ -326,7 +352,7 @@ export function registerIpc(context: IpcContext): void {
     return {
       // `npm_package_version` only exists when npm launched the app; a
       // packaged build reads the version it was built with instead.
-      version: process.env.npm_package_version ?? app.getVersion() ?? '0.5.0',
+      version: process.env.npm_package_version ?? app.getVersion() ?? '0.7.0',
       electron: process.versions.electron,
       node: process.versions.node,
       platform: process.platform,
@@ -344,7 +370,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('dialog:pickDirectory', async (_event, defaultPath?: string): Promise<string | null> => {
     const window = getWindow()
-    const result = window
+    const result = window && !window.isDestroyed()
       ? await dialog.showOpenDialog(window, {
           title: 'Select folder',
           defaultPath: defaultPath || undefined,
@@ -359,18 +385,40 @@ export function registerIpc(context: IpcContext): void {
     return result.filePaths[0]
   })
 
-  ipcMain.handle('dialog:pickPaths', async (_event, kind: 'files' | 'folders', defaultPath?: string): Promise<string[]> => {
-    if (kind !== 'files' && kind !== 'folders') throw new Error('Unknown attachment kind')
-    const options: OpenDialogOptions = {
-      title: kind === 'files' ? 'Add files' : 'Add folders',
+  // One dialog for every file the composer can take. Windows cannot select
+  // files and folders together, so folders stay on the @ picker. Pictures are
+  // read here because the user just chose them, including files outside the
+  // workspace; anything else is handed back as a path.
+  ipcMain.handle('dialog:pickFiles', async (_event, defaultPath?: string): Promise<PickedFile[]> => {
+    const options = {
+      title: 'Add files',
       defaultPath: defaultPath || undefined,
-      properties: kind === 'files' ? ['openFile', 'multiSelections'] : ['openDirectory', 'multiSelections']
+      properties: ['openFile', 'multiSelections'] as ('openFile' | 'multiSelections')[]
     }
     const window = getWindow()
     const result = window && !window.isDestroyed()
       ? await dialog.showOpenDialog(window, options)
       : await dialog.showOpenDialog(options)
-    return result.canceled ? [] : result.filePaths
+    if (result.canceled) return []
+    const picked: PickedFile[] = []
+    for (const file of result.filePaths) {
+      const mimeType = IMAGE_MIME[path.extname(file).toLowerCase()]
+      if (!mimeType) {
+        picked.push({ kind: 'path', path: file })
+        continue
+      }
+      try {
+        const stats = statSync(file)
+        if (!stats.isFile() || stats.size > 24 * 1024 * 1024) {
+          picked.push({ kind: 'path', path: file })
+          continue
+        }
+        picked.push({ kind: 'image', data: readFileSync(file).toString('base64'), mimeType })
+      } catch {
+        picked.push({ kind: 'path', path: file })
+      }
+    }
+    return picked
   })
 
   ipcMain.handle('app:setTheme', (_event, theme: 'dark' | 'light') => {
@@ -394,7 +442,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('app:checkUpdate', async (): Promise<VersionCheckResult> => {
     const currentPiVersion = (await piVersion(settings.get().piPath)) || '1.4.0'
-    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.5.0'
+    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.7.0'
 
     let piCliStatus: VersionItemStatus = {
       current: currentPiVersion,
@@ -442,7 +490,7 @@ export function registerIpc(context: IpcContext): void {
       if (!res.ok) {
         return { success: false, error: res.error || 'Failed to pull update' }
       }
-      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.5.0'
+      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.7.0'
       return { success: true, version: current }
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
@@ -457,7 +505,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('workspaces:pick', async (): Promise<Workspace | null> => {
     const window = getWindow()
-    const result = window
+    const result = window && !window.isDestroyed()
       ? await dialog.showOpenDialog(window, {
           title: 'Choose a project folder',
           properties: ['openDirectory', 'createDirectory']
@@ -501,17 +549,27 @@ export function registerIpc(context: IpcContext): void {
     }
   )
 
-  ipcMain.handle('sessions:list', (_event, cwd?: string) =>
-    listSessions(cwd).map(withoutProjectFolder)
+  ipcMain.handle('sessions:list', async (_event, cwd?: string) =>
+    (await listSessions(cwd)).map(withoutProjectFolder)
   )
 
-  ipcMain.handle('sessions:search', (_event, query: string, limit?: number) =>
-    searchSessions(query, limit).map(withoutProjectFolder)
+  ipcMain.handle('sessions:hydrate', async (_event, file: string) => {
+    if (typeof file !== 'string' || !file) return []
+    return await readSessionMessages(file)
+  })
+
+  ipcMain.handle('sessions:rename', async (_event, file: string, name: string) => {
+    if (typeof file !== 'string' || typeof name !== 'string') return false
+    return await supervisor.rename(file, name)
+  })
+
+  ipcMain.handle('sessions:search', async (_event, query: string, limit?: number) =>
+    (await searchSessions(query, limit)).map(withoutProjectFolder)
   )
 
-  ipcMain.handle('sessions:usageStats', (_event, customDir?: string) => {
+  ipcMain.handle('sessions:usageStats', async (_event, customDir?: string) => {
     const userDir = customDir?.trim() || settings.get().externalChatFolder?.trim()
-    return getAggregatedUsage(userDir || undefined)
+    return await getAggregatedUsage(userDir || undefined)
   })
 
   // Git is read from the folder Pi runs in: the review panel and the branch
@@ -521,20 +579,20 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('git:log', (_event, limit?: number) => readLog(workspaceRoot(context), limit))
 
   ipcMain.handle('git:commit', (_event, message: string, includeUnstaged?: boolean) =>
-    commitWorkingTree(workspaceRoot(context), message, includeUnstaged === true)
+    gitWrite(context, root => commitWorkingTree(root, message, includeUnstaged === true))
   )
 
   ipcMain.handle('git:stageFile', (_event, file: string) =>
-    stageFile(workspaceRoot(context), file)
+    gitWrite(context, root => stageFile(root, file))
   )
 
   ipcMain.handle('git:unstageFile', (_event, file: string) =>
-    unstageFile(workspaceRoot(context), file)
+    gitWrite(context, root => unstageFile(root, file))
   )
 
-  ipcMain.handle('git:stageAll', () => stageAll(workspaceRoot(context)))
+  ipcMain.handle('git:stageAll', () => gitWrite(context, root => stageAll(root)))
 
-  ipcMain.handle('git:unstageAll', () => unstageAll(workspaceRoot(context)))
+  ipcMain.handle('git:unstageAll', () => gitWrite(context, root => unstageAll(root)))
 
   ipcMain.handle('git:fileDiff', (_event, file: string) =>
     readFileDiff(workspaceRoot(context), file)
@@ -557,36 +615,36 @@ export function registerIpc(context: IpcContext): void {
   )
 
   ipcMain.handle('git:applyPatch', (_event, patch: string, reverse?: boolean) =>
-    applyPatch(workspaceRoot(context), patch, reverse === true)
+    gitWrite(context, root => applyPatch(root, patch, reverse === true))
   )
 
   ipcMain.handle('git:branches', () => readBranches(workspaceRoot(context)))
 
   ipcMain.handle('git:switchBranch', (_event, name: string) =>
-    switchBranch(workspaceRoot(context), name)
+    gitWrite(context, root => switchBranch(root, name))
   )
 
   ipcMain.handle('git:createBranch', (_event, name: string, checkout?: boolean) =>
-    createBranch(workspaceRoot(context), name, checkout !== false)
+    gitWrite(context, root => createBranch(root, name, checkout !== false))
   )
 
   ipcMain.handle(
     'git:addWorktree',
     (_event, worktreePath: string, branch: string, create?: boolean) =>
-      addWorktree(workspaceRoot(context), worktreePath, branch, create !== false)
+      gitWrite(context, root => addWorktree(root, worktreePath, branch, create !== false))
   )
 
   ipcMain.handle('git:removeWorktree', (_event, worktreePath: string) =>
-    removeWorktree(workspaceRoot(context), worktreePath)
+    gitWrite(context, root => supervisor.withCwdLock(path.resolve(root, worktreePath), () => removeWorktree(root, worktreePath)))
   )
 
   ipcMain.handle('git:revertFile', (_event, file: string) =>
-    revertFile(workspaceRoot(context), file)
+    gitWrite(context, root => revertFile(root, file))
   )
 
-  ipcMain.handle('git:push', () => pushBranch(workspaceRoot(context)))
+  ipcMain.handle('git:push', () => gitWrite(context, root => pushBranch(root)))
 
-  ipcMain.handle('git:pull', () => pullBranch(workspaceRoot(context)))
+  ipcMain.handle('git:pull', () => gitWrite(context, root => pullBranch(root)))
 
   ipcMain.handle('fs:list', (_event, dir: string): FileEntry[] => {
     const root = workspaceRoot(context)
@@ -737,6 +795,7 @@ export function registerIpc(context: IpcContext): void {
     try {
       // Recoverable: hand the file to the OS trash instead of unlinking it.
       await shell.trashItem(file)
+      invalidateSessionCache(file)
       return true
     } catch (error) {
       console.error('[pi-desktop] could not trash the session file:', error)
@@ -761,7 +820,7 @@ export function registerIpc(context: IpcContext): void {
             ? 'gif'
             : 'jpg'
       const window = getWindow()
-      const result = window
+      const result = window && !window.isDestroyed()
         ? await dialog.showSaveDialog(window, {
             title: 'Save the picture',
             defaultPath: `pi-picture-${Date.now()}.${extension}`,
@@ -784,15 +843,36 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('runtime:start', async (_event, options: RuntimeStartOptions) => {
     const cwd = options.cwd || projectlessRoot()
     if (!options.cwd) mkdirSync(cwd, { recursive: true })
-    return runtime.start({
+    const sessionKey = options.sessionFile || `draft:${randomUUID()}`
+    return supervisor.ensure({
+      ...options,
+      sessionKey,
+      cwd,
+      customInstructions: settings.get().customInstructions
+    })
+  })
+
+  ipcMain.handle('runtime:ensure', async (_event, options: RuntimeEnsureOptions) => {
+    const cwd = options.cwd || projectlessRoot()
+    if (!options.cwd) mkdirSync(cwd, { recursive: true })
+    if (!options.sessionKey) return { ok: false, error: 'Missing conversation id' }
+    return supervisor.ensure({
       ...options,
       cwd,
       customInstructions: settings.get().customInstructions
     })
   })
 
-  ipcMain.handle('runtime:stop', async () => {
-    await runtime.stop()
+  ipcMain.handle('runtime:has', (_event, sessionKey: string) => {
+    return typeof sessionKey === 'string' && supervisor.has(sessionKey)
+  })
+
+  ipcMain.handle('runtime:stop', async (_event, sessionKey?: string) => {
+    await supervisor.stop(typeof sessionKey === 'string' ? sessionKey : undefined)
+  })
+
+  ipcMain.handle('runtime:stopCwd', async (_event, cwd: string) => {
+    if (typeof cwd === 'string') await supervisor.stopCwd(cwd || projectlessRoot())
   })
 
   ipcMain.handle(
@@ -801,16 +881,22 @@ export function registerIpc(context: IpcContext): void {
       _event,
       command: string,
       payload: Record<string, unknown> = {},
-      timeoutMs?: number
+      timeoutMs?: number,
+      trace?: unknown,
+      sessionKey?: string
     ) => {
-      return runtime.request(command, payload, timeoutMs)
+      const hint = readTraceHint(trace)
+      const key = typeof sessionKey === 'string' && sessionKey ? sessionKey : hint?.uiSessionId
+      if (!key) throw new Error('Missing conversation id')
+      return supervisor.request(key, command, payload, timeoutMs, hint)
     }
   )
 
   ipcMain.handle(
     'runtime:respondUi',
-    async (_event, id: string, response: ExtensionUiResponse) => {
-      runtime.respondUi(id, response)
+    async (_event, id: string, response: ExtensionUiResponse, sessionKey?: string) => {
+      const key = typeof sessionKey === 'string' && sessionKey ? sessionKey : ''
+      supervisor.respondUi(key, id, response)
     }
   )
 
@@ -894,10 +980,11 @@ function sendToWindow(window: BrowserWindow | null, channel: string, payload: un
 
 /** Forward runtime traffic to the renderer window. */
 export function bridgeRuntime(context: IpcContext): void {
-  const { runtime, settings, getWindow } = context
-  runtime.on('event', (event: PiEvent) => {
+  const { supervisor, settings, getWindow } = context
+  supervisor.on('event', (payload: { ownerId: string; event: PiEvent }) => {
     const window = getWindow()
-    sendToWindow(window, 'runtime:event', event)
+    sendToWindow(window, 'runtime:event', payload)
+    const event = payload.event
 
     if (
       window &&
@@ -906,16 +993,14 @@ export function bridgeRuntime(context: IpcContext): void {
       settings.get().desktopNotifications !== false &&
       Notification.isSupported()
     ) {
-      const cwd = runtime.currentStatus.cwd
-      const project = cwd ? workspaceName(cwd) : 'Pi Desktop'
       let body: string | null = null
       if (event.type === 'agent_settled') {
-        body = `Pi finished working in ${project}.`
+        body = 'Pi finished a conversation.'
       } else if (
         event.type === 'extension_ui_request' &&
         ['select', 'confirm', 'input', 'editor'].includes(String(event.method ?? ''))
       ) {
-        body = String(event.title ?? event.message ?? `Pi needs your input in ${project}.`)
+        body = String(event.title ?? event.message ?? 'Pi needs your input.')
       }
       if (body) {
         try {
@@ -936,10 +1021,13 @@ export function bridgeRuntime(context: IpcContext): void {
       }
     }
   })
-  runtime.on('status', (status: RuntimeStatus) => {
-    sendToWindow(getWindow(), 'runtime:status', status)
+  supervisor.on('status', (payload: { ownerId: string; status: RuntimeStatus }) => {
+    sendToWindow(getWindow(), 'runtime:status', payload)
   })
-  runtime.on('stderr', (line: string) => {
-    sendToWindow(getWindow(), 'runtime:stderr', line)
+  supervisor.on('rekey', (payload: RuntimeRekey) => {
+    sendToWindow(getWindow(), 'runtime:rekey', payload)
+  })
+  supervisor.on('stderr', (payload: { ownerId: string; line: string }) => {
+    sendToWindow(getWindow(), 'runtime:stderr', payload.line)
   })
 }

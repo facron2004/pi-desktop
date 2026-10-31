@@ -9,15 +9,28 @@ import type {
   PermissionMode,
   PiEvent,
   PiState,
+  RpcTraceHint,
   RuntimeStartOptions,
   RuntimeStatus
 } from '@shared/types'
 import { resolvePiLaunch } from './locate'
 import { PiRpcClient } from './rpc-client'
+import { buildRpcArgs } from './rpc-args'
 import { canAutoApprove, parseToolApproval, permissionExtension } from './permissions'
-import { ensurePatientRetrySettings } from './retry-policy'
+import { ensurePatientRetrySettings, rememberDefaultModel, rememberDefaultThinkingLevel } from './retry-policy'
 import { taskModesExtension } from './task-modes'
 import { providerControlsExtension } from './provider-controls'
+import {
+  allowlistedEnv,
+  callerFrames,
+  emitTrace,
+  readTraceHint,
+  redactArgv,
+  rpcTraceEnabled,
+  sessionObservation,
+  shouldProbeState,
+  type RpcOutboundMeta
+} from './trace'
 
 export interface RuntimeOptions {
   customPiPath?: string
@@ -27,29 +40,34 @@ export interface RuntimeOptions {
 }
 
 /**
- * Owns the Pi child process for the currently open workspace.
+ * Owns one Pi child process for one conversation.
  *
- * One process per workspace keeps Pi's own "sessions are grouped by working
- * directory" model intact while still allowing the UI to switch between
- * conversations with the `switch_session` command.
- *
- * Switching projects replaces that process. The replacement is a handoff,
- * not a disconnect: `stopped` is what the UI reads as a lost connection, and
- * a switch the user asked for is not one. The next process boots while the
- * previous one exits.
+ * The supervisor holds one of these per hot session. Viewing another
+ * conversation does not call `switch_session` and does not stop this process.
+ * `start` only replaces the child that belongs to this instance.
  */
 export class PiRuntime extends EventEmitter {
   private client: PiRpcClient | null = null
   private status: RuntimeStatus = { phase: 'stopped' }
   private pendingApprovalId?: string
+  private pendingUiRequestId?: string
   private aborting = false
   /** Bumped on every start and stop so a superseded launch cannot publish status. */
   private generation = 0
   /** Scripts written for one process, removed once that process has exited. */
   private scratch = new Map<PiRpcClient, string[]>()
+  /** Epoch captured at spawn. `dispose` runs after `generation` has already moved on. */
+  private epochs = new WeakMap<PiRpcClient, number>()
+  /**
+   * Last identity `get_state` reported for this process.
+   * Command traces quote it as "before"; it is not a catalog of every session.
+   */
+  private observed: { sessionId?: string; sessionFile?: string; isStreaming?: boolean } = {}
+  private readonly tracing: boolean
 
   constructor(private readonly options: RuntimeOptions = {}) {
     super()
+    this.tracing = rpcTraceEnabled(process.env, app.isPackaged)
   }
 
   get currentStatus(): RuntimeStatus {
@@ -62,6 +80,8 @@ export class PiRuntime extends EventEmitter {
 
   async start(options: RuntimeStartOptions): Promise<{ ok: boolean; error?: string }> {
     const generation = ++this.generation
+    const trace = readTraceHint(options.trace)
+    this.observed = {}
     this.pendingApprovalId = undefined
     this.aborting = false
     // "starting" goes out before the old process is touched. Waiting for it
@@ -70,7 +90,8 @@ export class PiRuntime extends EventEmitter {
     this.setStatus({ phase: 'starting', cwd: options.cwd })
     const previous = this.client
     this.client = null
-    if (previous) void this.dispose(previous)
+    if (previous) await this.dispose(previous)
+    if (generation !== this.generation) return { ok: false }
 
     const launch = resolvePiLaunch(this.options.customPiPath)
     if (launch.source === 'none') {
@@ -130,16 +151,38 @@ export class PiRuntime extends EventEmitter {
     // once, when this process starts, so it has to be in place before launch.
     try {
       ensurePatientRetrySettings()
+      rememberDefaultModel(options.model)
+      rememberDefaultThinkingLevel(options.thinkingLevel)
     } catch {
-      /* an unreadable settings file keeps Pi's own budget */
+      /* an unreadable settings file keeps Pi's own budget and model */
     }
 
+    const traceOn = this.tracing
     const client = new PiRpcClient({
       command: launch.command,
       args,
       cwd: options.cwd,
-      env: launch.env
+      env: launch.env,
+      onBoot: traceOn
+        ? (info) => {
+            emitTrace({
+              kind: 'boot',
+              at: info.at,
+              runtimeEpoch: generation,
+              pid: info.pid,
+              executablePath: info.executablePath,
+              argv: redactArgv(info.argv),
+              cwd: info.cwd,
+              envKeyAllowlist: allowlistedEnv(launch.env),
+              uiSessionId: trace?.uiSessionId,
+              requestedSessionPath: options.sessionFile,
+              sourceAction: trace?.sourceAction
+            })
+          }
+        : undefined,
+      onCommand: traceOn ? (info) => emitTrace(info) : undefined
     })
+    this.epochs.set(client, generation)
 
     let permissionsReady = false
     let modesReady = false
@@ -148,6 +191,10 @@ export class PiRuntime extends EventEmitter {
       // A newer launch owns the wire. This process is only still exiting.
       if (this.generation !== generation) return
       if (event.type === 'agent_start') this.aborting = false
+      if (event.type === 'agent_settled') {
+        this.pendingApprovalId = undefined
+        this.pendingUiRequestId = undefined
+      }
       if (event.type === 'extension_ui_request') {
         const request = event as unknown as ExtensionUiRequest
         if (request.method === 'setStatus' && request.statusKey === 'pi-desktop-mode') modesReady = true
@@ -175,6 +222,13 @@ export class PiRuntime extends EventEmitter {
           })
           return
         }
+        if (['select', 'confirm', 'input', 'editor'].includes(request.method)) {
+          if (this.aborting) {
+            client.respondUi(request.id, { confirmed: false, cancelled: true }, this.outbound('extension-ui-cancel'))
+            return
+          }
+          this.pendingUiRequestId = request.id
+        }
       }
       this.emit('event', event)
     })
@@ -191,7 +245,20 @@ export class PiRuntime extends EventEmitter {
       if (this.generation !== generation || this.client !== client) return
       this.setStatus({ phase: 'error', cwd: options.cwd, error: error.message })
     })
-    client.on('exit', ({ code, signal }: { code: number | null; signal: string | null }) => {
+    client.on('exit', ({ code, signal, pid }: { code: number | null; signal: string | null; pid?: number }) => {
+      if (this.tracing) {
+        const ownsWire = this.client === client && this.generation === generation
+        emitTrace({
+          kind: 'exit',
+          at: Date.now(),
+          runtimeEpoch: generation,
+          pid,
+          code,
+          signal,
+          // A replaced process exiting is not the live runtime dying.
+          current: ownsWire
+        })
+      }
       // A client that was replaced or stopped on purpose exits on purpose.
       if (this.client !== client || this.generation !== generation) return
       // Still coming up: the failed request below reports the error.
@@ -201,7 +268,7 @@ export class PiRuntime extends EventEmitter {
         phase: 'stopped',
         cwd: options.cwd,
         error:
-          code === 0 || signal === null
+          code === 0
             ? undefined
             : describeExit(client.stderrTail, code, signal)
       })
@@ -214,7 +281,12 @@ export class PiRuntime extends EventEmitter {
         return { ok: false }
       }
       this.client = client
-      const state = await client.request<PiState>({ type: 'get_state' }, 30_000)
+      const state = await client.request<PiState>(
+        { type: 'get_state' },
+        30_000,
+        this.outbound(trace?.sourceAction ?? 'runtime-start', trace)
+      )
+      this.observe(state)
       // A newer start may have replaced this client while it was coming up.
       if (generation !== this.generation || this.client !== client) return { ok: false }
       if (!permissionsReady) throw new Error('Pi did not load its tool approval controls. Restart the runtime to try again.')
@@ -254,7 +326,8 @@ export class PiRuntime extends EventEmitter {
   async request<T = unknown>(
     command: string,
     payload: Record<string, unknown> = {},
-    timeoutMs = 30_000
+    timeoutMs = 30_000,
+    trace?: RpcTraceHint
   ): Promise<T> {
     if (!this.client || !this.client.running) {
       throw new Error('Pi is not running. Open a workspace to start a session.')
@@ -262,11 +335,25 @@ export class PiRuntime extends EventEmitter {
     if (command === 'abort' || command === 'abort_retry') {
       this.aborting = true
       if (this.pendingApprovalId) {
-        this.client.respondUi(this.pendingApprovalId, { confirmed: false })
+        this.client.respondUi(this.pendingApprovalId, { confirmed: false }, this.outbound('approval-cancel', trace))
         this.pendingApprovalId = undefined
       }
+      if (this.pendingUiRequestId) {
+        this.client.respondUi(this.pendingUiRequestId, { confirmed: false, cancelled: true }, this.outbound('extension-ui-cancel', trace))
+        this.pendingUiRequestId = undefined
+      }
     }
-    return this.client.request<T>({ type: command, ...payload }, timeoutMs)
+    const hint = readTraceHint(trace)
+    const result = await this.client.request<T>(
+      { type: command, ...payload },
+      timeoutMs,
+      this.outbound(hint?.sourceAction ?? command, hint, command)
+    )
+    if (command === 'get_state') this.observe(result)
+    if (this.tracing && shouldProbeState(command) && hint?.sourceAction !== 'state-probe') {
+      await this.probeAfter(command)
+    }
+    return result
   }
 
   /**
@@ -275,12 +362,32 @@ export class PiRuntime extends EventEmitter {
    */
   respondUi(id: string, response: ExtensionUiResponse): void {
     if (id === this.pendingApprovalId) this.pendingApprovalId = undefined
-    this.client?.respondUi(id, response)
+    if (id === this.pendingUiRequestId) this.pendingUiRequestId = undefined
+    this.client?.respondUi(id, response, this.outbound('extension-ui-response'))
+  }
+
+  hasPendingUi(id: string): boolean {
+    return this.pendingApprovalId === id || this.pendingUiRequestId === id
   }
 
   async stop(): Promise<void> {
     const generation = ++this.generation
+    if (this.pendingApprovalId && this.client?.running) {
+      try {
+        this.client.respondUi(this.pendingApprovalId, { confirmed: false }, this.outbound('approval-cancel'))
+      } catch {
+        /* client closing */
+      }
+    }
+    if (this.pendingUiRequestId && this.client?.running) {
+      try {
+        this.client.respondUi(this.pendingUiRequestId, { confirmed: false, cancelled: true }, this.outbound('extension-ui-cancel'))
+      } catch {
+        /* client closing */
+      }
+    }
     this.pendingApprovalId = undefined
+    this.pendingUiRequestId = undefined
     const client = this.client
     this.client = null
     if (client) await this.dispose(client)
@@ -296,6 +403,18 @@ export class PiRuntime extends EventEmitter {
    * asked to stop, and that must not land on the project that replaced it.
    */
   private async dispose(client: PiRpcClient): Promise<void> {
+    if (this.tracing) {
+      // Listeners come off before the process exits, so the exit trace below
+      // never sees an intentional stop. Record that stop here instead.
+      emitTrace({
+        kind: 'shutdown',
+        at: Date.now(),
+        runtimeEpoch: this.epochs.get(client),
+        pid: client.pid,
+        reason: 'dispose'
+      })
+    }
+    this.epochs.delete(client)
     this.detach(client)
     const files = this.scratch.get(client)
     this.scratch.delete(client)
@@ -326,6 +445,67 @@ export class PiRuntime extends EventEmitter {
     this.status = status
     this.emit('status', status)
   }
+
+  private observe(state: unknown): void {
+    const next = sessionObservation(state)
+    if (next.sessionId || next.sessionFile || next.isStreaming !== undefined) this.observed = next
+  }
+
+  /** Identity attached to one outbound record. Caller frames only for session mutations. */
+  private outbound(sourceAction: string, trace?: RpcTraceHint, command?: string): RpcOutboundMeta {
+    const hint = readTraceHint(trace)
+    return {
+      sourceAction: hint?.sourceAction ?? sourceAction,
+      uiSessionId: hint?.uiSessionId,
+      beforePiSessionId: this.observed.sessionId,
+      beforePiSessionFile: this.observed.sessionFile,
+      runtimeEpoch: this.generation,
+      ...(this.tracing && command && shouldProbeState(command)
+        ? { caller: callerFrames(new Error().stack) }
+        : {})
+    }
+  }
+
+  /**
+   * Ask the live process who it is after a session mutation.
+   *
+   * The probe is a diagnostic `get_state`, not a switch. A failure here must
+   * not fail the command that already completed.
+   */
+  private async probeAfter(command: string): Promise<void> {
+    const client = this.client
+    if (!client?.running) return
+    try {
+      const state = await client.request<PiState>({ type: 'get_state' }, 10_000, {
+        sourceAction: 'state-probe',
+        runtimeEpoch: this.generation,
+        beforePiSessionId: this.observed.sessionId,
+        beforePiSessionFile: this.observed.sessionFile
+      })
+      this.observe(state)
+      const observed = sessionObservation(state)
+      emitTrace({
+        kind: 'state_probe',
+        at: Date.now(),
+        afterCommand: command,
+        runtimeEpoch: this.generation,
+        pid: client.pid,
+        ok: true,
+        ...observed
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'state probe failed'
+      emitTrace({
+        kind: 'state_probe',
+        at: Date.now(),
+        afterCommand: command,
+        runtimeEpoch: this.generation,
+        pid: client.pid,
+        ok: false,
+        error: message.slice(0, 200)
+      })
+    }
+  }
 }
 
 /**
@@ -349,35 +529,4 @@ function describeExit(stderr: string[], code: number | null, signal: string | nu
     .slice(-3)
   const reason = `pi stopped unexpectedly (code ${code}, signal ${signal})`
   return tail.length > 0 ? `${reason}: ${tail.join(' ')}` : reason
-}
-
-/** CLI flags for RPC mode, derived from the requested start options. */
-export function buildRpcArgs(
-  options: RuntimeStartOptions,
-  trustProject = true,
-  customInstructionsFile?: string,
-  permissionFile?: string,
-  modeFile?: string,
-  providerFile?: string
-): string[] {
-  const args = ['--mode', 'rpc']
-  if (providerFile) args.push('--extension', providerFile)
-  if (modeFile) args.push('--extension', modeFile)
-  if (permissionFile) args.push('--extension', permissionFile)
-  if (options.sessionFile) {
-    args.push('--session', options.sessionFile)
-  }
-  if (options.model) {
-    args.push('--model', options.model)
-  }
-  if (options.thinkingLevel) {
-    args.push('--thinking', options.thinkingLevel)
-  }
-  if (customInstructionsFile) {
-    args.push('--append-system-prompt', customInstructionsFile)
-  }
-  // Project-local extensions, skills and settings are trust-gated. RPC mode
-  // has nobody to ask, so the choice has to be made up front.
-  args.push(trustProject ? '--approve' : '--no-approve')
-  return args
 }

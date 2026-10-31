@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import {
   Brain,
   Check,
-  ChevronRight,
   Copy,
   CircleAlert,
   CircleCheck,
@@ -81,14 +80,12 @@ export function UserMessage({
   )
 }
 
-export function AssistantText({ text, streaming }: { text: string; streaming?: boolean }) {
-  return (
-    <div className="assistant__text">
-      <Markdown>{text}</Markdown>
-      {streaming ? <span className="caret-blink" aria-hidden="true" /> : null}
-    </div>
-  )
-}
+/**
+ * The assistant text moved to `conversation/StreamingText` so the document
+ * block has its own module. The old export name stays: callers and the thread
+ * import `AssistantText` from here.
+ */
+export { StreamingText as AssistantText } from './conversation/StreamingText'
 
 /**
  * A picture the model produced.
@@ -130,21 +127,11 @@ export function AssistantImage({ data, mimeType }: { data: string; mimeType: str
 
 export function ThinkingBlock({
   text,
-  streaming,
-  expanded,
-  onExpandedChange
+  streaming
 }: {
   text: string
   streaming?: boolean
-  expanded?: boolean
-  onExpandedChange?: (expanded: boolean) => void
 }) {
-  const [manualOpen, setManualOpen] = useState(false)
-  const open = expanded ?? manualOpen
-  const toggleOpen = () => {
-    if (onExpandedChange) onExpandedChange(!open)
-    else setManualOpen(!open)
-  }
   const startedAtRef = useRef<number | null>(null)
   const [elapsedSec, setElapsedSec] = useState(0)
   const t = useT()
@@ -166,14 +153,11 @@ export function ThinkingBlock({
 
   if (!text.trim()) return null
   return (
-    <div className="thinking" data-open={open}>
-      <button
-        type="button"
-        className="thinking__head"
-        aria-expanded={open}
-        onClick={toggleOpen}
-      >
-        <ChevronRight size={13} className="caret" data-open={open} />
+    <div className="thinking" data-open="false">
+      {/* The model's raw reasoning is not conversation content. The row says
+          that a thought happened and how long it took; it never prints the
+          private chain of thought. */}
+      <div className="thinking__head" role="status">
         <Brain size={13} />
         <span className="thinking__title">
           {streaming
@@ -185,12 +169,8 @@ export function ThinkingBlock({
         {streaming && elapsedSec > 0 ? (
           <span className="thinking__duration">{elapsedSec}{t('s')}</span>
         ) : null}
-      </button>
-      {open ? (
-        <div className="thinking__body" role="region" aria-label={t('Thinking')} tabIndex={0}>
-          {text}
-        </div>
-      ) : null}
+        <span className="thinking__private">{t('Reasoning hidden')}</span>
+      </div>
     </div>
   )
 }
@@ -206,7 +186,7 @@ export function NoticeMessage({ item }: { item: NoticeItem }) {
   const t = useT()
   const Icon = NOTICE_ICONS[item.level]
   return (
-    <div className="notice" data-level={item.level}>
+    <div className={item.source === 'retry' ? 'notice notice--retry' : 'notice'} data-level={item.level}>
       <Icon size={14} className="notice__icon" />
       <span>{t(item.text)}</span>
     </div>

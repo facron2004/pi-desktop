@@ -8,32 +8,33 @@
  * App shell
  * ------------------------------------------------------------------ */
 
+/* A plain grid track does not ease. This length does, so the column
+   follows it while the sidebar opens and closes. */
+@property --sidebar-track {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 240px;
+}
+
 .app {
   position: relative;
   display: grid;
   grid-template-columns:
-    minmax(200px, min(var(--sidebar-w), calc(100vw - 480px - 2 * var(--shell-inset))))
+    minmax(0px, min(var(--sidebar-track), calc(100vw - 480px - 2 * var(--shell-inset))))
     minmax(480px, 1fr);
   grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
   height: 100%;
   padding: 0 var(--shell-inset) var(--shell-inset);
   background: var(--chrome-bg);
-}
-
-.app[data-sidebar='collapsed'] {
-  grid-template-columns: 0 minmax(480px, 1fr);
+  transition: --sidebar-track 320ms var(--ease);
 }
 
 /* 3-column layout when drawer is open and docked */
 .app[data-drawer='open'][data-inspector='docked'] {
   grid-template-columns:
-    minmax(200px, min(var(--sidebar-w), calc(100vw - 480px - var(--drawer-w) - 2 * var(--shell-inset))))
+    minmax(0px, min(var(--sidebar-track), calc(100vw - 480px - var(--drawer-w) - 2 * var(--shell-inset))))
     minmax(400px, 1fr)
     var(--drawer-w);
-}
-
-.app[data-sidebar='collapsed'][data-drawer='open'][data-inspector='docked'] {
-  grid-template-columns: 0 minmax(400px, 1fr) var(--drawer-w);
 }
 
 .app[data-sidebar='collapsed'] > .main {
@@ -266,6 +267,27 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--sidebar-text);
   font-family: var(--font-sidebar);
   overflow: hidden;
+  transition: opacity 320ms var(--ease);
+}
+
+.app[data-sidebar='collapsed'] .sidebar {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Dragging the edge should follow the pointer, not the open/close ease. */
+body.is-resizing .app,
+body.is-resizing .sidebar,
+body.is-resizing .main {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app,
+  .sidebar,
+  .main {
+    transition: none;
+  }
 }
 
 /* The right edge of the sidebar can be dragged to change its width. */
@@ -945,6 +967,7 @@ transition: border-color var(--dur-fast) var(--ease);
   border-left: 0;
   border-radius: 0 var(--r-lg) var(--r-lg) 0;
   overflow: hidden;
+  transition: border-radius 320ms var(--ease);
 }
 
 /* Everything below the header reads in this box. `.main` is `overflow: hidden`
@@ -1585,6 +1608,9 @@ transition: border-color var(--dur-fast) var(--ease);
   overflow-x: hidden;
   scrollbar-width: none;
   scroll-behavior: smooth;
+  /* Keep the reading position stable when a tool body above the viewport
+     grows; the browser's anchored overflow handles the shift. */
+  overflow-anchor: auto;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1761,7 +1787,7 @@ transition: background var(--dur-fast) var(--ease);
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  gap: var(--sp-5);
+  gap: var(--sp-6);
 }
 
 .thread__inner[data-history-collapsed='true'] {
@@ -1814,7 +1840,7 @@ transition: background var(--dur-fast) var(--ease);
   display: none;
 }
 
-/* A retry that Pi started on its own. It can be stopped from here. */
+/* Runtime handoff and connection notices. */
 .retry-wrap {
   flex: 0 0 auto;
   padding: 0 var(--sp-7) var(--sp-4);
@@ -2097,6 +2123,12 @@ transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--e
 
 .thinking__title {
   font-weight: 500;
+}
+
+.thinking__private {
+  margin-left: auto;
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
 }
 
 .thinking__body {
@@ -3676,8 +3708,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   flex: 0 1 auto;
   min-width: 0;
   height: var(--ctl-xs);
-  padding: 0 var(--sp-2);
-  border-radius: var(--r-sm);
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-full);
   color: var(--text-muted);
   font-size: var(--text-xs);
   font-weight: 500;
@@ -4054,6 +4086,33 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   line-height: 1.45;
   overflow-wrap: anywhere;
   text-wrap: balance;
+  /* A label, not copy. Dragging across it was selecting the words. */
+  user-select: none;
+}
+
+.welcome__greeting .popover-wrap {
+  display: inline-flex;
+  vertical-align: baseline;
+}
+
+/* The project name is the one part of the sentence that does something. */
+.welcome__project {
+  display: inline;
+  margin: 0;
+  padding: 0 0.08em;
+  border: none;
+  border-radius: 0.28em;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+
+.welcome__project:hover,
+.welcome__project[data-active='true'] {
+  background: var(--bg-hover);
 }
 
 .welcome .composer-wrap {

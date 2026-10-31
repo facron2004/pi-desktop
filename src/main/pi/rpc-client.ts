@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { StringDecoder } from 'node:string_decoder'
 import type { ExtensionUiResponse, PiEvent, RpcResponse } from '@shared/types'
+import { describeCommand, type RpcCommandTrace, type RpcOutboundMeta } from './trace'
 
 export interface RpcRequest {
   type: string
@@ -9,11 +10,23 @@ export interface RpcRequest {
   [key: string]: unknown
 }
 
+export interface RpcBootInfo {
+  at: number
+  pid?: number
+  executablePath: string
+  argv: string[]
+  cwd: string
+}
+
 export interface PiRpcClientOptions {
   command: string
   args: string[]
   cwd: string
   env?: NodeJS.ProcessEnv
+  /** Set only while development tracing is on. Sees the spawn that just happened. */
+  onBoot?: (info: RpcBootInfo) => void
+  /** Set only while development tracing is on. Sees each record about to be written. */
+  onCommand?: (info: RpcCommandTrace) => void
 }
 
 interface Pending {
@@ -42,6 +55,7 @@ export class PiRpcClient extends EventEmitter {
   private buffer: Buffer = Buffer.alloc(0)
   private pending = new Map<string, Pending>()
   private sequence = 0
+  private traceSequence = 0
   private writeQueue: string[] = []
   private draining = false
   private closed = false
@@ -59,6 +73,10 @@ export class PiRpcClient extends EventEmitter {
     return this.child !== null && !this.closed
   }
 
+  get pid(): number | undefined {
+    return this.child?.pid
+  }
+
   start(): void {
     if (this.child) return
     const { command, args, cwd, env } = this.options
@@ -69,6 +87,13 @@ export class PiRpcClient extends EventEmitter {
       windowsHide: true
     })
     this.closed = false
+    this.options.onBoot?.({
+      at: Date.now(),
+      pid: this.child.pid,
+      executablePath: command,
+      argv: args,
+      cwd
+    })
 
     this.child.stdout.on('data', (chunk: Buffer) => this.consume(chunk))
     this.child.stderr.on('data', (chunk: Buffer) => {
@@ -81,16 +106,27 @@ export class PiRpcClient extends EventEmitter {
       }
     })
 
-    this.child.on('error', (error) => {
-      this.failAll(new Error(`Failed to start pi: ${error.message}`))
-      this.emit('error', error)
+    this.child.stdin.on('error', (error: Error) => {
+      if (this.closed) return
+      this.writeQueue = []
+      this.failAll(new Error(`Could not write to pi: ${error.message}`))
+      if (this.listenerCount('error')) this.emit('error', error)
     })
 
-    this.child.on('exit', (code, signal) => {
+    this.child.on('error', (error) => {
+      this.closed = true
+      this.writeQueue = []
+      this.failAll(new Error(`Failed to start pi: ${error.message}`))
+      if (this.listenerCount('error')) this.emit('error', error)
+    })
+
+    // close follows the final stdout bytes; exit can precede their delivery.
+    this.child.on('close', (code, signal) => {
+      const pid = this.child?.pid
       this.closed = true
       this.child = null
       this.failAll(new Error(`pi exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`))
-      this.emit('exit', { code, signal })
+      this.emit('exit', { code, signal, pid })
     })
   }
 
@@ -99,32 +135,27 @@ export class PiRpcClient extends EventEmitter {
     const child = this.child
     if (!child) return
     this.closed = true
-    try {
-      child.stdin.end()
-    } catch {
-      /* the pipe may already be gone */
+    this.writeQueue = []
+    this.failAll(new Error('pi stopped'))
+    if (child.exitCode !== null || child.signalCode !== null || !child.pid) {
+      this.child = null
+      return
     }
-    await new Promise<void>((resolve) => {
+    const exited = new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
-        try {
-          child.kill()
-        } catch {
-          /* ignore */
-        }
-        resolve()
+        try { child.kill('SIGKILL') } catch { /* exit still owns completion */ }
       }, 3000)
       child.once('exit', () => {
         clearTimeout(timer)
         resolve()
       })
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        clearTimeout(timer)
-        resolve()
-      }
     })
-    this.child = null
+    try {
+      child.stdin.end()
+    } catch {
+      /* the pipe may already be gone */
+    }
+    await exited
   }
 
   /**
@@ -132,8 +163,9 @@ export class PiRpcClient extends EventEmitter {
    * Commands that can legitimately take a long time (bash, compaction) pass
    * `timeoutMs: 0` to disable the deadline.
    */
-  request<T = unknown>(request: RpcRequest, timeoutMs = 30_000): Promise<T> {
+  request<T = unknown>(request: RpcRequest, timeoutMs = 30_000, meta?: RpcOutboundMeta): Promise<T> {
     if (!this.child || this.closed) {
+      this.trace(request, meta, false)
       return Promise.reject(new Error('pi process is not running'))
     }
     const id = request.id ?? `pi-${++this.sequence}`
@@ -147,13 +179,13 @@ export class PiRpcClient extends EventEmitter {
         }, timeoutMs)
       }
       this.pending.set(id, entry)
-      this.write({ ...request, id })
+      this.write({ ...request, id }, meta)
     })
   }
 
   /** Fire-and-forget command (no response expected). */
-  notify(request: RpcRequest): void {
-    this.write(request)
+  notify(request: RpcRequest, meta?: RpcOutboundMeta): void {
+    this.write(request, meta)
   }
 
   /**
@@ -163,13 +195,37 @@ export class PiRpcClient extends EventEmitter {
    * instead of going through `request`, which would mint a new id and wait
    * for a response that never comes.
    */
-  respondUi(id: string, response: ExtensionUiResponse): void {
-    this.write({ type: 'extension_ui_response', id, ...response })
+  respondUi(id: string, response: ExtensionUiResponse, meta?: RpcOutboundMeta): void {
+    this.write({ type: 'extension_ui_response', id, ...response }, meta)
   }
 
-  private write(request: RpcRequest): void {
+  private trace(request: RpcRequest, meta: RpcOutboundMeta | undefined, delivered: boolean): void {
+    if (!this.options.onCommand) return
+    const described = describeCommand(request.type, request)
+    this.options.onCommand({
+      kind: 'command',
+      at: Date.now(),
+      traceId: `cmd-${++this.traceSequence}`,
+      requestId: typeof request.id === 'string' ? request.id : undefined,
+      ...described,
+      sourceAction: meta?.sourceAction,
+      uiSessionId: meta?.uiSessionId,
+      beforePiSessionId: meta?.beforePiSessionId,
+      beforePiSessionFile: meta?.beforePiSessionFile,
+      runtimeEpoch: meta?.runtimeEpoch ?? 0,
+      caller: meta?.caller,
+      pid: this.child?.pid,
+      delivered
+    })
+  }
+
+  private write(request: RpcRequest, meta?: RpcOutboundMeta): void {
     const child = this.child
-    if (!child || this.closed) return
+    if (!child || this.closed) {
+      this.trace(request, meta, false)
+      return
+    }
+    this.trace(request, meta, true)
     const line = `${JSON.stringify(request)}\n`
     this.writeQueue.push(line)
     this.pump()

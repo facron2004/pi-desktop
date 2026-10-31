@@ -72,6 +72,11 @@ node scripts/rpc-ui-smoke.mjs                  # extension UI smoke test
 The transcript is a projection of Pi's events, and the projection is a single
 reducer: `lib/thread.ts`. Live events and a replayed session go through the
 same code, so a reopened conversation and a running one render identically.
+The raw wire shape is handled by `lib/stream-events.ts`: it normalizes every
+Pi record into a typed `StreamEvent` carrying `threadId`, `runId`, `turnId`,
+`sequence`, `messageId`, `toolCallId` and `status`. `applyEvent` is only the
+compatibility door; the projection switch is `applyStreamEvent`. Do not add a
+second event switch inside a component.
 
 What that buys, and what it costs:
 
@@ -84,6 +89,13 @@ What that buys, and what it costs:
   `lib/thread.ts` is the only writer; it merges a patch rather than
   replacing, which is what stops `tool_execution_start` from wiping the
   arguments `toolcall_end` already delivered.
+- A finished tool node (`ok` / `error` / `aborted`) is **terminal**: a late
+  `tool_execution_start`, `tool_execution_update` or duplicated `toolcall_end`
+  must not turn it back into a spinner or a proposal. Replay creates a
+  `proposed` node for a tool call that never produced a `toolResult`, so
+  "not run" survives reopening.
+- The model's raw thinking text is never rendered. `ThinkingBlock` shows only
+  that a thought happened, its duration and a "Reasoning hidden" label.
 - `tool_execution_update.partialResult` is the tool's **newest** partial
   result, not an increment. It replaces the previous one; appending it
   repeats the whole output on every update.
@@ -109,6 +121,20 @@ registry is `lib/tool-renderers.ts`; an unknown tool still gets a card,
 because an MCP server or a project extension is a normal outcome, not a
 reason to drop a call from the stream.
 
+The stream's leaf components live in `components/conversation/`:
+`AssistantMessage` owns process segmentation, `StreamingText` owns the reply
+document, `ToolResultPanel`/`CommandOutput`/`LogOutput` own expandable output,
+`FileChangeRow`/`RunSummary`/`ErrorNotice` own their rows. Long output is
+paged by lines (200 per page) — never render a whole build log at once.
+
+`Thread` remembers the scroll position per conversation (session file or draft
+key) in a process-level map so switching to an empty chat cannot forget it;
+`rekeyThread` migrates a draft's entry when Pi writes the session file. It only
+follows while the reader is at the bottom. Do not call `scrollToBottom` on
+every update; expanding a tool body must not move the reader's viewport.
+Per-conversation tool/file/process/history expansion lives in
+`lib/view-state.ts`, not in component-local state.
+
 Tests: `npm test` runs the reducer unit tests (`tests/thread.test.ts`,
 against the real RPC event shapes), `npm run test:e2e` spawns the bundled
 CLI and drives the real reducer with a real run — including a stop mid-run.
@@ -127,8 +153,9 @@ never received a message. `get_fork_messages` reports the prompts of the active
 branch, in order, with the entry id to fork from; the thread pairs them with the
 messages on screen in `src/renderer/src/lib/thread.ts`.
 
-Pi can only name the session that is open (`set_session_name`), so naming a
-conversation that is not active means opening it, naming it and closing it again.
+A hot conversation is renamed with `set_session_name` on its own process. A cold
+one gets a single `session_info` line appended to its JSONL, and only when no
+process is writing that file. Naming never switches the conversation on screen.
 
 `SessionTreeDialog` reads `get_tree` and draws the whole tree; `lib/session-tree.ts`
 turns the payload into rows, skips bookkeeping entries without losing the depth of
@@ -150,22 +177,21 @@ another project cannot end the conversation Pi is working in. The caret on the
 right of the row is what says so; a project becomes active only through a
 deliberate action: picking a folder, the launcher, `Ctrl+1…9`, or a worktree row.
 
-A **conversation** row does open Pi's session, and that replaces the run. Two
-rules keep the reader in charge of that:
+A **conversation** row only changes the transcript on screen. It does not call
+`switch_session`, `abort`, or kill a process. Every conversation keeps its own
+thread in `threads`, keyed by the JSONL path, or by `draft:…` until Pi writes a
+file. Events are stamped with the runtime that owns them, so a background run
+keeps updating after the view has moved on.
 
-- `switchProject(path, { allowWhileRunning: true })` is the only way a switch may
-  end a run. Picking a folder, the launcher, `Ctrl+1…9` and worktrees pass it.
-  Everything else goes through `queueProjectSwitch`: the store keeps a
-  `pendingProject`, the composer says which project is waiting, and
-  `agent_settled` opens it. `openWorkspace` clears the queue, because a project
-  that is opened has nothing left to wait for.
-- A click on another conversation while `isStreaming` dispatches
-  `pi:confirm-switch-session` instead of switching. `App` owns the confirmation
-  (`ConfirmDialog`) and only the confirmed path calls `stop()` and then
-  `selectSession`. `openSearchHit` refuses with a toast for the same reason.
+Pi starts when a message is sent, not when a row is opened. `SessionSupervisor`
+holds one process per hot conversation, and the same JSONL never has two
+writers. A second prompt in the same working directory waits; it does not abort
+the one already running. Switching projects is also only a view change. Closing
+or removing a workspace is what stops that folder's processes.
 
-Never let a click be the thing that stops the agent. If a new path needs to
-switch sessions, route it through one of those two doors.
+The sidebar running mark reads `threads[file].isStreaming`. `stop()` aborts the
+conversation on screen, not whichever one happens to be running in the
+background.
 
 ## The composer
 

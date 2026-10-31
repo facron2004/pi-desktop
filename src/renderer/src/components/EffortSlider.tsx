@@ -53,7 +53,13 @@ export function EffortSlider({
   onBusyChange: (busy: boolean) => void
 }) {
   const levels = useAppStore((state) => state.thinkingLevels)
-  const current = useAppStore((state) => state.piState?.thinkingLevel)
+  const liveLevel = useAppStore((state) => state.piState?.thinkingLevel)
+  const savedLevel = useAppStore((state) => state.settings.thinkingLevel)
+  const current = liveLevel && levels.includes(liveLevel)
+    ? liveLevel
+    : savedLevel && levels.includes(savedLevel)
+      ? savedLevel
+      : liveLevel
   const setThinkingLevel = useAppStore((state) => state.setThinkingLevel)
   const ready = useAppStore((state) => state.status.phase === 'ready')
   const t = useT()
@@ -191,8 +197,8 @@ export function EffortSlider({
     return (
       <div className="effort-card">
         <div className="effort-card__header">
-          <div className="effort-card__title" style={{ color: 'var(--text-tertiary)' }}>
-            {t('No reasoning')}
+          <div className="effort-card__title" style={{ color: savedLevel ? undefined : 'var(--text-tertiary)' }}>
+            {savedLevel ? t(levelLabel(savedLevel)) : t('No reasoning')}
           </div>
           <button
             type="button"
@@ -210,7 +216,7 @@ export function EffortSlider({
             <div className="effort-card__fill" style={{ width: '0%' }} />
           </div>
         </div>
-        <div className="effort-card__empty-hint">{t('This model has no reasoning levels')}</div>
+        {savedLevel ? null : <div className="effort-card__empty-hint">{t('This model has no reasoning levels')}</div>}
       </div>
     )
   }

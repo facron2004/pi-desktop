@@ -1,11 +1,11 @@
-import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
-import { Check, ChevronLeft, ChevronRight, FilePlus, FolderPlus, ListChecks, Paperclip, Plus, Sparkles, Target, Wrench } from 'lucide-react'
+import { useLayoutEffect, useRef, useState } from 'react'
+import { Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, Target, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { useT } from '../lib/i18n'
 import { Popover } from './Popover'
 import '../styles/add-menu.css'
 
-type AddMenuPage = 'actions' | 'files' | 'skills' | 'plugins'
+type AddMenuPage = 'actions' | 'skills' | 'plugins'
 
 const MODES = [
   { value: 'goal', label: 'Goal Mode', icon: Target, description: 'Continue until the goal is complete or blocked' },
@@ -13,20 +13,18 @@ const MODES = [
 ] as const
 
 const PAGES = [
-  { page: 'files', label: 'Add files or folders', icon: Paperclip },
   { page: 'plugins', label: 'Plugins', icon: Wrench },
   { page: 'skills', label: 'Skills', icon: Sparkles }
 ] as const
 
-export function AddMenu({ ready, busy, mode, fileRef, skillCommands, pluginCommands, onModeChange, onPickPaths, onInsertCommand }: {
+export function AddMenu({ ready, busy, mode, skillCommands, pluginCommands, onModeChange, onPickFiles, onInsertCommand }: {
   ready: boolean
   busy: boolean
   mode: AgentMode
-  fileRef: RefObject<HTMLInputElement | null>
   skillCommands: PiCommand[]
   pluginCommands: PiCommand[]
   onModeChange: (mode: AgentMode) => Promise<void>
-  onPickPaths: (kind: 'files' | 'folders') => Promise<void>
+  onPickFiles: () => Promise<void>
   onInsertCommand: (command: PiCommand) => void
 }) {
   const t = useT()
@@ -89,12 +87,16 @@ export function AddMenu({ ready, busy, mode, fileRef, skillCommands, pluginComma
                 return (
                   <button key={entry.value} type="button" className="popover__item" role="menuitemcheckbox" aria-checked={mode === entry.value} disabled={busy} title={t(entry.description)} onClick={() => { close(); void onModeChange(mode === entry.value ? 'default' : entry.value) }}>
                     <Icon size={15} />
-                    <span className="popover__item-text">{entry.label}</span>
+                    <span className="popover__item-text">{t(entry.label)}</span>
                     {mode === entry.value ? <Check size={14} /> : null}
                   </button>
                 )
               })}
               <div className="composer__add-sep" role="separator" />
+              <button type="button" className="popover__item" role="menuitem" onClick={() => { close(); void onPickFiles() }}>
+                <Paperclip size={15} />
+                <span className="popover__item-text">{t('Add files')}</span>
+              </button>
               {PAGES.map((entry) => {
                 const Icon = entry.icon
                 return (
@@ -112,24 +114,9 @@ export function AddMenu({ ready, busy, mode, fileRef, skillCommands, pluginComma
                 <button type="button" className="icon-btn composer__add-back" aria-label={t('Back')} title={t('Back')} onClick={() => navigate('actions')}>
                   <ChevronLeft size={15} />
                 </button>
-                <div className="popover__label">{t(page === 'files' ? 'Add files or folders' : page === 'skills' ? 'Skills' : 'Plugins')}</div>
+                <div className="popover__label">{t(page === 'skills' ? 'Skills' : 'Plugins')}</div>
               </div>
-              {page === 'files' ? (
-                <>
-                  <button type="button" className="popover__item" role="menuitem" onClick={() => { close(); void onPickPaths('files') }}>
-                    <FilePlus size={15} />
-                    <span className="popover__item-text">{t('Add files')}</span>
-                  </button>
-                  <button type="button" className="popover__item" role="menuitem" onClick={() => { close(); void onPickPaths('folders') }}>
-                    <FolderPlus size={15} />
-                    <span className="popover__item-text">{t('Add folders')}</span>
-                  </button>
-                  <button type="button" className="popover__item" role="menuitem" onClick={() => { close(); fileRef.current?.click() }}>
-                    <Paperclip size={15} />
-                    <span className="popover__item-text">{t('Add image attachment')}</span>
-                  </button>
-                </>
-              ) : commands.length ? (
+              {commands.length ? (
                 <div className="composer__add-list">
                   {commands.map((command) => (
                     <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description} onClick={() => { close(); onInsertCommand(command) }}>

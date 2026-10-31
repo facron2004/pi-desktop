@@ -1,5 +1,25 @@
 # 更新日志
 
+## v0.7.0 · 2026-10-31
+
+- 对话流 V2：新增 `stream-events.ts` 规范化事件适配层，统一 thread/run/turn/message/tool 身份、序号与状态；实时流与会话回放走同一投影。
+- 组件拆分：新增 `components/conversation/`，将 AssistantMessage、StreamingText、ToolResultPanel、CommandOutput、FileChangeRow、RunSummary、ErrorNotice、LogOutput 独立出来。
+- 工具状态：一次调用一个节点，支持 proposed/running/ok/error/aborted；已完成节点不允许被迟到或重复事件回退，未执行的调用在回放和停止后仍显示“Not run”。
+- 流式与滚动：文本按帧批量上屏；每个会话独立保存阅读位置（空会话切换不丢失，draft 落盘时迁移）和工具/文件/过程/历史展开状态；Composer 增高不会遮挡最后一条消息。
+- 长输出与视觉：工具日志按 200 行分页，工具行 34px，消息节奏 24px；运行状态使用真实工具语义（读取/搜索/编辑/命令），thinking 原文不再渲染。
+- 可靠性：文件变更只统计成功的 edit/write；错误回答的 run 显示 Failed 而不是成功摘要；重复 `message_start` 按 messageId 去重。
+- 验证：`npm run typecheck` 0 error、`npm test` 223/223、`npm run build` 成功、`npm run test:e2e` 真实 CLI 通过。
+
+## v0.6.0 · 2026-10-29
+
+- 每个热会话使用独立 Pi 进程，跨目录并行，同目录任务排队；切换项目、聊天和搜索结果不再中断后台任务。
+- 修复异步发送、停止、状态刷新和分叉时的会话归属，保持原会话与分支独立，恢复历史时沿用自己的模型和推理设置。
+- Git 写操作与后台任务共用目录锁，工具审批和终端命令保持独立目标；修复队列取消、直接命令执行及项目移除后的运行状态。
+- 退出时等待 Pi 正常清理，修复旧进程事件、闲置回收和启动/停止竞态；流式正文按会话逐帧合并更新。
+- 保留当前工作区的提供商参数、字体与输入区域改进，内置 Pi coding agent 继续使用 1.4.0。
+- 提供 Windows x64、ARM64 安装包与 x64 免安装版。
+- 发布包仅包含程序构建目录，排除本地截图和测试配置。
+
 ## v0.5.0 · 2026-10-29
 
 - 汇总此前未单独发布的提供商管理、模型参数导入、权限模式和字体优化。

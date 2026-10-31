@@ -24,7 +24,7 @@
 .provider-editor,
 .provider-connection,
 .provider-parameters,
-.provider-model-choice {
+.provider-models {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
@@ -122,6 +122,30 @@
   min-width: 0;
 }
 
+/* The shared button shadow is an inset top stroke. On this square chip it
+   sits on the border, so pressed and focused states draw two frames. */
+.provider-editor__head > .provider-editor__back {
+  width: var(--ctl-sm);
+  height: var(--ctl-sm);
+  aspect-ratio: 1;
+  flex: 0 0 var(--ctl-sm);
+  padding: 0;
+  justify-content: center;
+  box-shadow: none;
+}
+
+.provider-editor__head > .provider-editor__back:hover,
+.provider-editor__head > .provider-editor__back:active,
+.provider-editor__head > .provider-editor__back:focus,
+.provider-editor__head > .provider-editor__back:focus-visible {
+  box-shadow: none;
+}
+
+.provider-editor__head > .provider-editor__back:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .provider-section-head h4 {
   margin: 0;
   font-size: var(--text-sm);
@@ -161,6 +185,67 @@
 .provider-field-label {
   flex-wrap: wrap;
   font-size: var(--text-sm);
+  color: var(--text);
+}
+
+/* The key field used to inherit --font-mono. That stack has no CJK glyphs,
+   and Windows then draws the saved-key hint in SimSun (宋体). Typed keys
+   stay masked until the eye is pressed. */
+.provider-key {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.provider-key .input,
+.provider-key .input::placeholder {
+  /* YaHei / PingFang have to come first. A western face earlier in the
+     stack is font-linked to SimSun for missing CJK glyphs on Windows. */
+  font-family: 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', var(--font-sidebar);
+}
+
+.provider-key .input {
+  width: 100%;
+  padding-right: calc(var(--ctl-sm) + var(--sp-4));
+}
+
+/* type=password hides its discs under this CJK face on Windows, so the
+   saved key is a text field masked with text-security instead. */
+.provider-key .input[data-masked='true'] {
+  -webkit-text-security: disc;
+}
+
+.provider-key .input[data-masked='true']::placeholder {
+  -webkit-text-security: none;
+}
+
+.provider-key .input::placeholder {
+  color: var(--text-faint);
+}
+
+.provider-key .provider-key__toggle,
+.provider-key .provider-key__toggle:hover,
+.provider-key .provider-key__toggle:focus,
+.provider-key .provider-key__toggle:focus-visible,
+.provider-key .provider-key__toggle:active {
+  position: absolute;
+  z-index: 1;
+  top: 1px;
+  right: 1px;
+  width: calc(var(--ctl-md) - 2px);
+  height: calc(var(--ctl-md) - 2px);
+  border-radius: 0;
+  background: none;
+  outline: none;
+  box-shadow: none;
+  color: var(--text-muted);
+}
+
+.provider-key .provider-key__toggle:hover:not(:disabled),
+.provider-key .provider-key__toggle:focus:not(:disabled),
+.provider-key .provider-key__toggle:focus-visible:not(:disabled),
+.provider-key .provider-key__toggle:active:not(:disabled) {
+  background: none;
   color: var(--text);
 }
 
@@ -216,11 +301,102 @@
   color: var(--red);
 }
 
-.provider-model-choice,
+.provider-models,
 .provider-parameters,
 .provider-editor__footer {
   padding-top: var(--sp-4);
   border-top: 1px solid var(--border-soft);
+}
+
+.provider-parameters--nested {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.provider-models__actions,
+.provider-models__detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.provider-models__actions {
+  justify-content: flex-end;
+}
+
+.provider-models__actions > .btn,
+.provider-models__detail-actions > .btn {
+  flex: 0 0 auto;
+}
+
+.provider-models__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.provider-models__columns,
+.provider-models__row {
+  display: grid;
+  grid-template-columns: var(--ctl-md) minmax(0, 1fr) minmax(0, 1.15fr) 36px;
+  column-gap: var(--sp-3);
+  align-items: center;
+}
+
+.provider-models__columns {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+/* The two fields sit in the parent grid, so the column labels line up with the inputs. */
+.provider-models__fields {
+  display: contents;
+}
+
+.provider-models__row > .provider-models__expand {
+  width: var(--ctl-md);
+  height: var(--ctl-md);
+}
+
+.provider-models__expand svg {
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.provider-models__item[data-open='true'] .provider-models__expand svg {
+  transform: rotate(90deg);
+}
+
+.provider-models__name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.provider-models__name .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.provider-models__item[data-enabled='false'] .provider-models__fields .input {
+  opacity: 0.55;
+}
+
+.provider-models__choose[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.provider-models__details {
+  margin-top: var(--sp-2);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-sunken);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .provider-models__expand svg { transition: none; }
 }
 
 .provider-price-details summary {

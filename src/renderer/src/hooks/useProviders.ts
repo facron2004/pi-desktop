@@ -1,12 +1,42 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelInfo } from '@shared/types'
 import type { ModelParameter, ProviderApi, ProviderModel, ProviderProbeResult, ProviderProfile, SaveProviderInput } from '@shared/providers'
+import { mergeFetchedModels } from '@shared/provider-models'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 
-export interface ProviderDraft extends ProviderProfile {
+export interface EditorModel extends ProviderModel {
+  clientKey: string
+}
+
+export interface ProviderDraft extends Omit<ProviderProfile, 'models'> {
   apiKey: string
   selectedModel: string
+  models: EditorModel[]
+}
+
+function stamp(models: ProviderModel[]): EditorModel[] {
+  return models.map(model => ({ ...model, enabled: model.enabled !== false, clientKey: crypto.randomUUID() }))
+}
+
+function mergeEditorModels(existing: EditorModel[], fetched: ProviderModel[]): EditorModel[] {
+  const merged = mergeFetchedModels(existing, fetched)
+  const keys = new Map(existing.filter(model => model.id).map(model => [model.id, model.clientKey]))
+  const blanks = existing.filter(model => !model.id).map(model => model.clientKey)
+  let blank = 0
+  return merged.map(model => ({
+    ...model,
+    clientKey: model.id ? keys.get(model.id) ?? crypto.randomUUID() : blanks[blank++] ?? crypto.randomUUID()
+  }))
+}
+
+function storedModel(model: EditorModel): ProviderModel | null {
+  const id = model.id.trim()
+  if (!id) return null
+  const { clientKey, sources, ...rest } = model
+  void clientKey
+  void sources
+  return { ...rest, id, enabled: model.enabled !== false }
 }
 
 function fromPi(models: ModelInfo[]): ProviderProfile[] {
@@ -36,6 +66,8 @@ export function useProviders() {
   const [busy, setBusy] = useState<'models' | 'probe' | 'save' | null>(null)
   const [probe, setProbe] = useState<ProviderProbeResult | null>(null)
   const request = useRef(0)
+  const editGeneration = useRef(0)
+  const loadedKey = useRef('')
 
   useEffect(() => {
     let active = true
@@ -55,41 +87,126 @@ export function useProviders() {
   }, [configured, models])
 
   const edit = (profile?: ProviderProfile) => {
-    request.current++
+    const sequence = ++editGeneration.current
+    loadedKey.current = ''
     setBusy(null); setError(''); setProbe(null)
     if (!profile) {
       setDraft({ id: '', name: '', api: 'openai-completions', baseUrl: '', hasApiKey: false,
         models: [], apiKey: '', selectedModel: '' })
       return
     }
-    const selected = profile.models.find(model => settings.model === `${profile.id}/${model.id}` || (settings.provider === profile.id && settings.model === model.id))
-    setDraft({ ...profile, apiKey: '', selectedModel: selected?.id ?? profile.models[0]?.id ?? '' })
+    const models = stamp(profile.models)
+    const selected = models.find(model => settings.model === `${profile.id}/${model.id}` || (settings.provider === profile.id && settings.model === model.id))
+    const fallback = models.find(model => model.enabled !== false)
+    const saved = profile.external ? '' : profile.apiKey?.trim() ?? ''
+    loadedKey.current = saved
+    setDraft({ ...profile, models, apiKey: saved, selectedModel: selected?.id ?? fallback?.id ?? '' })
+    if (!saved && !profile.external && profile.hasApiKey && profile.id) {
+      window.pi.providers.savedKey(profile.id).then(apiKey => {
+        if (editGeneration.current !== sequence) return
+        loadedKey.current = apiKey
+        // A key typed before this returns is the user's edit, not a blank field waiting to be filled.
+        setDraft(current => current && current.id === profile.id && !current.apiKey.trim() ? { ...current, apiKey } : current)
+      }).catch(() => { /* a blank field still means keep the stored key */ })
+    }
   }
 
-  const cancel = () => { request.current++; setDraft(null); setBusy(null); setProbe(null); setError('') }
+  const cancel = () => { editGeneration.current++; request.current++; setDraft(null); setBusy(null); setProbe(null); setError('') }
   const change = (patch: Partial<ProviderDraft>) => {
     setDraft(current => current ? { ...current, ...patch } : current)
     setProbe(null); setError('')
   }
-  const changeModel = (field: ModelParameter, value: ProviderModel[ModelParameter]) => {
-    if (!draft?.selectedModel) return
-    const model = draft.models.find(model => model.id === draft.selectedModel) ?? { id: draft.selectedModel }
-    const next = { ...model, [field]: value, sources: { ...model.sources, [field]: 'manual' as const } }
-    change({ models: [...draft.models.filter(model => model.id !== next.id), next] })
+  const patchModel = (clientKey: string, patch: Partial<ProviderModel>, manual: ModelParameter[] = []) => {
+    setDraft(current => {
+      if (!current) return current
+      let selectedModel = current.selectedModel
+      const models = current.models.map(model => {
+        if (model.clientKey !== clientKey) return model
+        const next: EditorModel = { ...model, ...patch, sources: model.sources ? { ...model.sources } : undefined }
+        for (const field of manual) next.sources = { ...next.sources, [field]: 'manual' }
+        if (patch.id !== undefined && model.id === current.selectedModel) selectedModel = patch.id
+        else if (patch.id?.trim() && !current.selectedModel.trim() && next.enabled !== false) selectedModel = patch.id
+        return next
+      })
+      return { ...current, models, selectedModel }
+    })
+    setProbe(null)
+    setError('')
+  }
+
+  const toggleModel = (clientKey: string) => {
+    setDraft(current => {
+      if (!current) return current
+      const models = current.models.map(model => model.clientKey === clientKey ? { ...model, enabled: model.enabled === false } : model)
+      const toggled = models.find(model => model.clientKey === clientKey)
+      const stillSelected = models.some(model => model.enabled !== false && model.id.trim() && model.id === current.selectedModel)
+      const selectedModel = stillSelected
+        ? current.selectedModel
+        : toggled && toggled.enabled !== false && toggled.id.trim()
+          ? toggled.id
+          : models.find(model => model.enabled !== false && model.id.trim())?.id ?? ''
+      return { ...current, models, selectedModel }
+    })
+    setProbe(null)
+    setError('')
+  }
+
+  const makeDefault = (clientKey: string) => {
+    setDraft(current => {
+      if (!current) return current
+      const model = current.models.find(item => item.clientKey === clientKey)
+      if (!model?.id.trim() || (!current.external && model.enabled === false)) return current
+      return { ...current, selectedModel: model.id }
+    })
+    setProbe(null)
+    setError('')
+  }
+
+  const addModel = (clientKey: string) => {
+    setDraft(current => current ? {
+      ...current,
+      models: [...current.models, { id: '', enabled: true, clientKey }]
+    } : current)
+    setProbe(null)
+    setError('')
+  }
+
+  const removeModel = (clientKey: string) => {
+    setDraft(current => {
+      if (!current) return current
+      const models = current.models.filter(model => model.clientKey !== clientKey)
+      const selectedModel = models.some(model => model.enabled !== false && model.id === current.selectedModel)
+        ? current.selectedModel
+        : models.find(model => model.enabled !== false && model.id.trim())?.id ?? ''
+      return { ...current, models, selectedModel }
+    })
+    setProbe(null)
+    setError('')
   }
 
   const run = async (operation: 'models' | 'probe' | 'save') => {
     if (!draft || busy) return
     const sequence = ++request.current
     setBusy(operation); setError('')
-    const connection = { id: draft.id || undefined, api: draft.api, baseUrl: draft.baseUrl, apiKey: draft.apiKey || undefined }
+    const typedKey = draft.apiKey.trim()
+    // The field is prefilled with the saved key. Sending it back would rewrite
+    // env references and escaping, so an untouched value stays on disk.
+    const connection = { id: draft.id || undefined, api: draft.api, baseUrl: draft.baseUrl,
+      apiKey: typedKey && typedKey !== loadedKey.current ? typedKey : undefined }
     try {
       if (operation === 'models') {
         const fetched = await window.pi.providers.models(connection)
         if (request.current !== sequence) return
-        setDraft({ ...draft, models: fetched, selectedModel: fetched.some(model => model.id === draft.selectedModel) ? draft.selectedModel : fetched[0]?.id ?? '' })
+        if (!fetched.length) {
+          setError(t('The provider returned no chat models. Enter a model ID manually.'))
+          return
+        }
+        const models = mergeEditorModels(draft.models, fetched)
+        const selectedModel = models.some(model => model.id === draft.selectedModel && model.enabled !== false)
+          ? draft.selectedModel
+          : models.find(model => model.enabled !== false && model.id)?.id ?? ''
+        setDraft({ ...draft, models, selectedModel })
         setProbe(null)
-        if (!fetched.length) setError(t('The provider returned no chat models. Enter a model ID manually.'))
       } else if (operation === 'probe') {
         const result = await window.pi.providers.probe(connection, draft.selectedModel || undefined)
         if (request.current === sequence) setProbe(result)
@@ -105,13 +222,21 @@ export function useProviders() {
             applied = useAppStore.getState().piState?.model?.id === target.id && useAppStore.getState().piState?.model?.provider === target.provider
           }
         } else {
-          const values = draft.models.some(model => model.id === draft.selectedModel) ? draft.models : [...draft.models, { id: draft.selectedModel }]
+          const values = draft.models.flatMap(model => {
+            const stored = storedModel(model)
+            return stored ? [stored] : []
+          })
+          const selectedModel = values.find(model => model.id === draft.selectedModel && model.enabled !== false)?.id
+            ?? values.find(model => model.enabled !== false)?.id
+          if (!selectedModel) throw new Error('Enable at least one model')
           const input: SaveProviderInput = { ...connection, name: draft.name, revision: draft.revision,
-            models: values, selectedModel: draft.selectedModel }
+            models: values, selectedModel }
           const result = await store.saveProvider(input)
           applied = result.applied
           if (request.current !== sequence) return
-          setConfigured(current => [...current.filter(provider => provider.id !== result.provider.id), result.provider])
+          const keptKey = typedKey || loadedKey.current
+          setConfigured(current => [...current.filter(provider => provider.id !== result.provider.id),
+            keptKey ? { ...result.provider, apiKey: keptKey } : result.provider])
           applyError = result.applyError
         }
         if (request.current !== sequence) return
@@ -121,7 +246,7 @@ export function useProviders() {
           : t(applied ? 'Provider saved and activated' : 'Provider saved for new conversations'), applyError ? 'warning' : 'info')
       }
     } catch (error) {
-      if (request.current === sequence) setError(error instanceof Error ? error.message : String(error))
+      if (request.current === sequence) setError(t(error instanceof Error ? error.message : String(error)))
     } finally {
       if (request.current === sequence) setBusy(null)
     }
@@ -140,6 +265,6 @@ export function useProviders() {
     }
   }
 
-  return { providers, loading, draft, busy, probe, error, edit, cancel, change, changeModel, remove,
+  return { providers, loading, draft, busy, probe, error, edit, cancel, change, patchModel, toggleModel, makeDefault, addModel, removeModel, remove,
     fetchModels: () => void run('models'), test: () => void run('probe'), save: () => void run('save') }
 }

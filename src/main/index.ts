@@ -4,6 +4,7 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { bridgeRuntime, registerIpc } from './ipc'
 import { PiRuntime } from './pi/runtime'
+import { SessionSupervisor } from './pi/supervisor'
 import { scheduleCapture, scheduleWindowClose } from './screenshot'
 import { SettingsStore } from './settings'
 import { initialBounds, wasMaximized, watchWindowState } from './window-state'
@@ -17,7 +18,7 @@ if (process.env.PI_DESKTOP_SCREENSHOT && process.env.PI_DESKTOP_USER_DATA) {
 
 let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore | null = null
-let runtime: PiRuntime | null = null
+let supervisor: SessionSupervisor | null = null
 
 function createWindow(): BrowserWindow {
   const bounds = initialBounds()
@@ -179,24 +180,25 @@ app.whenReady().then(() => {
     settings.addWorkspace(workspace)
   }
 
-  runtime = new PiRuntime({
+  const runtimeOptions = {
     customPiPath: settings.get().piPath,
     trustProject: settings.get().trustProject,
     getPermissionMode: () => settings?.get().permissionMode ?? 'ask'
-  })
+  }
+  supervisor = new SessionSupervisor(() => new PiRuntime(runtimeOptions))
 
   mainWindow = createWindow()
 
   const context = {
-    runtime,
+    supervisor,
     settings,
     getWindow: () => mainWindow
   }
   registerIpc(context)
   bridgeRuntime(context)
 
-  scheduleCapture({ window: mainWindow, runtime })
-  scheduleWindowClose({ window: mainWindow, runtime })
+  scheduleCapture({ window: mainWindow, supervisor })
+  scheduleWindowClose({ window: mainWindow })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -210,6 +212,17 @@ app.on('window-all-closed', () => {
   if (!isMac && process.env.PI_DESKTOP_KEEP_ALIVE !== '1') app.quit()
 })
 
-app.on('before-quit', async () => {
-  await runtime?.stop()
+let shutdownComplete = false
+let shuttingDown = false
+app.on('before-quit', (event) => {
+  if (shutdownComplete || !supervisor) return
+  event.preventDefault()
+  if (shuttingDown) return
+  shuttingDown = true
+  void supervisor.stop().catch((error: unknown) => {
+    console.error('[pi-desktop] shutdown failed:', error)
+  }).finally(() => {
+    shutdownComplete = true
+    app.quit()
+  })
 })

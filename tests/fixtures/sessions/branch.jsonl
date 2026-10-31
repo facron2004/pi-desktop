@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"header-sample","cwd":"C:/project/sample"}
+{"type":"message","id":"m1","parentId":null,"message":{"role":"user","content":"hello","timestamp":10}}
+{"type":"message","id":"old","parentId":null,"message":{"role":"user","content":"not on the leaf branch","timestamp":1}}
+{"type":"message","id":"m2","parentId":"m1","message":{"role":"assistant","content":"hi","timestamp":11}}

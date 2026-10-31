@@ -23,6 +23,23 @@ export interface PiEvent {
   [key: string]: unknown
 }
 
+export interface RuntimeEvent {
+  ownerId: string
+  event: PiEvent
+}
+
+export interface RuntimeStatusEvent {
+  ownerId: string
+  status: RuntimeStatus
+}
+
+export interface RuntimeRekey {
+  from: string
+  to: string
+  /** Startup replaced a file that had not been persisted, rather than forking it. */
+  replace?: boolean
+}
+
 /* ------------------------------------------------------------------ *
  * Content blocks / messages
  * ------------------------------------------------------------------ */
@@ -210,6 +227,9 @@ export interface ExtensionUiRequest {
   widgetLines?: string[]
   widgetPlacement?: 'aboveEditor' | 'belowEditor'
   text?: string
+  /** Originating runtime/session key so responses route back to the correct session. */
+  sessionKey?: string
+  ownerId?: string
 }
 
 export type ExtensionUiMethod =
@@ -643,12 +663,19 @@ export interface UpgradeResult {
  * Renderer bridge
  * ------------------------------------------------------------------ */
 
+/** A file chosen for the composer. Pictures are inlined; other files stay as paths. */
+export type PickedFile =
+  | { kind: 'image'; data: string; mimeType: string }
+  | { kind: 'path'; path: string }
+
 export interface PiDesktopBridge {
   providers: {
     list(): Promise<ProviderProfile[]>
+    /** Effective API key for one provider. Empty when there is nothing literal to show. */
+    savedKey(id: string): Promise<string>
     models(connection: ProviderConnection): Promise<ProviderModel[]>
     probe(connection: ProviderConnection, modelId?: string): Promise<ProviderProbeResult>
-    save(input: SaveProviderInput): Promise<{ provider: ProviderProfile; settings: AppSettings; applied: boolean; applyError?: string }>
+    save(input: SaveProviderInput, sessionKey?: string): Promise<{ provider: ProviderProfile; settings: AppSettings; applied: boolean; applyError?: string }>
     remove(id: string): Promise<{ settings: AppSettings }>
   }
   app: {
@@ -666,7 +693,8 @@ export interface PiDesktopBridge {
   }
   dialog: {
     pickDirectory(defaultPath?: string): Promise<string | null>
-    pickPaths(kind: 'files' | 'folders', defaultPath?: string): Promise<string[]>
+    /** One dialog for every file. Pictures come back inline; other files as paths. */
+    pickFiles(defaultPath?: string): Promise<PickedFile[]>
   }
   settings: {
     get(): Promise<AppSettings>
@@ -682,6 +710,10 @@ export interface PiDesktopBridge {
     list(cwd?: string): Promise<SessionMeta[]>
     /** Move a session file to the OS trash. Returns false when it fails. */
     remove(file: string): Promise<boolean>
+    /** Active-branch messages from disk. Does not start Pi. */
+    hydrate(file: string): Promise<AgentMessage[]>
+    /** Name a conversation. A hot one is renamed in its own process. */
+    rename(file: string, name: string): Promise<boolean>
     /** Search the text of every conversation on disk. */
     search(query: string, limit?: number): Promise<SessionSearchHit[]>
     /** Aggregate token consumption and conversation records across all sessions. */
@@ -689,16 +721,25 @@ export interface PiDesktopBridge {
   }
   runtime: {
     start(options: RuntimeStartOptions): Promise<{ ok: boolean; error?: string }>
-    stop(): Promise<void>
+    /** Start Pi for one conversation if it is not already running. */
+    ensure(options: RuntimeEnsureOptions): Promise<{ ok: boolean; error?: string }>
+    /** True when that conversation has a live process. */
+    has(sessionKey: string): Promise<boolean>
+    stop(sessionKey?: string): Promise<void>
+    /** Stop every process whose cwd is this workspace. */
+    stopCwd(cwd: string): Promise<void>
     request<T = unknown>(
       command: string,
       payload?: Record<string, unknown>,
-      timeoutMs?: number
+      timeoutMs?: number,
+      trace?: RpcTraceHint,
+      sessionKey?: string
     ): Promise<T>
     /** Answer a blocking extension dialog so the agent can continue. */
-    respondUi(id: string, response: ExtensionUiResponse): Promise<void>
-    onEvent(handler: (event: PiEvent) => void): () => void
-    onStatus(handler: (status: RuntimeStatus) => void): () => void
+    respondUi(id: string, response: ExtensionUiResponse, sessionKey?: string): Promise<void>
+    onEvent(handler: (event: RuntimeEvent) => void): () => void
+    onStatus(handler: (status: RuntimeStatusEvent) => void): () => void
+    onRekey(handler: (change: RuntimeRekey) => void): () => void
   }
   auth: {
     check(provider?: string): Promise<AuthStatus>
@@ -812,6 +853,22 @@ export interface TextSearchHit {
   matchLength: number
 }
 
+/**
+ * Who asked the runtime to start or to send a command.
+ *
+ * This never reaches Pi. It exists so a development trace can tell a sidebar
+ * click from a prompt, a project switch, or a restore without recording the
+ * message that was sent.
+ */
+export interface RpcTraceHint {
+  sourceAction: string
+  /**
+   * Desktop UI identity for the view that issued the command.
+   * Today that is the JSONL path (`activeSessionFile`), not Pi's `sessionId`.
+   */
+  uiSessionId?: string
+}
+
 export interface RuntimeStartOptions {
   /** Empty uses the app's working directory for chats without a project. */
   cwd: string
@@ -821,6 +878,14 @@ export interface RuntimeStartOptions {
   thinkingLevel?: string
   /** App-level instructions appended to the system prompt for this process. */
   customInstructions?: string
+  /** Diagnostic only. Stripped before the process is spawned. */
+  trace?: RpcTraceHint
+}
+
+/** Start the process for one conversation. Does not stop any other conversation. */
+export interface RuntimeEnsureOptions extends RuntimeStartOptions {
+  /** JSONL path, or `draft:…` until Pi has written a file. */
+  sessionKey: string
 }
 
 export interface RuntimeStatus {

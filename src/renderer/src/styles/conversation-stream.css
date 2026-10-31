@@ -54,14 +54,27 @@
 }
 
 .run-status__activity {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
   flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+}
+
+.run-status__activity-label {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
+.run-status__activity-detail {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
 }
 
 .run-status__elapsed {
@@ -69,6 +82,55 @@
   font-size: var(--text-2xs);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
+}
+
+.run-status[data-phase='retrying'] {
+  flex-wrap: wrap;
+}
+
+.run-status__retry {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.run-status__attempt {
+  color: var(--text-tertiary);
+}
+
+.run-status__stop {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.run-status__stop:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.run-status__stop:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.notice.notice--retry[data-level] {
+  padding: var(--sp-2) 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.notice--retry[data-level='error'] .notice__icon {
+  color: var(--status-danger);
 }
 
 /* The one-line record of how a run ended. */
@@ -94,6 +156,10 @@
 
 .run-outcome[data-outcome='aborted'] {
   color: var(--status-warning);
+}
+
+.run-outcome[data-outcome='failed'] {
+  color: var(--status-danger);
 }
 
 .run-outcome__meta {
@@ -265,7 +331,7 @@
   align-items: center;
   gap: var(--sp-2);
   min-width: 0;
-  min-height: 22px;
+  min-height: var(--tool-row-h);
 }
 
 .tool-link__toggle {
@@ -273,8 +339,17 @@
   align-items: center;
   gap: var(--sp-2);
   flex: 0 0 auto;
-  min-height: 22px;
+  min-height: var(--tool-row-h);
   padding: 0;
+  color: var(--text-tertiary);
+}
+
+.tool-link__icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
   color: var(--text-tertiary);
 }
 
@@ -318,12 +393,28 @@
   font-variant-numeric: tabular-nums;
 }
 
-.tool--link[data-status='error'] .tool-link__verb,
-.tool--link[data-status='error'] .tool-link__target {
+.tool-link__state {
+  flex: 0 0 auto;
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+.tool-link__state[data-state='error'] {
   color: var(--status-danger);
 }
 
-.tool--link[data-status='aborted'] .tool-link__verb {
+.tool-link__state[data-state='aborted'] {
+  color: var(--status-warning);
+}
+
+.tool--link[data-status='error'] .tool-link__verb,
+.tool--link[data-status='error'] .tool-link__target,
+.tool--link[data-status='error'] .tool-link__icon {
+  color: var(--status-danger);
+}
+
+.tool--link[data-status='aborted'] .tool-link__verb,
+.tool--link[data-status='aborted'] .tool-link__icon {
   color: var(--status-warning);
 }
 
@@ -366,13 +457,23 @@
 }
 
 .tool--group > .tool__body--group {
-  max-height: none;
+  /* A group is one scroll sheet of its own: a batch of long outputs must not
+     push the rows around it out of the transcript. */
+  max-height: min(60vh, calc(var(--sp-8) * 10));
+  overflow: auto;
+  overflow-anchor: auto;
   margin-left: var(--sp-4);
   padding: var(--sp-1) 0 var(--sp-1) var(--sp-4);
   border: 0;
   border-left: 1px solid var(--border-default);
   border-radius: 0;
   background: transparent;
+}
+
+/* A card nested in a group cannot grow unbounded either: it gets its own
+   bounded body, so one long log stays inside that card. */
+.tool__body--group .tool__body {
+  max-height: calc(var(--sp-8) * 5);
 }
 
 .assistant__body > .assistant__text + .process,
@@ -635,6 +736,38 @@
   overflow: auto;
   border-top: 1px solid var(--border-subtle);
   background: var(--surface-sunken);
+}
+
+/* ------------------------------------------------------------------ *
+ * Long output
+ * ------------------------------------------------------------------ */
+
+/* One page of a long log. The page is a single <pre> so selection and copy
+   work across lines; only the visible page is in the DOM. */
+.log-output {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.log-output > .tool__pre {
+  min-width: 0;
+}
+
+.log-output__more {
+  flex: 0 0 auto;
+  text-align: left;
+}
+
+.log-output__more:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* The error sheet used to hold its <pre> directly; LogOutput adds a wrapper,
+   so the no-padding rule has to reach through it. */
+.tool[data-status='error'] > .tool__body > .log-output > .tool__pre {
+  padding: 0;
 }
 
 /* The status row and the run summary share the document's measure. */

@@ -30,7 +30,35 @@ const esbuild = require('esbuild')
  * decides from the same events. Both matter for the conversation, so both
  * run here rather than in separate commands nobody remembers to call.
  */
-const suites = ['thread.test.ts', 'run-state.test.ts', 'projects.test.ts', 'git-status.test.ts', 'diff-fold.test.ts', 'permissions.test.ts', 'task-modes.test.ts', 'fonts.test.ts', 'providers.test.ts', 'retry-policy.test.ts']
+const suites = [
+  'thread.test.ts',
+  'run-state.test.ts',
+  'projects.test.ts',
+  'git-status.test.ts',
+  'diff-fold.test.ts',
+  'permissions.test.ts',
+  'task-modes.test.ts',
+  'fonts.test.ts',
+  'providers.test.ts',
+  'retry-policy.test.ts',
+  'rpc-trace.test.ts',
+  'cwd-gate.test.ts',
+  'session-scope.test.ts',
+  'sessions-cache.test.ts',
+  'sessions-targeted.test.ts',
+  'rpc-args.test.ts',
+  'session-fixture.test.ts',
+  'supervisor.test.ts',
+  'session-concurrency.test.ts',
+  'rpc-client.test.ts',
+  'extension-dialog-protocol.test.ts',
+  'stream-events.test.ts',
+  'scroll-memory.test.ts',
+  'conversation-helpers.test.ts',
+  'turns.test.ts',
+  'changes.test.ts',
+  'view-state.test.ts'
+]
 const debug = process.argv[2] === '--debug'
 
 const out = mkdtempSync(path.join(tmpdir(), 'pi-desktop-tests-'))

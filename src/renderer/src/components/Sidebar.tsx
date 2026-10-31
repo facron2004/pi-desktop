@@ -11,6 +11,7 @@ import {
   Plus,
   Search,
   Settings,
+  Square,
   SquarePen,
   Trash2,
   X
@@ -51,12 +52,14 @@ export function Sidebar({
   onOpenSettings,
   focusSearchSignal,
   width,
+  open = true,
   onResize,
   onResizeEnd
 }: {
   onOpenSettings: () => void
   focusSearchSignal: number
   width: number
+  open?: boolean
   onResize?: (width: number) => void
   onResizeEnd?: (width: number) => void
 }) {
@@ -64,11 +67,13 @@ export function Sidebar({
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const status = useAppStore((state) => state.status)
-  const isStreaming = useAppStore((state) => state.isStreaming)
+  const threads = useAppStore((state) => state.threads)
   const settings = useAppStore((state) => state.settings)
   const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const pendingProject = useAppStore((state) => state.pendingProject)
   const selectSession = useAppStore((state) => state.selectSession)
+  const stop = useAppStore((state) => state.stop)
+  const stopSession = useAppStore((state) => state.stopSession)
   const newChat = useAppStore((state) => state.newChat)
   const removeWorkspace = useAppStore((state) => state.removeWorkspace)
   const renameSessionFile = useAppStore((state) => state.renameSessionFile)
@@ -308,7 +313,7 @@ export function Sidebar({
         key={session.file}
         session={session}
         active={session.file === activeSessionFile}
-        running={session.file === activeSessionFile && isStreaming}
+        running={Boolean(threads[session.file]?.isStreaming)}
         pinned={pinned.has(session.file)}
         renaming={renaming === session.file}
         draft={draft}
@@ -316,16 +321,8 @@ export function Sidebar({
         onSelect={(file) => {
           if (renaming === file) return
           if (file === activeSessionFile) return
-          // Opening another conversation replaces the one Pi is running in.
-          // Stopping is the user's decision, not a side effect of a click.
-          if (isStreaming) {
-            window.dispatchEvent(
-              new CustomEvent('pi:confirm-switch-session', {
-                detail: { file, title: session.name || session.preview || t('Untitled session') }
-              })
-            )
-            return
-          }
+          // Opening a conversation only changes the view. The one that is
+          // running keeps its process.
           void selectSession(session)
         }}
         onStartRename={() =>
@@ -335,6 +332,10 @@ export function Sidebar({
         onCommitRename={commitRename}
         onCancelRename={() => setRenaming(null)}
         onDelete={() => setPendingDelete(session)}
+        onStop={() => {
+          if (session.file === activeSessionFile) void stop()
+          else void stopSession(session.file)
+        }}
         onTogglePin={() => {
           void togglePin(session.file).then(() => {
             requestAnimationFrame(() => {
@@ -398,7 +399,7 @@ export function Sidebar({
     })
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" inert={open ? undefined : true} aria-hidden={open ? undefined : true}>
       <div
         className="sidebar__resizer"
         role="separator"
@@ -438,7 +439,7 @@ export function Sidebar({
       <div className="sidebar__new-chat">
         <button
           className="btn-new-chat"
-          disabled={status.phase !== 'ready'}
+          disabled={status.phase === 'error' || (!workspace && status.phase === 'stopped')}
           onClick={() => void newChat()}
         >
           <span className="sidebar__compose-icon">
@@ -906,6 +907,7 @@ interface SessionRowProps {
   onCommitRename: (file: string) => void
   onCancelRename: () => void
   onDelete: () => void
+  onStop: () => void
   onTogglePin: () => void
 }
 
@@ -923,6 +925,7 @@ function SessionRow({
   onCommitRename,
   onCancelRename,
   onDelete,
+  onStop,
   onTogglePin
 }: SessionRowProps) {
   const t = useT()
@@ -1018,6 +1021,20 @@ function SessionRow({
                   <Pin size={12} />
                   {pinned ? t('Unpin conversation') : t('Pin conversation to the top')}
                 </button>
+                {running ? (
+                  <button
+                    type="button"
+                    className="popover__item"
+                    role="menuitem"
+                    onClick={() => {
+                      close()
+                      onStop()
+                    }}
+                  >
+                    <Square size={12} />
+                    {t('Stop this conversation')}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="popover__item"

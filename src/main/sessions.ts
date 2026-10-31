@@ -1,7 +1,11 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { createReadStream, existsSync, readFileSync } from 'node:fs'
+import { appendFile, readdir, realpath, stat } from 'node:fs/promises'
+import type { Stats } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type {
+  AgentMessage,
   AggregatedUsageStats,
   DailyUsageStat,
   ModelUsageStat,
@@ -10,8 +14,15 @@ import type {
   SessionSearchHit,
   TokenUsageMetrics
 } from '@shared/types'
+import { canonicalSessionFile } from './pi/session-file'
 
 const MAX_SESSION_BYTES = 24 * 1024 * 1024
+const MAX_SEARCH_FILES = 240
+const MAX_SEARCH_FILE_BYTES = 8 * 1024 * 1024
+const LF = 0x0a
+const CR = 0x0d
+const CHUNK_SIZE = 64 * 1024
+const MAX_CACHE_ENTRIES = 2000
 
 interface SessionHeader {
   type: 'session'
@@ -26,6 +37,38 @@ interface BaseEntry {
   parentId?: string | null
   timestamp?: string
 }
+
+interface TreeEntry extends BaseEntry {
+  message?: AgentMessage
+}
+
+export interface SessionCacheEntry {
+  mtime: number
+  size: number
+  meta: SessionMeta
+}
+
+const sessionMetaCache = new Map<string, SessionCacheEntry>()
+const inFlightReads = new Map<string, Promise<SessionMeta | null>>()
+
+interface CachedFileUsage {
+  mtime: number
+  size: number
+  sessionId: string
+  timestamps: number[]
+  metrics: Array<{
+    ts: number
+    model: string
+    input: number
+    output: number
+    cacheRead: number
+    cacheWrite: number
+    total: number
+    cost: number
+  }>
+}
+
+const usageCache = new Map<string, CachedFileUsage>()
 
 function homeDir(): string {
   return os.homedir()
@@ -53,6 +96,91 @@ export function resolveSessionRoot(customDir?: string): string {
 export function encodeWorkspaceDir(cwd: string): string {
   const normalized = path.resolve(cwd)
   return `--${normalized.replace(/^[/\\]+/, '').replace(/[/\\:]/g, '-')}--`
+}
+
+/**
+ * Test whether two paths refer to the same filesystem location,
+ * taking Windows case-insensitivity and separator differences into account.
+ */
+export function pathsEqual(a: string, b: string): boolean {
+  if (a === b) return true
+  const normA = path.resolve(a)
+  const normB = path.resolve(b)
+  if (normA === normB) return true
+  if (process.platform === 'win32') {
+    return normA.toLowerCase() === normB.toLowerCase()
+  }
+  return false
+}
+
+/**
+ * Locate the targeted session directory for a given workspace `cwd`.
+ * Prioritizes direct encoded match, then Windows drive casing flip,
+ * realpath resolution, and case-insensitive top-level directory matching.
+ * Returns null if no matching session directory exists.
+ */
+export async function findWorkspaceSessionDir(sessionRoot: string, cwd: string): Promise<string | null> {
+  if (!cwd || !sessionRoot) return null
+  try {
+    const rootStat = await stat(sessionRoot)
+    if (!rootStat.isDirectory()) return null
+  } catch {
+    return null
+  }
+
+  // 1. Primary candidate
+  const directEncoded = encodeWorkspaceDir(cwd)
+  const directPath = path.join(sessionRoot, directEncoded)
+  try {
+    const s = await stat(directPath)
+    if (s.isDirectory()) return directPath
+  } catch {
+    /* miss */
+  }
+
+  // 2. Windows drive letter casing candidate (e.g. e: vs E:)
+  const driveMatch = cwd.match(/^([a-zA-Z]):[\\/]/)
+  if (driveMatch) {
+    const drive = driveMatch[1]
+    const flippedDrive = drive === drive.toUpperCase() ? drive.toLowerCase() : drive.toUpperCase()
+    const flippedCwd = flippedDrive + cwd.slice(1)
+    const altEncoded = encodeWorkspaceDir(flippedCwd)
+    const altPath = path.join(sessionRoot, altEncoded)
+    try {
+      const s = await stat(altPath)
+      if (s.isDirectory()) return altPath
+    } catch {
+      /* miss */
+    }
+  }
+
+  // 3. Symlink / junction resolution via realpath
+  try {
+    const realCwd = await realpath(cwd)
+    if (realCwd !== cwd) {
+      const realEncoded = encodeWorkspaceDir(realCwd)
+      const realPath = path.join(sessionRoot, realEncoded)
+      const s = await stat(realPath)
+      if (s.isDirectory()) return realPath
+    }
+  } catch {
+    /* miss */
+  }
+
+  // 4. Shallow case-insensitive scan of immediate subdirectory names under sessionRoot
+  try {
+    const directLower = directEncoded.toLowerCase()
+    const entries = await readdir(sessionRoot, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.toLowerCase() === directLower) {
+        return path.join(sessionRoot, entry.name)
+      }
+    }
+  } catch {
+    /* miss */
+  }
+
+  return null
 }
 
 function extractText(content: unknown): string {
@@ -91,23 +219,250 @@ function searchableText(content: unknown): string {
     .join('\n')
 }
 
-function readSessionFile(file: string): { lines: string[]; mtime: number } {
+/**
+ * Streams lines from a JSONL file splitting strictly on LF (0x0A) with optional trailing CR (0x0D).
+ * Complies with AGENTS.md: Never uses readline. Handles U+2028 / U+2029 correctly.
+ */
+export async function* readJsonlLines(
+  file: string,
+  maxBytes = MAX_SESSION_BYTES
+): AsyncGenerator<string, void, void> {
+  let stream
   try {
-    const stats = statSync(file)
-    if (stats.size > MAX_SESSION_BYTES) return { lines: [], mtime: 0 }
-    return { lines: readFileSync(file, 'utf8').split('\n'), mtime: stats.mtimeMs }
+    stream = createReadStream(file, { highWaterMark: CHUNK_SIZE })
   } catch {
-    return { lines: [], mtime: 0 }
+    return
+  }
+
+  let buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0)
+  let bytesRead = 0
+
+  try {
+    for await (const chunk of stream) {
+      const bufChunk = typeof chunk === 'string' ? Buffer.from(chunk) : (chunk as Buffer)
+      bytesRead += bufChunk.length
+      if (bytesRead > maxBytes) {
+        stream.destroy()
+        return
+      }
+
+      buffer = buffer.length === 0 ? bufChunk : Buffer.concat([buffer, bufChunk])
+      let index = buffer.indexOf(LF)
+      while (index !== -1) {
+        let lineBuf = buffer.subarray(0, index)
+        buffer = buffer.subarray(index + 1)
+        if (lineBuf.length > 0 && lineBuf[lineBuf.length - 1] === CR) {
+          lineBuf = lineBuf.subarray(0, lineBuf.length - 1)
+        }
+        yield lineBuf.toString('utf8')
+        index = buffer.indexOf(LF)
+      }
+    }
+
+    if (buffer.length > 0) {
+      let lineBuf = buffer
+      if (lineBuf.length > 0 && lineBuf[lineBuf.length - 1] === CR) {
+        lineBuf = lineBuf.subarray(0, lineBuf.length - 1)
+      }
+      yield lineBuf.toString('utf8')
+    }
+  } catch {
+    return
+  } finally {
+    stream.destroy()
   }
 }
 
-function parseSession(file: string): SessionMeta | null {
-  const { lines, mtime } = readSessionFile(file)
-  if (!lines.length) return null
+export function clearSessionCache(): void {
+  sessionMetaCache.clear()
+  usageCache.clear()
+}
+
+export function invalidateSessionCache(file?: string): void {
+  if (file) {
+    const key = canonicalSessionFile(file)
+    sessionMetaCache.delete(key)
+    usageCache.delete(key)
+  } else {
+    sessionMetaCache.clear()
+    usageCache.clear()
+  }
+}
+
+export function getSessionCacheSize(): number {
+  return sessionMetaCache.size
+}
+
+function recordInCache(key: string, entry: SessionCacheEntry): void {
+  if (sessionMetaCache.size >= MAX_CACHE_ENTRIES && !sessionMetaCache.has(key)) {
+    const oldestKey = sessionMetaCache.keys().next().value
+    if (oldestKey) sessionMetaCache.delete(oldestKey)
+  }
+  sessionMetaCache.set(key, entry)
+}
+
+/**
+ * Returns metadata for a session file, reusing the incremental (mtime, size) cache
+ * when valid and coalescing in-flight concurrent reads.
+ */
+export async function getSessionMeta(file: string): Promise<SessionMeta | null> {
+  const key = canonicalSessionFile(file)
+  const existing = inFlightReads.get(key)
+  if (existing) return existing
+
+  const task = (async (): Promise<SessionMeta | null> => {
+    let s: Stats
+    try {
+      s = await stat(file)
+      if (s.size > MAX_SESSION_BYTES) return null
+    } catch {
+      sessionMetaCache.delete(key)
+      return null
+    }
+
+    const cached = sessionMetaCache.get(key)
+    if (cached && cached.mtime === s.mtimeMs && cached.size === s.size) {
+      return cached.meta
+    }
+
+    const meta = await parseSession(file, { size: s.size, mtimeMs: s.mtimeMs })
+    if (meta) {
+      recordInCache(key, {
+        mtime: s.mtimeMs,
+        size: s.size,
+        meta
+      })
+    } else {
+      sessionMetaCache.delete(key)
+    }
+    return meta
+  })()
+
+  inFlightReads.set(key, task)
+  try {
+    return await task
+  } finally {
+    inFlightReads.delete(key)
+  }
+}
+
+/** Active-branch entries, leaf first in the walk and then reversed into order. */
+function activeBranch(lines: string[]): TreeEntry[] {
+  const entries: TreeEntry[] = []
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) continue
+    try {
+      const parsed = JSON.parse(line) as TreeEntry
+      if (parsed && typeof parsed === 'object' && parsed.type && parsed.type !== 'session') {
+        entries.push(parsed)
+      }
+    } catch {
+      /* a torn line is not a message */
+    }
+  }
+  const parentIds = new Set<string>()
+  const byId = new Map<string, TreeEntry>()
+  for (const entry of entries) {
+    if (!entry.id) continue
+    byId.set(entry.id, entry)
+    if (entry.parentId) parentIds.add(entry.parentId)
+  }
+  let leaf: TreeEntry | null = null
+  for (const entry of entries) {
+    if (entry.id && !parentIds.has(entry.id)) leaf = entry
+  }
+  if (!leaf) leaf = entries[entries.length - 1] ?? null
+  const branch: TreeEntry[] = []
+  const seen = new Set<string>()
+  let cursor: TreeEntry | null = leaf
+  while (cursor && cursor.id && !seen.has(cursor.id)) {
+    seen.add(cursor.id)
+    branch.push(cursor)
+    cursor = cursor.parentId ? byId.get(cursor.parentId) ?? null : null
+  }
+  branch.reverse()
+  return branch
+}
+
+/**
+ * Messages on the active branch, without starting Pi.
+ * Compaction and bookkeeping entries stay out; the leaf walk already follows
+ * the branch Pi would show.
+ */
+export async function readSessionMessages(file: string): Promise<AgentMessage[]> {
+  const lines: string[] = []
+  for await (const line of readJsonlLines(file, MAX_SESSION_BYTES)) {
+    lines.push(line)
+  }
+  if (!lines.length) return []
+  const messages: AgentMessage[] = []
+  for (const entry of activeBranch(lines)) {
+    if (entry.type !== 'message' || !entry.message) continue
+    const message = entry.message
+    const timestamp = message.timestamp
+    messages.push({
+      ...message,
+      timestamp: typeof timestamp === 'number' ? timestamp : Date.parse(String(timestamp ?? '')) || Date.now()
+    })
+  }
+  return messages
+}
+
+/**
+ * Name a cold session by appending one `session_info` entry, the same record
+ * Pi writes. Refuses a missing file. The caller must already know that no
+ * runtime is writing this JSONL.
+ */
+export async function appendSessionName(file: string, name: string): Promise<boolean> {
+  const sanitized = name.replace(/[\r\n]+/g, ' ').trim()
+  if (!sanitized) return false
+  try {
+    const s = await stat(file)
+    if (!s.isFile()) return false
+  } catch {
+    return false
+  }
+
+  const lines: string[] = []
+  for await (const line of readJsonlLines(file, MAX_SESSION_BYTES)) {
+    lines.push(line)
+  }
+  if (!lines.length) return false
+
+  const branch = activeBranch(lines)
+  const leaf = branch[branch.length - 1]
+  const entry = {
+    type: 'session_info',
+    id: randomBytes(4).toString('hex'),
+    parentId: leaf?.id ?? null,
+    timestamp: new Date().toISOString(),
+    name: sanitized
+  }
+  await appendFile(file, `${JSON.stringify(entry)}\n`, 'utf8')
+  invalidateSessionCache(file)
+  return true
+}
+
+export async function parseSession(
+  file: string,
+  fileStats?: { size: number; mtimeMs: number }
+): Promise<SessionMeta | null> {
+  let stats = fileStats
+  if (!stats) {
+    try {
+      const s = await stat(file)
+      stats = { size: s.size, mtimeMs: s.mtimeMs }
+    } catch {
+      return null
+    }
+  }
+  if (stats.size > MAX_SESSION_BYTES) return null
 
   let header: SessionHeader | null = null
   const entries: BaseEntry[] = []
-  for (const raw of lines) {
+
+  for await (const raw of readJsonlLines(file, MAX_SESSION_BYTES)) {
     const line = raw.trim()
     if (!line) continue
     let parsed: unknown
@@ -166,8 +521,11 @@ function parseSession(file: string): SessionMeta | null {
       continue
     }
     if (entry.type === 'model_change') {
-      const value = (entry as unknown as { modelId?: string }).modelId
-      if (value) model = value
+      const change = entry as unknown as { provider?: string; modelId?: string }
+      // The provider is part of the identity. Keeping only the id makes the
+      // same model name on two providers indistinguishable, and a later restore
+      // has nothing to pass to `--model`.
+      if (change.modelId) model = change.provider ? `${change.provider}/${change.modelId}` : change.modelId
       continue
     }
     if (entry.type !== 'message') continue
@@ -193,7 +551,7 @@ function parseSession(file: string): SessionMeta | null {
   // old. The file itself was just written, and that is what the sidebar has
   // to sort by.
   const entryTime = Date.parse(entries[entries.length - 1]?.timestamp ?? header.timestamp ?? '') || 0
-  const updatedAt = Math.max(entryTime, mtime)
+  const updatedAt = Math.max(entryTime, stats.mtimeMs)
 
   return {
     id: header.id,
@@ -211,47 +569,68 @@ function parseSession(file: string): SessionMeta | null {
  * List every session Pi has on disk, optionally restricted to one working
  * directory. Results are sorted by most recent activity first.
  */
-export function listSessions(cwd?: string): SessionMeta[] {
+export async function listSessions(cwd?: string): Promise<SessionMeta[]> {
   const root = resolveSessionRoot()
-  if (!existsSync(root)) return []
-
-  const results: SessionMeta[] = []
-  let workspaceDirs: string[]
   try {
-    workspaceDirs = readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
+    const rootStat = await stat(root)
+    if (!rootStat.isDirectory()) return []
   } catch {
     return []
   }
 
-  const target = cwd ? path.resolve(cwd) : null
+  const results: SessionMeta[] = []
 
-  for (const dir of workspaceDirs) {
+  if (cwd && cwd.trim()) {
+    // Targeted workspace directory resolution (R3)
+    const targetDir = await findWorkspaceSessionDir(root, cwd)
+    if (!targetDir) {
+      return []
+    }
+
     let files: string[]
     try {
-      files = readdirSync(path.join(root, dir))
-        .filter((file) => file.endsWith('.jsonl'))
-        .map((file) => path.join(root, dir, file))
+      const names = await readdir(targetDir)
+      files = names.filter((f) => f.endsWith('.jsonl')).map((f) => path.join(targetDir, f))
     } catch {
-      continue
+      return []
     }
+
     for (const file of files) {
-      const meta = parseSession(file)
+      const meta = await getSessionMeta(file)
       if (!meta) continue
-      if (target && path.resolve(meta.cwd) !== target) continue
+      if (!pathsEqual(meta.cwd, cwd)) continue
       results.push(meta)
+    }
+  } else {
+    // Global listing across all workspaces
+    let workspaceDirs: string[]
+    try {
+      const entries = await readdir(root, { withFileTypes: true })
+      workspaceDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name)
+    } catch {
+      return []
+    }
+
+    for (const dir of workspaceDirs) {
+      const dirPath = path.join(root, dir)
+      let files: string[]
+      try {
+        const names = await readdir(dirPath)
+        files = names.filter((f) => f.endsWith('.jsonl')).map((f) => path.join(dirPath, f))
+      } catch {
+        continue
+      }
+      for (const file of files) {
+        const meta = await getSessionMeta(file)
+        if (!meta) continue
+        results.push(meta)
+      }
     }
   }
 
   results.sort((a, b) => b.updatedAt - a.updatedAt)
   return results
 }
-
-/** How many session files a search is allowed to read, newest first. */
-const MAX_SEARCH_FILES = 240
-/** How much of a session a search reads before giving up on it. */
-const MAX_SEARCH_FILE_BYTES = 8 * 1024 * 1024
 
 /**
  * Search the text of every conversation on disk.
@@ -261,28 +640,33 @@ const MAX_SEARCH_FILE_BYTES = 8 * 1024 * 1024
  * after it scrolled out of the list. The newest files are read first, and the
  * search stops once it has enough hits.
  */
-export function searchSessions(query: string, limit = 30): SessionSearchHit[] {
+export async function searchSessions(query: string, limit = 30): Promise<SessionSearchHit[]> {
   const needle = query.trim()
   if (needle.length < 2) return []
   const needleLower = needle.toLowerCase()
   const ceiling = Math.min(Math.max(limit, 1), 100)
   const root = resolveSessionRoot()
-  if (!existsSync(root)) return []
+  try {
+    const rootStat = await stat(root)
+    if (!rootStat.isDirectory()) return []
+  } catch {
+    return []
+  }
 
   const candidates: { file: string; mtime: number }[] = []
   let workspaceDirs: string[]
   try {
-    workspaceDirs = readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
+    const entries = await readdir(root, { withFileTypes: true })
+    workspaceDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
   } catch {
     return []
   }
+
   for (const dir of workspaceDirs) {
     const folder = path.join(root, dir)
     let names: string[]
     try {
-      names = readdirSync(folder)
+      names = await readdir(folder)
     } catch {
       continue
     }
@@ -290,7 +674,8 @@ export function searchSessions(query: string, limit = 30): SessionSearchHit[] {
       if (!name.endsWith('.jsonl')) continue
       const file = path.join(folder, name)
       try {
-        candidates.push({ file, mtime: statSync(file).mtimeMs })
+        const s = await stat(file)
+        candidates.push({ file, mtime: s.mtimeMs })
       } catch {
         /* a file that vanished is not a search result */
       }
@@ -301,37 +686,30 @@ export function searchSessions(query: string, limit = 30): SessionSearchHit[] {
   const hits: SessionSearchHit[] = []
   for (const candidate of candidates.slice(0, MAX_SEARCH_FILES)) {
     if (hits.length >= ceiling) break
-    hits.push(...searchSessionFile(candidate.file, needleLower, needle.length, ceiling - hits.length))
+    const fileHits = await searchSessionFile(
+      candidate.file,
+      candidate.mtime,
+      needleLower,
+      needle.length,
+      ceiling - hits.length
+    )
+    hits.push(...fileHits)
   }
   return hits
 }
 
 /** Read one session file and collect the matching messages of any branch. */
-function searchSessionFile(
+async function searchSessionFile(
   file: string,
+  mtime: number,
   needleLower: string,
   needleLength: number,
   remaining: number
-): SessionSearchHit[] {
-  let raw: string
-  try {
-    const stats = statSync(file)
-    if (stats.size > MAX_SEARCH_FILE_BYTES) return []
-    raw = readFileSync(file, 'utf8')
-  } catch {
-    return []
-  }
-
+): Promise<SessionSearchHit[]> {
   let sessionId = path.basename(file, '.jsonl')
   let cwd = ''
   let name: string | undefined
   let preview = ''
-  let mtime = 0
-  try {
-    mtime = statSync(file).mtimeMs
-  } catch {
-    mtime = 0
-  }
 
   const hits: SessionSearchHit[] = []
   // One file can match on both branches of a conversation, or on the same
@@ -339,8 +717,10 @@ function searchSessionFile(
   // recognise it, so identical snippets are dropped and the list stays short.
   const seenSnippets = new Set<string>()
   let messageIndex = 0
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
+
+  for await (const raw of readJsonlLines(file, MAX_SEARCH_FILE_BYTES)) {
+    const line = raw.trim()
+    if (!line) continue
     let record: Record<string, unknown>
     try {
       record = JSON.parse(line) as Record<string, unknown>
@@ -422,7 +802,7 @@ function emptyPeriod(period: 'today' | 'week' | 'month' | 'allTime'): PeriodUsag
  * Aggregate token usage and conversation records across all sessions on disk
  * for Today, This Week, This Month, and All-Time.
  */
-export function getAggregatedUsage(customRoot?: string): AggregatedUsageStats {
+export async function getAggregatedUsage(customRoot?: string): Promise<AggregatedUsageStats> {
   const root = resolveSessionRoot(customRoot)
   const now = new Date()
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
@@ -451,7 +831,11 @@ export function getAggregatedUsage(customRoot?: string): AggregatedUsageStats {
     recentDaysMap.set(key, { totalTokens: 0, conversations: new Set(), messageCount: 0 })
   }
 
-  if (!existsSync(root)) {
+  let rootStat: Stats
+  try {
+    rootStat = await stat(root)
+    if (!rootStat.isDirectory()) throw new Error('not a directory')
+  } catch {
     return {
       today,
       week,
@@ -470,9 +854,8 @@ export function getAggregatedUsage(customRoot?: string): AggregatedUsageStats {
 
   let workspaceDirs: string[] = []
   try {
-    workspaceDirs = readdirSync(root, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
+    const entries = await readdir(root, { withFileTypes: true })
+    workspaceDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
   } catch {
     workspaceDirs = []
   }
@@ -481,121 +864,157 @@ export function getAggregatedUsage(customRoot?: string): AggregatedUsageStats {
     const dirPath = path.join(root, dir)
     let files: string[] = []
     try {
-      files = readdirSync(dirPath).filter((f) => f.endsWith('.jsonl'))
+      const names = await readdir(dirPath)
+      files = names.filter((f) => f.endsWith('.jsonl'))
     } catch {
       continue
     }
 
     for (const file of files) {
       const fullPath = path.join(dirPath, file)
-      let content = ''
+      let s: Stats
       try {
-        const stats = statSync(fullPath)
-        if (stats.size > MAX_SESSION_BYTES) continue
-        content = readFileSync(fullPath, 'utf8')
+        s = await stat(fullPath)
+        if (s.size > MAX_SESSION_BYTES) continue
       } catch {
         continue
       }
 
+      const key = canonicalSessionFile(fullPath)
       const sessionId = file.replace(/\.jsonl$/, '')
-      activeInAllTime.add(sessionId)
+      let usageData = usageCache.get(key)
 
-      const lines = content.split('\n')
-      for (const line of lines) {
-        if (!line.trim() || !line.includes('"message"')) continue
-        try {
-          const record = JSON.parse(line) as {
-            type?: string
-            timestamp?: string
-            message?: {
-              role?: string
-              timestamp?: string | number
-              model?: string
-              usage?: {
-                input?: number
-                output?: number
-                cacheRead?: number
-                cacheWrite?: number
-                totalTokens?: number
-                cost?: number | { total?: number }
+      if (!usageData || usageData.mtime !== s.mtimeMs || usageData.size !== s.size) {
+        const timestamps: number[] = []
+        const metrics: CachedFileUsage['metrics'] = []
+
+        for await (const raw of readJsonlLines(fullPath, MAX_SESSION_BYTES)) {
+          if (!raw.includes('"message"')) continue
+          try {
+            const record = JSON.parse(raw) as {
+              type?: string
+              timestamp?: string
+              message?: {
+                role?: string
+                timestamp?: string | number
+                model?: string
+                usage?: {
+                  input?: number
+                  output?: number
+                  cacheRead?: number
+                  cacheWrite?: number
+                  totalTokens?: number
+                  cost?: number | { total?: number }
+                }
               }
             }
+
+            if (record.type !== 'message' || !record.message) continue
+            const msg = record.message
+            const ts =
+              Date.parse(record.timestamp ?? '') ||
+              (typeof msg.timestamp === 'number'
+                ? msg.timestamp
+                : Date.parse(String(msg.timestamp ?? ''))) ||
+              0
+
+            if (ts > 0) timestamps.push(ts)
+
+            if (msg.role === 'assistant' && msg.usage) {
+              const u = msg.usage
+              const input = typeof u.input === 'number' ? u.input : 0
+              const output = typeof u.output === 'number' ? u.output : 0
+              const cacheRead = typeof u.cacheRead === 'number' ? u.cacheRead : 0
+              const cacheWrite = typeof u.cacheWrite === 'number' ? u.cacheWrite : 0
+              const total =
+                typeof u.totalTokens === 'number' && u.totalTokens > 0
+                  ? u.totalTokens
+                  : input + output + cacheRead + cacheWrite
+              const cost =
+                typeof u.cost === 'number'
+                  ? u.cost
+                  : typeof u.cost?.total === 'number'
+                    ? u.cost.total
+                    : 0
+
+              metrics.push({
+                ts,
+                model: msg.model || 'Unknown',
+                input,
+                output,
+                cacheRead,
+                cacheWrite,
+                total,
+                cost
+              })
+            }
+          } catch {
+            // ignore malformed line
           }
+        }
 
-          if (record.type !== 'message' || !record.message) continue
-          const msg = record.message
-          const ts =
-            Date.parse(record.timestamp ?? '') ||
-            (typeof msg.timestamp === 'number'
-              ? msg.timestamp
-              : Date.parse(String(msg.timestamp ?? ''))) ||
-            0
+        usageData = {
+          mtime: s.mtimeMs,
+          size: s.size,
+          sessionId,
+          timestamps,
+          metrics
+        }
+        if (usageCache.size >= MAX_CACHE_ENTRIES) {
+          const oldest = usageCache.keys().next().value
+          if (oldest) usageCache.delete(oldest)
+        }
+        usageCache.set(key, usageData)
+      }
 
-          if (ts >= startOfToday) activeInToday.add(sessionId)
-          if (ts >= startOfWeek) activeInWeek.add(sessionId)
-          if (ts >= startOfMonth) activeInMonth.add(sessionId)
+      activeInAllTime.add(usageData.sessionId)
+      for (const ts of usageData.timestamps) {
+        if (ts >= startOfToday) activeInToday.add(usageData.sessionId)
+        if (ts >= startOfWeek) activeInWeek.add(usageData.sessionId)
+        if (ts >= startOfMonth) activeInMonth.add(usageData.sessionId)
+      }
 
-          if (msg.role === 'assistant' && msg.usage) {
-            const u = msg.usage
-            const input = typeof u.input === 'number' ? u.input : 0
-            const output = typeof u.output === 'number' ? u.output : 0
-            const cacheRead = typeof u.cacheRead === 'number' ? u.cacheRead : 0
-            const cacheWrite = typeof u.cacheWrite === 'number' ? u.cacheWrite : 0
-            const total =
-              typeof u.totalTokens === 'number' && u.totalTokens > 0
-                ? u.totalTokens
-                : input + output + cacheRead + cacheWrite
-            const cost =
-              typeof u.cost === 'number'
-                ? u.cost
-                : typeof u.cost?.total === 'number'
-                  ? u.cost.total
-                  : 0
+      for (const m of usageData.metrics) {
+        const addMetrics = (target: PeriodUsage) => {
+          target.tokens.input += m.input
+          target.tokens.output += m.output
+          target.tokens.cacheRead += m.cacheRead
+          target.tokens.cacheWrite += m.cacheWrite
+          target.tokens.totalTokens += m.total
+          target.tokens.cost += m.cost
+          target.messageCount += 1
+        }
 
-            const addMetrics = (target: PeriodUsage) => {
-              target.tokens.input += input
-              target.tokens.output += output
-              target.tokens.cacheRead += cacheRead
-              target.tokens.cacheWrite += cacheWrite
-              target.tokens.totalTokens += total
-              target.tokens.cost += cost
-              target.messageCount += 1
-            }
+        addMetrics(allTime)
+        if (m.ts >= startOfMonth) addMetrics(month)
+        if (m.ts >= startOfWeek) addMetrics(week)
+        if (m.ts >= startOfToday) addMetrics(today)
 
-            addMetrics(allTime)
-            if (ts >= startOfMonth) addMetrics(month)
-            if (ts >= startOfWeek) addMetrics(week)
-            if (ts >= startOfToday) addMetrics(today)
+        const modelName = m.model
+        const existingModel = modelStats.get(modelName) || {
+          model: modelName,
+          totalTokens: 0,
+          input: 0,
+          output: 0,
+          messageCount: 0,
+          cost: 0
+        }
+        existingModel.totalTokens += m.total
+        existingModel.input += m.input
+        existingModel.output += m.output
+        existingModel.messageCount += 1
+        existingModel.cost += m.cost
+        modelStats.set(modelName, existingModel)
 
-            const modelName = msg.model || 'Unknown'
-            const existingModel = modelStats.get(modelName) || {
-              model: modelName,
-              totalTokens: 0,
-              input: 0,
-              output: 0,
-              messageCount: 0,
-              cost: 0
-            }
-            existingModel.totalTokens += total
-            existingModel.input += input
-            existingModel.output += output
-            existingModel.messageCount += 1
-            existingModel.cost += cost
-            modelStats.set(modelName, existingModel)
-
-            if (ts > 0) {
-              const d = new Date(ts)
-              const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-              const dayBucket = recentDaysMap.get(dateKey)
-              if (dayBucket) {
-                dayBucket.totalTokens += total
-                dayBucket.messageCount += 1
-                dayBucket.conversations.add(sessionId)
-              }
-            }
+        if (m.ts > 0) {
+          const d = new Date(m.ts)
+          const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+          const dayBucket = recentDaysMap.get(dateKey)
+          if (dayBucket) {
+            dayBucket.totalTokens += m.total
+            dayBucket.messageCount += 1
+            dayBucket.conversations.add(usageData.sessionId)
           }
-        } catch {
-          // ignore malformed lines
         }
       }
     }

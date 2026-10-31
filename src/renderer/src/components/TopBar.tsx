@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { ModelInfo } from '@shared/types'
 import { Check, ChevronDown, ChevronLeft, Search, X } from 'lucide-react'
+import { resolveSavedModel, selectableModels } from '@shared/provider-models'
 import { useAppStore } from '../store/useAppStore'
 import { EffortSlider } from './EffortSlider'
 import { Popover } from './Popover'
@@ -71,12 +72,29 @@ function acceptsImages(model: ModelInfo): boolean {
 
 /** The model and its reasoning effort share one composer control. */
 export function ModelPicker() {
-  const models = useAppStore((state) => state.models)
-  const currentModel = useAppStore((state) => state.piState?.model)
-  const currentLevel = useAppStore((state) => state.piState?.thinkingLevel)
+  const threadModels = useAppStore((state) => state.models)
+  const catalogModels = useAppStore((state) => state.catalogModels)
+  const disabledModelSpecs = useAppStore((state) => state.disabledModelSpecs)
+  const savedModel = useAppStore((state) => state.settings.model)
+  const savedProvider = useAppStore((state) => state.settings.provider)
+  const liveModel = useAppStore((state) => state.piState?.model)
+  const liveLevel = useAppStore((state) => state.piState?.thinkingLevel)
+  const savedLevel = useAppStore((state) => state.settings.thinkingLevel)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
+  // A cold chat has no live level yet. The saved one stays on the chip instead
+  // of disappearing until Pi answers, and a level this model cannot use does not.
+  const currentLevel = liveLevel
+    || (savedLevel && (thinkingLevels.length === 0 || thinkingLevels.includes(savedLevel)) ? savedLevel : undefined)
   const setModel = useAppStore((state) => state.setModel)
-  const ready = useAppStore((state) => state.status.phase === 'ready')
+  const starting = useAppStore((state) => state.status.phase === 'starting')
+  const models = useMemo(
+    () => selectableModels(threadModels, catalogModels, disabledModelSpecs),
+    [threadModels, catalogModels, disabledModelSpecs]
+  )
+  const currentModel =
+    liveModel?.id && liveModel.provider
+      ? liveModel
+      : resolveSavedModel(savedModel, savedProvider, models)
   const [modelQuery, setModelQuery] = useState('')
   const [showModels, setShowModels] = useState(false)
   const [modelUpdating, setModelUpdating] = useState(false)
@@ -111,7 +129,7 @@ export function ModelPicker() {
       needle
         ? models.filter(
             (model) =>
-              model.name.toLowerCase().includes(needle) ||
+              (model.name ?? '').toLowerCase().includes(needle) ||
               model.id.toLowerCase().includes(needle) ||
               model.provider.toLowerCase().includes(needle)
           )
@@ -131,6 +149,7 @@ export function ModelPicker() {
   const currentPrice = currentModel ? modelPrice(currentModel, t) : null
   const triggerTitle = currentModel
     ? [
+        currentModel.provider,
         currentModel.name || currentModel.id,
         currentLevel ? `${t('Reasoning effort')}: ${effortLabel}` : null,
         currentContext ? `${currentContext} ${t('ctx')}` : null,
@@ -160,11 +179,11 @@ export function ModelPicker() {
             }
             toggle(e)
           }}
-          disabled={!ready}
+          disabled={starting}
           title={triggerTitle}
         >
           <span className="model-chip__name">{modelLabel}</span>
-          {currentLevel && thinkingLevels.length > 0 ? (
+          {currentLevel ? (
             <>
               <span className="model-chip__sep" aria-hidden="true">
                 ·
@@ -269,8 +288,7 @@ export function ModelPicker() {
                             }
                             setModelUpdating(true)
                             try {
-                              await setModel(model)
-                              setShowModels(false)
+                              if (await setModel(model)) setShowModels(false)
                             } finally {
                               setModelUpdating(false)
                             }

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { AppSettings, PiEvent, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
+import type { AppSettings, ModelInfo, PiEvent, PiState, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
 
 /* ------------------------------------------------------------------ *
  * A stand-in for the preload bridge.
@@ -87,14 +87,102 @@ await useAppStore.getState().bootstrap()
 
 /** Put the store in a settled state with one prompt in flight. */
 function startRun(): void {
+  const state = useAppStore.getState()
+  const key = state.activeSessionFile || state.draftId
+  const run = { phase: 'idle' as const, turns: 0, settled: true }
+  const threads = { ...state.threads }
+  if (key && threads[key]) {
+    threads[key] = { ...threads[key], run, isStreaming: false, uiRequest: undefined, retry: undefined }
+  }
   useAppStore.setState({
     isStreaming: false,
     uiRequest: undefined,
-    run: { phase: 'idle', turns: 0, settled: true }
+    run,
+    threads,
+    retry: undefined
   })
 }
 
 const phase = () => useAppStore.getState().run.phase
+
+test('model cycling includes a newly saved provider while Pi still reports its old list', async () => {
+  const previous = useAppStore.getState()
+  const model: ModelInfo = { id: 'shared-model', name: 'Existing model', provider: 'existing', api: 'openai-completions',
+    reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 4096 }
+  const added = { ...model, name: 'New provider model', provider: 'new-provider' }
+  let selected: ModelInfo | undefined
+  useAppStore.setState({
+    models: [model], catalogModels: [model, added],
+    piState: { ...previous.piState, model } as PiState,
+    setModel: async value => { selected = value; return true }
+  })
+  try {
+    await useAppStore.getState().cycleModel(1)
+    assert.equal(selected?.provider, added.provider)
+    assert.equal(selected?.id, added.id, 'identical model ids from different providers stay distinct')
+  } finally {
+    useAppStore.setState(previous)
+  }
+})
+
+test('selecting a newly saved provider refreshes an idle Pi registry before set_model', async () => {
+  const previous = useAppStore.getState()
+  const originalRequest = bridge.runtime.request
+  await previous.newChat()
+  const active = useAppStore.getState()
+  const key = active.draftId!
+  const oldModel: ModelInfo = { id: 'shared-model', provider: 'existing', api: 'openai-completions',
+    reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 4096 }
+  const added = { ...oldModel, provider: 'added' }
+  const calls: string[] = []
+  let selected = oldModel
+  bridge.runtime.request = async command => {
+    calls.push(command)
+    if (command === 'prompt') return { disposition: 'handled' }
+    if (command === 'set_model') {
+      assert.ok(calls.includes('prompt'), 'the stale registry must be refreshed first')
+      selected = added
+      return added
+    }
+    if (command === 'get_state') return { ...previous.piState, model: selected }
+    if (command === 'get_available_models') return { models: [oldModel, added] }
+    return {}
+  }
+  const thread = { ...active.threads[key], models: [oldModel], isStreaming: false,
+    run: { phase: 'idle' as const, turns: 0, settled: true } }
+  useAppStore.setState({ models: [oldModel], threads: { ...active.threads, [key]: thread },
+    run: thread.run, isStreaming: false, catalogModels: [added], disabledModelSpecs: [] })
+  try {
+    assert.equal(await useAppStore.getState().setModel(added), true)
+    assert.deepEqual(calls.slice(0, 2), ['prompt', 'set_model'])
+    assert.equal(useAppStore.getState().piState?.model?.provider, 'added')
+    assert.equal(useAppStore.getState().settings.model, 'added/shared-model')
+  } finally {
+    bridge.runtime.request = originalRequest
+    useAppStore.setState(previous)
+  }
+})
+
+test('a busy conversation keeps running when a new provider cannot be loaded yet', async () => {
+  const previous = useAppStore.getState()
+  await previous.newChat()
+  startRun()
+  emit({ type: 'agent_start' })
+  const originalRequest = bridge.runtime.request
+  const calls: string[] = []
+  bridge.runtime.request = command => { calls.push(command); return ok({}) }
+  try {
+    const added: ModelInfo = { id: 'not-loaded', provider: 'new-provider', api: 'openai-completions',
+      reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 4096 }
+    assert.equal(await useAppStore.getState().setModel(added), false)
+    assert.deepEqual(calls, [], 'loading must not queue a prompt, change the model or abort the run')
+    assert.equal(useAppStore.getState().run.settled, false)
+    assert.equal(useAppStore.getState().toast?.level, 'warning')
+  } finally {
+    bridge.runtime.request = originalRequest
+    useAppStore.setState(previous)
+  }
+})
 
 test('P01 — the queued phase follows what Pi says it did with the prompt', async () => {
   startRun()
@@ -184,6 +272,25 @@ test('P04 — aborting outranks everything until the runtime settles', () => {
   assert.equal(useAppStore.getState().run.settled, true)
 })
 
+test('P04a — an error answer settles as failed, not completed', () => {
+  startRun()
+  emit({ type: 'agent_start' })
+  emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 1 } })
+  emit({
+    type: 'message_end',
+    message: {
+      role: 'assistant',
+      content: [],
+      stopReason: 'error',
+      errorMessage: 'provider failed',
+      timestamp: 2
+    }
+  })
+  emit({ type: 'agent_settled', aborted: false })
+  assert.equal(useAppStore.getState().run.outcome, 'failed')
+  assert.equal(useAppStore.getState().run.settled, true)
+})
+
 test('P05 — a retry is reported as retrying, not as a finished run', () => {
   startRun()
   emit({ type: 'agent_start' })
@@ -196,18 +303,59 @@ test('P05 — a retry is reported as retrying, not as a finished run', () => {
   assert.equal(useAppStore.getState().retry, undefined)
 })
 
-test('P06 — a search hit never stops or switches a running conversation', async () => {
+test('P05a — a retry deadline survives view reads and clears when Pi starts the next attempt', () => {
+  for (const next of ['agent_start', 'turn_start']) {
+    startRun()
+    emit({ type: 'agent_start' })
+    const runId = useAppStore.getState().run.runId
+    const before = Date.now()
+    emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 8, delayMs: 60_000, errorMessage: '429 RPM' })
+    const retry = useAppStore.getState().retry
+    assert.ok(retry)
+    assert.ok(retry.retryAt >= before + 60_000)
+    assert.ok(retry.retryAt <= Date.now() + 60_000)
+    assert.equal(useAppStore.getState().isStreaming, true)
+    assert.equal(useAppStore.getState().run.settled, false)
+
+    emit({ type: next })
+    assert.equal(useAppStore.getState().retry, undefined, next)
+    assert.equal(phase(), 'working', next)
+    assert.equal(useAppStore.getState().run.runId, runId, 'a retry continues the same run')
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Recovered' } })
+    assert.equal(phase(), 'generating')
+  }
+})
+
+test('P05b — retry events cannot hide a stop or an approval request', async () => {
+  for (const priority of ['aborting', 'waiting_approval'] as const) {
+    startRun()
+    emit({ type: 'agent_start' })
+    if (priority === 'aborting') {
+      await useAppStore.getState().stop()
+    } else {
+      emit({ type: 'extension_ui_request', id: 'retry-approval', method: 'confirm', title: 'Proceed?' })
+    }
+    emit({ type: 'auto_retry_start', attempt: 1, delayMs: 100 })
+    assert.equal(phase(), priority)
+    emit({ type: 'auto_retry_end', success: false, finalError: 'Retry cancelled' })
+    assert.equal(phase(), priority)
+    emit({ type: 'agent_settled', aborted: true })
+    assert.equal(phase(), 'idle')
+    assert.equal(useAppStore.getState().retry, undefined)
+  }
+})
+
+test('P06 — a search hit switches the view and does not stop the running conversation', async () => {
   const previous = useAppStore.getState()
   let stops = 0
   let switches = 0
-  let warning = ''
   useAppStore.setState({
     isStreaming: true,
     activeSessionFile: 'active.jsonl',
     pendingJump: undefined,
     stop: async () => { stops += 1 },
     selectSession: async () => { switches += 1 },
-    showToast: (message) => { warning = message }
+    showToast: () => {}
   })
   try {
     await useAppStore.getState().openSearchHit({
@@ -216,10 +364,7 @@ test('P06 — a search hit never stops or switches a running conversation', asyn
       role: 'assistant', snippet: 'search result', matchStart: 0, matchLength: 6, messageIndex: 0
     }, 'search')
     assert.equal(stops, 0)
-    assert.equal(switches, 0)
-    assert.equal(useAppStore.getState().activeSessionFile, 'active.jsonl')
-    assert.equal(useAppStore.getState().pendingJump, undefined)
-    assert.equal(warning, 'Stop the current run to open another conversation')
+    assert.equal(switches, 1)
   } finally {
     useAppStore.setState(previous)
   }
@@ -246,19 +391,20 @@ test('project selection supports starting, restoring and reopening chats without
     assert.equal(useAppStore.getState().workspace, undefined)
     assert.equal(saved.activeWorkspaceId, null, 'the no-project choice must survive serialization')
     assert.deepEqual(saved.workspaces, [workspace], 'existing projects must remain registered')
-    assert.equal(starts.at(-1)?.cwd, '', 'no-project work must not inherit the previous project')
+    assert.equal(starts.length, 0, 'opening a project view must not start Pi')
 
     useAppStore.setState({ workspace, settings: previous.settings })
     await useAppStore.getState().bootstrap()
     assert.equal(useAppStore.getState().workspace, undefined, 'startup must respect the no-project choice')
-    assert.equal(starts.at(-1)?.cwd, '')
+    assert.equal(starts.length, 0)
 
     useAppStore.setState({ workspace, settings: { ...saved, activeWorkspaceId: workspace.id } })
     await useAppStore.getState().selectSession({
       id: 'chat', file: 'chat.jsonl', cwd: '', preview: 'General chat', updatedAt: 1, messageCount: 1
     })
     assert.equal(useAppStore.getState().workspace, undefined)
-    assert.equal(starts.at(-1)?.sessionFile, 'chat.jsonl')
+    assert.equal(useAppStore.getState().activeSessionFile, 'chat.jsonl')
+    assert.equal(starts.length, 0, 'viewing a conversation must not start Pi')
     assert.equal(saved.activeWorkspaceId, null)
 
     await useAppStore.getState().selectSession({
@@ -267,7 +413,7 @@ test('project selection supports starting, restoring and reopening chats without
     })
     assert.equal(useAppStore.getState().workspace?.id, workspace.id)
     assert.equal(saved.activeWorkspaceId, workspace.id, 'returning to a project restores its selection')
-    assert.equal(starts.at(-1)?.cwd, workspace.path)
+    assert.equal(starts.length, 0)
   } finally {
     bridge.settings.get = originalBridge.get
     bridge.settings.patch = originalBridge.patch
@@ -279,12 +425,18 @@ test('project selection supports starting, restoring and reopening chats without
 test('renaming a projectless conversation never switches an active project runtime', async () => {
   const previous = useAppStore.getState()
   const originalRequest = bridge.runtime.request
+  const sessions = bridge.sessions as { list: () => Promise<unknown>; rename?: (file: string, name: string) => Promise<boolean> }
+  const originalRename = sessions.rename
   const workspace = { id: 'project', path: 'C:/project', name: 'Project', lastOpenedAt: 1 }
   const requests: string[] = []
-  let warning = ''
+  const renames: { file: string; name: string }[] = []
   bridge.runtime.request = (command: string) => {
     requests.push(command)
     return ok({})
+  }
+  sessions.rename = (file, name) => {
+    renames.push({ file, name })
+    return ok(true)
   }
   useAppStore.setState({
     workspace,
@@ -297,45 +449,44 @@ test('renaming a projectless conversation never switches an active project runti
       preview: 'General chat',
       updatedAt: 1,
       messageCount: 1
-    }],
-    showToast: (message) => { warning = message }
+    }]
   })
   try {
     await useAppStore.getState().renameSessionFile('chat.jsonl', 'Renamed chat')
     assert.deepEqual(requests, [], 'a cross-workspace rename must not switch Pi sessions')
-    assert.equal(warning, 'Open that project to rename the conversation')
+    assert.deepEqual(renames, [{ file: 'chat.jsonl', name: 'Renamed chat' }])
     assert.equal(useAppStore.getState().activeSessionFile, undefined)
     assert.equal(useAppStore.getState().workspace?.path, workspace.path)
   } finally {
     bridge.runtime.request = originalRequest
+    sessions.rename = originalRename
     useAppStore.setState(previous)
   }
 })
 
-test('a queued no-project selection waits until the current run settles', async () => {
+test('a project view changes immediately while a conversation is still running', async () => {
   const previous = useAppStore.getState()
-  const selections: (string | null)[] = []
+  const originalPatch = bridge.settings.patch
   const workspace = { id: 'project', path: 'C:/project', name: 'Project', lastOpenedAt: 1 }
-  useAppStore.setState({ workspace, isStreaming: true, showToast: () => {} })
+  bridge.settings.patch = (patch: unknown) => ok({ ...previous.settings, workspaces: [workspace], ...patch as object })
+  useAppStore.setState({
+    workspace,
+    isStreaming: true,
+    settings: { ...previous.settings, workspaces: [workspace], activeWorkspaceId: workspace.id },
+    showToast: () => {}
+  })
   try {
     await useAppStore.getState().switchProject(null)
-    assert.equal(useAppStore.getState().workspace, workspace)
-    assert.equal(useAppStore.getState().pendingProject?.path, null)
-    useAppStore.setState({ switchProject: async (path) => { selections.push(path) } })
-
-    emit({ type: 'agent_end' })
-    assert.deepEqual(selections, [], 'agent_end must not end the active work')
-    emit({ type: 'agent_settled', aborted: false })
-    assert.deepEqual(selections, [null])
+    assert.equal(useAppStore.getState().workspace, undefined)
     assert.equal(useAppStore.getState().pendingProject, undefined)
   } finally {
+    bridge.settings.patch = originalPatch
     useAppStore.setState(previous)
   }
 })
 
-test('a project switch does not report a lost connection', async () => {
+test('opening another workspace does not stop or blank a running conversation', async () => {
   const previous = useAppStore.getState()
-  const originalStart = bridge.runtime.start
   const kept = {
     id: 'keep',
     kind: 'notice' as const,
@@ -344,54 +495,41 @@ test('a project switch does not report a lost connection', async () => {
     timestamp: 1,
     order: 1
   }
-  let release: (value: { ok: boolean; error?: string }) => void = () => {}
-  bridge.runtime.start = () =>
-    new Promise((resolve) => {
-      release = resolve
-    })
   useAppStore.setState({
     items: [kept],
+    threads: {
+      'C:/old/a.jsonl': {
+        items: [kept],
+        run: { phase: 'working', turns: 1, settled: false },
+        isStreaming: true,
+        transport: 'connected',
+        uiStatuses: [],
+        uiWidgets: [],
+        queue: { steering: [], followUp: [] },
+        status: { phase: 'ready', cwd: 'C:/old' },
+        forkTargets: [],
+        version: 2
+      }
+    },
+    activeSessionFile: 'C:/old/a.jsonl',
+    isStreaming: true,
     status: { phase: 'ready', cwd: 'C:/old' },
     transport: 'connected',
-    isStreaming: false,
     workspace: { id: 'old', path: 'C:/old', name: 'Old', lastOpenedAt: 1 }
   })
-  const pending = useAppStore.getState().openWorkspace({
-    id: 'new',
-    path: 'C:/new',
-    name: 'New',
-    lastOpenedAt: 2
-  })
   try {
-    const mid = useAppStore.getState()
-    assert.equal(mid.status.phase, 'starting')
-    assert.equal(mid.transport, 'connected')
-    assert.equal(mid.workspace?.name, 'New')
-    assert.equal(mid.items.length, 1)
-    assert.equal(mid.items[0]?.id, 'keep', 'the transcript stays up while Pi hands off')
-
-    emitStatus({ phase: 'stopped' })
-    assert.equal(useAppStore.getState().status.phase, 'starting')
-    assert.equal(useAppStore.getState().transport, 'connected', 'the old process exiting is not a lost connection')
-
-    emit({ type: 'client_notice', level: 'info', text: 'from the process that is leaving' })
-    assert.equal(useAppStore.getState().items.length, 1, 'events from the retiring process are not painted')
-
-    emitStatus({ phase: 'ready', cwd: 'C:/new' })
-    assert.equal(useAppStore.getState().status.phase, 'starting', 'ready waits until the new transcript is in place')
-
-    release({ ok: true })
-    await pending
-    assert.equal(useAppStore.getState().items.length, 0)
-    assert.equal(useAppStore.getState().status.phase, 'ready')
-    assert.equal(useAppStore.getState().transport, 'connected')
-
-    emitStatus({ phase: 'stopped' })
-    assert.equal(useAppStore.getState().transport, 'disconnected', 'a real exit after the handoff is still a lost connection')
+    await useAppStore.getState().openWorkspace({
+      id: 'new',
+      path: 'C:/new',
+      name: 'New',
+      lastOpenedAt: 2
+    })
+    const next = useAppStore.getState()
+    assert.equal(next.workspace?.name, 'New')
+    assert.equal(next.threads['C:/old/a.jsonl']?.isStreaming, true)
+    assert.equal(next.threads['C:/old/a.jsonl']?.items[0]?.id, 'keep')
+    assert.notEqual(next.activeSessionFile, 'C:/old/a.jsonl')
   } finally {
-    release({ ok: true })
-    await pending.catch(() => {})
-    bridge.runtime.start = originalStart
     useAppStore.setState(previous)
   }
 })

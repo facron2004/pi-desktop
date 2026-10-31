@@ -8,10 +8,11 @@ import { loadModelCatalog } from './catalog'
 import { fetchProviderModels, probeProvider, safeError } from './network'
 import { ProviderStore } from './store'
 
-export function registerProviderIpc({ runtime, settings }: IpcContext): void {
+export function registerProviderIpc({ supervisor, settings }: IpcContext): void {
   const store = new ProviderStore(process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent'))
   const catalogDirectory = path.join(app.getAppPath(), 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers', 'data')
   ipcMain.handle('providers:list', () => store.list())
+  ipcMain.handle('providers:savedKey', (_event, id: unknown) => store.savedKey(typeof id === 'string' ? id : ''))
   ipcMain.handle('providers:models', async (_event, connection: ProviderConnection) => {
     const key = store.key(connection)
     try {
@@ -22,20 +23,33 @@ export function registerProviderIpc({ runtime, settings }: IpcContext): void {
     try { return await probeProvider(connection, store.key(connection), modelId) }
     catch (error) { return { ok: false, latencyMs: 0, stage: modelId ? 'inference' : 'models', error: safeError(error, connection.apiKey) } }
   })
-  ipcMain.handle('providers:save', async (_event, input: SaveProviderInput) => {
+  ipcMain.handle('providers:save', async (_event, input: SaveProviderInput, sessionKey?: string) => {
     input = { ...input, selectedModel: input.selectedModel.trim() }
     const provider = store.save(input)
     const updated = settings.patch({ provider: provider.id, model: `${provider.id}/${input.selectedModel}` })
     let applied = false
     let applyError: string | undefined
-    if (runtime.isRunning) {
+    if (sessionKey && supervisor.has(sessionKey)) {
       try {
-        const state = await runtime.request<PiState>('get_state')
+        const key = sessionKey
+        const state = await supervisor.request<PiState>(key, 'get_state', {}, undefined, {
+          sourceAction: 'provider-save'
+        })
         if (!state.isStreaming) {
-          await runtime.request('prompt', { message: '/desktop-refresh-models' })
-          const latest = await runtime.request<PiState>('get_state')
+          await supervisor.request(key, 'prompt', { message: '/desktop-refresh-models' }, undefined, {
+            sourceAction: 'provider-save'
+          })
+          const latest = await supervisor.request<PiState>(key, 'get_state', {}, undefined, {
+            sourceAction: 'provider-save'
+          })
           if (!latest.isStreaming) {
-            await runtime.request('set_model', { provider: provider.id, modelId: input.selectedModel })
+            await supervisor.request(
+              key,
+              'set_model',
+              { provider: provider.id, modelId: input.selectedModel },
+              undefined,
+              { sourceAction: 'provider-save' }
+            )
             applied = true
           }
         }

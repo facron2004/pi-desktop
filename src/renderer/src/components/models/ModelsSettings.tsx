@@ -33,7 +33,7 @@ export function ModelsSettings() {
           return <article className="provider-card" key={provider.id} data-active={Boolean(isDefault)}>
             <span className="provider-card__icon"><Server size={17} /></span>
             <span className="provider-card__body">
-              <span className="provider-card__title">{provider.name}{isDefault ? <span className="settings-tag" data-tone="accent">{t('Default')}</span> : null}</span>
+              <span className="provider-card__title">{provider.name}</span>
               <span className="provider-card__url">{provider.baseUrl || t('Managed by Pi')}</span>
             </span>
             <span className="provider-card__actions">
