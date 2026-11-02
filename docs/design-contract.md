@@ -177,7 +177,7 @@ controls.css      primitives: .btn .btn--primary .icon-btn .pill .ghost-btn .inp
 
 ### 11.4 未做项与理由
 
-- **侧栏版式未重构**：现状已符合第 3、7 节（侧栏是列表不是开关）。只做了 Token 与圆角对齐，没有改版式——按 SKILL.md 第 1 节"结构先于装饰"，没有结构问题就不动结构。
+- **侧栏版式未重构**（本次范围内）：现状已符合第 3、7 节（侧栏是列表不是开关）。只做了 Token 与圆角对齐，没有改版式——按 SKILL.md 第 1 节"结构先于装饰"，没有结构问题就不动结构。**后续**：工作区面板已按 MCode 对齐另起一轮，项目图标、会话标记与常驻动作槽位见 [MCode 对齐记录](mcode-workspace-alignment.md)；本节所述"没有结构问题"只针对本契约的范围。
 - **标题栏做了删减而非重构**：删掉与 `SessionBar` 重复的项目/分支块后，标题栏只剩会话名与应用动作，正是 AGENTS.md 要求的形态。
 - **欢迎页仍不加大标题/建议列表**：`Welcome.tsx` 的极简是 AGENTS.md 的既有决定（只留 Composer）。本次只把它从"钉在底部"改为"居中偏上"，未新增内容。
 - **`--ctl-sm`/`--ctl-md` 未再压缩**：Composer 的两个固定控件与 SessionBar 的高度受 AGENTS.md 契约约束，继续压缩会破坏 32px 命中目标。

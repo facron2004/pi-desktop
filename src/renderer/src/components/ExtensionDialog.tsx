@@ -3,6 +3,7 @@ import { Check, MessageSquareText, TriangleAlert } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
+import { Markdown } from './Markdown'
 
 /**
  * Modal for the blocking half of Pi's extension UI sub-protocol.
@@ -72,6 +73,9 @@ export function ExtensionDialog() {
   if (!request) return null
 
   const title = t(request.title ?? 'Pi is asking for input')
+  // Plan review has two meaningful outcomes; "No" and "Yes" make the user read
+  // the plan twice to remember which one leaves Plan Mode.
+  const planReview = request.method === 'confirm' && request.title === 'Approve this plan?'
   const selectedIndex = (request.options ?? []).indexOf(selected ?? '')
 
   const submit = () => {
@@ -107,9 +111,19 @@ export function ExtensionDialog() {
           <div className="modal__headings">
             <h2 id="extension-dialog-title" className="modal__title">{title}</h2>
             {request.message ? (
-              <p id="extension-dialog-message" className="modal__message">
-                {request.approval ? t(request.message) : request.message}
-              </p>
+              planReview ? (
+                <div id="extension-dialog-message" className="modal__plan">
+                  <Markdown>{request.message}</Markdown>
+                </div>
+              ) : (
+                <p
+                  id="extension-dialog-message"
+                  className="modal__message"
+                  data-long={request.message.length > 600 ? 'true' : undefined}
+                >
+                  {request.approval ? t(request.message) : request.message}
+                </p>
+              )
             ) : null}
           </div>
         </header>
@@ -212,10 +226,10 @@ export function ExtensionDialog() {
                 className="btn"
                 onClick={() => void respondUi({ confirmed: false })}
               >
-                {t(request.approval ? 'Deny' : 'No')}
+                {t(planReview ? 'Keep planning' : request.approval ? 'Deny' : 'No')}
               </button>
               <button className="btn btn--primary" onClick={submit}>
-                {t(request.approval ? 'Approve' : 'Yes')}
+                {t(planReview ? 'Approve plan' : request.approval ? 'Approve' : 'Yes')}
               </button>
             </>
           ) : (

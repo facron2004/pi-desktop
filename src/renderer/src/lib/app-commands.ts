@@ -16,6 +16,29 @@ export const APP_COMMANDS: PiCommand[] = [
     takesArgument: true
   },
   {
+    name: 'plan',
+    description: 'Enter Plan Mode — explore read-only, then approve the plan',
+    source: 'app',
+    takesArgument: true
+  },
+  {
+    name: 'goal',
+    description: 'Set a goal this conversation keeps working toward',
+    source: 'app',
+    takesArgument: true
+  },
+  {
+    name: 'subagent',
+    description: 'Switch to Subagent Mode — delegate independent work',
+    source: 'app'
+  },
+  {
+    name: 'computer',
+    description: 'Operate the desktop — mouse, keyboard and screenshots',
+    source: 'app',
+    takesArgument: true
+  },
+  {
     name: 'export',
     description: 'Export this conversation as HTML',
     source: 'app'

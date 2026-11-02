@@ -62,7 +62,9 @@ export function SettingsDialog({
   const showToast = useAppStore((state) => state.showToast)
   const t = useT()
   const dialogRef = useRef<HTMLDivElement>(null)
-  useDialogFocus(dialogRef, onClose)
+  // Opening the dialog should not land on the close icon and paint a ring on
+  // a control the user did not touch; the container receives focus instead.
+  useDialogFocus(dialogRef, onClose, { initialFocus: 'dialog' })
 
   const [page, setPage] = useState<SettingsPage>(initialPage)
   const [customInstructions, setCustomInstructions] = useState(settings.customInstructions ?? '')

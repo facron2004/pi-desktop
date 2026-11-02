@@ -9,7 +9,13 @@ import { useT } from '../../lib/i18n'
  * Tool output is often worth keeping, and copying it by hand out of a long log
  * is a nuisance.
  */
-export const CopyButton = memo(function CopyButton({ text, label }: { text: string; label: string }) {
+export const CopyButton = memo(function CopyButton({
+  text,
+  label
+}: {
+  text: string | (() => string)
+  label: string
+}) {
   const [copied, setCopied] = useState(false)
   const showToast = useAppStore((state) => state.showToast)
   const t = useT()
@@ -20,8 +26,10 @@ export const CopyButton = memo(function CopyButton({ text, label }: { text: stri
       title={t(label)}
       aria-label={t(label)}
       onClick={() => {
+        const payload = typeof text === 'function' ? text() : text
+        if (!payload) return
         void navigator.clipboard
-          .writeText(text)
+          .writeText(payload)
           .then(() => {
             setCopied(true)
             window.setTimeout(() => setCopied(false), 1600)

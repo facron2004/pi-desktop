@@ -25,12 +25,26 @@ function insideDialog(dialog: HTMLElement, node: Node | null): boolean {
   )
 }
 
+export interface DialogFocusOptions {
+  enabled?: boolean
+  /**
+   * `first` lands on the first control (the old behaviour); `dialog` keeps the
+   * focus on the container so a programmatically focused icon button does not
+   * flash a focus ring the moment the dialog opens.
+   */
+  initialFocus?: 'first' | 'dialog'
+}
+
 /** Keep keyboard focus inside a modal and return it to its opener on close. */
 export function useDialogFocus<T extends HTMLElement>(
   dialogRef: RefObject<T | null>,
   onClose: () => void,
-  enabled = true
+  enabledOrOptions: boolean | DialogFocusOptions = true
 ) {
+  const enabled =
+    typeof enabledOrOptions === 'boolean' ? enabledOrOptions : enabledOrOptions.enabled !== false
+  const initialFocus =
+    typeof enabledOrOptions === 'boolean' ? 'first' : (enabledOrOptions.initialFocus ?? 'first')
   const closeRef = useRef(onClose)
   closeRef.current = onClose
 
@@ -39,12 +53,16 @@ export function useDialogFocus<T extends HTMLElement>(
     const dialog = dialogRef.current
     if (!dialog) return
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const focusFirst = () => {
+    const focusInitial = () => {
       if (topModalDialog() !== dialog) return
+      if (initialFocus === 'dialog') {
+        dialog.focus()
+        return
+      }
       const first = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE)).find(isVisible)
       ;(first ?? dialog).focus()
     }
-    const focusFrame = requestAnimationFrame(focusFirst)
+    const focusFrame = requestAnimationFrame(focusInitial)
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229 || topModalDialog() !== dialog) return
@@ -70,10 +88,14 @@ export function useDialogFocus<T extends HTMLElement>(
       }
       const first = nodes[0]
       const last = nodes[nodes.length - 1]
-      if (event.shiftKey && (document.activeElement === first || !insideDialog(dialog, document.activeElement))) {
+      const active = document.activeElement
+      // The container itself has tabIndex=-1; Tab from it still has to enter
+      // the dialog rather than walking out of the modal.
+      const atContainer = active === dialog
+      if (event.shiftKey && (active === first || atContainer || !insideDialog(dialog, active))) {
         event.preventDefault()
         last.focus()
-      } else if (!event.shiftKey && (document.activeElement === last || !insideDialog(dialog, document.activeElement))) {
+      } else if (!event.shiftKey && (active === last || atContainer || !insideDialog(dialog, active))) {
         event.preventDefault()
         first.focus()
       }
@@ -85,5 +107,5 @@ export function useDialogFocus<T extends HTMLElement>(
       const top = topModalDialog()
       if (previous?.isConnected && (!top || top.contains(previous))) previous.focus()
     }
-  }, [dialogRef, enabled])
+  }, [dialogRef, enabled, initialFocus])
 }

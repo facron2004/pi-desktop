@@ -26,9 +26,74 @@ import type {
 } from '@shared/types'
 import { formatCost, formatTokens } from '../lib/format'
 import { useT } from '../lib/i18n'
+import { useIsDark } from '../lib/theme'
 import { useAppStore } from '../store/useAppStore'
 import { Popover } from './Popover'
 import { Switch } from './Switch'
+
+function NativeMark({ src }: { src?: string }) {
+  if (!src) return null
+  return <img className="settings-icon-select__img" src={src} alt="" />
+}
+
+function SettingsIconSelect({
+  label,
+  value,
+  icons,
+  options,
+  onChange
+}: {
+  label: string
+  value: string
+  icons: Record<string, string>
+  options: { value: string; label: string; icon: string }[]
+  onChange: (value: string) => void
+}) {
+  const current = options.find((option) => option.value === value) ?? options[0]
+  return (
+    <Popover
+      align="right"
+      width={220}
+      className="settings-icon-select__popover"
+      renderTrigger={({ open, toggle }) => (
+        <button
+          type="button"
+          className="settings-icon-select"
+          aria-label={label}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          onClick={toggle}
+        >
+          <NativeMark src={icons[current.icon]} />
+          <span className="settings-icon-select__label">{current.label}</span>
+          <ChevronDown size={13} className="settings-icon-select__chevron" data-open={open} />
+        </button>
+      )}
+    >
+      {(close) => (
+        <div className="settings-icon-select__menu" role="listbox" aria-label={label}>
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              className="settings-icon-select__option"
+              onClick={() => {
+                onChange(option.value)
+                close()
+              }}
+            >
+              <NativeMark src={icons[option.icon]} />
+              <span>{option.label}</span>
+              {option.value === value ? <Check size={13} /> : null}
+            </button>
+          ))}
+        </div>
+      )}
+    </Popover>
+  )
+}
 
 function PageIntro({ title, description }: { title: string; description: string }) {
   return (
@@ -84,6 +149,16 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
   const t = useT()
 
   const currentChatFolder = settings.externalChatFolder || info?.sessionRoot || ''
+  const [nativeIcons, setNativeIcons] = useState<Record<string, string>>({})
+  useEffect(() => {
+    let cancel = false
+    void window.pi.shell.nativeIcons().then((next) => {
+      if (!cancel) setNativeIcons(next)
+    })
+    return () => {
+      cancel = true
+    }
+  }, [])
 
   const handlePickChatFolder = async () => {
     try {
@@ -124,17 +199,18 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
             <span className="settings-item-row__title">{t('Default file opening location')}</span>
             <span className="settings-item-row__desc">{t('Default location to open files and folders')}</span>
           </div>
-          <select
-            className="input settings-select"
-            aria-label={t('Default file opening location')}
+          <SettingsIconSelect
+            label={t('Default file opening location')}
             value={settings.defaultFileOpener ?? 'vscode'}
-            onChange={(e) => void updateSettings({ defaultFileOpener: e.target.value })}
-          >
-            <option value="vscode">VS Code</option>
-            <option value="cursor">Cursor</option>
-            <option value="windsurf">Windsurf</option>
-            <option value="system">{t('System default')}</option>
-          </select>
+            icons={nativeIcons}
+            onChange={(value) => void updateSettings({ defaultFileOpener: value })}
+            options={[
+              { value: 'vscode', label: 'VS Code', icon: 'vscode' },
+              { value: 'cursor', label: 'Cursor', icon: 'cursor' },
+              { value: 'windsurf', label: 'Windsurf', icon: 'windsurf' },
+              { value: 'system', label: t('System default'), icon: 'system' }
+            ]}
+          />
         </div>
 
         {/* 3. 智能体环境 */}
@@ -143,15 +219,16 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
             <span className="settings-item-row__title">{t('Agent environment')}</span>
             <span className="settings-item-row__desc">{t('Choose where the agent runs on Windows')}</span>
           </div>
-          <select
-            className="input settings-select"
-            aria-label={t('Agent environment')}
+          <SettingsIconSelect
+            label={t('Agent environment')}
             value={settings.agentEnvironment ?? 'windows'}
-            onChange={(e) => void updateSettings({ agentEnvironment: e.target.value })}
-          >
-            <option value="windows">{t('Windows Native')}</option>
-            <option value="wsl">WSL</option>
-          </select>
+            icons={nativeIcons}
+            onChange={(value) => void updateSettings({ agentEnvironment: value })}
+            options={[
+              { value: 'windows', label: t('Windows Native'), icon: 'windows' },
+              { value: 'wsl', label: 'WSL', icon: 'wsl' }
+            ]}
+          />
         </div>
 
         {/* 4. 集成终端 Shell */}
@@ -160,17 +237,18 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
             <span className="settings-item-row__title">{t('Integrated terminal shell')}</span>
             <span className="settings-item-row__desc">{t('Choose the shell to open in the integrated terminal')}</span>
           </div>
-          <select
-            className="input settings-select"
-            aria-label={t('Integrated terminal shell')}
+          <SettingsIconSelect
+            label={t('Integrated terminal shell')}
             value={settings.terminalShell ?? 'powershell'}
-            onChange={(e) => void updateSettings({ terminalShell: e.target.value })}
-          >
-            <option value="powershell">PowerShell</option>
-            <option value="cmd">Command Prompt (CMD)</option>
-            <option value="gitbash">Git Bash</option>
-            <option value="wsl">WSL (Bash)</option>
-          </select>
+            icons={nativeIcons}
+            onChange={(value) => void updateSettings({ terminalShell: value })}
+            options={[
+              { value: 'powershell', label: 'PowerShell', icon: 'powershell' },
+              { value: 'cmd', label: 'Command Prompt (CMD)', icon: 'cmd' },
+              { value: 'gitbash', label: 'Git Bash', icon: 'gitbash' },
+              { value: 'wsl', label: 'WSL (Bash)', icon: 'wsl' }
+            ]}
+          />
         </div>
 
         {/* 5. 语言 */}
@@ -271,7 +349,7 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
           <div className="settings-item-row__info">
             <span className="settings-item-row__title">{t('Follow-up handling method')}</span>
             <span className="settings-item-row__desc">
-              {t('Queue follow-up messages while the agent is running, or steer subsequent actions. Press Ctrl+Enter to fine-tune this setting.')}
+              {t('Queue follow-up messages while the agent is running, or steer subsequent actions.')}
             </span>
           </div>
           <div className="segmented">
@@ -352,44 +430,46 @@ const THEME_PRESETS: ThemePreset[] = [
 ]
 
 const ACCENT_PRESETS = [
-  { label: '自定义', value: 'custom' },
-  { label: '陶土橙 (ChatGPT)', value: '#D97757' },
-  { label: '经典橙 (Pi)', value: '#D95B26' },
-  { label: '翡翠绿 (OpenAI)', value: '#10A37F' },
-  { label: '天蓝色 (Ocean)', value: '#3B82F6' },
-  { label: '极客紫 (Violet)', value: '#8B5CF6' },
-  { label: '玫瑰粉 (Rose)', value: '#EC4899' },
-  { label: '琥珀黄 (Amber)', value: '#F59E0B' },
-  { label: '青蓝色 (Cyan)', value: '#06B6D4' }
+  { label: 'Custom', value: 'custom' },
+  { label: 'Terracotta (ChatGPT)', value: '#D97757' },
+  { label: 'Classic Orange (Pi)', value: '#D95B26' },
+  { label: 'Emerald (OpenAI)', value: '#10A37F' },
+  { label: 'Ocean Blue', value: '#3B82F6' },
+  { label: 'Violet', value: '#8B5CF6' },
+  { label: 'Rose', value: '#EC4899' },
+  { label: 'Amber', value: '#F59E0B' },
+  { label: 'Cyan', value: '#06B6D4' }
 ]
 
 const TONE_PRESETS = [
-  { id: 'neutral', label: '默认' },
-  { id: 'warm', label: '暖色' },
-  { id: 'cool', label: '冷色' },
-  { id: 'slate', label: '灰青' },
-  { id: 'contrast', label: '高对比' }
+  { id: 'neutral', label: 'Default' },
+  { id: 'warm', label: 'Warm' },
+  { id: 'cool', label: 'Cool' },
+  { id: 'slate', label: 'Slate' },
+  { id: 'contrast', label: 'High contrast' }
 ]
 
+// Every label is an English key so `t()` can translate it; the English UI
+// must never fall back to the Chinese names that used to live here.
 const FONT_DISPLAY_NAMES: Record<string, string> = {
-  system: '系统默认',
-  sans: '现代无衬线 (Sans)',
-  chinese: '中文优先 (Chinese)',
-  mono: '等宽代码 (Mono)',
-  serif: '经典衬线 (Serif)',
-  'Microsoft YaHei': '微软雅黑 (Microsoft YaHei)',
-  'Microsoft YaHei UI': '微软雅黑 UI',
-  SimSun: '宋体 (SimSun)',
-  NSimSun: '新宋体 (NSimSun)',
-  SimHei: '黑体 (SimHei)',
-  KaiTi: '楷体 (KaiTi)',
-  FangSong: '仿宋 (FangSong)',
-  DengXian: '等线 (DengXian)',
-  'PingFang SC': '苹方 (PingFang SC)',
-  'PingFang SC Regular': '苹方 (PingFang SC Regular)',
-  'PingFang SC Medium': '苹方 (PingFang SC Medium)',
-  'PingFang SC Bold': '苹方 (PingFang SC Bold)',
-  'Hiragino Sans GB': '冬青黑体 (Hiragino Sans GB)',
+  system: 'System default',
+  sans: 'Modern Sans',
+  chinese: 'Chinese First',
+  mono: 'Monospace Code',
+  serif: 'Classic Serif',
+  'Microsoft YaHei': 'Microsoft YaHei',
+  'Microsoft YaHei UI': 'Microsoft YaHei UI',
+  SimSun: 'SimSun',
+  NSimSun: 'NSimSun',
+  SimHei: 'SimHei',
+  KaiTi: 'KaiTi',
+  FangSong: 'FangSong',
+  DengXian: 'DengXian',
+  'PingFang SC': 'PingFang SC',
+  'PingFang SC Regular': 'PingFang SC Regular',
+  'PingFang SC Medium': 'PingFang SC Medium',
+  'PingFang SC Bold': 'PingFang SC Bold',
+  'Hiragino Sans GB': 'Hiragino Sans GB',
   'Segoe UI': 'Segoe UI',
   'Cascadia Code': 'Cascadia Code',
   Consolas: 'Consolas',
@@ -400,6 +480,22 @@ const FONT_DISPLAY_NAMES: Record<string, string> = {
   'Helvetica Neue': 'Helvetica Neue',
   Inter: 'Inter',
   Roboto: 'Roboto'
+}
+
+function normalizeCssColor(value: string): string | null {
+  if (!value) return null
+  const shortHex = /^#([0-9a-f]{3})$/i.exec(value)
+  if (shortHex) {
+    return `#${shortHex[1]
+      .split('')
+      .map((char) => char + char)
+      .join('')}`.toUpperCase()
+  }
+  if (/^#[0-9a-f]{6}$/i.test(value)) return value.toUpperCase()
+  const rgb = /^rgba?\(\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})/i.exec(value)
+  if (!rgb) return null
+  const hex = (part: string) => Math.min(255, Number(part)).toString(16).padStart(2, '0')
+  return `#${hex(rgb[1])}${hex(rgb[2])}${hex(rgb[3])}`.toUpperCase()
 }
 
 const POPULAR_FONT_FAMILIES = [
@@ -425,11 +521,35 @@ export function AppearanceSettings() {
   const updateSettings = useAppStore((state) => state.updateSettings)
   const showToast = useAppStore((state) => state.showToast)
   const t = useT()
+  const isDark = useIsDark()
 
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [systemFonts, setSystemFonts] = useState<string[]>([])
   const [fontsLoading, setFontsLoading] = useState(true)
   const [fontQuery, setFontQuery] = useState('')
+  const [defaultColors, setDefaultColors] = useState(() => ({
+    accent: isDark ? '#4C9AFF' : '#292929',
+    bg: isDark ? '#16181D' : '#FFFFFF',
+    fg: isDark ? '#F2F4F8' : '#242424'
+  }))
+
+  // The appearance page shows what is painted, so the "no custom theme" row
+  // has to follow the live tokens when the theme (or the system theme) flips.
+  useEffect(() => {
+    // Read the values that are actually painted instead of assuming a preset.
+    const rootStyle = window.getComputedStyle(document.documentElement)
+    setDefaultColors({
+      accent:
+        normalizeCssColor(rootStyle.getPropertyValue('--accent').trim()) ??
+        (isDark ? '#4C9AFF' : '#292929'),
+      bg:
+        normalizeCssColor(rootStyle.getPropertyValue('--surface-canvas').trim()) ??
+        (isDark ? '#16181D' : '#FFFFFF'),
+      fg:
+        normalizeCssColor(rootStyle.getPropertyValue('--text-primary').trim()) ??
+        (isDark ? '#F2F4F8' : '#242424')
+    })
+  }, [isDark, settings.accentColor, settings.customBg, settings.customFg, settings.themePreset])
 
   useEffect(() => {
     let active = true
@@ -449,40 +569,50 @@ export function AppearanceSettings() {
     }
   }, [])
 
-  const isDark =
-    settings.theme === 'dark' ||
-    (settings.theme === 'system' &&
-      typeof window !== 'undefined' &&
-      window.matchMedia('(prefers-color-scheme: dark)').matches)
-
-  const currentPresetObj = THEME_PRESETS.find((p) => p.id === (settings.themePreset ?? 'chatgpt'))
+  const currentPresetObj = settings.themePreset
+    ? THEME_PRESETS.find((preset) => preset.id === settings.themePreset)
+    : undefined
 
   const effectiveAccent =
-    settings.accentColor ??
-    currentPresetObj?.accent ??
-    (isDark ? '#4C9AFF' : '#D97757')
+    settings.accentColor ?? currentPresetObj?.accent ?? defaultColors.accent
 
   const effectiveBg =
     settings.customBg ??
     (currentPresetObj
       ? (isDark ? currentPresetObj.dark.bg : currentPresetObj.light.bg)
-      : (isDark ? '#16181D' : '#FAF9F5'))
+      : defaultColors.bg)
 
   const effectiveFg =
     settings.customFg ??
     (currentPresetObj
       ? (isDark ? currentPresetObj.dark.fg : currentPresetObj.light.fg)
-      : (isDark ? '#F2F4F8' : '#141413'))
+      : defaultColors.fg)
 
   const matchedAccentPreset = ACCENT_PRESETS.find(
     (p) => p.value.toLowerCase() === effectiveAccent.toLowerCase()
   )
 
-  const matchedTone = TONE_PRESETS.find((t) => t.id === (settings.themeTone ?? 'neutral'))
+  const matchedTone = TONE_PRESETS.find((tone) => tone.id === (settings.themeTone ?? 'neutral'))
   const currentFontVal = settings.fontFamily ?? 'system'
-  const currentFontLabel =
-    FONT_DISPLAY_NAMES[currentFontVal] ??
-    (currentFontVal === 'system' ? t('System') : currentFontVal)
+  const currentFontLabel = t(
+    FONT_DISPLAY_NAMES[currentFontVal] ?? (currentFontVal === 'system' ? 'System default' : currentFontVal)
+  )
+
+  const themeSelectValue = currentPresetObj
+    ? currentPresetObj.id
+    : settings.themePreset === 'custom'
+      ? 'custom'
+      : 'default'
+  const themeLabel = currentPresetObj
+    ? t(currentPresetObj.name)
+    : settings.themePreset === 'custom'
+      ? t('Custom')
+      : t('Default')
+  const accentLabel = matchedAccentPreset
+    ? t(matchedAccentPreset.label)
+    : settings.accentColor || currentPresetObj
+      ? t('Custom')
+      : t('Default')
 
   const popularOnSystem = useMemo(() => {
     if (systemFonts.length === 0) return []
@@ -498,35 +628,32 @@ export function AppearanceSettings() {
   const fontChoices = useMemo(() => {
     const normalize = (value: string) => value.toLowerCase().replace(/[\s_-]+/g, '')
     const needle = normalize(fontQuery)
-    const labelOf = (font: string) => FONT_DISPLAY_NAMES[font] ?? font
+    const labelOf = (font: string) => t(FONT_DISPLAY_NAMES[font] ?? font)
     const matches = (value: string, label: string) =>
       !needle || normalize(value).includes(needle) || normalize(label).includes(needle)
     const choices: { value: string; label: string; group: string }[] = []
-    const systemLabel = FONT_DISPLAY_NAMES.system
+    const systemLabel = t(FONT_DISPLAY_NAMES.system)
     if (matches('system', systemLabel)) {
       choices.push({ value: 'system', label: systemLabel, group: '' })
     }
-    const recommended = settings.language === 'zh-CN' ? '常用推荐' : 'Recommended'
+    const recommended = t('Recommended')
     for (const font of popularOnSystem) {
       const label = labelOf(font)
       if (matches(font, label)) choices.push({ value: font, label, group: recommended })
     }
     if (otherSystemFonts.length > 0) {
-      const group =
-        settings.language === 'zh-CN'
-          ? `系统字体 (${systemFonts.length})`
-          : `System Fonts (${systemFonts.length})`
+      const group = `${t('System Fonts')} (${systemFonts.length})`
       for (const font of otherSystemFonts) {
         const label = labelOf(font)
         if (matches(font, label)) choices.push({ value: font, label, group })
       }
     } else if (systemFonts.length === 0) {
-      const group = settings.language === 'zh-CN' ? '字体预设' : 'Presets'
+      const group = t('Presets')
       const presets = [
-        ['sans', t('现代无衬线')],
-        ['chinese', t('中文优先')],
-        ['mono', t('等宽代码')],
-        ['serif', t('经典衬线')]
+        ['sans', t('Modern Sans')],
+        ['chinese', t('Chinese First')],
+        ['mono', t('Monospace Code')],
+        ['serif', t('Classic Serif')]
       ] as const
       for (const [value, label] of presets) {
         if (matches(value, label)) choices.push({ value, label, group })
@@ -560,7 +687,11 @@ export function AppearanceSettings() {
         typeof window !== 'undefined' &&
         window.matchMedia('(prefers-color-scheme: dark)').matches)
 
-    const preset = THEME_PRESETS.find((p) => p.id === (settings.themePreset ?? 'chatgpt'))
+    // With no preset chosen, changing the mode must only change the mode:
+    // writing the old ChatGPT colours here is what made the dialog lie.
+    const preset = settings.themePreset
+      ? THEME_PRESETS.find((p) => p.id === settings.themePreset)
+      : undefined
     if (preset) {
       void updateSettings({
         theme: mode,
@@ -574,11 +705,21 @@ export function AppearanceSettings() {
   }
 
   const handlePresetChange = (presetId: string) => {
-    const preset = THEME_PRESETS.find((p) => p.id === presetId)
-    if (!preset) {
+    if (presetId === 'default') {
+      void updateSettings({
+        themePreset: undefined,
+        accentColor: undefined,
+        customBg: undefined,
+        customFg: undefined
+      })
+      return
+    }
+    if (presetId === 'custom') {
       void updateSettings({ themePreset: 'custom' })
       return
     }
+    const preset = THEME_PRESETS.find((p) => p.id === presetId)
+    if (!preset) return
     void updateSettings({
       themePreset: preset.id,
       accentColor: preset.accent,
@@ -605,7 +746,7 @@ export function AppearanceSettings() {
   const copyThemeJson = () => {
     const config = {
       theme: settings.theme,
-      themePreset: settings.themePreset ?? 'chatgpt',
+      themePreset: settings.themePreset ?? 'default',
       accentColor: effectiveAccent,
       customBg: effectiveBg,
       customFg: effectiveFg,
@@ -618,9 +759,9 @@ export function AppearanceSettings() {
 
   const exportThemeJson = () => {
     const config = {
-      name: currentPresetObj?.name ?? 'Custom',
+      name: currentPresetObj?.name ?? (settings.themePreset === 'custom' ? 'Custom' : 'Default'),
       theme: settings.theme,
-      themePreset: settings.themePreset ?? 'chatgpt',
+      themePreset: settings.themePreset ?? 'default',
       accentColor: effectiveAccent,
       customBg: effectiveBg,
       customFg: effectiveFg,
@@ -729,17 +870,18 @@ export function AppearanceSettings() {
             </button>
             <div className="appearance-select-pill">
               <Sparkles size={13} className="appearance-select-pill__icon" />
-              <span>{currentPresetObj?.name ?? t('Custom')}</span>
+              <span>{themeLabel}</span>
               <ChevronDown size={13} className="appearance-select-pill__chevron" />
               <select
                 className="appearance-select-native"
                 aria-label={t('Theme')}
-                value={settings.themePreset ?? 'chatgpt'}
+                value={themeSelectValue}
                 onChange={(e) => handlePresetChange(e.target.value)}
               >
+                <option value="default">{t('Default')}</option>
                 {THEME_PRESETS.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name}
+                    {t(p.name)}
                   </option>
                 ))}
                 <option value="custom">{t('Custom')}</option>
@@ -753,7 +895,7 @@ export function AppearanceSettings() {
           <div className="appearance-row__label">{t('Accent color')}</div>
           <div className="appearance-row__right">
             <div className="appearance-select-pill">
-              <span>{matchedAccentPreset ? t(matchedAccentPreset.label) : t('Custom')}</span>
+              <span>{accentLabel}</span>
               <ChevronDown size={13} className="appearance-select-pill__chevron" />
               <select
                 className="appearance-select-native"
@@ -767,7 +909,7 @@ export function AppearanceSettings() {
               >
                 {ACCENT_PRESETS.map((p) => (
                   <option key={p.value} value={p.value}>
-                    {p.label}
+                    {t(p.label)}
                   </option>
                 ))}
               </select>

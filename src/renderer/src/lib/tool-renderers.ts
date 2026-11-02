@@ -14,6 +14,9 @@ export type ToolRendererKind =
   | 'search'
   | 'mcp'
   | 'todo'
+  | 'subagent'
+  | 'plan'
+  | 'computer'
   | 'generic'
 
 const REGISTRY: Record<string, ToolRendererKind> = {
@@ -24,7 +27,10 @@ const REGISTRY: Record<string, ToolRendererKind> = {
   powershell: 'command',
   grep: 'search',
   find: 'search',
-  ls: 'search'
+  ls: 'search',
+  subagent: 'subagent',
+  exit_plan_mode: 'plan',
+  computer: 'computer'
 }
 
 /** The renderer for a tool name, with a safe fallback for unknown ones. */
@@ -48,7 +54,7 @@ export interface ToolSummary {
   tone: ToolSummaryTone
 }
 
-export type ToolSummaryTone = 'read' | 'edit' | 'command' | 'search' | 'generic'
+export type ToolSummaryTone = 'read' | 'edit' | 'command' | 'search' | 'subagent' | 'plan' | 'computer' | 'generic'
 
 function str(value: unknown): string {
   if (value === undefined || value === null) return ''
@@ -71,7 +77,10 @@ const TONES: Record<string, ToolSummaryTone> = {
   powershell: 'command',
   grep: 'search',
   find: 'search',
-  ls: 'search'
+  ls: 'search',
+  subagent: 'subagent',
+  exit_plan_mode: 'plan',
+  computer: 'computer'
 }
 
 /**
@@ -116,6 +125,34 @@ export function summarizeTool(tool: ToolItem): ToolSummary {
       label = 'Todo'
       detail = oneLine(str(args.content) || str(args.todos))
       break
+    case 'subagent': {
+      const tasks = Array.isArray(args.tasks) ? args.tasks : []
+      label = 'Subagent'
+      detail = tasks.length
+        ? `${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} in parallel`
+        : oneLine(str(args.task))
+      break
+    }
+    case 'plan':
+      label = 'Plan'
+      detail = oneLine(str(args.plan).split('\n')[0].replace(/^#+\s*/, ''))
+      break
+    case 'computer': {
+      label = 'Computer'
+      const action = str(args.action)
+      const x = str(args.x)
+      const y = str(args.y)
+      if (action === 'click' || action === 'move' || action === 'scroll') {
+        detail = oneLine([action, x && y ? `${x},${y}` : '', str(args.direction), str(args.button)].filter(Boolean).join(' '))
+      } else if (action === 'type') {
+        detail = oneLine(str(args.text))
+      } else if (action === 'key') {
+        detail = oneLine(str(args.key))
+      } else {
+        detail = oneLine(action)
+      }
+      break
+    }
     default:
       label = tool.toolName
       detail = oneLine(Object.keys(args).join(', '))

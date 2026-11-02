@@ -1,11 +1,14 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import {
   Ban,
+  Bot,
   ChevronRight,
   CircleAlert,
   CornerDownLeft,
   FileSearch,
   FileText,
+  ListChecks,
+  Monitor,
   Pencil,
   Play,
   Search,
@@ -31,6 +34,9 @@ const TONE_ICONS = {
   edit: Pencil,
   command: SquareTerminal,
   search: Search,
+  subagent: Bot,
+  plan: ListChecks,
+  computer: Monitor,
   generic: Wrench
 } as const
 
@@ -95,9 +101,10 @@ export const ToolCard = memo(function ToolCard({
 
   const summary = useMemo(() => summarizeTool(item), [item])
   const Icon = TONE_ICONS[summary.tone]
+  const edits = useMemo(() => diffableEdits(item), [item])
   const diffs = useMemo(
-    () => diffableEdits(item).map((pair) => buildDiff(pair.oldText, pair.newText)),
-    [item]
+    () => (open && edits.length > 0 ? edits.map((pair) => buildDiff(pair.oldText, pair.newText)) : []),
+    [open, edits]
   )
   const content = useMemo(() => writtenContent(item), [item])
 
@@ -110,14 +117,24 @@ export const ToolCard = memo(function ToolCard({
    * that is what leaves the app — anything else would copy a line of text
    * that is nowhere on the screen.
    */
-  const copyable =
-    item.status === 'error'
-      ? { label: 'Copy the result', text: result }
-      : diffs.length > 0
-        ? { label: 'Copy the diff', text: formatDiff(diffs) }
-        : content
-          ? { label: 'Copy the file', text: content }
-          : { label: 'Copy the result', text: result }
+  const copyable: { label: string; text: string | (() => string) } = useMemo(() => {
+    if (item.status === 'error') {
+      return { label: 'Copy the result', text: result }
+    }
+    if (edits.length > 0) {
+      if (open && diffs.length > 0) {
+        return { label: 'Copy the diff', text: formatDiff(diffs) }
+      }
+      return {
+        label: 'Copy the diff',
+        text: () => formatDiff(edits.map((pair) => buildDiff(pair.oldText, pair.newText)))
+      }
+    }
+    if (content) {
+      return { label: 'Copy the file', text: content }
+    }
+    return { label: 'Copy the result', text: result }
+  }, [item.status, result, edits, open, diffs, content])
 
   // A command or a file path can be handed back to the composer, so the
   // user can build on it without copying it by hand.
@@ -259,7 +276,7 @@ export const ToolCard = memo(function ToolCard({
           {item.status === 'running' ? (
             <span className="spinner" />
           ) : StateIcon ? (
-            <StateIcon size={13} color={item.status === 'error' ? 'var(--red)' : undefined} />
+            <StateIcon size={13} color={item.status === 'error' ? 'var(--status-danger)' : undefined} />
           ) : null}
           {item.durationMs !== undefined ? (
             <span className="tool__status">{formatDuration(item.durationMs)}</span>

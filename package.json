@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.7.0",
+  "version": "0.7.2",
   "description": "Pi Desktop — a native GUI for the Pi coding agent",
   "main": "./out/main/index.js",
   "author": "Facron",
@@ -22,12 +22,16 @@
     "dist": "npm run build && electron-builder",
     "dist:dir": "npm run build && electron-builder --dir",
     "test": "node tests/run.mjs",
-    "test:e2e": "node tests/e2e-run.mjs"
+    "test:e2e": "node tests/e2e-run.mjs",
+    "test:ui": "npm run build && node tests/ui-regressions.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "diff": "^9.0.0",
     "lucide-react": "^1.59.0",
+    "node-pty": "^1.1.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",

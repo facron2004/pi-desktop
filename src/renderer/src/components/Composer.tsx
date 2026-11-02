@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
-  ListFilter,
+  Bot,
   ListChecks,
+  Monitor,
   Target,
   Square,
   X
@@ -15,7 +16,6 @@ import { openingLabel, useT } from '../lib/i18n'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
 import { ModelPicker } from './TopBar'
-import { Popover } from './Popover'
 import { ProjectSelector } from './ProjectSelector'
 import { BranchMenu } from './BranchMenu'
 import { PermissionPicker } from './PermissionPicker'
@@ -83,11 +83,10 @@ export function Composer() {
 
   const [text, setText] = useState('')
   const [images, setImages] = useState<{ data: string; mimeType: string }[]>([])
-  const [kind, setKind] = useState<QueueKind>(defaultFollowUpMode === 'queue' ? 'followUp' : 'steer')
+  // Delivery is a preference, not a per-message control in the composer:
+  // configure it in Settings so this bar stays to send/stop and the model.
+  const kind: QueueKind = defaultFollowUpMode === 'queue' ? 'followUp' : 'steer'
 
-  useEffect(() => {
-    setKind(defaultFollowUpMode === 'queue' ? 'followUp' : 'steer')
-  }, [defaultFollowUpMode])
   const [slash, setSlash] = useState<SlashMatch | null>(null)
   const [mention, setMention] = useState<MentionMatch | null>(null)
   const [mentionFiles, setMentionFiles] = useState<FileEntry[]>([])
@@ -104,9 +103,11 @@ export function Composer() {
 
   const ready = status.phase === 'ready'
   const inputPrompt = ready
-    ? workspace
-      ? t('Describe a task, or use @ to reference project files…')
-      : t('Describe a task…')
+    ? agentMode === 'plan'
+      ? t('Describe the task to plan…')
+      : workspace
+        ? t('Describe a task, or use @ to reference project files…')
+        : t('Describe a task…')
     : status.phase === 'starting'
       ? openingLabel(workspace, t)
       : status.phase === 'error'
@@ -406,7 +407,6 @@ export function Composer() {
       }
       if (isCtrlEnter) {
         event.preventDefault()
-        setKind((current) => (current === 'steer' ? 'followUp' : 'steer'))
         submit()
         return
       }
@@ -644,8 +644,26 @@ export function Composer() {
                 disabled={isStreaming || !ready}
                 onClick={() => void setAgentMode('default')}
               >
-                {agentMode === 'goal' ? <Target size={13} /> : <ListChecks size={13} />}
-                <span>{t(agentMode === 'goal' ? 'Goal Mode' : 'Plan Mode')}</span>
+                {agentMode === 'goal' ? (
+                  <Target size={13} />
+                ) : agentMode === 'plan' ? (
+                  <ListChecks size={13} />
+                ) : agentMode === 'computer' ? (
+                  <Monitor size={13} />
+                ) : (
+                  <Bot size={13} />
+                )}
+                <span>
+                  {t(
+                    agentMode === 'goal'
+                      ? 'Goal Mode'
+                      : agentMode === 'plan'
+                        ? 'Plan Mode'
+                        : agentMode === 'computer'
+                          ? 'Computer Use'
+                          : 'Subagent Mode'
+                  )}
+                </span>
                 <X size={11} />
               </button>
             ) : null}
@@ -656,66 +674,6 @@ export function Composer() {
             {/* Kept mounted when Pi is cold or restarting. Unmounting it on
                 anything but `ready` is what made the model control vanish. */}
             <ModelPicker />
-
-            {isStreaming ? (
-              <Popover
-                placement="top"
-                width={230}
-                className="composer__delivery-popover"
-                renderTrigger={({ open, toggle }) => (
-                  <button
-                    className="icon-btn composer__delivery"
-                    aria-label={t('How the next message is delivered')}
-                    title={t('How the next message is delivered')}
-                    aria-haspopup="menu"
-                    aria-expanded={open}
-                    onClick={toggle}
-                  >
-                    <ListFilter size={15} />
-                  </button>
-                )}
-              >
-                {(close) => (
-                  <div role="menu" aria-label={t('How the next message is delivered')}>
-                    <div className="popover__label">
-                      {t('How the next message is delivered')}
-                    </div>
-                    <button
-                      className="popover__item composer__delivery-option"
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={kind === 'steer'}
-                      data-active={kind === 'steer'}
-                      onClick={() => {
-                        setKind('steer')
-                        close()
-                      }}
-                    >
-                      <span className="composer__delivery-option-title">{t('Steer')}</span>
-                      <span className="composer__delivery-option-description">
-                        {t('Deliver after the current tool calls finish')}
-                      </span>
-                    </button>
-                    <button
-                      className="popover__item composer__delivery-option"
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={kind === 'followUp'}
-                      data-active={kind === 'followUp'}
-                      onClick={() => {
-                        setKind('followUp')
-                        close()
-                      }}
-                    >
-                      <span className="composer__delivery-option-title">{t('Queue')}</span>
-                      <span className="composer__delivery-option-description">
-                        {t('Deliver when the current run is done')}
-                      </span>
-                    </button>
-                  </div>
-                )}
-              </Popover>
-            ) : null}
 
             {isStreaming ? (
               <button

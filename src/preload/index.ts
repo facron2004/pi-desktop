@@ -28,6 +28,9 @@ import type {
   RuntimeRekey,
   RuntimeStatusEvent,
   SessionMeta,
+  TerminalCreateOptions,
+  TerminalDataPayload,
+  TerminalExitPayload,
   SessionSearchHit,
   TextSearchHit,
   UpgradeResult,
@@ -87,6 +90,17 @@ const bridge: PiDesktopBridge = {
       ipcRenderer.invoke('sessions:search', query, limit),
     usageStats: (customDir?: string): Promise<AggregatedUsageStats> =>
       ipcRenderer.invoke('sessions:usageStats', customDir)
+  },
+  terminal: {
+    create: (options: TerminalCreateOptions) => ipcRenderer.invoke('terminal:create', options),
+    write: (id: string, data: string): Promise<void> => ipcRenderer.invoke('terminal:write', id, data),
+    resize: (id: string, cols: number, rows: number): Promise<void> =>
+      ipcRenderer.invoke('terminal:resize', id, cols, rows),
+    kill: (id: string): Promise<void> => ipcRenderer.invoke('terminal:kill', id),
+    onData: (handler: (payload: TerminalDataPayload) => void) =>
+      subscribe<TerminalDataPayload>('terminal:data', handler),
+    onExit: (handler: (payload: TerminalExitPayload) => void) =>
+      subscribe<TerminalExitPayload>('terminal:exit', handler)
   },
   runtime: {
     start: (options: RuntimeStartOptions) => ipcRenderer.invoke('runtime:start', options),
@@ -156,6 +170,7 @@ const bridge: PiDesktopBridge = {
     pull: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:pull')
   },
   shell: {
+    nativeIcons: (): Promise<Record<string, string>> => ipcRenderer.invoke('shell:nativeIcons'),
     openPath: (target: string): Promise<string> => ipcRenderer.invoke('shell:openPath', target),
     openInExplorer: (target: string): Promise<string> => ipcRenderer.invoke('shell:openInExplorer', target),
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:openExternal', url)

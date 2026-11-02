@@ -7,6 +7,14 @@
   min-width: 0;
 }
 
+.composer__add-modes {
+  padding: var(--sp-1) 0;
+}
+
+.composer__add-modes .popover__label {
+  padding: 0 var(--sp-3) var(--sp-1);
+}
+
 .composer__add-sep {
   height: 1px;
   margin: var(--sp-1) var(--sp-2);

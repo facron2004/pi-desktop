@@ -201,7 +201,7 @@
   border-radius: 0;
   background: transparent;
   font-size: var(--text-md);
-  line-height: 1.6;
+  line-height: var(--leading-reading);
   overflow-wrap: anywhere;
 }
 
@@ -381,7 +381,7 @@
 }
 
 .tool-link__target:hover {
-  color: var(--accent);
+  color: var(--text-pure);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -487,9 +487,27 @@
 /* Usage stays opt-in behind the caret, so this row is one small control wide. */
 .assistant__response-actions {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   min-height: var(--ctl-sm);
   color: var(--text-secondary);
+}
+
+.assistant__usage {
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 2px;
+}
+
+.assistant__usage:hover {
+  color: var(--text);
+}
+
+.usage-popover__body {
+  padding: var(--sp-2) var(--sp-3);
 }
 
 .assistant__details > summary {
@@ -531,6 +549,9 @@
   min-height: var(--ctl-sm);
   padding: var(--sp-2) var(--sp-3);
   color: var(--text-secondary);
+  /* Model, token count and clock stay on the one line beside the icon. */
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .assistant__body > .notice[role='alert'] > span {
@@ -562,37 +583,105 @@
 .file-changes {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  padding: var(--sp-3) 0;
-  border-top: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-canvas);
+  overflow: hidden;
 }
 
 .file-changes__head {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--border-strong);
 }
 
 .file-changes__icon {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  color: var(--text-tertiary);
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-canvas);
+  color: var(--text-secondary);
+}
+
+.file-changes__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .file-changes__count {
-  flex: 0 0 auto;
-  font-weight: 500;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-pure);
+  line-height: 1.3;
+}
+
+.file-changes__sublink {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  width: fit-content;
+  padding: 0;
   color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.file-changes__sublink:hover {
+  color: var(--text);
+}
+
+.file-changes__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
+.file-changes__undo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 28px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: var(--text-xs);
+}
+
+.file-changes__undo:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.file-changes__review {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-full);
+  background: var(--surface-canvas);
+  color: var(--text);
+  font-size: var(--text-xs);
+}
+
+.file-changes__review:hover {
+  background: var(--bg-hover);
 }
 
 .file-changes__stats {
   display: flex;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
@@ -606,14 +695,40 @@
   color: var(--status-danger);
 }
 
-.file-changes__review {
-  margin-left: auto;
-}
-
 .file-changes__list {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-hair);
+  padding: var(--sp-1) 0;
+}
+
+/* Keep a turn's change list to three rows by default; the rest is a
+   deliberate reveal rather than a long wall of files under every reply. */
+.file-changes__more {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  align-self: flex-start;
+  min-height: 28px;
+  margin: 0 var(--sp-3) var(--sp-2);
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: var(--text-sm);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.file-changes__more:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.file-changes__more-caret {
+  flex: 0 0 auto;
+  transition: transform var(--dur-base) var(--ease);
+}
+
+.file-changes__more-caret[data-open='true'] {
+  transform: rotate(180deg);
 }
 
 /* One file: a row that expands into its diff. */
@@ -631,58 +746,191 @@
 .file-change__head {
   display: flex;
   align-items: center;
-  gap: var(--sp-hair);
-  min-height: 32px;
-  padding: 0 var(--sp-2);
+  gap: var(--sp-2);
+  /* The row frame, borders included, is 32px: the compact tool-row range is
+     32–40px and this list has many rows. */
+  min-height: 30px;
+  padding: 0 var(--sp-2) 0 var(--sp-1);
 }
 
 .file-change__main {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 26px;
-  padding: var(--sp-1) 0;
+  min-height: 0;
+  padding: 0;
   border: 0;
   background: none;
   text-align: left;
   color: inherit;
   font: inherit;
   font-size: var(--text-xs);
+  line-height: 1.5;
   cursor: pointer;
   border-radius: var(--r-sm);
 }
 
-.file-change__icon {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
-  color: var(--text-secondary);
-}
-
-.file-change[data-kind='write'] .file-change__icon {
-  color: var(--status-success);
-}
-
+/* The name is the whole line. The path that used to trail it was trimmed in the
+   middle at this width, so it lives in the body now, where it can be read
+   entire and wrap. */
 .file-change__name {
-  flex: 0 0 auto;
-  font-weight: 500;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-}
-
-.file-change__path {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  font-weight: 500;
+  color: var(--text);
   font-family: var(--font-mono);
-  font-size: var(--text-2xs);
+  font-size: var(--text-sm);
+}
+
+.file-change__preview {
+  position: fixed;
+  z-index: var(--z-popover);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--surface-canvas);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  pointer-events: auto;
+  /* A fresh mount used to fade the previous file's box out under the next one. */
+  animation: none;
+}
+
+.file-change__preview-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-canvas);
+}
+
+.file-change__preview-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.file-change__preview-code {
+  margin: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Eight lines. The rest of a long diff scrolls inside this, it does not
+     stretch the card. */
+  max-height: calc(22px * 8);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 22px;
+  color: var(--text);
+  background: var(--surface-canvas);
+}
+
+.file-change__preview-pages {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  padding: var(--sp-1) var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.file-change__preview-line {
+  display: grid;
+  grid-template-columns: 46px 3px minmax(0, 1fr);
+  min-width: max-content;
+  height: 22px;
+  align-items: stretch;
+}
+
+.file-change__preview-line[data-kind='add'] {
+  background: var(--diff-add-bg);
+}
+
+.file-change__preview-line[data-kind='del'] {
+  background: var(--diff-del-bg);
+}
+
+.file-change__preview-num {
+  padding: 0 8px 0 10px;
+  text-align: right;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+.file-change__preview-line[data-kind='add'] .file-change__preview-mark {
+  background: var(--diff-add-text);
+}
+
+.file-change__preview-line[data-kind='del'] .file-change__preview-mark {
+  background: var(--diff-del-text);
+}
+
+.file-change__preview-line[data-kind='add'] .file-change__preview-num {
+  color: var(--diff-add-text);
+}
+
+.file-change__preview-line[data-kind='del'] .file-change__preview-num {
+  color: var(--diff-del-text);
+}
+
+.file-change__preview-text {
+  padding: 0 16px 0 10px;
+  white-space: pre;
+}
+
+.file-change__preview-line[data-kind='gap'] .file-change__preview-text {
+  color: var(--text-tertiary);
+}
+
+.file-change__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-hair);
+  flex: 0 0 auto;
+}
+
+.file-change__copy,
+.file-change__caret {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
   color: var(--text-faint);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.file-change__copy:hover,
+.file-change__caret:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.file-change__caret > svg {
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.file-change__caret > svg[data-open='true'] {
+  transform: rotate(180deg);
 }
 
 .file-change__edits,
@@ -709,21 +957,47 @@
   color: var(--text-faint);
 }
 
-.file-change__open {
+/* The expanded card: where the file is and what the change cost, then the
+   change itself under a rule — the same two-step the changes panel uses. */
+.file-change__body {
+  min-width: 0;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-sunken);
+}
+
+.file-change__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.file-change__file {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.6;
+  color: var(--text-faint);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.file-change__side {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
   flex: 0 0 auto;
+}
+
+.file-change__open {
   padding: 0 var(--sp-2);
   height: 22px;
   border-radius: var(--r-sm);
   font-size: var(--text-2xs);
   color: var(--text-muted);
-  opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
-}
-
-.file-change:hover .file-change__open,
-.file-change:focus-within .file-change__open {
-  opacity: 1;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .file-change__open:hover {
@@ -731,11 +1005,15 @@
   color: var(--accent);
 }
 
-.file-change__body {
+.file-change__content {
+  min-width: 0;
   max-height: 420px;
   overflow: auto;
-  border-top: 1px solid var(--border-subtle);
-  background: var(--surface-sunken);
+}
+
+.file-change__content .snippet,
+.file-change__content .tool__pre {
+  font-size: var(--text-2xs);
 }
 
 /* ------------------------------------------------------------------ *

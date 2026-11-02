@@ -1,4 +1,4 @@
-import { isValidElement, memo, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useContext, isValidElement, memo, useEffect, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -236,7 +236,10 @@ const markdownComponents: Components = {
   }
 }
 
+const StreamingContext = createContext<boolean>(false)
+
 const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
+  const isStreaming = useContext(StreamingContext)
   const [rendered, setRendered] = useState<{
     code: string
     language: string
@@ -259,6 +262,26 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
 
   useEffect(() => {
     let cancelled = false
+    let timer: number | undefined
+
+    if (isStreaming) {
+      // While actively streaming, debounce Shiki highlighting by 250ms to prevent
+      // expensive regex tokenization on every single delta animation frame.
+      timer = window.setTimeout(() => {
+        highlightCode(code, language ?? 'text', isDark)
+          .then((value) => {
+            if (!cancelled) setRendered({ code, language: language ?? 'text', isDark, html: value })
+          })
+          .catch(() => {
+            if (!cancelled) setRendered(null)
+          })
+      }, 250)
+      return () => {
+        cancelled = true
+        if (timer) window.clearTimeout(timer)
+      }
+    }
+
     highlightCode(code, language ?? 'text', isDark)
       .then((value) => {
         if (!cancelled) setRendered({ code, language: language ?? 'text', isDark, html: value })
@@ -269,7 +292,7 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
     return () => {
       cancelled = true
     }
-  }, [code, language, isDark])
+  }, [code, language, isDark, isStreaming])
   const html =
     rendered?.code === code &&
     rendered.language === (language ?? 'text') &&
@@ -339,15 +362,22 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
   )
 })
 
-export const Markdown = memo(function Markdown({ children }: { children: string }) {
+export interface MarkdownProps {
+  children: string
+  streaming?: boolean
+}
+
+export const Markdown = memo(function Markdown({ children, streaming = false }: MarkdownProps) {
   return (
-    <div className="md">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={markdownComponents}
-      >
-        {children}
-      </ReactMarkdown>
-    </div>
+    <StreamingContext.Provider value={streaming}>
+      <div className="md">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={markdownComponents}
+        >
+          {children}
+        </ReactMarkdown>
+      </div>
+    </StreamingContext.Provider>
   )
 })

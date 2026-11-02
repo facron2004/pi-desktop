@@ -93,6 +93,128 @@ body.terminal-resizing {
  * Header
  * ------------------------------------------------------------------ */
 
+/* The tab strip that replaced the old header: one tab per shell, a new-tab
+   button, and the terminal actions on the right. The bar stays quiet so the
+   screen below is the only thing that draws attention. */
+.terminal__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 36px;
+  padding: 0 var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-canvas);
+}
+
+.terminal__tabstrip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.terminal__tabstrip::-webkit-scrollbar {
+  display: none;
+}
+
+.terminal__tab {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.terminal__tab:hover {
+  background: var(--bg-hover);
+}
+
+.terminal__tab[data-active] {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.terminal__tab-main {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 100%;
+  min-width: 0;
+}
+
+.terminal__tab-icon {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.terminal__tab[data-active] .terminal__tab-icon {
+  color: var(--accent);
+}
+
+.terminal__tab-label {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal__tab-close {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 2px;
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+}
+
+.terminal__tab-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.terminal__new {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+}
+
+.terminal__new:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.terminal__pane {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.terminal__pane[data-active] {
+  display: flex;
+}
+
+.terminal__pane-body {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .terminal__head {
   flex: 0 0 auto;
   display: flex;
@@ -126,9 +248,8 @@ body.terminal-resizing {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 180px;
-  margin-left: var(--sp-hair);
-  padding-left: var(--sp-3);
-  border-left: 1px solid var(--border-soft);
+  margin-left: 0;
+  padding-left: 0;
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   color: var(--text-faint);
@@ -240,6 +361,16 @@ transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast)
   flex: 0 0 auto;
 }
 
+/* Copy and clear sit on the drawer's edge, where `--text-muted` is too quiet;
+   lift them one step without dressing them up as primary actions. */
+.terminal__actions .icon-btn {
+  color: var(--text-secondary);
+}
+
+.terminal__actions .icon-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+
 .terminal__actions .ghost-btn {
   height: var(--ctl-sm);
   color: var(--text-muted);
@@ -252,17 +383,22 @@ transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast)
 
 .terminal__actions .icon-btn:disabled,
 .terminal__actions .ghost-btn:disabled {
-  opacity: 0.35;
+  /* Still quieter than an enabled action, but the copy/clear glyphs stay
+     readable in an empty drawer instead of fading into the header. */
+  opacity: 0.5;
   cursor: default;
 }
 
 .terminal__actions .icon-btn:disabled:hover {
   background: none;
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 /* ------------------------------------------------------------------ *
- * Output log
+ * The screen
+ *
+ * xterm owns the whole body: it is the shell's viewport, so it has to fill
+ * the column and take the keyboard. The drawer supplies the frame around it.
  * ------------------------------------------------------------------ */
 
 .terminal__body {
@@ -271,39 +407,49 @@ transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast)
   display: flex;
   flex-direction: column;
   min-height: 0;
+  background: var(--surface-sunken);
 }
 
-.terminal__log {
+.terminal__xterm {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--sp-2) var(--sp-5);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: 1.6;
-  scrollbar-gutter: stable;
+  overflow: hidden;
+  padding: var(--sp-2) 0 var(--sp-2) var(--sp-4);
 }
 
-.terminal__empty {
-  padding: var(--sp-5) var(--sp-hair);
-  font-family: var(--font-ui);
-  font-size: var(--text-xs);
-  color: var(--text-faint);
+.terminal__xterm .xterm {
+  height: 100%;
+  padding: 0;
 }
 
-.terminal__notice {
+.terminal__xterm .xterm-viewport {
+  background: transparent !important;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.terminal__xterm .xterm-screen canvas {
+  image-rendering: auto;
+}
+
+/* A failed or exited shell sits over the last frame of the screen rather
+   than replacing it: the scrollback stays readable behind the message. */
+.terminal__overlay {
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  max-width: 640px;
-  margin: var(--sp-4) 0;
-  padding: var(--sp-4) var(--sp-4);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--bg-elevated);
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6);
+  background: color-mix(in srgb, var(--surface-sunken) 92%, transparent);
+  backdrop-filter: blur(2px);
   font-family: var(--font-ui);
   font-size: var(--text-xs);
+}
+
+.terminal__overlay .btn {
+  margin-top: var(--sp-2);
 }
 
 .terminal__notice-title {
@@ -316,258 +462,19 @@ transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast)
   word-break: break-word;
 }
 
-/* ------------------------------------------------------------------ *
- * One command
- * ------------------------------------------------------------------ */
-
-.terminal__block {
-  padding: var(--sp-3) 0;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.terminal__block:last-child {
-  border-bottom: none;
-}
-
-.terminal__command {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-3);
-}
-
-.terminal__prompt {
+.terminal__shell {
   flex: 0 0 auto;
-  color: var(--green);
+  color: var(--text-faint);
   font-family: var(--font-mono);
-  font-weight: 600;
-  user-select: none;
-}
-
-.terminal__cmd {
-  flex: 1 1 auto;
-  min-width: 0;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.terminal__meta {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-3);
-  flex: 0 0 auto;
-  padding-top: 1px;
-  font-family: var(--font-ui);
   font-size: var(--text-2xs);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-faint);
-  white-space: nowrap;
-}
-
-.terminal__meta-item[data-kind='ok'] {
-  color: var(--green);
-}
-
-.terminal__meta-item[data-kind='bad'] {
-  color: var(--red);
-}
-
-.terminal__meta-item[data-kind='warn'] {
-  color: var(--violet);
-}
-
-.terminal__meta-item[data-kind='running'] {
-  color: var(--text-faint);
-}
-
-.terminal__badge {
-  padding: 0 var(--sp-2);
-  border-radius: var(--r-xs);
-  background: var(--bg-active);
-  color: var(--text-muted);
-}
-
-.terminal__output {
-  margin: var(--sp-2) 0 0 var(--sp-6);
-  padding: 0;
-  border-left: 0;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-muted);
-}
-
-.terminal__output--muted {
-  color: var(--text-faint);
-  font-style: italic;
 }
 
 /* ------------------------------------------------------------------ *
- * ANSI colour runs
+ * Old command log styles
  *
- * The parser emits one span per run. The colours come from the same tokens
- * as the rest of the app; the hues the palette does not carry (yellow,
- * magenta, cyan) are mixed from the tokens rather than hard-coded, so both
- * themes stay consistent.
+ * The drawer used to paint Pi bash executions as cards. It is now a real
+ * PTY screen, so those rules were removed with the log.
  * ------------------------------------------------------------------ */
-
-.terminal__seg {
-  color: inherit;
-}
-
-.terminal__seg--bold {
-  font-weight: 600;
-}
-
-.terminal__seg--dim {
-  opacity: 0.72;
-}
-
-.terminal__seg--tone-black {
-  color: var(--text-faint);
-}
-
-.terminal__seg--tone-red {
-  color: var(--red);
-}
-
-.terminal__seg--tone-green {
-  color: var(--green);
-}
-
-.terminal__seg--tone-yellow {
-  color: color-mix(in srgb, var(--green) 52%, var(--red));
-}
-
-.terminal__seg--tone-blue {
-  color: var(--blue);
-}
-
-.terminal__seg--tone-magenta {
-  color: var(--violet);
-}
-
-.terminal__seg--tone-cyan {
-  color: color-mix(in srgb, var(--green) 48%, var(--blue));
-}
-
-.terminal__seg--tone-white {
-  color: var(--text);
-}
-
-.terminal__seg--tone-dim {
-  color: var(--text-faint);
-}
-
-.terminal__seg--tone-bright-black {
-  color: var(--text-muted);
-}
-
-.terminal__seg--tone-bright-red {
-  color: color-mix(in srgb, var(--red) 68%, var(--text));
-}
-
-.terminal__seg--tone-bright-green {
-  color: color-mix(in srgb, var(--green) 68%, var(--text));
-}
-
-.terminal__seg--tone-bright-yellow {
-  color: color-mix(in srgb, color-mix(in srgb, var(--green) 52%, var(--red)) 68%, var(--text));
-}
-
-.terminal__seg--tone-bright-blue {
-  color: color-mix(in srgb, var(--blue) 68%, var(--text));
-}
-
-.terminal__seg--tone-bright-magenta {
-  color: color-mix(in srgb, var(--violet) 68%, var(--text));
-}
-
-.terminal__seg--tone-bright-cyan {
-  color: color-mix(in srgb, color-mix(in srgb, var(--green) 48%, var(--blue)) 68%, var(--text));
-}
-
-.terminal__seg--tone-bright-white {
-  color: var(--accent);
-}
-
-/* ------------------------------------------------------------------ *
- * Jump back to the newest output
- * ------------------------------------------------------------------ */
-
-.terminal__jump {
-  position: absolute;
-  right: 18px;
-  bottom: 10px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-full);
-  background: var(--bg-elevated);
-  color: var(--text-muted);
-  font-size: var(--text-2xs);
-  box-shadow: var(--shadow-sm);
-animation: terminal-rise var(--dur-fast) var(--ease);
-transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
-}
-
-.terminal__jump:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .terminal__jump {
-    animation: none;
-  }
-}
-
-/* ------------------------------------------------------------------ *
- * Input row
- * ------------------------------------------------------------------ */
-
-.terminal__input-row {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-5);
-  border-top: 1px solid var(--border-soft);
-  background: var(--surface-canvas);
-}
-
-.terminal__input {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: var(--sp-1) 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--text);
-}
-
-.terminal__input::placeholder {
-  color: var(--text-faint);
-}
-
-.terminal__input:disabled {
-  cursor: default;
-  color: var(--text-faint);
-}
-
-.terminal__hint {
-  flex: 0 0 auto;
-  font-size: var(--text-2xs);
-  color: var(--text-faint);
-  user-select: none;
-}
 
 /* In the side panel there is no title line to repeat: the panel already says
    "Terminal", so the head keeps only what acts on the output. */
@@ -613,26 +520,13 @@ transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--
     margin-left: 0;
   }
 
-  .terminal__hint {
+  .terminal__shell {
     display: none;
-  }
-
-  .terminal__command {
-    flex-wrap: wrap;
-  }
-
-  .terminal__cmd {
-    flex: 1 1 calc(100% - 32px);
-  }
-
-  .terminal__meta {
-    flex: 1 0 100%;
-    padding-left: var(--sp-6);
   }
 }
 
 @media (max-width: 760px) {
-  .terminal__hint {
+  .terminal__shell {
     display: none;
   }
 }

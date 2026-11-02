@@ -19,6 +19,8 @@ import { buildRpcArgs } from './rpc-args'
 import { canAutoApprove, parseToolApproval, permissionExtension } from './permissions'
 import { ensurePatientRetrySettings, rememberDefaultModel, rememberDefaultThinkingLevel } from './retry-policy'
 import { taskModesExtension } from './task-modes'
+import { subagentExtension } from './subagent'
+import { computerUseExtension } from './computer-use'
 import { providerControlsExtension } from './provider-controls'
 import {
   allowlistedEnv,
@@ -115,14 +117,18 @@ export class PiRuntime extends EventEmitter {
     const permissionFile = path.join(userData, `pi-desktop-permissions-${scratchId}.mjs`)
     const modeFile = path.join(userData, `pi-desktop-task-modes-${scratchId}.mjs`)
     const providerFile = path.join(userData, `pi-desktop-providers-${scratchId}.mjs`)
+    const subagentFile = path.join(userData, `pi-desktop-subagent-${scratchId}.mjs`)
+    const computerFile = path.join(userData, `pi-desktop-computer-${scratchId}.mjs`)
     const permissionTitle = `pi-desktop-permissions-${scratchId}`
     const files: string[] = []
     try {
       mkdirSync(userData, { recursive: true })
-      files.push(permissionFile, modeFile, providerFile)
+      files.push(permissionFile, modeFile, providerFile, subagentFile, computerFile)
       writeFileSync(permissionFile, permissionExtension(permissionTitle), 'utf8')
       writeFileSync(modeFile, taskModesExtension(), 'utf8')
       writeFileSync(providerFile, providerControlsExtension(), 'utf8')
+      writeFileSync(subagentFile, subagentExtension(), 'utf8')
+      writeFileSync(computerFile, computerUseExtension(), 'utf8')
       if (options.customInstructions?.trim()) {
         files.push(customInstructionsFile)
         writeFileSync(customInstructionsFile, options.customInstructions.trim(), 'utf8')
@@ -143,7 +149,9 @@ export class PiRuntime extends EventEmitter {
         options.customInstructions?.trim() ? customInstructionsFile : undefined,
         permissionFile,
         modeFile,
-        providerFile
+        providerFile,
+        subagentFile,
+        computerFile
       )
     ]
 
@@ -519,7 +527,8 @@ const LEGACY_RUNTIME_FILES = [
   'pi-desktop-instructions.md',
   'pi-desktop-permissions.mjs',
   'pi-desktop-task-modes.mjs',
-  'pi-desktop-providers.mjs'
+  'pi-desktop-providers.mjs',
+  'pi-desktop-subagent.mjs'
 ]
 
 function describeExit(stderr: string[], code: number | null, signal: string | null): string {

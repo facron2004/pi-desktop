@@ -1,13 +1,12 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ChevronDown, ChevronRight, ChevronUp, Info, List, Search, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, List, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
 import type { Turn } from '../lib/turns'
 import { buildTurns } from '../lib/turns'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
-import { diffStats } from '../lib/diff-fold'
-import { formatClock, formatCost, formatTokens } from '../lib/format'
+import { formatClock, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
 import { pairForkTargets } from '../lib/thread'
 import { describeTool } from '../lib/tools'
@@ -24,6 +23,7 @@ import { RunStatusRow } from './RunStatusRow'
 import { AssistantMessage } from './conversation/AssistantMessage'
 import { RunSummary } from './conversation/RunSummary'
 import { ErrorNotice, ThreadErrorBanner } from './conversation/ErrorNotice'
+import { Popover } from './Popover'
 import { activityOf } from '../lib/activity'
 import { useT } from '../lib/i18n'
 import { isRateLimitError } from '../lib/provider-error'
@@ -137,6 +137,7 @@ export function Thread() {
     pendingRestoreRef.current = sessionKey
   }
   const [atBottom, setAtBottom] = useState(true)
+  const [atTop, setAtTop] = useState(true)
   const [expandedHistorySession, setExpandedHistorySession] = useState<string | null>(() =>
     readHistoryExpanded(sessionKey) ? sessionKey : null
   )
@@ -243,11 +244,13 @@ export function Thread() {
         const nearBottom = node.scrollHeight - node.clientHeight < FOLLOW_RANGE
         stickRef.current = nearBottom
         setAtBottom(nearBottom)
+        setAtTop(true)
         return
       }
       const restored = applyScroll(node, entry, FOLLOW_RANGE)
       stickRef.current = restored.stick
       setAtBottom(restored.atBottom)
+      setAtTop(restored.top < FOLLOW_RANGE)
       node.scrollTo({ top: restored.top, behavior: 'instant' })
       return
     }
@@ -267,6 +270,7 @@ export function Thread() {
       const distance = node.scrollHeight - node.scrollTop - node.clientHeight
       stickRef.current = distance < FOLLOW_RANGE
       setAtBottom(stickRef.current)
+      setAtTop(node.scrollTop < FOLLOW_RANGE)
       rememberScrollMemory(sessionKey, node, FOLLOW_RANGE)
     }
     node.addEventListener('scroll', onScroll, { passive: true })
@@ -436,8 +440,19 @@ export function Thread() {
     if (!node) return
     stickRef.current = true
     setAtBottom(true)
+    setAtTop(node.scrollHeight - node.clientHeight < FOLLOW_RANGE)
     node.scrollTo({ top: node.scrollHeight, behavior: scrollBehavior() })
     rememberScrollPosition(sessionKey, { top: node.scrollHeight, atBottom: true })
+  }
+
+  const scrollToTop = () => {
+    const node = scrollRef.current
+    if (!node) return
+    stickRef.current = false
+    setAtTop(true)
+    setAtBottom(node.scrollHeight - node.clientHeight < FOLLOW_RANGE)
+    node.scrollTo({ top: 0, behavior: scrollBehavior() })
+    rememberScrollPosition(sessionKey, { top: 0, atBottom: false })
   }
 
   // A conversation-search hit from the sidebar asks for a message, and the
@@ -550,6 +565,7 @@ export function Thread() {
   }, [pendingJump, query, searchOpen, turns, firstVisibleTurn])
 
   return (
+    <div className="thread-frame">
     <div className="thread" ref={scrollRef}>
       {searchOpen ? (
         <div className="thread-search">
@@ -703,16 +719,31 @@ export function Thread() {
         {error ? <ThreadErrorBanner message={error} onDismiss={dismissError} /> : null}
       </div>
 
-      {!atBottom ? (
-        <div className="scroll-bottom-wrap">
-          <button
-            className="scroll-bottom"
-            onClick={scrollToBottom}
-            title={t('Scroll to the latest')}
-            aria-label={t('Scroll to the latest')}
-          >
-            <ArrowDown size={15} />
-          </button>
+    </div>
+      {!atTop || !atBottom ? (
+        <div className="scroll-jumps">
+          {!atTop ? (
+            <button
+              type="button"
+              className="scroll-jump"
+              onClick={scrollToTop}
+              title={t('Scroll to the top')}
+              aria-label={t('Scroll to the top')}
+            >
+              <ArrowUp size={15} />
+            </button>
+          ) : null}
+          {!atBottom ? (
+            <button
+              type="button"
+              className="scroll-jump"
+              onClick={scrollToBottom}
+              title={t('Scroll to the latest')}
+              aria-label={t('Scroll to the latest')}
+            >
+              <ArrowDown size={15} />
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -752,6 +783,9 @@ function equalThreadTurnViewProps(
   previous: ThreadTurnViewProps,
   next: ThreadTurnViewProps
 ): boolean {
+  if (previous.isLastTurn !== next.isLastTurn) return false
+  if (next.isLastTurn && previous.run !== next.run) return false
+
   return (
     sameTurnContent(previous.turn, next.turn) &&
     previous.models === next.models &&
@@ -760,9 +794,7 @@ function equalThreadTurnViewProps(
     previous.userCopied === next.userCopied &&
     previous.forkEntryId === next.forkEntryId &&
     previous.onFork === next.onFork &&
-    previous.forking === next.forking &&
-    previous.run === next.run &&
-    previous.isLastTurn === next.isLastTurn
+    previous.forking === next.forking
   )
 }
 
@@ -800,21 +832,6 @@ const ThreadTurnView = memo(function ThreadTurnView({
   // A finished turn, including every earlier stretch of a long run, folds.
   const liveTail = isLastTurn && !run.settled
   const turnChanges = useMemo(() => collectChanges(turn.tools), [turn.tools])
-  const turnDiffTotals = useMemo(() => {
-    let added = 0
-    let removed = 0
-    for (const change of turnChanges) {
-      for (const block of change.diffs) {
-        const stats = diffStats(block)
-        added += stats.added
-        removed += stats.removed
-      }
-      if (change.kind === 'write' && change.diffs.length === 0 && change.content) {
-        added += change.content.split('\n').length
-      }
-    }
-    return { added, removed }
-  }, [turnChanges])
 
   return (
     <section className="turn" data-turn={turn.id}>
@@ -864,8 +881,6 @@ const ThreadTurnView = memo(function ThreadTurnView({
             {turnChanges.length > 0 ? (
               <FileChangeSummary
                 changes={turnChanges}
-                added={turnDiffTotals.added}
-                removed={turnDiffTotals.removed}
                 onReview={() =>
                   window.dispatchEvent(
                     new CustomEvent<InspectorRequest>('pi:open-inspector', {
@@ -890,23 +905,65 @@ const ThreadTurnView = memo(function ThreadTurnView({
               />
             ) : null}
 
-            {replySettled && (lastAssistant.model || lastAssistant.usage) ? (
+            {replySettled &&
+            lastAssistant &&
+            lastAssistant.stopReason !== 'error' &&
+            (lastAssistant.model || lastAssistant.usage) ? (
               <div className="assistant__response-actions">
-                <details className="assistant__details">
-                  <summary title={t('Response details')} aria-label={t('Response details')}>
-                    <Info size={14} />
-                  </summary>
-                  <div className="assistant__footer">
-                    {lastAssistant.model ? <span>{modelName(models, lastAssistant.model)}</span> : null}
-                    {lastAssistant.usage ? (
-                      <>
-                        <span>{formatTokens(lastAssistant.usage.totalTokens)} {t('tokens')}</span>
-                        {lastAssistant.usage.cost ? <span>{formatCost(lastAssistant.usage.cost.total)}</span> : null}
-                      </>
-                    ) : null}
-                    <span>{formatClock(lastAssistant.timestamp)}</span>
-                  </div>
-                </details>
+                <div className="assistant__footer">
+                  {lastAssistant.model ? <span>{modelName(models, lastAssistant.model)}</span> : null}
+                  {lastAssistant.usage ? (
+                    <Popover
+                      placement="top"
+                      align="left"
+                      width={220}
+                      className="usage-popover"
+                      renderTrigger={({ toggle }) => (
+                        <button
+                          type="button"
+                          className="assistant__usage"
+                          onClick={toggle}
+                          title={t('Usage details')}
+                          aria-label={t('Usage details')}
+                        >
+                          {formatTokens(lastAssistant.usage?.totalTokens)} {t('tokens')}
+                        </button>
+                      )}
+                    >
+                      {() => {
+                        const usage = lastAssistant.usage
+                        const listed = models.find(
+                          (item) =>
+                            item.id === lastAssistant.model ||
+                            `${item.provider}/${item.id}` === lastAssistant.model
+                        )
+                        const provider =
+                          listed?.provider ?? lastAssistant.model?.split('/')[0] ?? '—'
+                        return (
+                          <div className="usage-popover__body">
+                            <div className="ctx__row">
+                              <span>{t('Provider')}</span>
+                              <span>{provider}</span>
+                            </div>
+                            <div className="ctx__row">
+                              <span>{t('Cache hit')}</span>
+                              <span>{formatTokens(usage?.cacheRead)}</span>
+                            </div>
+                            <div className="ctx__row">
+                              <span>{t('Input')}</span>
+                              <span>{formatTokens(usage?.input)}</span>
+                            </div>
+                            <div className="ctx__row">
+                              <span>{t('Output')}</span>
+                              <span>{formatTokens(usage?.output)}</span>
+                            </div>
+                          </div>
+                        )
+                      }}
+                    </Popover>
+                  ) : null}
+                  <span>{formatClock(lastAssistant.timestamp)}</span>
+                </div>
               </div>
             ) : null}
           </div>

@@ -13,12 +13,16 @@ export function buildRpcArgs(
   customInstructionsFile?: string,
   permissionFile?: string,
   modeFile?: string,
-  providerFile?: string
+  providerFile?: string,
+  subagentFile?: string,
+  computerFile?: string
 ): string[] {
   const args = ['--mode', 'rpc']
   if (providerFile) args.push('--extension', providerFile)
   if (modeFile) args.push('--extension', modeFile)
   if (permissionFile) args.push('--extension', permissionFile)
+  if (subagentFile) args.push('--extension', subagentFile)
+  if (computerFile) args.push('--extension', computerFile)
   if (options.sessionFile) {
     args.push('--session', options.sessionFile)
   }

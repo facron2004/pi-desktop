@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -30,6 +30,8 @@ const MAX_UNTRACKED_BYTES = 512 * 1024
 const MAX_UNTRACKED_STATS = 60
 /** How much of either side of a review diff is sent to the renderer. */
 const MAX_DIFF_BYTES = 512 * 1024
+/** Files larger than this are treated as binary to avoid buffering huge files into memory. */
+const MAX_DIFF_FILE_BYTES = 2 * 1024 * 1024
 /** How much of a patch is sent to the renderer. */
 const MAX_PATCH_BYTES = 1024 * 1024
 
@@ -338,13 +340,18 @@ export async function readFileDiff(root: string, filePath: string): Promise<GitF
   let newText = ''
   let newTruncated = false
   try {
-    const buffer = await readFile(target)
-    if (looksBinary(buffer)) {
+    const stats = await stat(target)
+    if (stats.size > MAX_DIFF_FILE_BYTES) {
       binary = true
     } else {
-      const capped = capText(buffer.toString('utf8'))
-      newText = capped.text
-      newTruncated = capped.truncated
+      const buffer = await readFile(target)
+      if (looksBinary(buffer)) {
+        binary = true
+      } else {
+        const capped = capText(buffer.toString('utf8'))
+        newText = capped.text
+        newTruncated = capped.truncated
+      }
     }
   } catch {
     /* a deleted or unreadable file only has the old side */
@@ -404,6 +411,11 @@ export async function readPatch(root: string, filePath?: string): Promise<GitPat
     if (!target) continue
     const clean = file.path.replace(/\\/g, '/')
     try {
+      const stats = await stat(target)
+      if (stats.size > MAX_PATCH_BYTES) {
+        text += `diff --git a/${clean} b/${clean}\nnew file mode 100644\nBinary files /dev/null and b/${clean} differ\n`
+        continue
+      }
       const buffer = await readFile(target)
       if (looksBinary(buffer)) {
         text += `diff --git a/${clean} b/${clean}\nnew file mode 100644\nBinary files /dev/null and b/${clean} differ\n`
@@ -507,7 +519,7 @@ export async function readCommitDetail(
 
   const [numstat, nameStatus, shown] = await Promise.all([
     git(root, ['show', '--numstat', '--format=', '-M', '-z', hash], COMMIT_TIMEOUT_MS),
-    git(root, ['show', '--name-status', '--format=', '-M', hash], COMMIT_TIMEOUT_MS),
+    git(root, ['-c', 'core.quotepath=false', 'show', '--name-status', '--format=', '-M', hash], COMMIT_TIMEOUT_MS),
     git(root, ['show', '--no-color', '--format=', '-M', hash], COMMIT_TIMEOUT_MS)
   ])
 
@@ -553,7 +565,7 @@ async function commitSides(
 
   // A pathspec would make git call the rename an addition (the old path is not
   // in the pathspec), so the whole commit's name-status is read instead.
-  const nameStatus = await git(root, ['show', '--name-status', '--format=', '-M', hash])
+  const nameStatus = await git(root, ['-c', 'core.quotepath=false', 'show', '--name-status', '--format=', '-M', hash])
   const entry = parseNameStatus(nameStatus.stdout).get(filePath)
   const oldPath = (entry?.oldPath ?? filePath).replace(/\\/g, '/')
 
@@ -574,9 +586,15 @@ async function commitSides(
     const target = insideWorkTree(root, filePath)
     if (target) {
       try {
-        const buffer = await readFile(target)
-        newRaw = buffer.toString('utf8')
-        if (looksBinary(buffer)) oldRaw = `${oldRaw}\u0000`
+        const stats = await stat(target)
+        if (stats.size > MAX_DIFF_FILE_BYTES) {
+          newRaw = '\u0000'
+          oldRaw = `${oldRaw}\u0000`
+        } else {
+          const buffer = await readFile(target)
+          newRaw = buffer.toString('utf8')
+          if (looksBinary(buffer)) oldRaw = `${oldRaw}\u0000`
+        }
       } catch {
         /* the file is gone from the working tree: the diff is a deletion */
       }
@@ -665,7 +683,7 @@ export async function applyPatch(
 
 /** Local branches and worktrees of the open repository. */
 export async function readBranches(root: string): Promise<GitBranches> {
-  const empty: GitBranches = { detached: false, branches: [], worktrees: [] }
+  const empty: GitBranches = { isRepo: false, detached: false, branches: [], worktrees: [] }
   if (!root) return empty
 
   const [topLevelOut, currentOut, refs, worktreesOut] = await Promise.all([
@@ -680,7 +698,10 @@ export async function readBranches(root: string): Promise<GitBranches> {
     ]),
     git(root, ['worktree', 'list', '--porcelain'])
   ])
-  const failed = [topLevelOut, currentOut, refs, worktreesOut].find((result) => result.code !== 0)
+  if (topLevelOut.code !== 0) {
+    return empty
+  }
+  const failed = [currentOut, refs, worktreesOut].find((result) => result.code !== 0)
   if (failed) {
     throw new Error(cleanError(failed.stderr) || 'Could not read branches and worktrees.')
   }
@@ -748,7 +769,7 @@ export async function readBranches(root: string): Promise<GitBranches> {
       })
   )
 
-  return { current, detached: !current, branches, worktrees }
+  return { isRepo: true, current, detached: !current, branches, worktrees }
 }
 
 /** Remove a registered worktree, refusing the one the app is looking at. */
@@ -981,10 +1002,15 @@ async function countUntracked(root: string, files: GitFileStatus[]): Promise<voi
     pending.map(async (file) => {
       try {
         const absolute = path.join(root, file.path)
+        const stats = await stat(absolute)
+        if (stats.size > MAX_UNTRACKED_BYTES) {
+          file.added = 1
+          file.removed = 0
+          return
+        }
         const content = await readFile(absolute, { encoding: 'utf8', flag: 'r' })
-        const limited = content.length > MAX_UNTRACKED_BYTES ? content.slice(0, MAX_UNTRACKED_BYTES) : content
-        const lines = limited.split('\n')
-        file.added = Math.max(0, lines.length - (limited.endsWith('\n') ? 1 : 0))
+        const lines = content.split('\n')
+        file.added = Math.max(0, lines.length - (content.endsWith('\n') ? 1 : 0))
         file.removed = 0
       } catch {
         /* a binary or a file that vanished is simply shown without a count */

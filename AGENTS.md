@@ -42,6 +42,9 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
 | `src/preload/` | `contextBridge` surface — the only renderer↔main channel |
 | `src/renderer/` | React UI |
 | `src/renderer/src/components/Launcher.tsx` | the palette over the app (`Ctrl+Shift+P`) |
+| `src/renderer/src/components/Sidebar.tsx` | the workspace panel: projects and conversations |
+| `src/renderer/src/lib/session-indicator.ts` | the one mark a conversation row carries |
+| `src/renderer/src/lib/project-icons.ts` | the emoji and tint a project can wear |
 | `src/shared/types.ts` | Protocol and domain types shared by every layer |
 | `scripts/rpc-smoke.mjs` | Spawns the bundled CLI and exercises the RPC commands |
 | `scripts/rpc-ui-smoke.mjs` | Round-trips the extension UI dialogs over the wire |
@@ -193,6 +196,46 @@ The sidebar running mark reads `threads[file].isStreaming`. `stop()` aborts the
 conversation on screen, not whichever one happens to be running in the
 background.
 
+### What a row says about itself
+
+A conversation row carries **one** mark, and the mark is derived, never
+stored twice: `sessionIndicator()` in `src/renderer/src/lib/session-indicator.ts`
+turns the thread into `needs-input` / `error` / `unread` / `running` / `idle`,
+and the row writes it into `data-indicator`. The precedence is the point: a
+waiting dialog outranks everything, a failure outranks an unread answer.
+
+`unread` and `error` live in `thread.notice` and mean the same thing — *there
+is something in this conversation the reader has not looked at*. A run that
+settles while another conversation is on screen leaves the mark behind;
+opening the conversation clears it (`selectSession` / `openWorkspace`), and a
+new run clears it too. A conversation the reader is watching leaves no mark:
+it speaks for itself. Do not add a second flag for "the reader has not looked
+at this" — one mark, one place.
+
+A project row wears an **icon** and a **tint**. The emoji and the tint live
+in the workspace (`Workspace.icon` / `Workspace.iconColor`), and the picker
+hangs off the project icon itself, which is a control of its own — clicking
+the icon opens the picker, clicking the rest of the row still only folds the
+list. The icon list and its keywords come from MCode's own picker
+(`src/renderer/src/lib/project-icon-data.ts`, generated), so the same words
+find the same emoji in both apps. The tint is a token, never a literal: the
+component writes `data-icon-color` and the stylesheet picks the hue.
+
+### The row never moves
+
+The actions of a project row live in a **slot that is always there**
+(`--sidebar-action-slot`, 60px). The count of the conversations and the
+buttons take turns in that slot, so the title keeps the same width whether
+the row is hovered or not. Do not "solve" an overlap by changing the padding
+of the row on hover — that re-flows the title. Measure it instead:
+`output/audit/hover-check.mjs` drives a real mouse over the row and compares
+the geometry before and after.
+
+A conversation row is the same rule one step down: the dot and the spinner
+share one 14px slot, so switching between them leaves the title where it
+was. A row with nothing to say has no slot at all, so a marked row sits a
+little further right — the same ragged edge MCode's list has.
+
 ## The composer
 
 The bar inside the box holds the same two controls in every state: `+` (the add
@@ -213,8 +256,8 @@ conversation's settings live: the project (a menu of every known project, which
 switches through `switchProject(..., { allowWhileRunning: true })` — the same
 deliberate door the launcher uses), the branch and its dirty count
 (`BranchMenu`), the reasoning effort, the model and the context ring
-(`ContextRing`). While a run is going it also carries the steer/queue switch and
-the stop link.
+(`ContextRing`). While a run is going it also carries the stop link; delivery
+mode is a Settings preference, not a composer control.
 
 The title bar does not repeat any of it: it keeps the conversation's name and
 the app's actions. A project or branch chip in two places is two things to keep
@@ -246,6 +289,16 @@ The store cycles the list that `get_available_models` and
 `get_available_thinking_levels` reported. The model picker groups its display by
 provider in first-appearance order, preserving Pi's order within each provider;
 that grouping does not reorder the store's list or the keyboard cycle.
+
+## The tool panel
+
+The right side panel is browser-like: the top strip holds the pages the reader
+opened, with a close control on each, and `+` opens the tools guide. Files,
+File changes, Subagents, Terminal, Browser, Images and Tasks are navigation
+entries in that guide (`ToolPanel`), not a fixed function tab bar. Opening a
+guide entry adds or focuses its page tab; closing every page falls back to the
+guide. `SubagentPanel` is the Subagents page and owns the right-panel instance
+of `SubagentTree`; the left sidebar does not contain subagent status.
 
 ## Files in the composer
 
@@ -280,21 +333,27 @@ does not touch it — the only way to stop it is `abort`, which ends the whole r
 Do not build a "stop this command" button on top of `abort_bash` and expect it
 to work for the agent's own commands.
 
-The terminal drawer is the client's own `bash` user: it sends the command with
-an id prefixed `terminal-` and `excludeFromContext: true`. The store drops
-`bash_execution_update` events with that prefix, and `itemsFromMessages` skips
-`bashExecution` messages that carry `excludeFromContext` — so a command typed
-into the terminal never appears in the conversation or in the model's context.
+The terminal is a **real shell on a PTY**, not the client's `bash` user any
+more. `src/main/terminal.ts` owns the process through `node-pty`; `TerminalPanel`
+draws it with xterm.js and forwards keystrokes/resizes over
+`terminal:create`/`write`/`resize`/`kill`. Its output never touches Pi's message
+stream or the model's context. The native binaries live in
+`node_modules/node-pty` and must stay in `asarUnpack` (and `npmRebuild` is off,
+because the prebuilds target Electron 44 and rebuilding needs the VS Spectre
+libraries).
+
+The shell follows the `terminalShell` setting: PowerShell (default), CMD,
+Git Bash or WSL. Adding a shell means adding it in `resolveShellSpec`
+(`src/main/shell.ts`) and in the Settings select.
 
 A card in the transcript (the bash tool card, or a bash execution card) can hand
-its command to the drawer by dispatching `pi:terminal-run` with `{ command }`.
-`App` owns the drawer, so it turns the event into a `{ command, seq }` request
-that `TerminalPanel` runs through the same `submit()` path as a typed command —
-do not add a second command runner.
+its command to the terminal by dispatching `pi:terminal-run` with `{ command }`.
+`App` owns the terminal, so it turns the event into a `{ command, seq }` request
+that `TerminalPanel` types into the live shell.
 
-Pi strips ANSI escape sequences from the bash output before it reaches the
-client, so `parseAnsi` in `lib/ansi.ts` is a safety net for future colour
-output, not something the current `bash` path exercises.
+Pi strips ANSI escape sequences from the bash tool output before it reaches the
+client, but the PTY streams raw escape sequences — that is exactly what xterm
+needs, so `lib/ansi.ts` is no longer on this path.
 
 ## Git
 
@@ -361,6 +420,41 @@ The completion marker is a local view preference, not execution state. Do not ad
 store state for it — the thread is the source of truth. Its actions only hand the checklist
 back: copy as `- [x]` markdown, insert the whole plan or a single step through
 `insertIntoComposer`; the strip itself is never changed by them.
+
+## Task modes
+
+Task modes are a bundled Pi extension (`src/main/pi/task-modes.ts`), not renderer
+state. The extension persists mode and goal in custom session entries, changes
+the active tool loadout and publishes the mode on `pi-desktop-mode` and the goal
+on `pi-desktop-goal` (JSON `{text,status,summary}`). `GoalBar` only projects that
+status and sends `/desktop-goal pause|resume|clear|edit` back through the store.
+
+Plan Mode is read-only: `read`, `grep`, `find`, `ls` plus `exit_plan_mode`. The
+plan tool asks for approval through Pi's dialog protocol; approving restores the
+previous tool loadout. Its `tool_call` is exempt from the generic permission
+gate because that dialog is already the approval. The `subagent` tool is in the
+normal, Goal and Subagent loadouts (and blocked in Plan Mode); Subagent Mode adds
+the delegation-first instruction. `src/main/pi/subagent.ts` generates the
+per-process extension that spawns a separate `pi --mode json` process per task
+(StringDecoder JSONL, never readline) and returns its final text and usage to the
+parent.
+
+Computer Use is its own mode. `src/main/pi/computer-use.ts` registers the
+`computer` tool (screenshot, list windows, click, move, type, key, scroll) and
+it is active only in that mode, so choosing the mode is the approval — the
+generic permission dialog does not ask again on every action. Coordinates are
+pixels in the latest screenshot, not screen points or window bounds. Plan Mode
+blocks the tool, and it is not given to subagents.
+
+`SubagentTree` is a page of the right side panel (`SubagentPanel`), not part of
+the left sidebar. It projects all loaded conversations through `lib/subagents.ts`.
+Child progress lives in the subagent tool's `details.results`; `lib/thread.ts`
+preserves those details from live updates and replayed tool results. Keep
+queued/running/terminal states and timing in those events, not a second store.
+Tree expansion uses the per-conversation `lib/view-state.ts` map. Clicking a
+task row opens its child transcript (`SubagentConversation`), built from the
+`messages` the subagent process recorded in the same details; the Back control
+returns to the catalog.
 
 ## Jumping to a search hit
 

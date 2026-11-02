@@ -37,14 +37,17 @@ export function activityHeadline(
         : proposed
           ? 'proposed'
           : 'ok'
-  const counts = { read: 0, search: 0, edit: 0, command: 0, generic: 0 }
+  const counts = { read: 0, search: 0, edit: 0, command: 0, subagent: 0, plan: 0, computer: 0, generic: 0 }
   for (const item of items) counts[summarizeTool(item).tone] += 1
+  // Delegation, plan review and desktop actions are tool calls too; the batch
+  // summary only distinguishes the work it can describe precisely.
+  const genericCount = counts.generic + counts.subagent + counts.plan + counts.computer
   const summary = [
     counts.read ? t(`${counts.read} ${counts.read === 1 ? 'file read' : 'file reads'}`) : '',
     counts.search ? t(`${counts.search} ${counts.search === 1 ? 'search' : 'searches'}`) : '',
     counts.edit ? t(`${counts.edit} ${counts.edit === 1 ? 'edit' : 'edits'}`) : '',
     counts.command ? t(`${counts.command} ${counts.command === 1 ? 'command run' : 'commands run'}`) : '',
-    counts.generic ? t(`${counts.generic} ${counts.generic === 1 ? 'tool call' : 'tool calls'}`) : ''
+    genericCount ? t(`${genericCount} ${genericCount === 1 ? 'tool call' : 'tool calls'}`) : ''
   ]
     .filter(Boolean)
     .join(' · ')

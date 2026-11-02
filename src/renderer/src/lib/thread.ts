@@ -76,6 +76,8 @@ export interface ToolItem {
   args: Record<string, unknown>
   status: ToolStatus
   result?: string
+  /** Structured tool progress, preserved for projections such as the subagent tree. */
+  details?: unknown
   isError?: boolean
   durationMs?: number
   /**
@@ -377,6 +379,7 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
               args: call?.args ?? existing.args,
               status: message.isError ? 'error' : 'ok',
               result,
+              details: message.details,
               isError: message.isError,
               durationMs: duration ?? existing.durationMs
             }
@@ -392,6 +395,7 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
           args: call?.args ?? {},
           status: message.isError ? 'error' : 'ok',
           result,
+          details: message.details,
           isError: message.isError,
           durationMs: duration,
           timestamp: message.timestamp ?? Date.now(),
@@ -775,7 +779,8 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       const progress = extractToolResult(event.partialResult)
       return patchTool(items, toolCallId, {
         status: 'running',
-        progress: progress ?? target.progress
+        progress: progress ?? target.progress,
+        details: toolDetails(event.partialResult) ?? target.details
       })
     }
 
@@ -795,6 +800,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
           status: isError ? 'error' : 'ok',
           isError,
           result: result ?? existing?.result,
+          details: toolDetails(event.result) ?? existing?.details,
           exitCode: exitCodeOf(event.result) ?? existing?.exitCode,
           durationMs: event.durationMs ?? existing?.durationMs,
           finishedAt: Date.now(),
@@ -805,6 +811,8 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
           args: event.args ?? {},
           status: isError ? 'error' : 'ok',
           isError,
+          result,
+          details: toolDetails(event.result),
           durationMs: event.durationMs,
           finishedAt: Date.now(),
           runId: event.runId,
@@ -892,6 +900,10 @@ export function markAborted(items: ThreadItem[]): ThreadItem[] {
     }
     return item
   })
+}
+
+function toolDetails(value: unknown): unknown {
+  return value && typeof value === 'object' ? (value as { details?: unknown }).details : undefined
 }
 
 function extractToolResult(value: unknown): string | undefined {

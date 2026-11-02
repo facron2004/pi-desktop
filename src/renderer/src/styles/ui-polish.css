@@ -4,11 +4,10 @@
  * one hairline, one radius (--r-md, the floating layer), and no second
  * shadow stacked on the scrim that is already behind it. */
 :root .modal,
-:root .popover:has(.branch-menu),
 :root .popover.session-bar__picker {
   background: var(--surface-canvas);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   box-shadow: var(--shadow-md);
 }
 
@@ -25,9 +24,15 @@
   gap: var(--sp-5);
 }
 
+/* No overflow-wrap here: `anywhere` split ordinary words in narrow cards
+ * ("Conversatio / ns"). Long tokens are wrapped at the element that owns
+ * them; a scrolling panel must not rewrite the text of its children. */
 :root .settings-content {
-  overflow-wrap: anywhere;
   padding: var(--sp-6);
+  /* Let the last card scroll clear of the fade instead of dying under it. */
+  padding-bottom: var(--sp-8);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
 }
 
 :root .settings-nav {
@@ -74,5 +79,38 @@
 @media (max-width: 900px) {
   :root .settings-content {
     padding: var(--sp-5);
+    padding-bottom: var(--sp-7);
   }
+}
+
+
+/* --- 2026-11-02 polish pass ---
+ * Small consistency fixes layered on the existing token vocabulary. Do not
+ * invent a second system here; only quiet the remaining uneven edges.
+ */
+
+:root .palette__empty,
+:root .settings-empty,
+:root .model-picker__empty,
+:root .mcp__empty,
+:root .branch-menu__empty,
+:root .font-menu__empty,
+:root .commit__empty,
+:root .project-edit__empty,
+:root .mention__empty {
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+:root .session-item:focus-visible,
+:root .project:focus-visible,
+:root .settings-nav button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+:root .composer__add:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }

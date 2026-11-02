@@ -103,7 +103,7 @@ export function EditProjectDialog({
         folders,
         lastOpenedAt: Date.now()
       }
-      updatedWorkspaces = [targetWorkspace, ...workspaces]
+      updatedWorkspaces = [...workspaces, targetWorkspace]
     }
 
     await updateSettings({ workspaces: updatedWorkspaces })

@@ -308,3 +308,105 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .commit__check[data-tone='info'] svg {
   color: var(--text-faint);
 }
+
+/* Floating change-graph (commit log) card opened from the task rail. */
+
+.modal.modal--commit-history {
+  width: min(720px, calc(100vw - 48px));
+  max-height: min(520px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.modal.modal--commit-history .modal__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
+.modal.modal--commit-history .modal__title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.commit-history-float__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.commit-history-float {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-top: var(--sp-2);
+}
+
+.commit-history-float__list {
+  max-height: none;
+}
+
+
+/* Stable columns in the change-graph float (hash | subject | author | date | copy). */
+.commit-history-float__list .commit-history-float__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  column-gap: 2px;
+  min-width: 0;
+}
+
+.commit-history-float__list .commit-history-float__pick {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 88px 76px;
+  align-items: center;
+  column-gap: 8px;
+  width: 100%;
+  min-width: 0;
+  flex: initial;
+}
+
+.commit-history-float__list .commit__history-hash {
+  width: 52px;
+  flex: none;
+}
+
+.commit-history-float__list .commit__history-subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commit-history-float__author {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+}
+
+.commit-history-float__date {
+  width: 76px;
+  justify-self: end;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+}
+
+.commit-history-float__list .commit-history-float__copy {
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  justify-self: center;
+}

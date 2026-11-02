@@ -1,8 +1,8 @@
-import type { SessionMeta, Workspace } from '@shared/types'
+import type { ProjectIconColor, SessionMeta, Workspace } from '@shared/types'
 import { basename, normalisePathKey } from './path'
 
 /** A project: a folder Pi can run in. */
-export interface Project {
+export interface Project<Session extends SessionMeta = SessionMeta> {
   path: string
   name: string
   /** The settings id, when the project is registered. */
@@ -10,8 +10,12 @@ export interface Project {
   /** True when the project is in the settings and can be removed from there. */
   registered: boolean
   lastOpenedAt: number
-  sessions: SessionMeta[]
+  sessions: Session[]
   folders?: string[]
+  /** Emoji the project wears instead of the folder icon. */
+  icon?: string
+  /** Tint of the project icon. */
+  iconColor?: ProjectIconColor
 }
 
 /**
@@ -27,13 +31,13 @@ export interface Project {
  * Paths are canonicalised by `normalisePathKey` so case, slashes or trailing
  * slashes never cause duplicate entries.
  */
-export function collectProjects(
+export function collectProjects<Session extends SessionMeta>(
   workspaces: Workspace[],
-  sessions: SessionMeta[],
+  sessions: Session[],
   hiddenPaths: readonly string[] = []
-): Project[] {
+): Project<Session>[] {
   const hidden = new Set(hiddenPaths.map((path) => normalisePathKey(path)))
-  const map = new Map<string, Project>()
+  const map = new Map<string, Project<Session>>()
 
   for (const item of workspaces) {
     if (!item?.path) continue
@@ -49,6 +53,8 @@ export function collectProjects(
       if (item.folders && item.folders.length > 0) {
         existing.folders = item.folders
       }
+      if (item.icon) existing.icon = item.icon
+      if (item.iconColor) existing.iconColor = item.iconColor
     } else {
       map.set(key, {
         path: item.path,
@@ -57,7 +63,9 @@ export function collectProjects(
         registered: true,
         lastOpenedAt: item.lastOpenedAt || 0,
         sessions: [],
-        folders: item.folders && item.folders.length > 0 ? [...item.folders] : [item.path]
+        folders: item.folders && item.folders.length > 0 ? [...item.folders] : [item.path],
+        icon: item.icon,
+        iconColor: item.iconColor
       })
     }
   }
@@ -85,20 +93,17 @@ export function collectProjects(
 }
 
 /**
- * The order the projects are shown in: the open one first, then the ones
- * that were used most recently.
+ * Keep the order the projects were added in.
+ *
+ * Opening a conversation must not pull its folder to the top. `collectProjects`
+ * already walks the settings list first, and that list is the creation order
+ * until the user drags a row. `activePath` is unused on purpose: the open
+ * project is marked, not moved.
  */
-export function sortProjects(projects: Project[], activePath?: string): Project[] {
-  const activeKey = activePath ? normalisePathKey(activePath) : undefined
-  return [...projects].sort((a, b) => {
-    if (activeKey) {
-      const aIsActive = normalisePathKey(a.path) === activeKey
-      const bIsActive = normalisePathKey(b.path) === activeKey
-      if (aIsActive && !bIsActive) return -1
-      if (!aIsActive && bIsActive) return 1
-    }
-    const left = Math.max(a.lastOpenedAt, a.sessions[0]?.updatedAt ?? 0)
-    const right = Math.max(b.lastOpenedAt, b.sessions[0]?.updatedAt ?? 0)
-    return right - left
-  })
+export function sortProjects<Session extends SessionMeta>(
+  projects: Project<Session>[],
+  activePath?: string
+): Project<Session>[] {
+  void activePath
+  return [...projects]
 }

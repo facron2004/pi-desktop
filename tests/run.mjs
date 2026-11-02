@@ -9,7 +9,7 @@
  *   node tests/run.mjs
  */
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -38,6 +38,9 @@ const suites = [
   'diff-fold.test.ts',
   'permissions.test.ts',
   'task-modes.test.ts',
+  'computer-use.test.ts',
+  'subagent.test.ts',
+  'subagent-tree.test.ts',
   'fonts.test.ts',
   'providers.test.ts',
   'retry-policy.test.ts',
@@ -57,11 +60,30 @@ const suites = [
   'conversation-helpers.test.ts',
   'turns.test.ts',
   'changes.test.ts',
-  'view-state.test.ts'
+  'thinking.test.ts',
+  'terminal-shell.test.ts',
+  'view-state.test.ts',
+  'live-sessions.test.ts',
+  'git-branches.test.ts',
+  'mcp.test.ts',
+  'fs-read.test.ts',
+  'workspace-panel.test.ts'
 ]
 const debug = process.argv[2] === '--debug'
 
 const out = mkdtempSync(path.join(tmpdir(), 'pi-desktop-tests-'))
+const mockElectron = path.join(out, 'mock-electron.mjs')
+writeFileSync(
+  mockElectron,
+  `export const app = { getPath: () => "C:/tmp", isPackaged: false, getVersion: () => "0.7.2", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {} };
+export const dialog = { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true, filePath: undefined }) };
+export const BrowserWindow = class { static getAllWindows() { return [] } isDestroyed() { return false } };
+export const ipcMain = { handle: () => {}, on: () => {} };
+export const shell = { showItemInFolder: () => {}, trashItem: async () => {} };
+export const Notification = class { show() {} };
+`
+)
+
 try {
   const built = []
   for (const suite of suites) {
@@ -75,7 +97,10 @@ try {
       logLevel: 'warning',
       // The renderer's own aliases, so the test imports the module the same
       // way the app does.
-      alias: { '@shared': path.resolve(here, '..', 'src', 'shared') }
+      alias: {
+        '@shared': path.resolve(here, '..', 'src', 'shared'),
+        electron: mockElectron
+      }
     })
     built.push(path.join(out, bundle))
   }

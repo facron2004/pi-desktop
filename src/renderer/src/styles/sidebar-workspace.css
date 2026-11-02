@@ -1,0 +1,321 @@
+/* ------------------------------------------------------------------ *
+ * Workspace panel — the project and conversation list of the sidebar.
+ *
+ * The metrics follow MCode's sidebar: a row keeps the width of its title
+ * whether it is hovered or not, because the actions live in a slot that is
+ * always there. A conversation row carries at most one mark — a waiting
+ * dialog, a failure, or an answer the reader has not seen.
+ * ------------------------------------------------------------------ */
+
+/* The tint of a project icon. The component only writes the name. */
+:is(.project__icon, .project-icon-picker__color)[data-icon-color='neutral'] {
+  color: var(--project-icon-neutral);
+}
+
+:is(.project__icon, .project-icon-picker__color)[data-icon-color='yellow'] {
+  color: var(--project-icon-yellow);
+}
+
+:is(.project__icon, .project-icon-picker__color)[data-icon-color='orange'] {
+  color: var(--project-icon-orange);
+}
+
+:is(.project__icon, .project-icon-picker__color)[data-icon-color='green'] {
+  color: var(--project-icon-green);
+}
+
+:is(.project__icon, .project-icon-picker__color)[data-icon-color='blue'] {
+  color: var(--project-icon-blue);
+}
+
+:is(.project__icon, .project-icon-picker__color)[data-icon-color='purple'] {
+  color: var(--project-icon-purple);
+}
+
+:is(.project__icon, .project-icon-picker__color)[data-icon-color='pink'] {
+  color: var(--project-icon-pink);
+}
+
+:is(.project__icon, .project-icon-picker__color)[data-icon-color='red'] {
+  color: var(--project-icon-red);
+}
+
+/* The emoji wears the tint as a wash behind it; the glyph keeps its own
+   colours, the way an emoji always does. */
+.project__emoji {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, currentColor 18%, transparent);
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* An emoji lives in the platform's colour font, not in the app's own stack. */
+.project__emoji,
+.project-icon-picker__option {
+  font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', var(--font-ui);
+}
+
+/* The icon is a control of its own, so clicking it opens the picker instead
+   of folding the list. It sits over the icon the row already draws. */
+.project__icon-wrap {
+  position: absolute;
+  left: var(--sp-3);
+  top: 0;
+  height: 100%;
+  width: 20px;
+  display: grid;
+  place-items: center;
+  z-index: 1;
+}
+
+.project__icon-control {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.project__icon-control:hover {
+  background: var(--bg-hover);
+}
+
+.project__icon-control[data-active='true'] {
+  background: var(--bg-hover);
+}
+
+.project__icon-control:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* The count of the conversations lives in the slot the buttons take over on
+   hover, so the title never changes width. */
+.project__count {
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-full);
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+  line-height: 1;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.project__count[data-visible='true'] {
+  opacity: 1;
+}
+
+.project__row:hover .project__count,
+.project__row:focus-within .project__count {
+  opacity: 0;
+}
+
+.project__buttons {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.project__row:hover .project__buttons,
+.project__row:focus-within .project__buttons,
+.project__buttons:has([data-active='true']) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* The mark of a conversation. The slot is always 14px wide, so a dot and a
+   spinner leave the title exactly where it was. */
+.session-item__dot {
+  display: grid;
+  place-items: center;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+}
+
+.session-item__dot::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+
+.session-item__dot[data-tone='error']::before {
+  background: var(--status-danger);
+}
+
+/* A conversation waiting for an answer is the one mark allowed to shout:
+   the agent cannot move on until the user replies. */
+.session-item__badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 18px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-full);
+  background: var(--status-warning-soft);
+  color: var(--status-warning);
+  font-size: var(--text-2xs);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ *
+ * The project icon picker
+ * ------------------------------------------------------------------ */
+
+.popover.project-icon-popover {
+  width: 288px;
+  max-width: min(288px, calc(100vw - 24px));
+  padding: 0;
+  background: var(--surface-overlay);
+}
+
+.project-icon-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+}
+
+.project-icon-picker__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.project-icon-picker__search {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--ctl-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--bg-deep);
+  color: var(--text-tertiary);
+}
+
+.project-icon-picker__search:focus-within {
+  border-color: var(--accent);
+}
+
+.project-icon-picker__search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-xs);
+}
+
+.project-icon-picker__search input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.project-icon-picker__reset {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+  height: var(--ctl-md);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.project-icon-picker__reset:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.project-icon-picker__reset:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.project-icon-picker__colors {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.project-icon-picker__color {
+  display: grid;
+  place-items: center;
+  width: var(--ctl-sm);
+  height: var(--ctl-sm);
+  border-radius: var(--r-full);
+}
+
+.project-icon-picker__color:hover {
+  background: var(--bg-hover);
+}
+
+.project-icon-picker__color[aria-pressed='true'] {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.project-icon-picker__dot {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-full);
+  background: currentColor;
+}
+
+.project-icon-picker__grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: var(--sp-1);
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.project-icon-picker__option {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  min-height: var(--ctl-sm);
+  border-radius: var(--r-sm);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.project-icon-picker__option:hover {
+  background: var(--bg-hover);
+}
+
+.project-icon-picker__option[aria-pressed='true'] {
+  background: var(--bg-active);
+}
+
+.project-icon-picker__empty {
+  padding: var(--sp-4);
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}

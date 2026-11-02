@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { isValidElement, type ReactNode } from 'react'
 import type { ToolItem } from '../../lib/thread'
 import type { Turn } from '../../lib/turns'
 import type { RunState } from '../../store/useAppStore'
@@ -52,6 +52,9 @@ export function AssistantMessage({
     }
   }
 
+  const isThinkingRow = (node: ReactNode) =>
+    isValidElement(node) && node.type === ThinkingBlock
+
   const flushTools = () => {
     if (!group.length) return
     const items = group
@@ -59,6 +62,10 @@ export function AssistantMessage({
     ensureProcess(`process-${items[0].id}`)
     if (!trace) return
     trace.tools.push(...items)
+    // A thought before a command is already counted on the process. Leaving
+    // the "Reasoning hidden" row above every call doubled the list and pushed
+    // the reply to the bottom of it.
+    trace.children = trace.children.filter((child) => !isThinkingRow(child))
     // The fold already names the batch. Each call is a link, not another
     // "Activity" row wrapped around a card.
     for (const item of items) {
@@ -109,6 +116,9 @@ export function AssistantMessage({
         if (!trace) return
         trace.thoughts += 1
         trace.searchText += `\n${block.text}`
+        // Only the thought still in progress stays on screen. The ones that
+        // already turned into a command are a count, not a row each.
+        trace.children = trace.children.filter((child) => !isThinkingRow(child))
         trace.children.push(
           <ThinkingBlock
             key={`${assistant.id}-${index}`}

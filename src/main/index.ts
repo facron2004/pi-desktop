@@ -2,14 +2,31 @@ import { app, BrowserWindow, shell } from 'electron'
 import { createHash } from 'node:crypto'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
-import { bridgeRuntime, registerIpc } from './ipc'
+import { bridgeRuntime, registerIpc, sendToWindow } from './ipc'
 import { PiRuntime } from './pi/runtime'
 import { SessionSupervisor } from './pi/supervisor'
 import { scheduleCapture, scheduleWindowClose } from './screenshot'
 import { SettingsStore } from './settings'
+import { TerminalManager } from './terminal'
 import { initialBounds, wasMaximized, watchWindowState } from './window-state'
 
 const isMac = process.platform === 'darwin'
+
+/**
+ * stdout/stderr are pipes when a parent is reading them. If that parent goes
+ * away — or ConPTY detaches the console when a pty exits — the next
+ * `console.log` throws `EPIPE`. Electron turns that uncaught write into a
+ * native "JavaScript error occurred in the main process" dialog. An error
+ * listener keeps the write from becoming an exception.
+ */
+for (const stream of [process.stdout, process.stderr]) {
+  stream?.on('error', (error: NodeJS.ErrnoException) => {
+    if (error?.code === 'EPIPE') return
+    setImmediate(() => {
+      throw error
+    })
+  })
+}
 
 // Keep screenshot runs from reading or writing the user's regular app data.
 if (process.env.PI_DESKTOP_SCREENSHOT && process.env.PI_DESKTOP_USER_DATA) {
@@ -19,6 +36,7 @@ if (process.env.PI_DESKTOP_SCREENSHOT && process.env.PI_DESKTOP_USER_DATA) {
 let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore | null = null
 let supervisor: SessionSupervisor | null = null
+let terminalManager: TerminalManager | null = null
 
 function createWindow(): BrowserWindow {
   const bounds = initialBounds()
@@ -28,6 +46,10 @@ function createWindow(): BrowserWindow {
     ...(bounds.x !== undefined && bounds.y !== undefined ? { x: bounds.x, y: bounds.y } : {}),
     minWidth: 880,
     minHeight: 572,
+    // window-state stores the content area, so width/height have to mean the
+    // same thing when the window is created again. Without this the frame is
+    // counted twice and the window creeps larger on every launch.
+    useContentSize: true,
     show: false,
     backgroundColor: '#16181d',
     title: 'Pi Desktop',
@@ -78,6 +100,12 @@ function createWindow(): BrowserWindow {
       ]
     }
   })
+
+  // Windows rounds the frame to physical pixels at fractional display scaling,
+  // so a requested content size can come back a pixel or two larger. Re-assert
+  // the stored size before the window is shown; otherwise the rounding becomes
+  // the next run's input and the window creeps bigger on every launch.
+  window.setContentSize(bounds.width, bounds.height)
 
   window.once('ready-to-show', () => window.show())
 
@@ -146,8 +174,10 @@ app.setAppUserModelId('dev.pi.desktop')
  * dialog that blocks the app. Log it to the user data folder instead so the
  * problem is still diagnosable.
  */
-process.on('uncaughtException', (error: Error) => {
-  console.error('[pi-desktop] uncaught exception:', error)
+process.on('uncaughtException', (error: NodeJS.ErrnoException) => {
+  // The stream listener above usually swallows this. If one still escapes,
+  // logging it would write to the same broken pipe and the dialog would win.
+  if (error?.code === 'EPIPE') return
   try {
     const logDir = app.getPath('logs')
     mkdirSync(logDir, { recursive: true })
@@ -159,7 +189,56 @@ process.on('uncaughtException', (error: Error) => {
   } catch {
     /* logging must never throw */
   }
+  try {
+    console.error('[pi-desktop] uncaught exception:', error)
+  } catch {
+    /* stderr may already be closed */
+  }
 })
+
+process.on('unhandledRejection', (reason: unknown) => {
+  try {
+    const logDir = app.getPath('logs')
+    mkdirSync(logDir, { recursive: true })
+    const message = reason instanceof Error ? reason.stack ?? reason.message : String(reason)
+    appendFileSync(
+      path.join(logDir, 'pi-desktop.log'),
+      `${new Date().toISOString()} [unhandledRejection]\n${message}\n\n`,
+      'utf8'
+    )
+  } catch {
+    /* logging must never throw */
+  }
+  try {
+    console.error('[pi-desktop] unhandled rejection:', reason)
+  } catch {
+    /* stderr may already be closed */
+  }
+})
+
+function handleTerminationSignal(): void {
+  try {
+    terminalManager?.disposeAll()
+  } catch {
+    /* ignore */
+  }
+  if (supervisor) {
+    void supervisor
+      .stop()
+      .catch(() => {})
+      .finally(() => {
+        process.exit(0)
+      })
+    setTimeout(() => {
+      process.exit(0)
+    }, 2000).unref()
+  } else {
+    process.exit(0)
+  }
+}
+
+process.on('SIGINT', handleTerminationSignal)
+process.on('SIGTERM', handleTerminationSignal)
 
 app.whenReady().then(() => {
   settings = new SettingsStore()
@@ -186,13 +265,17 @@ app.whenReady().then(() => {
     getPermissionMode: () => settings?.get().permissionMode ?? 'ask'
   }
   supervisor = new SessionSupervisor(() => new PiRuntime(runtimeOptions))
+  terminalManager = new TerminalManager((channel, payload) => {
+    sendToWindow(mainWindow, channel, payload)
+  })
 
   mainWindow = createWindow()
 
   const context = {
     supervisor,
     settings,
-    getWindow: () => mainWindow
+    getWindow: () => mainWindow,
+    terminals: terminalManager
   }
   registerIpc(context)
   bridgeRuntime(context)
@@ -207,6 +290,11 @@ app.whenReady().then(() => {
   })
 })
 
+app.on('before-quit', () => {
+  // PTY children belong to this process; leaving them behind leaks shells.
+  terminalManager?.disposeAll()
+})
+
 app.on('window-all-closed', () => {
   // The keep-alive flag is a development aid for the window-close test.
   if (!isMac && process.env.PI_DESKTOP_KEEP_ALIVE !== '1') app.quit()
@@ -219,9 +307,20 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   if (shuttingDown) return
   shuttingDown = true
+
+  // Force shutdown completion after 5 seconds if supervisor.stop() hangs
+  const watchdog = setTimeout(() => {
+    console.error('[pi-desktop] shutdown watchdog timed out after 5s; forcing exit')
+    shutdownComplete = true
+    app.quit()
+    setTimeout(() => process.exit(0), 1000).unref()
+  }, 5000)
+  watchdog.unref()
+
   void supervisor.stop().catch((error: unknown) => {
     console.error('[pi-desktop] shutdown failed:', error)
   }).finally(() => {
+    clearTimeout(watchdog)
     shutdownComplete = true
     app.quit()
   })

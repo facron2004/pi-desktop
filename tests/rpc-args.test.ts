@@ -14,7 +14,9 @@ test('rpc launch baseline resumes one session and never switches it', () => {
     'instructions.md',
     'perm.mjs',
     'mode.mjs',
-    'provider.mjs'
+    'provider.mjs',
+    'subagent.mjs',
+    'computer.mjs'
   )
   assert.deepEqual(args, [
     '--mode',
@@ -25,6 +27,10 @@ test('rpc launch baseline resumes one session and never switches it', () => {
     'mode.mjs',
     '--extension',
     'perm.mjs',
+    '--extension',
+    'subagent.mjs',
+    '--extension',
+    'computer.mjs',
     '--session',
     'C:/project/session.jsonl',
     '--model',

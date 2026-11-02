@@ -1,7 +1,26 @@
-/* Some standalone copies expose Bold only by full face name, not family name. */
+/* Standalone copies expose a weight by its full face name, not the family.
+   CSS matches the family, so the picker names have to be registered or the
+   conversation falls through to sans-serif and Windows draws the Chinese
+   in SimSun. */
+@font-face {
+  font-family: 'PingFang SC Regular';
+  src: local('PingFang SC Regular'), local('PingFangSC-Regular'), local('苹方-简 常规体'), local('PingFang SC');
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'PingFang SC Medium';
+  src: local('PingFang SC Medium'), local('PingFangSC-Medium'), local('苹方-简 中黑体');
+  font-weight: 500;
+  font-style: normal;
+}
+
 @font-face {
   font-family: 'PingFang SC Bold';
   src: local('PingFang SC Bold'), local('PingFangSC-Bold'), local('苹方 粗体');
+  font-weight: 700;
+  font-style: normal;
 }
 
 /* ------------------------------------------------------------------ *
@@ -58,6 +77,18 @@
   inset: var(--titlebar-h) 0 0 0;
   z-index: var(--z-scrim);
   background: var(--drawer-scrim);
+  animation: fade var(--dur-base) var(--ease);
+}
+
+.inspector-scrim[data-closing='true'] {
+  pointer-events: none;
+  animation: fade-out var(--dur-base) var(--ease) forwards;
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
 }
 
 :root[data-platform='win32'] .app-menu {
@@ -350,7 +381,7 @@ transition: background var(--dur-fast) var(--ease);
   border: none;
   color: var(--sidebar-muted);
   cursor: pointer;
-  transition: all var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .sidebar__brand-btn:hover,
@@ -366,7 +397,7 @@ transition: background var(--dur-fast) var(--ease);
   padding: 0;
   font-weight: 600;
   letter-spacing: -0.015em;
-  font-size: 13.5px;
+  font-size: var(--text-sm);
   line-height: 24px;
   white-space: nowrap;
   min-width: 0;
@@ -379,7 +410,7 @@ transition: background var(--dur-fast) var(--ease);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 13.5px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--sidebar-text);
 }
@@ -449,9 +480,13 @@ transition: background var(--dur-fast) var(--ease);
 .sidebar__body {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: scroll;
   overflow-x: hidden;
-  padding: var(--sp-5) var(--sp-3) var(--sp-4);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+  /* Leave room under the last row: the foot's fade sits over this edge, so
+     12px of padding made the final conversation look cut in half. */
+  padding: var(--sp-5) var(--sp-3) var(--sp-7);
 }
 
 .btn-new-chat {
@@ -532,7 +567,7 @@ transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(
 }
 
 .sidebar__section-head button:hover {
-  background: var(--sidebar-hover);
+  background: transparent;
   color: var(--sidebar-text);
 }
 
@@ -557,20 +592,30 @@ transition: background var(--dur-fast) var(--ease);
   background: var(--sidebar-hover);
 }
 
+/* A project row only expands its conversation list; it is not a selection
+   target and must not paint the same rounded "bubble" as the active chat. */
+.project[data-active='true'] > .project__row {
+  background: transparent;
+}
+
+.project[data-dragging='true'] > .project__row {
+  opacity: 0.55;
+}
+
 .project__main {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 32px;
+  min-height: var(--sidebar-project-h);
   padding: var(--sp-1) var(--sp-3);
   text-align: left;
   border-radius: var(--r-md);
 }
 
 .project__icon {
-  width: 16px;
+  width: 20px;
   height: 20px;
   display: grid;
   place-items: center;
@@ -622,18 +667,19 @@ transition: background var(--dur-fast) var(--ease);
   color: var(--amber);
 }
 
+/* The actions live in a slot of their own, the width of the two icons plus
+   the gap between them. The slot is always there, so the project name keeps
+   the same width whether the row is hovered or not. */
 .project__actions {
-  position: absolute;
-  right: 4px;
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 2px;
-  /* No fill here. A rounded backing behind the two icons reads as a bubble
-     on the row; the icons themselves are the control. */
-  background: transparent;
-  visibility: hidden;
-  opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease);
+  justify-content: flex-end;
+  flex: 0 0 var(--sidebar-action-slot);
+  width: var(--sidebar-action-slot);
+  height: var(--sidebar-project-h);
+  margin-left: auto;
+  pointer-events: none;
 }
 
 .project__row:hover .project__actions,
@@ -648,11 +694,8 @@ transition: background var(--dur-fast) var(--ease);
   color: var(--sidebar-text);
 }
 
-.project__row:hover .project__main,
-.project__row:focus-within .project__main {
-  padding-right: 58px;
-}
-
+/* The name keeps its width: the slot for the actions is always reserved, so
+   hovering a row never re-flows the title. */
 .project__action-btn {
   width: 24px;
   height: 24px;
@@ -689,6 +732,12 @@ transition: background var(--dur-fast) var(--ease);
   outline: none;
 }
 
+/* The accent border alone is thin at this size; the soft ring makes the
+   focused rename field obvious without shifting layout. */
+.project__rename-input:focus {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
 .session-list {
   display: flex;
   flex-direction: column;
@@ -713,7 +762,7 @@ transition: background var(--dur-fast) var(--ease);
   display: flex;
   align-items: center;
   width: 100%;
-  min-height: 32px;
+  min-height: var(--sidebar-row-h);
   gap: var(--sp-1);
   padding: 0 var(--sp-2) 0 32px;
   border-radius: var(--r-sm);
@@ -740,9 +789,9 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   align-items: center;
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 32px;
+  min-height: var(--sidebar-row-h);
   gap: 6px;
-  padding: var(--sp-2) 0;
+  padding: 4px 0;
   text-align: left;
   border-radius: var(--r-sm);
 }
@@ -875,11 +924,17 @@ transition: border-color var(--dur-fast) var(--ease);
   font-size: var(--text-xs);
 }
 
+.session-item__input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
 .sidebar__empty {
-  padding: var(--sp-4) var(--sp-3);
+  padding: var(--sp-5) var(--sp-4);
   font-size: var(--text-xs);
-  color: var(--text-faint);
+  color: var(--text-tertiary);
   line-height: 1.6;
+  text-align: center;
 }
 
 .runtime-chip {
@@ -926,9 +981,24 @@ transition: border-color var(--dur-fast) var(--ease);
 }
 
 .sidebar__foot {
+  position: relative;
   flex: 0 0 auto;
   padding: var(--sp-2) var(--sp-3);
-  border-top: 1px solid transparent;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--sidebar-bg);
+}
+
+/* The fade is the boundary between the scrolling list and the fixed foot:
+   it tells the eye the list continues without a second border. */
+.sidebar__foot::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 24px;
+  background: linear-gradient(to bottom, transparent, var(--sidebar-bg));
+  pointer-events: none;
 }
 
 .sidebar__foot-btn {
@@ -977,6 +1047,14 @@ transition: border-color var(--dur-fast) var(--ease);
    Named containers resolve to the nearest ancestor that declares the name, so
    the titlebar's `@container conversation` rules keep resolving against
    `.main` while everything below it resolves against `.main__body`. */
+.main__stage {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: row;
+  min-width: 0;
+  min-height: 0;
+}
+
 .main__body {
   display: flex;
   flex-direction: column;
@@ -986,6 +1064,96 @@ transition: border-color var(--dur-fast) var(--ease);
   container: conversation / inline-size;
 }
 
+/* Vertical status card to the right of the conversation — not ToolPanel. */
+.task-rail {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  width: var(--task-rail-w);
+  min-width: var(--task-rail-w);
+  max-width: var(--task-rail-w);
+  min-height: 0;
+
+  background: var(--surface-raised, var(--surface-chrome));
+  align-self: stretch;
+  margin: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.task-rail__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.task-rail__hide {
+  position: absolute;
+  top: calc((var(--panel-head-h) - var(--ctl-sm)) / 2);
+  right: var(--sp-2);
+  z-index: 1;
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.task-rail:hover .task-rail__hide,
+.task-rail__hide:focus-visible {
+  opacity: 1;
+}
+
+
+
+.task-rail__show {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--sp-2);
+  width: 36px;
+  padding: var(--sp-4) 0;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--surface-chrome);
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+.task-rail__show:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.task-rail__show span {
+  letter-spacing: 0.06em;
+}
+
+@media (max-width: 900px) {
+  .task-rail {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    bottom: 10px;
+    z-index: var(--z-drawer);
+    max-width: min(var(--task-rail-w), calc(100% - 20px));
+    box-shadow: var(--shadow-md);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border-subtle);
+}
+
+  .main__stage {
+    position: relative;
+  }
+}
+
 .titlebar {
   height: var(--panel-head-h);
   flex: 0 0 auto;
@@ -993,7 +1161,7 @@ transition: border-color var(--dur-fast) var(--ease);
   align-items: center;
   min-width: 0;
   gap: var(--sp-5);
-  padding: 0 var(--sp-5) 0 var(--sp-6);
+  padding: 0 var(--panel-toggle-reserve) 0 var(--sp-6);
   border-bottom: 0;
   background: var(--surface-canvas);
 }
@@ -1034,7 +1202,7 @@ transition: border-color var(--dur-fast) var(--ease);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background-color var(--t-fast);
+  transition: background-color var(--dur-fast);
 }
 
 .titlebar__title--editable:hover,
@@ -1428,7 +1596,8 @@ transition: border-color var(--dur-fast) var(--ease);
 }
 
 .ctx__input:focus {
-  border-color: var(--accent-line);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .ctx__input::placeholder {
@@ -1581,8 +1750,6 @@ transition: border-color var(--dur-fast) var(--ease);
 .popover__item--danger:hover svg {
   opacity: 1;
 }
-  background: var(--accent-soft);
-}
 
 .popover__item-text {
   flex: 1 1 auto;
@@ -1601,12 +1768,21 @@ transition: border-color var(--dur-fast) var(--ease);
  * Thread
  * ------------------------------------------------------------------ */
 
+.thread-frame {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
 .thread {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: scroll;
   overflow-x: hidden;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
   scroll-behavior: smooth;
   /* Keep the reading position stable when a tool body above the viewport
      grows; the browser's anchored overflow handles the shift. */
@@ -1641,6 +1817,11 @@ transition: border-color var(--dur-fast) var(--ease);
   border-bottom-color: var(--border-subtle);
   background: var(--surface-canvas);
   color: var(--text-faint);
+}
+
+/* The input is borderless; the bar marks where the focus is. */
+.thread-search__bar:focus-within {
+  border-bottom-color: var(--accent-line);
 }
 
 .thread-search__bar > svg {
@@ -1913,17 +2094,17 @@ transition: background var(--dur-fast) var(--ease);
   max-width: 100%;
   padding: var(--sp-3) var(--sp-5);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-full);
+  /* Bubble layer: soft outer corners, squared corner toward the speaker. */
+  border-radius: var(--bubble-radius) var(--bubble-radius) var(--r-sm) var(--bubble-radius);
   background: var(--accent-soft);
   word-break: break-word;
   overflow-wrap: anywhere;
-  color: var(--text);
-  box-shadow: var(--shadow-sm);
+  color: var(--text-pure);
 }
 
 .user-msg__bubble .md {
-  font-size: var(--text-sm);
-  line-height: 1.6;
+  font-size: var(--text-md);
+  line-height: var(--leading-reading);
 }
 
 .user-msg__bubble .md > *:last-child {
@@ -1981,34 +2162,26 @@ transition: background var(--dur-fast) var(--ease);
 }
 
 .caret-blink {
-  display: inline-block;
-  width: 2px;
-  height: 1.05em;
-  margin-left: var(--sp-hair);
-  vertical-align: text-bottom;
-  border-radius: 1px;
-  background: var(--accent);
-  animation: blink 1.05s steps(2, start) infinite;
+  display: none !important;
+  animation: none !important;
 }
 
-@keyframes blink {
-  to {
-    visibility: hidden;
-  }
+/* blink caret keyframes removed */
 }
 
-.scroll-bottom-wrap {
-  position: sticky;
-  bottom: 16px;
-  height: 0;
-  z-index: var(--z-sticky);
-}
-
-.scroll-bottom {
+.scroll-jumps {
   position: absolute;
+  right: auto;
+  bottom: 12px;
+  z-index: var(--z-sticky);
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
   left: 50%;
-  bottom: 0;
   transform: translateX(-50%);
+}
+
+.scroll-jump {
   display: grid;
   place-items: center;
   width: 30px;
@@ -2018,13 +2191,21 @@ transition: background var(--dur-fast) var(--ease);
   border: 1px solid var(--border-strong);
   color: var(--text-muted);
   box-shadow: var(--shadow);
-animation: pop var(--dur-fast) var(--ease);
-transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  animation: pop var(--dur-fast) var(--ease);
+  transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 
-.scroll-bottom:hover {
-  color: var(--accent);
-  transform: translateX(-50%) translateY(-2px);
+.scroll-jump:hover {
+  color: var(--text);
+  transform: translateY(-2px);
+}
+
+.sidebar .scroll-jumps {
+  bottom: 58px;
+  right: 10px;
+  left: auto;
+  transform: none;
+  flex-direction: column;
 }
 
 .user-msg__images {
@@ -2402,12 +2583,22 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   padding: 0;
 }
 
+/* A plan submitted for review is prose; keep the document's own rhythm
+   instead of the monospace output panel. */
+.tool__plan {
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.tool__plan .md {
+  font-size: var(--text-sm);
+}
+
 .tool__pre {
   margin: 0;
   padding: var(--sp-4) var(--sp-4);
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: 1.6;
+  font-size: var(--text-code);
+  line-height: var(--leading-code);
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-muted);
@@ -2437,8 +2628,8 @@ transition: background var(--dur-fast) var(--ease);
 
 .diff {
   font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  line-height: 1.62;
+  font-size: var(--text-code);
+  line-height: var(--leading-diff);
   overflow-x: auto;
 }
 
@@ -2680,15 +2871,19 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .composer {
   border: 1px solid var(--border);
   border-radius: var(--composer-radius);
-  background: color-mix(in srgb, var(--bg-elevated) 85%, transparent);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  /* Solid sheet: glass blur washed the message tail and fought the hairline. */
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-sm);
   transition:
     border-color var(--dur-fast) var(--ease),
     box-shadow var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease);
   overflow: visible;
+}
+
+:root[data-theme='light'] .composer {
+  /* Raised is white on light canvas; one step of chrome keeps the box readable. */
+  background: var(--surface-chrome);
 }
 
 /* ------------------------------------------------------------------ *
@@ -2898,8 +3093,12 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 .composer:focus-within {
   border-color: var(--accent-line);
-  background: color-mix(in srgb, var(--bg-elevated) 95%, transparent);
-  box-shadow: var(--accent-glow), 0 4px 20px -2px rgba(0, 0, 0, 0.1);
+  background: var(--surface-raised);
+  box-shadow: var(--accent-glow), var(--shadow-sm);
+}
+
+:root[data-theme='light'] .composer:focus-within {
+  background: var(--surface-chrome);
 }
 
 .composer[data-shell='true'] {
@@ -2968,7 +3167,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   background: transparent;
   padding: var(--sp-4) var(--sp-4) var(--sp-2);
   font-size: var(--text-md);
-  line-height: 1.6;
+  line-height: var(--leading-composer);
   max-height: 240px;
   min-height: 48px;
   display: block;
@@ -3071,7 +3270,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .thread-error-banner__content {
   display: flex;
   align-items: center;
-  gap: var(--sp-2-5);
+  gap: var(--sp-2);
   min-width: 0;
 }
 
@@ -3104,11 +3303,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .composer__top-selectors {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--sp-1);
   width: 100%;
   max-width: var(--composer-max, 768px);
-  margin-bottom: 2px;
-  padding: 0 1px;
+  margin-bottom: var(--sp-hair);
+  padding: 0 var(--sp-hair);
 }
 
 .composer__top-selectors {
@@ -3122,13 +3321,13 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   border: none !important;
   box-shadow: none !important;
   background: transparent !important;
-  height: 20px;
-  padding: 0 5px;
+  height: var(--ctl-xs);
+  padding: 0 var(--sp-2);
   color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1;
-  gap: 3.5px;
-  border-radius: var(--r-sm, 4px);
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  gap: var(--sp-1);
+  border-radius: var(--r-sm);
 }
 
 .composer__top-selectors .project-chip,
@@ -3169,14 +3368,23 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   height: 20px;
   padding: 0 5px;
   border-radius: var(--r-sm, 4px);
-  background: transparent;
   border: none;
   color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1;
+  font-size: var(--text-2xs);
+  /* 1.4, not 1: a clipped line box cuts the descender of "g" in "Jobseek
+     agent" once the chip is inside an overflow:hidden row. */
+  line-height: 1.4;
   cursor: pointer;
-  transition: all var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
   user-select: none;
+}
+
+/* Git chips are chrome, not plain labels: the branch pill gets the panel
+   fill so the monospace branch name reads as an object. This is the single
+   base rule — the later duplicate that fought it with --bg-panel is gone. */
+.git-chip {
+  max-width: 320px;
+  background: var(--bg-panel);
 }
 
 .project-chip:hover,
@@ -3220,11 +3428,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .popover.project-menu-popover {
-  padding: 4px;
-  border-radius: 10px;
-  background: var(--surface-card, #ffffff);
-  border: 1px solid var(--border-soft);
-  box-shadow: 0 10px 28px -4px rgba(0, 0, 0, 0.12), 0 4px 10px -2px rgba(0, 0, 0, 0.05);
+  padding: var(--sp-1);
+  border-radius: var(--r-md);
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-md);
 }
 
 .project-menu {
@@ -3255,15 +3463,21 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   border: none;
   outline: none;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--text-xs);
   color: var(--text);
   padding: 0;
   line-height: 1.4;
 }
 
+/* The borderless input marks focus on the row that frames it. */
+.project-menu__search:focus-within {
+  border-radius: var(--r-xs);
+  box-shadow: 0 0 0 1px var(--accent-line);
+}
+
 .project-menu__search-input::placeholder {
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 
 .project-menu__search-clear {
@@ -3272,7 +3486,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--text-faint);
   padding: 2px;
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: var(--r-xs);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3309,7 +3523,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 .project-menu__list::-webkit-scrollbar-thumb {
   background: var(--border-strong);
-  border-radius: 4px;
+  border-radius: var(--r-xs);
 }
 
 .project-menu__row {
@@ -3320,7 +3534,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   height: 24px;
   min-height: 24px;
   padding: 0 6px;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
   border: none;
   background: transparent;
   text-align: left;
@@ -3328,7 +3542,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   transition: background var(--dur-fast) var(--ease);
   user-select: none;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--text-xs);
   box-sizing: border-box;
 }
 
@@ -3346,7 +3560,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .project-menu__name {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--text-xs);
   font-weight: 450;
   color: var(--text-strong);
   white-space: nowrap;
@@ -3363,7 +3577,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 .project-menu__empty {
   padding: 12px 6px;
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   color: var(--text-faint);
   text-align: center;
 }
@@ -3382,13 +3596,13 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   height: 24px;
   min-height: 24px;
   padding: 0 6px;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
   border: none;
   text-align: left;
-  font-size: 11.5px;
+  font-size: var(--text-xs);
   font-weight: 450;
   cursor: pointer;
-  transition: all var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
   user-select: none;
 }
 
@@ -3422,6 +3636,139 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   border-radius: 0 var(--r-lg) var(--r-lg) 0;
   background: var(--surface-canvas);
   overflow: hidden;
+  container: tool-panel / inline-size;
+  animation: tool-panel-in var(--dur-slow) var(--ease);
+}
+
+/* The panel's tools are peers, so they are a tab strip rather than a menu
+   that each tool replaces. The right corner stays free for the pinned toggle. */
+.tool-panel__tabs {
+  display: flex;
+  align-items: center;
+  align-content: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  flex: 0 0 auto;
+  min-height: var(--panel-head-h);
+  padding: 4px var(--panel-toggle-reserve) 4px var(--sp-2);
+  box-shadow: inset 0 -1px 0 var(--border-soft);
+  background: var(--surface-canvas);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tool-panel__tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tool-panel__tab-shell {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+}
+
+.tool-panel__tab-shell:hover {
+  background: var(--bg-hover);
+}
+
+.tool-panel__tab-shell[data-active] {
+  background: var(--bg-active);
+}
+
+.tool-panel__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  border-radius: var(--r-sm) 0 0 var(--r-sm);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.tool-panel__tab-shell:hover .tool-panel__tab,
+.tool-panel__tab-shell[data-active] .tool-panel__tab {
+  color: var(--text);
+}
+
+.tool-panel__tab-close {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 22px;
+  margin-right: 4px;
+  border-radius: var(--r-xs);
+  color: var(--text-tertiary);
+}
+
+.tool-panel__tab-close:hover {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.tool-panel__new-tab {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+}
+
+.tool-panel__new-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.tool-panel__tab .tool-panel__count {
+  margin-left: 2px;
+}
+
+/* A narrow panel trims the tabs down so all six still fit beside the pinned
+   toggle: tighter padding and the small text step, not hidden labels. */
+@container tool-panel (max-width: 520px) {
+  .tool-panel__tab {
+    gap: var(--sp-1);
+    padding: 0 7px;
+    font-size: var(--text-xs);
+  }
+}
+
+/* The terminal tab's content stays mounted behind the other tabs so its
+   processes survive a tab switch; only the active one is laid out. */
+.tool-panel__terminal {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.tool-panel__terminal[data-active] {
+  display: flex;
+}
+
+.tool-panel--closing {
+  pointer-events: none;
+  animation: tool-panel-out var(--dur-base) var(--ease) forwards;
+}
+
+@keyframes tool-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+}
+
+@keyframes tool-panel-out {
+  to {
+    opacity: 0;
+    transform: translateX(18px);
+  }
 }
 
 .tool-panel__resizer {
@@ -3455,7 +3802,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   gap: var(--sp-2);
   flex: 0 0 auto;
   min-height: var(--panel-head-h);
-  padding: 0 var(--sp-5) 0 var(--sp-4);
+  /* The right corner belongs to the shell's pinned toggle, not to this head. */
+  padding: 0 var(--panel-toggle-reserve) 0 var(--sp-4);
   box-shadow: inset 0 -1px 0 var(--border-soft);
 }
 
@@ -3493,11 +3841,27 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   font-variant-numeric: tabular-nums;
 }
 
-.tool-panel__head-actions {
+/* The panel's only chrome control, pinned to the shell rather than to the
+   panel: the enter/exit animation moves and fades the panel's box, and an icon
+   inside it would ride along. This box is a child of `.app`, so it keeps the
+   same pixels whether the panel is open, closing, or gone — and it still reads
+   as the corner control of whichever header is under it, because both headers
+   reserve exactly this width. */
+.shell__panel-toggle {
+  position: absolute;
+  top: var(--titlebar-h);
+  right: calc(var(--shell-inset) + var(--sp-5));
+  /* The band the two headers occupy, so the button sits in their line whatever
+     size an .icon-btn is on this surface. */
+  height: var(--panel-head-h);
   display: flex;
   align-items: center;
-  gap: var(--sp-hair);
-  flex: 0 0 auto;
+  /* Over the docked panel and over the floating one, under any popover. */
+  z-index: calc(var(--z-drawer) + 1);
+  /* It sits in the corner the .titlebar reserves — and that bar is a window
+     drag region. Without no-drag the OS swallows the click as a window drag
+     and the button never fires. */
+  -webkit-app-region: no-drag;
 }
 
 .tool-panel__body {
@@ -3565,9 +3929,24 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--text-secondary);
 }
 
+.tool-menu__card-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .tool-menu__card-label {
   flex: 1 1 auto;
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-menu__card-description {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
@@ -3618,79 +3997,370 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 /* ------------------------------------------------------------------ *
- * Tasks
+ * Tasks — dense Codex-style vertical rail
  * ------------------------------------------------------------------ */
 
 .task-panel {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-4);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+  border-radius: inherit;
+}
+
+.task-panel__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
+  padding: 2px 0 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
-.task-panel__empty {
+.task-panel__section {
+  padding: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.task-panel__section:last-child {
+  border-bottom: 0;
+}
+
+.task-panel__section-head {
+  margin: 0;
+}
+
+.task-panel__section-toggle {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: var(--sp-3);
-  margin: auto;
-  padding: var(--sp-5);
-  color: var(--text-faint);
-  font-size: var(--text-xs);
-  text-align: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 26px;
+  padding: 3px 10px 3px 8px;
+  background: transparent;
+  color: var(--text-tertiary);
+  text-align: left;
+  cursor: pointer;
 }
 
-.task-panel__hint {
+.task-panel__section-toggle:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.task-panel__section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
   font-size: var(--text-2xs);
-  line-height: 1.5;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.task-panel__section-icon {
+  display: inline-grid;
+  place-items: center;
   color: var(--text-tertiary);
 }
 
-.task-panel__summary {
+.task-panel__section-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
+.task-panel__section-caret {
+  color: var(--text-tertiary);
+  transition: transform var(--dur-fast) var(--ease);
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.task-panel__section-caret[data-open] {
+  transform: rotate(90deg);
+}
+
+.task-panel__section-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 10px 8px;
+}
+
+.task-panel__section-content[hidden] {
+  display: none;
+}
+
+.task-panel__count {
   color: var(--text-tertiary);
   font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
 }
 
-.task-panel__list {
+.task-panel__diff-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.task-panel__diff-add {
+  color: var(--status-success);
+}
+
+.task-panel__diff-del {
+  color: var(--status-danger);
+}
+
+.task-panel__env {
+  min-width: 0;
+  padding: 1px 2px 2px;
+}
+
+.task-panel__env-branch {
+  display: block;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.35;
+}
+
+.task-panel__action-list {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: 1px;
+}
+
+.task-panel__action-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 24px;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+  text-align: left;
+}
+
+.task-panel__action-row:hover,
+.task-panel__action-main:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.task-panel__action-row > svg,
+.task-panel__action-main > svg {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.task-panel__action-main {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 24px;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.task-panel__action-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-panel__action-row--env {
+  cursor: default;
+}
+
+.task-panel__action-row--env .task-panel__action-main {
+  cursor: default;
+}
+
+.task-panel__action-row--env:hover {
+  background: transparent;
+}
+
+.task-panel__action-row--env .task-panel__action-label {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+
+.task-panel__action-sub {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+}
+
+.task-panel__action-sub:hover:not(:disabled) {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+.task-panel__action-main:disabled,
+.task-panel__action-sub:disabled,
+.task-panel__action-row:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.task-panel__background-list,
+.task-panel__checklist,
+.task-panel__artifacts {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.task-panel__row {
+.task-panel__background-row,
+.task-panel__check-row,
+.task-panel__artifact {
   display: flex;
-  align-items: flex-start;
-  gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  min-height: 22px;
+  padding: 2px 6px;
   border-radius: var(--r-sm);
   color: var(--text-secondary);
-  font-size: var(--text-xs);
-  line-height: 1.5;
+  font-size: var(--text-2xs);
 }
 
-.task-panel__row:hover {
+.task-panel__background-row:hover,
+.task-panel__check-row:hover,
+.task-panel__artifact:hover {
   background: var(--bg-hover);
 }
 
-.task-panel__row > svg {
-  flex: 0 0 auto;
-  margin-top: 1px;
-  color: var(--text-tertiary);
+.task-panel__background-name,
+.task-panel__check-text,
+.task-panel__file-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.task-panel__row[data-done] {
+
+.task-panel__background-row {
+  justify-content: flex-start;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.task-panel__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  margin-left: 0;
+  flex-shrink: 0;
+  margin-right: 0;
+}
+
+.task-panel__dot[data-tone='success'] {
+  background: var(--status-success);
+}
+
+.task-panel__dot[data-tone='danger'] {
+  background: var(--status-danger);
+}
+
+.task-panel__dot[data-tone='active'] {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.task-panel__check-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 13px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  color: var(--text-tertiary);
+  border: 1.25px solid var(--border-strong);
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.task-panel__check-row[data-done] .task-panel__check-mark {
+  background: color-mix(in srgb, var(--status-success) 16%, transparent);
+  color: var(--status-success);
+  border-color: var(--status-success);
+}
+
+.task-panel__check-row[data-done] .task-panel__check-text {
   color: var(--text-tertiary);
   text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--text-tertiary) 55%, transparent);
 }
 
-.task-panel__row[data-done] > svg {
-  color: var(--status-success);
+.task-panel__artifact-group {
+  padding: 2px 6px;
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  font-weight: 500;
 }
+
+.task-panel__artifact > svg {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.task-panel__inline-empty {
+  margin: 0;
+  padding: 2px 6px;
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  opacity: 0.85;
+}
+
+/* Task rail open: tighten chat right gutter so rail doesn't double-margin */
+.main__stage:has(.task-rail) .composer-wrap {
+  padding-right: var(--sp-4);
+}
+
+.main__stage:has(.task-rail) .thread__inner {
+  padding-right: var(--sp-4);
+}
+
+.main__stage:has(.task-rail) .thread-search {
+  padding-right: var(--sp-4);
+}
+
 
 /* ------------------------------------------------------------------ *
  * The tag controls of the composer bar
@@ -3717,12 +4387,30 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
+.model-chip {
+  color: var(--text-pure);
+}
+
 .model-chip:hover,
 .model-chip[data-active='true'],
 .effort-chip:hover,
 .effort-chip[data-active='true'] {
   background: var(--bg-hover);
   color: var(--text);
+}
+
+.model-chip:hover,
+.model-chip[data-active='true'] {
+  color: var(--text-pure);
+}
+
+.model-chip .pill__caret {
+  opacity: 1;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.model-chip[data-active='true'] .pill__caret {
+  transform: rotate(180deg);
 }
 
 .model-chip:disabled,
@@ -3889,7 +4577,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
      that text this small has to meet. Quiet is a weight and a size, not an
      excuse to drop below legibility. */
   color: var(--text-secondary);
-  font-size: var(--text-2xs);
+  font-size: var(--text-sm);
 }
 
 .session-bar__spacer {
@@ -3908,7 +4596,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   padding: 0 var(--sp-2);
   border-radius: var(--r-sm);
   color: var(--text-secondary);
-  font-size: var(--text-2xs);
+  font-size: var(--text-sm);
   font-weight: 500;
   white-space: nowrap;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
@@ -3990,36 +4678,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   cursor: progress;
 }
 
-/* How the next message is delivered, while a run is going. */
-.composer__delivery {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-hair);
-  flex: 0 0 auto;
-}
-
-.composer__delivery button {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  height: var(--ctl-xs);
-  padding: 0 var(--sp-2);
-  border-radius: var(--r-sm);
-  color: var(--text-faint);
-  font-size: var(--text-2xs);
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-
-.composer__delivery button:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-
-.composer__delivery button[data-active='true'] {
-  background: var(--bg-active);
-  color: var(--text);
-}
-
 .session-bar .git-chip {
   gap: var(--sp-2);
 }
@@ -4044,8 +4702,10 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
+  /* Hero already centers; pin the column slightly above the bottom edge. */
+  justify-content: center;
   padding: var(--sp-6) var(--sp-6) var(--sp-4);
+  padding-bottom: max(var(--sp-4), 6vh);
   overflow-y: auto;
 }
 
@@ -4061,7 +4721,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 2px;
+  gap: var(--sp-hair);
   margin: 0 auto;
   text-align: center;
 }
@@ -4161,10 +4821,17 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
  * Markdown
  * ------------------------------------------------------------------ */
 
+.thread,
+.composer__input {
+  font-family: var(--font-reading);
+}
+
 .md {
   font-size: var(--text-md);
-  line-height: 1.6;
-  color: var(--text);
+  line-height: var(--leading-reading);
+  /* Conversation ink is black in the light theme (--text-pure), never the
+     accent. A custom accent is for controls, not for the words of a reply. */
+  color: var(--text-pure);
   overflow-wrap: anywhere;
 }
 
@@ -4217,30 +4884,27 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .md a {
-  color: var(--blue);
+  color: inherit;
   text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--blue) 35%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, currentColor 35%, transparent);
 }
 
 .md a:hover {
-  border-bottom-color: var(--blue);
+  border-bottom-color: currentColor;
 }
 
 .md strong {
   font-weight: 600;
-  color: var(--text);
+  color: inherit;
 }
 
 .md code {
   font-family: var(--font-mono);
-  /* On the scale rather than a relative 0.9em. A relative size renders as
-     12.6px at the default scale — a size that is in no token, so it drifts
-     the moment the font scale changes. */
-  font-size: var(--text-sm);
+  font-size: var(--text-inline-code);
   background: var(--bg-active);
   padding: 1.5px var(--sp-2);
   border-radius: var(--r-sm);
-  color: var(--accent);
+  color: inherit;
   border: 1px solid var(--border-soft);
 }
 
@@ -4251,7 +4915,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   background: var(--bg-deep);
   border: 1px solid var(--border);
   overflow-x: auto;
-  line-height: 1.55;
+  font-size: var(--text-code);
+  line-height: var(--leading-code);
 }
 
 .code-block {
@@ -4351,7 +5016,7 @@ transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--
   background: none;
   border: none;
   padding: 0;
-  color: var(--text);
+  color: var(--text-pure);
   font-size: inherit;
 }
 
@@ -4481,13 +5146,18 @@ animation: fade var(--dur-fast) var(--ease);
 }
 
 .settings-modal .modal__foot {
+  position: relative;
+  z-index: 1;
   padding: var(--sp-4) var(--sp-6);
   min-height: 48px;
+  /* The foot floats over the last scrolling row; the shadow is the edge
+     that says the content continues underneath it. */
+  box-shadow: 0 -12px 24px -18px var(--scrim);
 }
 
 .settings-layout {
   display: grid;
-  grid-template-columns: 184px minmax(0, 1fr);
+  grid-template-columns: 208px minmax(0, 1fr);
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -4512,7 +5182,8 @@ animation: fade var(--dur-fast) var(--ease);
   color: var(--text-muted);
   text-align: left;
   font-size: var(--text-sm);
-transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .settings-nav button:hover {
@@ -5043,6 +5714,21 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   white-space: pre-wrap;
 }
 
+/* A plan review is a document, not a one-line warning. It scrolls inside the
+   dialog so the footer actions stay reachable. */
+.modal__message[data-long='true'] {
+  max-height: min(48vh, 420px);
+  overflow: auto;
+  padding-right: var(--sp-2);
+}
+
+.modal__plan {
+  max-height: min(48vh, 420px);
+  overflow: auto;
+  padding: 0 var(--sp-4) var(--sp-4);
+  font-size: var(--text-sm);
+}
+
 .modal__options {
   display: flex;
   flex-direction: column;
@@ -5113,7 +5799,8 @@ transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast)
 }
 
 .modal__editor:focus {
-  border-color: var(--border-strong);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .modal__note {
@@ -5247,7 +5934,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
  * ------------------------------------------------------------------ */
 
 .tree {
-  padding: var(--sp-3) var(--sp-2) var(--sp-5);
+  padding: var(--sp-1) var(--sp-2) var(--sp-4);
   font-size: var(--text-sm);
 }
 
@@ -5260,14 +5947,14 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .tree__item {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-1);
   width: 100%;
-  min-height: 30px;
-  padding: var(--sp-1) var(--sp-3) var(--sp-1) 0;
-  border-radius: var(--r-sm);
+  min-height: 22px;
+  padding: 0 var(--sp-2) 0 0;
+  border-radius: var(--r-xs);
   color: var(--text-muted);
   text-align: left;
-transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .tree__item:hover {
@@ -5360,6 +6047,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   display: inline-flex;
   align-items: center;
   color: var(--text-faint);
+}
+
+/* The same mark inside a list row, where the line has to keep its height. */
+.file-icon {
+  flex: 0 0 auto;
 }
 
 .tree__icon[data-tone='ts'] {
@@ -5481,8 +6173,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   background: var(--bg-deep) !important;
   border: none;
   border-radius: 0;
-  font-size: var(--text-2xs);
-  line-height: 1.6;
+  font-size: var(--text-code);
+  line-height: var(--leading-code);
 }
 
 /* Code snippets: the file viewer and the tool cards share these. */
@@ -5519,8 +6211,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   background: var(--bg-deep);
   border: none;
   font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  line-height: 1.6;
+  font-size: var(--text-code);
+  line-height: var(--leading-code);
   color: var(--text-muted);
   white-space: pre;
   overflow: auto;
@@ -5655,7 +6347,9 @@ body.is-resizing {
 .drawer__body {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: scroll;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
   padding: var(--sp-4);
   display: flex;
   flex-direction: column;
@@ -5683,9 +6377,9 @@ body.is-resizing {
 }
 
 .drawer__empty {
-  padding: var(--sp-6) var(--sp-5);
-  font-size: var(--text-xs);
-  color: var(--text-faint);
+  padding: var(--sp-7) var(--sp-5);
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
   line-height: 1.7;
   text-align: center;
 }
@@ -5696,17 +6390,26 @@ body.is-resizing {
 }
 
 .change {
+  /* An open diff must not shrink the rows under it just to stay on screen.
+     The panel scrolls; the list keeps its own height. */
+  flex-shrink: 0;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface-canvas);
   overflow: hidden;
 }
 
 .change__head {
-  position: relative;
   display: flex;
   align-items: center;
-  min-height: calc(var(--ctl-lg) + var(--sp-hair));
-  padding: 0 var(--sp-3);
+  gap: var(--sp-2);
+  min-height: 32px;
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.change__head:hover,
+.change__head:focus-within {
+  background: var(--bg-hover);
 }
 
 .change__toggle {
@@ -5715,33 +6418,95 @@ body.is-resizing {
   gap: var(--sp-2);
   flex: 1 1 auto;
   min-width: 0;
-  min-height: calc(var(--ctl-lg) + var(--sp-hair));
-  padding: var(--sp-1);
+  min-height: 32px;
+  padding: 0;
   text-align: left;
 }
 
-.change__toggle > svg {
+/* The row carries the name and nothing else. The folders that used to trail it
+   were cut in the middle at this width, so they live in the body now, where a
+   full path can wrap instead of being truncated. */
+.change__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-xs);
+  line-height: 32px;
+  color: var(--text);
+}
+
+.change__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-hair);
   flex: 0 0 auto;
+}
+
+.change__caret {
   color: var(--text-faint);
+}
+
+.change__caret > svg {
   transition: transform var(--dur-fast) var(--ease);
 }
 
-.change[data-open='true'] .change__toggle > svg {
-  transform: rotate(90deg);
+.change[data-open='true'] .change__caret > svg {
+  transform: rotate(180deg);
+}
+
+.change__body {
+  min-width: 0;
+}
+
+/* The path first: where the file is, what the change cost, and the two ways to
+   reach it. A rule under it keeps the change itself on separate ground. */
+.change__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.change__file {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.change__meta-side {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
+.change__content {
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+}
+
+.change__content,
+.change__content .snippet,
+.change__content .snippet pre,
+.change__content .snippet code,
+.change__content .tool__pre,
+.change__content .diff__code,
+.change__content .diff__gutter {
+  font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  font-size: var(--text-xs);
+  line-height: 1.6;
 }
 
 .change__body .diff__row {
   min-width: 0;
-}
-
-.change__path {
-  flex: 0 1 auto;
-  min-width: 0;
-  font-size: var(--text-md);
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .change__badge {
@@ -5753,39 +6518,12 @@ body.is-resizing {
   color: var(--text-faint);
 }
 
-.change__file-actions {
-  position: absolute;
-  right: var(--sp-2);
-  display: flex;
-  align-items: center;
-  background: var(--bg-hover);
-  opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease);
-}
-
-.change__head:hover,
-.change__head:focus-within {
-  background: var(--bg-hover);
-}
-
-.change__head:hover .change__file-actions,
-.change__head:focus-within .change__file-actions {
-  opacity: 1;
-}
-
-@media (hover: none), (pointer: coarse) {
-  .change__file-actions {
-    position: static;
-    background: transparent;
-    opacity: 1;
-  }
-}
-
 .change__stats {
   flex: 0 0 auto;
   display: inline-flex;
   gap: var(--sp-2);
   font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
 }
 
 .change__stats span[data-kind='add'] {
@@ -5849,6 +6587,71 @@ animation: pop var(--dur-fast) var(--ease);
   background: var(--red-soft);
   color: var(--red);
 }
+
+/* ------------------------------------------------------------------ *
+ * The renderer's crash screen.
+ *
+ * The ErrorBoundary draws it when a component error unmounts the tree.
+ * It fills the window with the app's own surface so the failure is read
+ * against familiar colours, and the stack stays copyable in monospace.
+ * ------------------------------------------------------------------ */
+
+.crash-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-8);
+  background: var(--surface-canvas);
+  overflow: auto;
+}
+
+.crash-screen__card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  width: min(640px, 100%);
+  padding: var(--sp-6);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--surface-raised);
+}
+
+.crash-screen__title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.crash-screen__message {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--red);
+  word-break: break-word;
+}
+
+.crash-screen__stack {
+  margin: 0;
+  max-height: 40vh;
+  width: 100%;
+  overflow: auto;
+  padding: var(--sp-3);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface-sunken);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.crash-screen__card .btn {
+  margin-top: var(--sp-2);
+}
+
 
 /* ------------------------------------------------------------------ *
  * Extension status strip and widgets
@@ -5926,7 +6729,7 @@ animation: pop var(--dur-fast) var(--ease);
   .runtime-chip[data-phase='starting'] .runtime-chip__dot,
   .popover,
   .turn,
-  .scroll-bottom,
+  .scroll-jump,
   .palette,
   .launcher,
   .mention,
@@ -6222,7 +7025,7 @@ button:focus-visible,
 
 @media (max-width: 760px) {
   .sidebar__body {
-    padding: var(--sp-4) var(--sp-3) var(--sp-5);
+    padding: var(--sp-4) var(--sp-3) var(--sp-7);
   }
 
   .composer-wrap {
@@ -6257,12 +7060,8 @@ button:focus-visible,
  * Git branch menu and commit dialog
  * ------------------------------------------------------------------ */
 
-.git-chip {
-  max-width: 320px;
-  border-color: var(--border-soft);
-  background: var(--bg-panel);
-}
-
+/* .git-chip's base rule lives with the other chips above; this section only
+   carries the branch-specific parts, so the two never disagree again. */
 .git-chip[data-dirty='true'] {
   border-color: var(--border);
 }
@@ -6517,6 +7316,7 @@ button:focus-visible,
   .project__remove,
   .sidebar__section-head button,
   .titlebar > .icon-btn,
+  .shell__panel-toggle .icon-btn,
   .drawer__head > .icon-btn,
   .modal__head > .icon-btn,
   .composer__bar > .icon-btn {
@@ -6543,8 +7343,7 @@ button:focus-visible,
   }
 
   .session-bar__item,
-  .session-bar__stop,
-  .composer__delivery button {
+  .session-bar__stop {
     min-height: 30px;
   }
 
@@ -6599,7 +7398,7 @@ button:focus-visible,
   border-radius: var(--r-xs);
   border: 1px solid var(--border);
   background: var(--bg-raised);
-  color: var(--accent-hover);
+  color: var(--text-pure);
   font-family: var(--font-mono);
   font-size: 0.88em;
   line-height: 1.4;
@@ -6612,9 +7411,9 @@ button:focus-visible,
 }
 
 .md-file-link:hover {
-  background: var(--accent-soft);
-  border-color: var(--accent-line);
-  color: var(--accent);
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--text-pure);
 }
 
 .code-block__tool[data-active='true'] {
@@ -6740,7 +7539,7 @@ button:focus-visible,
   .spin,
   .spinner,
   .caret-blink {
-    animation-duration: 1s !important;
-    animation-iteration-count: infinite !important;
-  }
+  display: none !important;
+  animation: none !important;
+}
 }

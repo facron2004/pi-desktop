@@ -249,6 +249,14 @@
   color: var(--text);
 }
 
+/* The toggle is a button inside the key field; the field's frame is not a
+   focus mark for it, so it draws its own ring inside the control. */
+.provider-key .provider-key__toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  border-radius: var(--r-xs);
+}
+
 .provider-source {
   font-size: var(--text-xs);
   font-weight: 400;

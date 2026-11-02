@@ -6,6 +6,7 @@ import { useAppStore } from '../store/useAppStore'
 import { EffortSlider } from './EffortSlider'
 import { Popover } from './Popover'
 import { useT } from '../lib/i18n'
+import { resolveThinkingLevel } from '../lib/thinking'
 import '../styles/model-picker.css'
 
 /** The picker prints context windows short; `0` means Pi did not report one. */
@@ -77,14 +78,17 @@ export function ModelPicker() {
   const disabledModelSpecs = useAppStore((state) => state.disabledModelSpecs)
   const savedModel = useAppStore((state) => state.settings.model)
   const savedProvider = useAppStore((state) => state.settings.provider)
-  const liveModel = useAppStore((state) => state.piState?.model)
-  const liveLevel = useAppStore((state) => state.piState?.thinkingLevel)
+  const piState = useAppStore((state) => state.piState)
+  const liveModel = piState?.model
+  const liveLevel = piState?.thinkingLevel
   const savedLevel = useAppStore((state) => state.settings.thinkingLevel)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
-  // A cold chat has no live level yet. The saved one stays on the chip instead
-  // of disappearing until Pi answers, and a level this model cannot use does not.
-  const currentLevel = liveLevel
-    || (savedLevel && (thinkingLevels.length === 0 || thinkingLevels.includes(savedLevel)) ? savedLevel : undefined)
+  // A cold chat has no live level yet. The saved one stays on the chip until
+  // Pi answers; once Pi has answered, the chip follows the same resolved level
+  // as the slider, so it never advertises an effort this model cannot use.
+  const currentLevel =
+    resolveThinkingLevel(thinkingLevels, liveLevel, savedLevel) ??
+    (thinkingLevels.length === 0 && !piState ? liveLevel || savedLevel : undefined)
   const setModel = useAppStore((state) => state.setModel)
   const starting = useAppStore((state) => state.status.phase === 'starting')
   const models = useMemo(

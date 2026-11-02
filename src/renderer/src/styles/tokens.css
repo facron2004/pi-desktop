@@ -44,8 +44,12 @@
   /* ---- text ------------------------------------------------------ */
   --text-primary: #f2f4f8;
   --text-secondary: #9da4b2;
-  --text-tertiary: #6c7382;
-  --text-disabled: #4c525f;
+  /* Tertiary still carries 11px labels, so it has to clear 4.5:1 on the
+     canvas and in the overlay menus: #868e9e measures 5.4 on the canvas and
+     4.5 on --surface-overlay. Disabled stays a step quieter, but it is
+     neutral grey now instead of the old blue-slate that read as a hue. */
+  --text-tertiary: #868e9e;
+  --text-disabled: #747984;
 
   /* ---- accent ---------------------------------------------------- *
    * Electric blue for intent: selection, focus and the primary action all
@@ -57,6 +61,11 @@
   --accent-glow: 0 0 0 3px rgba(76, 154, 255, 0.16);
   --accent-contrast: #080b11;
   --focus-ring: var(--accent);
+  /* Selection has its own token because it cannot come from --accent-soft:
+     in the light theme the accent is near-black and a 14% wash of it lands
+     on #ededed, which is invisible against white. A colour-mix keeps the
+     wash tied to the theme's accent while staying legible under the text. */
+  --selection-bg: color-mix(in srgb, var(--accent) 32%, transparent);
 
   /* ---- status ---------------------------------------------------- */
   --status-success: #4ade80;
@@ -89,12 +98,20 @@
   --text-xl: calc(20px * var(--font-scale, 1));
   --text-2xl: calc(28px * var(--font-scale, 1));
 
-  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text',
-    'Segoe UI', system-ui, 'Helvetica Neue', sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Menlo', Consolas,
+  /* Codex Desktop 26.1027 uses the platform stack for both chrome and text. */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-reading: var(--font-ui);
+  --font-mono: ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Consolas,
     'Liberation Mono', monospace;
-  --font-sidebar: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text',
-    'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  --font-sidebar: var(--font-ui);
+  --font-weight-ui: 430;
+  --text-code: var(--text-xs);
+  --text-inline-code: 0.92em;
+  --leading-ui: 1.5;
+  --leading-reading: 1.625;
+  --leading-composer: calc(20px * var(--font-scale, 1));
+  --leading-code: max(1.5em, calc(20px * var(--font-scale, 1)));
+  --leading-diff: 1.8;
 
   /* ---- spacing ---------------------------------------------------- *
    * A 4px rhythm with a 2px half step. The half step is not a second
@@ -161,9 +178,15 @@
    * to follow past ~40 characters. */
   --content-w: 720px;
   --drawer-w: 420px;
+  /* Status card beside the conversation (not the Tools drawer). */
+  --task-rail-w: 280px;
   --shell-inset: var(--sp-3);
   --titlebar-h: 44px;
   --panel-head-h: 52px;
+  /* The shell pins the side panel's one toggle to the right corner of the
+   * content row, over whichever header is there. Both headers keep this width
+   * free so their own controls never slide under it. */
+  --panel-toggle-reserve: calc(var(--sp-5) + var(--ctl-sm) + var(--sp-1));
 
   /* ---- shadows ----------------------------------------------------- */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32), var(--border-specular);
@@ -235,6 +258,24 @@
   --sidebar-text: var(--text-primary);
   --sidebar-muted: var(--text-tertiary);
   --chrome-bg: var(--surface-chrome);
+
+  /* The sidebar's own metrics. A conversation row and a project row are two
+     different heights, and the actions of a row live in a slot that is always
+     there — so a title never changes width when the row is hovered. */
+  --sidebar-row-h: var(--ctl-sm);
+  --sidebar-project-h: var(--ctl-md);
+  --sidebar-action-slot: 60px;
+
+  /* The tint of a project icon. One hue per name; the component only writes
+     the name into `data-icon-color`. */
+  --project-icon-neutral: var(--text-primary);
+  --project-icon-yellow: #facc15;
+  --project-icon-orange: #fb923c;
+  --project-icon-green: var(--status-success);
+  --project-icon-blue: #4c9aff;
+  --project-icon-purple: #a78bfa;
+  --project-icon-pink: #f472b6;
+  --project-icon-red: var(--status-danger);
 }
 
 :root[data-theme='light'] {
@@ -251,8 +292,11 @@
   --bg-hover: #eeeeee;
   --bg-active: #e8e8e8;
 
-  --border-subtle: #e8e8e8;
-  --border-default: #e4e4e4;
+  /* Light borders climb in one direction: subtle is the faintest hairline,
+     default is one step visible and strong is the interactive edge. The old
+     pair had subtle darker than default, so the hierarchy read backwards. */
+  --border-subtle: #ededed;
+  --border-default: #e0e0e0;
   --border-strong: #d4d4d4;
   --border-specular: inset 0 1px 0 rgba(255, 255, 255, 0.85);
 
@@ -262,8 +306,10 @@
   --text-strong: #111111;
   --text-pure: #000000;
   --text-secondary: #686868;
-  --text-tertiary: #909090;
-  --text-disabled: #94a3b8;
+  /* 5.7:1 on white. The old #909090 sat at 3.2:1 while being used for
+     clickable labels, and --text-disabled keeps the same neutral family. */
+  --text-tertiary: #666666;
+  --text-disabled: #767676;
 
   --accent: #292929;
   --accent-hover: #111111;
@@ -271,11 +317,15 @@
   --accent-line: rgba(41, 41, 41, 0.32);
   --accent-glow: 0 0 0 3px rgba(41, 41, 41, 0.14);
   --accent-contrast: #ffffff;
+  /* A 40% wash is #a9a9a9 on white: unmistakably a selection rather than a
+     faint hover, and #242424 body text still keeps 6.7:1 on top of it. */
+  --selection-bg: color-mix(in srgb, var(--accent) 40%, transparent);
 
   --status-success: #16a34a;
   --status-success-soft: rgba(22, 163, 74, 0.1);
-  --status-warning: #d97706;
-  --status-warning-soft: rgba(217, 119, 6, 0.1);
+  /* #b45309 measures 5.0:1 on white; #d97706 only reached 3.2:1. */
+  --status-warning: #b45309;
+  --status-warning-soft: rgba(180, 83, 9, 0.1);
   --status-danger: #dc2626;
   --status-danger-soft: rgba(220, 38, 38, 0.1);
   --status-danger-ink: #ffffff;
@@ -307,6 +357,17 @@
   --sidebar-hover: var(--bg-hover);
   --sidebar-active: var(--bg-active);
   --chrome-bg: #f3f3f3;
+
+  /* The light theme needs deeper hues: the dark ones sit on a dark canvas,
+     and the same yellow on white is unreadable. */
+  --project-icon-neutral: var(--text-primary);
+  --project-icon-yellow: #a16207;
+  --project-icon-orange: #c2410c;
+  --project-icon-green: var(--status-success);
+  --project-icon-blue: #2563eb;
+  --project-icon-purple: #7c3aed;
+  --project-icon-pink: #db2777;
+  --project-icon-red: var(--status-danger);
 }
 
 @media (forced-colors: active) {
@@ -335,9 +396,11 @@ body {
   color: var(--text-primary);
   font-family: var(--font-ui);
   font-size: var(--text-md);
-  line-height: 1.6;
+  font-weight: var(--font-weight-ui);
+  font-synthesis-weight: none;
+  line-height: var(--leading-ui);
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+  text-rendering: auto;
   overflow: hidden;
 }
 
@@ -385,7 +448,7 @@ select {
 }
 
 ::selection {
-  background: var(--accent-soft);
+  background: var(--selection-bg);
   color: var(--text-primary);
 }
 

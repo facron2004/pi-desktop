@@ -56,6 +56,23 @@ function tools(items: ThreadItem[]): Extract<ThreadItem, { kind: 'tool' }>[] {
   return items.filter((item): item is Extract<ThreadItem, { kind: 'tool' }> => item.kind === 'tool')
 }
 
+test('structured subagent progress survives live updates and session replay', () => {
+  const args = { tasks: [{ task: 'Inspect' }, { task: 'Test' }] }
+  const details = { mode: 'parallel', results: [{ task: 'Inspect', status: 'running' }, { task: 'Test', status: 'queued' }] }
+  const started = applyEvent([], { type: 'tool_execution_start', toolCallId: 'agents', toolName: 'subagent', args })
+  const live = applyEvent(started, { type: 'tool_execution_update', toolCallId: 'agents', toolName: 'subagent', partialResult: { content: [{ type: 'text', text: 'Running' }], details } })
+  assert.deepEqual(tools(live)[0].details, details)
+  const finished = { mode: 'parallel', results: [{ task: 'Inspect', status: 'completed' }, { task: 'Test', status: 'failed' }] }
+  const result = { content: [{ type: 'text', text: 'Done' }], details: finished }
+  const final = applyEvent(live, { type: 'tool_execution_end', toolCallId: 'agents', toolName: 'subagent', result, isError: false })
+  assert.deepEqual(tools(final)[0].details, finished)
+  const replay = itemsFromMessages([
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'agents', name: 'subagent', arguments: args }], timestamp: 1 },
+    { role: 'toolResult', toolCallId: 'agents', toolName: 'subagent', content: result.content, details: finished, timestamp: 2 }
+  ])
+  assert.deepEqual(tools(replay)[0].details, finished)
+})
+
 function texts(items: ThreadItem[]): string {
   return items
     .flatMap((item) =>

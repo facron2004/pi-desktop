@@ -22,6 +22,7 @@ import type {
 } from '@shared/types'
 import type { ProviderProfile, SaveProviderInput } from '@shared/providers'
 import { modelsFromProfiles, resolveSavedModel, selectableModels } from '@shared/provider-models'
+import type { SessionNotice } from '../lib/session-indicator'
 import {
   applyEvent,
   itemsFromMessages,
@@ -38,6 +39,7 @@ import { hydrationStale, scopeEvent, scopeStatus } from '../lib/session-scope'
 import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
 import { beginStream } from '../lib/stream-events'
 import { migrateViewState } from '../lib/view-state'
+import { DEFAULT_THINKING_LEVELS } from '../lib/thinking'
 
 export type QueueKind = 'steer' | 'followUp'
 
@@ -141,6 +143,12 @@ export interface SessionThread {
   thinkingLevels: string[]
   commands: PiCommand[]
   version: number
+  /**
+   * What the last background run left behind: a failure, or an answer the
+   * reader has not seen yet. It is cleared when the conversation is opened,
+   * so it only ever marks the rows that are not on screen.
+   */
+  notice?: SessionNotice
 }
 
 const THREAD_KEYS = [
@@ -162,7 +170,8 @@ const THREAD_KEYS = [
   'agentMode',
   'models',
   'thinkingLevels',
-  'commands'
+  'commands',
+  'notice'
 ] as const
 
 function emptyThread(cwd?: string): SessionThread {
@@ -201,6 +210,8 @@ export interface AppStore {
   status: RuntimeStatus
   agentMode: AgentMode
   setAgentMode: (mode: AgentMode) => Promise<void>
+  /** Run a task-mode extension command through the live Pi process. */
+  runTaskCommand: (command: string) => Promise<void>
   isStreaming: boolean
   piState?: PiState
   models: ModelInfo[]
@@ -242,6 +253,8 @@ export interface AppStore {
   /** Set while Pi is retrying a failed request on its own. */
   retry?: RetryState
   error?: string
+  /** The mark of the conversation on screen; the sidebar reads the threads. */
+  notice?: SessionNotice
   toast?: { text: string; level: 'info' | 'warning' | 'error' }
   /** Branch and working tree of the open project, when it is a git repo. */
   git?: GitStatus
@@ -411,6 +424,26 @@ let pendingProjectPath: string | null | undefined
  * its own owner and continues to update background conversations.
  */
 let workspaceEpoch = 0
+/**
+ * The project that owns the screen, as opposed to the conversation on it.
+ *
+ * `workspaceEpoch` also moves for view-only changes — a new chat, a sidebar
+ * click — so it cannot guard a read that describes the project rather than
+ * the view. The conversation list is one of those reads: a new chat while it
+ * is in flight must not throw the fresh list away.
+ */
+let projectEpoch = 0
+
+/** A project switch: the view and the project both move. */
+function beginProjectChange(): number {
+  ++projectEpoch
+  return ++workspaceEpoch
+}
+
+/** A view-only change: the conversation on screen moves, the project does not. */
+function beginViewChange(): number {
+  return ++workspaceEpoch
+}
 const threadAliases = new Map<string, string>()
 /** One restore attempt per conversation and saved model, so a miss does not loop. */
 const modelRestoreAttempts = new Set<string>()
@@ -495,15 +528,72 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async setAgentMode(mode) {
-    if (get().status.phase !== 'ready') return
     if (get().isStreaming) {
       get().showToast('Stop the current run before changing modes', 'warning')
       return
     }
     const key = viewKeyOf(get())
+    if (!key) {
+      get().showToast('Start a conversation first', 'warning')
+      return
+    }
+    const update = bindSet(set, get, key)
+    const previous = get().agentMode
+    // The runtime boot can take a few seconds on a cold chat. Show the chosen
+    // mode immediately so a click never looks like it did nothing; Pi's own
+    // status event confirms it when the extension is ready.
+    update({ agentMode: mode })
+    const sendMode = () => tracedRpc(
+      threadKey(key),
+      'prompt',
+      { message: `/desktop-mode ${mode}` },
+      undefined,
+      'mode-change'
+    )
+    const finish = async () => {
+      await get().refreshState(threadKey(key))
+      await get().refreshCommands(threadKey(key))
+    }
     try {
+      // Selecting a mode on the welcome screen starts Pi just like sending a
+      // message does. The old guard on `status.phase === 'ready'` made the
+      // click a silent no-op while the first runtime was still booting.
       await get().ensureRuntime(key, 'mode-change')
-      await tracedRpc(threadKey(key), 'prompt', { message: `/desktop-mode ${mode}` }, undefined, 'mode-change')
+      await sendMode()
+      await finish()
+    } catch (error) {
+      let message = messageOf(error)
+      // An idle Pi can retain an older extension. If a fresh Pi still rejects
+      // the mode, the desktop main process itself needs to be restarted.
+      const unknownMode = /\bunknown (?:task )?mode\b/i
+      if (unknownMode.test(message)) {
+        try {
+          await window.pi.runtime.stop(threadKey(key))
+          await get().ensureRuntime(key, 'mode-change-reload')
+          await sendMode()
+          await finish()
+          return
+        } catch (retry) {
+          message = messageOf(retry)
+          if (unknownMode.test(message)) {
+            message = 'Restart Pi Desktop to load the updated task modes'
+          }
+        }
+      }
+      update({ agentMode: previous, error: message })
+      get().showToast(message, 'error')
+    }
+  },
+
+  async runTaskCommand(command) {
+    const key = viewKeyOf(get())
+    if (!key) return
+    try {
+      // These go to Pi's extension command path, not the transcript: no
+      // optimistic user message and no streaming state. The extension owns
+      // the mode or goal mutation and publishes its new state back.
+      await get().ensureRuntime(key, 'task-command')
+      await tracedRpc(threadKey(key), 'prompt', { message: command }, 900_000, 'task-command')
       await get().refreshState(threadKey(key))
     } catch (error) {
       bindSet(set, get, key)({ error: messageOf(error) })
@@ -590,7 +680,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async switchProject(path, options) {
-    const epoch = ++workspaceEpoch
+    const epoch = beginProjectChange()
     const current = get().workspace
     const same = path === null
       ? !current && get().settings.activeWorkspaceId === null
@@ -642,12 +732,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async openWorkspace(workspace, sessionFile, sourceAction = 'project-open') {
     void sourceAction
-    const epoch = ++workspaceEpoch
+    const epoch = beginProjectChange()
     drainPending()
     pendingProjectPath = undefined
     const cached = sessionFile ? get().threads[sessionFile] : undefined
     const draftId = sessionFile ? undefined : mintDraft()
-    const thread = cached ?? emptyThread(workspace?.path)
+    // Opening a conversation is what clears its mark: the reader has seen it.
+    const thread = cached
+      ? { ...cached, notice: undefined }
+      : emptyThread(workspace?.path)
     const threads = { ...get().threads, [sessionFile ?? draftId!]: thread }
     set({
       workspace,
@@ -700,26 +793,39 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async refreshSessions() {
-    const epoch = workspaceEpoch
+    const epoch = projectEpoch
     const sessions = await window.pi.sessions.list()
-    // A switch that started while this list was being read owns the screen.
-    if (epoch !== workspaceEpoch) return
+    // The list is the project's conversations on disk, not the one on screen,
+    // so only a project switch makes a read obsolete. Guarding it with the
+    // view epoch is what made two conversations created in quick succession
+    // both vanish from the sidebar: a new chat bumped that epoch while the
+    // read was out, and the fresh list was thrown away.
+    if (epoch !== projectEpoch) return
     set({ sessions })
   },
 
   async selectSession(session, sourceAction = 'sidebar-select') {
     void sourceAction
-    const epoch = ++workspaceEpoch
     const workspace = get().workspace
+    const changesProject = session.cwd
+      ? !workspace || !samePath(session.cwd, workspace.path)
+      : Boolean(workspace || get().settings.activeWorkspaceId !== null)
+    const epoch = changesProject ? beginProjectChange() : beginViewChange()
     // Paint anything still queued for the conversation being left. Those
     // reducers name their own owner, so they cannot land in the new view.
     drainPending()
     const cached = get().threads[session.file]
-    const thread = cached ?? emptyThread(session.cwd)
+    // Opening a conversation is what clears its mark: the reader has seen it.
+    const thread = cached ? { ...cached, notice: undefined } : emptyThread(session.cwd)
+    // A conversation Pi has not written to disk yet is still keyed by its
+    // draft id (or by the path Pi assigned before flushing). It is a
+    // conversation, not a file, so the view follows its own key and nothing
+    // here may read that key as a session file.
+    const live = session.file.startsWith('draft:')
     set({
-      threads: cached ? get().threads : { ...get().threads, [session.file]: thread },
-      draftId: undefined,
-      activeSessionFile: session.file,
+      threads: { ...get().threads, [session.file]: thread },
+      draftId: live ? session.file : undefined,
+      activeSessionFile: live ? undefined : session.file,
       error: undefined,
       ...projectThread(thread)
     })
@@ -737,16 +843,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
           lastOpenedAt: Date.now()
         }
         const settings = await window.pi.settings.patch({
-          ...(known ? {} : { workspaces: [target, ...get().settings.workspaces] }),
+          ...(known ? {} : { workspaces: [...get().settings.workspaces, target] }),
           activeWorkspaceId: target.id
         })
         if (epoch !== workspaceEpoch) return
         set({ settings, workspace: target })
         void get().refreshGit()
       }
-      if (!cached || cached.version === 0) await get().hydrateSession(session.file)
+      // There is no file to replay for a conversation that has none yet; its
+      // transcript is the live one the store already holds.
+      if (!live && (!cached || cached.version === 0)) await get().hydrateSession(session.file)
     } catch (error) {
-      if (get().activeSessionFile === session.file) set({ error: messageOf(error) })
+      if ((get().activeSessionFile ?? get().draftId) === session.file) set({ error: messageOf(error) })
     }
   },
 
@@ -876,7 +984,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async newChat() {
-    ++workspaceEpoch
+    beginViewChange()
     drainPending()
     const draftId = mintDraft()
     const thread = emptyThread(get().workspace?.path)
@@ -938,6 +1046,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (rename && !images.length) {
       await get().renameSession(rename[1].trim())
       return
+    }
+    // App commands are client features, not Pi slash commands. Typing one is
+    // the same request as picking it from the palette.
+    if (!images.length) {
+      const appCommand = APP_COMMANDS.find(
+        (command) => command.source === 'app' && !command.takesArgument && trimmed === `/${command.name}`
+      )
+      if (appCommand) {
+        await get().runAppCommand(appCommand.name)
+        return
+      }
     }
     let key = viewKeyOf(get())
     if (!key) {
@@ -1193,9 +1312,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async setThinkingLevel(level) {
     const owner = viewKeyOf(get())
     try {
-      const key = await get().ensureRuntime(owner, 'set-thinking')
-      await tracedRpc(key, 'set_thinking_level', { level }, undefined, 'set-thinking')
-      await get().refreshState(threadKey(owner))
+      // A cold chat has no process yet. Starting one just to store the effort
+      // is what the empty card was avoiding; the next launch already reads
+      // the saved level. An existing process still hears the change now.
+      const running = owner ? await window.pi.runtime.has(owner) : false
+      if (running) {
+        const key = await get().ensureRuntime(owner, 'set-thinking')
+        await tracedRpc(key, 'set_thinking_level', { level }, undefined, 'set-thinking')
+        await get().refreshState(threadKey(owner))
+      }
       if (get().settings.thinkingLevel !== level) {
         const settings = await window.pi.settings.patch({ thinkingLevel: level })
         set({ settings })
@@ -1234,17 +1359,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async cycleThinkingLevel(direction = 1) {
     const { thinkingLevels, piState } = get()
-    if (thinkingLevels.length === 0) {
+    const levels =
+      thinkingLevels.length > 0 ? thinkingLevels : piState ? thinkingLevels : DEFAULT_THINKING_LEVELS
+    if (levels.length === 0) {
       get().showToast('This model has no reasoning levels', 'warning')
       return
     }
-    if (thinkingLevels.length === 1) {
-      get().showToast(`Reasoning effort: ${thinkingLevels[0]}`, 'warning')
+    if (levels.length === 1) {
+      get().showToast(`Reasoning effort: ${levels[0]}`, 'warning')
       return
     }
-    const current = thinkingLevels.indexOf(piState?.thinkingLevel ?? get().settings.thinkingLevel ?? '')
+    const current = levels.indexOf(piState?.thinkingLevel ?? get().settings.thinkingLevel ?? '')
     const start = current === -1 ? (direction === 1 ? -1 : 0) : current
-    const next = thinkingLevels[(start + direction + thinkingLevels.length) % thinkingLevels.length]
+    const next = levels[(start + direction + levels.length) % levels.length]
     await get().setThinkingLevel(next)
     get().showToast(`Reasoning effort: ${next}`)
   },
@@ -1444,7 +1571,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       )
       // The app's own commands come first — they are few, and they are the
       // ones the desktop app is for.
-      update({ commands: [...APP_COMMANDS, ...(data?.commands ?? []).filter((command) => command.name !== 'desktop-mode')] })
+      const appNames = new Set(APP_COMMANDS.map((command) => command.name))
+      update({
+        commands: [
+          ...APP_COMMANDS,
+          ...(data?.commands ?? []).filter(
+            (command) =>
+              !appNames.has(command.name) &&
+              command.name !== 'desktop-mode' &&
+              command.name !== 'desktop-goal'
+          )
+        ]
+      })
     } catch {
       update({ commands: APP_COMMANDS })
     }
@@ -1514,6 +1652,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         break
       case 'new':
         await get().newChat()
+        break
+      case 'subagent':
+        await get().setAgentMode(get().agentMode === 'subagent' ? 'default' : 'subagent')
         break
       default:
         break
@@ -1740,13 +1881,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async refreshGit() {
-    const epoch = workspaceEpoch
+    // Git describes the open folder, not the conversation on screen.
+    const epoch = projectEpoch
     try {
       const git = await window.pi.git.status()
-      if (epoch !== workspaceEpoch) return
+      if (epoch !== projectEpoch) return
       set({ git })
     } catch {
-      if (epoch !== workspaceEpoch) return
+      if (epoch !== projectEpoch) return
       // A folder that is not a repository is a normal state, not an error.
       set({ git: undefined })
     }
@@ -1975,19 +2117,28 @@ export function applyAppearance(
     }
     const mapped = fontMap[settings.fontFamily]
     // The installed copy is registered as 苹方; keep both names so either one resolves.
-    const pingfang = `"PingFang SC", "苹方", "苹方-简", sans-serif`
+    // YaHei has to follow: a bare "PingFang SC Regular" often misses on Windows,
+    // and the next generic sans-serif is then drawn as SimSun.
+    const pingfang = `"PingFang SC", "苹方", "苹方-简", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif`
+    const pingfangWeights: Record<string, string> = {
+      'PingFang SC': pingfang,
+      'PingFang SC Regular': `"PingFang SC Regular", ${pingfang}`,
+      'PingFang SC Medium': `"PingFang SC Medium", ${pingfang}`,
+      'PingFang SC Bold': `"PingFang SC Bold", ${pingfang}`
+    }
     const fontVal =
       mapped ??
-      (settings.fontFamily === 'PingFang SC'
-        ? pingfang
-        : settings.fontFamily.includes(',') || settings.fontFamily.includes('"') || settings.fontFamily.includes("'")
-          ? settings.fontFamily
-          : `"${settings.fontFamily}", sans-serif`)
+      pingfangWeights[settings.fontFamily] ??
+      (settings.fontFamily.includes(',') || settings.fontFamily.includes('"') || settings.fontFamily.includes("'")
+        ? settings.fontFamily
+        : `"${settings.fontFamily}", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif`)
     root.style.setProperty('--font-ui', fontVal)
     root.style.setProperty('--font-sidebar', fontVal)
+    root.style.setProperty('--font-reading', fontVal)
   } else {
     remove('--font-ui')
     remove('--font-sidebar')
+    remove('--font-reading')
   }
 
   void window.pi.app.setTheme(dark ? 'dark' : 'light')
@@ -2013,7 +2164,8 @@ function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEY
     agentMode: thread.agentMode ?? 'default',
     models: thread.models ?? [],
     thinkingLevels: thread.thinkingLevels ?? [],
-    commands: thread.commands ?? APP_COMMANDS
+    commands: thread.commands ?? APP_COMMANDS,
+    notice: thread.notice
   }
 }
 
@@ -2222,6 +2374,9 @@ function handleEvent(
       set((state) => ({
         isStreaming: true,
         retry: undefined,
+        // A new run supersedes whatever the last one left behind: the row is
+        // working again, so there is nothing left to notice.
+        notice: undefined,
         run: !state.run.runId || state.run.phase === 'idle' || state.run.settled
           ? {
               phase: phaseFor(state, 'working'),
@@ -2270,6 +2425,19 @@ function handleEvent(
         .reverse()
         .find((item) => item.kind === 'assistant')
       const failed = !aborted && lastAssistant?.kind === 'assistant' && lastAssistant.stopReason === 'error'
+      // A mark means "there is something in this conversation the reader has
+      // not looked at": a failure outranks an answer, and an answer that
+      // finished while the reader was elsewhere is unread. A conversation the
+      // reader is watching speaks for itself.
+      const settledKey = owner ? threadKey(owner) : ''
+      const viewed = settledKey ? settledKey === viewKeyOf(realGet ? realGet() : get()) : true
+      const notice: SessionNotice | undefined = viewed
+        ? undefined
+        : failed
+          ? 'error'
+          : aborted
+            ? undefined
+            : 'unread'
       set({
         isStreaming: false,
         items: aborted ? markAborted(state.items) : state.items,
@@ -2281,6 +2449,7 @@ function handleEvent(
           durationMs: startedAt ? Date.now() - startedAt : undefined
         },
         retry: undefined,
+        notice,
         ...(event.runtimeStopped ? { status: { ...state.status, phase: 'ready' as const }, transport: 'connected' as const } : {}),
         // Pi resolves a dialog on its own when its timeout expires. The
         // client is not told, so the dialog is closed when the agent moves on.
@@ -2476,7 +2645,7 @@ function handleExtensionUi(
       if (!key) break
       if (key === 'pi-desktop-mode') {
         const mode = request.statusText
-        if (mode === 'default' || mode === 'goal' || mode === 'plan') set({ agentMode: mode })
+        if (mode === 'default' || mode === 'goal' || mode === 'plan' || mode === 'subagent' || mode === 'computer') set({ agentMode: mode })
         break
       }
       set((state) => ({

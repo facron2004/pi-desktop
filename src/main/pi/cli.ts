@@ -8,10 +8,12 @@ export interface CliResult {
   stderr: string
 }
 
+const CLI_TIMEOUT_MS = 10_000
+
 /** Run the Pi CLI once and capture its output. */
 export function runPiCli(
   args: string[],
-  options: { cwd?: string; customPiPath?: string } = {}
+  options: { cwd?: string; customPiPath?: string; timeoutMs?: number } = {}
 ): Promise<CliResult> {
   const launch = resolvePiLaunch(options.customPiPath)
   if (launch.source === 'none') {
@@ -30,6 +32,23 @@ export function runPiCli(
     })
     let stdout = ''
     let stderr = ''
+    let settled = false
+
+    const timeout = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try {
+        child.kill()
+      } catch {
+        /* ignore */
+      }
+      resolve({
+        code: null,
+        stdout,
+        stderr: stderr || `Command timed out after ${options.timeoutMs ?? CLI_TIMEOUT_MS}ms`
+      })
+    }, options.timeoutMs ?? CLI_TIMEOUT_MS)
+
     child.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf8')
     })
@@ -37,9 +56,17 @@ export function runPiCli(
       stderr += chunk.toString('utf8')
     })
     child.on('error', (error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
       resolve({ code: null, stdout, stderr: stderr || error.message })
     })
-    child.on('close', (code) => resolve({ code, stdout, stderr }))
+    child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      resolve({ code, stdout, stderr })
+    })
   })
 }
 

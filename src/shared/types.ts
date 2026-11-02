@@ -254,12 +254,32 @@ export interface ExtensionUiResponse {
  * App domain
  * ------------------------------------------------------------------ */
 
+/**
+ * The tint a project icon can wear.
+ *
+ * The eight hues are the ones MCode offers; each maps to one token, so the
+ * colour never appears as a literal in a component.
+ */
+export type ProjectIconColor =
+  | 'neutral'
+  | 'yellow'
+  | 'orange'
+  | 'green'
+  | 'blue'
+  | 'purple'
+  | 'pink'
+  | 'red'
+
 export interface Workspace {
   id: string
   path: string
   name: string
   lastOpenedAt: number
   folders?: string[]
+  /** Emoji the project wears instead of the folder icon. */
+  icon?: string
+  /** Tint of the project icon. */
+  iconColor?: ProjectIconColor
 }
 
 export interface SessionMeta {
@@ -466,6 +486,7 @@ export interface GitWorktree {
 }
 
 export interface GitBranches {
+  isRepo?: boolean
   current?: string
   detached: boolean
   branches: GitBranch[]
@@ -539,7 +560,32 @@ export interface GitFileDiff {
 export type ThemePreference = 'dark' | 'light' | 'system'
 export type AppLanguage = 'en' | 'zh-CN'
 export type PermissionMode = 'ask' | 'auto' | 'full'
-export type AgentMode = 'default' | 'goal' | 'plan'
+/**
+ * A conversation's task mode. Plan explores without writing and submits its
+ * plan for approval; Goal keeps working until the goal is done or blocked;
+ * Subagent makes the model delegate self-contained work to isolated children.
+ * Computer Use lets the model see and operate the Windows desktop; choosing
+ * the mode is the approval for those actions.
+ */
+export type AgentMode = 'default' | 'goal' | 'plan' | 'subagent' | 'computer'
+
+export type SubagentTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'aborted'
+
+/** Progress published in the subagent tool's result details. */
+export interface SubagentTaskProgress {
+  task: string
+  cwd: string
+  status: SubagentTaskStatus
+  model?: string
+  activity?: string
+  toolName?: string
+  startedAt?: number
+  finishedAt?: number
+  output?: string
+  errorMessage?: string
+  /** The child's transcript, captured from its JSON event stream. */
+  messages?: AgentMessage[]
+}
 
 export interface ToolApproval {
   toolName: string
@@ -719,6 +765,15 @@ export interface PiDesktopBridge {
     /** Aggregate token consumption and conversation records across all sessions. */
     usageStats(customDir?: string): Promise<AggregatedUsageStats>
   }
+  terminal: {
+    /** Start a real PTY shell for the open workspace. */
+    create(options: TerminalCreateOptions): Promise<TerminalSessionInfo>
+    write(id: string, data: string): Promise<void>
+    resize(id: string, cols: number, rows: number): Promise<void>
+    kill(id: string): Promise<void>
+    onData(handler: (payload: TerminalDataPayload) => void): () => void
+    onExit(handler: (payload: TerminalExitPayload) => void): () => void
+  }
   runtime: {
     start(options: RuntimeStartOptions): Promise<{ ok: boolean; error?: string }>
     /** Start Pi for one conversation if it is not already running. */
@@ -794,6 +849,8 @@ export interface PiDesktopBridge {
     pull(): Promise<GitCommitResult>
   }
   shell: {
+    /** Data URLs of the installed editors' and shells' own icons. */
+    nativeIcons(): Promise<Record<string, string>>
     openPath(target: string): Promise<string>
     openInExplorer(target: string): Promise<string>
     openExternal(url: string): Promise<void>
@@ -894,4 +951,35 @@ export interface RuntimeStatus {
   error?: string
   sessionFile?: string
   sessionId?: string
+}
+
+/* ------------------------------------------------------------------ *
+ * Terminal (real PTY)
+ * ------------------------------------------------------------------ */
+
+export interface TerminalCreateOptions {
+  cols: number
+  rows: number
+  /** The working directory; defaults to the open workspace. */
+  cwd?: string
+  /** A terminalShell setting value: powershell, cmd, gitbash or wsl. */
+  shell?: string
+}
+
+export interface TerminalSessionInfo {
+  id: string
+  pid: number
+  shell: string
+  cwd: string
+}
+
+export interface TerminalDataPayload {
+  id: string
+  data: string
+}
+
+export interface TerminalExitPayload {
+  id: string
+  exitCode: number
+  signal?: number
 }

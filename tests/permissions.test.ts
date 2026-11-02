@@ -78,4 +78,6 @@ test('the real extension serializes confirmations and blocks denied or aborted t
   controller.abort()
   assert.equal((await call(event, ctx) as { block: boolean }).block, true)
   assert.equal(answers.length, 2, 'aborted work never opens another confirmation')
+  assert.equal(await call({ toolName: 'computer', input: { action: 'screenshot' } }, ctx), undefined)
+  assert.equal(answers.length, 2, 'Computer Use does not open another confirmation')
 })

@@ -1,7 +1,17 @@
 import { app, BrowserWindow, Notification, dialog, ipcMain, shell } from 'electron'
 import { exec } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from 'node:fs'
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+  type Dirent
+} from 'node:fs'
 import path from 'node:path'
 import type {
   AppInfo,
@@ -16,6 +26,7 @@ import type {
   RuntimeRekey,
   RuntimeStartOptions,
   RuntimeStatus,
+  TerminalCreateOptions,
   TextSearchHit,
   UpgradeResult,
   VersionCheckResult,
@@ -27,6 +38,7 @@ import { resolvePiLaunch } from './pi/locate'
 import { readTraceHint } from './pi/trace'
 import type { SessionSupervisor } from './pi/supervisor'
 import { readMcpConfig } from './mcp'
+import { nativeAppIcons } from './native-icons'
 import {
   addWorktree,
   applyPatch,
@@ -61,14 +73,47 @@ import {
 } from './sessions'
 import { querySystemFonts } from './fonts'
 import { registerProviderIpc } from './providers/ipc'
+import { TerminalManager } from './terminal'
 
 export interface IpcContext {
   supervisor: SessionSupervisor
   settings: SettingsStore
   getWindow: () => BrowserWindow | null
+  terminals: TerminalManager
 }
 
-const MAX_FILE_BYTES = 512 * 1024
+export const MAX_FILE_BYTES = 512 * 1024
+
+export function readBoundedFile(
+  target: string,
+  maxBytes = MAX_FILE_BYTES
+): { content: string; truncated: boolean; size: number } | null {
+  try {
+    const stats = statSync(target)
+    if (!stats.isFile()) return null
+    const truncated = stats.size > maxBytes
+    const bytesToRead = truncated ? maxBytes : stats.size
+    let content = ''
+    if (bytesToRead > 0) {
+      const fd = openSync(target, 'r')
+      try {
+        const buffer = Buffer.alloc(bytesToRead)
+        let totalRead = 0
+        while (totalRead < bytesToRead) {
+          const bytesRead = readSync(fd, buffer, totalRead, bytesToRead - totalRead, totalRead)
+          if (bytesRead === 0) break
+          totalRead += bytesRead
+        }
+        content = buffer.subarray(0, totalRead).toString('utf8')
+      } finally {
+        closeSync(fd)
+      }
+    }
+    return { content, truncated, size: stats.size }
+  } catch {
+    return null
+  }
+}
 const MAX_SEARCH_RESULTS = 200
 const MAX_SEARCH_DEPTH = 12
 /** How many matches of one file a text search reports. */
@@ -342,8 +387,24 @@ function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
 }
 
 export function registerIpc(context: IpcContext): void {
-  const { supervisor, settings, getWindow } = context
+  const { supervisor, settings, getWindow, terminals } = context
   registerProviderIpc(context)
+
+  // A terminal is a real PTY, not a conversation: its output goes straight to
+  // the drawer and never into Pi's message stream.
+  ipcMain.handle('terminal:create', (_event, options: TerminalCreateOptions) => {
+    const root = workspaceRoot(context)
+    return terminals.create({
+      ...options,
+      cwd: options?.cwd?.trim() || root,
+      shell: options?.shell || settings.get().terminalShell
+    })
+  })
+  ipcMain.handle('terminal:write', (_event, id: string, data: string) => terminals.write(id, data))
+  ipcMain.handle('terminal:resize', (_event, id: string, cols: number, rows: number) =>
+    terminals.resize(id, cols, rows)
+  )
+  ipcMain.handle('terminal:kill', (_event, id: string) => terminals.kill(id))
 
   ipcMain.handle('app:info', async (): Promise<AppInfo> => {
     const current = settings.get()
@@ -352,7 +413,7 @@ export function registerIpc(context: IpcContext): void {
     return {
       // `npm_package_version` only exists when npm launched the app; a
       // packaged build reads the version it was built with instead.
-      version: process.env.npm_package_version ?? app.getVersion() ?? '0.7.0',
+      version: process.env.npm_package_version ?? app.getVersion() ?? '0.7.2',
       electron: process.versions.electron,
       node: process.versions.node,
       platform: process.platform,
@@ -369,20 +430,24 @@ export function registerIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('dialog:pickDirectory', async (_event, defaultPath?: string): Promise<string | null> => {
-    const window = getWindow()
-    const result = window && !window.isDestroyed()
-      ? await dialog.showOpenDialog(window, {
-          title: 'Select folder',
-          defaultPath: defaultPath || undefined,
-          properties: ['openDirectory', 'createDirectory']
-        })
-      : await dialog.showOpenDialog({
-          title: 'Select folder',
-          defaultPath: defaultPath || undefined,
-          properties: ['openDirectory', 'createDirectory']
-        })
-    if (result.canceled || !result.filePaths.length) return null
-    return result.filePaths[0]
+    try {
+      const window = getWindow()
+      const result = window && !window.isDestroyed()
+        ? await dialog.showOpenDialog(window, {
+            title: 'Select folder',
+            defaultPath: defaultPath || undefined,
+            properties: ['openDirectory', 'createDirectory']
+          })
+        : await dialog.showOpenDialog({
+            title: 'Select folder',
+            defaultPath: defaultPath || undefined,
+            properties: ['openDirectory', 'createDirectory']
+          })
+      if (result.canceled || !result.filePaths.length) return null
+      return result.filePaths[0]
+    } catch {
+      return null
+    }
   })
 
   // One dialog for every file the composer can take. Windows cannot select
@@ -395,10 +460,15 @@ export function registerIpc(context: IpcContext): void {
       defaultPath: defaultPath || undefined,
       properties: ['openFile', 'multiSelections'] as ('openFile' | 'multiSelections')[]
     }
-    const window = getWindow()
-    const result = window && !window.isDestroyed()
-      ? await dialog.showOpenDialog(window, options)
-      : await dialog.showOpenDialog(options)
+    let result: Electron.OpenDialogReturnValue
+    try {
+      const window = getWindow()
+      result = window && !window.isDestroyed()
+        ? await dialog.showOpenDialog(window, options)
+        : await dialog.showOpenDialog(options)
+    } catch {
+      return []
+    }
     if (result.canceled) return []
     const picked: PickedFile[] = []
     for (const file of result.filePaths) {
@@ -442,7 +512,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('app:checkUpdate', async (): Promise<VersionCheckResult> => {
     const currentPiVersion = (await piVersion(settings.get().piPath)) || '1.4.0'
-    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.7.0'
+    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.7.2'
 
     let piCliStatus: VersionItemStatus = {
       current: currentPiVersion,
@@ -490,7 +560,7 @@ export function registerIpc(context: IpcContext): void {
       if (!res.ok) {
         return { success: false, error: res.error || 'Failed to pull update' }
       }
-      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.7.0'
+      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.7.2'
       return { success: true, version: current }
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
@@ -504,23 +574,27 @@ export function registerIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('workspaces:pick', async (): Promise<Workspace | null> => {
-    const window = getWindow()
-    const result = window && !window.isDestroyed()
-      ? await dialog.showOpenDialog(window, {
-          title: 'Choose a project folder',
-          properties: ['openDirectory', 'createDirectory']
-        })
-      : await dialog.showOpenDialog({ properties: ['openDirectory'] })
-    if (result.canceled || !result.filePaths.length) return null
-    const dir = path.resolve(result.filePaths[0])
-    const workspace: Workspace = {
-      id: randomUUID(),
-      path: dir,
-      name: workspaceName(dir),
-      lastOpenedAt: Date.now()
+    try {
+      const window = getWindow()
+      const result = window && !window.isDestroyed()
+        ? await dialog.showOpenDialog(window, {
+            title: 'Choose a project folder',
+            properties: ['openDirectory', 'createDirectory']
+          })
+        : await dialog.showOpenDialog({ properties: ['openDirectory'] })
+      if (result.canceled || !result.filePaths.length) return null
+      const dir = path.resolve(result.filePaths[0])
+      const workspace: Workspace = {
+        id: randomUUID(),
+        path: dir,
+        name: workspaceName(dir),
+        lastOpenedAt: Date.now()
+      }
+      settings.addWorkspace(workspace)
+      return workspace
+    } catch {
+      return null
     }
-    settings.addWorkspace(workspace)
-    return workspace
   })
 
   ipcMain.handle('workspaces:remove', (_event, id: string): AppSettings => {
@@ -685,23 +759,15 @@ export function registerIpc(context: IpcContext): void {
     const root = workspaceRoot(context)
     const target = path.resolve(root, file)
     if (!isInside(root, target)) return null
-    try {
-      const stats = statSync(target)
-      if (!stats.isFile()) return null
-      const truncated = stats.size > MAX_FILE_BYTES
-      const content = truncated
-        ? readFileSync(target, { encoding: 'utf8' }).slice(0, MAX_FILE_BYTES)
-        : readFileSync(target, 'utf8')
-      const ext = path.extname(target).slice(1).toLowerCase()
-      return {
-        path: target,
-        content,
-        truncated,
-        size: stats.size,
-        language: LANGUAGE_BY_EXT[ext] ?? 'text'
-      }
-    } catch {
-      return null
+    const result = readBoundedFile(target)
+    if (!result) return null
+    const ext = path.extname(target).slice(1).toLowerCase()
+    return {
+      path: target,
+      content: result.content,
+      truncated: result.truncated,
+      size: result.size,
+      language: LANGUAGE_BY_EXT[ext] ?? 'text'
     }
   })
 
@@ -819,19 +885,25 @@ export function registerIpc(context: IpcContext): void {
           : mimeType.includes('gif')
             ? 'gif'
             : 'jpg'
-      const window = getWindow()
-      const result = window && !window.isDestroyed()
-        ? await dialog.showSaveDialog(window, {
-            title: 'Save the picture',
-            defaultPath: `pi-picture-${Date.now()}.${extension}`,
-            filters: [{ name: 'Image', extensions: [extension] }]
-          })
-        : await dialog.showSaveDialog({
-            defaultPath: `pi-picture-${Date.now()}.${extension}`
-          })
+      let result: Electron.SaveDialogReturnValue
+      try {
+        const window = getWindow()
+        result = window && !window.isDestroyed()
+          ? await dialog.showSaveDialog(window, {
+              title: 'Save the picture',
+              defaultPath: `pi-picture-${Date.now()}.${extension}`,
+              filters: [{ name: 'Image', extensions: [extension] }]
+            })
+          : await dialog.showSaveDialog({
+              defaultPath: `pi-picture-${Date.now()}.${extension}`
+            })
+      } catch {
+        return null
+      }
       if (result.canceled || !result.filePath) return null
       try {
-        writeFileSync(result.filePath, Buffer.from(data, 'base64'))
+        const base64Data = data.includes(',') ? data.split(',')[1] : data
+        writeFileSync(result.filePath, Buffer.from(base64Data, 'base64'))
         return result.filePath
       } catch (error) {
         console.error('[pi-desktop] could not save the picture:', error)
@@ -910,6 +982,8 @@ export function registerIpc(context: IpcContext): void {
     readMcpConfig(workspaceRoot(context), settings.get().trustProject)
   )
 
+  ipcMain.handle('shell:nativeIcons', () => nativeAppIcons())
+
   ipcMain.handle('shell:openPath', async (_event, target: string) => {
     const opener = settings.get().defaultFileOpener
     if (opener === 'vscode') {
@@ -967,7 +1041,7 @@ export function registerIpc(context: IpcContext): void {
  * destroyed window throws "Object has been destroyed" and takes the whole
  * main process down with an error dialog.
  */
-function sendToWindow(window: BrowserWindow | null, channel: string, payload: unknown): void {
+export function sendToWindow(window: BrowserWindow | null, channel: string, payload: unknown): void {
   if (!window || window.isDestroyed()) return
   const contents = window.webContents
   if (!contents || contents.isDestroyed()) return

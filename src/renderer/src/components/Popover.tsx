@@ -64,6 +64,9 @@ export function Popover({
       const above = Math.max(0, rect.top - edge - gap)
       const below = Math.max(0, innerHeight - rect.bottom - edge - gap)
       const preferTop = placement === 'top'
+      // `scrollHeight` is the full content height even while the panel is
+      // clamped, so this reads the natural size without first undoing the
+      // previous clamp (which would bounce the ResizeObserver).
       const naturalHeight = panel.scrollHeight + 2
       const useTop =
         placement !== 'right' &&
@@ -71,7 +74,10 @@ export function Popover({
           ? above >= naturalHeight || above >= below
           : below < naturalHeight && above > below)
       const available = placement === 'right' ? innerHeight - edge * 2 : useTop ? above : below
-      panel.style.maxHeight = `${available}px`
+      // A max-height that only just covers the content still produces a
+      // scrollbar: the border and rounding take the last pixels. Leave the
+      // panel unclamped when it fits, and only scroll when it really cannot.
+      panel.style.maxHeight = available >= naturalHeight + 2 ? '' : `${available}px`
       const size = { width: panel.offsetWidth, height: panel.offsetHeight }
       const left =
         placement === 'right'

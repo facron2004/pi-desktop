@@ -1,6 +1,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import '@xterm/xterm/css/xterm.css'
 import './styles/tokens.css'
 import './styles/base/controls.css'
 import './styles/global.css'
@@ -13,6 +15,8 @@ if (!container) throw new Error('Root container is missing')
 
 createRoot(container).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>
 )

@@ -39,6 +39,31 @@ function brief(value: unknown, max = 60): string {
 }
 
 /**
+ * The one line a shell command should occupy in the trace.
+ *
+ * Pi starts the command with `cd "<workspace>" &&`, then often chains the
+ * real work with `&&` and trims the output (`2>&1 | tail`). Showing that
+ * whole string made every row the same long line, and the reply had to sit
+ * underneath the pile. The row names the first real command.
+ */
+export function commandSummary(command: string): string {
+  const text = command
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*)+/i, '')
+  const parts = text
+    .split(/\s*(?:&&|;)\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const first = (parts[0] ?? text)
+    .replace(/\s+\d*>&\d+/g, '')
+    .replace(/\s*\|\s*(?:tail|head)\s+-?\d+\s*$/i, '')
+    .trim()
+  const extra = parts.length > 1 ? ` · +${parts.length - 1}` : ''
+  return brief(`${first}${extra}`, 72)
+}
+
+/**
  * A path as it should be shown: relative to the project when it is inside
  * it, because the full path is mostly noise.
  */
@@ -79,13 +104,13 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     label: 'Bash',
     plural: 'bash commands',
     tone: 'exec',
-    summary: (args) => brief(str(args.command).split('\n')[0])
+    summary: (args) => commandSummary(str(args.command))
   },
   powershell: {
     label: 'PowerShell',
     plural: 'PowerShell commands',
     tone: 'exec',
-    summary: (args) => brief(str(args.command).split('\n')[0])
+    summary: (args) => commandSummary(str(args.command))
   },
   grep: {
     label: 'Grep',
@@ -112,6 +137,34 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     plural: 'listings',
     tone: 'read',
     summary: (args, root) => displayPath(str(args.path) || '.', root)
+  },
+  subagent: {
+    label: 'Subagent',
+    plural: 'subagent calls',
+    tone: 'generic',
+    summary: (args) => {
+      const tasks = Array.isArray(args.tasks) ? args.tasks.length : 0
+      return tasks ? `${tasks} parallel tasks` : brief(str(args.task))
+    }
+  },
+  exit_plan_mode: {
+    label: 'Plan',
+    plural: 'plans',
+    tone: 'generic',
+    summary: (args) => brief(str(args.plan))
+  },
+  computer: {
+    label: 'Computer',
+    plural: 'computer actions',
+    tone: 'generic',
+    summary: (args) => {
+      const action = str(args.action)
+      if (action === 'type') return brief(str(args.text))
+      if (action === 'key') return brief(str(args.key))
+      const x = str(args.x)
+      const y = str(args.y)
+      return x && y ? `${action} ${x},${y}` : action
+    }
   }
 }
 

@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
-  ChevronRight,
+  ChevronDown,
   ChevronsDownUp,
   ChevronsUpDown,
   Columns2,
   Copy,
   Ellipsis,
-  ExternalLink,
   FileDiff,
+  FilePen,
+  Folder,
   Files,
   GitCommit,
   GitCompare,
@@ -17,16 +18,20 @@ import {
   MessageSquare,
   Rows3,
   Search,
-  SquareArrowOutUpRight,
   X
 } from 'lucide-react'
 import { collectChanges, countChangedFiles, type FileChange } from '../lib/changes'
 import { formatChanges } from '../lib/diff-text'
-import { relativePath, resolveAgainst } from '../lib/path'
+import { basename, relativePath, resolveAgainst } from '../lib/path'
+import { languageOf } from '../lib/files'
+import { countLines, LOG_PAGE_LINES } from '../lib/log-output'
 import type { ThreadItem } from '../lib/thread'
 import { useAppStore } from '../store/useAppStore'
 import { diffStats } from '../lib/diff-fold'
+import { CodeSnippet } from './CodeSnippet'
 import { DiffView } from './DiffView'
+import { FileIcon } from './FileIcon'
+import { LogOutput } from './conversation/LogOutput'
 import { FileTree } from './FileTree'
 import { FileViewer } from './FileViewer'
 import { CommitDialog } from './CommitDialog'
@@ -190,6 +195,16 @@ export function InspectorPanel({
       return next
     })
   }
+  /** Open or close one file's body; the row and its caret are the same action. */
+  const toggleChange = useCallback((path: string) => {
+    setOpenChanges((previous) => {
+      const next = new Set(previous)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }, [])
+
   const scopeControl = git?.isRepo ? (
     <DiffScope
       value={showingGitFallback || tab === 'review' ? 'local' : 'conversation'}
@@ -546,66 +561,82 @@ export function InspectorPanel({
                   <div className="drawer__empty">{t('No changed file matches')} “{fileFilter}”.</div>
                 ) : null}
 
-                {entries.map(({ change, stat: one, path }) => {
+                {entries.map(({ change, stat: one }) => {
                   const isOpen = openChanges.has(change.path)
+                  const name = basename(change.path)
+                  // A file that was only written has no old side to diff
+                  // against, so its content is shown — paged like any other
+                  // long output rather than dumped whole into the panel.
+                  const content = !change.diffs.length ? change.content : ''
+                  const paged = !!content && countLines(content) > LOG_PAGE_LINES
                   return (
                     <section className="change" key={change.path} data-open={isOpen}>
                       <header className="change__head">
                         <button
                           className="change__toggle"
                           aria-expanded={isOpen}
-                          aria-label={`${isOpen ? t('Collapse this file') : t('Show the changes of this file')}: ${path}`}
+                          aria-label={`${isOpen ? t('Collapse this file') : t('Show the changes of this file')}: ${name}`}
                           title={isOpen ? t('Collapse this file') : t('Show the changes of this file')}
-                          onClick={() => {
-                            setOpenChanges((previous) => {
-                              const next = new Set(previous)
-                              if (next.has(change.path)) next.delete(change.path)
-                              else next.add(change.path)
-                              return next
-                            })
-                          }}
+                          onClick={() => toggleChange(change.path)}
                         >
-                          <ChevronRight size={12} />
-                          <span className="change__path" title={change.path}>{path}</span>
-                          {one.added || one.removed ? (
-                            <span className="change__stats">
-                              {one.added ? <span data-kind="add">+{one.added}</span> : null}
-                              {one.removed ? <span data-kind="del">−{one.removed}</span> : null}
-                            </span>
-                          ) : null}
-                          {change.edits > 1 ? (
-                            <span className="change__badge">{change.edits} {t('edits')}</span>
-                          ) : null}
+                          <FileIcon name={name} />
+                          <span className="change__name" title={change.path}>{name}</span>
                         </button>
-                        <div className="change__file-actions">
-                          <button className="icon-btn" title={t('Open the file')} aria-label={`${t('Open the file')}: ${change.path}`} onClick={() => setOpenFile({ path: change.path })}>
-                            <SquareArrowOutUpRight size={12} />
-                          </button>
-                          <button className="icon-btn" title={t('Reveal in the file manager')} aria-label={`${t('Reveal in the file manager')}: ${change.path}`} onClick={() => void window.pi.fs.reveal(change.path)}>
-                            <ExternalLink size={12} />
+                        <div className="change__actions">
+                          <button
+                            className="icon-btn change__caret"
+                            tabIndex={-1}
+                            aria-hidden="true"
+                            onClick={() => toggleChange(change.path)}
+                          >
+                            <ChevronDown size={13} />
                           </button>
                         </div>
                       </header>
 
                       {isOpen ? (
                         <div className="change__body">
-                          {change.diffs.length > 0 ? (
-                            <DiffView
-                              diffs={change.diffs}
-                              mode={diffSplit ? 'split' : 'unified'}
-                              onOpenLine={(line) => setOpenFile({ path: change.path, line })}
-                              expandAll={expandAll}
-                              onExpandAllChange={setExpandAll}
-                            />
-                          ) : null}
+                          {/* Where the file is, what it cost to change, and how
+                              to reach it: the row is only a name, so this is the
+                              place the path can be read in full and wrapped. */}
+                          <div className="change__meta">
+                            <code className="change__file" title={change.path}>{change.path}</code>
+                            <div className="change__meta-side">
+                              {one.added || one.removed ? (
+                                <span className="change__stats">
+                                  {one.added ? <span data-kind="add">+{one.added}</span> : null}
+                                  {one.removed ? <span data-kind="del">−{one.removed}</span> : null}
+                                </span>
+                              ) : null}
+                              {change.edits > 1 ? (
+                                <span className="change__badge">{change.edits} {t('edits')}</span>
+                              ) : null}
+                              <button className="icon-btn" title={t('Open in folder')} aria-label={`${t('Open in folder')}: ${name}`} onClick={() => void window.pi.fs.reveal(change.path)}>
+                                <Folder size={13} />
+                              </button>
+                              <button className="icon-btn" title={t('Open in editor')} aria-label={`${t('Open in editor')}: ${name}`} onClick={() => setOpenFile({ path: change.path })}>
+                                <FilePen size={13} />
+                              </button>
+                            </div>
+                          </div>
 
-                          {!change.diffs.length && change.content ? (
-                            <pre className="tool__pre">{change.content}</pre>
-                          ) : null}
-
-                          {!change.diffs.length && !change.content ? (
-                            <pre className="tool__pre">{t('Written to disk.')}</pre>
-                          ) : null}
+                          <div className="change__content">
+                            {change.diffs.length > 0 ? (
+                              <DiffView
+                                diffs={change.diffs}
+                                mode={diffSplit ? 'split' : 'unified'}
+                                onOpenLine={(line) => setOpenFile({ path: change.path, line })}
+                                expandAll={expandAll}
+                                onExpandAllChange={setExpandAll}
+                              />
+                            ) : paged ? (
+                              <LogOutput text={content} />
+                            ) : content ? (
+                              <CodeSnippet code={content} language={languageOf(name)} />
+                            ) : (
+                              <pre className="tool__pre">{t('Written to disk.')}</pre>
+                            )}
+                          </div>
                         </div>
                       ) : null}
                     </section>

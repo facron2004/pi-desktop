@@ -23,6 +23,9 @@ const LABELS: Record<ToolSummaryTone, string> = {
   search: 'Searching files',
   edit: 'Editing a file',
   command: 'Running a command',
+  subagent: 'Delegating to a subagent',
+  plan: 'Reviewing the plan',
+  computer: 'Using the computer',
   generic: 'Working'
 }
 

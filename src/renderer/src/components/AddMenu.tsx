@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import { Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, Target, Wrench } from 'lucide-react'
+import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, Monitor, Paperclip, Plus, Sparkles, Target, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { useT } from '../lib/i18n'
 import { Popover } from './Popover'
@@ -9,7 +9,9 @@ type AddMenuPage = 'actions' | 'skills' | 'plugins'
 
 const MODES = [
   { value: 'goal', label: 'Goal Mode', icon: Target, description: 'Continue until the goal is complete or blocked' },
-  { value: 'plan', label: 'Plan Mode', icon: ListChecks, description: 'Explore and plan without changing files' }
+  { value: 'plan', label: 'Plan Mode', icon: ListChecks, description: 'Explore and plan without changing files' },
+  { value: 'subagent', label: 'Subagent Mode', icon: Bot, description: 'Delegate self-contained work to isolated subagents' },
+  { value: 'computer', label: 'Computer Use', icon: Monitor, description: 'Operate native apps with the mouse, keyboard and screenshots' }
 ] as const
 
 const PAGES = [
@@ -80,19 +82,25 @@ export function AddMenu({ ready, busy, mode, skillCommands, pluginCommands, onMo
             navigate('actions')
           }
         }}>
+          {/* Task modes stay at the very top of the Add menu, on every page:
+              switching how the next message runs should not require opening a
+              submenu or scrolling past the file actions. */}
+          <div className="composer__add-modes" role="group" aria-label={t('Modes')}>
+            <div className="popover__label">{t('Modes')}</div>
+            {MODES.map((entry) => {
+              const Icon = entry.icon
+              return (
+                <button key={entry.value} type="button" className="popover__item" role="menuitemcheckbox" aria-checked={mode === entry.value} disabled={busy} title={t(entry.description)} onClick={() => { close(); void onModeChange(mode === entry.value ? 'default' : entry.value) }}>
+                  <Icon size={15} />
+                  <span className="popover__item-text">{t(entry.label)}</span>
+                  {mode === entry.value ? <Check size={14} /> : null}
+                </button>
+              )
+            })}
+          </div>
+          <div className="composer__add-sep" role="separator" />
           {page === 'actions' ? (
             <>
-              {MODES.map((entry) => {
-                const Icon = entry.icon
-                return (
-                  <button key={entry.value} type="button" className="popover__item" role="menuitemcheckbox" aria-checked={mode === entry.value} disabled={busy} title={t(entry.description)} onClick={() => { close(); void onModeChange(mode === entry.value ? 'default' : entry.value) }}>
-                    <Icon size={15} />
-                    <span className="popover__item-text">{t(entry.label)}</span>
-                    {mode === entry.value ? <Check size={14} /> : null}
-                  </button>
-                )
-              })}
-              <div className="composer__add-sep" role="separator" />
               <button type="button" className="popover__item" role="menuitem" onClick={() => { close(); void onPickFiles() }}>
                 <Paperclip size={15} />
                 <span className="popover__item-text">{t('Add files')}</span>

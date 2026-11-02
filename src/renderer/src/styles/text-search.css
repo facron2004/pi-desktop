@@ -132,6 +132,15 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   padding: var(--sp-3) var(--sp-4) var(--sp-hair);
 }
 
+/* The tree is the pane: without a flex child that owns the remaining height,
+   a long project pushes past the drawer and its scrollbar never appears. */
+.file-mode__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .file-mode__body[hidden] {
   display: none;
 }

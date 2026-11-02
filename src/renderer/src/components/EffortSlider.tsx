@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
+import { DEFAULT_THINKING_LEVELS, resolveThinkingLevel } from '../lib/thinking'
 
 /**
  * The reasoning effort card with stepped capsule slider.
@@ -52,14 +53,17 @@ export function EffortSlider({
   onOpenModelList?: () => void
   onBusyChange: (busy: boolean) => void
 }) {
-  const levels = useAppStore((state) => state.thinkingLevels)
+  const reportedLevels = useAppStore((state) => state.thinkingLevels)
   const liveLevel = useAppStore((state) => state.piState?.thinkingLevel)
   const savedLevel = useAppStore((state) => state.settings.thinkingLevel)
-  const current = liveLevel && levels.includes(liveLevel)
-    ? liveLevel
-    : savedLevel && levels.includes(savedLevel)
-      ? savedLevel
-      : liveLevel
+  const piState = useAppStore((state) => state.piState)
+  // No list yet, and no live session: Pi has not been asked. The saved level
+  // is already on the chip, so the same standard scale has to be draggable.
+  const levels =
+    reportedLevels.length > 0 ? reportedLevels : piState ? reportedLevels : DEFAULT_THINKING_LEVELS
+  // A saved level can belong to another model. Never position the slider on a
+  // level this model does not offer; fall back to the closest supported one.
+  const current = resolveThinkingLevel(levels, liveLevel, savedLevel)
   const setThinkingLevel = useAppStore((state) => state.setThinkingLevel)
   const ready = useAppStore((state) => state.status.phase === 'ready')
   const t = useT()
@@ -73,7 +77,7 @@ export function EffortSlider({
 
   const currentIndex = Math.max(0, levels.findIndex((level) => level === current))
   const index = previewIndex ?? currentIndex
-  const last = levels.length - 1
+  const last = Math.max(0, levels.length - 1)
   const enabled = ready && !disabled && !busy && levels.length > 1
   const shownLevel = previewIndex === null ? current : levels[previewIndex]
   const label = shownLevel ? t(levelLabel(shownLevel)) : t('Thinking')
@@ -194,11 +198,15 @@ export function EffortSlider({
   }
 
   if (levels.length === 0) {
+    // Pi has not reported any levels for this model. A saved level from
+    // another model is still useful while a chat is cold, but there is no
+    // scale to point at: show the state as text instead of an empty track.
+    const showSavedTitle = Boolean(savedLevel) && !piState
     return (
       <div className="effort-card">
         <div className="effort-card__header">
-          <div className="effort-card__title" style={{ color: savedLevel ? undefined : 'var(--text-tertiary)' }}>
-            {savedLevel ? t(levelLabel(savedLevel)) : t('No reasoning')}
+          <div className="effort-card__title" data-off={showSavedTitle ? undefined : 'true'}>
+            {showSavedTitle ? t(levelLabel(savedLevel!)) : t('No reasoning')}
           </div>
           <button
             type="button"
@@ -211,12 +219,11 @@ export function EffortSlider({
             <ChevronRight size={12} className="effort-card__model-chevron" />
           </button>
         </div>
-        <div className="effort-card__slider" data-disabled="true">
-          <div className="effort-card__track">
-            <div className="effort-card__fill" style={{ width: '0%' }} />
-          </div>
+        <div className="effort-card__empty-hint">
+          {piState
+            ? t('This model has no reasoning levels')
+            : t('Reasoning effort can be changed once the conversation starts.')}
         </div>
-        {savedLevel ? null : <div className="effort-card__empty-hint">{t('This model has no reasoning levels')}</div>}
       </div>
     )
   }

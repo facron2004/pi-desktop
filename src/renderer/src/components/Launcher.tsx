@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Bot,
   Copy,
   CopyPlus,
   Cpu,
@@ -11,7 +12,9 @@ import {
   GitCommit,
   GitFork,
   Keyboard,
+  ListChecks,
   MessageSquarePlus,
+  Monitor,
   Minimize2,
   Moon,
   PanelLeft,
@@ -24,6 +27,7 @@ import {
   SquarePen,
   SquareTerminal,
   Sun,
+  Target,
   Type
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -81,6 +85,8 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const cycleModel = useAppStore((state) => state.cycleModel)
   const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
+  const setAgentMode = useAppStore((state) => state.setAgentMode)
+  const agentMode = useAppStore((state) => state.agentMode)
   const togglePin = useAppStore((state) => state.togglePin)
   const updateSettings = useAppStore((state) => state.updateSettings)
   const workspaces = useAppStore((state) => state.settings.workspaces)
@@ -237,6 +243,34 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Model',
       icon: Sparkles,
       run: () => cycleThinkingLevel(-1)
+    },
+    {
+      id: 'mode-plan',
+      title: agentMode === 'plan' ? 'Leave Plan Mode' : 'Use Plan Mode',
+      group: 'Mode',
+      icon: ListChecks,
+      run: () => setAgentMode(agentMode === 'plan' ? 'default' : 'plan')
+    },
+    {
+      id: 'mode-goal',
+      title: agentMode === 'goal' ? 'Leave Goal Mode' : 'Use Goal Mode',
+      group: 'Mode',
+      icon: Target,
+      run: () => setAgentMode(agentMode === 'goal' ? 'default' : 'goal')
+    },
+    {
+      id: 'mode-subagent',
+      title: agentMode === 'subagent' ? 'Leave Subagent Mode' : 'Use Subagent Mode',
+      group: 'Mode',
+      icon: Bot,
+      run: () => setAgentMode(agentMode === 'subagent' ? 'default' : 'subagent')
+    },
+    {
+      id: 'mode-computer',
+      title: agentMode === 'computer' ? 'Leave Computer Use' : 'Use Computer Use',
+      group: 'Mode',
+      icon: Monitor,
+      run: () => setAgentMode(agentMode === 'computer' ? 'default' : 'computer')
     },
     {
       id: 'open-project',

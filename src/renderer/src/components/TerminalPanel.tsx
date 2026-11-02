@@ -1,11 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, Copy, Eraser, Folder, Search, Square, SquareTerminal, X } from 'lucide-react'
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState
+} from 'react'
+import { Copy, Eraser, Plus, RotateCcw, SquareTerminal, X } from 'lucide-react'
+import { Terminal as XTerm } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
 import { useAppStore } from '../store/useAppStore'
-import { formatDuration } from '../lib/format'
-import { formatPlatformShortcut } from '../lib/shortcuts'
-import { scrollBehavior } from '../lib/motion'
+import { useIsDark } from '../lib/theme'
 import { useT } from '../lib/i18n'
-import { parseAnsi, stripAnsi, type AnsiSegment } from '../lib/ansi'
 
 const MIN_TERMINAL_HEIGHT = 160
 /** The drawer may not swallow the conversation above it. */
@@ -21,89 +27,305 @@ function defaultTerminalHeight(): number {
   return clampHeight(window.innerHeight / 3)
 }
 
-function segmentClassName(segment: AnsiSegment): string {
-  const names = ['terminal__seg']
-  if (segment.tone) names.push(`terminal__seg--tone-${segment.tone}`)
-  if (segment.bold) names.push('terminal__seg--bold')
-  if (segment.dim) names.push('terminal__seg--dim')
-  return names.join(' ')
+function cssValue(name: string, fallback: string): string {
+  if (typeof window === 'undefined') return fallback
+  const value = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
 }
 
-/**
- * The output of one command, with SGR colour runs turned into spans.
- *
- * The stored text stays untouched: copy reads it with `stripAnsi`, so the
- * clipboard never carries escape bytes.
- */
-function AnsiText({ text }: { text: string }) {
-  const segments = useMemo(() => parseAnsi(text), [text])
-  const styled = segments.some((segment) => segment.tone || segment.bold || segment.dim)
-  if (!styled) {
-    return (
-      <pre className="terminal__output">
-        {segments.map((segment) => segment.text).join('')}
-      </pre>
-    )
+/** The terminal follows the app's canvas, not its own hard-coded palette. */
+function terminalTheme(isDark: boolean) {
+  return {
+    background: cssValue('--surface-sunken', isDark ? '#0d0f13' : '#f2f2f2'),
+    foreground: cssValue('--text-primary', isDark ? '#f2f4f8' : '#242424'),
+    cursor: cssValue('--accent', isDark ? '#4c9aff' : '#292929'),
+    cursorAccent: cssValue('--surface-sunken', isDark ? '#0d0f13' : '#f2f2f2'),
+    selectionBackground: cssValue('--accent-soft', isDark ? 'rgba(76,154,255,.25)' : '#d8d8d8')
   }
-  return (
-    <pre className="terminal__output">
-      {segments.map((segment, index) => (
-        // The runs are cut out of the whole output again on every delta, and
-        // the final response can replace that text outright, so the run's own
-        // text is the stable part of the key; the index only keeps two
-        // identical runs apart.
-        <span key={`${segment.text}-${index}`} className={segmentClassName(segment)}>
-          {segment.text}
-        </span>
-      ))}
-    </pre>
-  )
 }
 
-/** The payload of Pi's `bash` command, as far as the panel cares. */
-interface BashResult {
-  output?: string
-  exitCode?: number
-  cancelled?: boolean
-  truncated?: boolean
-  fullOutputPath?: string
-}
-
-interface TerminalBlock {
-  /** The command id, shared with the `bash_execution_update` events it emits. */
-  id: string
-  command: string
-  output: string
-  status: 'running' | 'done' | 'error'
-  exitCode?: number
-  cancelled?: boolean
-  truncated?: boolean
-  fullOutputPath?: string
-  durationMs?: number
-}
-
-/** A command handed to the drawer from somewhere else in the app. */
+/** A command handed to the terminal from somewhere else in the app. */
 export interface TerminalRunRequest {
   command: string
   /** Bumped for every hand-off, so the same command twice still runs twice. */
   seq: number
 }
 
-// The drawer can be closed and opened again; a shell remembers what it ran.
-let rememberedHistory: string[] = []
+export interface TerminalPaneHandle {
+  /** The whole visible buffer, for the copy action. */
+  copySelection(): string
+  clear(): void
+  restart(): void
+  focus(): void
+}
+
+interface TerminalPaneProps {
+  active: boolean
+  cwd?: string
+  shell: string
+  request?: TerminalRunRequest | null
+  /** The shell name, once the PTY reports it, for the tab label. */
+  onLabel: (label: string) => void
+}
 
 /**
- * The command drawer.
+ * One real shell on one PTY, with its own xterm screen.
  *
- * Every command goes through Pi's RPC `bash` command with an id prefixed
- * `terminal-`, so the streamed `bash_execution_update` events can be matched
- * here. The output of these commands is excluded from the model context — the
- * drawer is the user's terminal, not a conversation message.
+ * Each tab keeps its own pane alive while another tab is in front, so the
+ * scrollback of a terminal survives a switch instead of being replayed into a
+ * shared screen. The pane owns nothing but its own process and viewport.
+ */
+const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function TerminalPane(
+  { active, cwd, shell, request, onLabel },
+  ref
+) {
+  const t = useT()
+  const showToast = useAppStore((state) => state.showToast)
+  const isDark = useIsDark()
+
+  const containerRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<XTerm | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
+  const sessionRef = useRef<string | null>(null)
+  const pendingOutputRef = useRef('')
+  const pendingRequestRef = useRef<string | null>(null)
+  const handledRequestRef = useRef(0)
+  const onLabelRef = useRef(onLabel)
+  onLabelRef.current = onLabel
+
+  const [exited, setExited] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [restartKey, setRestartKey] = useState(0)
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      copySelection() {
+        const term = termRef.current
+        if (!term) return ''
+        term.selectAll()
+        const text = term.getSelection()
+        term.clearSelection()
+        return text
+      },
+      clear() {
+        termRef.current?.clear()
+        termRef.current?.focus()
+      },
+      restart() {
+        setRestartKey((value) => value + 1)
+      },
+      focus() {
+        termRef.current?.focus()
+      }
+    }),
+    []
+  )
+
+  // Create the shell and the screen together. The xterm instance is created
+  // first so the first PTY write already knows the viewport size.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    setExited(null)
+    setError(null)
+    pendingOutputRef.current = ''
+    pendingRequestRef.current = null
+
+    const term = new XTerm({
+      allowTransparency: false,
+      cursorBlink: true,
+      convertEol: false,
+      scrollback: 8000,
+      fontFamily: cssValue('--font-mono', 'Consolas, monospace'),
+      fontSize: 12,
+      lineHeight: 1.35,
+      theme: terminalTheme(isDark)
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.open(container)
+    try {
+      fit.fit()
+    } catch {
+      /* the panel may be measured before its first layout */
+    }
+    termRef.current = term
+    fitRef.current = fit
+
+    let disposed = false
+    let resizeFrame = 0
+    // Only the window between the mount and our own `create` resolving may
+    // buffer unknown-id output. Anything after that belongs to another
+    // session — typically a sibling tab — and would paint its banner here.
+    let awaitingCreate = true
+
+    const offData = window.pi.terminal.onData(({ id, data }) => {
+      if (id === sessionRef.current) {
+        term.write(data)
+      } else if (awaitingCreate && sessionRef.current === null) {
+        // The banner can arrive before `create` resolves; keep it for the
+        // moment the id becomes known instead of dropping the first prompt.
+        pendingOutputRef.current += data
+      }
+    })
+    const offExit = window.pi.terminal.onExit(({ id, exitCode }) => {
+      if (id !== sessionRef.current) return
+      sessionRef.current = null
+      setExited(exitCode)
+    })
+    const offBinary = term.onBinary((data) => {
+      const id = sessionRef.current
+      if (id) void window.pi.terminal.write(id, data)
+    })
+    const offInput = term.onData((data) => {
+      const id = sessionRef.current
+      if (id) void window.pi.terminal.write(id, data)
+    })
+
+    const resize = () => {
+      if (disposed) return
+      try {
+        fit.fit()
+      } catch {
+        return
+      }
+      const id = sessionRef.current
+      if (id) void window.pi.terminal.resize(id, term.cols, term.rows)
+    }
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(resizeFrame)
+      resizeFrame = requestAnimationFrame(resize)
+    })
+    observer.observe(container)
+
+    void window.pi.terminal
+      .create({ cols: term.cols, rows: term.rows, cwd, shell })
+      .then((info) => {
+        awaitingCreate = false
+        if (disposed) {
+          void window.pi.terminal.kill(info.id)
+          return
+        }
+        sessionRef.current = info.id
+        onLabelRef.current(info.shell)
+        if (pendingOutputRef.current) {
+          term.write(pendingOutputRef.current)
+          pendingOutputRef.current = ''
+        }
+        const pending = pendingRequestRef.current
+        if (pending) {
+          pendingRequestRef.current = null
+          void window.pi.terminal.write(info.id, `${pending}\r`)
+        }
+        term.focus()
+      })
+      .catch((failure: unknown) => {
+        awaitingCreate = false
+        if (disposed) return
+        const message = failure instanceof Error ? failure.message : String(failure)
+        setError(message)
+        showToast(message, 'error')
+      })
+
+    return () => {
+      disposed = true
+      awaitingCreate = false
+      cancelAnimationFrame(resizeFrame)
+      observer.disconnect()
+      offData()
+      offExit()
+      offBinary.dispose()
+      offInput.dispose()
+      const id = sessionRef.current
+      sessionRef.current = null
+      if (id) void window.pi.terminal.kill(id)
+      term.dispose()
+      termRef.current = null
+      fitRef.current = null
+    }
+  }, [cwd, shell, restartKey, showToast])
+
+  // The app theme can change without restarting the shell.
+  useEffect(() => {
+    const term = termRef.current
+    if (term) term.options.theme = terminalTheme(isDark)
+  }, [isDark])
+
+  // A hidden pane measured 0×0; when it comes back in front it has to learn its
+  // real size and take the keyboard again.
+  useEffect(() => {
+    if (!active) return
+    const frame = requestAnimationFrame(() => {
+      try {
+        fitRef.current?.fit()
+      } catch {
+        return
+      }
+      const term = termRef.current
+      if (!term) return
+      term.focus()
+      const id = sessionRef.current
+      if (id) void window.pi.terminal.resize(id, term.cols, term.rows)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [active])
+
+  // A command handed over from the transcript is typed into the shell.
+  useEffect(() => {
+    if (!request || request.seq === handledRequestRef.current) return
+    handledRequestRef.current = request.seq
+    const command = request.command.trim()
+    if (!command) return
+    const id = sessionRef.current
+    if (!id) {
+      pendingRequestRef.current = command
+      return
+    }
+    termRef.current?.focus()
+    void window.pi.terminal.write(id, `${command}\r`)
+  }, [request])
+
+  return (
+    <div className="terminal__pane-body">
+      <div className="terminal__xterm" ref={containerRef} />
+      {error ? (
+        <div className="terminal__overlay" role="status">
+          <span className="terminal__notice-title">{t('Could not start the terminal')}</span>
+          <span className="terminal__notice-text">{error}</span>
+          <button type="button" className="btn btn--sm" onClick={() => setRestartKey((v) => v + 1)}>
+            {t('Restart the terminal')}
+          </button>
+        </div>
+      ) : null}
+      {exited !== null ? (
+        <div className="terminal__overlay" role="status">
+          <span className="terminal__notice-title">{t('The shell has exited')}</span>
+          <span className="terminal__notice-text">
+            {t('exit')} {exited}
+          </span>
+          <button type="button" className="btn btn--sm" onClick={() => setRestartKey((v) => v + 1)}>
+            {t('Restart the terminal')}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  )
+})
+
+interface TerminalTab {
+  key: string
+  label: string
+}
+
+/**
+ * The integrated terminal, as a strip of terminal tabs.
  *
- * It runs in two places: horizontally under the thread, and vertically inside
- * the side panel. `embedded` is that difference — the height, the resize edge
- * and the Close button belong to the drawer, while the panel draws its own
- * header and closing.
+ * This is a real shell on a PTY, not a command runner over Pi's `bash` RPC:
+ * every tab is its own process with a prompt, a working directory, interactive
+ * programs and a scrollback. The renderer owns the screen (xterm.js); the main
+ * process owns the processes (`TerminalManager`), so no Node access leaks into
+ * the React tree.
  */
 export function TerminalPanel({
   onClose,
@@ -116,63 +338,41 @@ export function TerminalPanel({
   embedded?: boolean
 }) {
   const t = useT()
-  const status = useAppStore((state) => state.status)
-  const platform = useAppStore((state) => state.info?.platform)
   const workspace = useAppStore((state) => state.workspace)
-  const showToast = useAppStore((state) => state.showToast)
+  const shell = useAppStore((state) => state.settings.terminalShell ?? 'powershell')
   const storedHeight = useAppStore((state) => state.settings.terminalHeight)
   const updateSettings = useAppStore((state) => state.updateSettings)
-  const ready = status.phase === 'ready'
+  const showToast = useAppStore((state) => state.showToast)
 
-  const [blocks, setBlocks] = useState<TerminalBlock[]>([])
-  const [input, setInput] = useState('')
-  const [history, setHistory] = useState<string[]>(rememberedHistory)
-  // -1 means the input is the live draft rather than a recalled command.
-  const [cursor, setCursor] = useState(-1)
-  const [running, setRunning] = useState<string | null>(null)
-  const [stopping, setStopping] = useState(false)
-  const [atBottom, setAtBottom] = useState(true)
-  // The drag updates this locally; the store only hears about it on release.
   const [height, setHeight] = useState(() =>
     typeof storedHeight === 'number' ? clampHeight(storedHeight) : defaultTerminalHeight()
   )
-  const [filter, setFilter] = useState('')
-
-  const inputRef = useRef<HTMLInputElement>(null)
-  const logRef = useRef<HTMLDivElement>(null)
-  const filterRef = useRef<HTMLInputElement>(null)
-  const stickRef = useRef(true)
-  const draftRef = useRef('')
-  const runningRef = useRef<string | null>(null)
-  const ownerRef = useRef<string | undefined>(undefined)
-  const sequenceRef = useRef(0)
+  const [tabs, setTabs] = useState<TerminalTab[]>(() => [
+    { key: 'terminal-1', label: '' }
+  ])
+  const [activeKey, setActiveKey] = useState('terminal-1')
+  const [assignedRequest, setAssignedRequest] = useState<{
+    key: string
+    request: TerminalRunRequest
+  } | null>(null)
+  const nextKeyRef = useRef(2)
+  const paneApis = useRef(new Map<string, TerminalPaneHandle>())
   const heightRef = useRef(height)
   const draggingRef = useRef(false)
-  // Command ids whose events land in this panel, and when they started.
-  const activeRef = useRef<Set<string>>(new Set())
-  const startedRef = useRef<Map<string, number>>(new Map())
-  // Ids the reader stopped, so the block shows "Cancelled" even if Pi's
-  // response does not say so itself.
-  const stoppedRef = useRef<Set<string>>(new Set())
 
-  // The filter only hides blocks; the log and the copy still hold everything.
-  const filterQuery = filter.trim()
-  const visibleBlocks = useMemo(() => {
-    if (!filterQuery) return blocks
-    const needle = filterQuery.toLowerCase()
-    return blocks.filter(
-      (block) =>
-        block.command.toLowerCase().includes(needle) ||
-        stripAnsi(block.output).toLowerCase().includes(needle)
+  // A hand-off belongs to the tab that received it, even after another tab
+  // becomes active. Keeping that owner prevents old requests from replaying.
+  useEffect(() => {
+    if (!request) return
+    setAssignedRequest((previous) =>
+      previous?.request.seq === request.seq ? previous : { key: activeKey, request }
     )
-  }, [blocks, filterQuery])
+  }, [request, activeKey])
 
   useEffect(() => {
     heightRef.current = height
   }, [height])
 
-  // The stored value can land after the drawer mounted (bootstrap) or change
-  // elsewhere; follow it unless a drag is in progress.
   useEffect(() => {
     if (draggingRef.current) return
     const next =
@@ -181,8 +381,6 @@ export function TerminalPanel({
     setHeight(next)
   }, [storedHeight])
 
-  // Keep the responsive default in step with the window; custom heights only
-  // shrink when needed to leave room for the conversation.
   useEffect(() => {
     const onWindowResize = () => {
       const next =
@@ -196,104 +394,55 @@ export function TerminalPanel({
     return () => window.removeEventListener('resize', onWindowResize)
   }, [storedHeight])
 
-  // A drag that ends in an unmount must not leave the resize cursor behind.
   useEffect(() => () => document.body.classList.remove('terminal-resizing'), [])
 
-  // The streamed output is the full text; the final response may be the
-  // truncated version of it, so the events are appended as they arrive.
-  useEffect(() => {
-    return window.pi.runtime.onEvent(({ event }) => {
-      if (event.type !== 'bash_execution_update') return
-      const id = typeof event.id === 'string' ? event.id : ''
-      if (!id.startsWith('terminal-') || !activeRef.current.has(id)) return
-      const delta = typeof event.delta === 'string' ? event.delta : ''
-      if (!delta) return
-      setBlocks((previous) =>
-        previous.map((block) =>
-          block.id === id ? { ...block, output: block.output + delta } : block
-        )
-      )
-    })
+  const setTabLabel = useCallback((key: string, label: string) => {
+    setTabs((previous) =>
+      previous.map((tab) => (tab.key === key && tab.label !== label ? { ...tab, label } : tab))
+    )
   }, [])
 
-  // Opened from the titlebar, the palette or `Ctrl+\`` — the caret belongs in
-  // the input so the drawer is ready to type in.
-  useEffect(() => {
-    if (!ready) return
-    const frame = requestAnimationFrame(() => inputRef.current?.focus())
-    return () => cancelAnimationFrame(frame)
-  }, [ready])
+  const addTab = useCallback(() => {
+    const key = `terminal-${nextKeyRef.current}`
+    nextKeyRef.current += 1
+    setTabs((previous) => [...previous, { key, label: '' }])
+    setActiveKey(key)
+  }, [])
 
-  // A command belongs to the project it ran in; switching projects empties the
-  // log rather than showing another folder's output under its name.
-  const rootRef = useRef(workspace?.path)
-  useEffect(() => {
-    if (rootRef.current === workspace?.path) return
-    rootRef.current = workspace?.path
-    setBlocks([])
-  }, [workspace?.path])
-
-  // Closing the drawer stops the command it was running, the way closing a
-  // terminal does.
-  useEffect(
-    () => () => {
-      if (!runningRef.current) return
-      const sessionKey = ownerRef.current
-      void window.pi.runtime
-        .request('abort_bash', undefined, undefined, {
-          sourceAction: 'terminal-close',
-          uiSessionId: sessionKey
-        }, sessionKey)
-        .catch(() => {
-          /* the runtime may be gone already */
-        })
+  const closeTab = useCallback(
+    (key: string) => {
+      const index = tabs.findIndex((tab) => tab.key === key)
+      const next = tabs.filter((tab) => tab.key !== key)
+      paneApis.current.delete(key)
+      if (next.length === 0) {
+        onClose()
+        return
+      }
+      setTabs(next)
+      if (activeKey === key) setActiveKey(next[Math.max(0, index - 1)].key)
     },
-    []
+    [tabs, activeKey, onClose]
   )
 
-  // Development-mode strict effects mount, unmount and mount again, and the
-  // unmount half aborts whatever runs. A handed-over command therefore waits
-  // one tick before it starts, and does nothing when the drawer really closed.
-  const aliveRef = useRef(true)
-  useEffect(() => {
-    aliveRef.current = true
-    return () => {
-      aliveRef.current = false
+  const activePane = useCallback(() => paneApis.current.get(activeKey), [activeKey])
+
+  const copyOutput = useCallback(async () => {
+    const text = activePane()?.copySelection() ?? ''
+    if (!text.trim()) {
+      showToast(t('There is nothing to copy yet'), 'warning')
+      return
     }
-  }, [])
-
-  useLayoutEffect(() => {
-    const node = logRef.current
-    if (!node || !stickRef.current) return
-    node.scrollTop = node.scrollHeight
-  }, [visibleBlocks, height])
-
-  // The reader can scroll up to read an earlier command; from then on the log
-  // stays where it is instead of jumping to the newest output.
-  useEffect(() => {
-    const node = logRef.current
-    if (!node) return
-    const onScroll = () => {
-      const distance = node.scrollHeight - node.scrollTop - node.clientHeight
-      stickRef.current = distance < 24
-      setAtBottom(stickRef.current)
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast(t('Copied to clipboard'))
+    } catch {
+      showToast(t('The clipboard is not available'), 'error')
     }
-    node.addEventListener('scroll', onScroll, { passive: true })
-    return () => node.removeEventListener('scroll', onScroll)
-  }, [])
+  }, [activePane, showToast, t])
 
-  const scrollToBottom = useCallback(() => {
-    const node = logRef.current
-    if (!node) return
-    stickRef.current = true
-    setAtBottom(true)
-    node.scrollTo({ top: node.scrollHeight, behavior: scrollBehavior() })
-  }, [])
+  const clearOutput = useCallback(() => activePane()?.clear(), [activePane])
+  const restart = useCallback(() => activePane()?.restart(), [activePane])
 
-  // The handle is the top edge of the drawer: dragging it up makes the drawer
-  // taller. The height is local while the pointer is down and only the release
-  // writes it to the settings, so a drag is one settings change rather than one
-  // per pixel.
   const startResize = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return
@@ -329,8 +478,6 @@ export function TerminalPanel({
     [updateSettings]
   )
 
-  // The same handle works from the keyboard: arrows resize by a step, Escape
-  // still belongs to the drawer.
   const resizeFromKeyboard = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       const step = event.shiftKey ? RESIZE_STEP * 4 : RESIZE_STEP
@@ -354,262 +501,12 @@ export function TerminalPanel({
     void updateSettings({ terminalHeight: undefined })
   }, [updateSettings])
 
-  // The one path a command takes, whether it was typed or handed over from a
-  // card in the transcript: the id, the streaming, the history and the exit
-  // code handling all live here rather than in a second runner.
-  const submit = useCallback((override?: string) => {
-    const command = (override ?? input).trim()
-    if (!command || runningRef.current || !ready) return
-    const id = `terminal-${Date.now().toString(36)}-${++sequenceRef.current}`
-    runningRef.current = id
-    activeRef.current.add(id)
-    startedRef.current.set(id, Date.now())
-    setRunning(id)
-    setStopping(false)
-    setInput('')
-    setCursor(-1)
-    draftRef.current = ''
-    stickRef.current = true
-    setAtBottom(true)
-    setBlocks((previous) => [...previous, { id, command, output: '', status: 'running' }])
-
-    const nextHistory =
-      history[history.length - 1] === command ? history : [...history, command]
-    rememberedHistory = nextHistory
-    setHistory(nextHistory)
-
-    void (async () => {
-      try {
-        const state = useAppStore.getState()
-        const sessionKey = state.activeSessionFile ?? state.draftId
-        ownerRef.current = sessionKey
-        if (sessionKey && typeof window.pi.runtime.ensure === 'function') {
-          const ensured = await window.pi.runtime.ensure({
-            sessionKey,
-            cwd: state.workspace?.path ?? '',
-            sessionFile: sessionKey.startsWith('draft:') ? undefined : sessionKey,
-            trace: { sourceAction: 'terminal-bash', uiSessionId: sessionKey }
-          })
-          if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start')
-        }
-        if (!aliveRef.current || stoppedRef.current.has(id)) return
-        const result = await window.pi.runtime.request<BashResult>(
-          'bash',
-          { command, id, excludeFromContext: true },
-          0,
-          { sourceAction: 'terminal-bash', uiSessionId: sessionKey },
-          sessionKey
-        )
-        const started = startedRef.current.get(id)
-        // The streamed text is the complete output; the response may carry
-        // only the truncated version, but it is the fallback when the events
-        // did not make it here.
-        setBlocks((previous) =>
-          previous.map((block) =>
-            block.id === id
-              ? {
-                  ...block,
-                  output:
-                    block.output.length >= (result.output ?? '').length
-                      ? block.output
-                      : result.output ?? '',
-                  status: 'done',
-                  exitCode: typeof result.exitCode === 'number' ? result.exitCode : undefined,
-                  cancelled: result.cancelled === true || stoppedRef.current.has(id),
-                  truncated: result.truncated === true,
-                  fullOutputPath: result.fullOutputPath,
-                  durationMs: started === undefined ? undefined : Date.now() - started
-                }
-              : block
-          )
-        )
-      } catch (error) {
-        const started = startedRef.current.get(id)
-        const cancelled = stoppedRef.current.has(id)
-        const message = error instanceof Error ? error.message : String(error)
-        setBlocks((previous) =>
-          previous.map((block) =>
-            block.id === id
-              ? {
-                  ...block,
-                  status: cancelled ? 'done' : 'error',
-                  cancelled,
-                  // A stop is not a failure: the partial output is all there is.
-                  output: cancelled
-                    ? block.output
-                    : block.output
-                      ? `${block.output}\n${message}`
-                      : message,
-                  durationMs: started === undefined ? undefined : Date.now() - started
-                }
-              : block
-          )
-        )
-      } finally {
-        activeRef.current.delete(id)
-        startedRef.current.delete(id)
-        stoppedRef.current.delete(id)
-        runningRef.current = null
-        setRunning(null)
-        setStopping(false)
-        requestAnimationFrame(() => inputRef.current?.focus())
-      }
-    })()
-  }, [input, ready, history])
-
-  // A command handed over from the transcript lands in the input and, when the
-  // drawer is idle, runs through the same path as typing Enter. The sequence
-  // number is remembered so a re-render does not run the same hand-off twice.
-  const handledRequestRef = useRef(0)
-  useEffect(() => {
-    if (!request || request.seq === handledRequestRef.current) return
-    handledRequestRef.current = request.seq
-    const command = request.command.trim()
-    if (!command) return
-    setInput(command)
-    setCursor(-1)
-    draftRef.current = command
-    // A command that is already running is not interleaved with another one:
-    // the handed-over command waits in the input for the user to send it.
-    if (ready && !runningRef.current) {
-      // Deferred by a tick so a development-mode remount cannot abort the
-      // command before it has started.
-      window.setTimeout(() => {
-        if (!aliveRef.current) return
-        // A command started in the meantime keeps the input instead of being
-        // cleared by a run that cannot happen.
-        if (runningRef.current) {
-          setInput(command)
-          return
-        }
-        submit(command)
-      }, 0)
-      return
-    }
-    requestAnimationFrame(() => inputRef.current?.focus())
-  }, [request, ready, submit])
-
-  // The Stop button and Ctrl+C share this path: the runtime is asked to abort
-  // the command, and the block is marked cancelled straight away so the log
-  // does not keep claiming that it runs.
-  const stop = useCallback(async () => {
-    const id = runningRef.current
-    if (!id) return
-    stoppedRef.current.add(id)
-    setStopping(true)
-    try {
-      const sessionKey = ownerRef.current
-      await window.pi.runtime.request('abort_bash', undefined, undefined, {
-        sourceAction: 'terminal-stop',
-        uiSessionId: sessionKey
-      }, sessionKey)
-      setBlocks((previous) =>
-        previous.map((block) => (block.id === id ? { ...block, cancelled: true } : block))
-      )
-    } catch {
-      stoppedRef.current.delete(id)
-      setStopping(false)
-    }
-  }, [])
-
-  const clear = useCallback(() => {
-    setBlocks([])
-    stickRef.current = true
-    setAtBottom(true)
-    requestAnimationFrame(() => inputRef.current?.focus())
-  }, [])
-
-  const copyOutput = useCallback(async () => {
-    const text = blocks
-      .map((block) => {
-        const output = stripAnsi(block.output)
-        return output ? `$ ${block.command}\n${output}` : `$ ${block.command}`
-      })
-      .join('\n')
-    if (!text.trim()) {
-      showToast(t('There is nothing to copy yet'), 'warning')
-      return
-    }
-    try {
-      await navigator.clipboard.writeText(text)
-      showToast(t('Copied to clipboard'))
-    } catch {
-      showToast(t('The clipboard is not available'), 'error')
-    }
-  }, [blocks, showToast, t])
-
-  const onInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    // Control+C is the shell interrupt; Command+C must remain native copy on macOS.
-    if (event.ctrlKey && event.key.toLowerCase() === 'c') {
-      if (event.currentTarget.selectionStart !== event.currentTarget.selectionEnd) return
-      event.preventDefault()
-      if (runningRef.current) {
-        void stop()
-        return
-      }
-      setInput('')
-      setCursor(-1)
-      draftRef.current = ''
-      return
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
-      event.preventDefault()
-      clear()
-      return
-    }
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      submit()
-      return
-    }
-    if (event.key === 'ArrowUp') {
-      if (!history.length) return
-      event.preventDefault()
-      if (cursor === -1) draftRef.current = input
-      const next = cursor === -1 ? history.length - 1 : Math.max(0, cursor - 1)
-      setCursor(next)
-      setInput(history[next])
-      return
-    }
-    if (event.key === 'ArrowDown') {
-      if (cursor === -1) return
-      event.preventDefault()
-      const next = cursor + 1
-      if (next >= history.length) {
-        setCursor(-1)
-        setInput(draftRef.current)
-        return
-      }
-      setCursor(next)
-      setInput(history[next])
-    }
-  }
-
-  const hasBlocks = blocks.length > 0
-
   return (
     <section
       className="terminal"
       data-embedded={embedded || undefined}
-      // The drawer sets its own height and is dragged by its top edge; inside
-      // the panel the column is the panel's height and the edge is not there.
       style={embedded ? undefined : { height: `${height}px` }}
       aria-label={t('Terminal')}
-      onKeyDown={(event) => {
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
-          event.preventDefault()
-          // The conversation search listens on the window for the same keys;
-          // inside the terminal the filter owns them.
-          event.stopPropagation()
-          filterRef.current?.focus()
-          filterRef.current?.select()
-          return
-        }
-        if (event.key !== 'Escape') return
-        event.preventDefault()
-        event.stopPropagation()
-        onClose()
-      }}
     >
       <div
         className="terminal__resizer"
@@ -626,68 +523,54 @@ export function TerminalPanel({
         onDoubleClick={embedded ? undefined : resetHeight}
         hidden={embedded || undefined}
       />
-      <header className="terminal__head">
-        <SquareTerminal size={13} className="terminal__head-icon" />
-        <span className="terminal__title">{t('Terminal')}</span>
-        {workspace ? (
-          <span className="terminal__folder" title={workspace.path}>
-            <Folder size={11} />
-            <span>{workspace.name}</span>
-          </span>
-        ) : null}
-        {running ? (
-          <span className="terminal__running">
-            <span className="terminal__pulse" />
-            {stopping ? t('Stopping…') : t('running…')}
-          </span>
-        ) : null}
-        <div className="terminal__filter">
-          <Search size={11} aria-hidden="true" />
-          <input
-            ref={filterRef}
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== 'Escape') return
-              // An empty box lets Escape through, so the drawer still closes.
-              if (!filterQuery) return
-              event.preventDefault()
-              event.stopPropagation()
-              setFilter('')
-            }}
-            spellCheck={false}
-            autoComplete="off"
-            placeholder={t('Filter')}
-            aria-label={t('Filter the output')}
-          />
-          {filter ? (
-            <button
-              type="button"
-              className="terminal__filter-clear"
-              title={t('Clear the filter')}
-              aria-label={t('Clear the filter')}
-              onClick={() => {
-                setFilter('')
-                filterRef.current?.focus()
-              }}
+
+      <div className="terminal__bar">
+        <div className="terminal__tabstrip" role="tablist" aria-label={t('Terminal')}>
+          {tabs.map((tab) => (
+            <div
+              key={tab.key}
+              className="terminal__tab"
+              data-active={tab.key === activeKey || undefined}
+              role="tab"
+              aria-selected={tab.key === activeKey}
             >
-              <X size={10} />
-            </button>
-          ) : null}
+              <button
+                type="button"
+                className="terminal__tab-main"
+                title={tab.label || t('Terminal')}
+                onClick={() => setActiveKey(tab.key)}
+              >
+                <SquareTerminal size={13} className="terminal__tab-icon" />
+                <span className="terminal__tab-label">{tab.label || t('Terminal')}</span>
+              </button>
+              <button
+                type="button"
+                className="terminal__tab-close"
+                title={t('Close')}
+                aria-label={t('Close')}
+                onClick={() => closeTab(tab.key)}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="terminal__new"
+            title={t('New terminal')}
+            aria-label={t('New terminal')}
+            onClick={addTab}
+          >
+            <Plus size={14} />
+          </button>
         </div>
+
         <div className="terminal__actions">
-          {running ? (
-            <button className="ghost-btn" onClick={() => void stop()} disabled={stopping}>
-              <Square size={9} />
-              {t('Stop')}
-            </button>
-          ) : null}
           <button
             className="icon-btn"
             title={t('Copy the output')}
             aria-label={t('Copy the output')}
             onClick={() => void copyOutput()}
-            disabled={!hasBlocks}
           >
             <Copy size={13} />
           </button>
@@ -695,10 +578,17 @@ export function TerminalPanel({
             className="icon-btn"
             title={t('Clear')}
             aria-label={t('Clear')}
-            onClick={clear}
-            disabled={!hasBlocks}
+            onClick={clearOutput}
           >
             <Eraser size={13} />
+          </button>
+          <button
+            className="icon-btn"
+            title={t('Restart the terminal')}
+            aria-label={t('Restart the terminal')}
+            onClick={restart}
+          >
+            <RotateCcw size={13} />
           </button>
           {embedded ? null : (
             <button className="icon-btn" title={t('Close')} aria-label={t('Close')} onClick={onClose}>
@@ -706,113 +596,28 @@ export function TerminalPanel({
             </button>
           )}
         </div>
-      </header>
-
-      <div className="terminal__body">
-        <div className="terminal__log" ref={logRef} role="log" aria-label={t('Terminal output')}>
-          {!ready ? (
-            <div className="terminal__notice" role="status">
-              <span className="terminal__notice-title">{t('The terminal needs the Pi runtime.')}</span>
-              <span className="terminal__notice-text">
-                {status.error ?? t('Open a project to start Pi, then run commands here.')}
-              </span>
-            </div>
-          ) : null}
-
-          {ready && !hasBlocks ? (
-            <div className="terminal__empty">{t('Run a command in the workspace…')}</div>
-          ) : null}
-
-          {ready && hasBlocks && filterQuery && visibleBlocks.length === 0 ? (
-            <div className="terminal__empty">{t('No commands match the filter.')}</div>
-          ) : null}
-
-          {visibleBlocks.map((block) => (
-            <article className="terminal__block" key={block.id}>
-              <div className="terminal__command">
-                <span className="terminal__prompt" aria-hidden="true">
-                  $
-                </span>
-                <span className="terminal__cmd">{block.command}</span>
-                <span className="terminal__meta">
-                  {block.status === 'running' ? (
-                    <span className="terminal__meta-item" data-kind="running">
-                      {t('running…')}
-                    </span>
-                  ) : block.cancelled ? (
-                    <span className="terminal__meta-item" data-kind="warn">
-                      {t('Cancelled')}
-                    </span>
-                  ) : block.status === 'error' ? (
-                    <span className="terminal__meta-item" data-kind="bad">
-                      {t('Failed')}
-                    </span>
-                  ) : (
-                    <span
-                      className="terminal__meta-item"
-                      data-kind={block.exitCode === 0 ? 'ok' : 'bad'}
-                    >
-                      {t('exit')} {block.exitCode ?? '—'}
-                    </span>
-                  )}
-                  {block.truncated ? (
-                    <span className="terminal__badge" title={block.fullOutputPath}>
-                      {t('truncated')}
-                    </span>
-                  ) : null}
-                  {block.durationMs === undefined ? null : (
-                    <span className="terminal__meta-item">{formatDuration(block.durationMs)}</span>
-                  )}
-                </span>
-              </div>
-              {block.output ? (
-                <AnsiText text={block.output} />
-              ) : block.status === 'running' ? (
-                <pre className="terminal__output terminal__output--muted">
-                  {t('Waiting for output…')}
-                </pre>
-              ) : null}
-            </article>
-          ))}
-        </div>
-
-        {!atBottom && hasBlocks ? (
-          <button
-            className="terminal__jump"
-            onClick={scrollToBottom}
-            title={t('Scroll to the latest')}
-            aria-label={t('Scroll to the latest')}
-          >
-            <ArrowDown size={11} />
-            {t('Latest')}
-          </button>
-        ) : null}
       </div>
 
-      <div className="terminal__input-row">
-        <span className="terminal__prompt" aria-hidden="true">
-          $
-        </span>
-        <input
-          ref={inputRef}
-          className="terminal__input"
-          value={input}
-          disabled={!ready}
-          spellCheck={false}
-          autoComplete="off"
-          aria-label={t('Run command')}
-          placeholder={
-            ready ? t('Type a command and press Enter') : t('Pi is not running')
-          }
-          onChange={(event) => {
-            setInput(event.target.value)
-            setCursor(-1)
-          }}
-          onKeyDown={onInputKeyDown}
-        />
-        <span className="terminal__hint">
-          {formatPlatformShortcut(t('Enter to run · Ctrl+L to clear'), platform)}
-        </span>
+      <div className="terminal__body">
+        {tabs.map((tab) => (
+          <div
+            key={tab.key}
+            className="terminal__pane"
+            data-active={tab.key === activeKey || undefined}
+          >
+            <TerminalPane
+              ref={(api) => {
+                if (api) paneApis.current.set(tab.key, api)
+                else paneApis.current.delete(tab.key)
+              }}
+              active={tab.key === activeKey}
+              cwd={workspace?.path}
+              shell={shell}
+              request={tab.key === assignedRequest?.key ? assignedRequest.request : null}
+              onLabel={(label) => setTabLabel(tab.key, label)}
+            />
+          </div>
+        ))}
       </div>
     </section>
   )

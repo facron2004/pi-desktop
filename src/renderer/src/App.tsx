@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import {
   Download,
   Ellipsis,
   GitBranch,
+  ListTodo,
   PanelRight,
   Pencil,
   TriangleAlert
@@ -20,17 +27,22 @@ import { InspectorPanel } from './components/InspectorPanel'
 import { BrowserView } from './components/BrowserView'
 import { ImageViewer } from './components/ImageViewer'
 import { TaskPanel } from './components/TaskPanel'
+import { SubagentPanel } from './components/SubagentPanel'
 import { ToolPanel, type ToolPanelView } from './components/ToolPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
 import { Launcher, useLauncherActions } from './components/Launcher'
 import { TerminalPanel, type TerminalRunRequest } from './components/TerminalPanel'
 import { PlanStrip } from './components/PlanStrip'
+import { GoalBar } from './components/GoalBar'
 import { SessionTreeDialog } from './components/SessionTreeDialog'
 import { McpDialog } from './components/McpDialog'
 import { EditProjectDialog } from './components/EditProjectDialog'
 import { Popover } from './components/Popover'
 import { openingLabel, useT } from './lib/i18n'
+
+/** Matches the closing animation in global.css; the panel stays mounted that long. */
+const INSPECTOR_EXIT_MS = 200
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
@@ -54,6 +66,7 @@ export default function App() {
   const updateSettings = useAppStore((state) => state.updateSettings)
   const sessions = useAppStore((state) => state.sessions)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
+  const draftId = useAppStore((state) => state.draftId)
   const switchProject = useAppStore((state) => state.switchProject)
   const run = useAppStore((state) => state.run)
   const transport = useAppStore((state) => state.transport)
@@ -74,11 +87,20 @@ export default function App() {
   const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
   const terminalSeqRef = useRef(0)
   const [changesOpen, setChangesOpen] = useState(false)
-  const [panelView, setPanelView] = useState<ToolPanelView>('start')
+  // Independent of Tools: a status card column beside the conversation.
+  const [taskRailOpen, setTaskRailOpen] = useState(true)
+  // Keep the panel mounted for the closing animation; `changesOpen` alone
+  // unmounts it on the same frame and the exit would never be seen.
+  const [panelMounted, setPanelMounted] = useState(false)
+  const [panelClosing, setPanelClosing] = useState(false)
+  const panelCloseTimer = useRef<number | null>(null)
+  const [panelView, setPanelView] = useState<ToolPanelView>('changes')
   /**
-   * Which tool of the side panel is showing. The old tab model is gone: the
-   * panel opens on a menu, and a request picks one tool out of it.
+   * The panel's tools are tabs; the terminal is the one tab whose content is a
+   * live process. Once it has been opened it stays mounted while another tab
+   * is in front, so switching tabs does not kill the shells.
    */
+  const [terminalMounted, setTerminalMounted] = useState(false)
   const inspectorTab: 'changes' | 'files' =
     panelView === 'files' ? 'files' : 'changes'
   const [inspectorFile, setInspectorFile] = useState<{ path: string; line?: number } | null>(null)
@@ -100,6 +122,42 @@ export default function App() {
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
+
+  useEffect(() => {
+    if (changesOpen) {
+      if (panelCloseTimer.current !== null) {
+        window.clearTimeout(panelCloseTimer.current)
+        panelCloseTimer.current = null
+      }
+      setPanelMounted(true)
+      setPanelClosing(false)
+      return
+    }
+    if (!panelMounted) return
+    setPanelClosing(true)
+    panelCloseTimer.current = window.setTimeout(() => {
+      panelCloseTimer.current = null
+      setPanelMounted(false)
+      setPanelClosing(false)
+    }, INSPECTOR_EXIT_MS)
+    return () => {
+      if (panelCloseTimer.current !== null) {
+        window.clearTimeout(panelCloseTimer.current)
+        panelCloseTimer.current = null
+      }
+    }
+  }, [changesOpen, panelMounted])
+
+  // Mount the terminal on its first visit and keep it alive afterwards, so a
+  // tab switch does not throw away the shells it is running. Closing the whole
+  // panel ends them, exactly like closing the drawer used to.
+  useEffect(() => {
+    if (panelMounted && panelView === 'terminal') setTerminalMounted(true)
+  }, [panelMounted, panelView])
+
+  useEffect(() => {
+    if (!changesOpen && !panelMounted) setTerminalMounted(false)
+  }, [changesOpen, panelMounted])
 
   // The panel is a column of the grid; it only floats over the conversation
   // when the window is too narrow to give it a column of its own.
@@ -408,7 +466,7 @@ export default function App() {
     <div
       className="app"
       data-sidebar={sidebarOpen ? 'open' : 'collapsed'}
-      data-drawer={changesOpen ? 'open' : 'closed'}
+      data-drawer={panelMounted ? 'open' : 'closed'}
       data-inspector={inspectorOverlay ? 'overlay' : 'docked'}
       data-empty={hasItems ? 'false' : 'true'}
       style={
@@ -491,6 +549,18 @@ export default function App() {
           </div>
           <div className="titlebar__actions no-drag">
             {hasItems ? (
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label={taskRailOpen ? t('Hide task status') : t('Show task status')}
+                title={taskRailOpen ? t('Hide task status') : t('Show task status')}
+                aria-pressed={taskRailOpen}
+                onClick={() => setTaskRailOpen((open) => !open)}
+              >
+                <ListTodo size={16} strokeWidth={1.6} />
+              </button>
+            ) : null}
+            {hasItems ? (
               <Popover
                 align="right"
                 width={220}
@@ -550,25 +620,14 @@ export default function App() {
                   )}
                 </Popover>
               ) : null}
-              {!changesOpen ? (
-                <button
-                  className="icon-btn"
-                  type="button"
-                  aria-label={t('Show tools panel')}
-                  title={t('Show tools panel')}
-                  aria-expanded={false}
-                  onClick={() => openInspector(panelView)}
-                >
-                  <PanelRight size={16} strokeWidth={1.7} />
-                </button>
-              ) : null}
             </div>
         </div>
 
         {/* Everything below the header shares one container: the drawer
             margin lives here, so this element measures the width the
             conversation actually has to read in. */}
-        <div className="main__body">
+        <div className="main__stage">
+          <div className="main__body">
           {!hasItems ? (
             <Welcome onPick={() => openProjectDialog({ mode: 'create' })}>
               <Composer />
@@ -603,14 +662,16 @@ export default function App() {
             </div>
           ) : null}
 
-          {uiStatuses.length > 0 ? (
+          {uiStatuses.some((entry) => entry.key !== 'pi-desktop-goal') ? (
             <div className="status-strip">
-              {uiStatuses.map((entry) => (
-                <span className="status-strip__item" key={entry.key}>
-                  <span className="status-strip__dot" />
-                  {entry.text}
-                </span>
-              ))}
+              {uiStatuses
+                .filter((entry) => entry.key !== 'pi-desktop-goal')
+                .map((entry) => (
+                  <span className="status-strip__item" key={entry.key}>
+                    <span className="status-strip__dot" />
+                    {entry.text}
+                  </span>
+                ))}
             </div>
           ) : null}
 
@@ -625,6 +686,7 @@ export default function App() {
             </div>
           ))}
 
+          <GoalBar key={activeSessionFile ?? draftId ?? 'draft'} />
           <PlanStrip />
 
           {hasItems ? <Composer /> : null}
@@ -636,14 +698,23 @@ export default function App() {
               ))}
             </div>
           ))}
+          </div>
+          {hasItems && taskRailOpen ? (
+            <aside className="task-rail" aria-label={t('Task status')}>
+              <div className="task-rail__body">
+                <TaskPanel />
+              </div>
+            </aside>
+          ) : null}
         </div>
       </main>
 
-      {changesOpen ? (
+      {panelMounted ? (
         <>
           {inspectorOverlay ? (
             <button
               className="inspector-scrim"
+              data-closing={panelClosing || undefined}
               tabIndex={-1}
               aria-label={t('Close the inspector')}
               onClick={() => setChangesOpen(false)}
@@ -655,7 +726,9 @@ export default function App() {
               setPanelView(view)
               setInspectorFile(null)
             }}
-            className={inspectorOverlay ? 'tool-panel--overlay' : undefined}
+            className={[inspectorOverlay ? 'tool-panel--overlay' : '', panelClosing ? 'tool-panel--closing' : '']
+              .filter(Boolean)
+              .join(' ')}
             overlay={inspectorOverlay}
             width={drawerWidth}
             onClose={() => setChangesOpen(false)}
@@ -665,18 +738,12 @@ export default function App() {
               void updateSettings({ drawerWidth: width })
             }}
           >
-            {panelView === 'terminal' ? (
-              <TerminalPanel
-                embedded
-                request={terminalRequest}
-                onClose={() => setChangesOpen(false)}
-              />
-            ) : panelView === 'browser' ? (
+            {panelView === 'terminal' ? null : panelView === 'browser' ? (
               <BrowserView />
             ) : panelView === 'images' ? (
               <ImageViewer />
-            ) : panelView === 'tasks' ? (
-              <TaskPanel />
+            ) : panelView === 'subagents' ? (
+              <SubagentPanel />
             ) : panelView === 'files' || panelView === 'changes' ? (
               <InspectorPanel
                 embedded
@@ -687,9 +754,40 @@ export default function App() {
                 onClose={() => setChangesOpen(false)}
               />
             ) : null}
+            {terminalMounted ? (
+              <div
+                className="tool-panel__terminal"
+                data-active={panelView === 'terminal' || undefined}
+              >
+                <TerminalPanel
+                  embedded
+                  request={panelView === 'terminal' ? terminalRequest : null}
+                  onClose={() => setChangesOpen(false)}
+                />
+              </div>
+            ) : null}
           </ToolPanel>
         </>
       ) : null}
+      {/* One toggle for the side panel, pinned to the corner of the content
+          row. It used to live in whichever header was nearest — the main
+          title bar while the panel was gone, the panel's own head while it was
+          up — so opening and closing moved the icon, and the panel's enter/exit
+          animation slid and faded it on the way. As a child of the shell it
+          keeps the same pixels in every state and the animation cannot reach
+          it; the panel reserves the corner it sits in. */}
+      <div className="shell__panel-toggle">
+        <button
+          className="icon-btn"
+          type="button"
+          aria-label={t(changesOpen ? 'Hide tools panel' : 'Show tools panel')}
+          title={t(changesOpen ? 'Hide tools panel' : 'Show tools panel')}
+          aria-expanded={changesOpen}
+          onClick={() => (changesOpen ? setChangesOpen(false) : openInspector(panelView))}
+        >
+          <PanelRight size={16} strokeWidth={1.7} />
+        </button>
+      </div>
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
       {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
       {launcherOpen ? (

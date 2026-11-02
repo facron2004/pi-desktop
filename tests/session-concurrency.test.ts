@@ -24,6 +24,7 @@ const bridge = {
   runtime: {
     ensure: async (_options: RuntimeEnsureOptions) => ({ ok: true }),
     has: async (_key: string) => true,
+    stop: async (_key?: string) => {},
     stopCwd: async (cwd: string) => { stopped.push(cwd) },
     onEvent: (handler: (payload: EventPayload) => void) => subscribe(eventListeners, handler),
     onRekey: (handler: (change: RekeyPayload) => void) => subscribe(rekeyListeners, handler),
@@ -47,10 +48,14 @@ await useAppStore.getState().bootstrap()
 const initial = useAppStore.getState()
 const originalRequest = bridge.runtime.request
 const originalEnsure = bridge.runtime.ensure
+const originalStop = bridge.runtime.stop
+const originalGitStatus = bridge.git.status
 afterEach(async () => {
   await tick()
   bridge.runtime.request = originalRequest
   bridge.runtime.ensure = originalEnsure
+  bridge.runtime.stop = originalStop
+  bridge.git.status = originalGitStatus
   calls.length = 0
   stopped.length = 0
   useAppStore.setState(initial, true)
@@ -60,6 +65,44 @@ afterEach(async () => {
 
 const session = (file: string): SessionMeta => ({
   id: file, file, cwd: '', preview: file, updatedAt: 1, messageCount: 0
+})
+
+for (const errorText of ['Unknown task mode', 'Unknown mode']) {
+  test(`a stale desktop main process explains how to recover from ${errorText}`, async () => {
+    await useAppStore.getState().selectSession(session('mode.jsonl'))
+    let prompts = 0
+    const retired: string[] = []
+    bridge.runtime.stop = async (key) => { if (key) retired.push(key) }
+    bridge.runtime.request = async (command, ...args) => {
+      if (command === 'prompt') {
+        prompts += 1
+        throw new Error(errorText)
+      }
+      return originalRequest(command, ...args)
+    }
+    await useAppStore.getState().setAgentMode('subagent')
+    assert.equal(prompts, 2, 'retry the idle Pi once before asking for an app restart')
+    assert.deepEqual(retired, ['mode.jsonl'])
+    assert.equal(useAppStore.getState().agentMode, 'default')
+    assert.equal(useAppStore.getState().error, 'Restart Pi Desktop to load the updated task modes')
+  })
+}
+
+test('an old Pi extension can be refreshed without restarting the desktop', async () => {
+  await useAppStore.getState().selectSession(session('mode.jsonl'))
+  let prompts = 0
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'prompt' && ++prompts === 1) throw new Error('Unknown task mode')
+    if (command === 'prompt') {
+      emit({ ownerId: 'mode.jsonl', event: { type: 'extension_ui_request', method: 'setStatus', statusKey: 'pi-desktop-mode', statusText: 'subagent' } })
+      return { disposition: 'handled' }
+    }
+    return originalRequest(command, ...args)
+  }
+  await useAppStore.getState().setAgentMode('subagent')
+  assert.equal(prompts, 2)
+  assert.equal(useAppStore.getState().agentMode, 'subagent')
+  assert.equal(useAppStore.getState().error, undefined)
 })
 
 test('repeated bootstrap processes each runtime event once', async () => {
@@ -327,4 +370,104 @@ test('replacing an unpersisted file follows its in-flight updates without leavin
   assert.equal(useAppStore.getState().activeSessionFile, 'replacement.jsonl')
   assert.equal(useAppStore.getState().threads['unpersisted.jsonl'], undefined)
   assert.equal(useAppStore.getState().threads['replacement.jsonl'].run.phase, 'idle')
+})
+
+test('a new chat while the conversation list is being read keeps the fresh list', async () => {
+  // The list describes the project, not the conversation on screen, so a
+  // view-only change must not throw it away. This is the bug that made two
+  // conversations created in quick succession both vanish from the sidebar:
+  // a settle started the read, the reader asked for the next conversation,
+  // and the refreshed list was dropped.
+  let release!: () => void
+  const reading = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  bridge.sessions.list = async () => {
+    await reading
+    return [session('A.jsonl')]
+  }
+  const refreshing = useAppStore.getState().refreshSessions()
+  await useAppStore.getState().newChat()
+  release()
+  await refreshing
+  await tick()
+  assert.deepEqual(
+    useAppStore.getState().sessions.map((entry) => entry.file),
+    ['A.jsonl'],
+    'the refreshed list must survive a new chat'
+  )
+  assert.ok(useAppStore.getState().draftId?.startsWith('draft:'), 'the new chat still owns the screen')
+})
+
+test('a project switch while the conversation list is being read discards it', async () => {
+  // The other half of the same rule: a read that started in one project must
+  // not land in another. The first read is held; the switch's own read
+  // returns the new project's conversations.
+  let release!: () => void
+  const reading = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let calls = 0
+  bridge.sessions.list = async () => {
+    calls += 1
+    if (calls === 1) {
+      await reading
+      return [session('OLD.jsonl')]
+    }
+    return [session('NEW.jsonl')]
+  }
+  const refreshing = useAppStore.getState().refreshSessions()
+  // Not awaited yet: its own refresh waits on the same read this test holds.
+  const switching = useAppStore.getState().openWorkspace(undefined, undefined, 'project-switch')
+  release()
+  await Promise.all([refreshing, switching])
+  await tick()
+  assert.deepEqual(
+    useAppStore.getState().sessions.map((entry) => entry.file),
+    ['NEW.jsonl'],
+    'the stale list must not paint over the project the switch opened'
+  )
+})
+
+for (const fails of [false, true]) {
+  test(`selecting another project's conversation discards a stale Git ${fails ? 'failure' : 'result'}`, async () => {
+    const a = { id: 'project-a', path: 'C:/review-a', name: 'A', lastOpenedAt: 1 }
+    const b = { id: 'project-b', path: 'C:/review-b', name: 'B', lastOpenedAt: 1 }
+    useAppStore.setState({
+      workspace: a,
+      settings: { ...initial.settings, workspaces: [a, b], activeWorkspaceId: a.id }
+    })
+    let resolveOld!: (value: { isRepo: boolean; branch: string }) => void
+    let rejectOld!: (error: Error) => void
+    const oldRead = new Promise<{ isRepo: boolean; branch: string }>((resolve, reject) => {
+      resolveOld = resolve
+      rejectOld = reject
+    })
+    let reads = 0
+    bridge.git.status = async () => ++reads === 1 ? oldRead : { isRepo: true, branch: 'branch-B' }
+    const refreshing = useAppStore.getState().refreshGit()
+    await useAppStore.getState().selectSession({ ...session('B.jsonl'), cwd: b.path })
+    await tick()
+    assert.equal(useAppStore.getState().git?.branch, 'branch-B')
+    if (fails) rejectOld(new Error('The old project is unavailable'))
+    else resolveOld({ isRepo: true, branch: 'branch-A' })
+    await refreshing
+    assert.equal(useAppStore.getState().workspace?.path, b.path)
+    assert.equal(useAppStore.getState().git?.branch, 'branch-B')
+  })
+}
+
+test('a conversation switch within the same project keeps an in-flight Git result', async () => {
+  const workspace = { id: 'project-a', path: 'C:/review-a', name: 'A', lastOpenedAt: 1 }
+  useAppStore.setState({
+    workspace,
+    settings: { ...initial.settings, workspaces: [workspace], activeWorkspaceId: workspace.id }
+  })
+  let resolve!: (value: { isRepo: boolean; branch: string }) => void
+  bridge.git.status = () => new Promise((finish) => { resolve = finish })
+  const refreshing = useAppStore.getState().refreshGit()
+  await useAppStore.getState().selectSession({ ...session('A.jsonl'), cwd: 'c:\\review-a\\' })
+  resolve({ isRepo: true, branch: 'branch-A' })
+  await refreshing
+  assert.equal(useAppStore.getState().git?.branch, 'branch-A')
 })

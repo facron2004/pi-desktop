@@ -40,7 +40,7 @@ test('collectProjects deduplicates workspaces and sessions pointing to the same 
   assert.equal(projects[0].sessions.length, 2, 'Sessions should be merged into the single project')
 })
 
-test('sortProjects prioritises active project regardless of path separator differences', () => {
+test('sortProjects keeps creation order even when another project was opened later', () => {
   const projects = [
     {
       path: 'C:\\Users\\User\\Other',
@@ -59,7 +59,7 @@ test('sortProjects prioritises active project regardless of path separator diffe
   ]
 
   const sorted = sortProjects(projects, 'e:/Program/Pi Desktop/')
-  assert.equal(sorted[0].name, 'Pi Desktop')
+  assert.deepEqual(sorted.map((project) => project.name), ['Other', 'Pi Desktop'])
 })
 
 test('a removed project stays gone even when its conversations are still on disk', () => {

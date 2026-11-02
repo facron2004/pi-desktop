@@ -25,7 +25,19 @@ function read(): WindowState | null {
     const file = stateFile()
     if (!existsSync(file)) return null
     const parsed = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) as WindowState
-    if (typeof parsed.width !== 'number' || typeof parsed.height !== 'number') return null
+    // A process killed before its first frame can leave a zero-sized state
+    // behind; clamping that to the minimum would open the next run as a tiny
+    // window. Treat impossible sizes as no state so the default wins.
+    if (
+      typeof parsed.width !== 'number' ||
+      typeof parsed.height !== 'number' ||
+      !Number.isFinite(parsed.width) ||
+      !Number.isFinite(parsed.height) ||
+      parsed.width < MIN_WIDTH ||
+      parsed.height < MIN_HEIGHT
+    ) {
+      return null
+    }
     return parsed
   } catch {
     return null
@@ -74,6 +86,40 @@ export function wasMaximized(): boolean {
 }
 
 /**
+ * The size of the content area, in the same unit the window is created with.
+ *
+ * `getNormalBounds()` reports the outer frame, which on Windows includes the
+ * title bar and a rounded border. Saving that number and passing it back as
+ * the next window's `width`/`height` mixes the two units, and at fractional
+ * display scaling the rounding makes the difference stack up on every launch.
+ * The content bounds are the stable unit: `index.ts` re-asserts them with
+ * `setContentSize()` after the frame has been resolved.
+ */
+function contentSize(window: BrowserWindow): { width: number; height: number } {
+  // A minimised window reports 0x0 content; saving that would drop the size
+  // the user left behind, and the next launch would fall back to the default.
+  // The normal bounds are the size the window returns to, so they stand in.
+  if (window.isMinimized()) {
+    const normal = window.getNormalBounds()
+    return { width: Math.max(MIN_WIDTH, normal.width), height: Math.max(MIN_HEIGHT, normal.height) }
+  }
+  if (!window.isMaximized() && !window.isFullScreen()) {
+    const content = window.getContentBounds()
+    return { width: content.width, height: content.height }
+  }
+  // While maximised `getContentBounds()` is the maximised screen, not the
+  // state the window returns to. Subtract the frame from the normal bounds
+  // instead (the frame delta is measured from the current window).
+  const outer = window.getBounds()
+  const content = window.getContentBounds()
+  const normal = window.getNormalBounds()
+  return {
+    width: Math.max(MIN_WIDTH, normal.width - (outer.width - content.width)),
+    height: Math.max(MIN_HEIGHT, normal.height - (outer.height - content.height))
+  }
+}
+
+/**
  * Remember the size and place of the window.
  *
  * The write is debounced, because a drag sends a stream of move events and
@@ -81,19 +127,36 @@ export function wasMaximized(): boolean {
  */
 export function watchWindowState(window: BrowserWindow): void {
   let timer: NodeJS.Timeout | null = null
+  // A maximised window reports the maximised content bounds. Keep the last
+  // normal content size so closing while maximised does not overwrite the
+  // size the window would return to.
+  const previous = read()
+  let lastContent = previous ? { width: previous.width, height: previous.height } : null
+  if (!window.isMaximized() && !window.isFullScreen() && !window.isMinimized()) {
+    lastContent = contentSize(window)
+  }
+
+  const snapshot = (): WindowState => {
+    if (!window.isMaximized() && !window.isFullScreen() && !window.isMinimized()) {
+      lastContent = contentSize(window)
+    }
+    const normal = window.getNormalBounds()
+    const content = lastContent ?? contentSize(window)
+    return {
+      width: content.width,
+      height: content.height,
+      x: normal.x,
+      y: normal.y,
+      maximized: window.isMaximized()
+    }
+  }
+
   const save = () => {
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
       timer = null
       if (window.isDestroyed()) return
-      const bounds = window.getNormalBounds()
-      write({
-        width: bounds.width,
-        height: bounds.height,
-        x: bounds.x,
-        y: bounds.y,
-        maximized: window.isMaximized()
-      })
+      write(snapshot())
     }, 400)
   }
 
@@ -106,13 +169,6 @@ export function watchWindowState(window: BrowserWindow): void {
   })
   window.on('close', () => {
     if (timer) clearTimeout(timer)
-    const bounds = window.getNormalBounds()
-    write({
-      width: bounds.width,
-      height: bounds.height,
-      x: bounds.x,
-      y: bounds.y,
-      maximized: window.isMaximized()
-    })
+    write(snapshot())
   })
 }

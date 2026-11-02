@@ -3,7 +3,7 @@ import { Markdown } from '../Markdown'
 
 export interface StreamingTextProps {
   text: string
-  /** Draws the blinking caret while the model is still writing. */
+  /** @deprecated Ignored — streaming caret removed; kept so call sites need not change. */
   streaming?: boolean
 }
 
@@ -17,8 +17,7 @@ export interface StreamingTextProps {
 export const StreamingText = memo(function StreamingText({ text, streaming }: StreamingTextProps) {
   return (
     <div className="assistant__text">
-      <Markdown>{text}</Markdown>
-      {streaming ? <span className="caret-blink" aria-hidden="true" /> : null}
+      <Markdown streaming={streaming}>{text}</Markdown>
     </div>
   )
 })

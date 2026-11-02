@@ -1,60 +1,54 @@
-import { useCallback, useMemo, useRef, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  ChevronLeft,
+  Bot,
+  Compass,
   FileDiff,
   Files,
   Globe,
   Images,
-  LayoutGrid,
-  PanelRight,
-  SquareTerminal
+  Plus,
+  SquareTerminal,
+  X
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import { collectChanges } from '../lib/changes'
+import { countChangedFiles } from '../lib/changes'
 import { formatPlatformShortcut } from '../lib/shortcuts'
 import { useT } from '../lib/i18n'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 
 /**
- * What the side panel can show: a menu first, then the thing that was picked.
+ * What the side panel can show, as a page each.
  *
- * The panel opens on a menu rather than on a tab — a tab bar says "these are
- * five views of one thing", which is not true here; the pieces are unrelated
- * tools, and a menu is what a list of tools looks like. Picking one replaces
- * the menu with that tool and leaves one way back, so the panel is never a
- * puzzle about where the menu went.
+ * Pages are opened from the guide (the panel's home page), not from a fixed
+ * function strip: the top row is a browser-like tab strip, so opening Files
+ * does not make Files the permanent meaning of a tab. The guide is the
+ * navigation surface and always remains reachable through the plus control.
  */
-export type ToolPanelView =
-  | 'start'
-  | 'files'
-  | 'changes'
-  | 'terminal'
-  | 'browser'
-  | 'images'
-  | 'tasks'
+export type ToolPanelView = 'files' | 'changes' | 'subagents' | 'terminal' | 'browser' | 'images'
 
-const MENU: {
+type ToolTab = ToolPanelView | 'guide'
+
+const TABS: {
   view: ToolPanelView
   label: string
+  description: string
   icon: typeof Files
   shortcut?: string
 }[] = [
-  { view: 'files', label: 'Files', icon: Files },
-  { view: 'changes', label: 'File changes', icon: FileDiff },
-  { view: 'terminal', label: 'New terminal', icon: SquareTerminal, shortcut: 'Ctrl+`' },
-  { view: 'browser', label: 'Browser', icon: Globe },
-  { view: 'images', label: 'Images', icon: Images },
-  { view: 'tasks', label: 'Tasks', icon: LayoutGrid }
+  { view: 'files', label: 'Files', description: 'Browse the project files', icon: Files },
+  { view: 'changes', label: 'File changes', description: 'Review the files this conversation changed', icon: FileDiff },
+  { view: 'subagents', label: 'Subagents', description: 'Subagent tasks and their status', icon: Bot },
+  { view: 'terminal', label: 'Terminal', description: 'Run commands in a real shell', icon: SquareTerminal, shortcut: 'Ctrl+`' },
+  { view: 'browser', label: 'Browser', description: 'Browse a page without leaving the app', icon: Globe },
+  { view: 'images', label: 'Images', description: 'Pictures in this project', icon: Images }
 ]
 
-const MENU_TITLES: Record<ToolPanelView, string> = {
-  start: 'Start',
-  files: 'Files',
-  changes: 'File changes',
-  terminal: 'Terminal',
-  browser: 'Browser',
-  images: 'Images',
-  tasks: 'Tasks'
+const GUIDE_META = { label: 'Tools', icon: Compass }
+const TAB_BY_VIEW = new Map(TABS.map((entry) => [entry.view, entry]))
+
+function metaOf(tab: ToolTab) {
+  if (tab === 'guide') return GUIDE_META
+  return TAB_BY_VIEW.get(tab) ?? GUIDE_META
 }
 
 export function ToolPanel({
@@ -70,7 +64,7 @@ export function ToolPanel({
 }: {
   view: ToolPanelView
   onViewChange: (view: ToolPanelView) => void
-  /** The tool itself, or null when this component draws the menu. */
+  /** The active page's content. The guide is drawn by the panel itself. */
   children?: ReactNode
   className?: string
   overlay: boolean
@@ -82,16 +76,54 @@ export function ToolPanel({
   const t = useT()
   const panelRef = useRef<HTMLElement>(null)
   useDialogFocus(panelRef, onClose, overlay)
-  const platform = useAppStore((state) => state.info?.platform)
   const items = useAppStore((state) => state.items)
   const git = useAppStore((state) => state.git)
 
-  const showingMenu = view === 'start'
-
   const changeCount = useMemo(() => {
-    const fromThread = collectChanges(items).length
+    const fromThread = countChangedFiles(items)
     return fromThread > 0 ? fromThread : git?.isRepo ? git.files.length : 0
   }, [items, git])
+
+  // The strip holds the pages the reader opened in this panel visit. App still
+  // owns the active view, so the guide and every tab share one navigation
+  // state rather than maintaining a second copy in the panel.
+  const [tabs, setTabs] = useState<ToolTab[]>(['guide', view])
+  const [active, setActive] = useState<ToolTab>(view)
+  useEffect(() => {
+    setTabs((current) => (current.includes(view) ? current : [...current, view]))
+    setActive(view)
+  }, [view])
+
+  const openView = useCallback((next: ToolPanelView) => {
+    setTabs((current) => (current.includes(next) ? current : [...current, next]))
+    setActive(next)
+    onViewChange(next)
+  }, [onViewChange])
+
+  const openGuide = useCallback(() => {
+    setTabs((current) => (current.includes('guide') ? current : [...current, 'guide']))
+    setActive('guide')
+  }, [])
+
+  const selectTab = (next: ToolTab) => {
+    setActive(next)
+    if (next !== 'guide') onViewChange(next)
+  }
+
+  const closeTab = (next: ToolTab) => {
+    const remaining = tabs.filter((tab) => tab !== next)
+    if (remaining.length === 0) {
+      setTabs(['guide'])
+      setActive('guide')
+      return
+    }
+    setTabs(remaining)
+    if (active === next) {
+      const fallback = remaining[remaining.length - 1]
+      setActive(fallback)
+      if (fallback !== 'guide') onViewChange(fallback)
+    }
+  }
 
   const widthRef = useRef(width)
   const startResize = useCallback(
@@ -144,80 +176,95 @@ export function ToolPanel({
           onPointerDown={startResize}
         />
       ) : null}
-      <header className="tool-panel__head">
-        {showingMenu ? (
-          <div className="tool-panel__title">
-            <span className="tool-panel__title-icon" aria-hidden="true">
-              <LayoutGrid size={15} />
-            </span>
-            <span>{t(MENU_TITLES[view])}</span>
-          </div>
-        ) : (
-          <>
-            <button
-              type="button"
-              className="icon-btn tool-panel__back"
-              aria-label={t('Back')}
-              title={t('Back')}
-              onClick={() => onViewChange('start')}
-            >
-              <ChevronLeft size={15} />
-            </button>
-            <div className="tool-panel__title">
-              <span>{t(MENU_TITLES[view])}</span>
-              {view === 'changes' && changeCount > 0 ? (
-                <span className="tool-panel__count">{changeCount}</span>
-              ) : null}
+      {/* The strip keeps its right corner empty: the shell pins the panel's one
+          toggle there, so it does not travel with the panel's animation. */}
+      <div className="tool-panel__tabs" role="tablist" aria-label={t('Tools')}>
+        {tabs.map((tab) => {
+          const meta = metaOf(tab)
+          const Icon = meta.icon
+          const activeTab = tab === active
+          const title = tab === 'guide' ? GUIDE_META.label : TAB_BY_VIEW.get(tab)?.description ?? GUIDE_META.label
+          return (
+            <div className="tool-panel__tab-shell" key={tab} data-active={activeTab || undefined}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab}
+                className="tool-panel__tab"
+                data-active={activeTab || undefined}
+                title={t(title)}
+                onClick={() => selectTab(tab)}
+              >
+                <Icon size={15} strokeWidth={1.7} />
+                <span className="tool-panel__tab-label">{t(meta.label)}</span>
+                {tab === 'changes' && changeCount > 0 ? (
+                  <span className="tool-panel__count">{changeCount}</span>
+                ) : null}
+              </button>
+              {tab === 'guide' ? null : (
+                <button
+                  type="button"
+                  className="tool-panel__tab-close"
+                  aria-label={t('Close tab')}
+                  title={t('Close tab')}
+                  onClick={() => closeTab(tab)}
+                >
+                  <X size={11} />
+                </button>
+              )}
             </div>
-          </>
-        )}
-        <div className="tool-panel__head-actions">
-          <button
-            className="icon-btn"
-            aria-label={t('Hide tools panel')}
-            title={t('Hide tools panel')}
-            onClick={onClose}
-          >
-            <PanelRight size={16} strokeWidth={1.7} />
-          </button>
-        </div>
-      </header>
+          )
+        })}
+        <button
+          type="button"
+          className="tool-panel__new-tab"
+          aria-label={t('Open a tool')}
+          title={t('Open a tool')}
+          onClick={openGuide}
+        >
+          <Plus size={14} />
+        </button>
+      </div>
 
-      <div className="tool-panel__body" data-view={view}>
-        {showingMenu ? (
-          <div className="tool-menu">
-            <div className="tool-menu__list">
-              <div className="tool-menu__heading">{t('Start here')}</div>
-              {MENU.map((entry) => {
-                const Icon = entry.icon
-                return (
-                  <button
-                    key={entry.view}
-                    type="button"
-                    className="tool-menu__card"
-                    onClick={() => onViewChange(entry.view)}
-                  >
-                    <span className="tool-menu__card-icon">
-                      <Icon size={17} />
-                    </span>
-                    <span className="tool-menu__card-label">{t(entry.label)}</span>
-                    {entry.view === 'changes' && changeCount > 0 ? (
-                      <span className="tool-menu__count">{changeCount}</span>
-                    ) : null}
-                    {entry.shortcut ? (
-                      <span className="tool-menu__shortcut">
-                        {formatPlatformShortcut(entry.shortcut, platform)}
-                      </span>
-                    ) : null}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        ) : (
-          children
-        )}
+      <div className="tool-panel__body" data-view={active}>
+        {active === 'guide' ? <ToolGuide onOpen={openView} /> : children}
       </div>
     </aside>
+  )
+}
+
+/** The panel's home page: tool entries are links, not permanent tabs. */
+function ToolGuide({ onOpen }: { onOpen: (view: ToolPanelView) => void }) {
+  const t = useT()
+  const platform = useAppStore((state) => state.info?.platform)
+  return (
+    <div className="tool-menu">
+      <div className="tool-menu__list">
+        <div className="tool-menu__heading">{t('Open a tool')}</div>
+        {TABS.map((entry) => {
+          const Icon = entry.icon
+          return (
+            <button
+              key={entry.view}
+              type="button"
+              className="tool-menu__card"
+              title={entry.shortcut}
+              onClick={() => onOpen(entry.view)}
+            >
+              <span className="tool-menu__card-icon">
+                <Icon size={16} strokeWidth={1.7} />
+              </span>
+              <span className="tool-menu__card-copy">
+                <span className="tool-menu__card-label">{t(entry.label)}</span>
+                <span className="tool-menu__card-description">{t(entry.description)}</span>
+              </span>
+              {entry.shortcut ? (
+                <span className="tool-menu__shortcut">{formatPlatformShortcut(entry.shortcut, platform)}</span>
+              ) : null}
+            </button>
+          )
+        })}
+      </div>
+    </div>
   )
 }

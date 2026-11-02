@@ -1,0 +1,111 @@
+.subagent-conversation {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface-canvas);
+}
+
+.subagent-conversation__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  min-height: var(--panel-head-h);
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.subagent-conversation__back {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+}
+
+.subagent-conversation__back:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.subagent-conversation__back:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.subagent-conversation__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.subagent-conversation__identity strong {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.subagent-conversation__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-conversation__meta [data-status='completed'] {
+  color: var(--status-success);
+}
+
+.subagent-conversation__meta [data-status='failed'] {
+  color: var(--status-danger);
+}
+
+.subagent-conversation__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-4);
+}
+
+.subagent-conversation__user {
+  align-self: flex-end;
+  max-width: min(100%, 85%);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--bubble-radius) var(--bubble-radius) var(--r-sm) var(--bubble-radius);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-reading);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.subagent-conversation__empty {
+  margin: auto;
+  padding: var(--sp-6) var(--sp-4);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+
+.subagent-conversation__assistant {
+  max-width: 100%;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.subagent-conversation__assistant .md {
+  font-size: var(--text-sm);
+}

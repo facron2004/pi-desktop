@@ -8,6 +8,8 @@ import { countLines, LOG_PAGE_LINES } from '../../lib/log-output'
 import { useAppStore } from '../../store/useAppStore'
 import { CodeSnippet } from '../CodeSnippet'
 import { DiffView } from '../DiffView'
+import { Markdown } from '../Markdown'
+import { ImageButton } from '../Lightbox'
 import { LogOutput } from './LogOutput'
 import { useT } from '../../lib/i18n'
 
@@ -64,6 +66,12 @@ export const ToolResultPanel = memo(function ToolResultPanel({
 
   const fileName = basename(String(item.args?.path ?? ''))
   const language = languageOf(fileName)
+  // A submitted plan is prose, not a JSON argument. Render the document the
+  // agent wrote; the approval result still appears below it as ordinary text.
+  const plan = item.toolName === 'exit_plan_mode' && typeof item.args?.plan === 'string'
+    ? item.args.plan
+    : ''
+  const shot = computerShot(item.details)
 
   if (!open) return null
 
@@ -71,6 +79,20 @@ export const ToolResultPanel = memo(function ToolResultPanel({
     <div className="tool__body">
       {item.status === 'error' && visibleResult ? (
         <LogOutput text={visibleResult} className="tool__error" />
+      ) : null}
+
+      {plan ? (
+        <div className="tool__plan">
+          <Markdown>{plan}</Markdown>
+        </div>
+      ) : null}
+
+      {shot ? (
+        <ImageButton
+          src={`data:${shot.mimeType};base64,${shot.data}`}
+          alt={t('Desktop screenshot')}
+          inline={shot}
+        />
       ) : null}
 
       {diffs.length > 0 ? (
@@ -98,6 +120,10 @@ export const ToolResultPanel = memo(function ToolResultPanel({
       {visibleResult && item.status !== 'error' ? (
         item.toolName === 'read' && resultLines <= LOG_PAGE_LINES ? (
           <CodeSnippet code={visibleResult} language={language} />
+        ) : item.toolName === 'subagent' ? (
+          <div className="tool__plan">
+            <Markdown>{visibleResult}</Markdown>
+          </div>
         ) : (
           <LogOutput text={visibleResult} />
         )
@@ -111,9 +137,20 @@ export const ToolResultPanel = memo(function ToolResultPanel({
         </button>
       ) : null}
 
-      {!diffs.length && !visibleResult && !content ? (
+      {!diffs.length && !visibleResult && !content && !plan && !shot ? (
         <pre className="tool__pre">{JSON.stringify(item.args ?? {}, null, 2)}</pre>
       ) : null}
     </div>
   )
 })
+
+/** The screenshot a computer action attached for the reader, not the model. */
+function computerShot(details: unknown): { data: string; mimeType: string } | null {
+  if (!details || typeof details !== 'object') return null
+  const image = (details as { image?: { data?: unknown; mimeType?: unknown } }).image
+  if (!image || typeof image.data !== 'string' || !image.data) return null
+  const mimeType = typeof image.mimeType === 'string' && image.mimeType.startsWith('image/')
+    ? image.mimeType
+    : 'image/png'
+  return { data: image.data, mimeType }
+}

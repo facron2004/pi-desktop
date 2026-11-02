@@ -1,0 +1,203 @@
+/* ------------------------------------------------------------------ *
+ * Goal bar
+ *
+ * Goal Mode's objective, above the composer. It follows the plan strip's
+ * rhythm: same width, same quiet canvas, one compact line. The status badge
+ * is the only colour, because the objective is read and the state is
+ * scanned.
+ * ------------------------------------------------------------------ */
+
+.goal-bar {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-6) var(--sp-3);
+}
+
+.goal-bar__inner {
+  max-width: var(--content-w);
+  margin: 0 auto;
+  background: var(--surface-canvas);
+}
+
+.goal-bar__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 32px;
+  padding: var(--sp-hair) var(--sp-2);
+}
+
+.goal-bar__label {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.goal-bar__icon {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+/* The badge states the goal's own status, not the run's: paused and blocked
+   both mean "the extension is waiting", but they wait for different things. */
+.goal-bar__badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.goal-bar__badge[data-status='paused'] {
+  background: var(--status-warning-soft);
+  color: var(--status-warning);
+}
+
+.goal-bar__badge[data-status='blocked'] {
+  background: var(--status-danger-soft);
+  color: var(--status-danger);
+}
+
+.goal-bar__badge[data-status='complete'] {
+  background: var(--status-success-soft);
+  color: var(--status-success);
+}
+
+.goal-bar__objective {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.goal-bar[data-status='complete'] .goal-bar__objective {
+  color: var(--text-faint);
+}
+
+/* A blocked or complete goal carries the extension's reason; it sits on the
+   same line as a hint, while the full text stays in the title. */
+.goal-bar__summary {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 30%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+}
+
+.goal-bar__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-hair);
+}
+
+.goal-bar__action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: var(--ctl-xs);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.goal-bar__action:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.goal-bar__action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.goal-bar__action[data-tone='danger']:hover {
+  color: var(--status-danger);
+}
+
+.goal-bar__action[data-tone='primary'] {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.goal-bar__action[data-tone='primary']:hover {
+  background: var(--accent-hover);
+  color: var(--accent-contrast);
+}
+
+.goal-bar__action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.goal-bar__action:disabled:hover {
+  background: none;
+  color: var(--text-faint);
+}
+
+.goal-bar__editor {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2) var(--sp-2);
+}
+
+.goal-bar__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 48px;
+  max-height: 140px;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  color: var(--text);
+  font-size: var(--text-sm);
+  line-height: var(--leading-ui);
+  resize: vertical;
+}
+
+.goal-bar__input:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.goal-bar__editor-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+/* Touch has no hover that reveals a target; the buttons themselves grow. */
+@media (hover: none), (pointer: coarse), (any-pointer: coarse) {
+  .goal-bar__action {
+    height: 30px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .goal-bar__action {
+    transition: none;
+  }
+}

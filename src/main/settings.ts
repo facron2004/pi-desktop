@@ -102,10 +102,17 @@ export class SettingsStore {
 
   addWorkspace(workspace: Workspace): AppSettings {
     const key = workspaceKey(workspace.path)
-    const workspaces = this.data.workspaces.filter((item) => workspaceKey(item.path) !== key)
-    workspaces.push(workspace)
-    workspaces.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
-    return this.patch({ workspaces, activeWorkspaceId: workspace.id })
+    const index = this.data.workspaces.findIndex((item) => workspaceKey(item.path) === key)
+    // Opening a folder that is already listed must leave it where the user
+    // put it. Only a folder that has never been added goes on the end.
+    if (index >= 0) {
+      const current = this.data.workspaces[index]
+      return this.patch({ activeWorkspaceId: current.id })
+    }
+    return this.patch({
+      workspaces: [...this.data.workspaces, workspace],
+      activeWorkspaceId: workspace.id
+    })
   }
 
   removeWorkspace(id: string): AppSettings {

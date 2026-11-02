@@ -6,6 +6,11 @@ directories:
   buildResources: build
   output: release
 
+# node-pty ships Electron-compatible prebuilds for win32-x64/arm64 (verified
+# against Electron 44). Rebuilding them from source needs the VS Spectre
+# libraries, which are not part of the default build tools install.
+npmRebuild: false
+
 files:
   - out/main/**/*
   - out/preload/**/*
@@ -20,6 +25,9 @@ asarUnpack:
   - node_modules/@earendil-works/pi-coding-agent/**/*
   - node_modules/jiti/**/*
   - node_modules/quickjs-wasi/**/*
+  # node-pty loads native .node/.dll/.exe files next to its JavaScript; they
+  # cannot be executed from inside the asar archive.
+  - node_modules/node-pty/**/*
 
 win:
   icon: build/icon-pixel.ico
