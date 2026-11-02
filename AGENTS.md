@@ -43,6 +43,7 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
 | `src/renderer/` | React UI |
 | `src/renderer/src/components/Launcher.tsx` | the palette over the app (`Ctrl+Shift+P`) |
 | `src/renderer/src/components/Sidebar.tsx` | the workspace panel: projects and conversations |
+| `src/renderer/src/components/TaskPanel.tsx` | the task rail: environment, background tasks, progress, deliverables |
 | `src/renderer/src/lib/session-indicator.ts` | the one mark a conversation row carries |
 | `src/renderer/src/lib/project-icons.ts` | the emoji and tint a project can wear |
 | `src/shared/types.ts` | Protocol and domain types shared by every layer |
@@ -299,6 +300,32 @@ entries in that guide (`ToolPanel`), not a fixed function tab bar. Opening a
 guide entry adds or focuses its page tab; closing every page falls back to the
 guide. `SubagentPanel` is the Subagents page and owns the right-panel instance
 of `SubagentTree`; the left sidebar does not contain subagent status.
+
+## The task rail
+
+The rail beside the conversation answers four questions about the session on
+screen, in this order: the environment of the folder, the tasks running in the
+background, how far the plan has come, and the files the run produced. Its
+sections are 环境信息 / 后台任务 / 进度 / 交付物 (Environment info, Background
+tasks, Progress, Deliverables) — the same four the reference app carries.
+
+Every part of it is a projection, not state:
+
+- the environment section reads `git` from the store: the branch is the
+  subtitle under the title, the line counts sit on the right of the Changes
+  row, and the other two rows open the commit dialog and the change graph;
+- background tasks are the subagent calls of the thread (`lib/subagents.ts`),
+  and the dot on the right of a row says how the task is going;
+- progress is the checklist of the newest assistant message that carries one
+  (`lib/plan.ts`) — the same source the plan strip reads;
+- deliverables are the files the run wrote (`lib/changes.ts`), folded into a
+  folder tree by `lib/task-panel.ts`.
+
+The rail keeps no state of its own beyond which folders of the deliverables
+tree are open; that lives in `lib/view-state.ts`, keyed by the conversation.
+A section title is plain text with the caret on the right, and the body folds
+on a grid row (180ms) instead of snapping shut. The comparison with the
+reference app is in [The task rail, aligned with MCode](docs/mcode-task-rail-alignment.md).
 
 ## Files in the composer
 

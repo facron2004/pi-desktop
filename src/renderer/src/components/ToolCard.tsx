@@ -28,6 +28,7 @@ import { CopyButton } from './conversation/CopyButton'
 import { ToolResultPanel } from './conversation/ToolResultPanel'
 import { runInTerminal } from './conversation/tool-actions'
 import { useT } from '../lib/i18n'
+import { ErrorBoundary } from './ErrorBoundary'
 
 const TONE_ICONS = {
   read: FileText,
@@ -218,121 +219,125 @@ export const ToolCard = memo(function ToolCard({
 
   if (presentation === 'link') {
     return (
-      <div className="tool tool--link" data-tone={summary.tone} data-status={state}>
-        <div className="tool-link">
-          <button
-            type="button"
-            className="tool-link__toggle"
-            aria-expanded={open}
-            onClick={toggleOpen}
-          >
-            <ChevronRight size={13} className="caret" data-open={open} />
-            <span className="tool-link__icon">
-              <Icon size={12} strokeWidth={2.2} />
-            </span>
-            <span className="tool-link__verb">{t(summary.label)}</span>
-          </button>
-          {viewedFile ? (
+      <ErrorBoundary inline scope="tool card">
+        <div className="tool tool--link" data-tone={summary.tone} data-status={state}>
+          <div className="tool-link">
             <button
               type="button"
-              className="tool-link__target"
-              title={t('Open this file')}
-              onClick={openViewedFile}
+              className="tool-link__toggle"
+              aria-expanded={open}
+              onClick={toggleOpen}
             >
-              {linkText}
+              <ChevronRight size={13} className="caret" data-open={open} />
+              <span className="tool-link__icon">
+                <Icon size={12} strokeWidth={2.2} />
+              </span>
+              <span className="tool-link__verb">{t(summary.label)}</span>
             </button>
-          ) : (
-            <button type="button" className="tool-link__target" onClick={toggleOpen}>
-              {linkText}
-            </button>
-          )}
-          {item.status === 'running' ? <span className="spinner" /> : null}
-          {StateIcon ? (
-            <StateIcon size={13} color={item.status === 'error' ? 'var(--status-danger)' : undefined} />
-          ) : null}
-          {item.status === 'proposed' || item.status === 'error' || item.status === 'aborted' ? (
-            <span className="tool-link__state" data-state={state}>
-              {t(stateLabel(item.status))}
-            </span>
-          ) : null}
-          {item.durationMs !== undefined && item.status !== 'running' ? (
-            <span className="tool-link__time">{formatDuration(item.durationMs)}</span>
-          ) : null}
+            {viewedFile ? (
+              <button
+                type="button"
+                className="tool-link__target"
+                title={t('Open this file')}
+                onClick={openViewedFile}
+              >
+                {linkText}
+              </button>
+            ) : (
+              <button type="button" className="tool-link__target" onClick={toggleOpen}>
+                {linkText}
+              </button>
+            )}
+            {item.status === 'running' ? <span className="spinner" /> : null}
+            {StateIcon ? (
+              <StateIcon size={13} color={item.status === 'error' ? 'var(--status-danger)' : undefined} />
+            ) : null}
+            {item.status === 'proposed' || item.status === 'error' || item.status === 'aborted' ? (
+              <span className="tool-link__state" data-state={state}>
+                {t(stateLabel(item.status))}
+              </span>
+            ) : null}
+            {item.durationMs !== undefined && item.status !== 'running' ? (
+              <span className="tool-link__time">{formatDuration(item.durationMs)}</span>
+            ) : null}
+          </div>
+          {details}
         </div>
-        {details}
-      </div>
+      </ErrorBoundary>
     )
   }
 
   return (
-    <div className="tool" data-tone={summary.tone} data-status={state}>
-      <div className="tool__head">
-        <button className="tool__head-main" aria-expanded={open} onClick={toggleOpen}>
-          <span className="tool__icon">
-            <Icon size={12} strokeWidth={2.2} />
-          </span>
-          <span className="tool__name">{t(summary.label)}</span>
-          <span className="tool__summary">{summary.detail}</span>
-          {item.status === 'running' ? (
-            <span className="spinner" />
-          ) : StateIcon ? (
-            <StateIcon size={13} color={item.status === 'error' ? 'var(--status-danger)' : undefined} />
+    <ErrorBoundary inline scope="tool card">
+      <div className="tool" data-tone={summary.tone} data-status={state}>
+        <div className="tool__head">
+          <button className="tool__head-main" aria-expanded={open} onClick={toggleOpen}>
+            <span className="tool__icon">
+              <Icon size={12} strokeWidth={2.2} />
+            </span>
+            <span className="tool__name">{t(summary.label)}</span>
+            <span className="tool__summary">{summary.detail}</span>
+            {item.status === 'running' ? (
+              <span className="spinner" />
+            ) : StateIcon ? (
+              <StateIcon size={13} color={item.status === 'error' ? 'var(--status-danger)' : undefined} />
+            ) : null}
+            {item.durationMs !== undefined ? (
+              <span className="tool__status">{formatDuration(item.durationMs)}</span>
+            ) : null}
+            <span className="tool__state" data-state={state}>
+              {t(stateLabel(item.status))}
+            </span>
+          </button>
+
+          {viewedFile ? (
+            <button
+              className="tool__reuse-icon"
+              title={t('Open this file')}
+              aria-label={t('Open this file')}
+              onClick={openViewedFile}
+            >
+              <FileSearch size={12} />
+            </button>
           ) : null}
-          {item.durationMs !== undefined ? (
-            <span className="tool__status">{formatDuration(item.durationMs)}</span>
+
+          {reuse ? (
+            <button
+              className="tool__reuse-icon"
+              title={t(reuse.label)}
+              aria-label={t(reuse.label)}
+              onClick={() => insertIntoComposer(reuse.text)}
+            >
+              <CornerDownLeft size={12} />
+            </button>
           ) : null}
-          <span className="tool__state" data-state={state}>
-            {t(stateLabel(item.status))}
-          </span>
-        </button>
 
-        {viewedFile ? (
+          {terminalCommand ? (
+            <button
+              className="tool__reuse-icon"
+              title={t('Run in terminal')}
+              aria-label={t('Run in terminal')}
+              onClick={() => runInTerminal(terminalCommand)}
+            >
+              <Play size={12} />
+            </button>
+          ) : null}
+
+          <CopyButton text={copyable.text} label={t(copyable.label)} />
+
           <button
-            className="tool__reuse-icon"
-            title={t('Open this file')}
-            aria-label={t('Open this file')}
-            onClick={openViewedFile}
+            className="tool__caret"
+            onClick={toggleOpen}
+            aria-label={open ? t('Collapse') : t('Expand')}
+            aria-expanded={open}
           >
-            <FileSearch size={12} />
+            <ChevronRight size={13} className="caret" data-open={open} />
           </button>
-        ) : null}
+        </div>
 
-        {reuse ? (
-          <button
-            className="tool__reuse-icon"
-            title={t(reuse.label)}
-            aria-label={t(reuse.label)}
-            onClick={() => insertIntoComposer(reuse.text)}
-          >
-            <CornerDownLeft size={12} />
-          </button>
-        ) : null}
-
-        {terminalCommand ? (
-          <button
-            className="tool__reuse-icon"
-            title={t('Run in terminal')}
-            aria-label={t('Run in terminal')}
-            onClick={() => runInTerminal(terminalCommand)}
-          >
-            <Play size={12} />
-          </button>
-        ) : null}
-
-        <CopyButton text={copyable.text} label={t(copyable.label)} />
-
-        <button
-          className="tool__caret"
-          onClick={toggleOpen}
-          aria-label={open ? t('Collapse') : t('Expand')}
-          aria-expanded={open}
-        >
-          <ChevronRight size={13} className="caret" data-open={open} />
-        </button>
+        {details}
       </div>
-
-      {details}
-    </div>
+    </ErrorBoundary>
   )
 })
 

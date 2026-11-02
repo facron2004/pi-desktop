@@ -80,17 +80,54 @@ function asNode(value: unknown): SessionTreeNode | null {
   if (!isRecord(value)) return null
   const entry = asEntry(value.entry)
   if (!entry) return null
-  const children = Array.isArray(value.children)
-    ? value.children
-        .map(asNode)
-        .filter((child): child is SessionTreeNode => child !== null)
-    : []
-  return {
+
+  interface StackFrame {
+    node: SessionTreeNode
+    rawChildren: unknown[]
+    nextChildIndex: number
+  }
+
+  const rootNode: SessionTreeNode = {
     entry,
-    children,
+    children: [],
     label: typeof value.label === 'string' ? value.label : undefined,
     labelTimestamp: typeof value.labelTimestamp === 'string' ? value.labelTimestamp : undefined
   }
+
+  const stack: StackFrame[] = [
+    {
+      node: rootNode,
+      rawChildren: Array.isArray(value.children) ? value.children : [],
+      nextChildIndex: 0
+    }
+  ]
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]
+    if (frame.nextChildIndex < frame.rawChildren.length) {
+      const childRaw = frame.rawChildren[frame.nextChildIndex++]
+      if (!isRecord(childRaw)) continue
+      const childEntry = asEntry(childRaw.entry)
+      if (!childEntry) continue
+
+      const childNode: SessionTreeNode = {
+        entry: childEntry,
+        children: [],
+        label: typeof childRaw.label === 'string' ? childRaw.label : undefined,
+        labelTimestamp: typeof childRaw.labelTimestamp === 'string' ? childRaw.labelTimestamp : undefined
+      }
+      frame.node.children.push(childNode)
+      stack.push({
+        node: childNode,
+        rawChildren: Array.isArray(childRaw.children) ? childRaw.children : [],
+        nextChildIndex: 0
+      })
+    } else {
+      stack.pop()
+    }
+  }
+
+  return rootNode
 }
 
 /** Turn the `get_tree` response into the shape the dialog uses. */
@@ -105,14 +142,21 @@ export function normalizeTree(raw: unknown): SessionTree {
 /** Every entry id on the path from the open leaf back to the root. */
 export function pathToLeaf(tree: SessionTree): Set<string> {
   const parents = new Map<string, string | null>()
-  const walk = (nodes: SessionTreeNode[], parent: string | null) => {
-    for (const node of nodes) {
-      const id = node.entry.id
-      if (id) parents.set(id, parent)
-      walk(node.children, id ?? parent)
+  const stack: { node: SessionTreeNode; parent: string | null }[] = []
+
+  for (let i = tree.roots.length - 1; i >= 0; i--) {
+    stack.push({ node: tree.roots[i], parent: null })
+  }
+
+  while (stack.length > 0) {
+    const { node, parent } = stack.pop()!
+    const id = node.entry.id
+    if (id) parents.set(id, parent)
+    const nextParent = id ?? parent
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push({ node: node.children[i], parent: nextParent })
     }
   }
-  walk(tree.roots, null)
 
   const active = new Set<string>()
   let cursor = tree.leafId
@@ -127,27 +171,41 @@ export function pathToLeaf(tree: SessionTree): Set<string> {
 export function treeStats(tree: SessionTree): TreeStats {
   let entries = 0
   let forkPoints = 0
-  const walk = (nodes: SessionTreeNode[]) => {
-    for (const node of nodes) {
-      entries += 1
-      if (node.children.length > 1) forkPoints += 1
-      walk(node.children)
+  const stack: SessionTreeNode[] = []
+
+  for (let i = tree.roots.length - 1; i >= 0; i--) {
+    stack.push(tree.roots[i])
+  }
+
+  while (stack.length > 0) {
+    const node = stack.pop()!
+    entries += 1
+    if (node.children.length > 1) forkPoints += 1
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push(node.children[i])
     }
   }
-  walk(tree.roots)
+
   return { entries, forkPoints }
 }
 
 /** Ids of every node that has children, so the tree can start fully open. */
 export function branchIds(tree: SessionTree): Set<string> {
   const ids = new Set<string>()
-  const walk = (nodes: SessionTreeNode[]) => {
-    for (const node of nodes) {
-      if (node.children.length > 0 && node.entry.id) ids.add(node.entry.id)
-      walk(node.children)
+  const stack: SessionTreeNode[] = []
+
+  for (let i = tree.roots.length - 1; i >= 0; i--) {
+    stack.push(tree.roots[i])
+  }
+
+  while (stack.length > 0) {
+    const node = stack.pop()!
+    if (node.children.length > 0 && node.entry.id) ids.add(node.entry.id)
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push(node.children[i])
     }
   }
-  walk(tree.roots)
+
   return ids
 }
 
@@ -242,34 +300,39 @@ export function describeEntry(entry: SessionEntry): Description | null {
 export function flattenTree(tree: SessionTree, expanded: ReadonlySet<string>): TreeRow[] {
   const active = pathToLeaf(tree)
   const rows: TreeRow[] = []
+  const stack: { node: SessionTreeNode; depth: number }[] = []
 
-  const walk = (nodes: SessionTreeNode[], depth: number) => {
-    for (const node of nodes) {
-      const id = node.entry.id ?? ''
-      const description = describeEntry(node.entry)
-      const childrenOpen = expanded.has(id)
-      if (description) {
-        rows.push({
-          id,
-          depth,
-          role: description.role,
-          title: description.title,
-          detail: description.detail,
-          prompt: description.prompt,
-          active: active.has(id),
-          leaf: tree.leafId !== null && tree.leafId === id,
-          hasChildren: node.children.length > 0,
-          childrenOpen,
-          branch: node.children.length > 1,
-          label: node.label
-        })
-      }
-      if (description && node.children.length > 0 && !childrenOpen) continue
-      walk(node.children, description ? depth + 1 : depth)
-    }
+  for (let i = tree.roots.length - 1; i >= 0; i--) {
+    stack.push({ node: tree.roots[i], depth: 0 })
   }
 
-  walk(tree.roots, 0)
+  while (stack.length > 0) {
+    const { node, depth } = stack.pop()!
+    const id = node.entry.id ?? ''
+    const description = describeEntry(node.entry)
+    const childrenOpen = expanded.has(id)
+    if (description) {
+      rows.push({
+        id,
+        depth,
+        role: description.role,
+        title: description.title,
+        detail: description.detail,
+        prompt: description.prompt,
+        active: active.has(id),
+        leaf: tree.leafId !== null && tree.leafId === id,
+        hasChildren: node.children.length > 0,
+        childrenOpen,
+        branch: node.children.length > 1,
+        label: node.label
+      })
+    }
+    if (description && node.children.length > 0 && !childrenOpen) continue
+    const childDepth = description ? depth + 1 : depth
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push({ node: node.children[i], depth: childDepth })
+    }
+  }
 
   // The leaf itself can be a bookkeeping entry (a model or reasoning switch)
   // that has no row of its own; the last row on the active path is then the
@@ -287,20 +350,29 @@ export function flattenTree(tree: SessionTree, expanded: ReadonlySet<string>): T
 /** The parent of every node that has an id, so a row can find its path. */
 function parentIds(tree: SessionTree): Map<string, string> {
   const parents = new Map<string, string>()
-  const walk = (nodes: SessionTreeNode[], parent: string | undefined) => {
-    for (const node of nodes) {
-      const id = node.entry.id
-      if (!id) {
-        // An entry without an id cannot be tracked; its children keep the
-        // closest ancestor that can be.
-        walk(node.children, parent)
-        continue
+  const stack: { node: SessionTreeNode; parent: string | undefined }[] = []
+
+  for (let i = tree.roots.length - 1; i >= 0; i--) {
+    stack.push({ node: tree.roots[i], parent: undefined })
+  }
+
+  while (stack.length > 0) {
+    const { node, parent } = stack.pop()!
+    const id = node.entry.id
+    if (!id) {
+      // An entry without an id cannot be tracked; its children keep the
+      // closest ancestor that can be.
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        stack.push({ node: node.children[i], parent })
       }
-      if (parent) parents.set(id, parent)
-      walk(node.children, id)
+      continue
+    }
+    if (parent) parents.set(id, parent)
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push({ node: node.children[i], parent: id })
     }
   }
-  walk(tree.roots, undefined)
+
   return parents
 }
 
@@ -326,21 +398,28 @@ export function pathToEntry(tree: SessionTree, id: string): string[] {
 export function branchTips(tree: SessionTree): string[] {
   const tips: string[] = []
   const seen = new Set<string>()
-  const walk = (nodes: SessionTreeNode[], lastRowId: string | null) => {
-    for (const node of nodes) {
-      const id = node.entry.id ?? ''
-      const rowId = id && describeEntry(node.entry) ? id : lastRowId
-      if (node.children.length === 0) {
-        if (rowId && !seen.has(rowId)) {
-          seen.add(rowId)
-          tips.push(rowId)
-        }
-        continue
+  const stack: { node: SessionTreeNode; lastRowId: string | null }[] = []
+
+  for (let i = tree.roots.length - 1; i >= 0; i--) {
+    stack.push({ node: tree.roots[i], lastRowId: null })
+  }
+
+  while (stack.length > 0) {
+    const { node, lastRowId } = stack.pop()!
+    const id = node.entry.id ?? ''
+    const rowId = id && describeEntry(node.entry) ? id : lastRowId
+    if (node.children.length === 0) {
+      if (rowId && !seen.has(rowId)) {
+        seen.add(rowId)
+        tips.push(rowId)
       }
-      walk(node.children, rowId)
+      continue
+    }
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push({ node: node.children[i], lastRowId: rowId })
     }
   }
-  walk(tree.roots, null)
+
   return tips
 }
 

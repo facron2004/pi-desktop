@@ -67,7 +67,10 @@ const suites = [
   'git-branches.test.ts',
   'mcp.test.ts',
   'fs-read.test.ts',
-  'workspace-panel.test.ts'
+  'workspace-panel.test.ts',
+  'task-panel.test.ts',
+  'session-tree.test.ts',
+  'renderer-utils.test.ts'
 ]
 const debug = process.argv[2] === '--debug'
 
@@ -75,7 +78,7 @@ const out = mkdtempSync(path.join(tmpdir(), 'pi-desktop-tests-'))
 const mockElectron = path.join(out, 'mock-electron.mjs')
 writeFileSync(
   mockElectron,
-  `export const app = { getPath: () => "C:/tmp", isPackaged: false, getVersion: () => "0.7.2", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {} };
+  `export const app = { getPath: () => "C:/tmp", isPackaged: false, getVersion: () => "0.7.3", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {} };
 export const dialog = { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true, filePath: undefined }) };
 export const BrowserWindow = class { static getAllWindows() { return [] } isDestroyed() { return false } };
 export const ipcMain = { handle: () => {}, on: () => {} };

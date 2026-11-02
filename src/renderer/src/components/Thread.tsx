@@ -24,6 +24,7 @@ import { AssistantMessage } from './conversation/AssistantMessage'
 import { RunSummary } from './conversation/RunSummary'
 import { ErrorNotice, ThreadErrorBanner } from './conversation/ErrorNotice'
 import { Popover } from './Popover'
+import { ErrorBoundary } from './ErrorBoundary'
 import { activityOf } from '../lib/activity'
 import { useT } from '../lib/i18n'
 import { isRateLimitError } from '../lib/provider-error'
@@ -689,19 +690,20 @@ export function Thread() {
             const userId = turn.user?.id
             const isLastTurn = turnIndex === turns.length - 1
             return (
-              <ThreadTurnView
-                key={turn.id}
-                turn={turn}
-                models={models}
-                t={t}
-                onCopy={copy}
-                userCopied={copied === userId}
-                forkEntryId={userId ? forkByUserId.get(userId) : undefined}
-                onFork={forkFrom}
-                forking={Boolean(userId && forkByUserId.has(userId) && forking)}
-                run={run}
-                isLastTurn={isLastTurn}
-              />
+              <ErrorBoundary key={turn.id} scope="turn">
+                <ThreadTurnView
+                  turn={turn}
+                  models={models}
+                  t={t}
+                  onCopy={copy}
+                  userCopied={copied === userId}
+                  forkEntryId={userId ? forkByUserId.get(userId) : undefined}
+                  onFork={forkFrom}
+                  forking={Boolean(userId && forkByUserId.has(userId) && forking)}
+                  run={run}
+                  isLastTurn={isLastTurn}
+                />
+              </ErrorBoundary>
             )
           })}
         </SearchContext.Provider>

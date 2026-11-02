@@ -18,7 +18,7 @@ export const app = {
   getPath: () => "C:/tmp",
   getAppPath: () => "C:/tmp",
   isPackaged: false,
-  getVersion: () => "0.7.2",
+  getVersion: () => "0.7.3",
   setAppUserModelId: () => {},
   whenReady: () => Promise.resolve(),
   on: () => {}

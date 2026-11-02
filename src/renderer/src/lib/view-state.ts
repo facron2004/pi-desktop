@@ -11,6 +11,7 @@ const toolOpen = new Map<string, boolean>()
 const toolFull = new Map<string, boolean>()
 const fileOpen = new Map<string, boolean>()
 const processOpen = new Map<string, boolean>()
+const deliverableOpen = new Map<string, boolean>()
 const historyExpanded = new Set<string>()
 
 function keyOf(threadId: string, id: string): string {
@@ -57,6 +58,15 @@ export function writeProcessOpen(
   else processOpen.set(key, open)
 }
 
+/** Whether a folder of the deliverables tree is open. Unset means open. */
+export function readDeliverableOpen(threadId: string, path: string): boolean | undefined {
+  return deliverableOpen.get(keyOf(threadId, path))
+}
+
+export function writeDeliverableOpen(threadId: string, path: string, open: boolean): void {
+  deliverableOpen.set(keyOf(threadId, path), open)
+}
+
 export function readHistoryExpanded(threadId: string): boolean {
   return historyExpanded.has(threadId)
 }
@@ -69,7 +79,7 @@ export function writeHistoryExpanded(threadId: string, expanded: boolean): void 
 /** Carry a draft's open rows over when Pi writes its session file. */
 export function migrateViewState(from: string, to: string): void {
   if (from === to) return
-  for (const map of [toolOpen, toolFull, fileOpen, processOpen]) {
+  for (const map of [toolOpen, toolFull, fileOpen, processOpen, deliverableOpen]) {
     for (const [key, value] of [...map]) {
       const [threadId, id] = key.split('\u0000')
       if (threadId !== from) continue

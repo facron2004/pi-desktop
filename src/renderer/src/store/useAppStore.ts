@@ -450,6 +450,82 @@ const modelRestoreAttempts = new Set<string>()
 /** Conversations whose live process has already been told to retry rate limits. */
 const retryArmed = new Set<string>()
 
+export const MAX_CACHED_INACTIVE_THREADS = 10
+
+const sessionAccessLru: string[] = []
+
+export function touchSessionLru(file: string): void {
+  if (!file || file.startsWith('draft:')) return
+  const index = sessionAccessLru.indexOf(file)
+  if (index !== -1) {
+    sessionAccessLru.splice(index, 1)
+  }
+  sessionAccessLru.push(file)
+}
+
+export function forgetSessionLru(file: string): void {
+  const index = sessionAccessLru.indexOf(file)
+  if (index !== -1) {
+    sessionAccessLru.splice(index, 1)
+  }
+}
+
+export function getSessionAccessLru(): readonly string[] {
+  return sessionAccessLru
+}
+
+export function enforceSessionLru(
+  threads: Record<string, SessionThread>,
+  activeKey?: string,
+  maxInactive = MAX_CACHED_INACTIVE_THREADS
+): Record<string, SessionThread> {
+  const activeNormalized = activeKey ? threadKey(activeKey) : undefined
+
+  // Identify loaded inactive threads safe for memory eviction
+  const inactiveLoadedKeys: string[] = []
+  for (const [key, thread] of Object.entries(threads)) {
+    if (key.startsWith('draft:')) continue
+    if (key === activeNormalized) continue
+    if (thread.version === 0 || thread.items.length === 0) continue
+    if (thread.isStreaming) continue
+    if (thread.run.phase !== 'idle' && !thread.run.settled) continue
+    if (thread.queue.steering.length > 0 || thread.queue.followUp.length > 0) continue
+    if (thread.uiRequest) continue
+    inactiveLoadedKeys.push(key)
+  }
+
+  if (inactiveLoadedKeys.length <= maxInactive) return threads
+
+  // Sort candidate inactive keys by LRU (oldest first)
+  inactiveLoadedKeys.sort((a, b) => {
+    const idxA = sessionAccessLru.indexOf(a)
+    const idxB = sessionAccessLru.indexOf(b)
+    const orderA = idxA === -1 ? -1 : idxA
+    const orderB = idxB === -1 ? -1 : idxB
+    return orderA - orderB
+  })
+
+  const toEvictCount = inactiveLoadedKeys.length - maxInactive
+  const toEvict = new Set(inactiveLoadedKeys.slice(0, toEvictCount))
+
+  let changed = false
+  const nextThreads: Record<string, SessionThread> = { ...threads }
+  for (const key of toEvict) {
+    const thread = threads[key]
+    if (thread) {
+      nextThreads[key] = {
+        ...thread,
+        items: [],
+        version: 0
+      }
+      changed = true
+    }
+    forgetSessionLru(key)
+  }
+
+  return changed ? nextThreads : threads
+}
+
 function threadKey(key: string): string {
   return threadAliases.get(key) ?? key
 }
@@ -822,6 +898,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     // conversation, not a file, so the view follows its own key and nothing
     // here may read that key as a session file.
     const live = session.file.startsWith('draft:')
+    touchSessionLru(session.file)
     set({
       threads: { ...get().threads, [session.file]: thread },
       draftId: live ? session.file : undefined,
@@ -873,7 +950,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       items: itemsFromMessages(messages ?? []),
       version: current.version + 1
     }
-    const threads = { ...get().threads, [file]: next }
+    touchSessionLru(file)
+    const rawThreads = { ...get().threads, [file]: next }
+    const threads = enforceSessionLru(rawThreads, file)
     if (get().activeSessionFile === file) set({ threads, ...projectThread(next) })
     else set({ threads })
   },
@@ -962,6 +1041,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       const threads = { ...get().threads }
       delete threads[file]
+      forgetSessionLru(file)
       clearScrollMemory(file)
       if (get().activeSessionFile === file) {
         const draftId = mintDraft()

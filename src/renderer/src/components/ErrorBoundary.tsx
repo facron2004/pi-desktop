@@ -13,7 +13,14 @@ interface State {
  * which leaves a blank window with nothing to read. The boundary keeps the
  * failure visible instead: what broke, where, and one way back.
  */
-export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
+export interface ErrorBoundaryProps {
+  children: ReactNode
+  fallback?: ReactNode | ((error: Error, retry: () => void) => ReactNode)
+  scope?: string
+  inline?: boolean
+}
+
+export class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
   override state: State = { error: null }
 
   static getDerivedStateFromError(error: Error): State {
@@ -23,15 +30,42 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   override componentDidCatch(error: Error, info: { componentStack?: string | null }) {
     // The dev console surfaces renderer errors to the terminal, so the same
     // message lands next to the app's own logs.
-    console.error('[pi-desktop] the interface crashed:', error, info.componentStack)
+    console.error(`[pi-desktop] error in ${this.props.scope ?? 'interface'}:`, error, info.componentStack)
+  }
+
+  retry = () => {
+    this.setState({ error: null })
   }
 
   override render() {
     const error = this.state.error
     if (!error) return this.props.children
 
+    if (this.props.fallback) {
+      if (typeof this.props.fallback === 'function') {
+        return this.props.fallback(error, this.retry)
+      }
+      return this.props.fallback
+    }
+
     const language = useAppStore.getState().settings.language ?? 'en'
     const t = (text: string) => translate(text, language)
+
+    if (this.props.inline || this.props.scope) {
+      return (
+        <div className="component-error-fallback" role="alert">
+          <span className="component-error-fallback__message">
+            {this.props.scope
+              ? `${t('Failed to render')} ${this.props.scope}`
+              : t('Failed to render this section')}
+          </span>
+          <button type="button" className="btn btn--sm" onClick={this.retry}>
+            {t('Retry')}
+          </button>
+        </div>
+      )
+    }
+
     return (
       <div className="crash-screen" role="alert">
         <div className="crash-screen__card">

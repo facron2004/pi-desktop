@@ -15,6 +15,7 @@ import { countChangedFiles } from '../lib/changes'
 import { formatPlatformShortcut } from '../lib/shortcuts'
 import { useT } from '../lib/i18n'
 import { useDialogFocus } from '../hooks/useDialogFocus'
+import { ErrorBoundary } from './ErrorBoundary'
 
 /**
  * What the side panel can show, as a page each.
@@ -227,7 +228,9 @@ export function ToolPanel({
       </div>
 
       <div className="tool-panel__body" data-view={active}>
-        {active === 'guide' ? <ToolGuide onOpen={openView} /> : children}
+        <ErrorBoundary scope="tool panel">
+          {active === 'guide' ? <ToolGuide onOpen={openView} /> : children}
+        </ErrorBoundary>
       </div>
     </aside>
   )

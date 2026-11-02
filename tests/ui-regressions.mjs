@@ -270,6 +270,84 @@ async function checkRenderer(markerFile) {
   hover(row)
   await until(() => document.querySelector('.file-change__preview-text')?.textContent === 'line 0', 'Returning to the file did not reset paging')
   passed.push('file previews page by 200 lines and reset between files')
+
+  // The task rail beside the conversation: the environment of the folder, the
+  // tasks running in the background, the plan and the files the run produced.
+  await store.getState().newChat()
+  const railItems = [
+    { id: 'rail-user', kind: 'user', text: 'Ship the panel', images: [], timestamp: 1, order: 1 },
+    {
+      id: 'rail-assistant',
+      kind: 'assistant',
+      blocks: [{ type: 'text', text: '- [x] Read the reference\n- [x] Rewrite the panel\n- [ ] Verify the build' }],
+      streaming: false,
+      timestamp: 2,
+      order: 2
+    },
+    {
+      id: 'rail-write',
+      kind: 'tool',
+      toolCallId: 'rail-write',
+      toolName: 'write',
+      args: { path: 'audit/shot.png', content: 'x' },
+      status: 'ok',
+      timestamp: 3,
+      order: 3
+    },
+    {
+      id: 'rail-write2',
+      kind: 'tool',
+      toolCallId: 'rail-write2',
+      toolName: 'write',
+      args: { path: 'audit/hover-check.mjs', content: 'x' },
+      status: 'ok',
+      timestamp: 4,
+      order: 4
+    },
+    {
+      id: 'rail-sub',
+      kind: 'tool',
+      toolCallId: 'rail-sub',
+      toolName: 'subagent',
+      args: { tasks: [{ task: 'Run the gate' }] },
+      status: 'running',
+      details: { mode: 'parallel', results: [{ task: 'Run the gate', status: 'running' }] },
+      timestamp: 5,
+      order: 5
+    }
+  ]
+  store.setState({
+    activeSessionFile: undefined,
+    draftId: 'draft:task-rail',
+    uiStatuses: [],
+    items: railItems
+  })
+  await until(() => document.querySelector('.task-panel'), 'Task rail did not render')
+  const titles = [...document.querySelectorAll('.task-panel__section-title')].map((node) => node.textContent)
+  for (const title of ['Environment info', 'Background tasks', 'Progress', 'Deliverables']) {
+    check(titles.includes(title), `The task rail is missing the ${title} section: ${titles.join(' | ')}`)
+  }
+  check(document.querySelectorAll('.task-panel__task').length === 1, 'The background task row is missing')
+  check(document.querySelectorAll('.task-panel__check').length === 3, 'The plan checklist is missing a step')
+  check(document.querySelectorAll('.task-panel__check[data-done]').length === 2, 'A finished step is not marked as done')
+  check(document.querySelectorAll('.task-panel__folder').length === 1, 'The deliverables folder is missing')
+  check(document.querySelectorAll('.task-panel__file').length === 2, 'The deliverables files are missing')
+  const progress = [...document.querySelectorAll('.task-panel__section')].find((node) =>
+    node.querySelector('.task-panel__section-title')?.textContent === 'Progress'
+  )
+  progress.querySelector('.task-panel__section-toggle').click()
+  await pause(250)
+  check(
+    progress.querySelector('.task-panel__section-body').getAttribute('data-open') === null,
+    'The section did not fold shut'
+  )
+  progress.querySelector('.task-panel__section-toggle').click()
+  await pause(250)
+  check(
+    progress.querySelector('.task-panel__section-body').getAttribute('data-open') !== null,
+    'The section did not fold open again'
+  )
+  passed.push('the task rail reads the environment, the background tasks, the plan and the deliverables')
   return passed
 }
 
@@ -297,7 +375,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 6 : 5)
+  assert.equal(passed.length, process.platform === 'win32' ? 7 : 6)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

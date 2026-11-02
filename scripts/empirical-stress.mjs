@@ -40,7 +40,7 @@ const mockElectronPath = path.join(tempHarnessDir, 'mock-electron.mjs')
 const rootDirPosix = rootDir.replace(/\\/g, '/')
 writeFileSync(
   mockElectronPath,
-  `export const app = { getPath: () => "C:/tmp", getAppPath: () => "${rootDirPosix}", isPackaged: false, getVersion: () => "0.7.2", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {} };
+  `export const app = { getPath: () => "C:/tmp", getAppPath: () => "${rootDirPosix}", isPackaged: false, getVersion: () => "0.7.3", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {} };
 export const dialog = { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true, filePath: undefined }) };
 export const BrowserWindow = class { static getAllWindows() { return [] } isDestroyed() { return false } };
 export const ipcMain = { handle: () => {}, on: () => {} };

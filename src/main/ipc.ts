@@ -413,7 +413,7 @@ export function registerIpc(context: IpcContext): void {
     return {
       // `npm_package_version` only exists when npm launched the app; a
       // packaged build reads the version it was built with instead.
-      version: process.env.npm_package_version ?? app.getVersion() ?? '0.7.2',
+      version: process.env.npm_package_version ?? app.getVersion() ?? '0.7.3',
       electron: process.versions.electron,
       node: process.versions.node,
       platform: process.platform,
@@ -512,7 +512,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('app:checkUpdate', async (): Promise<VersionCheckResult> => {
     const currentPiVersion = (await piVersion(settings.get().piPath)) || '1.4.0'
-    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.7.2'
+    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.7.3'
 
     let piCliStatus: VersionItemStatus = {
       current: currentPiVersion,
@@ -560,7 +560,7 @@ export function registerIpc(context: IpcContext): void {
       if (!res.ok) {
         return { success: false, error: res.error || 'Failed to pull update' }
       }
-      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.7.2'
+      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.7.3'
       return { success: true, version: current }
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }

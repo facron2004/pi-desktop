@@ -11,6 +11,7 @@ import { useIsDark } from '../lib/theme'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { ImageButton } from './Lightbox'
+import { ErrorBoundary } from './ErrorBoundary'
 
 const FILE_EXTS = new Set([
   'ts',
@@ -369,15 +370,17 @@ export interface MarkdownProps {
 
 export const Markdown = memo(function Markdown({ children, streaming = false }: MarkdownProps) {
   return (
-    <StreamingContext.Provider value={streaming}>
-      <div className="md">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={markdownComponents}
-        >
-          {children}
-        </ReactMarkdown>
-      </div>
-    </StreamingContext.Provider>
+    <ErrorBoundary inline scope="Markdown">
+      <StreamingContext.Provider value={streaming}>
+        <div className="md">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={markdownComponents}
+          >
+            {children}
+          </ReactMarkdown>
+        </div>
+      </StreamingContext.Provider>
+    </ErrorBoundary>
   )
 })
