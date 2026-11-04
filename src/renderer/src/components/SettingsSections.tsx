@@ -1388,7 +1388,7 @@ export function UsageSettings() {
               <div className="usage-heatmap__calendar">
                 <div
                   className="usage-heatmap__months"
-                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 10px)` }}
+                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 12px)` }}
                   aria-hidden="true"
                 >
                   {heatmap.monthLabels.map(({ week, label, fullLabel }) => (
@@ -1401,7 +1401,7 @@ export function UsageSettings() {
                   className="usage-heatmap__cells"
                   role="grid"
                   aria-label={t('Usage heatmap')}
-                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 10px)` }}
+                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 12px)` }}
                 >
                   {heatmap.cells.map(({ date, day, week, weekday, level }) => {
                     const dateLabel = heatmap.fullDateFormatter.format(date)
