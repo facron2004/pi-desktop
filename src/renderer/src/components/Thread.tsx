@@ -6,7 +6,7 @@ import type { Turn } from '../lib/turns'
 import { buildTurns } from '../lib/turns'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
-import { formatClock, formatTokens } from '../lib/format'
+import { formatClock, formatCost, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
 import { pairForkTargets } from '../lib/thread'
 import { describeTool } from '../lib/tools'
@@ -168,6 +168,10 @@ export function Thread() {
   }, [])
 
   const turns = useMemo(() => buildTurns(items), [items])
+  // Callbacks that only look a turn up must not change identity on every
+  // streamed delta; they read the latest turns through this ref instead.
+  const turnsRef = useRef(turns)
+  turnsRef.current = turns
   const sessionTurns = useMemo(
     () => turns.filter((turn): turn is Turn & { user: UserItem } => Boolean(turn.user)),
     [turns]
@@ -291,7 +295,9 @@ export function Thread() {
 
     if (!itemsChanged || !stickRef.current || items.length === 0) return
     node.scrollTo({ top: node.scrollHeight, behavior: 'instant' })
-    syncActiveTurn(node)
+    // While following the live edge the active turn is the last one by
+    // definition; measuring every visible turn on every streamed delta is
+    // wasted layout work.
   }, [items, historyCollapsed, sessionKey, syncActiveTurn])
 
   // A reader who scrolls up is reading, not watching: the follow stops and
@@ -367,7 +373,7 @@ export function Thread() {
 
   const jumpToTurn = useCallback(
     (turnId: string) => {
-      const turnIndex = turns.findIndex((turn) => turn.id === turnId)
+      const turnIndex = turnsRef.current.findIndex((turn) => turn.id === turnId)
       if (turnIndex < 0) return
       if (turnIndex < firstVisibleTurn) {
         pendingTurnJumpRef.current = turnId
@@ -384,7 +390,7 @@ export function Thread() {
       node.classList.add('turn--flash')
       window.setTimeout(() => node.classList.remove('turn--flash'), 1400)
     },
-    [firstVisibleTurn, expandHistory, turns]
+    [firstVisibleTurn, expandHistory]
   )
 
   const jumpToHit = useCallback(
@@ -880,16 +886,32 @@ const ThreadTurnView = memo(function ThreadTurnView({
   // own, at the position it was created in.
   const orphanTools = turn.tools.filter((tool) => !referenced.has(tool.toolCallId))
   const lastAssistant = turn.assistants.at(-1)
-  const hasFinalReply = lastAssistant?.stopReason !== 'error' &&
-    lastAssistant?.blocks.some((block) => block.type === 'text' && block.text.trim()) &&
-    !lastAssistant.blocks.some((block) => block.type === 'toolCall')
   const outcome = isLastTurn && run.settled && run.outcome ? run : undefined
-  const replyOutcome = outcome?.outcome === 'completed' && hasFinalReply ? outcome : undefined
   const replySettled = lastAssistant && !lastAssistant.streaming && (!isLastTurn || run.settled)
   // The tail stays open only while this turn is the one still being written.
   // A finished turn, including every earlier stretch of a long run, folds.
   const liveTail = isLastTurn && !run.settled
-  const turnChanges = useMemo(() => collectChanges(turn.tools), [turn.tools])
+  const autoFoldProcess = useAppStore((state) => state.settings.autoFoldProcess !== false)
+  const [processOpen, setProcessOpen] = useState(!autoFoldProcess)
+  const hasProcess = useMemo(
+    () =>
+      turn.tools.length > 0 ||
+      turn.assistants.some((assistant) =>
+        assistant.blocks.some((block) => block.type === 'thinking')
+      ),
+    [turn.tools, turn.assistants]
+  )
+  // A completed turn follows the reader's fold setting; a live, failed or
+  // stopped turn must keep its process visible, because hiding it there would
+  // hide the only evidence of what happened.
+  const processVisible =
+    liveTail || !outcome || outcome.outcome !== 'completed' || processOpen
+  // The closing card is not painted while the run is live, so there is no
+  // reason to build every file diff on every streamed pixel.
+  const turnChanges = useMemo(
+    () => (liveTail ? [] : collectChanges(turn.tools)),
+    [liveTail, turn.tools]
+  )
 
   return (
     <section className="turn" data-turn={turn.id}>
@@ -907,18 +929,26 @@ const ThreadTurnView = memo(function ThreadTurnView({
       {turn.assistants.length > 0 || turn.tools.length > 0 || turn.notices.length > 0 || turn.bash.length > 0 ? (
         <div className="assistant">
           <div className="assistant__body">
+            {outcome ? (
+              <RunSummary
+                run={outcome}
+                foldable={hasProcess}
+                open={processOpen}
+                onToggle={() => setProcessOpen((value) => !value)}
+              />
+            ) : null}
             <AssistantMessage
               turn={turn}
               toolMap={toolMap}
-              replyOutcome={replyOutcome}
               liveTail={liveTail}
+              processOpen={processVisible}
             />
 
             {turn.bash.map((item) => (
               <BashCard key={item.id} item={item} />
             ))}
 
-            {orphanTools.length > 0 ? (
+            {orphanTools.length > 0 && processVisible ? (
               <ProcessTrail
                 key="process-orphans"
                 tools={orphanTools}
@@ -935,8 +965,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
             {turn.notices.map((notice) => (
               <NoticeMessage key={notice.id} item={notice} />
             ))}
-
-            {turnChanges.length > 0 ? (
+            {turnChanges.length > 0 && !liveTail ? (
               <FileChangeSummary
                 changes={turnChanges}
                 onReview={() =>
@@ -948,8 +977,6 @@ const ThreadTurnView = memo(function ThreadTurnView({
                 }
               />
             ) : null}
-
-            {outcome && !replyOutcome ? <RunSummary run={outcome} /> : null}
 
             {lastAssistant?.stopReason === 'error' &&
             !(isLastTurn && (run.outcome === 'aborted' || (!run.settled && isRateLimitError(lastAssistant.error)))) ? (
@@ -972,16 +999,16 @@ const ThreadTurnView = memo(function ThreadTurnView({
                   {lastAssistant.model ? <span>{modelName(models, lastAssistant.model)}</span> : null}
                   {lastAssistant.usage ? (
                     <Popover
+                      trigger="hover"
                       placement="top"
                       align="left"
-                      width={220}
+                      width={236}
                       className="usage-popover"
                       renderTrigger={({ toggle }) => (
                         <button
                           type="button"
                           className="assistant__usage"
                           onClick={toggle}
-                          title={t('Usage details')}
                           aria-label={t('Usage details')}
                         >
                           {formatTokens(lastAssistant.usage?.totalTokens)} {t('tokens')}
@@ -990,30 +1017,41 @@ const ThreadTurnView = memo(function ThreadTurnView({
                     >
                       {() => {
                         const usage = lastAssistant.usage
-                        const listed = models.find(
-                          (item) =>
-                            item.id === lastAssistant.model ||
-                            `${item.provider}/${item.id}` === lastAssistant.model
-                        )
-                        const provider =
-                          listed?.provider ?? lastAssistant.model?.split('/')[0] ?? '—'
+                        const cost = usage?.cost?.total
                         return (
                           <div className="usage-popover__body">
-                            <div className="ctx__row">
-                              <span>{t('Provider')}</span>
-                              <span>{provider}</span>
+                            <div className="usage-popover__title">{t('Usage details')}</div>
+                            <div className="usage-popover__total">
+                              <span className="usage-popover__number">
+                                {formatTokens(usage?.totalTokens)}
+                              </span>
+                              <span className="usage-popover__unit">{t('Total tokens')}</span>
                             </div>
-                            <div className="ctx__row">
-                              <span>{t('Cache hit')}</span>
-                              <span>{formatTokens(usage?.cacheRead)}</span>
-                            </div>
-                            <div className="ctx__row">
-                              <span>{t('Input')}</span>
-                              <span>{formatTokens(usage?.input)}</span>
-                            </div>
-                            <div className="ctx__row">
-                              <span>{t('Output')}</span>
-                              <span>{formatTokens(usage?.output)}</span>
+                            <div className="ctx__rows">
+                              <div className="ctx__row">
+                                <span>{t('Input')}</span>
+                                <span>{formatTokens(usage?.input)}</span>
+                              </div>
+                              <div className="ctx__row">
+                                <span>{t('Output')}</span>
+                                <span>{formatTokens(usage?.output)}</span>
+                              </div>
+                              <div className="ctx__row">
+                                <span>{t('Cache read')}</span>
+                                <span>{formatTokens(usage?.cacheRead)}</span>
+                              </div>
+                              {usage?.cacheWrite ? (
+                                <div className="ctx__row">
+                                  <span>{t('Cache write')}</span>
+                                  <span>{formatTokens(usage?.cacheWrite)}</span>
+                                </div>
+                              ) : null}
+                              {cost ? (
+                                <div className="ctx__row">
+                                  <span>{t('Cost')}</span>
+                                  <span>{formatCost(cost)}</span>
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                         )

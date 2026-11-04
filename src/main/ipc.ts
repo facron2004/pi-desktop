@@ -39,6 +39,7 @@ import type {
 } from '@shared/types'
 import { checkAuth, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
+import { getModelThinkingLevels } from './pi/model-catalog'
 import { readTraceHint } from './pi/trace'
 import type { SessionSupervisor } from './pi/supervisor'
 import { readMcpConfig } from './mcp'
@@ -433,6 +434,9 @@ function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
 export function registerIpc(context: IpcContext): void {
   const { supervisor, settings, getWindow, terminals } = context
   registerProviderIpc(context)
+  ipcMain.handle('model-catalog:thinking-levels', (_event, provider: unknown, modelId: unknown) =>
+    getModelThinkingLevels(typeof provider === 'string' ? provider : '', typeof modelId === 'string' ? modelId : '')
+  )
 
   // A terminal is a real PTY, not a conversation: its output goes straight to
   // the drawer and never into Pi's message stream.
@@ -544,8 +548,8 @@ export function registerIpc(context: IpcContext): void {
       // Keep the native window controls in step with the app chrome.
       window.setTitleBarOverlay(
         theme === 'light'
-          ? { color: '#ffffff', symbolColor: '#686868', height: 44 }
-          : { color: '#16181d', symbolColor: '#9da4b2', height: 44 }
+          ? { color: '#f3f3f3', symbolColor: '#686868', height: 44 }
+          : { color: '#111317', symbolColor: '#9da4b2', height: 44 }
       )
     } catch {
       /* the platform may not support a title bar overlay */

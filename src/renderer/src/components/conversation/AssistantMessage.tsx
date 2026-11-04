@@ -1,11 +1,9 @@
 import { isValidElement, type ReactNode } from 'react'
 import type { ToolItem } from '../../lib/thread'
 import type { Turn } from '../../lib/turns'
-import type { RunState } from '../../store/useAppStore'
 import { AssistantImage, ThinkingBlock } from '../MessageItem'
 import { ProcessTrail } from '../ProcessTrail'
 import { ToolCard } from '../ToolCard'
-import { RunSummary } from './RunSummary'
 import { StreamingText } from './StreamingText'
 
 interface ProcessBuffer {
@@ -32,21 +30,19 @@ type TurnSegment = { kind: 'node'; node: ReactNode } | { kind: 'process'; buffer
 export function AssistantMessage({
   turn,
   toolMap,
-  replyOutcome,
-  liveTail
+  liveTail,
+  processOpen = true
 }: {
   turn: Turn
   toolMap: Map<string, ToolItem>
-  /** The settled run summary shown before the final answer, when it is complete. */
-  replyOutcome: RunState | undefined
   /** True while this turn is the part of the conversation still being written. */
   liveTail: boolean
+  /** Whether the turn's tool/thinking process is visible. */
+  processOpen?: boolean
 }) {
   const segments: TurnSegment[] = []
   let group: ToolItem[] = []
   let trace: ProcessBuffer | null = null
-  const lastAssistant = turn.assistants.at(-1)
-  let outcomeShown = false
 
   const ensureProcess = (key: string) => {
     if (!trace) {
@@ -80,7 +76,7 @@ export function AssistantMessage({
 
   const flushProcess = () => {
     flushTools()
-    if (!trace || trace.children.length === 0) {
+    if (!trace || trace.children.length === 0 || !processOpen) {
       trace = null
       return
     }
@@ -98,10 +94,6 @@ export function AssistantMessage({
       if (block.type === 'text') {
         if (!block.text.trim()) return
         flushProcess()
-        if (replyOutcome && assistant === lastAssistant && !outcomeShown) {
-          segments.push({ kind: 'node', node: <RunSummary key="run-outcome" run={replyOutcome} /> })
-          outcomeShown = true
-        }
         segments.push({
           kind: 'node',
           node: (

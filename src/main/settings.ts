@@ -68,6 +68,16 @@ function normalizeFontFamily(value: unknown): string | undefined {
   return value === 'Segoe UI' ? 'system' : value
 }
 
+/** The old GitHub preset wrote #1F2328 as a custom foreground; the contrast
+ *  pass makes pure black the intentional ink for that preset. */
+function normalizeThemeForeground(parsed: Partial<AppSettings>): string | undefined {
+  const customFg = typeof parsed.customFg === 'string' ? parsed.customFg : undefined
+  if (parsed.themePreset === 'github' && customFg?.toLowerCase() === '#1f2328') {
+    return '#000000'
+  }
+  return customFg
+}
+
 /**
  * Tiny JSON-file settings store in the Electron userData directory.
  * Writes are atomic (temp file + rename) so a crash cannot corrupt the file.
@@ -94,6 +104,7 @@ export class SettingsStore {
         ...parsed,
         fontScale: normalizeFontScale(parsed.fontScale),
         fontFamily: normalizeFontFamily(parsed.fontFamily),
+        customFg: normalizeThemeForeground(parsed),
         workspaces: dedupeWorkspaces(Array.isArray(parsed.workspaces) ? parsed.workspaces : []),
         pinnedSessions: Array.isArray(parsed.pinnedSessions) ? parsed.pinnedSessions : []
       }

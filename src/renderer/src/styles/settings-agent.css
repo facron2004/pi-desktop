@@ -11,6 +11,13 @@
   max-width: 240px;
 }
 
+/* "Follow the conversation" is a short default; the subagent row does not need
+   the full model-select width and looked stretched beside its label. */
+.settings-item-row select.settings-select--subagent {
+  min-width: 140px;
+  max-width: 180px;
+}
+
 /* One row, one line: the description wraps inside its own column and the control
    keeps the right edge, as the reference page does. The shared row wraps because
    `.settings-item-row__info` has a content-sized basis, so a two-line description

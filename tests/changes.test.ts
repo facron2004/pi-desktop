@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { collectChanges, countChangedFiles } from '../src/renderer/src/lib/changes'
+import { changedFilePaths, collectChanges, countChangedFiles } from '../src/renderer/src/lib/changes'
 import type { ToolItem } from '../src/renderer/src/lib/thread'
 
 function tool(overrides: Partial<ToolItem>): ToolItem {
@@ -53,4 +53,28 @@ test('a successful edit and write produce a real change with a diff', () => {
   assert.ok(write)
   assert.equal(write.kind, 'write')
   assert.equal(write.content, 'one\ntwo')
+})
+
+test('changedFilePaths lists the files without building their diffs', () => {
+  const items = [
+    tool({ id: 'edit', toolCallId: 'edit-call', status: 'ok' }),
+    tool({
+      id: 'write',
+      toolCallId: 'write-call',
+      toolName: 'write',
+      args: { path: 'src/b.ts', content: 'one\ntwo' },
+      status: 'ok'
+    }),
+    tool({
+      id: 'failed',
+      toolCallId: 'failed-call',
+      toolName: 'edit',
+      args: { path: 'src/failed.ts', edits: [] },
+      status: 'error'
+    })
+  ]
+  assert.deepEqual(changedFilePaths(items), [
+    { path: 'src/a.ts', at: 1 },
+    { path: 'src/b.ts', at: 1 }
+  ])
 })

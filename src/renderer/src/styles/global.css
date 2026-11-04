@@ -652,7 +652,7 @@ transition: background var(--dur-fast) var(--ease);
   font-size: var(--text-sm);
   font-weight: var(--font-weight-ui);
   line-height: var(--leading-body);
-  color: var(--text-strong);
+  color: var(--text-primary);
   overflow-wrap: anywhere;
 }
 
@@ -4454,12 +4454,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 .welcome .composer-wrap .session-bar {
   justify-content: flex-start;
-}
-
-.welcome__open {
-  align-self: center;
-  height: var(--ctl-lg);
-  background: var(--bg-elevated);
 }
 
 .welcome__pending {

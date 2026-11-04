@@ -443,7 +443,7 @@
 
   --text-primary: #242424;
   /* Near-black, not #000: pure black on the light canvas blooms. This is
-     the step the project name uses so it reads as ink. */
+     the strongest ink step; project names deliberately stay one step softer. */
   --text-strong: #111111;
   --text-pure: #000000;
   --text-secondary: #686868;
@@ -509,6 +509,36 @@
   --project-icon-purple: #7c3aed;
   --project-icon-pink: #db2777;
   --project-icon-red: var(--status-danger);
+}
+
+/* The tone picker has two levels: the default tokens above, and a high
+   contrast pass that raises ink and borders without changing the hue. */
+:root[data-tone='contrast'] {
+  --text-primary: #000000;
+  --text-strong: #000000;
+  --text-pure: #000000;
+  --text-secondary: #3a3a3a;
+  --text-tertiary: #4a4a4a;
+  --text-muted: #3a3a3a;
+  --text-faint: #555555;
+  --border-subtle: #d6d6d6;
+  --border-default: #bfbfbf;
+  --border-strong: #9e9e9e;
+  --border: #bfbfbf;
+}
+
+:root[data-theme='dark'][data-tone='contrast'] {
+  --text-primary: #ffffff;
+  --text-strong: #ffffff;
+  --text-pure: #ffffff;
+  --text-secondary: #d4d4d4;
+  --text-tertiary: #bdbdbd;
+  --text-muted: #d4d4d4;
+  --text-faint: #a3a3a3;
+  --border-subtle: rgba(255, 255, 255, 0.18);
+  --border-default: rgba(255, 255, 255, 0.24);
+  --border-strong: rgba(255, 255, 255, 0.32);
+  --border: rgba(255, 255, 255, 0.24);
 }
 
 @media (forced-colors: active) {

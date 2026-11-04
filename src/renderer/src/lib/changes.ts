@@ -38,6 +38,34 @@ export function countChangedFiles(items: ThreadItem[]): number {
   return paths.size
 }
 
+export interface ChangedFilePath {
+  path: string
+  /** Wall-clock time of the first change. */
+  at: number
+}
+
+/**
+ * The changed files without their diffs.
+ *
+ * The task rail only needs the paths; building a line diff for every edit on
+ * every animation frame is pure waste while the agent is working. Anything
+ * that shows the diff itself can call `collectChanges` instead.
+ */
+export function changedFilePaths(items: ThreadItem[]): ChangedFilePath[] {
+  const changes = new Map<string, ChangedFilePath>()
+
+  for (const item of items) {
+    if (item.kind !== 'tool') continue
+    if (item.status !== 'ok') continue
+    if (item.toolName !== 'edit' && item.toolName !== 'write') continue
+    const path = pathOf(item.args)
+    if (!path) continue
+    if (!changes.has(path)) changes.set(path, { path, at: item.timestamp })
+  }
+
+  return Array.from(changes.values()).sort((a, b) => a.at - b.at)
+}
+
 /**
  * Collect the files the agent changed during this session.
  *

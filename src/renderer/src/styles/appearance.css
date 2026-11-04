@@ -627,6 +627,16 @@
   overflow-wrap: normal;
 }
 
+/* Long descriptions must shrink the text column, not push their control onto
+   a new line. Used by the rows whose copy wraps to more than one line. */
+.settings-item-row--fixed-control .settings-item-row__info {
+  flex: 1 1 0;
+}
+
+.settings-item-row--fixed-control > :not(.settings-item-row__info) {
+  flex: 0 0 auto;
+}
+
 .settings-item-row__title {
   font-size: var(--text-small);
   font-weight: var(--weight-ui);
@@ -813,7 +823,7 @@
 .settings-about-card {
   overflow: hidden;
   border-radius: var(--r-lg);
-  background: var(--bg-hover);
+  background: transparent;
 }
 
 .settings-about-card .settings-about-row {
@@ -885,17 +895,17 @@
 
 .usage-heatmap__weekdays {
   display: grid;
-  grid-template-rows: 12px repeat(7, 8px);
+  grid-template-rows: 12px repeat(7, 10px);
   gap: 3px;
   color: var(--text-faint);
   font-size: 9px;
-  line-height: 8px;
+  line-height: 10px;
   text-align: right;
 }
 
 .usage-heatmap__calendar {
   display: grid;
-  grid-template-rows: 12px 74px;
+  grid-template-rows: 12px 88px;
   gap: 3px;
   width: max-content;
 }
@@ -914,14 +924,14 @@
 }
 
 .usage-heatmap__cells {
-  grid-template-rows: repeat(7, 8px);
+  grid-template-rows: repeat(7, 10px);
   row-gap: 3px;
 }
 
 .usage-heatmap__cell {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 2.5px;
   background: var(--surface-sunken);
 }
 
@@ -948,6 +958,235 @@
 
 .usage-heatmap__legend .usage-heatmap__cell {
   flex: 0 0 auto;
+}
+
+/* Compact overview: one period selector in the group header and six readings
+   in a single narrow row, instead of four large period cards. */
+.usage-period-select {
+  min-width: 104px;
+  max-width: 150px;
+}
+
+.usage-overview {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.usage-overview__metric {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: 2px var(--sp-4) 2px 0;
+  border-right: 1px solid var(--border-soft);
+}
+
+.usage-overview__metric:last-child {
+  border-right: 0;
+  padding-right: 0;
+}
+
+.usage-overview__label {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-assist);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-overview__value {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-md);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: var(--leading-body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+  .usage-overview {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    row-gap: var(--sp-4);
+  }
+
+  .usage-overview__metric:nth-child(3n) {
+    border-right: 0;
+  }
+}
+
+/* The heatmap's own tooltip, not the browser's title bubble. */
+.usage-heatmap-tooltip {
+  position: fixed;
+  z-index: var(--z-overlay);
+  display: flex;
+  min-width: 168px;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.usage-heatmap-tooltip__date {
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+}
+
+.usage-heatmap-tooltip__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  font-size: var(--text-small);
+}
+
+.usage-heatmap-tooltip__row > span {
+  color: var(--text-muted);
+}
+
+.usage-heatmap-tooltip__row > strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Model distribution: a quiet vertical bar plot on the left, the readable
+   model facts on the right. */
+.usage-model-chart {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.usage-model-chart__plot {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  min-height: 180px;
+  padding: var(--sp-3) var(--sp-4) 0;
+  border-bottom: 1px solid var(--border-soft);
+  box-sizing: border-box;
+}
+
+.usage-model-chart__column {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.usage-model-chart__bar {
+  width: min(100%, 32px);
+  min-height: 4px;
+  flex: 0 0 auto;
+  border-radius: 4px 4px 0 0;
+  background: var(--series-color, var(--accent));
+  transition: height var(--dur-base) var(--ease);
+}
+
+.usage-model-chart__xlabel {
+  width: 100%;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-model-chart__info {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-3);
+}
+
+.usage-model-chart__info-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.usage-model-chart__dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: var(--series-color, var(--accent));
+}
+
+.usage-model-chart__info-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.usage-model-chart__name {
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-model-chart__stats {
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-series='0'] {
+  --series-color: var(--accent);
+}
+
+[data-series='1'] {
+  --series-color: var(--blue);
+}
+
+[data-series='2'] {
+  --series-color: var(--violet);
+}
+
+[data-series='3'] {
+  --series-color: var(--amber);
+}
+
+[data-series='4'] {
+  --series-color: var(--status-success);
+}
+
+[data-series='5'] {
+  --series-color: var(--red);
+}
+
+@media (max-width: 680px) {
+  .usage-model-chart {
+    grid-template-columns: 1fr;
+  }
+
+  .usage-model-chart__plot {
+    min-height: 140px;
+  }
 }
 
 .usage-period-grid {

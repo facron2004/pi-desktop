@@ -903,11 +903,32 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
   const modelStats = new Map<string, ModelUsageStat>()
 
   const createDailyBuckets = (count: number) => {
-    const buckets = new Map<string, { totalTokens: number; conversations: Set<string>; messageCount: number }>()
+    const buckets = new Map<
+      string,
+      {
+        totalTokens: number
+        input: number
+        output: number
+        cacheRead: number
+        cacheWrite: number
+        cost: number
+        conversations: Set<string>
+        messageCount: number
+      }
+    >()
     for (let i = count - 1; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-      buckets.set(key, { totalTokens: 0, conversations: new Set(), messageCount: 0 })
+      buckets.set(key, {
+        totalTokens: 0,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        conversations: new Set(),
+        messageCount: 0
+      })
     }
     return buckets
   }
@@ -918,7 +939,12 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
       date,
       totalTokens: d.totalTokens,
       conversationsCount: d.conversations.size,
-      messageCount: d.messageCount
+      messageCount: d.messageCount,
+      input: d.input,
+      output: d.output,
+      cacheRead: d.cacheRead,
+      cacheWrite: d.cacheWrite,
+      cost: d.cost
     }))
 
   let rootStat: Stats
@@ -1099,6 +1125,11 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
             const dayBucket = days.get(dateKey)
             if (dayBucket) {
               dayBucket.totalTokens += m.total
+              dayBucket.input += m.input
+              dayBucket.output += m.output
+              dayBucket.cacheRead += m.cacheRead
+              dayBucket.cacheWrite += m.cacheWrite
+              dayBucket.cost += m.cost
               dayBucket.messageCount += 1
               dayBucket.conversations.add(usageData.sessionId)
             }

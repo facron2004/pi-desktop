@@ -52,6 +52,10 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
 }
 
 const bridge: PiDesktopBridge = {
+  modelCatalog: {
+    thinkingLevels: (provider: string, modelId: string): Promise<string[]> =>
+      ipcRenderer.invoke('model-catalog:thinking-levels', provider, modelId)
+  },
   providers: {
     list: () => ipcRenderer.invoke('providers:list'),
     savedKey: (id: string) => ipcRenderer.invoke('providers:savedKey', id),

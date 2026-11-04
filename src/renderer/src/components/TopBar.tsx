@@ -1,11 +1,13 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelInfo } from '@shared/types'
-import { Check, ChevronDown, ChevronLeft, Search, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Search, X } from 'lucide-react'
 import { resolveSavedModel, selectableModels } from '@shared/provider-models'
 import { useAppStore } from '../store/useAppStore'
 import { EffortSlider } from './EffortSlider'
 import { Popover } from './Popover'
 import { useT } from '../lib/i18n'
+import { filterModels } from '../lib/model-search'
+import { modelRecencyKey, readModelRecency, sortModelsByRecency } from '../lib/model-recency'
 import { resolveThinkingLevel } from '../lib/thinking'
 import '../styles/model-picker.css'
 
@@ -83,12 +85,9 @@ export function ModelPicker() {
   const liveLevel = piState?.thinkingLevel
   const savedLevel = useAppStore((state) => state.settings.thinkingLevel)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
-  // A cold chat has no live level yet. The saved one stays on the chip until
-  // Pi answers; once Pi has answered, the chip follows the same resolved level
-  // as the slider, so it never advertises an effort this model cannot use.
-  const currentLevel =
-    resolveThinkingLevel(thinkingLevels, liveLevel, savedLevel) ??
-    (thinkingLevels.length === 0 && !piState ? liveLevel || savedLevel : undefined)
+
+  const [configuredThinkingLevels, setConfiguredThinkingLevels] = useState<string[]>([])
+  const [configuredLevelsLoading, setConfiguredLevelsLoading] = useState(false)
   const setModel = useAppStore((state) => state.setModel)
   const starting = useAppStore((state) => state.status.phase === 'starting')
   const models = useMemo(
@@ -99,10 +98,62 @@ export function ModelPicker() {
     liveModel?.id && liveModel.provider
       ? liveModel
       : resolveSavedModel(savedModel, savedProvider, models)
+  useEffect(() => {
+    let cancelled = false
+    setConfiguredThinkingLevels([])
+    // A live process already reported the levels through `get_state`. Reading
+    // the static catalog again would only duplicate that answer.
+    if (piState?.model?.provider && piState.model.id) {
+      setConfiguredLevelsLoading(false)
+      return () => {
+        cancelled = true
+      }
+    }
+    if (!currentModel) {
+      setConfiguredLevelsLoading(false)
+      return () => {
+        cancelled = true
+      }
+    }
+    const getLevels = window.pi.modelCatalog?.thinkingLevels
+    if (typeof getLevels !== 'function') {
+      setConfiguredLevelsLoading(false)
+      return () => {
+        cancelled = true
+      }
+    }
+    setConfiguredLevelsLoading(true)
+    void getLevels(currentModel.provider, currentModel.id)
+      .then((levels) => {
+        if (!cancelled) setConfiguredThinkingLevels(levels)
+      })
+      .catch(() => {
+        if (!cancelled) setConfiguredThinkingLevels([])
+      })
+      .finally(() => {
+        if (!cancelled) setConfiguredLevelsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentModel?.provider, currentModel?.id, piState?.model?.provider, piState?.model?.id])
+
+  const availableThinkingLevels = piState ? thinkingLevels : configuredThinkingLevels
+  // Before a runtime exists, use the exact level list resolved from Pi's model
+  // catalog. A live session's RPC result takes precedence once it is available.
+  const currentLevel =
+    liveLevel || savedLevel
+      ? resolveThinkingLevel(availableThinkingLevels, liveLevel, savedLevel) ??
+        (!piState ? liveLevel || savedLevel : liveLevel)
+      : undefined
   const [modelQuery, setModelQuery] = useState('')
   const [showModels, setShowModels] = useState(false)
+  const [otherModelsExpanded, setOtherModelsExpanded] = useState(false)
   const [modelUpdating, setModelUpdating] = useState(false)
   const [effortUpdating, setEffortUpdating] = useState(false)
+  const [recency, setRecency] = useState(readModelRecency)
+  const [highlighted, setHighlighted] = useState(0)
+  const listRef = useRef<HTMLDivElement>(null)
   const t = useT()
 
   const levelLabel = (level: string) => t(level.charAt(0).toUpperCase() + level.slice(1))
@@ -126,29 +177,164 @@ export function ModelPicker() {
       list.scrollTop += selectedRect.top - listRect.top - (list.clientHeight - selectedRect.height) / 2
     }
   }, [])
+  const attachList = useCallback((list: HTMLDivElement | null) => {
+    listRef.current = list
+  }, [])
 
-  const needle = modelQuery.trim().toLowerCase()
-  const visibleModels = useMemo(
+  const needle = modelQuery.trim()
+  const visibleModels = useMemo(() => filterModels(models, needle), [models, needle])
+  // Recently used models are only a shortcut for the empty search state; a
+  // search still walks the full provider-grouped list in Pi's order.
+  const recentModels = useMemo(() => {
+    if (needle) return []
+    const used = sortModelsByRecency(models, recency)
+      .filter((model) => recency[modelRecencyKey(model)] !== undefined)
+      .slice(0, 3)
+    return used
+  }, [models, needle, recency])
+  const showRecents = recentModels.length > 0
+  const regularModels = useMemo(() => {
+    if (!showRecents) return visibleModels
+    const recent = new Set(recentModels.map(modelRecencyKey))
+    return visibleModels.filter((model) => !recent.has(modelRecencyKey(model)))
+  }, [recentModels, showRecents, visibleModels])
+  const visibleRegularModels = useMemo(
+    () => (showRecents && !otherModelsExpanded ? [] : regularModels),
+    [showRecents, otherModelsExpanded, regularModels]
+  )
+  const hasOtherModels = showRecents && regularModels.length > 0
+  const displayModels = useMemo(
+    () => (showRecents ? [...recentModels, ...visibleRegularModels] : visibleModels),
+    [recentModels, showRecents, visibleRegularModels, visibleModels]
+  )
+  // With a recent section the list opens at the top on purpose; scrolling to a
+  // model far down the provider groups would hide the shortcut that was just
+  // shown. Without it, keep the selected model visible as before.
+  useEffect(() => {
+    if (!showModels || modelQuery || showRecents) return
+    showSelectedModel(listRef.current)
+  }, [showModels, modelQuery, showRecents, showSelectedModel])
+  const displayIndexByKey = useMemo(
+    () => new Map(displayModels.map((model, index) => [modelRecencyKey(model), index])),
+    [displayModels]
+  )
+  const activeIndex = useMemo(
     () =>
-      needle
-        ? models.filter(
-            (model) =>
-              (model.name ?? '').toLowerCase().includes(needle) ||
-              model.id.toLowerCase().includes(needle) ||
-              model.provider.toLowerCase().includes(needle)
-          )
-        : models,
-    [models, needle]
+      displayModels.findIndex(
+        (model) => currentModel?.id === model.id && currentModel.provider === model.provider
+      ),
+    [displayModels, currentModel?.id, currentModel?.provider]
   )
   const modelGroups = useMemo(() => {
     const groups = new Map<string, ModelInfo[]>()
-    for (const model of visibleModels) {
+    for (const model of visibleRegularModels) {
       const group = groups.get(model.provider)
       if (group) group.push(model)
       else groups.set(model.provider, [model])
     }
     return [...groups]
-  }, [visibleModels])
+  }, [visibleRegularModels])
+
+  useEffect(() => {
+    if (!showModels) return
+    setHighlighted(activeIndex >= 0 ? activeIndex : 0)
+    setOtherModelsExpanded(false)
+    // Another surface (the keyboard cycle) may have picked a model since the
+    // last open; recency is cheap to re-read and belongs to the picker's view.
+    setRecency(readModelRecency())
+  }, [showModels, activeIndex])
+
+  useEffect(() => {
+    if (!showModels) return
+    const list = listRef.current
+    const row = list?.querySelector<HTMLElement>('.model-picker__row[data-highlighted="true"]')
+    if (!list || !row) return
+    const listRect = list.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    if (rowRect.top < listRect.top) list.scrollTop += rowRect.top - listRect.top
+    else if (rowRect.bottom > listRect.bottom) list.scrollTop += rowRect.bottom - listRect.bottom
+  }, [highlighted, showModels, displayModels.length])
+
+  const pickModel = async (model: ModelInfo): Promise<void> => {
+    if (updating) return
+    const selected = currentModel?.id === model.id && currentModel.provider === model.provider
+    if (selected) {
+      setShowModels(false)
+      return
+    }
+    setModelUpdating(true)
+    try {
+      if (await setModel(model)) {
+        setRecency(readModelRecency())
+        setShowModels(false)
+      }
+    } finally {
+      setModelUpdating(false)
+    }
+  }
+
+  const renderModelRow = (model: ModelInfo) => {
+    const modelContext = formatContextWindow(model.contextWindow)
+    const price = modelPrice(model, t)
+    const images = acceptsImages(model)
+    const selected = currentModel?.id === model.id && currentModel.provider === model.provider
+    const key = modelRecencyKey(model)
+    const modelIndex = displayIndexByKey.get(key) ?? 0
+    const rowTitle = [
+      model.name || model.id,
+      model.provider,
+      modelContext ? `${modelContext} ${t('ctx')}` : null,
+      price?.title ?? null,
+      model.reasoning ? t('Reasoning') : null,
+      images ? t('Image input') : null
+    ]
+      .filter((part): part is string => Boolean(part))
+      .join(' · ')
+
+    return (
+      <button
+        key={key}
+        className="popover__item model-picker__row"
+        data-selected={selected}
+        data-highlighted={highlighted === modelIndex}
+        aria-pressed={selected}
+        aria-disabled={updating}
+        title={rowTitle}
+        onMouseEnter={() => setHighlighted(modelIndex)}
+        onClick={() => void pickModel(model)}
+      >
+        <span className="model-picker__row-body">
+          <span className="model-picker__row-name">{model.name || model.id}</span>
+          {modelContext || price || model.reasoning || images ? (
+            <span className="model-picker__row-meta">
+              {modelContext ? (
+                <span className="model-picker__meta-item">
+                  {modelContext} {t('ctx')}
+                </span>
+              ) : null}
+              {price ? (
+                <span className="model-picker__price" title={price.title}>
+                  {price.text}
+                </span>
+              ) : null}
+              {model.reasoning ? (
+                <span className="model-picker__badge" data-kind="reasoning">
+                  {t('Reasoning')}
+                </span>
+              ) : null}
+              {images ? (
+                <span className="model-picker__badge" data-kind="image">
+                  {t('Images')}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
+        </span>
+        {selected ? <Check size={13} className="model-picker__check" /> : null}
+      </button>
+    )
+  }
+
   const currentContext = currentModel ? formatContextWindow(currentModel.contextWindow) : null
   const currentPrice = currentModel ? modelPrice(currentModel, t) : null
   const triggerTitle = currentModel
@@ -180,6 +366,7 @@ export function ModelPicker() {
             if (!open) {
               setModelQuery('')
               setShowModels(false)
+              setRecency(readModelRecency())
             }
             toggle(e)
           }}
@@ -232,7 +419,25 @@ export function ModelPicker() {
                     value={modelQuery}
                     placeholder={t('Search models')}
                     aria-label={t('Search models')}
-                    onChange={(event) => setModelQuery(event.target.value)}
+                    onChange={(event) => {
+                      setModelQuery(event.target.value)
+                      setHighlighted(0)
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.nativeEvent.isComposing) return
+                      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                        event.preventDefault()
+                        if (displayModels.length === 0) return
+                        const direction = event.key === 'ArrowDown' ? 1 : -1
+                        setHighlighted((index) => (index + direction + displayModels.length) % displayModels.length)
+                        return
+                      }
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        const model = displayModels[highlighted]
+                        if (model && !updating) void pickModel(model)
+                      }
+                    }}
                   />
                   {modelQuery ? (
                     <button
@@ -249,86 +454,37 @@ export function ModelPicker() {
 
               <div className="project-menu__divider" />
 
-              <div className="model-picker__list" ref={showSelectedModel}>
-                {visibleModels.length === 0 ? (
+              <div className="model-picker__list" ref={attachList}>
+                {displayModels.length === 0 ? (
                   <div className="model-picker__empty">
                     {t('No model matches')} “{modelQuery}”
                   </div>
+                ) : null}
+                {showRecents ? (
+                  <div className="model-picker__group" role="group" aria-label={t('Recent models')}>
+                    <div className="popover__label model-picker__group-label" title={t('Recent models')}>
+                      {t('Recent models')}
+                    </div>
+                    {recentModels.map(renderModelRow)}
+                  </div>
+                ) : null}
+                {hasOtherModels ? (
+                  <button
+                    type="button"
+                    className="model-picker__other"
+                    aria-expanded={otherModelsExpanded}
+                    onClick={() => setOtherModelsExpanded((expanded) => !expanded)}
+                  >
+                    {otherModelsExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    <span>{t('Other models')}</span>
+                  </button>
                 ) : null}
                 {modelGroups.map(([provider, group]) => (
                   <div className="model-picker__group" key={provider} role="group" aria-label={provider}>
                     <div className="popover__label model-picker__group-label" title={provider}>
                       {provider}
                     </div>
-                    {group.map((model) => {
-                      const modelContext = formatContextWindow(model.contextWindow)
-                      const price = modelPrice(model, t)
-                      const images = acceptsImages(model)
-                      const selected = currentModel?.id === model.id && currentModel.provider === model.provider
-                      const rowTitle = [
-                        model.name || model.id,
-                        model.provider,
-                        modelContext ? `${modelContext} ${t('ctx')}` : null,
-                        price?.title ?? null,
-                        model.reasoning ? t('Reasoning') : null,
-                        images ? t('Image input') : null
-                      ]
-                        .filter((part): part is string => Boolean(part))
-                        .join(' · ')
-
-                      return (
-                        <button
-                          key={`${model.provider}/${model.id}`}
-                          className="popover__item model-picker__row"
-                          data-selected={selected}
-                          aria-pressed={selected}
-                          aria-disabled={updating}
-                          title={rowTitle}
-                          onClick={async () => {
-                            if (updating) return
-                            if (selected) {
-                              setShowModels(false)
-                              return
-                            }
-                            setModelUpdating(true)
-                            try {
-                              if (await setModel(model)) setShowModels(false)
-                            } finally {
-                              setModelUpdating(false)
-                            }
-                          }}
-                        >
-                          <span className="model-picker__row-body">
-                            <span className="model-picker__row-name">{model.name || model.id}</span>
-                            {modelContext || price || model.reasoning || images ? (
-                              <span className="model-picker__row-meta">
-                                {modelContext ? (
-                                  <span className="model-picker__meta-item">
-                                    {modelContext} {t('ctx')}
-                                  </span>
-                                ) : null}
-                                {price ? (
-                                  <span className="model-picker__price" title={price.title}>
-                                    {price.text}
-                                  </span>
-                                ) : null}
-                                {model.reasoning ? (
-                                  <span className="model-picker__badge" data-kind="reasoning">
-                                    {t('Reasoning')}
-                                  </span>
-                                ) : null}
-                                {images ? (
-                                  <span className="model-picker__badge" data-kind="image">
-                                    {t('Images')}
-                                  </span>
-                                ) : null}
-                              </span>
-                            ) : null}
-                          </span>
-                          {selected ? <Check size={13} className="model-picker__check" /> : null}
-                        </button>
-                      )
-                    })}
+                    {group.map(renderModelRow)}
                   </div>
                 ))}
               </div>
@@ -337,9 +493,12 @@ export function ModelPicker() {
             <EffortSlider
               disabled={updating}
               modelLabel={modelLabel}
+              availableLevels={availableThinkingLevels}
+              levelsLoading={configuredLevelsLoading && thinkingLevels.length === 0}
               onOpenModelList={() => {
                 if (updating) return
                 setModelQuery('')
+                setRecency(readModelRecency())
                 setShowModels(true)
               }}
               onBusyChange={setEffortUpdating}

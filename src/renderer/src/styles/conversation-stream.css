@@ -133,25 +133,72 @@
   color: var(--status-danger);
 }
 
-/* The one-line record of how a run ended. */
+/* The one-line record of how a turn ended. It sits above the answer, like a
+   quiet chapter heading: the reader sees the result before the content. */
 .run-outcome {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
-  min-height: var(--ctl-sm);
-  padding: var(--sp-2) 0;
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  margin: var(--sp-2) 0;
+  width: 100%;
+  min-width: 0;
+  min-height: calc(var(--ctl-sm) + var(--sp-1));
+  margin: 0 0 var(--sp-2);
+  padding: 0 0 var(--sp-2);
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  text-align: left;
   white-space: nowrap;
 }
 
-.run-outcome::before,
-.run-outcome::after {
-  content: '';
-  flex: 1 1 auto;
-  height: 1px;
-  background: var(--border-subtle);
+.run-outcome[data-foldable='true'] {
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.run-outcome[data-foldable='true']:hover {
+  color: var(--text-secondary);
+}
+
+.run-outcome:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.run-outcome:disabled {
+  cursor: default;
+}
+
+.run-outcome > svg:not(.run-outcome__chevron) {
+  margin-right: var(--sp-2);
+}
+
+.run-outcome__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-outcome__meta {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+}
+
+.run-outcome__chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: var(--sp-1);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.run-outcome[data-open='true'] .run-outcome__chevron {
+  transform: rotate(180deg);
 }
 
 .run-outcome[data-outcome='aborted'] {
@@ -160,12 +207,6 @@
 
 .run-outcome[data-outcome='failed'] {
   color: var(--status-danger);
-}
-
-.run-outcome__meta {
-  font-size: var(--text-2xs);
-  color: inherit;
-  font-variant-numeric: tabular-nums;
 }
 
 /* A tool call that was named but never ran. It is not a success and it is
@@ -518,22 +559,65 @@
   color: var(--text-secondary);
 }
 
+/* The token count answers a question under the pointer, so it is not a link:
+   the card is the affordance and the number stays a quiet part of the footer. */
 .assistant__usage {
-  padding: 0;
+  padding: 0 var(--sp-1);
+  margin-left: calc(-1 * var(--sp-1));
   color: inherit;
   font: inherit;
   font-variant-numeric: tabular-nums;
-  text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
-  text-underline-offset: 2px;
+  border-radius: var(--r-sm);
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
-.assistant__usage:hover {
-  color: var(--text);
+.assistant__usage:hover,
+.assistant__usage:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.assistant__usage:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .usage-popover__body {
-  padding: var(--sp-2) var(--sp-3);
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+}
+
+.usage-popover__title {
+  padding: var(--sp-1) 0 var(--sp-2);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+/* The number the reader hovered for is the one thing the card says loudly. */
+.usage-popover__total {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin: var(--sp-1) 0 var(--sp-2);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.usage-popover__number {
+  font-size: var(--text-large);
+  line-height: var(--leading-large);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.usage-popover__unit {
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  color: var(--text-muted);
 }
 
 .assistant__details > summary {

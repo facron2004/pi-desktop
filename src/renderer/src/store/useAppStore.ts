@@ -38,6 +38,7 @@ import { APP_COMMANDS } from '../lib/app-commands'
 import { hydrationStale, scopeEvent, scopeStatus } from '../lib/session-scope'
 import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
 import { beginStream } from '../lib/stream-events'
+import { recordModelUse } from '../lib/model-recency'
 import { migrateViewState } from '../lib/view-state'
 
 export type QueueKind = 'steer' | 'followUp'
@@ -402,6 +403,7 @@ export interface AppStore {
 
 const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
+  activeWorkspaceId: null,
   pinnedSessions: [],
   theme: 'dark',
   language: 'en',
@@ -463,6 +465,14 @@ const threadAliases = new Map<string, string>()
 const modelRestoreAttempts = new Set<string>()
 /** Conversations whose live process has already been told to retry rate limits. */
 const retryArmed = new Set<string>()
+/**
+ * A model chosen while the conversation was cold.
+ *
+ * There is no process to hear `set_model` yet. Starting one just to store the
+ * choice is a multi-second cold boot; the next launch reads the saved default
+ * and this map applies it to a resumed session before its first prompt.
+ */
+const pendingModelSelections = new Map<string, { provider: string; id: string }>()
 
 export const MAX_CACHED_INACTIVE_THREADS = 10
 
@@ -762,7 +772,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
         // screen, and a click there is the reader asking for it.
         await get().openWorkspace(target, undefined, 'restore-project')
       } else {
-        await get().refreshSessions()
+        // No saved project can be restored (a fresh profile, or the active
+        // project was deleted). A projectless chat is a valid start; leaving
+        // the screen without a workspace used to strand the welcome view on a
+        // non-functional "open project folder" button.
+        await get().openWorkspace(undefined, undefined, 'restore-projectless')
+        const nextSettings = await window.pi.settings.patch({ activeWorkspaceId: null })
+        if (nextSettings) set({ settings: nextSettings })
       }
     })()
     const guarded = work.catch((error: unknown) => {
@@ -770,6 +786,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ error: messageOf(error) })
     })
     bootstrapPromise = guarded
+    // The promise only has to deduplicate the StrictMode replay while it is
+    // in flight. Once it settles, a later call is a real request to restore
+    // the startup state again (for example after reading changed settings).
+    void guarded.finally(() => {
+      if (bootstrapPromise === guarded) bootstrapPromise = undefined
+    })
     return guarded
   },
 
@@ -1151,6 +1173,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
       trace: { sourceAction, uiSessionId: key }
     })
     if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start')
+    // A model picked while this conversation was cold had no process to hear
+    // `set_model`. Apply it before the first prompt runs on the old model.
+    const pending = pendingModelSelections.get(key)
+    if (pending) {
+      pendingModelSelections.delete(key)
+      await tracedRpc(
+        key,
+        'set_model',
+        { provider: pending.provider, modelId: pending.id },
+        undefined,
+        'restore-model'
+      )
+    }
     return threadKey(key)
   },
 
@@ -1399,18 +1434,46 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async setModel(model) {
     const owner = viewKeyOf(get())
+    const key = threadKey(owner)
     try {
-      const key = await get().ensureRuntime(owner, 'set-model')
-      const state = bindGet(get, key)()
+      // Pi starts when a message is sent, not when a picker changes. A cold
+      // conversation has no process to hear `set_model`, so store the choice
+      // and let the next launch read it (draft) or `ensureRuntime` apply it
+      // (a resumed session). Booting Pi here made every first switch after a
+      // start feel like a cold start, because it was one.
+      const running =
+        owner && typeof window.pi.runtime.has === 'function' ? await window.pi.runtime.has(owner) : true
+      // A process that is already booting will not read a settings change it
+      // missed. Treat it as live so `ensureRuntime` waits for it and sends
+      // `set_model` instead of leaving the first prompt on the old model.
+      const starting = get().threads[key]?.status.phase === 'starting'
+      if (!running && !starting) {
+        const spec = `${model.provider}/${model.id}`
+        if (get().settings.model !== spec || get().settings.provider !== model.provider) {
+          const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
+          set({ settings })
+        }
+        // A draft's next launch already receives the saved default through
+        // `ensureRuntime`; only a resumed session needs the extra command.
+        if (key && !key.startsWith('draft:')) {
+          pendingModelSelections.set(key, { provider: model.provider, id: model.id })
+        }
+        recordModelUse(model)
+        return true
+      }
+      pendingModelSelections.delete(key)
+      const ensuredKey = await get().ensureRuntime(owner, 'set-model')
+      const liveKey = threadKey(ensuredKey)
+      const state = bindGet(get, liveKey)()
       if (!state.models.some(item => item.provider === model.provider && item.id === model.id)) {
         if (!state.run.settled) {
           get().showToast('New models can be selected when the current run finishes', 'warning')
           return false
         }
-        await tracedRpc(key, 'prompt', { message: '/desktop-refresh-models' }, undefined, 'refresh-models')
+        await tracedRpc(liveKey, 'prompt', { message: '/desktop-refresh-models' }, undefined, 'refresh-models')
       }
       await tracedRpc(
-        key,
+        liveKey,
         'set_model',
         { provider: model.provider, modelId: model.id },
         undefined,
@@ -1422,6 +1485,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
         set({ settings })
       }
+      recordModelUse(model)
       return true
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
@@ -2182,9 +2246,10 @@ export function applyAppearance(
     }
   }
 
-  // Tone
-  if (settings.themeTone && settings.themeTone !== 'neutral') {
-    root.dataset.tone = settings.themeTone
+  // Tone: the appearance picker has only two levels — normal (no override)
+  // and high contrast (raised ink/border contrast).
+  if (settings.themeTone === 'contrast') {
+    root.dataset.tone = 'contrast'
   } else {
     delete root.dataset.tone
   }
@@ -2451,9 +2516,56 @@ function scheduleItems(
   }
   const key = viewKeyOf(get())
   const batch = pending.get(key) ?? { set, events: [] }
-  batch.events.push({ event, context })
+  const last = batch.events[batch.events.length - 1]
+  const merged = last ? mergeTextDelta(last.event, last.context, event, context) : null
+  if (merged) last.event = merged
+  else batch.events.push({ event, context })
   pending.set(key, batch)
   scheduleFlush()
+}
+
+/**
+ * Fold a run of adjacent text deltas into one record before reducing.
+ *
+ * A provider can emit dozens of tiny deltas in a single frame. They all land
+ * in the same thread and block, so reducing each one separately copies the
+ * whole `items` array dozens of times for a transcript that is painted once.
+ * Keeping the last record and extending its delta gives the reducer the same
+ * text with one pass. `text_end` remains authoritative, as before.
+ */
+function mergeTextDelta(
+  previousEvent: PiEvent,
+  previousContext: ReturnType<typeof runContextOf>,
+  nextEvent: PiEvent,
+  nextContext: ReturnType<typeof runContextOf>
+): PiEvent | null {
+  if (previousEvent.type !== 'message_update' || nextEvent.type !== 'message_update') return null
+  if (
+    previousContext.sessionKey !== nextContext.sessionKey ||
+    previousContext.runId !== nextContext.runId ||
+    previousContext.turnId !== nextContext.turnId
+  ) {
+    return null
+  }
+  const previous = previousEvent.assistantMessageEvent as
+    | { type?: string; contentIndex?: number; delta?: string }
+    | undefined
+  const next = nextEvent.assistantMessageEvent as
+    | { type?: string; contentIndex?: number; delta?: string }
+    | undefined
+  if (!previous || !next || previous.type !== next.type) return null
+  if (previous.type !== 'text_delta' && previous.type !== 'thinking_delta') return null
+  // Without a content index there is no proof the two deltas belong to the
+  // same block, so leave them separate rather than risk merging two blocks.
+  if (previous.contentIndex === undefined || next.contentIndex === undefined) return null
+  if (previous.contentIndex !== next.contentIndex) return null
+  return {
+    ...previousEvent,
+    assistantMessageEvent: {
+      ...previous,
+      delta: (previous.delta ?? '') + (next.delta ?? '')
+    }
+  }
 }
 
 /** Reducers waiting for the next frame. */

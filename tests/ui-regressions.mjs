@@ -278,6 +278,9 @@ async function checkRenderer(markerFile) {
       write('ui-small', 'small.txt', 'small', 3)
     ]
   })
+  // The change summary is a turn's closing statement, so the previews below it
+  // only exist once the run has settled.
+  store.setState((state) => ({ run: { ...state.run, phase: 'idle', settled: true } }))
   const row = await until(() => document.querySelector('.file-change'), 'File change did not render')
   const hover = (node) => node.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
   hover(row)
@@ -354,7 +357,9 @@ async function checkRenderer(markerFile) {
       kind: 'tool',
       toolCallId: 'rail-write5',
       toolName: 'write',
-      args: { path: 'audit/nested/one.md', content: 'x' },
+      // Two files that share a name: the one case where a row has to say which
+      // folder it came from.
+      args: { path: 'server/store.js', content: 'x' },
       status: 'ok',
       timestamp: 7,
       order: 7
@@ -364,7 +369,7 @@ async function checkRenderer(markerFile) {
       kind: 'tool',
       toolCallId: 'rail-write6',
       toolName: 'write',
-      args: { path: 'audit/nested/two.md', content: 'x' },
+      args: { path: 'web/store.js', content: 'x' },
       status: 'ok',
       timestamp: 8,
       order: 8
@@ -395,49 +400,44 @@ async function checkRenderer(markerFile) {
   check(document.querySelectorAll('.task-panel__task').length === 1, 'The background task row is missing')
   check(document.querySelectorAll('.task-panel__check').length === 3, 'The plan checklist is missing a step')
   check(document.querySelectorAll('.task-panel__check[data-done]').length === 2, 'A finished step is not marked as done')
-  check(document.querySelectorAll('.task-panel__folder').length === 2, 'The deliverables folders are missing')
+  check(document.querySelectorAll('.task-panel__folder').length === 0, 'The deliverables still draw folder rows')
   check(document.querySelectorAll('.task-panel__file').length === 6, 'The deliverables files are missing')
-  // Every deliverable is on one column, whatever folder it sits under: a file
-  // row says where it came from on its own right, and only a folder header uses
-  // the indent, because that row's job is structure. A folder also keeps the
-  // 20px tile slot a file wears, so its name starts on the same column.
-  const nameLeft = (node) => Math.round(node.getBoundingClientRect().left)
-  const fileNamed = (name) =>
-    [...document.querySelectorAll('.task-panel__file')].find(
-      (row) => row.querySelector('.task-panel__file-name')?.textContent === name
-    )
-  const folderNamed = (name) =>
-    [...document.querySelectorAll('.task-panel__folder')].find(
-      (row) => row.querySelector('.task-panel__folder-name')?.textContent === name
-    )
-  const column = (node) => nameLeft(node.querySelector('.task-panel__file-name, .task-panel__folder-name'))
-  const topFolder = folderNamed('audit')
-  const subFolder = folderNamed('nested')
-  const rootFile = fileNamed('note.md')
-  const insideFolder = fileNamed('hover-check.mjs')
-  const insideSub = fileNamed('one.md')
-  // A folder that holds one file is a path, not a group: the file stands on the
-  // root column and names its folder itself.
-  const soloFile = fileNamed('status.md')
-  check(
-    Boolean(topFolder && subFolder && rootFile && insideFolder && insideSub && soloFile),
-    'The deliverables tree is missing a row'
-  )
-  for (const row of [rootFile, insideFolder, insideSub, soloFile]) {
+  // The deliverables are a list of files, not a directory tree: no folder rows,
+  // no indent, no path on the row. Every row is one tile slot plus one name, so
+  // every name starts on the same column and every row is the same height.
+  const left = (node) => Math.round(node.getBoundingClientRect().left)
+  const fileRows = [...document.querySelectorAll('.task-panel__file')]
+  const rowNamed = (name) =>
+    fileRows.find((row) => row.querySelector('.task-panel__file-name')?.textContent === name)
+  check(fileRows.length === 6, 'A deliverables row is missing')
+  const column = left(fileRows[0].querySelector('.task-panel__file-name'))
+  for (const row of fileRows) {
     check(
-      column(row) === column(topFolder),
-      `${row.querySelector('.task-panel__file-name').textContent} is not on the deliverables column: ${column(row)} vs ${column(topFolder)}`
+      left(row.querySelector('.task-panel__file-name')) === column,
+      `${row.querySelector('.task-panel__file-name').textContent} is not on the deliverables column`
     )
+    check(row.querySelector('.task-panel__tile').getBoundingClientRect().width === 20, 'A deliverable lost its tile slot')
+    check(Math.round(row.getBoundingClientRect().height) === 28, 'Deliverables rows are not the same height')
   }
+  // The path is not shown — except where two files share a name and the row has
+  // to say which one it is.
+  const dirHint = (name) => rowNamed(name)?.querySelector('.task-panel__file-dir')?.textContent ?? ''
+  const serverStore = fileRows.filter((row) => row.querySelector('.task-panel__file-name')?.textContent === 'store.js')
+  check(serverStore.length === 2, 'The two files that share a name are not both listed')
   check(
-    column(subFolder) - column(topFolder) === 14,
-    `A sub-folder header is not one indent step in from its parent: ${column(subFolder) - column(topFolder)}`
+    serverStore.map((row) => row.querySelector('.task-panel__file-dir')?.textContent).join('|') === 'server/|web/',
+    'Files sharing a name do not say which folder each one is in'
   )
-  const dirHint = (row) => row.querySelector('.task-panel__file-dir')?.textContent ?? ''
-  check(dirHint(insideFolder) === 'audit/', `A file inside a folder does not name it: "${dirHint(insideFolder)}"`)
-  check(dirHint(insideSub) === 'audit/nested/', `A file in a sub-folder does not name it: "${dirHint(insideSub)}"`)
-  check(dirHint(soloFile) === 'docs/', `A file alone in its folder does not name it: "${dirHint(soloFile)}"`)
-  check(dirHint(rootFile) === '', 'A file at the project root claims a folder')
+  check(dirHint('status.md') === '', 'A deliverable shows its path')
+  check(dirHint('note.md') === '', 'A file at the project root claims a folder')
+  check(rowNamed('status.md').getAttribute('title') === 'docs/status.md', 'The row lost the path its tooltip carries')
+  // What a turn changed is its closing statement: the summary waits for the run
+  // to settle, while the tool rows above already show every edit as it happens.
+  store.setState((state) => ({ run: { ...state.run, phase: 'tool_running', settled: false } }))
+  await pause(150)
+  check(!document.querySelector('.file-changes'), 'The file-change summary appeared while the run was still going')
+  store.setState((state) => ({ run: { ...state.run, phase: 'idle', settled: true } }))
+  await until(() => document.querySelector('.file-changes'), 'The file-change summary did not appear once the run settled')
   const progress = [...document.querySelectorAll('.task-panel__section')].find((node) =>
     node.querySelector('.task-panel__section-title')?.textContent === 'Progress'
   )

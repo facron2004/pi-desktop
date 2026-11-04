@@ -74,6 +74,7 @@ const bridge = {
 
 ;(globalThis as unknown as { window: unknown }).window = {
   pi: bridge,
+  location: { search: '' },
   matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
   addEventListener: () => {},
   removeEventListener: () => {},
@@ -180,6 +181,76 @@ test('a busy conversation keeps running when a new provider cannot be loaded yet
     assert.equal(useAppStore.getState().toast?.level, 'warning')
   } finally {
     bridge.runtime.request = originalRequest
+    useAppStore.setState(previous)
+  }
+})
+
+test('switching the model in a cold draft stores it without starting Pi', async () => {
+  const previous = useAppStore.getState()
+  await previous.newChat()
+  const originalRequest = bridge.runtime.request
+  const originalPatch = bridge.settings.patch
+  const originalHas = (bridge.runtime as unknown as Record<string, unknown>).has
+  const calls: string[] = []
+  const patches: unknown[] = []
+  ;(bridge.runtime as unknown as Record<string, unknown>).has = async () => false
+  bridge.runtime.request = command => { calls.push(command); return ok({}) }
+  bridge.settings.patch = (patch: unknown) => {
+    patches.push(patch)
+    return ok({ ...useAppStore.getState().settings, ...(patch as object) })
+  }
+  try {
+    const target: ModelInfo = { id: 'codex/gpt-6.1-terra', provider: 'magpie', api: 'openai-responses',
+      reasoning: true, input: ['text'], contextWindow: 500000, maxTokens: 128000 }
+    assert.equal(await useAppStore.getState().setModel(target), true)
+    assert.deepEqual(calls, [], 'a cold draft has no process to tell')
+    assert.deepEqual(patches, [{ provider: 'magpie', model: 'magpie/codex/gpt-6.1-terra' }])
+    assert.equal(useAppStore.getState().settings.model, 'magpie/codex/gpt-6.1-terra')
+  } finally {
+    bridge.runtime.request = originalRequest
+    bridge.settings.patch = originalPatch
+    ;(bridge.runtime as unknown as Record<string, unknown>).has = originalHas
+    useAppStore.setState(previous)
+  }
+})
+
+test('a model chosen while a resumed session is cold is applied when it starts', async () => {
+  const previous = useAppStore.getState()
+  await previous.newChat()
+  const started = useAppStore.getState()
+  const source = started.threads[started.draftId!]
+  const session = 'C:/tmp/pi-desktop-cold-model.jsonl'
+  useAppStore.setState({
+    activeSessionFile: session,
+    draftId: undefined,
+    threads: { ...started.threads, [session]: source }
+  })
+  const originalRequest = bridge.runtime.request
+  const originalPatch = bridge.settings.patch
+  const originalHas = (bridge.runtime as unknown as Record<string, unknown>).has
+  const originalEnsure = (bridge.runtime as unknown as Record<string, unknown>).ensure
+  const calls: Array<{ command: string; payload?: Record<string, unknown> }> = []
+  ;(bridge.runtime as unknown as Record<string, unknown>).has = async () => false
+  ;(bridge.runtime as unknown as Record<string, unknown>).ensure = async () => ({ ok: true })
+  bridge.runtime.request = (command: string, payload?: Record<string, unknown>) => {
+    calls.push({ command, payload })
+    if (command === 'set_model') return ok(payload)
+    return ok({})
+  }
+  bridge.settings.patch = (patch: unknown) =>
+    ok({ ...useAppStore.getState().settings, ...(patch as object) })
+  try {
+    const target: ModelInfo = { id: 'model-b', provider: 'p', api: 'openai-completions',
+      reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 4096 }
+    assert.equal(await useAppStore.getState().setModel(target), true)
+    assert.deepEqual(calls, [], 'the selection waits for the process')
+    await useAppStore.getState().ensureRuntime(session, 'test')
+    assert.deepEqual(calls, [{ command: 'set_model', payload: { provider: 'p', modelId: 'model-b' } }])
+  } finally {
+    bridge.runtime.request = originalRequest
+    bridge.settings.patch = originalPatch
+    ;(bridge.runtime as unknown as Record<string, unknown>).has = originalHas
+    ;(bridge.runtime as unknown as Record<string, unknown>).ensure = originalEnsure
     useAppStore.setState(previous)
   }
 })

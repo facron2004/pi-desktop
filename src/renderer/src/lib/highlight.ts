@@ -92,6 +92,19 @@ const PLAIN = 'text'
 
 let highlighterPromise: Promise<Highlighter> | null = null
 
+/**
+ * Recently highlighted snippets.
+ *
+ * The same code block can appear several times in one answer (an example
+ * repeated per section) or while a stable block is reassembled; Shiki's
+ * tokenizer is deterministic for `(code, language, theme)`, so the HTML can be
+ * reused instead of re-tokenising the same text. The cache is deliberately
+ * small: code can be large, and stale snippets are not worth keeping for the
+ * life of the window.
+ */
+const highlightCache = new Map<string, Promise<string>>()
+const HIGHLIGHT_CACHE_LIMIT = 80
+
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     // The highlighter itself is a separate chunk, so the app starts without
@@ -129,26 +142,36 @@ function resolveGrammar(name: string): Grammar | null {
   return ALIASES[key] ?? null
 }
 
-export async function highlightCode(
-  code: string,
-  language: string,
-  isDark: boolean
-): Promise<string> {
-  const highlighter = await getHighlighter()
-  const grammar = resolveGrammar(language)
+export function highlightCode(code: string, language: string, isDark: boolean): Promise<string> {
+  const key = `${isDark ? 'dark' : 'light'}\u0000${language}\u0000${code}`
+  const cached = highlightCache.get(key)
+  if (cached) return cached
 
-  if (grammar && !highlighter.getLoadedLanguages().includes(grammar)) {
-    try {
-      await highlighter.loadLanguage(grammar)
-    } catch {
-      // A grammar that refuses to load is not worth breaking the block over.
+  const pending = (async () => {
+    const highlighter = await getHighlighter()
+    const grammar = resolveGrammar(language)
+
+    if (grammar && !highlighter.getLoadedLanguages().includes(grammar)) {
+      try {
+        await highlighter.loadLanguage(grammar)
+      } catch {
+        // A grammar that refuses to load is not worth breaking the block over.
+      }
     }
+
+    const lang = grammar && highlighter.getLoadedLanguages().includes(grammar) ? grammar : PLAIN
+
+    return highlighter.codeToHtml(code, {
+      lang: lang as Grammar | typeof PLAIN,
+      theme: themeName(isDark)
+    })
+  })()
+
+  highlightCache.set(key, pending)
+  if (highlightCache.size > HIGHLIGHT_CACHE_LIMIT) {
+    const oldest = highlightCache.keys().next().value
+    if (oldest !== undefined) highlightCache.delete(oldest)
   }
-
-  const lang = grammar && highlighter.getLoadedLanguages().includes(grammar) ? grammar : PLAIN
-
-  return highlighter.codeToHtml(code, {
-    lang: lang as Grammar | typeof PLAIN,
-    theme: themeName(isDark)
-  })
+  pending.catch(() => highlightCache.delete(key))
+  return pending
 }

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { CircleAlert, FolderOpen, X } from 'lucide-react'
+import { CircleAlert, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { openingLabel, useT } from '../lib/i18n'
 import { ProjectSelector } from './ProjectSelector'
@@ -7,10 +7,14 @@ import { PiLogo } from './PiLogo'
 
 /**
  * A new chat: project & branch selectors above the composer.
+ *
+ * There is deliberately no "open project folder" holding screen. A start with
+ * no usable project is a projectless chat, so the composer is always here to
+ * type into; picking a project is an option, not a prerequisite.
  */
-export function Welcome({ onPick, children }: { onPick: () => void; children: ReactNode }) {
+export function Welcome({ children }: { children: ReactNode }) {
   const workspace = useAppStore((state) => state.workspace)
-  const noProject = useAppStore((state) => state.settings.activeWorkspaceId === null)
+  const noProject = useAppStore((state) => state.settings.activeWorkspaceId == null)
   const status = useAppStore((state) => state.status.phase)
   const error = useAppStore((state) => state.error)
   const dismissError = useAppStore((state) => state.dismissError)
@@ -68,16 +72,7 @@ export function Welcome({ onPick, children }: { onPick: () => void; children: Re
           </div>
         </div>
 
-        {workspace || noProject ? (
-          <div className="welcome__composer">{children}</div>
-        ) : (
-          <div className="welcome__composer">
-            <button className="btn welcome__open" onClick={onPick}>
-              <FolderOpen size={16} aria-hidden="true" />
-              {t('Open project folder')}
-            </button>
-          </div>
-        )}
+        <div className="welcome__composer">{children}</div>
       </div>
     </div>
   )

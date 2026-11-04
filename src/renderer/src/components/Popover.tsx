@@ -11,8 +11,9 @@ import { createPortal } from 'react-dom'
 
 interface PopoverProps {
   /**
-   * The trigger element. It has to call `toggle` when it is clicked —
-   * without it the popover never opens.
+   * The trigger element. In `click` mode it has to call `toggle` when it is
+   * clicked — without it the popover never opens. In `hover` mode it is opened
+   * by the pointer and `toggle` only pins or dismisses it.
    */
   renderTrigger: (state: {
     open: boolean
@@ -23,6 +24,20 @@ interface PopoverProps {
   placement?: 'top' | 'bottom' | 'right'
   width?: number
   className?: string
+  /**
+   * `click` is the default because every menu and picker in the app is a
+   * deliberate action. `hover` is for a control that only *answers a question*
+   * — a number the reader wants explained — so the card appears under the
+   * pointer and leaves when the pointer does.
+   */
+  trigger?: 'click' | 'hover'
+  /** How long the pointer must rest on the trigger before the card appears. */
+  hoverDelay?: number
+  /**
+   * How long the card survives the pointer leaving. It has to be enough to
+   * cross the gap to the card, or the card would vanish on the way in.
+   */
+  closeDelay?: number
 }
 
 export function Popover({
@@ -31,17 +46,76 @@ export function Popover({
   align = 'left',
   placement = 'bottom',
   width,
-  className
+  className,
+  trigger = 'click',
+  hoverDelay = 120,
+  closeDelay = 160
 }: PopoverProps) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLElement | null>(null)
+  const openTimer = useRef<number | null>(null)
+  const closeTimer = useRef<number | null>(null)
+  const hover = trigger === 'hover'
+
+  const clearTimers = useCallback(() => {
+    if (openTimer.current !== null) window.clearTimeout(openTimer.current)
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
+    openTimer.current = null
+    closeTimer.current = null
+  }, [])
+
+  useEffect(() => clearTimers, [clearTimers])
+
+  const stopClosing = useCallback(() => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current)
+      closeTimer.current = null
+    }
+  }, [])
+
+  const stopOpening = useCallback(() => {
+    if (openTimer.current !== null) {
+      window.clearTimeout(openTimer.current)
+      openTimer.current = null
+    }
+  }, [])
+
+  const openNow = useCallback(() => {
+    if (!hover) return
+    clearTimers()
+    setOpen(true)
+  }, [clearTimers, hover])
+
+  const scheduleOpen = useCallback(() => {
+    if (!hover || openTimer.current !== null) return
+    stopClosing()
+    openTimer.current = window.setTimeout(() => {
+      openTimer.current = null
+      setOpen(true)
+    }, hoverDelay)
+  }, [hover, hoverDelay, stopClosing])
+
+  // Leaving does not close the card: the pointer may only be crossing the gap to
+  // it. Re-entering either side cancels the pending close.
+  const scheduleClose = useCallback(() => {
+    if (!hover) return
+    stopOpening()
+    stopClosing()
+    closeTimer.current = window.setTimeout(() => {
+      closeTimer.current = null
+      setOpen(false)
+    }, closeDelay)
+  }, [closeDelay, hover, stopClosing, stopOpening])
 
   const close = useCallback(() => {
+    clearTimers()
     setOpen(false)
-    triggerRef.current?.focus()
-  }, [])
+    // A card dismissed by the pointer must not move the caret; one dismissed by
+    // Escape or a menu item has to give focus back to the control it came from.
+    if (!hover) triggerRef.current?.focus()
+  }, [clearTimers, hover])
 
   const toggle = (event?: ReactMouseEvent<HTMLElement>) => {
     const target = event?.currentTarget ?? document.activeElement
@@ -163,12 +237,21 @@ export function Popover({
   }, [close, open])
 
   return (
-    <div className="popover-wrap" ref={containerRef}>
+    <div
+      className="popover-wrap"
+      ref={containerRef}
+      onMouseEnter={scheduleOpen}
+      onMouseLeave={scheduleClose}
+      onFocus={openNow}
+      onBlur={scheduleClose}
+    >
       {renderTrigger({ open, toggle })}
       {open ? createPortal(
         <div
           ref={popoverRef}
           className={`popover ${className ?? ''}`}
+          onMouseEnter={stopClosing}
+          onMouseLeave={scheduleClose}
           style={{
             width,
             visibility: 'hidden'

@@ -90,7 +90,7 @@ function createWindow(): BrowserWindow {
       ? { trafficLightPosition: { x: 18, y: 18 } }
       : {
           titleBarOverlay: {
-            color: dark ? '#16181d' : '#ffffff',
+            color: dark ? '#111317' : '#f3f3f3',
             symbolColor: dark ? '#9da4b2' : '#686868',
             height: 44
           }

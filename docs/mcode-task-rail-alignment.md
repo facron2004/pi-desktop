@@ -40,7 +40,7 @@ MCode's own, read from that package:
 | Changes row | `+N` in success, `−N` in error, right-aligned, tabular | the counts in the section header | the counts on the row, right-aligned |
 | A task row | the name on the left, the state dot on the right | the dot on the left | the dot on the right |
 | A finished step | a filled disc with the check cut out of it, struck through | a green tinted ring | a filled disc, struck through |
-| Deliverables | a folder tree, 20px per level, caret on the right | a flat list under the workspace name | a folder tree, 14px per level, one 20px leading slot on every row, a one-file folder unfolded |
+| Deliverables | a folder tree, 20px per level, caret on the right | a flat list under the workspace name | a flat list of files: one 20px tile plus one name, no folder rows, no indent, no path |
 
 ## What changed
 
@@ -75,41 +75,42 @@ and strikes the text through. The old rail drew a green tinted ring, which
 read as "active" rather than "finished". The disc uses `--text-tertiary`, so
 it inverts with the theme.
 
-### The deliverables are a tree
+### The deliverables are a list of files, not a directory tree
 
-Ten files written into one folder read as one line instead of ten. The tree is
-built in `lib/task-panel.ts` and its folders fold on the same caret as the
-sections.
+MCode folds the produced files into a folder tree, 20px per level, caret on the
+right. Pi Desktop copied that, measured it against real captures three times, and
+dropped it. The record of why, because the tree will look tempting again:
 
-Every row of that tree carries the same 20px leading slot, whether it wears a
-mark or not: a file puts its icon tile in it, a folder leaves it empty because
-the caret on the right already says it folds. Without the slot a folder's name
-starts 28px left of the file names beside it — the same trap the sidebar already
-documents for a conversation row's mark. The depth indent (14px) is then the
-only thing allowed to move the text column.
+1. **The folder row had no leading slot, so its name was not on the file column.**
+   A file row put a 20px tile in front of its name and a folder row put nothing
+   there, so `docs` started 28px left of `AGENTS.md` beside it — the same trap the
+   sidebar documents for a conversation row's mark. Fixed: every row keeps the
+   slot, a folder leaves it empty.
+2. **The children still hung one indent step right.** After the slot fix the
+   folder and its siblings shared a column, but the files inside `docs` sat 14px
+   right of the files outside it, and the eye read that as one row out of line —
+   three captures in, that was still the complaint. A deliverable is a file, and
+   a run that wrote ten files produced ten deliverables, not a directory listing.
+3. **An absolute path is a tree of nothing.** A chat written outside the project
+   came in as `C:/Users/Facron/AppData/Roaming/pi-desktop/chats/gen_pelican.js`,
+   and the tree dutifully drew `C:` → `Users` → `Facron` → `AppData` → `Roaming` →
+   `pi-desktop` → `chats` — seven folder rows and one file, all of it noise.
 
-The slot alone was not enough. Measured on a real capture: after it, `docs` did
-share the column with `AGENTS.md` and `README.md`, and the list still read as one
-row out of line, because the files inside `docs` hung 14px to the right of the
-files beside it. A tree of folders is not what the section answers — "what did
-this run produce" is a list of files — so **a file row never indents**. Every
-file keeps the one column whatever folder it sits under and says where it came
-from on the right of its own row, in the assist tone, in the room its name left
-behind: `career-os-2-upgrade-status.md   docs/`, `subagent-prompt.txt
-docs/agents/`. Only a folder *header* steps in with the depth, because that row's
-job is structure and the file row's job is the file.
+So the section is now one flat list, in the order the run touched the files: one
+20px tile, one name, one column, one row height. **The path is not shown.** The
+full path is the row's tooltip and the click target, which is where a reader who
+needs it will find it. The single exception is a name two produced files share
+(`server/store.js` and `web/store.js`): those two rows say which folder each one
+is in, because the name alone no longer identifies them.
 
-On top of that, a folder holding exactly one file is unfolded by
-`buildDeliverableTree`: it is that file's path, not a group, and the row already
-names its folder, so the header would only add a line. MCode folds per level and
-keeps single-file folders folded; this is a deliberate departure, and it is why
-the list reads as deliverables first and structure second.
+`listDeliverables` in `lib/task-panel.ts` owns the rule — including the
+duplicate-name test — and the component only renders what it is given.
 
-The seventh case of `tests/ui-regressions.mjs` measures all of it — the column a
-folder header, a root file, a file in a folder and a file in a sub-folder share,
-the one step a sub-folder header takes, and every row's folder hint.
-`output/audit/rail-check.mjs` prints the same numbers for a shape you can look at
-and captures the rail.
+The seventh case of `tests/ui-regressions.mjs` measures it: no folder rows at
+all, one column and one height for every file row, the folder shown only on the
+pair that shares a name, nothing shown on the rest, and the path still on the
+`title`. `output/audit/rail-check.mjs` prints those numbers for a shape you can
+look at and captures the rail.
 
 ## What was deliberately not copied
 

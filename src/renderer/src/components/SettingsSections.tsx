@@ -8,7 +8,6 @@ import {
   Copy,
   Download,
   FileJson,
-  MessageSquare,
   RefreshCw,
   Search,
   Server,
@@ -22,6 +21,7 @@ import '../styles/settings-agent.css'
 import type {
   AggregatedUsageStats,
   AuthStatus,
+  DailyUsageStat,
   McpConfig,
   McpServerInfo,
   ModelInfo,
@@ -313,7 +313,7 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
         </div>
 
         {/* Computer Use is a capability, not a task mode. The switch is the approval. */}
-        <div className="settings-item-row">
+        <div className="settings-item-row settings-item-row--fixed-control">
           <div className="settings-item-row__info">
             <span className="settings-item-row__title">{t('Computer Use')}</span>
             <span className="settings-item-row__desc">
@@ -446,7 +446,7 @@ const THEME_PRESETS: ThemePreset[] = [
     id: 'github',
     name: 'GitHub',
     accent: '#0969DA',
-    light: { bg: '#FFFFFF', fg: '#1F2328' },
+    light: { bg: '#FFFFFF', fg: '#000000' },
     dark: { bg: '#0D1117', fg: '#E6EDF3' }
   },
   {
@@ -478,10 +478,7 @@ const ACCENT_PRESETS = [
 ]
 
 const TONE_PRESETS = [
-  { id: 'neutral', label: 'Default' },
-  { id: 'warm', label: 'Warm' },
-  { id: 'cool', label: 'Cool' },
-  { id: 'slate', label: 'Slate' },
+  { id: 'neutral', label: 'Normal contrast' },
   { id: 'contrast', label: 'High contrast' }
 ]
 
@@ -628,7 +625,8 @@ export function AppearanceSettings() {
     (p) => p.value.toLowerCase() === effectiveAccent.toLowerCase()
   )
 
-  const matchedTone = TONE_PRESETS.find((tone) => tone.id === (settings.themeTone ?? 'neutral'))
+  const toneValue = settings.themeTone === 'contrast' ? 'contrast' : 'neutral'
+  const matchedTone = TONE_PRESETS.find((tone) => tone.id === toneValue)
   const currentFontVal = settings.fontFamily ?? 'system'
   const currentFontLabel = t(
     FONT_DISPLAY_NAMES[currentFontVal] ?? (currentFontVal === 'system' ? 'System default' : currentFontVal)
@@ -1013,7 +1011,7 @@ export function AppearanceSettings() {
               <select
                 className="appearance-select-native"
                 aria-label={t('Tone')}
-                value={settings.themeTone ?? 'neutral'}
+                value={toneValue}
                 onChange={(e) => void updateSettings({ themeTone: e.target.value })}
               >
                 {TONE_PRESETS.map((tone) => (
@@ -1161,24 +1159,6 @@ export function AppearanceSettings() {
       {/* 高级展开项 */}
       {showAdvanced ? (
         <div className="appearance-advanced">
-          <SettingsGroup title={t('Language')}>
-            <div className="segmented" role="group" aria-label={t('Language')}>
-              {([
-                { label: 'English', value: 'en' },
-                { label: '简体中文', value: 'zh-CN' }
-              ] as const).map((option) => (
-                <button
-                  key={option.value}
-                  aria-pressed={(settings.language ?? 'en') === option.value}
-                  data-active={(settings.language ?? 'en') === option.value}
-                  onClick={() => void updateSettings({ language: option.value })}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </SettingsGroup>
-
           <SettingsGroup title={t('Text size')}>
             <div className="segmented settings-text-size" role="group" aria-label={t('Text size')}>
               {[
@@ -1257,6 +1237,12 @@ export function UsageSettings() {
   const [usageStats, setUsageStats] = useState<AggregatedUsageStats | null>(null)
   const [loading, setLoading] = useState(false)
   const [selectedPeriod, setSelectedPeriod] = useState<'today' | 'week' | 'month' | 'allTime'>('today')
+  const [hoveredDay, setHoveredDay] = useState<{
+    day: DailyUsageStat
+    dateLabel: string
+    x: number
+    y: number
+  } | null>(null)
 
   const loadStats = useCallback(async () => {
     setLoading(true)
@@ -1283,9 +1269,14 @@ export function UsageSettings() {
 
   const activeData = usageStats ? usageStats[selectedPeriod] : null
   const activeTokens = activeData?.tokens
-  const activeConvs = activeData?.conversationsCount ?? 0
   const activeMsgs = activeData?.messageCount ?? 0
-  const avgTokens = activeConvs > 0 && activeTokens ? Math.round(activeTokens.totalTokens / activeConvs) : 0
+  const activeRequests = activeMsgs
+  const activeCacheRead = activeTokens?.cacheRead ?? 0
+  const cacheHitRate = (cacheRead: number | undefined, input: number | undefined): number => {
+    const denominator = (cacheRead ?? 0) + (input ?? 0)
+    return denominator > 0 ? Math.round(((cacheRead ?? 0) / denominator) * 1000) / 10 : 0
+  }
+  const activeCacheHitRate = cacheHitRate(activeTokens?.cacheRead, activeTokens?.input)
   const heatmap = useMemo(() => {
     const locale = settings.language === 'zh-CN' ? 'zh-CN' : 'en'
     const now = new Date()
@@ -1397,7 +1388,7 @@ export function UsageSettings() {
               <div className="usage-heatmap__calendar">
                 <div
                   className="usage-heatmap__months"
-                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 8px)` }}
+                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 10px)` }}
                   aria-hidden="true"
                 >
                   {heatmap.monthLabels.map(({ week, label, fullLabel }) => (
@@ -1410,11 +1401,11 @@ export function UsageSettings() {
                   className="usage-heatmap__cells"
                   role="grid"
                   aria-label={t('Usage heatmap')}
-                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 8px)` }}
+                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 10px)` }}
                 >
                   {heatmap.cells.map(({ date, day, week, weekday, level }) => {
                     const dateLabel = heatmap.fullDateFormatter.format(date)
-                    const description = `${dateLabel} · ${t('Total tokens')}: ${day.totalTokens.toLocaleString(heatmap.locale)} · ${t('Conversations')}: ${day.conversationsCount} · ${t('Message turns')}: ${day.messageCount}`
+                    const description = `${dateLabel} · ${t('Total tokens')}: ${day.totalTokens.toLocaleString(heatmap.locale)} · ${t('Cache hit rate')}: ${cacheHitRate(day.cacheRead, day.input)}%`
                     return (
                       <span
                         key={day.date}
@@ -1422,8 +1413,17 @@ export function UsageSettings() {
                         data-level={level}
                         role="gridcell"
                         aria-label={description}
-                        title={description}
                         style={{ gridColumn: week + 1, gridRow: weekday + 1 }}
+                        onMouseEnter={(event) => {
+                          const rect = event.currentTarget.getBoundingClientRect()
+                          setHoveredDay({
+                            day,
+                            dateLabel,
+                            x: Math.min(rect.right + 10, window.innerWidth - 200),
+                            y: Math.min(rect.top + rect.height / 2, window.innerHeight - 96)
+                          })
+                        }}
+                        onMouseLeave={() => setHoveredDay(null)}
                       />
                     )
                   })}
@@ -1441,116 +1441,94 @@ export function UsageSettings() {
         </div>
       </SettingsGroup>
 
-      {/* 4 Overview Period Cards */}
+      {/* Compact overview: one period selector, six readings. */}
       <SettingsGroup
         title={t('Token usage overview')}
+        action={
+          <select
+            className="settings-select usage-period-select"
+            aria-label={t('Period')}
+            value={selectedPeriod}
+            onChange={(event) =>
+              setSelectedPeriod(event.target.value as typeof selectedPeriod)
+            }
+          >
+            {periods.map(({ key, title }) => (
+              <option key={key} value={key}>
+                {title}
+              </option>
+            ))}
+          </select>
+        }
       >
-        <div className="usage-period-grid">
-          {periods.map(({ key, title }) => {
-            const periodData = usageStats ? usageStats[key] : null
-            const tokens = periodData?.tokens.totalTokens ?? 0
-            const convs = periodData?.conversationsCount ?? 0
-            const msgs = periodData?.messageCount ?? 0
-            const isSelected = selectedPeriod === key
-
-            return (
-              <button
-                key={key}
-                type="button"
-                className="usage-period-card"
-                data-active={isSelected}
-                onClick={() => setSelectedPeriod(key)}
-              >
-                <div className="usage-period-card__header">
-                  <span>{title}</span>
-                  {isSelected && <span className="usage-period-badge">{t('Selected')}</span>}
-                </div>
-                <div className="usage-period-card__tokens">
-                  {formatTokens(tokens)}
-                </div>
-                <div className="usage-period-card__footer">
-                  <span className="usage-period-badge">
-                    <MessageSquare size={10} />
-                    {convs} {t('Conversations')}
-                  </span>
-                  <span>· {msgs} {t('turns')}</span>
-                </div>
-              </button>
-            )
-          })}
-        </div>
-      </SettingsGroup>
-
-      {/* Selected Period Detailed Breakdown */}
-      <SettingsGroup
-        title={`${periods.find((p) => p.key === selectedPeriod)?.title ?? ''} - ${t('Detailed breakdown')}`}
-      >
-        <div className="usage-detail-grid">
-          <div className="usage-detail-metric">
-            <span className="usage-detail-metric__label">{t('Total tokens')}</span>
-            <span className="usage-detail-metric__value">{formatTokens(activeTokens?.totalTokens)}</span>
+        <div className="usage-overview">
+          <div className="usage-overview__metric">
+            <span className="usage-overview__label">{t('Requests')}</span>
+            <span className="usage-overview__value">{activeRequests}</span>
           </div>
-          <div className="usage-detail-metric">
-            <span className="usage-detail-metric__label">{t('Input tokens')}</span>
-            <span className="usage-detail-metric__value">{formatTokens(activeTokens?.input)}</span>
+          <div className="usage-overview__metric">
+            <span className="usage-overview__label">{t('Total cost')}</span>
+            <span className="usage-overview__value">{formatCost(activeTokens?.cost)}</span>
           </div>
-          <div className="usage-detail-metric">
-            <span className="usage-detail-metric__label">{t('Output tokens')}</span>
-            <span className="usage-detail-metric__value">{formatTokens(activeTokens?.output)}</span>
+          <div className="usage-overview__metric">
+            <span className="usage-overview__label">{t('Input')}</span>
+            <span className="usage-overview__value">{formatTokens(activeTokens?.input)}</span>
           </div>
-          <div className="usage-detail-metric">
-            <span className="usage-detail-metric__label">{t('Cache read')}</span>
-            <span className="usage-detail-metric__value">{formatTokens(activeTokens?.cacheRead)}</span>
+          <div className="usage-overview__metric">
+            <span className="usage-overview__label">{t('Output')}</span>
+            <span className="usage-overview__value">{formatTokens(activeTokens?.output)}</span>
           </div>
-          <div className="usage-detail-metric">
-            <span className="usage-detail-metric__label">{t('Cache write')}</span>
-            <span className="usage-detail-metric__value">{formatTokens(activeTokens?.cacheWrite)}</span>
+          <div className="usage-overview__metric">
+            <span className="usage-overview__label">{t('Cache hit')}</span>
+            <span className="usage-overview__value">{formatTokens(activeCacheRead)}</span>
           </div>
-          <div className="usage-detail-metric">
-            <span className="usage-detail-metric__label">{t('Conversations')}</span>
-            <span className="usage-detail-metric__value">{activeConvs}</span>
+          <div className="usage-overview__metric">
+            <span className="usage-overview__label">{t('Cache hit rate')}</span>
+            <span className="usage-overview__value">{activeCacheHitRate}%</span>
           </div>
-          <div className="usage-detail-metric">
-            <span className="usage-detail-metric__label">{t('Message turns')}</span>
-            <span className="usage-detail-metric__value">{activeMsgs}</span>
-          </div>
-          <div className="usage-detail-metric">
-            <span className="usage-detail-metric__label">{t('Avg / conversation')}</span>
-            <span className="usage-detail-metric__value">{formatTokens(avgTokens)}</span>
-          </div>
-          {activeTokens?.cost && activeTokens.cost > 0 ? (
-            <div className="usage-detail-metric">
-              <span className="usage-detail-metric__label">{t('Estimated cost')}</span>
-              <span className="usage-detail-metric__value">{formatCost(activeTokens.cost)}</span>
-            </div>
-          ) : null}
         </div>
       </SettingsGroup>
 
       {/* Model Distribution */}
       {usageStats && usageStats.byModel.length > 0 && (
         <SettingsGroup title={t('Model distribution')}>
-          <div className="usage-model-list">
-            {usageStats.byModel.map((m) => {
-              const allTimeTotal = usageStats.allTime.tokens.totalTokens || 1
-              const pct = Math.min(100, Math.round((m.totalTokens / allTimeTotal) * 100))
-              return (
-                <div key={m.model} className="usage-model-row">
-                  <div className="usage-model-row__head">
-                    <span className="usage-model-row__name">{m.model}</span>
-                    <div className="usage-model-row__stats">
-                      <span>{formatTokens(m.totalTokens)}</span>
-                      <span>{pct}%</span>
-                      <span>{m.messageCount} {t('turns')}</span>
-                      {m.cost > 0 && <span>{formatCost(m.cost)}</span>}
+          <div className="usage-model-chart">
+            <div className="usage-model-chart__plot">
+              {usageStats.byModel.map((m, index) => {
+                const maxTokens = Math.max(1, ...usageStats.byModel.map((item) => item.totalTokens))
+                const height = Math.max(4, Math.round((m.totalTokens / maxTokens) * 100))
+                return (
+                  <div key={m.model} className="usage-model-chart__column" title={m.model}>
+                    <div
+                      className="usage-model-chart__bar"
+                      data-series={index % 6}
+                      style={{ height: `${height}%` }}
+                    />
+                    <span className="usage-model-chart__xlabel">
+                      {m.model.split('/').pop() ?? m.model}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="usage-model-chart__info">
+              {usageStats.byModel.map((m, index) => {
+                const allTimeTotal = usageStats.allTime.tokens.totalTokens || 1
+                const pct = Math.min(100, Math.round((m.totalTokens / allTimeTotal) * 100))
+                return (
+                  <div key={m.model} className="usage-model-chart__info-row">
+                    <span className="usage-model-chart__dot" data-series={index % 6} aria-hidden="true" />
+                    <div className="usage-model-chart__info-main">
+                      <span className="usage-model-chart__name">{m.model}</span>
+                      <span className="usage-model-chart__stats">
+                        {formatTokens(m.totalTokens)} · {pct}% · {m.messageCount} {t('turns')}
+                        {m.cost > 0 ? ` · ${formatCost(m.cost)}` : ''}
+                      </span>
                     </div>
                   </div>
-                  <div className="usage-model-row__bar">
-                    <div className="usage-model-row__bar-fill" style={{ width: `${pct}%` }} />
-                  </div>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
           </div>
         </SettingsGroup>
       )}
@@ -1604,6 +1582,27 @@ export function UsageSettings() {
           </div>
         </div>
       </SettingsGroup>
+
+      {hoveredDay
+        ? createPortal(
+            <div
+              className="usage-heatmap-tooltip"
+              role="tooltip"
+              style={{ left: hoveredDay.x, top: hoveredDay.y }}
+            >
+              <div className="usage-heatmap-tooltip__date">{hoveredDay.dateLabel}</div>
+              <div className="usage-heatmap-tooltip__row">
+                <span>{t('Total tokens')}</span>
+                <strong>{formatTokens(hoveredDay.day.totalTokens)}</strong>
+              </div>
+              <div className="usage-heatmap-tooltip__row">
+                <span>{t('Cache hit rate')}</span>
+                <strong>{cacheHitRate(hoveredDay.day.cacheRead, hoveredDay.day.input)}%</strong>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   )
 }
@@ -1950,7 +1949,7 @@ function ProjectSafetySettings() {
 
   return (
     <SettingsGroup title={t('Project safety')}>
-      <div className="settings-item-row">
+      <div className="settings-item-row settings-item-row--fixed-control">
         <div className="settings-item-row__info">
           <span className="settings-item-row__title">
             {t('Trust project-local extensions and settings')}
@@ -2001,10 +2000,6 @@ export function AboutSettings() {
       setChecking(false)
     }
   }
-
-  useEffect(() => {
-    void handleCheck(true)
-  }, [])
 
   const handleUpgradeCli = async () => {
     setUpgradingCli(true)
@@ -2220,13 +2215,15 @@ function ModelSelect({
   value,
   groups,
   emptyLabel,
-  onChange
+  onChange,
+  className
 }: {
   label: string
   value: string
   groups: [string, ModelInfo[]][]
   emptyLabel?: string
   onChange: (spec: string) => void
+  className?: string
 }) {
   const t = useT()
   // A saved pair the catalog no longer offers still has to appear in the
@@ -2234,7 +2231,7 @@ function ModelSelect({
   const listed = groups.some(([, list]) => list.some((model) => modelSpec(model) === value))
   return (
     <select
-      className="input settings-select settings-select--model"
+      className={`input settings-select settings-select--model${className ? ` ${className}` : ''}`}
       aria-label={label}
       value={value}
       onChange={(event) => onChange(event.target.value)}
@@ -2445,6 +2442,7 @@ export function AgentSettings() {
             value={subagentModel ? modelSpec(subagentModel) : ''}
             groups={groups}
             emptyLabel={t('Follow the conversation')}
+            className="settings-select--subagent"
             onChange={saveSubagentModel}
           />
         </SettingsItemRow>

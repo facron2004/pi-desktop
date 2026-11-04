@@ -731,7 +731,7 @@ export default function App() {
         <div className="main__stage">
           <div className="main__body">
           {!showThread ? (
-            <Welcome onPick={() => openProjectDialog({ mode: 'create' })}>
+            <Welcome>
               <Composer />
             </Welcome>
           ) : (

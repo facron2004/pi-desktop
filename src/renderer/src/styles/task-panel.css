@@ -323,14 +323,13 @@
   list-style: none;
 }
 
-.task-panel__folder,
 .task-panel__file {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
   min-height: 28px;
-  padding: 0 6px 0 0;
+  padding: 0 6px 0 4px;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
@@ -340,36 +339,12 @@
   cursor: pointer;
 }
 
-.task-panel__folder:hover,
 .task-panel__file:hover {
   background: var(--bg-hover);
 }
 
-.task-panel__folder-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-tertiary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-panel__folder-caret {
-  flex: 0 0 auto;
-  margin-left: auto;
-  width: 14px;
-  height: 14px;
-  color: var(--text-tertiary);
-  transition: transform var(--dur-base) var(--ease);
-}
-
-.task-panel__folder-caret[data-open] {
-  transform: rotate(90deg);
-}
-
-/* The leading slot every row of the tree has, mark or no mark: a folder's
-   name and a file's name start on one column at the same depth, so the indent
-   is the only thing that ever moves the text. */
+/* The tile a file's mark sits in. Every row has one, so every name starts on
+   the same column: this is a list of files, not a directory tree. */
 .task-panel__tile {
   display: inline-grid;
   place-items: center;
@@ -377,11 +352,6 @@
   width: 20px;
   height: 20px;
   border-radius: var(--r-xs);
-}
-
-/* The mark a file wears, on the tile that holds it. A folder wears none — the
-   caret on the right is what says it folds. */
-.task-panel__tile--file {
   background: var(--bg-hover);
 }
 
@@ -393,9 +363,9 @@
   white-space: nowrap;
 }
 
-/* The folders a root-level file was pulled out of, on the right of the row:
-   the name is what the reader reads first, so the path only ever takes the
-   room the name left behind. */
+/* The folder a row was pulled out of — only when another produced file shares
+   its name. The name is what the reader reads first, so this only ever takes
+   the room the name left behind; the full path is the tooltip. */
 .task-panel__file-dir {
   flex: 0 0 auto;
   max-width: 40%;

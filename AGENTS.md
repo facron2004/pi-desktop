@@ -117,7 +117,18 @@ What that buys, and what it costs:
   animation frame** (`scheduleItems` in `useAppStore.ts`). The store is the
   truth; the frame is the paint. `drainPending()` runs before anything that
   changes the conversation (session switch, new chat, settle) so a queued
-  delta can never land in the wrong session.
+  delta can never land in the wrong session. Adjacent text deltas in one
+  pending batch are merged before the reducer, so a fast provider does not
+  copy the whole transcript once per token.
+- A long streamed text block is parsed as **finished Markdown chunks plus one
+  live tail** (`lib/streaming-markdown.ts`); `StreamingText` renders a finished
+  chunk once and re-parses only the tail on the next delta. All chunks share
+  one outer `.md` container so block spacing still reads as a single document.
+- **What a turn changed is its closing statement.** `FileChangeSummary` renders
+  only once the turn settles — `turnChanges.length > 0 && !liveTail` in
+  `Thread.tsx`. A card that counted the files while the agent was still editing
+  read as work that had finished; the tool rows above already show each edit as
+  it happens.
 
 Tool rows are compact by design: icon, verb, object, state, duration — 32–40
 pixels. Everything else (arguments, output, diff) is behind the caret. The
@@ -130,6 +141,11 @@ The stream's leaf components live in `components/conversation/`:
 document, `ToolResultPanel`/`CommandOutput`/`LogOutput` own expandable output,
 `FileChangeRow`/`RunSummary`/`ErrorNotice` own their rows. Long output is
 paged by lines (200 per page) — never render a whole build log at once.
+
+`RunSummary` is the completed turn's top row (label, duration, chevron), not a
+divider at the end. Its chevron folds the tool/thinking process; the answer
+stays visible. `AssistantMessage` receives `processOpen` so hiding the process
+never hides the reply.
 
 `Thread` remembers the scroll position per conversation (session file or draft
 key) in a process-level map so switching to an empty chat cannot forget it;
@@ -279,7 +295,9 @@ popover behind it, which reads Pi's `get_session_stats`.
 `bootstrap()` reopens the *project* that was active, never the conversation.
 `lastSessions` is still written by `rememberSession` and still feeds the welcome
 screen's "recent in this project" list, but only a click there opens a session —
-a start is a new chat.
+a start is a new chat. If no saved project can be restored, the start becomes a
+projectless chat and `activeWorkspaceId` is persisted as `null`; the welcome
+screen never falls back to a dead "open project folder" state.
 
 ## The launcher
 
@@ -293,7 +311,20 @@ and the `/` command list never drift apart.
 The store cycles the list that `get_available_models` and
 `get_available_thinking_levels` reported. The model picker groups its display by
 provider in first-appearance order, preserving Pi's order within each provider;
-that grouping does not reorder the store's list or the keyboard cycle.
+that grouping does not reorder the store's list or the keyboard cycle. A
+`Recent models` shortcut may sit above the provider groups; it only reorders the
+display. Search normalizes separators (`model-search.ts`), arrow keys move the
+highlight and Enter picks, and the last 20 picks are remembered in
+`model-recency.ts`; the menu shows three recent rows and folds the rest of the
+list behind "Other models".
+
+A cold chat has not reported `get_available_thinking_levels` yet, so `ModelPicker`
+reads `model-catalog:thinking-levels` instead. That handler is a local read of
+`models.json` plus the bundled provider JSON (`src/main/pi/model-catalog.ts`);
+never import `@earendil-works/pi-coding-agent` there just to answer a picker
+question. That import pulls the whole agent bundle into the main process and the
+first picker render waits seconds for it. A live session's `get_state` wins over
+the static catalog and the picker must not query the catalog again while it does.
 
 ## The tool panel
 
@@ -340,35 +371,29 @@ Every part of it is a projection, not state:
   and the dot on the right of a row says how the task is going;
 - progress is the checklist of the newest assistant message that carries one
   (`lib/plan.ts`) — the same source the plan strip reads;
-- deliverables are the files the run wrote (`lib/changes.ts`), folded into a
-  folder tree by `lib/task-panel.ts`.
+- deliverables are the files the run wrote (`lib/changes.ts`), listed flat by
+  `lib/task-panel.ts`.
 
-Every row of that tree keeps the same 20px leading slot, mark or no mark: a
-file's tile sits in it, a folder leaves it empty because the caret on its right
-already says it folds. A folder with a mark in front of its name instead starts
-28px left of the file names beside it — the same trap the sidebar documents for a
-conversation row's mark.
+**The deliverables are a list of files, not a directory tree.** No folder rows,
+no indent, no path on the row: one 20px tile plus one name, so every name starts
+on the same column and every row is the same height, in the order the run touched
+them. The full path is the tooltip and the click target. The only row that shows
+a folder is one whose name another produced file shares — that is the single case
+where the name is not enough. `listDeliverables` owns the rule, not the
+component.
 
-**A file never indents.** The deliverables are read as a list of files, so every
-file row keeps the one column whatever folder it sits under and says where it
-came from on the right of its own row, in the assist tone (`docs/agents/`), in
-the room its name left behind. Only a folder *header* steps in with the depth
-(14px): that row's job is structure, the file row's job is the file.
+A tree was tried and is gone: it made every folder a row, hung a file one indent
+per level, and turned an absolute path (a chat written outside the project) into a
+chain of `C:` → `Users` → `Facron` rows.
 
-A folder that holds exactly one file is not a group — it is that file's path — so
-`buildDeliverableTree` unfolds it and the file keeps its folders as the hint.
-`lib/task-panel.ts` owns that rule, not the component; the component only renders
-`node.dir`.
+The seventh case of `tests/ui-regressions.mjs` measures it: no folder rows, one
+column and one row height for every file, the folder shown only on the pair that
+shares a name, and the path still on the row's `title`.
+`output/audit/rail-check.mjs` prints those numbers for a shape you can look at and
+captures the rail.
 
-The seventh case of `tests/ui-regressions.mjs` measures all of it: the column a
-folder header, a root file, a file inside a folder and a file inside a sub-folder
-share, the one step a sub-folder header takes, and every row's folder hint.
-`output/audit/rail-check.mjs` prints the slot width, the hint and the column of
-every row for a shape you can look at, and captures the rail.
-
-The rail keeps no state of its own beyond which folders of the deliverables
-tree are open; that lives in `lib/view-state.ts`, keyed by the conversation.
-A section title is plain text with the caret on the right, and the body folds
+The rail keeps no state of its own. A section title is plain text with the caret
+on the right, and the body folds
 on a grid row (180ms) instead of snapping shut. The comparison with the
 reference app is in [The task rail, aligned with MCode](docs/mcode-task-rail-alignment.md).
 
@@ -599,6 +624,11 @@ How a default reaches a process is the part to get right:
 - The renderer seeds a draft's `agentMode` so the chip is honest before Pi boots. Pi's
   `setStatus('pi-desktop-mode')` stays the only writer afterwards; no second flag, and no
   process is started just to apply a mode.
+- A model switch on a cold conversation is a settings change, not a process launch:
+  `setModel` persists `settings.model`/`settings.provider`, a draft's next process reads
+  the saved default, and a resumed session gets `set_model` from `ensureRuntime` before
+  its first prompt. Never call `ensureRuntime` just to change a model — that made the
+  first picker click after startup wait for a full Pi cold boot.
 
 `autoFoldProcess` and `toolCallSummary` are projections, not state. The first is the
 *default of the fold that `ProcessTrail` already computes* (`manualOpen ?? !autoFold`) —

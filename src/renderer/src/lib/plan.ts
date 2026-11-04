@@ -82,8 +82,17 @@ export function parseChecklist(markdown: string): PlanEntry[] {
  * This is a projection of the thread and not a piece of state — a conversation
  * switch, a branch or a compaction shows the plan of whatever is on screen,
  * and nothing has to keep two copies of it in step.
+ *
+ * Both the plan strip and the task rail ask for the same plan in the same
+ * render; caching one `items` snapshot keeps the second scan free while the
+ * first still follows a live answer.
  */
+let cachedItems: ThreadItem[] | null = null
+let cachedPlan: Plan | null = null
+
 export function extractPlan(items: ThreadItem[]): Plan | null {
+  if (cachedItems === items) return cachedPlan
+  let plan: Plan | null = null
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]
     if (item.kind !== 'assistant') continue
@@ -91,12 +100,15 @@ export function extractPlan(items: ThreadItem[]): Plan | null {
     // The answer after a plan is prose, not a second plan; keep looking back
     // until a message actually carries one.
     if (entries.length < MIN_ENTRIES) continue
-    return {
+    plan = {
       entries,
       done: entries.filter((entry) => entry.done).length,
       total: entries.length,
       sourceId: item.id
     }
+    break
   }
-  return null
+  cachedItems = items
+  cachedPlan = plan
+  return plan
 }

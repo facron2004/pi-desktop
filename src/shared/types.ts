@@ -377,6 +377,12 @@ export interface DailyUsageStat {
   totalTokens: number
   conversationsCount: number
   messageCount: number
+  /** Token split for the day, when the aggregator has it. */
+  input?: number
+  output?: number
+  cacheRead?: number
+  cacheWrite?: number
+  cost?: number
 }
 
 export interface AggregatedUsageStats {
@@ -866,6 +872,10 @@ export interface RemoteSession {
 }
 
 export interface PiDesktopBridge {
+  modelCatalog: {
+    /** Supported effort levels for a configured Pi model, without starting a conversation. */
+    thinkingLevels(provider: string, modelId: string): Promise<string[]>
+  }
   providers: {
     list(): Promise<ProviderProfile[]>
     /** Effective API key for one provider. Empty when there is nothing literal to show. */

@@ -45,24 +45,25 @@ function levelHint(level: string): string {
 export function EffortSlider({
   disabled = false,
   modelLabel,
+  availableLevels,
+  levelsLoading = false,
   onOpenModelList,
   onBusyChange
 }: {
   disabled?: boolean
   modelLabel?: string
+  availableLevels: string[]
+  levelsLoading?: boolean
   onOpenModelList?: () => void
   onBusyChange: (busy: boolean) => void
 }) {
-  const reportedLevels = useAppStore((state) => state.thinkingLevels)
   const liveLevel = useAppStore((state) => state.piState?.thinkingLevel)
   const savedLevel = useAppStore((state) => state.settings.thinkingLevel)
   const piState = useAppStore((state) => state.piState)
-  // A cold chat has no Pi process to report model-specific levels. Keep the
-  // saved effort visible, but don't present the generic scale as supported.
-  const levels = reportedLevels
+  const levels = availableLevels
   // A saved level can belong to another model. Never position the slider on a
   // level this model does not offer; fall back to the closest supported one.
-  const current = resolveThinkingLevel(levels, liveLevel, savedLevel)
+  const current = liveLevel || savedLevel ? resolveThinkingLevel(levels, liveLevel, savedLevel) : undefined
   const setThinkingLevel = useAppStore((state) => state.setThinkingLevel)
   const ready = useAppStore((state) => state.status.phase === 'ready')
   const t = useT()
@@ -74,14 +75,17 @@ export function EffortSlider({
   const [previewIndex, setPreviewIndex] = useState<number | null>(null)
   const [dragRatio, setDragRatio] = useState<number | null>(null)
 
-  const currentIndex = Math.max(0, levels.findIndex((level) => level === current))
-  const index = previewIndex ?? currentIndex
   const last = Math.max(0, levels.length - 1)
+  const hasSelection = current !== undefined || previewIndex !== null
+  const currentIndex = current
+    ? Math.max(0, levels.findIndex((level) => level === current))
+    : Math.floor(last / 2)
+  const index = previewIndex ?? currentIndex
   const enabled = ready && !disabled && !busy && levels.length > 1
   const shownLevel = previewIndex === null ? current : levels[previewIndex]
-  const label = shownLevel ? t(levelLabel(shownLevel)) : t('Thinking')
+  const label = shownLevel ? t(levelLabel(shownLevel)) : t('Automatic (Pi default)')
 
-  const activeRatio = dragRatio !== null ? dragRatio : last > 0 ? index / last : 0
+  const activeRatio = dragRatio !== null ? dragRatio : last > 0 && hasSelection ? index / last : 0
 
   const commit = useCallback(
     async (next: number) => {
@@ -220,7 +224,9 @@ export function EffortSlider({
         <div className="effort-card__empty-hint">
           {piState
             ? t('This model has no reasoning levels')
-            : t('Reasoning effort can be changed once the conversation starts.')}
+            : levelsLoading
+              ? t('Loading model reasoning levels…')
+              : t('No reasoning levels available for this model.')}
         </div>
       </div>
     )
@@ -228,8 +234,9 @@ export function EffortSlider({
 
   const isOff = shownLevel?.toLowerCase() === 'off'
 
-  const fillWidth =
-    last > 0
+  const fillWidth = !hasSelection
+    ? '0%'
+    : last > 0
       ? activeRatio <= 0.001
         ? '0%'
         : activeRatio >= 0.999
@@ -237,7 +244,8 @@ export function EffortSlider({
           : `calc(12px + (100% - 24px) * ${activeRatio})`
       : '100%'
 
-  const thumbLeft = last > 0 ? `calc(12px + (100% - 24px) * ${activeRatio})` : '50%'
+  const thumbRatio = hasSelection ? activeRatio : 0.5
+  const thumbLeft = last > 0 ? `calc(12px + (100% - 24px) * ${thumbRatio})` : '50%'
 
   return (
     <div className="effort-card">
@@ -280,7 +288,7 @@ export function EffortSlider({
         <div className="effort-card__track">
           <div className="effort-card__fill" style={{ width: fillWidth }} />
           {levels.map((lvl, i) => {
-            const isFilled = activeRatio > 0.001 && i <= (previewIndex ?? currentIndex)
+            const isFilled = hasSelection && activeRatio > 0.001 && i <= (previewIndex ?? currentIndex)
             const dotPosition = last > 0 ? `calc(12px + (100% - 24px) * ${i / last})` : '50%'
             return (
               <span

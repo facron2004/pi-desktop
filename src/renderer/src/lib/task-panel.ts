@@ -5,10 +5,9 @@ import type { GitStatus } from '@shared/types'
  * tasks a run started, the plan the agent is working through and the files it
  * produced.
  *
- * Everything here is a projection. The rail keeps no state of its own beyond
- * which folders of the deliverables tree are open, so a conversation switch
- * shows the state of whatever is on screen and nothing has to keep two copies
- * of it in step.
+ * Everything here is a projection: the rail keeps no state of its own, so a
+ * conversation switch shows the state of whatever is on screen and nothing has
+ * to keep two copies of it in step.
  */
 
 /** One file the agent produced, addressed relative to the workspace root. */
@@ -19,101 +18,47 @@ export interface DeliverableFile {
   target?: string
 }
 
-export interface DeliverableFolder {
-  kind: 'folder'
+/** One row of the deliverables list. */
+export interface Deliverable {
+  /** The file name, which is what the row shows. */
   name: string
-  /** The folder path relative to the workspace root. */
+  /** The path relative to the workspace root, for the tooltip and the click. */
   path: string
-  children: DeliverableNode[]
-}
-
-export interface DeliverableFileNode {
-  kind: 'file'
-  name: string
-  /** The file path relative to the workspace root. */
-  path: string
-  /** The folders the file sits in, `/`-joined and empty at the project root. */
+  /** The folder — only when another produced file shares this name. */
   dir: string
-  /** The path the file is opened with — absolute when the agent reported one. */
+  /** The path the file is opened with. */
   target?: string
 }
 
-export type DeliverableNode = DeliverableFolder | DeliverableFileNode
-
-/** Folders come before files, and both are read in the order of their names. */
-function compare(a: DeliverableNode, b: DeliverableNode): number {
-  if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1
-  return a.name.localeCompare(b.name)
-}
-
-function sortTree(nodes: DeliverableNode[]): DeliverableNode[] {
-  nodes.sort(compare)
-  for (const node of nodes) if (node.kind === 'folder') sortTree(node.children)
-  return nodes
-}
-
 /**
- * The produced files as a folder tree.
+ * The produced files as one flat list, in the order the run touched them.
  *
- * A run that wrote ten files into one folder reads as one line instead of ten,
- * which is how the same list is shown elsewhere.
+ * The section answers "what did this run make", which is a list of files, not a
+ * directory tree. A tree made every folder a row, hung a file one indent per
+ * level, and turned an absolute path into a chain of `C:` → `Users` → `Facron`
+ * rows — so the path is not shown at all: the name is the row, and the tooltip
+ * and the click still carry the whole path. Only a name two files share has to
+ * say which one it is, and then the folder earns its place.
  */
-export function buildDeliverableTree(files: readonly DeliverableFile[]): DeliverableNode[] {
-  const root: DeliverableFolder = { kind: 'folder', name: '', path: '', children: [] }
-
-  for (const file of files) {
+export function listDeliverables(files: readonly DeliverableFile[]): Deliverable[] {
+  const rows = files.reduce<Deliverable[]>((list, file) => {
     const segments = file.path.split('/').filter(Boolean)
-    if (!segments.length) continue
-
-    let folder = root
-    for (const segment of segments.slice(0, -1)) {
-      const path = folder.path ? `${folder.path}/${segment}` : segment
-      const existing = folder.children.find(
-        (node): node is DeliverableFolder => node.kind === 'folder' && node.name === segment
-      )
-      if (existing) {
-        folder = existing
-        continue
-      }
-      const child: DeliverableFolder = { kind: 'folder', name: segment, path, children: [] }
-      folder.children.push(child)
-      folder = child
-    }
-
+    if (!segments.length) return list
     const name = segments[segments.length - 1]
-    // The same file can be written twice; the tree lists it once.
-    if (folder.children.some((node) => node.kind === 'file' && node.name === name)) continue
-    folder.children.push({
-      kind: 'file',
+    // The same file can be written twice; the list shows it once.
+    if (list.some((row) => row.path === file.path)) return list
+    list.push({
       name,
-      dir: folder.path,
-      path: folder.path ? `${folder.path}/${name}` : name,
+      dir: segments.length > 1 ? segments.slice(0, -1).join('/') : '',
+      path: file.path,
       target: file.target
     })
-  }
+    return list
+  }, [])
 
-  // Unfold first, then sort: a file that came out of a folder belongs with the
-  // other files, not in the block of folder rows the sort puts first.
-  return sortTree(unwrapSingleFileFolders(root.children))
-}
-
-/**
- * A folder that holds one file is not a group: it is that file's path.
- *
- * Folding it into a line of its own saves nothing — the run still reads one
- * line per file — and the lone child sitting one indent step right of the files
- * beside it reads as a row that failed to line up. The file takes the folder's
- * place in the list and carries its folders as a hint on the row instead.
- *
- * A folder with two files or with a subfolder is a real group and stays.
- */
-function unwrapSingleFileFolders(nodes: DeliverableNode[]): DeliverableNode[] {
-  return nodes.map((node) => {
-    if (node.kind === 'file') return node
-    const children = unwrapSingleFileFolders(node.children)
-    const [only] = children
-    return children.length === 1 && only.kind === 'file' ? only : { ...node, children }
-  })
+  const times = new Map<string, number>()
+  for (const row of rows) times.set(row.name, (times.get(row.name) ?? 0) + 1)
+  return rows.map((row) => (times.get(row.name) === 1 ? { ...row, dir: '' } : row))
 }
 
 /** How much the working tree changed, as the environment row shows it. */

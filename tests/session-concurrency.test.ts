@@ -41,7 +41,7 @@ const bridge = {
 }
 Object.assign(globalThis, {
   document: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } },
-  window: { pi: bridge, matchMedia: () => ({ matches: false }) }
+  window: { pi: bridge, location: { search: '' }, matchMedia: () => ({ matches: false }) }
 })
 const { useAppStore } = await import('../src/renderer/src/store/useAppStore')
 await useAppStore.getState().bootstrap()

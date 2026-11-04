@@ -11,16 +11,15 @@ import { CommitDialog } from './CommitDialog'
 import { CommitHistoryDialog } from './CommitHistoryDialog'
 import { FileIcon } from './FileIcon'
 import { useAppStore } from '../store/useAppStore'
-import { collectChanges } from '../lib/changes'
+import { changedFilePaths } from '../lib/changes'
 import { relativePath, resolveAgainst } from '../lib/path'
 import { extractPlan } from '../lib/plan'
 import { subagentCalls, type SubagentTreeTask } from '../lib/subagents'
 import {
-  buildDeliverableTree,
+  listDeliverables,
   summariseDiff,
-  type DeliverableNode
+  type Deliverable
 } from '../lib/task-panel'
-import { readDeliverableOpen, writeDeliverableOpen } from '../lib/view-state'
 import { useT } from '../lib/i18n'
 import '../styles/task-panel.css'
 
@@ -118,82 +117,28 @@ function BackgroundTaskRow({ task }: { task: SubagentTreeTask }) {
   )
 }
 
-/** A folder of the deliverables tree, or one file in it. */
+/** One file the run produced, as one row of the deliverables list. */
 function DeliverableRow({
-  node,
-  depth,
-  isOpen,
-  onToggle,
+  file,
   onOpenFile
 }: {
-  node: DeliverableNode
-  depth: number
-  isOpen: (path: string) => boolean
-  onToggle: (path: string) => void
-  onOpenFile: (node: Extract<DeliverableNode, { kind: 'file' }>) => void
+  file: Deliverable
+  onOpenFile: (file: Deliverable) => void
 }) {
-  // A file is a deliverable, and the reader scans deliverables: every file row
-  // keeps the one column, whatever folder it sits under. Only a folder header
-  // steps in with the depth, because that is the row whose job is structure.
-  const indent = { paddingLeft: `${node.kind === 'file' ? 4 : 4 + depth * 14}px` }
-
-  if (node.kind === 'folder') {
-    const open = isOpen(node.path)
-    return (
-      <li className="task-panel__tree-node">
-        <button
-          type="button"
-          className="task-panel__folder"
-          style={indent}
-          aria-expanded={open}
-          onClick={() => onToggle(node.path)}
-        >
-          {/* The tile a file's mark sits in is always there, empty for a
-              folder: it is what keeps a folder's name on the same column as a
-              file's name at the same depth. Only the indent moves the column. */}
-          <span className="task-panel__tile" aria-hidden="true" />
-          <span className="task-panel__folder-name">{node.name}</span>
-          <ChevronRight
-            size={14}
-            className="task-panel__folder-caret"
-            data-open={open || undefined}
-            aria-hidden="true"
-          />
-        </button>
-        {open ? (
-          <ul className="task-panel__tree">
-            {node.children.map((child) => (
-              <DeliverableRow
-                key={child.path}
-                node={child}
-                depth={depth + 1}
-                isOpen={isOpen}
-                onToggle={onToggle}
-                onOpenFile={onOpenFile}
-              />
-            ))}
-          </ul>
-        ) : null}
-      </li>
-    )
-  }
-
   return (
     <li className="task-panel__tree-node">
       <button
         type="button"
         className="task-panel__file"
-        style={indent}
-        title={node.path}
-        onClick={() => onOpenFile(node)}
+        title={file.path}
+        onClick={() => onOpenFile(file)}
       >
-        <span className="task-panel__tile task-panel__tile--file">
-          <FileIcon name={node.name} size={12} />
+        <span className="task-panel__tile">
+          <FileIcon name={file.name} size={12} />
         </span>
-        <span className="task-panel__file-name">{node.name}</span>
-        {/* Which folder this file came from: the row no longer says it with an
-            indent, so it says it here, in the room the name left behind. */}
-        {node.dir ? <span className="task-panel__file-dir">{node.dir}/</span> : null}
+        <span className="task-panel__file-name">{file.name}</span>
+        {/* Only a name two files share has to say which one this row is. */}
+        {file.dir ? <span className="task-panel__file-dir">{file.dir}/</span> : null}
       </button>
     </li>
   )
@@ -203,40 +148,36 @@ function DeliverableRow({
  * The task rail: what the folder looks like from the outside, what is running
  * in the background, how far the plan has come and what the run produced.
  *
- * Every part of it is a projection of the thread and the Git state, so the
- * rail has no state of its own beyond which folders are open.
+ * Every part of it is a projection of the thread and the Git state, so the rail
+ * keeps no state of its own at all.
  */
 export function TaskPanel() {
   const t = useT()
   const items = useAppStore((state) => state.items)
   const git = useAppStore((state) => state.git)
   const workspacePath = useAppStore((state) => state.workspace?.path)
-  const activeSessionFile = useAppStore((state) => state.activeSessionFile)
-  const draftId = useAppStore((state) => state.draftId)
   const refreshGit = useAppStore((state) => state.refreshGit)
 
-  const threadKey = activeSessionFile ?? draftId ?? ''
   const plan = useMemo(() => extractPlan(items), [items])
   const backgroundTasks = useMemo(
     () => subagentCalls(items).flatMap((call) => call.tasks),
     [items]
   )
   const deliverables = useMemo(() => {
-    const files = collectChanges(items).map((change) => {
+    const files = changedFilePaths(items).map((change) => {
       const relative = relativePath(workspacePath ?? '', change.path).replace(/\\/g, '/')
       return {
         path: relative,
         target: relative === change.path ? change.path : resolveAgainst(workspacePath, change.path)
       }
     })
-    return buildDeliverableTree(files)
+    return listDeliverables(files)
   }, [items, workspacePath])
   const diff = useMemo(() => summariseDiff(git), [git])
 
   const [refreshing, setRefreshing] = useState(false)
   const [commitOpen, setCommitOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [folders, setFolders] = useState<Record<string, boolean>>({})
 
   const readGitStatus = useCallback(async () => {
     setRefreshing(true)
@@ -276,28 +217,14 @@ export function TaskPanel() {
     )
   }
 
-  const openFile = (node: Extract<DeliverableNode, { kind: 'file' }>) => {
-    const target = node.target ?? node.path
+  const openFile = (file: Deliverable) => {
+    const target = file.target ?? file.path
     window.dispatchEvent(
       new CustomEvent<InspectorRequest>('pi:open-inspector', {
         detail: { tab: 'files', file: target }
       })
     )
   }
-
-  const isOpen = useCallback(
-    (path: string) => folders[`${threadKey}\u0000${path}`] ?? readDeliverableOpen(threadKey, path) ?? true,
-    [folders, threadKey]
-  )
-
-  const toggleFolder = useCallback(
-    (path: string) => {
-      const next = !isOpen(path)
-      setFolders((previous) => ({ ...previous, [`${threadKey}\u0000${path}`]: next }))
-      writeDeliverableOpen(threadKey, path, next)
-    },
-    [isOpen, threadKey]
-  )
 
   return (
     <div className="task-panel">
@@ -379,15 +306,8 @@ export function TaskPanel() {
         <TaskSection title={t('Deliverables')}>
           {deliverables.length > 0 ? (
             <ul className="task-panel__tree">
-              {deliverables.map((node) => (
-                <DeliverableRow
-                  key={node.path}
-                  node={node}
-                  depth={0}
-                  isOpen={isOpen}
-                  onToggle={toggleFolder}
-                  onOpenFile={openFile}
-                />
+              {deliverables.map((file) => (
+                <DeliverableRow key={file.path} file={file} onOpenFile={openFile} />
               ))}
             </ul>
           ) : (

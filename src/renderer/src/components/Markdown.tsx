@@ -115,17 +115,18 @@ const markdownComponents: Components = {
   // Keep renderer component identities stable while streamed text grows.
   pre({ children: content }: { children?: ReactNode }) {
     const child = Array.isArray(content) ? content[0] : content
-    if (
-      isValidElement<{ className?: string; children?: ReactNode }>(child) &&
-      child.type === 'code'
-    ) {
+    if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
+      // `pre` always wraps the `code` element in Markdown. Use the element's
+      // own className to recover the fence language; comparing `child.type`
+      // to the string 'code' fails because the renderer maps it to the custom
+      // component below.
       const match = /language-([\w+-]+)/.exec(child.props.className ?? '')
       const text = String(child.props.children ?? '').replace(/\n$/, '')
       return <CodeBlock code={text} language={match?.[1]} />
     }
     return <pre>{content}</pre>
   },
-  code({ className, children, ...rest }) {
+  code({ className, children, node: _node, ...rest }) {
     const raw = String(children ?? '')
     if (!className && !raw.includes('\n')) {
       const ref = parseFileReference(raw)
@@ -159,63 +160,63 @@ const markdownComponents: Components = {
       </code>
     )
   },
-  p({ children: content, ...rest }) {
+  p({ children: content, node: _node, ...rest }) {
     return (
       <p {...rest}>
         <Marked>{content}</Marked>
       </p>
     )
   },
-  li({ children: content, ...rest }) {
+  li({ children: content, node: _node, ...rest }) {
     return (
       <li {...rest}>
         <Marked>{content}</Marked>
       </li>
     )
   },
-  h1({ children: content, ...rest }) {
+  h1({ children: content, node: _node, ...rest }) {
     return (
       <h1 {...rest}>
         <Marked>{content}</Marked>
       </h1>
     )
   },
-  h2({ children: content, ...rest }) {
+  h2({ children: content, node: _node, ...rest }) {
     return (
       <h2 {...rest}>
         <Marked>{content}</Marked>
       </h2>
     )
   },
-  h3({ children: content, ...rest }) {
+  h3({ children: content, node: _node, ...rest }) {
     return (
       <h3 {...rest}>
         <Marked>{content}</Marked>
       </h3>
     )
   },
-  h4({ children: content, ...rest }) {
+  h4({ children: content, node: _node, ...rest }) {
     return (
       <h4 {...rest}>
         <Marked>{content}</Marked>
       </h4>
     )
   },
-  strong({ children: content, ...rest }) {
+  strong({ children: content, node: _node, ...rest }) {
     return (
       <strong {...rest}>
         <Marked>{content}</Marked>
       </strong>
     )
   },
-  em({ children: content, ...rest }) {
+  em({ children: content, node: _node, ...rest }) {
     return (
       <em {...rest}>
         <Marked>{content}</Marked>
       </em>
     )
   },
-  a({ children, href, ...rest }) {
+  a({ children, href, node: _node, ...rest }) {
     return (
       <a
         href={href}
@@ -366,20 +367,32 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
 export interface MarkdownProps {
   children: string
   streaming?: boolean
+  /**
+   * Render the Markdown tree without its own `.md` wrapper.
+   *
+   * StreamingText splits a reply into several Markdown segments and puts them
+   * under one `.md` container so block spacing still behaves like a single
+   * document; each segment must then render bare.
+   */
+  bare?: boolean
 }
 
-export const Markdown = memo(function Markdown({ children, streaming = false }: MarkdownProps) {
+const REMARK_PLUGINS = [remarkGfm]
+
+export const Markdown = memo(function Markdown({
+  children,
+  streaming = false,
+  bare = false
+}: MarkdownProps) {
+  const body = (
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents}>
+      {children}
+    </ReactMarkdown>
+  )
   return (
     <ErrorBoundary inline scope="Markdown">
       <StreamingContext.Provider value={streaming}>
-        <div className="md">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={markdownComponents}
-          >
-            {children}
-          </ReactMarkdown>
-        </div>
+        {bare ? body : <div className="md">{body}</div>}
       </StreamingContext.Provider>
     </ErrorBoundary>
   )

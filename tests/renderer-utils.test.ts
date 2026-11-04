@@ -2,6 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { countChangedFiles } from '../src/renderer/src/lib/changes'
 import { diffableEdits } from '../src/renderer/src/lib/tool-renderers'
+import { filterModels, normalizeModelSearchText } from '../src/renderer/src/lib/model-search'
+import { sortModelsByRecency } from '../src/renderer/src/lib/model-recency'
+import type { ModelInfo } from '../src/shared/types'
 import {
   enforceSessionLru,
   touchSessionLru,
@@ -174,4 +177,28 @@ test('turn memoization logic ignores run changes for historical turns', () => {
     ),
     false
   )
+})
+
+test('model search normalizes separators and requires every token', () => {
+  assert.equal(normalizeModelSearchText('Claude-Sonnet_4.5'), 'claude sonnet 4 5')
+  const models: ModelInfo[] = [
+    { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', provider: 'anthropic', api: '', reasoning: true, input: ['text'], contextWindow: 1, maxTokens: 1 },
+    { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', provider: 'openai', api: '', reasoning: true, input: ['text'], contextWindow: 1, maxTokens: 1 }
+  ]
+  assert.deepEqual(filterModels(models, 'sonnet 4'), [models[0]])
+  assert.deepEqual(filterModels(models, 'gpt terra'), [models[1]])
+  assert.deepEqual(filterModels(models, 'missing'), [])
+})
+
+test('model recency ordering keeps first-seen order for unused models', () => {
+  const models = [
+    { provider: 'a', id: 'one' },
+    { provider: 'a', id: 'two' },
+    { provider: 'b', id: 'three' }
+  ]
+  assert.deepEqual(
+    sortModelsByRecency(models, { 'b/three': 10, 'a/two': 20 }).map((model) => model.id),
+    ['two', 'three', 'one']
+  )
+  assert.deepEqual(sortModelsByRecency(models, {}), models)
 })
