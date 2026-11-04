@@ -225,17 +225,21 @@ component writes `data-icon-color` and the stylesheet picks the hue.
 ### The row never moves
 
 The actions of a project row live in a **slot that is always there**
-(`--sidebar-action-slot`, 60px). The count of the conversations and the
-buttons take turns in that slot, so the title keeps the same width whether
-the row is hovered or not. Do not "solve" an overlap by changing the padding
-of the row on hover — that re-flows the title. Measure it instead:
-`output/audit/hover-check.mjs` drives a real mouse over the row and compares
-the geometry before and after.
+(`--sidebar-action-slot`, 60px). The slot is empty at rest and fills with the
+buttons on hover or focus, so the title keeps the same width whether the row
+is hovered or not; the conversation count is not shown on the row. Do not
+"solve" an overlap by changing the padding of the row on hover — that re-flows
+the title. Measure it instead: `output/audit/hover-check.mjs` drives a real
+mouse over the row and compares the geometry before and after.
 
-A conversation row is the same rule one step down: the dot and the spinner
-share one 14px slot, so switching between them leaves the title where it
-was. A row with nothing to say has no slot at all, so a marked row sits a
-little further right — the same ragged edge MCode's list has.
+A conversation row is the same rule one step down, taken further: its mark (the
+dot or the spinner, sharing one 14px slot) hangs in the row's indent
+(`--sidebar-session-indent`, which is the project's own text column) and is
+positioned out of the flow. A running row and a silent row therefore start their
+titles on exactly the same column — the column the project name uses — and the
+mark sits concentric with the project icon above it. Never put the mark in front
+of the title as a flex child: that is how one running conversation shifts every
+other row's title out of alignment.
 
 ## The composer
 
@@ -293,13 +297,31 @@ that grouping does not reorder the store's list or the keyboard cycle.
 
 ## The tool panel
 
-The right side panel is browser-like: the top strip holds the pages the reader
-opened, with a close control on each, and `+` opens the tools guide. Files,
-File changes, Subagents, Terminal, Browser, Images and Tasks are navigation
-entries in that guide (`ToolPanel`), not a fixed function tab bar. Opening a
-guide entry adds or focuses its page tab; closing every page falls back to the
-guide. `SubagentPanel` is the Subagents page and owns the right-panel instance
-of `SubagentTree`; the left sidebar does not contain subagent status.
+The right side panel is the workspace panel, aligned with MCode: a 46px strip
+of fixed-width page tabs (120–160px, 30px high, 18px icons), a close control
+that appears on hover, and a `+` beside the tabs that creates a new tab page.
+Pages can be dragged to reorder, right-clicked for close/close-others/
+close-to-right/close-all, and a strip too narrow for its pages gets the
+all-pages menu and horizontal scroll. `Maximize2` makes the panel the whole
+work area while leaving the project sidebar reachable — and it maximizes at the
+panel's own level (`--z-drawer`), never above it: the shell's corner toggle and
+the panel's own menus must stay clickable, or the maximized state covers the
+only ways out of it. `Escape` leaves the maximized state, and never steals the
+key from an open dialog, menu or lightbox. There is no permanent
+"Tools" tab: closing every page falls back to a centered "start from here" card
+list (`ToolPanel`).
+
+Files, File changes, Subagents, Terminal, Browser and Images are pages, not a
+fixed function tab bar. Selecting a card on the new-tab page turns that tab
+into the chosen page; opening a view elsewhere adds or focuses its page tab.
+`Files` and `File changes` are split views: the preview or diff is the page and
+a 220px project tree (Files) or changed-file list (File changes) sits on its
+right, as MCode's file panel and review panel do. `SubagentPanel` is the Subagents page and owns the right-panel
+instance of `SubagentTree`; the left sidebar does not contain subagent status.
+The docked panel defaults to 520px and can be dragged between 360 and 760px;
+MCode's 640px default does not fit beside Pi's 280px task rail at the same
+window width. The comparison with the reference app is in
+[docs/mcode-tool-panel-alignment.md](docs/mcode-tool-panel-alignment.md).
 
 ## The task rail
 
@@ -320,6 +342,29 @@ Every part of it is a projection, not state:
   (`lib/plan.ts`) — the same source the plan strip reads;
 - deliverables are the files the run wrote (`lib/changes.ts`), folded into a
   folder tree by `lib/task-panel.ts`.
+
+Every row of that tree keeps the same 20px leading slot, mark or no mark: a
+file's tile sits in it, a folder leaves it empty because the caret on its right
+already says it folds. A folder with a mark in front of its name instead starts
+28px left of the file names beside it — the same trap the sidebar documents for a
+conversation row's mark.
+
+**A file never indents.** The deliverables are read as a list of files, so every
+file row keeps the one column whatever folder it sits under and says where it
+came from on the right of its own row, in the assist tone (`docs/agents/`), in
+the room its name left behind. Only a folder *header* steps in with the depth
+(14px): that row's job is structure, the file row's job is the file.
+
+A folder that holds exactly one file is not a group — it is that file's path — so
+`buildDeliverableTree` unfolds it and the file keeps its folders as the hint.
+`lib/task-panel.ts` owns that rule, not the component; the component only renders
+`node.dir`.
+
+The seventh case of `tests/ui-regressions.mjs` measures all of it: the column a
+folder header, a root file, a file inside a folder and a file inside a sub-folder
+share, the one step a sub-folder header takes, and every row's folder hint.
+`output/audit/rail-check.mjs` prints the slot width, the hint and the column of
+every row for a shape you can look at, and captures the rail.
 
 The rail keeps no state of its own beyond which folders of the deliverables
 tree are open; that lives in `lib/view-state.ts`, keyed by the conversation.
@@ -436,6 +481,31 @@ so. `env` and `headers` values are credentials: only the key names leave main, n
 the values. The dialog is read-only and never connects to a server — connection state
 is the runtime's business, and there is no RPC command for it.
 
+## Remote access
+
+The opt-in phone companion is a separate web app in `src/remote/`, built to
+`out/remote/` and served by `src/main/remote-access.ts` only while remote access
+is enabled. It works on the same private Wi-Fi network over HTTP; the Settings
+page must say that traffic is not encrypted and should only be used on a trusted
+network.
+
+- Pairing uses one short-lived, one-use code in the QR fragment. A phone receives
+  one bearer token; only its SHA-256 digest is stored in `remote-access.json`.
+  Revoking a phone removes the digest and closes its event streams.
+- The phone API accepts registered workspace ids and Pi session ids. Resolve
+  those ids to paths in the main process; never accept a phone-supplied `cwd` or
+  session-file path.
+- Keep the API limited to listing registered projects and their conversations,
+  reading a conversation, and sending a prompt. Do not expose the preload bridge,
+  arbitrary Pi RPC, terminal, filesystem, Git, provider or settings operations.
+  Prompts still use the session's configured Pi permissions.
+- Live updates come from `SessionSupervisor` events. The mobile renderer reuses
+  `lib/stream-events.ts` and `lib/thread.ts`; do not add a second protocol reducer.
+- Keep host checks, same-origin checks, one-use pairing, device revocation and
+  path redaction in the main process. Never put a bearer token in a URL.
+- `npm run dev` watches the separate mobile bundle alongside Electron;
+  `npm run build` includes it in the packaged output.
+
 ## The plan strip
 
 `PlanStrip` is a projection, not a feature of the protocol: `extractPlan` reads
@@ -447,6 +517,22 @@ The completion marker is a local view preference, not execution state. Do not ad
 store state for it — the thread is the source of truth. Its actions only hand the checklist
 back: copy as `- [x]` markdown, insert the whole plan or a single step through
 `insertIntoComposer`; the strip itself is never changed by them.
+
+## Memory
+
+`src/main/memory/` owns persistent memory: a background extractor, a
+file-backed store under `<userData>/memories/`, and the appended system-prompt
+block. `MemoryService` only listens to `agent_settled`, waits for an idle
+delay, skips aborted, draft, running and external-context sessions, and
+serializes model calls. `memories.json` is canonical; `memory_summary.md` and
+`rollout_summaries/` are projections. Never inject the raw entries file — the
+prompt gets a project-scoped, 10,000-byte summary plus the decision-boundary
+header in `MemoryService.promptFor`. Extraction runs in a throwaway
+`pi --print --no-session --no-tools --no-extensions --no-skills --no-mcp
+--no-context-files` process; memory text is data, never instructions, and
+secrets are redacted before storage and again at merge time. The settings page
+is `MemorySettings.tsx`; tests are `tests/memory.test.ts`. See
+[docs/memory-system.md](docs/memory-system.md).
 
 ## Task modes
 
@@ -466,12 +552,14 @@ per-process extension that spawns a separate `pi --mode json` process per task
 (StringDecoder JSONL, never readline) and returns its final text and usage to the
 parent.
 
-Computer Use is its own mode. `src/main/pi/computer-use.ts` registers the
-`computer` tool (screenshot, list windows, click, move, type, key, scroll) and
-it is active only in that mode, so choosing the mode is the approval — the
-generic permission dialog does not ask again on every action. Coordinates are
-pixels in the latest screenshot, not screen points or window bounds. Plan Mode
-blocks the tool, and it is not given to subagents.
+Computer Use is a General setting (`computerUse`), not a task mode.
+`src/main/pi/computer-use.ts` registers the `computer` tool (screenshot, list
+windows, click, move, type, key, scroll). The task-mode extension adds it to
+the normal, Goal and Subagent loadouts only while the setting is on, so the
+switch is the approval — the generic permission dialog does not ask again on
+every action. A live process hears the change as `/desktop-computer on|off`.
+Coordinates are pixels in the latest screenshot, not screen points or window
+bounds. Plan Mode blocks the tool, and it is not given to subagents.
 
 `SubagentTree` is a page of the right side panel (`SubagentPanel`), not part of
 the left sidebar. It projects all loaded conversations through `lib/subagents.ts`.
@@ -482,6 +570,57 @@ Tree expansion uses the per-conversation `lib/view-state.ts` map. Clicking a
 task row opens its child transcript (`SubagentConversation`), built from the
 `messages` the subagent process recorded in the same details; the Back control
 returns to the catalog.
+
+## The agent defaults page
+
+Settings has a page (`AgentSettings`, page id `agent`) that gathers what a new
+conversation starts with: the default model, permission, reasoning effort, Plan Mode,
+the subagent model and effort, pasting, folding and titling. It is a door, not an
+owner — every row writes a field in `AppSettings` that the rest of the app already reads.
+
+How a default reaches a process is the part to get right:
+
+- The generated extensions are written **per process**, so a default is baked at
+  generation (`runtime.ts` → `taskModesExtension(computerUse, defaultMode)` and
+  `subagentExtension(defaults)`). That is why a settings change affects the next
+  process, and why the copy must say "new conversations" — never "now".
+- The one exception is `permissionMode`: `getPermissionMode` is consulted on every
+  `tool_call`, so it is live. That row is allowed to promise immediate effect.
+- Do **not** broadcast `/desktop-mode` on a settings change. It would flip the mode of
+  conversations the user is already working in, which is not what the switch means.
+- Plan Mode seeds only a launch with nothing to resume — gate on `!sessionFile`, the
+  same value that decides `--session`. A resumed conversation restores the mode from its
+  own `pi-desktop-mode` entry, and that entry then wins over the setting.
+- A subagent's model or effort must survive into an argv: only `provider/id` (the id may
+  hold slashes — gateway providers are `openrouter/vendor/model`, and the catalog splits a
+  saved spec on its **first** slash) and Pi's lowercase level names are accepted; anything
+  else degrades to `''` = follow the conversation. Empty settings must leave the child's
+  argv byte-identical to before, which `tests/subagent.test.ts` asserts.
+- The renderer seeds a draft's `agentMode` so the chip is honest before Pi boots. Pi's
+  `setStatus('pi-desktop-mode')` stays the only writer afterwards; no second flag, and no
+  process is started just to apply a mode.
+
+`autoFoldProcess` and `toolCallSummary` are projections, not state. The first is the
+*default of the fold that `ProcessTrail` already computes* (`manualOpen ?? !autoFold`) —
+it ships on, because a settled trail is folded today. The second only gathers a *live*
+stretch of calls into the summary line, opening to the same `ToolCard` rows. Neither adds
+a store field, neither touches `lib/thread.ts`, and neither may change the rule that a tool
+call is one node keyed by `toolCallId` at its first-appearance position.
+
+`pasteMentions` writes the pasted picture **into the working folder** (`fs:savePastedImage`,
+`projectlessRoot()` when there is no project) before referencing it, because an `@` mention
+resolves against Pi's cwd and `fs:search` walks the project: a temp path would reference a
+file the agent cannot read. It inserts through the same splice as a hand-picked mention and
+degrades to attach-only when the write fails.
+
+`autoTitle` is a second listener on the runtime stream, deliberately not part of
+`MemoryService`: a title is wanted for every new conversation while memory skips sessions
+that used MCP or subagents. It runs the throwaway `pi --print` CLI, names through
+`supervisor.rename` (hot → `set_session_name`, cold → one `session_info` line) and never
+writes the JSONL itself, because a second writer of a session file is the bug AGENTS.md
+warns about. The model's reply is data: one line, length-capped, and a first line ending in
+`.`/`!` is rejected so a refusal never becomes a plausible title. Every failure path logs at
+most one line.
 
 ## Jumping to a search hit
 
@@ -497,6 +636,25 @@ sidebar — a conversation that is not mounted has nothing to scroll.
 - TypeScript everywhere, `strict` on. No `any` in the IPC boundary.
 - CSS is plain CSS with custom properties in `src/renderer/src/styles/tokens.css`.
   Use the existing tokens; do not hard-code colours.
+- The type scale is MCode's standard preset, copied 1:1; use the role tokens
+  (`--text-assist` / `--text-small` / `--text-body` / `--text-chat` /
+  `--text-large` / `--text-button` / `--text-code-block` …) with their matching
+  `--leading-*`. The old numeric names are aliases only; do not add new
+  `--text-2xs` / `--text-xs` uses, and never write a raw `font-size` in a
+  component stylesheet. The reference record is
+  [docs/mcode-typography-alignment.md](docs/mcode-typography-alignment.md).
+- The UI face is MCode's system stack; Chinese must fall through to the generic
+  `sans-serif` family (Noto Sans SC on this image). Do not put an explicit
+  Microsoft YaHei family before it — that changes every CJK glyph. Code uses
+  the bundled JetBrains Mono (OFL) in `src/renderer/src/assets/fonts/`.
+- The four text sizes live in `src/shared/font-scale.ts` (12/14/15/16 against
+  the 14px body). Stored legacy multipliers are normalized there; use that
+  module instead of re-deriving the ratios in a component.
+- A control that cannot fit its own label in one line — the narrow docked panel
+  is where this happens — drops the label and keeps the icon: `.icon-btn` with
+  the same words in `title` and `aria-label`, so the tooltip explains what the
+  icon does. Do not solve the wrap by shrinking the font or abbreviating the
+  wording.
 - Prefer small, focused components. Keep protocol knowledge out of the React tree.
 - Comments explain *why*, not *what*.
 

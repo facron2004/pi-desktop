@@ -161,6 +161,21 @@ export async function readLog(root: string, limit = 20): Promise<GitCommit[]> {
     }))
 }
 
+/** Build a compact subject from the staged paths when the user leaves it blank. */
+function generatedCommitMessage(paths: string[]): string {
+  const normalized = paths
+    .map((path) => path.replace(/\\/g, '/').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+  const unique = [...new Set(normalized)]
+  if (unique.length === 0) return 'chore: update project files'
+
+  const summary = unique.length <= 2
+    ? unique.join(' and ')
+    : `${unique[0]} and ${unique.length - 1} more`
+  const subject = `chore: update ${summary}`
+  return subject.length <= 72 ? subject : `chore: update ${unique.length} files`
+}
+
 /** Stage everything in the work tree and commit it. */
 export async function commitWorkingTree(
   root: string,
@@ -169,7 +184,6 @@ export async function commitWorkingTree(
 ): Promise<GitCommitResult> {
   const trimmed = message.trim()
   if (!root) return { ok: false, error: 'No project is open.' }
-  if (!trimmed) return { ok: false, error: 'Write a message for the commit first.' }
 
   const status = await readStatus(root)
   if (!status.isRepo) return { ok: false, error: 'This folder is not a git repository.' }
@@ -192,10 +206,12 @@ export async function commitWorkingTree(
     }
   }
 
-  const stagedFiles = await git(root, ['diff', '--cached', '--name-only'])
-  const count = stagedFiles.code === 0 ? stagedFiles.stdout.split('\n').filter(Boolean).length : 0
+  const stagedFiles = await git(root, ['diff', '--cached', '--name-only', '-z'])
+  const stagedPaths = stagedFiles.code === 0 ? stagedFiles.stdout.split('\0').filter(Boolean) : []
+  const count = stagedPaths.length
+  const commitMessage = trimmed || generatedCommitMessage(stagedPaths)
 
-  const committed = await git(root, ['commit', '-m', trimmed], COMMIT_TIMEOUT_MS)
+  const committed = await git(root, ['commit', '-m', commitMessage], COMMIT_TIMEOUT_MS)
   if (committed.code !== 0) {
     const detail = cleanError(committed.stderr) || cleanError(committed.stdout)
     return { ok: false, error: detail || 'git commit failed.' }

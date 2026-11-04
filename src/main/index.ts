@@ -1,10 +1,15 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, shell } from 'electron'
 import { createHash } from 'node:crypto'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { bridgeRuntime, registerIpc, sendToWindow } from './ipc'
+import { MemoryService } from './memory/service'
+import { AutoTitleService } from './auto-title'
+import { MemoryStore } from './memory/store'
+import { ScheduledTaskService } from './scheduled-tasks'
 import { PiRuntime } from './pi/runtime'
 import { SessionSupervisor } from './pi/supervisor'
+import { RemoteAccessService } from './remote-access'
 import { scheduleCapture, scheduleWindowClose } from './screenshot'
 import { SettingsStore } from './settings'
 import { TerminalManager } from './terminal'
@@ -37,9 +42,36 @@ let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore | null = null
 let supervisor: SessionSupervisor | null = null
 let terminalManager: TerminalManager | null = null
+let memoryService: MemoryService | null = null
+let autoTitleService: AutoTitleService | null = null
+let remoteAccess: RemoteAccessService | null = null
+let remoteInitialization: Promise<void> | null = null
+let scheduledTaskService: ScheduledTaskService | null = null
+
+function startupTheme(): 'light' | 'dark' {
+  const forcedTheme = process.env.PI_DESKTOP_THEME
+  const preference =
+    forcedTheme === 'light' || forcedTheme === 'dark' || forcedTheme === 'system'
+      ? forcedTheme
+      : settings?.get().theme ?? 'dark'
+  return preference === 'system'
+    ? nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+    : preference
+}
+
+function disposeRemoteAccess(): void {
+  const dispose = () => {
+    const pending = remoteAccess?.dispose()
+    if (pending) void pending.catch(() => {})
+  }
+  if (remoteInitialization) void remoteInitialization.then(dispose).catch(() => {})
+  else dispose()
+}
 
 function createWindow(): BrowserWindow {
   const bounds = initialBounds()
+  const theme = startupTheme()
+  const dark = theme === 'dark'
   const window = new BrowserWindow({
     width: bounds.width,
     height: bounds.height,
@@ -51,15 +83,15 @@ function createWindow(): BrowserWindow {
     // counted twice and the window creeps larger on every launch.
     useContentSize: true,
     show: false,
-    backgroundColor: '#16181d',
+    backgroundColor: dark ? '#16181d' : '#ffffff',
     title: 'Pi Desktop',
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac
       ? { trafficLightPosition: { x: 18, y: 18 } }
       : {
           titleBarOverlay: {
-            color: '#111317',
-            symbolColor: '#9da4b2',
+            color: dark ? '#16181d' : '#ffffff',
+            symbolColor: dark ? '#9da4b2' : '#686868',
             height: 44
           }
         }),
@@ -107,7 +139,21 @@ function createWindow(): BrowserWindow {
   // the next run's input and the window creeps bigger on every launch.
   window.setContentSize(bounds.width, bounds.height)
 
-  window.once('ready-to-show', () => window.show())
+  let readyToShow = false
+  let rendererStartupReady = false
+  const showWhenReady = () => {
+    if (readyToShow && rendererStartupReady && !window.isDestroyed()) window.show()
+  }
+  const onStartupReady = (event: Electron.IpcMainEvent) => {
+    if (event.sender !== window.webContents) return
+    rendererStartupReady = true
+    showWhenReady()
+  }
+  ipcMain.on('app:startup-ready', onStartupReady)
+  window.once('ready-to-show', () => {
+    readyToShow = true
+    showWhenReady()
+  })
 
   // The size and place the user left the window in are kept for the next run.
   if (wasMaximized()) window.maximize()
@@ -116,6 +162,7 @@ function createWindow(): BrowserWindow {
   // The window can be closed while Pi is still shutting down; drop the
   // reference so nothing tries to push events into a destroyed renderer.
   window.on('closed', () => {
+    ipcMain.removeListener('app:startup-ready', onStartupReady)
     if (mainWindow === window) mainWindow = null
   })
 
@@ -159,9 +206,13 @@ function createWindow(): BrowserWindow {
 
   const devServerUrl = process.env.ELECTRON_RENDERER_URL
   if (devServerUrl) {
-    window.loadURL(devServerUrl)
+    const url = new URL(devServerUrl)
+    url.searchParams.set('piDesktopTheme', theme)
+    window.loadURL(url.toString())
   } else {
-    window.loadFile(path.join(__dirname, '../renderer/index.html'))
+    window.loadFile(path.join(__dirname, '../renderer/index.html'), {
+      query: { piDesktopTheme: theme }
+    })
   }
 
   return window
@@ -222,6 +273,7 @@ function handleTerminationSignal(): void {
   } catch {
     /* ignore */
   }
+  disposeRemoteAccess()
   if (supervisor) {
     void supervisor
       .stop()
@@ -240,8 +292,9 @@ function handleTerminationSignal(): void {
 process.on('SIGINT', handleTerminationSignal)
 process.on('SIGTERM', handleTerminationSignal)
 
-app.whenReady().then(() => {
-  settings = new SettingsStore()
+app.whenReady().then(async () => {
+  const settingsStore = new SettingsStore()
+  settings = settingsStore
 
   // Development helper: open a folder that was passed in on the command line.
   const forcedWorkspace = process.env.PI_DESKTOP_WORKSPACE
@@ -260,13 +313,67 @@ app.whenReady().then(() => {
   }
 
   const runtimeOptions = {
-    customPiPath: settings.get().piPath,
-    trustProject: settings.get().trustProject,
-    getPermissionMode: () => settings?.get().permissionMode ?? 'ask'
+    customPiPath: settingsStore.get().piPath,
+    trustProject: settingsStore.get().trustProject,
+    getPermissionMode: () => settingsStore.get().permissionMode ?? 'ask',
+    getComputerUse: () => settingsStore.get().computerUse === true,
+    // Read when a process is built, and only applied to a session Pi has never
+    // written — a conversation already under way keeps the mode it stored.
+    getDefaultPlanMode: () => settingsStore.get().defaultPlanMode === true,
+    // An empty field follows the conversation, so it is passed as undefined
+    // rather than as a model id; the generator still rejects a bad shape.
+    getSubagentModel: () => {
+      const current = settingsStore.get()
+      const model = current.subagentModel?.trim() ?? ''
+      const provider = current.subagentProvider?.trim() ?? ''
+      // `model` and `provider` are kept the same way here as for the conversation's
+      // own model: a stored id may be bare, with its provider beside it.
+      const spec = model.includes('/') || !provider ? model : `${provider}/${model}`
+      const thinking = current.subagentThinking?.trim()
+      return { model: spec || undefined, thinking: thinking || undefined }
+    }
   }
   supervisor = new SessionSupervisor(() => new PiRuntime(runtimeOptions))
+  const memoryStore = new MemoryStore(path.join(app.getPath('userData'), 'memories'))
+  memoryService = new MemoryService(memoryStore, () => settingsStore.get())
+  memoryService.attach(supervisor)
+  memoryService.startupScan()
+  // A second listener on the same stream, deliberately not part of MemoryService:
+  // a title is wanted for every new conversation, while memory skips the ones that
+  // used MCP or a subagent. One service's rules must not edit the other's.
+  autoTitleService = new AutoTitleService(() => settingsStore.get())
+  autoTitleService.attach(supervisor)
   terminalManager = new TerminalManager((channel, payload) => {
     sendToWindow(mainWindow, channel, payload)
+  })
+
+  remoteAccess = new RemoteAccessService({
+    userData: app.getPath('userData'),
+    uiDirectory: path.join(app.getAppPath(), 'out', 'remote'),
+    settings: settingsStore,
+    supervisor,
+    customInstructions: (cwd) => {
+      const user = settingsStore.get().customInstructions?.trim()
+      const memory = memoryService?.promptFor(cwd).trim() ?? ''
+      return [user, memory].filter(Boolean).join('\n\n---\n\n') || undefined
+    }
+  })
+  // Network binding can wait on OS setup; let the window paint while the
+  // service initializes, and gate remote IPC on this promise below.
+  const remoteReady = remoteAccess.initialize().then(() => undefined).catch((error: unknown) => {
+    console.error('[pi-desktop] remote access initialization failed:', error)
+  })
+  remoteInitialization = remoteReady
+
+  scheduledTaskService = new ScheduledTaskService({
+    userData: app.getPath('userData'),
+    settings: settingsStore,
+    supervisor,
+    customInstructions: (cwd) => {
+      const user = settingsStore.get().customInstructions?.trim()
+      const memory = memoryService?.promptFor(cwd).trim() ?? ''
+      return [user, memory].filter(Boolean).join('\n\n---\n\n') || undefined
+    }
   })
 
   mainWindow = createWindow()
@@ -275,7 +382,11 @@ app.whenReady().then(() => {
     supervisor,
     settings,
     getWindow: () => mainWindow,
-    terminals: terminalManager
+    terminals: terminalManager,
+    memory: memoryService,
+    remote: remoteAccess,
+    remoteReady,
+    scheduledTasks: scheduledTaskService
   }
   registerIpc(context)
   bridgeRuntime(context)
@@ -293,6 +404,10 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   // PTY children belong to this process; leaving them behind leaks shells.
   terminalManager?.disposeAll()
+  disposeRemoteAccess()
+  memoryService?.dispose()
+  autoTitleService?.dispose()
+  scheduledTaskService?.dispose()
 })
 
 app.on('window-all-closed', () => {

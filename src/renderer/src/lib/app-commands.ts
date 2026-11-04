@@ -33,12 +33,6 @@ export const APP_COMMANDS: PiCommand[] = [
     source: 'app'
   },
   {
-    name: 'computer',
-    description: 'Operate the desktop — mouse, keyboard and screenshots',
-    source: 'app',
-    takesArgument: true
-  },
-  {
     name: 'export',
     description: 'Export this conversation as HTML',
     source: 'app'

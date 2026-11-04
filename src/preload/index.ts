@@ -19,6 +19,8 @@ import type {
   GitStatus,
   GitWorktreeResult,
   McpConfig,
+  MemoryGenerateOptions,
+  MemoryState,
   PickedFile,
   PiDesktopBridge,
   RpcTraceHint,
@@ -27,6 +29,9 @@ import type {
   RuntimeEvent,
   RuntimeRekey,
   RuntimeStatusEvent,
+  RemoteAccessStatus,
+  ScheduledTask,
+  ScheduledTaskInput,
   SessionMeta,
   TerminalCreateOptions,
   TerminalDataPayload,
@@ -57,8 +62,10 @@ const bridge: PiDesktopBridge = {
   },
   app: {
     info: (): Promise<AppInfo> => ipcRenderer.invoke('app:info'),
+    startupReady: (): void => ipcRenderer.send('app:startup-ready'),
     setTheme: (theme: 'dark' | 'light'): Promise<void> => ipcRenderer.invoke('app:setTheme', theme),
     getSystemFonts: (): Promise<string[]> => ipcRenderer.invoke('app:getSystemFonts'),
+    emojiFont: (): Promise<Uint8Array | null> => ipcRenderer.invoke('app:emojiFont'),
     checkUpdate: (): Promise<VersionCheckResult> => ipcRenderer.invoke('app:checkUpdate'),
     upgradePiCli: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:upgradePiCli'),
     upgradeApp: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:upgradeApp')
@@ -73,6 +80,35 @@ const bridge: PiDesktopBridge = {
     get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
     patch: (patch: Partial<AppSettings>): Promise<AppSettings> =>
       ipcRenderer.invoke('settings:patch', patch)
+  },
+  remote: {
+    status: (): Promise<RemoteAccessStatus> => ipcRenderer.invoke('remote:status'),
+    setEnabled: (enabled: boolean): Promise<RemoteAccessStatus> =>
+      ipcRenderer.invoke('remote:setEnabled', enabled),
+    newPairing: (): Promise<RemoteAccessStatus> => ipcRenderer.invoke('remote:newPairing'),
+    revokeDevice: (id: string): Promise<RemoteAccessStatus> =>
+      ipcRenderer.invoke('remote:revokeDevice', id)
+  },
+  scheduledTasks: {
+    list: (): Promise<ScheduledTask[]> => ipcRenderer.invoke('scheduled-tasks:list'),
+    create: (input: ScheduledTaskInput): Promise<ScheduledTask[]> =>
+      ipcRenderer.invoke('scheduled-tasks:create', input),
+    update: (id: string, input: ScheduledTaskInput): Promise<ScheduledTask[]> =>
+      ipcRenderer.invoke('scheduled-tasks:update', id, input),
+    setEnabled: (id: string, enabled: boolean): Promise<ScheduledTask[]> =>
+      ipcRenderer.invoke('scheduled-tasks:setEnabled', id, enabled),
+    remove: (id: string): Promise<ScheduledTask[]> => ipcRenderer.invoke('scheduled-tasks:remove', id),
+    runNow: (id: string): Promise<ScheduledTask[]> => ipcRenderer.invoke('scheduled-tasks:runNow', id),
+    onChanged: (handler: (tasks: ScheduledTask[]) => void) =>
+      subscribe<ScheduledTask[]>('scheduled-tasks:changed', handler)
+  },
+  memory: {
+    get: (): Promise<MemoryState> => ipcRenderer.invoke('memory:get'),
+    remove: (id: string): Promise<MemoryState> => ipcRenderer.invoke('memory:remove', id),
+    clear: (): Promise<MemoryState> => ipcRenderer.invoke('memory:clear'),
+    generate: (options?: MemoryGenerateOptions) => ipcRenderer.invoke('memory:generate', options),
+    openFolder: (): Promise<void> => ipcRenderer.invoke('memory:openFolder'),
+    onChanged: (handler: (state: MemoryState) => void) => subscribe<MemoryState>('memory:changed', handler)
   },
   workspaces: {
     pick: (): Promise<Workspace | null> => ipcRenderer.invoke('workspaces:pick'),
@@ -183,6 +219,11 @@ const bridge: PiDesktopBridge = {
     searchText: (query: string, limit?: number): Promise<TextSearchHit[]> =>
       ipcRenderer.invoke('fs:searchText', query, limit),
     reveal: (file: string): Promise<void> => ipcRenderer.invoke('fs:reveal', file),
+    savePastedImage: (
+      data: string,
+      mimeType: string
+    ): Promise<{ path: string; root: string } | null> =>
+      ipcRenderer.invoke('fs:savePastedImage', data, mimeType),
     saveImage: (data: string, mimeType: string): Promise<string | null> =>
       ipcRenderer.invoke('fs:saveImage', data, mimeType),
     pathForFile: (file: File): string => {

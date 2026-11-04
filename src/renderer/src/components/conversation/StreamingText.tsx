@@ -3,7 +3,7 @@ import { Markdown } from '../Markdown'
 
 export interface StreamingTextProps {
   text: string
-  /** @deprecated Ignored — streaming caret removed; kept so call sites need not change. */
+  /** Whether this text block is still streaming (used to defer code highlighting). */
   streaming?: boolean
 }
 

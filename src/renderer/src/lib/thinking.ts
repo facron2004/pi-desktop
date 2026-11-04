@@ -9,13 +9,7 @@
 
 const EFFORT_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
-/**
- * The scale shown before Pi has reported this model's levels.
- *
- * A cold chat still has a saved effort (the chip already shows it). Hiding
- * the slider until the first message would make that label look stuck.
- * Once Pi answers, its list replaces this one.
- */
+/** Generic choices for settings that can be saved before Pi reports model-specific levels. */
 export const DEFAULT_THINKING_LEVELS: readonly string[] = EFFORT_ORDER
 
 function rankOf(level: string): number | undefined {

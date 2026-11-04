@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.7.3",
+  "version": "0.8.1",
   "description": "Pi Desktop — a native GUI for the Pi coding agent",
   "main": "./out/main/index.js",
   "author": "Facron",
@@ -12,9 +12,12 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:desktop": "electron-vite dev",
+    "remote:watch": "vite build --config vite.remote.config.ts --watch",
     "start": "electron-vite preview",
-    "build": "electron-vite build",
+    "build": "electron-vite build && npm run build:remote",
+    "build:remote": "vite build --config vite.remote.config.ts",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
@@ -26,12 +29,13 @@
     "test:ui": "npm run build && node tests/ui-regressions.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "diff": "^9.0.0",
     "lucide-react": "^1.59.0",
     "node-pty": "^1.1.0",
+    "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
@@ -41,6 +45,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.2.0",

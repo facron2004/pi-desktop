@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Type } from 'typebox'
-import { taskModesExtension } from '../src/main/pi/task-modes'
+import { taskModesExtension, type TaskModeSeed } from '../src/main/pi/task-modes'
 
 type Entry = { type: string; customType: string; data: unknown }
 type StatusValue = string | undefined
@@ -28,7 +28,7 @@ type Tool = {
 }
 type Command = { handler: (value: string, ctx: Context) => Promise<void> }
 
-function fixture(entries: Entry[] = []) {
+function fixture(entries: Entry[] = [], computerUse = false, defaultMode: TaskModeSeed = 'default') {
   const handlers = new Map<string, Handler>()
   const commands = new Map<string, Command>()
   const tools = new Map<string, Tool>()
@@ -61,7 +61,7 @@ function fixture(entries: Entry[] = []) {
     appendEntry: (customType: string, data: unknown) => entries.push({ type: 'custom', customType, data }),
     sendUserMessage: (text: string) => sent.push(text)
   }
-  const source = taskModesExtension().replace("import { Type } from 'typebox';", '').replace('export default function', 'return function')
+  const source = taskModesExtension(computerUse, defaultMode).replace("import { Type } from 'typebox';", '').replace('export default function', 'return function')
   const install = new Function('Type', source)(Type) as (extensionApi: typeof api) => void
   install(api)
   const parseGoal = (): GoalStatus | undefined => {
@@ -230,20 +230,29 @@ test('/plan and /goal drive the same mode and goal state', async () => {
   assert.equal(f.goal(), undefined)
 })
 
-test('Computer Use adds the computer tool and keeps it out of the other modes', async () => {
-  const f = fixture()
+test('Computer Use is a setting: on in the normal loadout, off in Plan Mode, and toggled without changing mode', async () => {
+  const f = fixture([], true)
   f.emit('session_start')
-  await f.modeCommand('computer')
+  assert.equal(f.mode(), 'default')
   assert.deepEqual(f.active(), [...f.base, 'computer'])
   const next = f.emit('before_agent_start') as { message: { customType: string; content: string } }
   assert.equal(next.message.customType, 'desktop-computer-context')
   assert.match(next.message.content, /screenshot/i)
-  assert.equal((f.emit('tool_call', { toolName: 'computer' }) as { block?: boolean } | undefined)?.block, undefined)
-  await f.command('computer', 'off')
-  assert.equal(f.mode(), 'default')
-  assert.deepEqual(f.active(), f.base)
+
+  await f.modeCommand('goal')
+  assert.ok(f.active().includes('computer'))
+  assert.ok(f.active().includes('desktop_goal_finish'))
   await f.modeCommand('plan')
+  assert.equal(f.active().includes('computer'), false)
   assert.equal((f.emit('tool_call', { toolName: 'computer' }) as { block: boolean }).block, true)
+
+  await f.modeCommand('default')
+  await f.command('desktop-computer', 'off')
+  assert.equal(f.mode(), 'default')
+  assert.equal(f.active().includes('computer'), false)
+  assert.equal(f.emit('before_agent_start'), undefined)
+  await f.command('desktop-computer', 'on')
+  assert.deepEqual(f.active(), [...f.base, 'computer'])
 })
 
 test('Subagent Mode adds the subagent tool and a delegation instruction', async () => {
@@ -278,6 +287,54 @@ test('Modes restore from the session branch and a new chat starts with the origi
   resumed.emit('session_start', { reason: 'new' })
   assert.equal(resumed.mode(), 'default')
   assert.deepEqual(resumed.active(), resumed.base)
+})
+
+test('a seeded Plan Mode starts a new conversation read-only and writes the mode down', () => {
+  const f = fixture([], false, 'plan')
+  f.emit('session_start')
+  assert.equal(f.mode(), 'plan')
+  assert.deepEqual(f.active(), ['read', 'grep', 'find', 'ls', 'exit_plan_mode'])
+  assert.equal((f.emit('tool_call', { toolName: 'write' }) as { block: boolean }).block, true)
+  const next = f.emit('before_agent_start') as { message: { customType: string } }
+  assert.equal(next.message.customType, 'desktop-plan-context')
+  // Persisting the seed is what keeps this conversation in Plan Mode once the
+  // setting is turned off and the session is opened again.
+  assert.equal((f.entries.at(-1)!.data as { mode: string }).mode, 'plan')
+})
+
+test('a session entry still decides the mode when Plan Mode is the default', () => {
+  const f = fixture([{ type: 'custom', customType: 'pi-desktop-mode', data: { mode: 'default' } }], false, 'plan')
+  f.emit('session_start')
+  assert.equal(f.mode(), 'default')
+  assert.deepEqual(f.active(), f.base)
+  // Default is the absence of a mode, so session_start writes nothing.
+  assert.equal(f.entries.length, 1)
+
+  const restored = fixture(
+    [{ type: 'custom', customType: 'pi-desktop-mode', data: { mode: 'goal', goal: { text: 'Stored', status: 'active' } } }],
+    false,
+    'plan'
+  )
+  restored.emit('session_start')
+  assert.equal(restored.mode(), 'goal')
+  assert.equal(restored.goal()?.text, 'Stored')
+})
+
+test('a conversation seeded into Plan Mode keeps it after the setting is turned off', () => {
+  const started = fixture([], false, 'plan')
+  started.emit('session_start')
+  const reopened = fixture([...started.entries], false, 'default')
+  reopened.emit('session_start')
+  assert.equal(reopened.mode(), 'plan')
+  assert.deepEqual(reopened.active(), ['read', 'grep', 'find', 'ls', 'exit_plan_mode'])
+})
+
+test('the default seed leaves a new conversation in Default Mode with its original tools', () => {
+  const f = fixture()
+  f.emit('session_start')
+  assert.equal(f.mode(), 'default')
+  assert.deepEqual(f.active(), f.base)
+  assert.equal(f.entries.length, 0)
 })
 
 test('A goal restored from the branch republishes its status', async () => {

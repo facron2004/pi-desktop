@@ -16,15 +16,19 @@
 .browser-bar {
   display: flex;
   align-items: center;
-  gap: var(--sp-hair);
+  gap: var(--sp-1);
   flex: 0 0 auto;
-  padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--border-soft);
+  height: var(--toolpanel-head-h);
+  padding: 0 var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-chrome);
 }
 
 .browser-bar .icon-btn {
-  width: 26px;
+  width: var(--ctl-sm);
+  height: var(--ctl-sm);
   flex: 0 0 auto;
+  border-radius: var(--r-sm);
 }
 
 .browser-bar__address {
@@ -33,12 +37,12 @@
   gap: var(--sp-2);
   flex: 1 1 auto;
   min-width: 0;
-  height: var(--ctl-sm);
+  height: var(--toolpanel-tab-h);
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-full);
-  background: var(--bg-deep);
-  color: var(--text-faint);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--toolpanel-tab-radius);
+  background: var(--surface-sunken);
+  color: var(--text-tertiary);
 }
 
 .browser-bar__address:focus-within {

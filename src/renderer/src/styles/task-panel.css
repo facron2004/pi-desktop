@@ -68,22 +68,23 @@
   min-width: 0;
   overflow: hidden;
   font-size: var(--text-md);
-  font-weight: 400;
-  line-height: 1.4;
+  font-weight: var(--font-weight-ui);
+  line-height: var(--leading-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 /* The branch the folder is on sits under the title, not in a row of its
-   own: it describes the section rather than being one of its actions. */
+   own: it describes the section rather than being one of its actions. It is
+   MCode's assist step, in the UI face — a branch name is not code. */
 .task-panel__section-subtitle {
   margin: -2px 0 2px;
   padding: 0 12px;
   overflow: hidden;
   color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: 1.4;
+  font-family: var(--font-ui);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-assist);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -136,7 +137,8 @@
 .task-panel__count {
   flex: 0 0 auto;
   color: var(--text-tertiary);
-  font-size: var(--text-xs);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
   font-variant-numeric: tabular-nums;
 }
 
@@ -144,8 +146,8 @@
   margin: 0;
   padding: 2px 8px;
   color: var(--text-tertiary);
-  font-size: var(--text-sm);
-  line-height: 1.4;
+  font-size: var(--text-body);
+  line-height: var(--leading-button);
 }
 
 /* ---- environment rows ------------------------------------------------ */
@@ -168,6 +170,7 @@
   background: transparent;
   color: var(--text-primary);
   font-size: var(--text-md);
+  line-height: var(--leading-body);
   text-align: left;
   cursor: pointer;
 }
@@ -194,66 +197,14 @@
   white-space: nowrap;
 }
 
-/* The commit row carries a second control, so it holds the label and the
-   push button side by side instead of wrapping the row around them. */
-.task-panel__row[data-split='true'] {
-  gap: 0;
-  padding: 0;
-}
-
-.task-panel__row-main {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 32px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.task-panel__row-main:disabled {
-  color: var(--text-tertiary);
-  cursor: default;
-}
-
-.task-panel__row-action {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  margin-right: 4px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-}
-
-.task-panel__row-action:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.task-panel__row-action:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
 /* The line counts sit on the right of the row they belong to. */
 .task-panel__diff {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   flex: 0 0 auto;
-  font-size: var(--text-sm);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
   font-variant-numeric: tabular-nums;
 }
 
@@ -295,8 +246,7 @@
   white-space: nowrap;
 }
 
-/* The state of a task is on the right: the name is what the reader reads
-   first, the dot only answers "is it still going". */
+/* The state leads the task name so the status is visible at a glance. */
 .task-panel__dot {
   flex: 0 0 auto;
   width: 7px;
@@ -417,14 +367,21 @@
   transform: rotate(90deg);
 }
 
-/* The mark a file wears, on the tile that holds it. */
-.task-panel__file-tile {
+/* The leading slot every row of the tree has, mark or no mark: a folder's
+   name and a file's name start on one column at the same depth, so the indent
+   is the only thing that ever moves the text. */
+.task-panel__tile {
   display: inline-grid;
   place-items: center;
-  flex: 0 0 auto;
+  flex: 0 0 20px;
   width: 20px;
   height: 20px;
   border-radius: var(--r-xs);
+}
+
+/* The mark a file wears, on the tile that holds it. A folder wears none — the
+   caret on the right is what says it folds. */
+.task-panel__tile--file {
   background: var(--bg-hover);
 }
 
@@ -432,6 +389,20 @@
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The folders a root-level file was pulled out of, on the right of the row:
+   the name is what the reader reads first, so the path only ever takes the
+   room the name left behind. */
+.task-panel__file-dir {
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

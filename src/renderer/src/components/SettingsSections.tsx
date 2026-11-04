@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import {
   AlertTriangle,
   Check,
@@ -17,17 +18,28 @@ import {
   X
 } from 'lucide-react'
 import '../styles/appearance.css'
+import '../styles/settings-agent.css'
 import type {
   AggregatedUsageStats,
   AuthStatus,
   McpConfig,
   McpServerInfo,
+  ModelInfo,
+  PermissionMode,
   VersionCheckResult
 } from '@shared/types'
+import { resolveSavedModel, selectableModels } from '@shared/provider-models'
 import { formatCost, formatTokens } from '../lib/format'
+import {
+  FONT_SCALE_LABELS,
+  FONT_SCALE_PRESETS,
+  normalizeFontScale
+} from '@shared/font-scale'
 import { useT } from '../lib/i18n'
 import { useIsDark } from '../lib/theme'
+import { DEFAULT_THINKING_LEVELS } from '../lib/thinking'
 import { useAppStore } from '../store/useAppStore'
+import { ConfirmDialog } from './ConfirmDialog'
 import { Popover } from './Popover'
 import { Switch } from './Switch'
 
@@ -41,13 +53,15 @@ function SettingsIconSelect({
   value,
   icons,
   options,
-  onChange
+  onChange,
+  className
 }: {
   label: string
   value: string
   icons: Record<string, string>
   options: { value: string; label: string; icon: string }[]
   onChange: (value: string) => void
+  className?: string
 }) {
   const current = options.find((option) => option.value === value) ?? options[0]
   return (
@@ -58,7 +72,7 @@ function SettingsIconSelect({
       renderTrigger={({ open, toggle }) => (
         <button
           type="button"
-          className="settings-icon-select"
+          className={`settings-icon-select ${className ?? ''}`}
           aria-label={label}
           aria-haspopup="listbox"
           aria-expanded={open}
@@ -257,15 +271,17 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
             <span className="settings-item-row__title">{t('Language')}</span>
             <span className="settings-item-row__desc">{t('Application interface language')}</span>
           </div>
-          <select
-            className="input settings-select"
-            aria-label={t('Language')}
+          <SettingsIconSelect
+            label={t('Language')}
             value={settings.language ?? 'zh-CN'}
-            onChange={(e) => void updateSettings({ language: e.target.value as 'zh-CN' | 'en' })}
-          >
-            <option value="zh-CN">简体中文</option>
-            <option value="en">English</option>
-          </select>
+            icons={{}}
+            className="settings-icon-select--language"
+            onChange={(value) => void updateSettings({ language: value as 'zh-CN' | 'en' })}
+            options={[
+              { value: 'zh-CN', label: '简体中文', icon: '' },
+              { value: 'en', label: 'English', icon: '' }
+            ]}
+          />
         </div>
 
         {/* 6. 压缩本地保存的聊天历史记录 */}
@@ -295,7 +311,24 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
             label={t('Plugins')}
           />
         </div>
+
+        {/* Computer Use is a capability, not a task mode. The switch is the approval. */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Computer Use')}</span>
+            <span className="settings-item-row__desc">
+              {t('Let the agent see and operate this Windows desktop. Screenshots, clicks and keystrokes are not asked for one by one. Plan Mode still cannot use it.')}
+            </span>
+          </div>
+          <Switch
+            checked={settings.computerUse === true}
+            onChange={(checked) => void updateSettings({ computerUse: checked })}
+            label={t('Computer Use')}
+          />
+        </div>
       </SettingsGroup>
+
+      <ProjectSafetySettings />
 
       <SettingsGroup title={t('Editor')}>
         {/* 纯文本编辑器 */}
@@ -331,17 +364,19 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
             <span className="settings-item-row__title">{t('Send shortcut')}</span>
             <span className="settings-item-row__desc">{t('Choose whether pressing Enter sends or inserts a new line')}</span>
           </div>
-          <select
-            className="input settings-select"
-            aria-label={t('Send shortcut')}
+          <SettingsIconSelect
+            label={t('Send shortcut')}
             value={settings.sendShortcut ?? 'enter'}
-            onChange={(e) =>
-              void updateSettings({ sendShortcut: e.target.value as 'enter' | 'ctrlEnter' })
+            icons={{}}
+            className="settings-icon-select--shortcut"
+            onChange={(value) =>
+              void updateSettings({ sendShortcut: value as 'enter' | 'ctrlEnter' })
             }
-          >
-            <option value="enter">{t('Press Enter')}</option>
-            <option value="ctrlEnter">{t('Press Ctrl+Enter')}</option>
-          </select>
+            options={[
+              { value: 'enter', label: t('Press Enter'), icon: '' },
+              { value: 'ctrlEnter', label: t('Press Ctrl+Enter'), icon: '' }
+            ]}
+          />
         </div>
 
         {/* 跟进处理方式 */}
@@ -372,6 +407,7 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
           </div>
         </div>
       </SettingsGroup>
+
     </div>
   )
 }
@@ -1146,21 +1182,27 @@ export function AppearanceSettings() {
           <SettingsGroup title={t('Text size')}>
             <div className="segmented settings-text-size" role="group" aria-label={t('Text size')}>
               {[
-                { label: 'Small', value: 0.92 },
-                { label: 'Default', value: 1 },
-                { label: 'Large', value: 1.1 },
-                { label: 'XL', value: 1.22 }
-              ].map((option) => (
-                <button
-                  key={option.label}
-                  data-size={option.label.toLowerCase()}
-                  aria-pressed={Math.abs((settings.fontScale ?? 1) - option.value) < 0.01}
-                  data-active={Math.abs((settings.fontScale ?? 1) - option.value) < 0.01}
-                  onClick={() => void updateSettings({ fontScale: option.value })}
-                >
-                  {t(option.label)}
-                </button>
-              ))}
+                { label: FONT_SCALE_LABELS[0], value: FONT_SCALE_PRESETS[0], data: 'small' },
+                { label: FONT_SCALE_LABELS[1], value: FONT_SCALE_PRESETS[1], data: 'standard' },
+                { label: FONT_SCALE_LABELS[2], value: FONT_SCALE_PRESETS[2], data: 'large' },
+                { label: FONT_SCALE_LABELS[3], value: FONT_SCALE_PRESETS[3], data: 'extra-large' }
+              ].map((option) => {
+                const active =
+                  Math.abs(
+                    normalizeFontScale(settings.fontScale) - option.value
+                  ) < 0.001
+                return (
+                  <button
+                    key={option.label}
+                    data-size={option.data}
+                    aria-pressed={active}
+                    data-active={active}
+                    onClick={() => void updateSettings({ fontScale: option.value })}
+                  >
+                    {t(option.label)}
+                  </button>
+                )
+              })}
             </div>
           </SettingsGroup>
 
@@ -1244,6 +1286,77 @@ export function UsageSettings() {
   const activeConvs = activeData?.conversationsCount ?? 0
   const activeMsgs = activeData?.messageCount ?? 0
   const avgTokens = activeConvs > 0 && activeTokens ? Math.round(activeTokens.totalTokens / activeConvs) : 0
+  const heatmap = useMemo(() => {
+    const locale = settings.language === 'zh-CN' ? 'zh-CN' : 'en'
+    const now = new Date()
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 364)
+    const leadingDays = (start.getDay() + 6) % 7
+    const weekCount = Math.ceil((leadingDays + 365) / 7)
+    const gridStart = new Date(start)
+    gridStart.setDate(gridStart.getDate() - leadingDays)
+    const usageByDate = new Map(
+      (usageStats?.heatmapDays ?? usageStats?.recentDays ?? []).map((day) => [day.date, day])
+    )
+    const dateKey = (date: Date) =>
+      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    const cells: Array<{
+      date: Date
+      day: NonNullable<typeof usageStats>['recentDays'][number]
+      week: number
+      weekday: number
+      level: number
+    }> = []
+    const monthLabels: Array<{ week: number; label: string; fullLabel: string }> = []
+    const monthFormatter = new Intl.DateTimeFormat(locale, { month: 'short' })
+    const fullDateFormatter = new Intl.DateTimeFormat(locale, {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    })
+    const weekdayFormatter = new Intl.DateTimeFormat(locale, { weekday: 'short' })
+    let yearTokens = 0
+    let activeDays = 0
+
+    for (let week = 0; week < weekCount; week++) {
+      for (let weekday = 0; weekday < 7; weekday++) {
+        const date = new Date(gridStart)
+        date.setDate(gridStart.getDate() + week * 7 + weekday)
+        if (date < start || date > today) continue
+        const key = dateKey(date)
+        const day = usageByDate.get(key) ?? {
+          date: key,
+          totalTokens: 0,
+          conversationsCount: 0,
+          messageCount: 0
+        }
+        yearTokens += day.totalTokens
+        if (day.totalTokens > 0) activeDays += 1
+        if (date.getDate() === 1) {
+          monthLabels.push({
+            week,
+            label: monthFormatter.format(date),
+            fullLabel: new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'long' }).format(date)
+          })
+        }
+        cells.push({ date, day, week, weekday, level: 0 })
+      }
+    }
+
+    const maxTokens = Math.max(0, ...cells.map((cell) => cell.day.totalTokens))
+    for (const cell of cells) {
+      cell.level = cell.day.totalTokens === 0 || maxTokens === 0
+        ? 0
+        : Math.max(1, Math.ceil((cell.day.totalTokens / maxTokens) * 4))
+    }
+
+    const weekdays = Array.from({ length: 7 }, (_, day) => {
+      const date = new Date(2024, 0, 1 + day)
+      return weekdayFormatter.format(date)
+    })
+
+    return { cells, monthLabels, weekdays, weekCount, yearTokens, activeDays, fullDateFormatter, locale }
+  }, [settings.language, usageStats])
 
   return (
     <div className="settings-page">
@@ -1252,9 +1365,8 @@ export function UsageSettings() {
         description={t('Global token consumption statistics and conversation activity across time horizons.')}
       />
 
-      {/* 4 Overview Period Cards */}
       <SettingsGroup
-        title={t('Token usage overview')}
+        title={t('Usage heatmap')}
         action={
           <button
             type="button"
@@ -1266,6 +1378,72 @@ export function UsageSettings() {
             {t('Refresh')}
           </button>
         }
+      >
+        <div className="usage-heatmap">
+          <div className="usage-heatmap__summary">
+            <span>{t('Past 365 days')}</span>
+            <span>
+              {heatmap.activeDays} {t('Active days')} · {formatTokens(heatmap.yearTokens)} {t('Total tokens')}
+            </span>
+          </div>
+          <div className="usage-heatmap__viewport">
+            <div className="usage-heatmap__layout">
+              <div className="usage-heatmap__weekdays" aria-hidden="true">
+                <span />
+                {heatmap.weekdays.map((day, index) => (
+                  <span key={index}>{index === 0 || index === 2 || index === 4 ? day : ''}</span>
+                ))}
+              </div>
+              <div className="usage-heatmap__calendar">
+                <div
+                  className="usage-heatmap__months"
+                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 8px)` }}
+                  aria-hidden="true"
+                >
+                  {heatmap.monthLabels.map(({ week, label, fullLabel }) => (
+                    <span key={`${week}-${label}`} style={{ gridColumn: week + 1 }} title={fullLabel}>
+                      {label}
+                    </span>
+                  ))}
+                </div>
+                <div
+                  className="usage-heatmap__cells"
+                  role="grid"
+                  aria-label={t('Usage heatmap')}
+                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 8px)` }}
+                >
+                  {heatmap.cells.map(({ date, day, week, weekday, level }) => {
+                    const dateLabel = heatmap.fullDateFormatter.format(date)
+                    const description = `${dateLabel} · ${t('Total tokens')}: ${day.totalTokens.toLocaleString(heatmap.locale)} · ${t('Conversations')}: ${day.conversationsCount} · ${t('Message turns')}: ${day.messageCount}`
+                    return (
+                      <span
+                        key={day.date}
+                        className="usage-heatmap__cell"
+                        data-level={level}
+                        role="gridcell"
+                        aria-label={description}
+                        title={description}
+                        style={{ gridColumn: week + 1, gridRow: weekday + 1 }}
+                      />
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="usage-heatmap__legend" aria-label={t('Usage intensity')}>
+            <span>{t('Less')}</span>
+            {[0, 1, 2, 3, 4].map((level) => (
+              <span key={level} className="usage-heatmap__cell" data-level={level} aria-hidden="true" />
+            ))}
+            <span>{t('More')}</span>
+          </div>
+        </div>
+      </SettingsGroup>
+
+      {/* 4 Overview Period Cards */}
+      <SettingsGroup
+        title={t('Token usage overview')}
       >
         <div className="usage-period-grid">
           {periods.map(({ key, title }) => {
@@ -1728,87 +1906,6 @@ function McpPluginCard({ server }: { server: McpServerInfo }) {
   )
 }
 
-type PanelWidth = 'sidebarWidth' | 'drawerWidth' | 'terminalHeight'
-
-/** The sidebar and inspector defaults; the terminal derives its default from the window height. */
-const PANEL_DEFAULTS: Record<'sidebarWidth' | 'drawerWidth', number> = {
-  sidebarWidth: 240,
-  drawerWidth: 440
-}
-
-const PANEL_ROWS: { key: PanelWidth; label: string }[] = [
-  { key: 'sidebarWidth', label: 'Sidebar' },
-  { key: 'drawerWidth', label: 'Inspector' },
-  { key: 'terminalHeight', label: 'Terminal' }
-]
-
-export function PanelsSettings() {
-  const settings = useAppStore((state) => state.settings)
-  const updateSettings = useAppStore((state) => state.updateSettings)
-  const t = useT()
-
-  const resetWidth = (key: PanelWidth) => {
-    if (key === 'sidebarWidth') void updateSettings({ sidebarWidth: PANEL_DEFAULTS.sidebarWidth })
-    else if (key === 'drawerWidth') void updateSettings({ drawerWidth: PANEL_DEFAULTS.drawerWidth })
-    else void updateSettings({ terminalHeight: undefined })
-  }
-
-  return (
-    <div className="settings-page">
-      <PageIntro
-        title={t('Panels')}
-        description={t('Put the surrounding panels back to their default size, and choose how diffs are shown.')}
-      />
-
-      <SettingsGroup title={t('Panel widths')}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {PANEL_ROWS.map((row) => {
-            const value = settings[row.key]
-            return (
-              <div className="field" key={row.key}>
-                <div className="field__row">
-                  <span className="field__label">{t(row.label)}</span>
-                  <span
-                    className="field__hint"
-                    style={{ flex: 1, fontVariantNumeric: 'tabular-nums' }}
-                  >
-                    {typeof value === 'number' ? `${value} px` : t('Default')}
-                  </span>
-                  <button className="btn btn--sm" onClick={() => resetWidth(row.key)}>
-                    {t('Reset')}
-                  </button>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        <span className="field__hint">
-          {t('You can also drag the edge of a panel to resize it.')}
-        </span>
-      </SettingsGroup>
-
-      <SettingsGroup title={t('Diff layout')}>
-        <div className="segmented" role="group" aria-label={t('Diff layout')}>
-          <button
-            aria-pressed={!settings.diffSplit}
-            data-active={!settings.diffSplit}
-            onClick={() => void updateSettings({ diffSplit: false })}
-          >
-            {t('Unified')}
-          </button>
-          <button
-            aria-pressed={settings.diffSplit === true}
-            data-active={settings.diffSplit === true}
-            onClick={() => void updateSettings({ diffSplit: true })}
-          >
-            {t('Side by side')}
-          </button>
-        </div>
-      </SettingsGroup>
-    </div>
-  )
-}
-
 export function PersonalizationSettings({
   value,
   onChange
@@ -1846,39 +1943,38 @@ export function PersonalizationSettings({
   )
 }
 
-export function ProjectSafetySettings() {
+function ProjectSafetySettings() {
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
   const t = useT()
 
   return (
-    <div className="settings-page">
-      <PageIntro
-        title={t('Project safety')}
-        description={t('Control whether Pi loads configuration and extensions from local workspaces.')}
-      />
-
-      <SettingsGroup title={t('Project resources')}>
-        <div className="field">
-          <div className="field__row settings-switch-row">
-            <Switch
-              checked={settings.trustProject !== false}
-              onChange={(value) => void updateSettings({ trustProject: value })}
-              label={t('Trust project-local extensions and settings')}
-            />
-            <span className="field__hint">
-              {t('Allow project-local .pi/extensions, .pi/skills and .pi/settings.json to load in all workspaces. Turn this off for untrusted code.')}
-              <br />
-              {t('Saved immediately. Restart Pi Desktop to apply this to the Pi runtime. MCP configuration uses this setting the next time it is read.')}
-            </span>
-          </div>
+    <SettingsGroup title={t('Project safety')}>
+      <div className="settings-item-row">
+        <div className="settings-item-row__info">
+          <span className="settings-item-row__title">
+            {t('Trust project-local extensions and settings')}
+          </span>
+          <span className="settings-item-row__desc">
+            {t('Allow project-local .pi/extensions, .pi/skills and .pi/settings.json to load in all workspaces. Turn this off for untrusted code.')}
+          </span>
+          <span className="settings-item-row__desc">
+            {t('Saved immediately. Restart Pi Desktop to apply this to the Pi runtime. MCP configuration uses this setting the next time it is read.')}
+          </span>
         </div>
-      </SettingsGroup>
-    </div>
+        <Switch
+          checked={settings.trustProject !== false}
+          onChange={(value) => void updateSettings({ trustProject: value })}
+          label={t('Trust project-local extensions and settings')}
+        />
+      </div>
+    </SettingsGroup>
   )
 }
 
 export function AboutSettings() {
+  const settings = useAppStore((state) => state.settings)
+  const updateSettings = useAppStore((state) => state.updateSettings)
   const info = useAppStore((state) => state.info)
   const refreshInfo = useAppStore((state) => state.refreshInfo)
   const showToast = useAppStore((state) => state.showToast)
@@ -1950,108 +2046,493 @@ export function AboutSettings() {
     }
   }
 
-  const appCurrent = info?.version ?? '0.5.0'
+  const appCurrent = info?.version ?? '—'
   const piCliCurrent = info?.pi.version ?? '—'
 
   return (
     <div className="settings-page settings-page--compact">
-      <PageIntro
-        title={t('About')}
-        description={t('Version information and update checking.')}
-      />
+      <SettingsGroup title={t('Version and updates')}>
+        <div className="settings-about-card">
+          <div className="settings-item-row settings-about-row">
+            <div className="settings-item-row__info">
+              <span className="settings-item-row__title">{t('Application version')}</span>
+              <span className="settings-item-row__desc">{t('Current application version')}</span>
+            </div>
+            <div className="settings-version-actions">
+              <span className="settings-about-value">{appCurrent}</span>
+              {updateStatus?.app.hasUpdate ? (
+                <>
+                  <span className="settings-badge" data-tone="amber">
+                    <Sparkles size={11} style={{ marginRight: 4 }} />
+                    {t('New version')} v{updateStatus.app.latest}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn--primary btn--sm"
+                    disabled={upgradingApp || upgradingCli}
+                    onClick={() => void handleUpgradeApp()}
+                  >
+                    <Download size={12} />
+                    {upgradingApp ? t('Upgrading...') : t('Pull update')}
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
 
-      <SettingsGroup
-        title={t('Version info')}
-        action={
-          <button
-            type="button"
-            className="btn btn--sm"
-            disabled={checking || upgradingCli || upgradingApp}
-            onClick={() => void handleCheck()}
-          >
-            <RefreshCw size={12} className={checking ? 'spin' : ''} />
-            {checking ? t('Checking...') : t('Check for updates')}
-          </button>
-        }
-      >
-        {/* 1. 应用版本 */}
-        <div className="settings-item-row">
-          <div className="settings-item-row__info settings-version-info">
-            <span className="settings-item-row__title">{t('Application version')}</span>
-            <span className="settings-item-row__desc">
-              Pi Desktop v{appCurrent}
-            </span>
+          <div className="settings-item-row settings-about-row">
+            <div className="settings-item-row__info">
+              <span className="settings-item-row__title">{t('Built-in service version')}</span>
+              <span className="settings-item-row__desc">{t('Current built-in service version')}</span>
+            </div>
+            <div className="settings-version-actions">
+              <span className="settings-about-value">{piCliCurrent}</span>
+              {updateStatus?.piCli.hasUpdate ? (
+                <>
+                  <span className="settings-badge" data-tone="amber">
+                    <Sparkles size={11} style={{ marginRight: 4 }} />
+                    {t('New version')} v{updateStatus.piCli.latest}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn--primary btn--sm"
+                    disabled={upgradingCli || upgradingApp}
+                    onClick={() => void handleUpgradeCli()}
+                  >
+                    <Download size={12} />
+                    {upgradingCli ? t('Upgrading...') : t('Reinstall & Upgrade')}
+                  </button>
+                </>
+              ) : null}
+            </div>
           </div>
-          <div className="settings-version-actions">
-            {checking ? (
-              <span className="settings-badge">
-                <RefreshCw size={10} className="spin" style={{ marginRight: 4 }} />
-                {t('Checking...')}
-              </span>
-            ) : updateStatus?.app.hasUpdate ? (
-              <>
-                <span className="settings-badge" data-tone="amber">
-                  <Sparkles size={11} style={{ marginRight: 4 }} />
-                  {t('New version')} v{updateStatus.app.latest}
-                </span>
-                <button
-                  type="button"
-                  className="btn btn--primary btn--sm"
-                  disabled={upgradingApp}
-                  onClick={() => void handleUpgradeApp()}
-                >
-                  <Download size={12} className={upgradingApp ? 'spin' : ''} />
-                  {upgradingApp ? t('Upgrading...') : t('Pull update')}
-                </button>
-              </>
-            ) : updateStatus?.app ? (
-              <span className="settings-badge" data-tone="green">
-                <Check size={11} style={{ marginRight: 4 }} />
-                {t('Up to date')}
-              </span>
-            ) : null}
-          </div>
-        </div>
 
-        {/* 2. Pi CLI 版本 */}
-        <div className="settings-item-row">
-          <div className="settings-item-row__info settings-version-info">
-            <span className="settings-item-row__title">{t('Pi CLI version')}</span>
-            <span className="settings-item-row__desc">
-              @earendil-works/pi-coding-agent v{piCliCurrent}
-            </span>
+          <div className="settings-item-row settings-about-row">
+            <div className="settings-item-row__info">
+              <span className="settings-item-row__title">{t('Check for updates')}</span>
+              <span className="settings-item-row__desc">{t('Manually check for available updates')}</span>
+            </div>
+            <button
+              type="button"
+              className="btn btn--sm"
+              disabled={checking || upgradingCli || upgradingApp}
+              onClick={() => void handleCheck()}
+            >
+              <RefreshCw size={12} className={checking ? 'spin' : ''} />
+              {checking ? t('Checking...') : t('Check now')}
+            </button>
           </div>
-          <div className="settings-version-actions">
-            {checking ? (
-              <span className="settings-badge">
-                <RefreshCw size={10} className="spin" style={{ marginRight: 4 }} />
-                {t('Checking...')}
+
+          <div className="settings-item-row settings-about-row">
+            <div className="settings-item-row__info">
+              <span className="settings-item-row__title">{t('Automatically download updates')}</span>
+              <span className="settings-item-row__desc">
+                {t('Download built-in service updates in the background and restart the app to finish installing')}
               </span>
-            ) : updateStatus?.piCli.hasUpdate ? (
-              <>
-                <span className="settings-badge" data-tone="amber">
-                  <Sparkles size={11} style={{ marginRight: 4 }} />
-                  {t('New version')} v{updateStatus.piCli.latest}
-                </span>
-                <button
-                  type="button"
-                  className="btn btn--primary btn--sm"
-                  disabled={upgradingCli}
-                  onClick={() => void handleUpgradeCli()}
-                >
-                  <Download size={12} className={upgradingCli ? 'spin' : ''} />
-                  {upgradingCli ? t('Upgrading...') : t('Reinstall & Upgrade')}
-                </button>
-              </>
-            ) : updateStatus?.piCli ? (
-              <span className="settings-badge" data-tone="green">
-                <Check size={11} style={{ marginRight: 4 }} />
-                {t('Up to date')}
-              </span>
-            ) : null}
+            </div>
+            <Switch
+              checked={settings.automaticUpdates === true}
+              onChange={(value) => void updateSettings({ automaticUpdates: value })}
+              label={t('Automatically download updates')}
+            />
           </div>
         </div>
       </SettingsGroup>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ *
+ * Agent and conversation
+ * ------------------------------------------------------------------ */
+
+const modelSpec = (model: ModelInfo): string => `${model.provider}/${model.id}`
+
+/**
+ * The three levels with the exact words `PermissionPicker` shows. That list is
+ * private to the component, so the strings live here too; sharing the English
+ * keys is what keeps the two dialogs from drifting into different wording.
+ */
+const PERMISSION_MODES: { value: PermissionMode; label: string; description: string }[] = [
+  { value: 'ask', label: 'Request approval', description: 'Ask before every agent tool operation.' },
+  {
+    value: 'auto',
+    label: 'Approve for me',
+    description: 'Approve ordinary files in the working folder; ask for commands and other access.'
+  },
+  { value: 'full', label: 'Full access', description: 'Allow all agent tools without approval.' }
+]
+
+/** The row shape GeneralSettings uses: title and description left, control right. */
+function SettingsItemRow({
+  title,
+  description,
+  children
+}: {
+  title: string
+  description?: string
+  children: ReactNode
+}) {
+  return (
+    // The page's own row class: these descriptions are two lines long, and the
+    // shared row sizes its text column by content — which pushed the control
+    // onto a second line instead of holding it on the row's right edge.
+    <div className="settings-item-row settings-item-row--agent">
+      <div className="settings-item-row__info">
+        <span className="settings-item-row__title">{title}</span>
+        {description ? <span className="settings-item-row__desc">{description}</span> : null}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * Models the selects on this page can offer.
+ *
+ * The saved provider catalog is folded in with whatever the live process
+ * published, so a default can be chosen while no Pi process is running. The
+ * grouping is the composer picker's: providers in first-appearance order, Pi's
+ * order preserved inside each provider.
+ */
+function useModelChoices(): { models: ModelInfo[]; groups: [string, ModelInfo[]][] } {
+  const runtimeModels = useAppStore((state) => state.models)
+  const catalogModels = useAppStore((state) => state.catalogModels)
+  const disabledModelSpecs = useAppStore((state) => state.disabledModelSpecs)
+  const models = useMemo(
+    () => selectableModels(runtimeModels, catalogModels, disabledModelSpecs),
+    [runtimeModels, catalogModels, disabledModelSpecs]
+  )
+  const groups = useMemo(() => {
+    const map = new Map<string, ModelInfo[]>()
+    for (const model of models) {
+      const group = map.get(model.provider)
+      if (group) group.push(model)
+      else map.set(model.provider, [model])
+    }
+    return [...map]
+  }, [models])
+  return { models, groups }
+}
+
+function ModelSelect({
+  label,
+  value,
+  groups,
+  emptyLabel,
+  onChange
+}: {
+  label: string
+  value: string
+  groups: [string, ModelInfo[]][]
+  emptyLabel?: string
+  onChange: (spec: string) => void
+}) {
+  const t = useT()
+  // A saved pair the catalog no longer offers still has to appear in the
+  // control. Dropping it would paint the first row and claim that was the choice.
+  const listed = groups.some(([, list]) => list.some((model) => modelSpec(model) === value))
+  return (
+    <select
+      className="input settings-select settings-select--model"
+      aria-label={label}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      {emptyLabel ? <option value="">{emptyLabel}</option> : null}
+      {groups.map(([provider, list]) => (
+        <optgroup key={provider} label={provider}>
+          {list.map((model) => (
+            <option key={modelSpec(model)} value={modelSpec(model)}>
+              {model.name || model.id}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+      {value && !listed ? <option value={value}>{value}</option> : null}
+      {/* Nothing to list is worth saying out loud; a bare default looks like a choice. */}
+      {groups.length === 0 ? (
+        <option value="" disabled>
+          {t('No models yet.')}
+        </option>
+      ) : null}
+    </select>
+  )
+}
+
+/**
+ * A reasoning-effort select.
+ *
+ * The levels Pi reports belong to the model on screen. A saved effort that came
+ * from another model is still offered, or the control would read as unset.
+ */
+function LevelSelect({
+  label,
+  value,
+  levels,
+  emptyLabel,
+  onChange
+}: {
+  label: string
+  value: string
+  levels: readonly string[]
+  emptyLabel: string
+  onChange: (level: string) => void
+}) {
+  const t = useT()
+  const levelLabel = (level: string) => t(level.charAt(0).toUpperCase() + level.slice(1))
+  const match = value
+    ? levels.find((level) => level.toLowerCase() === value.toLowerCase())
+    : undefined
+  return (
+    <select
+      className="input settings-select"
+      aria-label={label}
+      value={match ?? value}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      <option value="">{emptyLabel}</option>
+      {levels.map((level) => (
+        <option key={level} value={level}>
+          {levelLabel(level)}
+        </option>
+      ))}
+      {value && !match ? <option value={value}>{levelLabel(value)}</option> : null}
+    </select>
+  )
+}
+
+/**
+ * The defaults a new conversation starts with and how its work is shown.
+ * Every control saves on the spot — this dialog has no save button.
+ */
+export function AgentSettings() {
+  const settings = useAppStore((state) => state.settings)
+  const updateSettings = useAppStore((state) => state.updateSettings)
+  const refreshModelCatalog = useAppStore((state) => state.refreshModelCatalog)
+  const liveLevels = useAppStore((state) => state.thinkingLevels)
+  const t = useT()
+  const { models, groups } = useModelChoices()
+  const [confirmFullAccess, setConfirmFullAccess] = useState(false)
+
+  // A provider saved in the Model page is not in this store until the catalog is
+  // re-read, and this page has to work with no Pi process to tell it otherwise.
+  useEffect(() => {
+    void refreshModelCatalog()
+  }, [refreshModelCatalog])
+
+  // This is a saved default for new conversations, so it can use Pi's generic
+  // effort choices even when no running session has reported model-specific levels.
+  const levels: readonly string[] = liveLevels.length > 0 ? liveLevels : DEFAULT_THINKING_LEVELS
+  const permissionMode = settings.permissionMode ?? 'ask'
+  const defaultModel = resolveSavedModel(settings.model, settings.provider, models)
+  const subagentModel = resolveSavedModel(settings.subagentModel, settings.subagentProvider, models)
+
+  const saveModel = (spec: string) => {
+    if (!spec) {
+      void updateSettings({ model: undefined, provider: undefined })
+      return
+    }
+    const model = models.find((item) => modelSpec(item) === spec)
+    if (!model) return
+    // Kept in the shape the rest of the app compares: `provider/id`, plus the
+    // provider id on its own, exactly as `setModel` writes the live choice.
+    void updateSettings({ model: spec, provider: model.provider })
+  }
+
+  const saveSubagentModel = (spec: string) => {
+    if (!spec) {
+      void updateSettings({ subagentModel: undefined, subagentProvider: undefined })
+      return
+    }
+    const model = models.find((item) => modelSpec(item) === spec)
+    if (!model) return
+    void updateSettings({ subagentModel: spec, subagentProvider: model.provider })
+  }
+
+  const savePermission = (value: PermissionMode) => {
+    void updateSettings({ permissionMode: value })
+  }
+
+  // The picker's safety step, kept here too: full access is never one click away.
+  const pickPermission = (value: PermissionMode) => {
+    if (value === permissionMode) return
+    if (value === 'full') {
+      setConfirmFullAccess(true)
+      return
+    }
+    savePermission(value)
+  }
+
+  return (
+    <div className="settings-page">
+      <PageIntro
+        title={t('Agent and conversation')}
+        description={t('What every new conversation starts with, and how the work it does is shown to you.')}
+      />
+
+      <SettingsGroup title={t('Agent defaults')}>
+        <SettingsItemRow
+          title={t('Default model')}
+          description={t('The model a new conversation starts with. The conversation on screen keeps the model it already chose.')}
+        >
+          <ModelSelect
+            label={t('Default model')}
+            value={defaultModel ? modelSpec(defaultModel) : ''}
+            groups={groups}
+            emptyLabel={t('Automatic (Pi default)')}
+            onChange={saveModel}
+          />
+        </SettingsItemRow>
+
+        <SettingsItemRow
+          title={t('Default permission')}
+          description={t('How Pi asks before it uses a tool. This one applies straight away, including to a conversation already running.')}
+        >
+          <div className="segmented" role="group" aria-label={t('Default permission')}>
+            {PERMISSION_MODES.map((entry) => {
+              const active = entry.value === permissionMode
+              return (
+                <button
+                  key={entry.value}
+                  type="button"
+                  data-active={active}
+                  aria-pressed={active}
+                  title={t(entry.description)}
+                  onClick={() => pickPermission(entry.value)}
+                >
+                  {t(entry.label)}
+                </button>
+              )
+            })}
+          </div>
+        </SettingsItemRow>
+
+        {/* Seven effort levels do not fit one segmented control, so this row
+            gets a select; the scale is Pi's, not a made-up shortlist. */}
+        <SettingsItemRow
+          title={t('Default reasoning effort')}
+          description={t('The reasoning effort a new conversation starts with. Automatic leaves the choice to Pi.')}
+        >
+          <LevelSelect
+            label={t('Default reasoning effort')}
+            value={settings.thinkingLevel ?? ''}
+            levels={levels}
+            emptyLabel={t('Automatic (Pi default)')}
+            onChange={(level) => void updateSettings({ thinkingLevel: level || undefined })}
+          />
+        </SettingsItemRow>
+
+        <SettingsItemRow
+          title={t('Default plan mode')}
+          description={t('Open a brand-new conversation in Plan Mode, which begins read-only: read, grep, find, ls and the plan tool. Approving the plan, or /plan off, leaves it. A conversation already open or resumed from disk keeps the mode it stored.')}
+        >
+          <Switch
+            checked={settings.defaultPlanMode === true}
+            onChange={(checked) => void updateSettings({ defaultPlanMode: checked })}
+            label={t('Default plan mode')}
+          />
+        </SettingsItemRow>
+      </SettingsGroup>
+
+      <SettingsGroup title={t('Subagents')}>
+        <SettingsItemRow
+          title={t('Subagent model')}
+          description={t('The model a spawned subagent runs on. Follow the conversation keeps the model of the conversation that delegated the task. Reaches the subagents dispatched by conversations started from now on.')}
+        >
+          <ModelSelect
+            label={t('Subagent model')}
+            value={subagentModel ? modelSpec(subagentModel) : ''}
+            groups={groups}
+            emptyLabel={t('Follow the conversation')}
+            onChange={saveSubagentModel}
+          />
+        </SettingsItemRow>
+
+        <SettingsItemRow
+          title={t('Subagent reasoning effort')}
+          description={t('The reasoning effort a spawned subagent runs with. The setup is written when a conversation starts, so it reaches the subagents of new conversations.')}
+        >
+          <LevelSelect
+            label={t('Subagent reasoning effort')}
+            value={settings.subagentThinking ?? ''}
+            levels={levels}
+            emptyLabel={t('Follow the conversation')}
+            onChange={(level) => void updateSettings({ subagentThinking: level || undefined })}
+          />
+        </SettingsItemRow>
+      </SettingsGroup>
+
+      <SettingsGroup title={t('Composer')}>
+        <SettingsItemRow
+          title={t('Auto-mention pasted images')}
+          description={t('Reference a pasted picture in the message, not only attach it.')}
+        >
+          <Switch
+            checked={settings.pasteMentions === true}
+            onChange={(checked) => void updateSettings({ pasteMentions: checked })}
+            label={t('Auto-mention pasted images')}
+          />
+        </SettingsItemRow>
+      </SettingsGroup>
+
+      <SettingsGroup title={t('Message folding')}>
+        <SettingsItemRow
+          title={t('Auto-fold the working process')}
+          description={t('Keep a finished turn’s tools and thinking folded so the answer is what stays on screen. Turn this off to leave the work visible.')}
+        >
+          <Switch
+            checked={settings.autoFoldProcess !== false}
+            onChange={(checked) => void updateSettings({ autoFoldProcess: checked })}
+            label={t('Auto-fold the working process')}
+          />
+        </SettingsItemRow>
+
+        {/* A different thing from the row above: this one is about the live list
+            while the agent works, not about a turn that has already settled. */}
+        <SettingsItemRow
+          title={t('Tool call summary')}
+          description={t('While the agent is working, gather consecutive tool calls into one summary line instead of a list that keeps growing. This is not the folding of a finished turn.')}
+        >
+          <Switch
+            checked={settings.toolCallSummary === true}
+            onChange={(checked) => void updateSettings({ toolCallSummary: checked })}
+            label={t('Tool call summary')}
+          />
+        </SettingsItemRow>
+      </SettingsGroup>
+
+      <SettingsGroup title={t('Chat titles')}>
+        <SettingsItemRow
+          title={t('Auto-generate title')}
+          description={t('Name a new conversation from its first exchange. This spends one extra model call.')}
+        >
+          <Switch
+            checked={settings.autoTitle === true}
+            onChange={(checked) => void updateSettings({ autoTitle: checked })}
+            label={t('Auto-generate title')}
+          />
+        </SettingsItemRow>
+      </SettingsGroup>
+
+      {confirmFullAccess
+        ? createPortal(
+            <ConfirmDialog
+              className="permission-confirm"
+              title={t('Enable full access?')}
+              body={t(
+                'Full access lets the agent read and change files outside the working folder, run commands, and access the network with your system account permissions. Tool operations will no longer ask for approval. You can switch back at any time.'
+              )}
+              tone="danger"
+              onCancel={() => setConfirmFullAccess(false)}
+              onConfirm={() => {
+                setConfirmFullAccess(false)
+                savePermission('full')
+              }}
+            />,
+            document.body
+          )
+        : null}
     </div>
   )
 }

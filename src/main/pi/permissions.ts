@@ -47,8 +47,8 @@ export function permissionExtension(title: string): string {
     pi.on('tool_call', (event, ctx) => {
       // Mode tools record session state or run their own approval.
       // exit_plan_mode asks through its own dialog. computer is only offered
-      // after the user turns Computer Use on, and a per-click dialog would
-      // make the observe/act loop unusable, so that mode is the approval.
+      // after the user turns it on in Settings, and a per-click dialog would
+      // make the observe/act loop unusable, so that switch is the approval.
       if (event.toolName === 'desktop_goal_finish' || event.toolName === 'exit_plan_mode' || event.toolName === 'computer') return;
       const decide = async () => {
         if (ctx.signal?.aborted || !ctx.hasUI) return { block: true, reason: 'Tool approval is unavailable', terminate: true };

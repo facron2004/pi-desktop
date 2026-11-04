@@ -139,7 +139,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       scrollback: 8000,
       fontFamily: cssValue('--font-mono', 'Consolas, monospace'),
       fontSize: 12,
-      lineHeight: 1.35,
+      // MCode's terminal role is 12/14.4, i.e. a 1.2 line box.
+      lineHeight: 1.2,
       theme: terminalTheme(isDark)
     })
     const fit = new FitAddon()
@@ -154,6 +155,18 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     fitRef.current = fit
 
     let disposed = false
+    // xterm measures its cell box when it opens. With JetBrains Mono loading
+    // asynchronously the first measure would keep the fallback metrics, so
+    // re-fit once the face is ready.
+    void document.fonts.ready.then(() => {
+      if (disposed) return
+      try {
+        fit.fit()
+      } catch {
+        /* the panel may no longer be laid out */
+      }
+      term.refresh(0, term.rows - 1)
+    })
     let resizeFrame = 0
     // Only the window between the mount and our own `create` resolving may
     // buffer unknown-id output. Anything after that belongs to another
@@ -540,7 +553,7 @@ export function TerminalPanel({
                 title={tab.label || t('Terminal')}
                 onClick={() => setActiveKey(tab.key)}
               >
-                <SquareTerminal size={13} className="terminal__tab-icon" />
+                <SquareTerminal size={18} className="terminal__tab-icon" />
                 <span className="terminal__tab-label">{tab.label || t('Terminal')}</span>
               </button>
               <button
@@ -550,7 +563,7 @@ export function TerminalPanel({
                 aria-label={t('Close')}
                 onClick={() => closeTab(tab.key)}
               >
-                <X size={12} />
+                <X size={16} />
               </button>
             </div>
           ))}
@@ -561,7 +574,7 @@ export function TerminalPanel({
             aria-label={t('New terminal')}
             onClick={addTab}
           >
-            <Plus size={14} />
+            <Plus size={18} />
           </button>
         </div>
 

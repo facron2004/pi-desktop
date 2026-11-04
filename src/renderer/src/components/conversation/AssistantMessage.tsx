@@ -23,8 +23,10 @@ type TurnSegment = { kind: 'node'; node: ReactNode } | { kind: 'process'; buffer
  *
  * Spoken text keeps the column. Thinking and tool calls between two stretches
  * of text are one process: open and indented while it is the live tail,
- * collapsed to a single indented line once that stretch has finished. Tools
- * stay grouped inside it until text, thinking or an image interrupts them,
+ * collapsed to a single indented line once that stretch has finished — or, when
+ * `toolCallSummary` is on, one line while it is still working too. That choice
+ * is ProcessTrail's; this component only cuts the turn into stretches.
+ * Tools stay grouped inside it until text, thinking or an image interrupts them,
  * even when they span several assistant messages.
  */
 export function AssistantMessage({
@@ -68,6 +70,9 @@ export function AssistantMessage({
     trace.children = trace.children.filter((child) => !isThinkingRow(child))
     // The fold already names the batch. Each call is a link, not another
     // "Activity" row wrapped around a card.
+    // The rows are built whether or not they are painted: `toolCallSummary`
+    // is a presentation choice ProcessTrail makes from `live`, and one call is
+    // still one node keyed by the thread's own id at its first appearance.
     for (const item of items) {
       trace.children.push(<ToolCard key={item.id} item={item} presentation="link" />)
     }

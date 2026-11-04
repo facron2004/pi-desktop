@@ -16,6 +16,12 @@ const profile = mkdtempSync(path.join(output, 'profile-'))
 const markerFile = path.join(profile, 'terminal-requests.txt')
 const workspace = path.join(profile, 'workspace')
 mkdirSync(workspace)
+writeFileSync(path.join(workspace, 'note.txt'), 'hello from the workspace\n')
+// A 1×1 PNG so the Images page has something real to list.
+writeFileSync(
+  path.join(workspace, 'shot.png'),
+  Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+)
 const agent = path.join(profile, 'agent')
 mkdirSync(agent)
 const requests = []
@@ -80,25 +86,42 @@ async function checkRenderer(markerFile) {
   await store.getState().updateSettings({ language: 'en', terminalShell: 'cmd' })
   const passed = []
 
-  // Subagents live in the right panel now, behind the browser-like Tools tab.
-  // Open that page through the same navigation a user would use.
-  const openSubagentsPage = async () => {
+  // The OS font registry can point at nothing even when the emoji file exists;
+  // the bridge hands the renderer the bytes and App registers a real FontFace.
+  await until(
+    () => [...document.fonts].some((face) =>
+      face.family.replace(/['"]/g, '') === 'Pi Desktop Emoji' && face.status === 'loaded'),
+    'The platform emoji font did not register',
+    15000
+  )
+  passed.push('the platform emoji font registers for project icons and text')
+
+  // A page opens the way the panel does it: the `+` creates a new tab, and its
+  // start page turns that tab into the chosen page. A page already open is only
+  // focused, never added twice.
+  const openToolPage = async (view, label) => {
     if (!document.querySelector('.tool-panel')) {
       const toggle = [...document.querySelectorAll('button')].find((node) => node.getAttribute('aria-label') === 'Show tools panel')
       toggle?.click()
     }
-    await until(() => document.querySelector('.tool-panel__new-tab'), 'Tools panel did not open')
-    const tab = [...document.querySelectorAll('.tool-panel__tab')].find((node) => node.textContent?.includes('Subagents'))
+    await until(() => document.querySelector('.tool-panel__new-tab'), 'The workspace panel did not open')
+    const tab = [...document.querySelectorAll('.tool-panel__tab')].find((node) => node.textContent?.includes(label))
     if (tab) {
       tab.click()
-    } else {
-      document.querySelector('.tool-panel__new-tab').click()
-      const card = await until(
-        () => [...document.querySelectorAll('.tool-menu__card')].find((node) => node.textContent?.includes('Subagents')),
-        'Subagents navigation entry did not render'
-      )
-      card.click()
+      return
     }
+    document.querySelector('.tool-panel__new-tab').click()
+    const card = await until(
+      () => document.querySelector(`.tool-start .tool-menu__card[data-tool="${view}"]`),
+      `The new-tab page has no ${label} card`
+    )
+    card.click()
+  }
+
+  // Subagents live in the right panel now, behind the browser-like Tools tab.
+  // Open that page through the same navigation a user would use.
+  const openSubagentsPage = async () => {
+    await openToolPage('subagents', 'Subagents')
     await until(() => document.querySelector('.subagent-panel'), 'Subagents page did not render')
   }
 
@@ -305,6 +328,48 @@ async function checkRenderer(markerFile) {
       order: 4
     },
     {
+      id: 'rail-write3',
+      kind: 'tool',
+      toolCallId: 'rail-write3',
+      toolName: 'write',
+      args: { path: 'note.md', content: 'x' },
+      status: 'ok',
+      timestamp: 5,
+      order: 5
+    },
+    {
+      id: 'rail-write4',
+      kind: 'tool',
+      toolCallId: 'rail-write4',
+      toolName: 'write',
+      // The shape that read as a misaligned row: a folder with one file in it,
+      // beside files that stand at the root of the project.
+      args: { path: 'docs/status.md', content: 'x' },
+      status: 'ok',
+      timestamp: 6,
+      order: 6
+    },
+    {
+      id: 'rail-write5',
+      kind: 'tool',
+      toolCallId: 'rail-write5',
+      toolName: 'write',
+      args: { path: 'audit/nested/one.md', content: 'x' },
+      status: 'ok',
+      timestamp: 7,
+      order: 7
+    },
+    {
+      id: 'rail-write6',
+      kind: 'tool',
+      toolCallId: 'rail-write6',
+      toolName: 'write',
+      args: { path: 'audit/nested/two.md', content: 'x' },
+      status: 'ok',
+      timestamp: 8,
+      order: 8
+    },
+    {
       id: 'rail-sub',
       kind: 'tool',
       toolCallId: 'rail-sub',
@@ -312,8 +377,8 @@ async function checkRenderer(markerFile) {
       args: { tasks: [{ task: 'Run the gate' }] },
       status: 'running',
       details: { mode: 'parallel', results: [{ task: 'Run the gate', status: 'running' }] },
-      timestamp: 5,
-      order: 5
+      timestamp: 9,
+      order: 9
     }
   ]
   store.setState({
@@ -330,8 +395,49 @@ async function checkRenderer(markerFile) {
   check(document.querySelectorAll('.task-panel__task').length === 1, 'The background task row is missing')
   check(document.querySelectorAll('.task-panel__check').length === 3, 'The plan checklist is missing a step')
   check(document.querySelectorAll('.task-panel__check[data-done]').length === 2, 'A finished step is not marked as done')
-  check(document.querySelectorAll('.task-panel__folder').length === 1, 'The deliverables folder is missing')
-  check(document.querySelectorAll('.task-panel__file').length === 2, 'The deliverables files are missing')
+  check(document.querySelectorAll('.task-panel__folder').length === 2, 'The deliverables folders are missing')
+  check(document.querySelectorAll('.task-panel__file').length === 6, 'The deliverables files are missing')
+  // Every deliverable is on one column, whatever folder it sits under: a file
+  // row says where it came from on its own right, and only a folder header uses
+  // the indent, because that row's job is structure. A folder also keeps the
+  // 20px tile slot a file wears, so its name starts on the same column.
+  const nameLeft = (node) => Math.round(node.getBoundingClientRect().left)
+  const fileNamed = (name) =>
+    [...document.querySelectorAll('.task-panel__file')].find(
+      (row) => row.querySelector('.task-panel__file-name')?.textContent === name
+    )
+  const folderNamed = (name) =>
+    [...document.querySelectorAll('.task-panel__folder')].find(
+      (row) => row.querySelector('.task-panel__folder-name')?.textContent === name
+    )
+  const column = (node) => nameLeft(node.querySelector('.task-panel__file-name, .task-panel__folder-name'))
+  const topFolder = folderNamed('audit')
+  const subFolder = folderNamed('nested')
+  const rootFile = fileNamed('note.md')
+  const insideFolder = fileNamed('hover-check.mjs')
+  const insideSub = fileNamed('one.md')
+  // A folder that holds one file is a path, not a group: the file stands on the
+  // root column and names its folder itself.
+  const soloFile = fileNamed('status.md')
+  check(
+    Boolean(topFolder && subFolder && rootFile && insideFolder && insideSub && soloFile),
+    'The deliverables tree is missing a row'
+  )
+  for (const row of [rootFile, insideFolder, insideSub, soloFile]) {
+    check(
+      column(row) === column(topFolder),
+      `${row.querySelector('.task-panel__file-name').textContent} is not on the deliverables column: ${column(row)} vs ${column(topFolder)}`
+    )
+  }
+  check(
+    column(subFolder) - column(topFolder) === 14,
+    `A sub-folder header is not one indent step in from its parent: ${column(subFolder) - column(topFolder)}`
+  )
+  const dirHint = (row) => row.querySelector('.task-panel__file-dir')?.textContent ?? ''
+  check(dirHint(insideFolder) === 'audit/', `A file inside a folder does not name it: "${dirHint(insideFolder)}"`)
+  check(dirHint(insideSub) === 'audit/nested/', `A file in a sub-folder does not name it: "${dirHint(insideSub)}"`)
+  check(dirHint(soloFile) === 'docs/', `A file alone in its folder does not name it: "${dirHint(soloFile)}"`)
+  check(dirHint(rootFile) === '', 'A file at the project root claims a folder')
   const progress = [...document.querySelectorAll('.task-panel__section')].find((node) =>
     node.querySelector('.task-panel__section-title')?.textContent === 'Progress'
   )
@@ -348,6 +454,176 @@ async function checkRenderer(markerFile) {
     'The section did not fold open again'
   )
   passed.push('the task rail reads the environment, the background tasks, the plan and the deliverables')
+
+  // The workspace panel follows MCode's page strip: fixed-width tabs, an add
+  // menu, a start page when nothing is open, a maximized state, and the file
+  // tree beside the preview on the Files page.
+  const panelToggle = () => [...document.querySelectorAll('button')].find((node) =>
+    node.getAttribute('aria-label') === 'Show tools panel' || node.getAttribute('aria-label') === 'Hide tools panel')
+  if (!document.querySelector('.tool-panel')) panelToggle()?.click()
+  await until(() => document.querySelector('.tool-panel'), 'Workspace panel did not open')
+  while (document.querySelector('.tool-panel__tab-close')) {
+    document.querySelector('.tool-panel__tab-close').click()
+    await pause(30)
+  }
+  await until(() => document.querySelector('.tool-start'), 'The panel start page did not render')
+  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 6, 'The start page does not list every page')
+  const filesCard = [...document.querySelectorAll('.tool-start .tool-menu__card')].find((node) => node.textContent?.includes('Files'))
+  check(filesCard, 'The start page has no Files entry')
+  filesCard.click()
+  await until(() => document.querySelector('.file-workspace'), 'Files page did not render')
+  const firstTab = document.querySelector('.tool-panel__tab-shell')
+  const tabWidth = firstTab?.getBoundingClientRect().width ?? 0
+  check(tabWidth >= 120 && tabWidth <= 160, `A page tab is not MCode-sized: ${tabWidth}`)
+  check(firstTab?.getBoundingClientRect().height === 30, 'A page tab is not 30px high')
+  check(document.querySelector('.tool-panel__tabs')?.getBoundingClientRect().height === 46, 'The panel header is not 46px high')
+  // The corner controls are one family: the panel's `+` and maximize buttons and
+  // the shell's pinned toggle share a box, a radius and a centre line.
+  const corner = ['.tool-panel__new-tab', '.tool-panel__action', '.shell__panel-toggle button']
+    .map((selector) => document.querySelector(selector))
+  check(corner.every(Boolean), 'A corner control is missing')
+  const cornerBoxes = corner.map((node) => {
+    const box = node.getBoundingClientRect()
+    return {
+      size: `${Math.round(box.width)}x${Math.round(box.height)}`,
+      centre: Math.round((box.y + box.height / 2) * 10) / 10,
+      radius: getComputedStyle(node).borderRadius
+    }
+  })
+  check(
+    new Set(cornerBoxes.map((box) => box.size)).size === 1,
+    `The corner controls are not one size: ${JSON.stringify(cornerBoxes)}`
+  )
+  check(
+    new Set(cornerBoxes.map((box) => box.radius)).size === 1,
+    `The corner controls are not one shape: ${JSON.stringify(cornerBoxes)}`
+  )
+  const cornerLines = cornerBoxes.map((box) => box.centre)
+  check(
+    Math.max(...cornerLines) - Math.min(...cornerLines) <= 0.5,
+    `The corner controls are not on one line: ${JSON.stringify(cornerLines)}`
+  )
+  check(![...document.querySelectorAll('.tool-panel__tab')].some((node) => node.textContent?.trim() === 'Tools'), 'The old permanent Tools tab is still there')
+  await until(() => [...document.querySelectorAll('.tree__item')].find((node) => node.textContent?.includes('note.txt')), 'Workspace file did not appear in the tree')
+  ;[...document.querySelectorAll('.tree__item')].find((node) => node.textContent?.includes('note.txt')).click()
+  await until(() => document.querySelector('.file-workspace .viewer'), 'The file preview did not open beside the tree')
+  check(document.querySelector('.file-workspace__tree'), 'Opening a file removed the file tree')
+  document.querySelector('.tool-panel__action').click()
+  await until(() => document.querySelector('.tool-panel--maximized'), 'The panel did not maximize')
+  // Maximizing must not outrank the controls that undo it. The fixed panel once
+  // sat above the shell's corner toggle and above its own menus, so every way
+  // out of the state was covered by the state.
+  const cornerToggle = document.querySelector('.shell__panel-toggle button')
+  const cornerBox = cornerToggle.getBoundingClientRect()
+  check(
+    Boolean(document.elementFromPoint(
+      cornerBox.x + cornerBox.width / 2, cornerBox.y + cornerBox.height / 2
+    )?.closest('.shell__panel-toggle')),
+    'The maximized panel covers the shell toggle, leaving no way out'
+  )
+  // The panel's own menus ride above it too: the tab context menu is portalled
+  // with the popover level, and a maximized panel used to swallow it.
+  const tabForMenu = document.querySelector('.tool-panel__tab-shell')
+  const menuBox = tabForMenu.getBoundingClientRect()
+  tabForMenu.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, clientX: menuBox.x + menuBox.width / 2, clientY: menuBox.y + menuBox.height / 2
+  }))
+  const menuItem = await until(
+    () => document.querySelector('.tool-tab-menu__item'),
+    'The tab menu did not open while the panel was maximized'
+  )
+  const itemBox = menuItem.getBoundingClientRect()
+  check(
+    Boolean(document.elementFromPoint(itemBox.x + itemBox.width / 2, itemBox.y + itemBox.height / 2)?.closest('.tool-tab-menu')),
+    'The maximized panel covers the tab menu'
+  )
+  const pressEscape = () => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  pressEscape()
+  await until(() => !document.querySelector('.tool-tab-menu'), 'Escape did not close the tab menu')
+  check(document.querySelector('.tool-panel--maximized'), 'Escape left the menu and the maximized state at once')
+  pressEscape()
+  await until(() => !document.querySelector('.tool-panel--maximized'), 'Escape did not restore the maximized panel')
+  document.querySelector('.tool-panel__action').click()
+  await until(() => document.querySelector('.tool-panel--maximized'), 'The panel did not maximize again')
+  document.querySelector('.tool-panel__action').click()
+  await until(() => !document.querySelector('.tool-panel--maximized'), 'The panel did not restore')
+  passed.push('the maximized panel keeps its own escape routes on top of it')
+  passed.push('the workspace panel uses MCode page tabs, start page, maximize and the file split view')
+
+  // The docked panel is narrow, and the labelled "reveal in the file manager"
+  // button wrapped its text to three lines. The action is an icon now, so the
+  // tooltip has to carry the explanation and the row has to stay one line.
+  await openToolPage('images', 'Images')
+  const meta = await until(() => document.querySelector('.image-viewer__meta'), 'The Images page did not list the project picture')
+  const reveal = meta.querySelector('button')
+  check(reveal, 'The Images meta line has no reveal control')
+  check(!reveal.textContent?.trim(), `The reveal control still carries a label: ${reveal.textContent?.trim()}`)
+  check(Boolean(reveal.title), 'The reveal control has no tooltip to explain the icon')
+  check(meta.getBoundingClientRect().height < 48, `The picture's meta line wrapped: ${meta.getBoundingClientRect().height}px`)
+  passed.push('the image viewer reveals a picture with a tooltip-only icon')
+
+  // The jump controls float centred on the composer's own axis, directly above
+  // the box. They are placed by `.scroll-jumps`, and a stray `}` in the
+  // stylesheet once swallowed that whole rule and left the container
+  // `position: static`, parked at the top of the thread. Probe the rule with a
+  // throwaway element so the check does not depend on where the reader is.
+  const frame = await until(() => document.querySelector('.thread-frame'), 'No conversation thread to measure')
+  const composer = await until(() => document.querySelector('.composer'), 'No composer to align the jump controls with')
+  const probe = document.createElement('div')
+  probe.className = 'scroll-jumps'
+  frame.appendChild(probe)
+  try {
+    const style = getComputedStyle(probe)
+    const box = probe.getBoundingClientRect()
+    const area = frame.getBoundingClientRect()
+    const input = composer.getBoundingClientRect()
+    check(style.position === 'absolute', `The jump controls are not positioned: ${style.position}`)
+    const centre = (box.left + box.right) / 2
+    const inputCentre = (input.left + input.right) / 2
+    check(Math.abs(centre - inputCentre) <= 1, `The jump controls are not centred on the composer: ${centre} vs ${inputCentre}`)
+    check(box.bottom <= area.bottom && input.top >= box.bottom, `The jump controls are not above the composer: bottom ${box.bottom}, composer top ${input.top}`)
+    check(style.pointerEvents === 'none', 'The jump band must not swallow clicks across the column')
+  } finally {
+    probe.remove()
+  }
+  passed.push('the scroll-to-top and scroll-to-bottom controls float centred above the composer')
+  // A conversation's mark hangs in the row's indent, out of the flow: a row that
+  // is running must not slide its title right of a row that has nothing to say,
+  // and every title starts on the project's own text column.
+  await until(() => document.querySelector('.session-item'), 'The sidebar has no conversation rows to measure')
+  const sessionRows = [...document.querySelectorAll('.session-item')]
+  const titleColumn = (row) => Math.round(row.querySelector('.session-item__title')?.getBoundingClientRect().x ?? -1)
+  const idleColumns = new Set(sessionRows.map(titleColumn))
+  check(idleColumns.size === 1, `Conversation titles do not share a column: ${[...idleColumns].join(', ')}`)
+  const runningMark = document.createElement('span')
+  runningMark.className = 'session-item__status'
+  const unreadMark = document.createElement('span')
+  unreadMark.className = 'session-item__dot'
+  sessionRows[0].querySelector('.session-item__main').appendChild(runningMark)
+  sessionRows[1]?.querySelector('.session-item__main')?.appendChild(unreadMark)
+  try {
+    const markedColumns = new Set(sessionRows.map(titleColumn))
+    check(
+      markedColumns.size === 1 && markedColumns.values().next().value === idleColumns.values().next().value,
+      `A mark moved a conversation title: ${[...markedColumns].join(', ')}`
+    )
+    const icon = document.querySelector('.project__icon').getBoundingClientRect()
+    const markBox = runningMark.getBoundingClientRect()
+    const dotBox = unreadMark.getBoundingClientRect()
+    check(
+      Math.abs(markBox.x + markBox.width / 2 - (icon.x + icon.width / 2)) <= 1,
+      'The running mark is not centred in the project icon column'
+    )
+    check(
+      Math.round(markBox.x) === Math.round(dotBox.x) && Math.round(markBox.width) === Math.round(dotBox.width),
+      'The spinner and the dot do not share one slot'
+    )
+  } finally {
+    runningMark.remove()
+    unreadMark.remove()
+  }
+  passed.push('a conversation mark hangs in the indent without moving the title')
+
   return passed
 }
 
@@ -375,7 +651,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 7 : 6)
+  assert.equal(passed.length, process.platform === 'win32' ? 13 : 12)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

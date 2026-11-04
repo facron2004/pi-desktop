@@ -32,6 +32,8 @@ export interface DeliverableFileNode {
   name: string
   /** The file path relative to the workspace root. */
   path: string
+  /** The folders the file sits in, `/`-joined and empty at the project root. */
+  dir: string
   /** The path the file is opened with — absolute when the agent reported one. */
   target?: string
 }
@@ -84,12 +86,34 @@ export function buildDeliverableTree(files: readonly DeliverableFile[]): Deliver
     folder.children.push({
       kind: 'file',
       name,
+      dir: folder.path,
       path: folder.path ? `${folder.path}/${name}` : name,
       target: file.target
     })
   }
 
-  return sortTree(root.children)
+  // Unfold first, then sort: a file that came out of a folder belongs with the
+  // other files, not in the block of folder rows the sort puts first.
+  return sortTree(unwrapSingleFileFolders(root.children))
+}
+
+/**
+ * A folder that holds one file is not a group: it is that file's path.
+ *
+ * Folding it into a line of its own saves nothing — the run still reads one
+ * line per file — and the lone child sitting one indent step right of the files
+ * beside it reads as a row that failed to line up. The file takes the folder's
+ * place in the list and carries its folders as a hint on the row instead.
+ *
+ * A folder with two files or with a subfolder is a real group and stays.
+ */
+function unwrapSingleFileFolders(nodes: DeliverableNode[]): DeliverableNode[] {
+  return nodes.map((node) => {
+    if (node.kind === 'file') return node
+    const children = unwrapSingleFileFolders(node.children)
+    const [only] = children
+    return children.length === 1 && only.kind === 'file' ? only : { ...node, children }
+  })
 }
 
 /** How much the working tree changed, as the environment row shows it. */

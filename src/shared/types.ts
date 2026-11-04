@@ -299,6 +299,31 @@ export interface SessionMeta {
   model?: string
 }
 
+export type ScheduledTaskSchedule =
+  | { kind: 'once'; at: number }
+  | { kind: 'daily'; time: string }
+  | { kind: 'weekly'; time: string; weekday: number }
+
+export type ScheduledTaskStatus = 'running' | 'completed' | 'error' | 'aborted'
+
+export interface ScheduledTaskInput {
+  title: string
+  prompt: string
+  workspaceId: string
+  schedule: ScheduledTaskSchedule
+}
+
+export interface ScheduledTask extends ScheduledTaskInput {
+  id: string
+  enabled: boolean
+  createdAt: number
+  nextRunAt?: number
+  lastRunAt?: number
+  lastStatus?: ScheduledTaskStatus
+  lastError?: string
+  lastSessionFile?: string
+}
+
 /**
  * One hit of a full-text search over the conversations on disk.
  *
@@ -361,6 +386,7 @@ export interface AggregatedUsageStats {
   allTime: PeriodUsage
   byModel: ModelUsageStat[]
   recentDays: DailyUsageStat[]
+  heatmapDays?: DailyUsageStat[]
   updatedAt: number
 }
 
@@ -564,10 +590,9 @@ export type PermissionMode = 'ask' | 'auto' | 'full'
  * A conversation's task mode. Plan explores without writing and submits its
  * plan for approval; Goal keeps working until the goal is done or blocked;
  * Subagent makes the model delegate self-contained work to isolated children.
- * Computer Use lets the model see and operate the Windows desktop; choosing
- * the mode is the approval for those actions.
+ * Computer Use is not a mode: it is the `computerUse` setting.
  */
-export type AgentMode = 'default' | 'goal' | 'plan' | 'subagent' | 'computer'
+export type AgentMode = 'default' | 'goal' | 'plan' | 'subagent'
 
 export type SubagentTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'aborted'
 
@@ -613,6 +638,14 @@ export interface AppSettings {
   thinkingLevel?: string
   /** User instructions appended to Pi's system prompt when the runtime starts. */
   customInstructions?: string
+  /** Inject memories learned from earlier conversations into new sessions. */
+  memoriesEnabled?: boolean
+  /** Let Pi learn durable memories from finished conversations in the background. */
+  memoryGeneration?: boolean
+  /** Keep conversations that used MCP, web search, computer use or subagents out of memory. */
+  memorySkipExternalContext?: boolean
+  /** Model for memory extraction; empty uses the model of the conversation being learned from. */
+  memoryModel?: string
   /** Approval policy for agent tool calls, independent of project trust. */
   permissionMode?: PermissionMode
   theme: ThemePreference
@@ -656,6 +689,35 @@ export interface AppSettings {
   sendShortcut?: 'enter' | 'ctrlEnter'
   /** Follow-up handling method: 'queue' or 'steer'. */
   followUpMode?: 'queue' | 'steer'
+  /**
+   * Let the agent see and operate this Windows desktop.
+   * Off until the user turns it on in Settings. Plan Mode never receives it.
+   */
+  computerUse?: boolean
+  /**
+   * Start a brand-new conversation in Plan Mode. Only a session Pi has never
+   * written gets the default: a resumed one keeps the mode it stored itself.
+   */
+  defaultPlanMode?: boolean
+  /**
+   * The model a spawned subagent runs on. Empty follows the conversation's own
+   * model, which is how subagents behaved before this setting existed.
+   */
+  subagentModel?: string
+  /** Provider of `subagentModel`, kept the way `model` and `provider` are kept. */
+  subagentProvider?: string
+  /** Reasoning effort for a spawned subagent. Empty follows the conversation. */
+  subagentThinking?: string
+  /** Reference a pasted picture in the message, not only attach it. */
+  pasteMentions?: boolean
+  /** Fold a settled turn's working process so the answer is what stays on screen. */
+  autoFoldProcess?: boolean
+  /** Gather a run of consecutive tool calls into one summary line. */
+  toolCallSummary?: boolean
+  /** Name a new conversation from its first exchange with a throwaway model call. */
+  autoTitle?: boolean
+  /** Automatically download available application and service updates. */
+  automaticUpdates?: boolean
 }
 
 export interface PiLaunchInfo {
@@ -706,6 +768,63 @@ export interface UpgradeResult {
 }
 
 /* ------------------------------------------------------------------ *
+ * Memory
+ * ------------------------------------------------------------------ */
+
+/** What a memory is about. The kind only groups the summary; all kinds are facts. */
+export type MemoryKind = 'preference' | 'knowledge' | 'failure' | 'environment'
+
+/** Global memories apply everywhere; project memories apply to one working folder. */
+export type MemoryScope = 'global' | 'project'
+
+export interface MemoryEntry {
+  id: string
+  scope: MemoryScope
+  kind: MemoryKind
+  /** One durable fact, kept short so the injected summary stays cheap. */
+  text: string
+  /** Working folder for a project memory. Undefined for a global memory. */
+  projectPath?: string
+  projectName?: string
+  /** Session file this entry was learned from. */
+  source?: string
+  createdAt: number
+  updatedAt: number
+}
+
+/** What the Memory settings page and the composer-facing state need. */
+export interface MemoryState {
+  /** Absolute path of the memory directory, so the UI can open it. */
+  root: string
+  /** The full summary markdown stored on disk (all projects). */
+  summary: string
+  entries: MemoryEntry[]
+  /** When the memory store was last changed. */
+  updatedAt?: number
+  /** Sessions waiting for their background extraction. */
+  pending: number
+  /** True while an extraction or consolidation is running. */
+  generating: boolean
+  lastError?: string
+}
+
+export interface MemoryGenerateOptions {
+  /** Learn from this session file. Omit to scan recent conversations. */
+  sessionFile?: string
+  /** How many recent conversations to scan when sessionFile is omitted. Defaults to 3. */
+  limit?: number
+}
+
+export interface MemoryGenerateResult {
+  ok: boolean
+  /** New entries added across all sessions in this run. */
+  added: number
+  /** Why nothing was learned, when that is a normal outcome. */
+  skipped?: string
+  error?: string
+}
+
+/* ------------------------------------------------------------------ *
  * Renderer bridge
  * ------------------------------------------------------------------ */
 
@@ -713,6 +832,38 @@ export interface UpgradeResult {
 export type PickedFile =
   | { kind: 'image'; data: string; mimeType: string }
   | { kind: 'path'; path: string }
+
+export interface RemoteAccessDevice {
+  id: string
+  name: string
+  pairedAt: number
+}
+
+export interface RemoteAccessStatus {
+  enabled: boolean
+  urls: string[]
+  pairingUrl?: string
+  pairingExpiresAt?: number
+  devices: RemoteAccessDevice[]
+  error?: string
+}
+
+export interface RemoteWorkspace {
+  id: string
+  name: string
+  icon?: string
+  iconColor?: ProjectIconColor
+}
+
+export interface RemoteSession {
+  id: string
+  name?: string
+  preview: string
+  updatedAt: number
+  messageCount: number
+  model?: string
+  isRunning: boolean
+}
 
 export interface PiDesktopBridge {
   providers: {
@@ -726,10 +877,17 @@ export interface PiDesktopBridge {
   }
   app: {
     info(): Promise<AppInfo>
+    /** Let the main process show the window after the initial UI is ready. */
+    startupReady(): void
     /** Sync the native window controls with the current theme. */
     setTheme(theme: 'dark' | 'light'): Promise<void>
     /** Query the font families installed on the operating system. */
     getSystemFonts(): Promise<string[]>
+    /**
+     * The platform's colour emoji font as bytes, so the renderer can register
+     * it with the FontFace API even where the OS font registry has no path.
+     */
+    emojiFont(): Promise<Uint8Array | null>
     /** Check for updates for the application and Pi CLI. */
     checkUpdate(): Promise<VersionCheckResult>
     /** Upgrade Pi CLI to the latest version. */
@@ -745,6 +903,35 @@ export interface PiDesktopBridge {
   settings: {
     get(): Promise<AppSettings>
     patch(patch: Partial<AppSettings>): Promise<AppSettings>
+  }
+  remote: {
+    status(): Promise<RemoteAccessStatus>
+    setEnabled(enabled: boolean): Promise<RemoteAccessStatus>
+    newPairing(): Promise<RemoteAccessStatus>
+    revokeDevice(id: string): Promise<RemoteAccessStatus>
+  }
+  scheduledTasks: {
+    list(): Promise<ScheduledTask[]>
+    create(input: ScheduledTaskInput): Promise<ScheduledTask[]>
+    update(id: string, input: ScheduledTaskInput): Promise<ScheduledTask[]>
+    setEnabled(id: string, enabled: boolean): Promise<ScheduledTask[]>
+    remove(id: string): Promise<ScheduledTask[]>
+    runNow(id: string): Promise<ScheduledTask[]>
+    onChanged(handler: (tasks: ScheduledTask[]) => void): () => void
+  }
+  memory: {
+    /** Stored memories, the injected summary and background status. */
+    get(): Promise<MemoryState>
+    /** Delete one memory entry. */
+    remove(id: string): Promise<MemoryState>
+    /** Delete every memory entry and the per-session learning ledger. */
+    clear(): Promise<MemoryState>
+    /** Learn from one session, or from the most recent unprocessed sessions. */
+    generate(options?: MemoryGenerateOptions): Promise<MemoryGenerateResult>
+    /** Open the memory folder in the system file manager. */
+    openFolder(): Promise<void>
+    /** Fires after a background extraction or a manual change. */
+    onChanged(handler: (state: MemoryState) => void): () => void
   }
   workspaces: {
     pick(): Promise<Workspace | null>
@@ -866,6 +1053,17 @@ export interface PiDesktopBridge {
     searchText(query: string, limit?: number): Promise<TextSearchHit[]>
     /** Show a file in the file manager of the operating system. */
     reveal(file: string): Promise<void>
+    /**
+     * Write a picture pasted into the composer into the folder the conversation
+     * runs in, so the reference it becomes resolves like a picked file. `root`
+     * is that folder and `path` the file written. `null` when the type is not a
+     * picture the agent can read, or when the folder refused the write — the
+     * composer then keeps the picture as an attachment only.
+     */
+    savePastedImage(
+      data: string,
+      mimeType: string
+    ): Promise<{ path: string; root: string } | null>
     /** Write a picture the model produced to a file the user picks. */
     saveImage(data: string, mimeType: string): Promise<string | null>
     /** Resolve the filesystem path of a dropped File object. */

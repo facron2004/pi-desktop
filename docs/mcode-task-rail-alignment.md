@@ -40,7 +40,7 @@ MCode's own, read from that package:
 | Changes row | `+N` in success, `−N` in error, right-aligned, tabular | the counts in the section header | the counts on the row, right-aligned |
 | A task row | the name on the left, the state dot on the right | the dot on the left | the dot on the right |
 | A finished step | a filled disc with the check cut out of it, struck through | a green tinted ring | a filled disc, struck through |
-| Deliverables | a folder tree, 20px per level, caret on the right | a flat list under the workspace name | a folder tree, 14px per level |
+| Deliverables | a folder tree, 20px per level, caret on the right | a flat list under the workspace name | a folder tree, 14px per level, one 20px leading slot on every row, a one-file folder unfolded |
 
 ## What changed
 
@@ -80,6 +80,36 @@ it inverts with the theme.
 Ten files written into one folder read as one line instead of ten. The tree is
 built in `lib/task-panel.ts` and its folders fold on the same caret as the
 sections.
+
+Every row of that tree carries the same 20px leading slot, whether it wears a
+mark or not: a file puts its icon tile in it, a folder leaves it empty because
+the caret on the right already says it folds. Without the slot a folder's name
+starts 28px left of the file names beside it — the same trap the sidebar already
+documents for a conversation row's mark. The depth indent (14px) is then the
+only thing allowed to move the text column.
+
+The slot alone was not enough. Measured on a real capture: after it, `docs` did
+share the column with `AGENTS.md` and `README.md`, and the list still read as one
+row out of line, because the files inside `docs` hung 14px to the right of the
+files beside it. A tree of folders is not what the section answers — "what did
+this run produce" is a list of files — so **a file row never indents**. Every
+file keeps the one column whatever folder it sits under and says where it came
+from on the right of its own row, in the assist tone, in the room its name left
+behind: `career-os-2-upgrade-status.md   docs/`, `subagent-prompt.txt
+docs/agents/`. Only a folder *header* steps in with the depth, because that row's
+job is structure and the file row's job is the file.
+
+On top of that, a folder holding exactly one file is unfolded by
+`buildDeliverableTree`: it is that file's path, not a group, and the row already
+names its folder, so the header would only add a line. MCode folds per level and
+keeps single-file folders folded; this is a deliberate departure, and it is why
+the list reads as deliverables first and structure second.
+
+The seventh case of `tests/ui-regressions.mjs` measures all of it — the column a
+folder header, a root file, a file in a folder and a file in a sub-folder share,
+the one step a sub-folder header takes, and every row's folder hint.
+`output/audit/rail-check.mjs` prints the same numbers for a shape you can look at
+and captures the rail.
 
 ## What was deliberately not copied
 

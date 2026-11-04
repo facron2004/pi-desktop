@@ -1,0 +1,271 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #e7e7e9;
+  background: #15171b;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --remote-bg: #15171b;
+  --remote-surface: #1e2025;
+  --remote-raised: #25272d;
+  --remote-line: #363840;
+  --remote-text: #e7e7e9;
+  --remote-muted: #92949d;
+  --remote-accent: #ff735d;
+  --remote-green: #67cf88;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { width: 100%; min-height: 100%; margin: 0; }
+
+body {
+  min-width: 320px;
+  min-height: 100dvh;
+  background: var(--remote-bg);
+}
+
+button, textarea { font: inherit; }
+button { color: inherit; }
+
+.remote-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 560px);
+  min-height: 100dvh;
+  margin: 0 auto;
+  background: var(--remote-bg);
+}
+
+.remote-header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  padding: max(10px, env(safe-area-inset-top)) 18px 10px;
+  border-bottom: 1px solid #292b30;
+  background: rgb(21 23 27 / 96%);
+  backdrop-filter: blur(14px);
+}
+
+.remote-header__title { flex: 1; min-width: 0; text-align: center; }
+.remote-header h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -0.02em; }
+.remote-header small { display: block; overflow: hidden; margin-top: 4px; color: var(--remote-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.remote-brand { color: #fff; font-size: 14px; font-weight: 650; letter-spacing: 0.01em; }
+.remote-brand-small { color: #fff; font-size: 15px; font-weight: 650; }
+
+.remote-back, .remote-menu {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: #c8c9ce;
+  cursor: pointer;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.remote-back { margin-left: -8px; font-size: 34px; }
+.remote-back:hover, .remote-menu:hover { background: var(--remote-surface); }
+.remote-section-title { margin: 24px 18px 12px; color: #b8bac2; font-size: 14px; font-weight: 600; }
+.remote-list-view { padding: 0 14px 30px; }
+.remote-list-view--projects { padding-top: 16px; }
+
+.remote-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 76px;
+  gap: 14px;
+  padding: 14px 14px;
+  border: 1px solid var(--remote-line);
+  border-radius: 15px;
+  background: var(--remote-surface);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.remote-row + .remote-row { margin-top: 10px; }
+.remote-row:hover { border-color: #555862; background: #24262c; }
+.remote-row:active { transform: scale(0.99); }
+.remote-project-icon, .remote-session-icon {
+  display: grid;
+  flex: 0 0 38px;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: #2b2d34;
+  color: #c9cbd2;
+  font-size: 19px;
+}
+
+.remote-row__body { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 5px; }
+.remote-row__body strong { overflow: hidden; color: #eeeef0; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.remote-row__body small { overflow: hidden; color: var(--remote-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.remote-chevron { color: #93959d; font-size: 25px; font-weight: 300; }
+.remote-dot, .remote-online { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: #858891; }
+.remote-dot--running, .remote-online { background: var(--remote-green); box-shadow: 0 0 0 3px rgb(103 207 136 / 12%); }
+.remote-session-icon { background: transparent; color: #aeb0b8; font-size: 18px; }
+
+.remote-empty {
+  margin: 32px 8px;
+  padding: 28px 18px;
+  color: var(--remote-muted);
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.remote-pair { align-items: stretch; padding: max(30px, env(safe-area-inset-top)) 20px calc(32px + env(safe-area-inset-bottom)); }
+.remote-pair .remote-brand { margin-bottom: clamp(58px, 13vh, 100px); }
+.remote-pair h1 { margin: 0 0 10px; color: #f1f1f3; font-size: clamp(25px, 7vw, 31px); letter-spacing: -0.035em; }
+.remote-lead { max-width: 340px; margin: 0 0 34px; color: #a3a5ad; font-size: 14px; line-height: 1.65; }
+
+.remote-device {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 16px;
+  border: 1px solid var(--remote-line);
+  border-radius: 17px;
+  background: #202228;
+}
+
+.remote-device__glyph { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: #31333a; color: #f2f2f4; font-size: 23px; }
+.remote-device strong, .remote-device small { display: block; }
+.remote-device strong { margin-bottom: 5px; font-size: 14px; }
+.remote-device small { color: var(--remote-muted); font-size: 12px; }
+.remote-device .remote-online { margin-left: auto; }
+
+.remote-primary {
+  min-height: 52px;
+  margin-top: 32px;
+  border: 0;
+  border-radius: 13px;
+  background: var(--remote-accent);
+  color: #1d1716;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.remote-primary:hover:not(:disabled) { background: #ff856f; }
+.remote-primary:disabled { opacity: 0.55; cursor: wait; }
+.remote-muted { color: var(--remote-muted); font-size: 13px; line-height: 1.6; }
+.remote-pair .remote-muted { margin-top: 22px; }
+.remote-error { padding: 12px 14px; border: 1px solid #693b39; border-radius: 12px; background: #30201f; color: #ffaaa0; font-size: 13px; line-height: 1.5; }
+.remote-pair .remote-error { margin-top: 16px; }
+.remote-error--floating { position: fixed; z-index: 4; right: 14px; bottom: calc(82px + env(safe-area-inset-bottom)); left: 14px; width: min(520px, calc(100% - 28px)); margin: 0 auto; box-shadow: 0 8px 28px rgb(0 0 0 / 30%); }
+.remote-loading { color: var(--remote-muted); font-size: 13px; text-align: center; }
+.remote-loading--overlay { padding: 30px; }
+
+.remote-transcript {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 22px;
+  overflow-y: auto;
+  padding: 24px 16px 26px;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.remote-history-note { color: #777a83; font-size: 11px; text-align: center; }
+.remote-message { max-width: 94%; line-height: 1.65; overflow-wrap: anywhere; }
+.remote-message--user { align-self: flex-end; max-width: 90%; }
+.remote-message--assistant { align-self: stretch; }
+.remote-message__meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #d9d9dc; font-size: 12px; font-weight: 600; }
+.remote-message__meta time { color: #777a83; font-size: 11px; font-weight: 400; }
+.remote-assistant-mark { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 7px; background: var(--remote-accent); color: #211817; font-size: 18px; font-weight: 700; }
+.remote-message--user .remote-message__meta { justify-content: flex-end; color: #b8bac1; }
+.remote-message--user .remote-message__body { padding: 12px 14px; border: 1px solid #393b42; border-radius: 15px 15px 4px 15px; background: #22242a; color: #ededf0; white-space: pre-wrap; }
+.remote-markdown { color: #dedee1; font-size: 14px; line-height: 1.72; }
+.remote-markdown > :first-child { margin-top: 0; }
+.remote-markdown > :last-child { margin-bottom: 0; }
+.remote-markdown p { margin: 0 0 12px; }
+.remote-markdown ul, .remote-markdown ol { padding-left: 21px; }
+.remote-markdown pre, .remote-tool pre { max-width: 100%; overflow: auto; padding: 12px; border: 1px solid #34363d; border-radius: 11px; background: #101114; color: #cfd0d5; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.remote-markdown code { border-radius: 4px; background: #292b31; padding: 2px 4px; font: 0.9em ui-monospace, SFMono-Regular, Consolas, monospace; }
+.remote-markdown pre code { padding: 0; background: transparent; }
+.remote-markdown blockquote { margin: 10px 0; padding-left: 12px; border-left: 2px solid #555861; color: #adafb6; }
+.remote-markdown a { color: #ff927f; }
+.remote-thinking, .remote-tool-call { display: inline-flex; align-items: center; margin: 3px 6px 3px 0; padding: 5px 9px; border: 1px solid #373940; border-radius: 8px; color: #9fa1a9; font-size: 11px; }
+
+.remote-tool {
+  align-self: stretch;
+  overflow: hidden;
+  border: 1px solid #363840;
+  border-radius: 12px;
+  background: #1c1e23;
+}
+
+.remote-tool summary { display: flex; align-items: center; gap: 9px; min-height: 48px; padding: 0 12px; cursor: pointer; list-style: none; }
+.remote-tool summary::-webkit-details-marker { display: none; }
+.remote-tool summary strong { color: #d3d4d8; font-size: 12px; font-weight: 600; text-transform: capitalize; }
+.remote-tool__icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: #2a2c32; color: #b4b6bd; font-size: 19px; }
+.remote-tool__state { margin-left: auto; color: #9b9da5; font-size: 11px; }
+.remote-tool__state--ok { color: var(--remote-green); }
+.remote-tool__state--error { color: #ff8c7d; }
+.remote-tool pre { margin: 0 10px 10px; max-height: 240px; }
+.remote-notice { color: #aeb0b7; font-size: 12px; }
+.remote-notice--error { color: #ff9b8d; }
+.remote-running { display: flex; align-items: center; align-self: flex-start; gap: 8px; color: #aeb0b7; font-size: 12px; }
+.remote-running--notice { padding-left: 10px; border-left: 2px solid var(--remote-accent); color: #ffab9d; }
+.remote-spinner { display: inline-block; width: 15px; height: 15px; border: 2px solid #5b5e67; border-top-color: var(--remote-accent); border-radius: 50%; animation: remote-spin 800ms linear infinite; }
+.remote-spinner--light { width: 18px; height: 18px; border-color: rgb(32 24 22 / 30%); border-top-color: #211817; }
+@keyframes remote-spin { to { transform: rotate(360deg); } }
+
+.remote-composer {
+  position: sticky;
+  z-index: 2;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 9px;
+  padding: 10px 14px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid #292b30;
+  background: rgb(21 23 27 / 97%);
+}
+
+.remote-composer textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 48px;
+  max-height: 150px;
+  resize: vertical;
+  padding: 13px 14px;
+  border: 1px solid #41434b;
+  border-radius: 14px;
+  outline: none;
+  background: #202228;
+  color: #eeeeef;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.remote-composer textarea::placeholder { color: #82848c; }
+.remote-composer textarea:focus { border-color: #797b83; }
+.remote-send { display: grid; flex: 0 0 48px; place-items: center; width: 48px; height: 48px; padding: 0; border: 0; border-radius: 14px; background: var(--remote-accent); color: #241a19; font-size: 25px; font-weight: 600; cursor: pointer; }
+.remote-send:disabled { background: #373940; color: #82848c; cursor: default; }
+
+@media (min-width: 700px) {
+  body { padding: 24px 0; background: #101114; }
+  .remote-shell { min-height: calc(100dvh - 48px); overflow: hidden; border: 1px solid #303239; border-radius: 22px; box-shadow: 0 24px 90px rgb(0 0 0 / 35%); }
+  .remote-pair { min-height: calc(100dvh - 48px); }
+  .remote-composer { border-radius: 0 0 22px 22px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

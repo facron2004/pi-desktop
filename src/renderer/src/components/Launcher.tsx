@@ -14,7 +14,6 @@ import {
   Keyboard,
   ListChecks,
   MessageSquarePlus,
-  Monitor,
   Minimize2,
   Moon,
   PanelLeft,
@@ -32,6 +31,7 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { selectableModels } from '@shared/provider-models'
+import { FONT_SCALE_PRESETS, nearestFontStepIndex } from '@shared/font-scale'
 import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
 import { samePath } from '../lib/path'
@@ -52,8 +52,8 @@ export interface LauncherAction {
   run: () => void | Promise<void>
 }
 
-/** The text sizes the settings offer, from the smallest to the largest. */
-const FONT_STEPS = [0.92, 1, 1.1, 1.22]
+/** MCode's text sizes (UI base 12 / 14 / 15 / 16) live in the shared
+ *  font-scale module so this launcher and Settings cannot drift. */
 
 const MESSAGE_ACTION_IDS = new Set([
   'rename',
@@ -118,9 +118,12 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   // The theme that is on screen, which is what the reader sees — the setting
   // itself may still be "follow the system".
   const theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
-  const fontIndex = FONT_STEPS.findIndex((step) => Math.abs(step - fontScale) < 0.01)
-  const biggerFont = FONT_STEPS[(fontIndex + 1 + FONT_STEPS.length) % FONT_STEPS.length]
-  const smallerFont = FONT_STEPS[(fontIndex - 1 + FONT_STEPS.length) % FONT_STEPS.length]
+  // Snap legacy or odd stored values to a preset first; findIndex alone
+  // returned -1 for an old 0.92 and inverted the two font actions.
+  const fontIndex = nearestFontStepIndex(fontScale)
+  const biggerFont = FONT_SCALE_PRESETS[(fontIndex + 1) % FONT_SCALE_PRESETS.length]
+  const smallerFont =
+    FONT_SCALE_PRESETS[(fontIndex - 1 + FONT_SCALE_PRESETS.length) % FONT_SCALE_PRESETS.length]
 
   const actions: LauncherAction[] = [
     {
@@ -264,13 +267,6 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Mode',
       icon: Bot,
       run: () => setAgentMode(agentMode === 'subagent' ? 'default' : 'subagent')
-    },
-    {
-      id: 'mode-computer',
-      title: agentMode === 'computer' ? 'Leave Computer Use' : 'Use Computer Use',
-      group: 'Mode',
-      icon: Monitor,
-      run: () => setAgentMode(agentMode === 'computer' ? 'default' : 'computer')
     },
     {
       id: 'open-project',

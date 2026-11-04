@@ -23,6 +23,7 @@ import { RunStatusRow } from './RunStatusRow'
 import { AssistantMessage } from './conversation/AssistantMessage'
 import { RunSummary } from './conversation/RunSummary'
 import { ErrorNotice, ThreadErrorBanner } from './conversation/ErrorNotice'
+import { SessionRail } from './SessionRail'
 import { Popover } from './Popover'
 import { ErrorBoundary } from './ErrorBoundary'
 import { activityOf } from '../lib/activity'
@@ -35,6 +36,7 @@ const VISIBLE_RECENT_TURNS = 3
 const MIN_HIDDEN_MESSAGES = 12
 /** How far from the bottom still counts as "following the output". */
 const FOLLOW_RANGE = 80
+const EDGE_RANGE = 16
 
 function scrollKeyOf(sessionFile: string | undefined): string {
   return sessionFile ?? 'draft'
@@ -115,6 +117,9 @@ export function Thread() {
   const runOpen = isStreaming || (run.phase !== 'idle' && !run.settled)
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
+  const historyLoading = useAppStore(
+    (state) => Boolean(state.activeSessionFile && state.hydratingSessionFile === state.activeSessionFile)
+  )
   const draftId = useAppStore((state) => state.draftId)
   const models = useAppStore((state) => state.models)
   const forkTargets = useAppStore((state) => state.forkTargets)
@@ -139,6 +144,9 @@ export function Thread() {
   }
   const [atBottom, setAtBottom] = useState(true)
   const [atTop, setAtTop] = useState(true)
+  const [scrollDirection, setScrollDirection] = useState<'up' | 'down' | null>(null)
+  const previousScrollTopRef = useRef<number | null>(null)
+  const [scrolledTurnId, setScrolledTurnId] = useState<string | null>(null)
   const [expandedHistorySession, setExpandedHistorySession] = useState<string | null>(() =>
     readHistoryExpanded(sessionKey) ? sessionKey : null
   )
@@ -160,6 +168,27 @@ export function Thread() {
   }, [])
 
   const turns = useMemo(() => buildTurns(items), [items])
+  const sessionTurns = useMemo(
+    () => turns.filter((turn): turn is Turn & { user: UserItem } => Boolean(turn.user)),
+    [turns]
+  )
+  const sessionTurnIdsRef = useRef<string[]>([])
+  sessionTurnIdsRef.current = sessionTurns.map((turn) => turn.id)
+  const lastSessionTurnId = sessionTurns[sessionTurns.length - 1]?.id ?? null
+  const activeTurnId = atBottom ? lastSessionTurnId : scrolledTurnId
+  const syncActiveTurn = useCallback((container: HTMLDivElement) => {
+    const sessionTurnIds = new Set(sessionTurnIdsRef.current)
+    const visibleTurns = Array.from(container.querySelectorAll<HTMLElement>('[data-turn]')).filter(
+      (element) => sessionTurnIds.has(element.dataset.turn ?? '')
+    )
+    let activeTurn = visibleTurns[0]
+    const threshold = container.getBoundingClientRect().top + 96
+    for (const turn of visibleTurns) {
+      if (turn.getBoundingClientRect().top <= threshold) activeTurn = turn
+      else break
+    }
+    setScrolledTurnId(activeTurn?.dataset.turn ?? null)
+  }, [])
   const historySessionKey = sessionKey
   const historyExpanded = expandedHistorySession === historySessionKey
   const expandHistory = useCallback(() => {
@@ -235,6 +264,7 @@ export function Thread() {
     // restore waits for the first items instead of anchoring to an empty box.
     const restoreKey = pendingRestoreRef.current
     if (restoreKey) {
+      setScrollDirection(null)
       if (items.length === 0) return
       pendingRestoreRef.current = null
       const entry = readScrollMemory(restoreKey)
@@ -244,21 +274,25 @@ export function Thread() {
         node.scrollTo({ top: 0, behavior: 'instant' })
         const nearBottom = node.scrollHeight - node.clientHeight < FOLLOW_RANGE
         stickRef.current = nearBottom
-        setAtBottom(nearBottom)
-        setAtTop(true)
+        setAtBottom(node.scrollHeight - node.clientHeight <= EDGE_RANGE)
+        setAtTop(node.scrollTop <= EDGE_RANGE)
+        syncActiveTurn(node)
         return
       }
       const restored = applyScroll(node, entry, FOLLOW_RANGE)
+      const distanceToBottom = node.scrollHeight - restored.top - node.clientHeight
       stickRef.current = restored.stick
-      setAtBottom(restored.atBottom)
-      setAtTop(restored.top < FOLLOW_RANGE)
+      setAtBottom(distanceToBottom <= EDGE_RANGE)
+      setAtTop(restored.top <= EDGE_RANGE)
       node.scrollTo({ top: restored.top, behavior: 'instant' })
+      syncActiveTurn(node)
       return
     }
 
     if (!itemsChanged || !stickRef.current || items.length === 0) return
     node.scrollTo({ top: node.scrollHeight, behavior: 'instant' })
-  }, [items, historyCollapsed, sessionKey])
+    syncActiveTurn(node)
+  }, [items, historyCollapsed, sessionKey, syncActiveTurn])
 
   // A reader who scrolls up is reading, not watching: the follow stops and
   // only a click brings it back. The window is generous enough that a
@@ -267,16 +301,23 @@ export function Thread() {
   useEffect(() => {
     const node = scrollRef.current
     if (!node) return
+    previousScrollTopRef.current = node.scrollTop
     const onScroll = () => {
       const distance = node.scrollHeight - node.scrollTop - node.clientHeight
+      const previousScrollTop = previousScrollTopRef.current
+      if (previousScrollTop !== null && node.scrollTop !== previousScrollTop) {
+        setScrollDirection(node.scrollTop < previousScrollTop ? 'up' : 'down')
+      }
+      previousScrollTopRef.current = node.scrollTop
       stickRef.current = distance < FOLLOW_RANGE
-      setAtBottom(stickRef.current)
-      setAtTop(node.scrollTop < FOLLOW_RANGE)
+      setAtBottom(distance <= EDGE_RANGE)
+      setAtTop(node.scrollTop <= EDGE_RANGE)
       rememberScrollMemory(sessionKey, node, FOLLOW_RANGE)
+      syncActiveTurn(node)
     }
     node.addEventListener('scroll', onScroll, { passive: true })
     return () => node.removeEventListener('scroll', onScroll)
-  }, [sessionKey])
+  }, [sessionKey, syncActiveTurn])
 
   // The composer is a sibling, so growing it reduces the transcript's
   // client height without a scroll event. A reader who is following must
@@ -440,8 +481,6 @@ export function Thread() {
     const node = scrollRef.current
     if (!node) return
     stickRef.current = true
-    setAtBottom(true)
-    setAtTop(node.scrollHeight - node.clientHeight < FOLLOW_RANGE)
     node.scrollTo({ top: node.scrollHeight, behavior: scrollBehavior() })
     rememberScrollPosition(sessionKey, { top: node.scrollHeight, atBottom: true })
   }
@@ -450,8 +489,6 @@ export function Thread() {
     const node = scrollRef.current
     if (!node) return
     stickRef.current = false
-    setAtTop(true)
-    setAtBottom(node.scrollHeight - node.clientHeight < FOLLOW_RANGE)
     node.scrollTo({ top: 0, behavior: scrollBehavior() })
     rememberScrollPosition(sessionKey, { top: 0, atBottom: false })
   }
@@ -565,8 +602,29 @@ export function Thread() {
     window.setTimeout(() => node.classList.remove('turn--flash'), 1600)
   }, [pendingJump, query, searchOpen, turns, firstVisibleTurn])
 
+  const jumpTarget =
+    atTop && atBottom
+      ? null
+      : atBottom
+        ? 'top'
+        : atTop
+          ? 'bottom'
+          : scrollDirection === 'up'
+            ? 'top'
+            : scrollDirection === 'down'
+              ? 'bottom'
+              : null
+
   return (
     <div className="thread-frame">
+    {sessionTurns.length > 1 ? (
+      <SessionRail
+        key={sessionKey}
+        turns={sessionTurns}
+        activeTurnId={activeTurnId}
+        onSelect={jumpToTurn}
+      />
+    ) : null}
     <div className="thread" ref={scrollRef}>
       {searchOpen ? (
         <div className="thread-search">
@@ -670,7 +728,18 @@ export function Thread() {
         </div>
       ) : null}
 
-      <div className="thread__inner" data-history-collapsed={historyCollapsed}>
+      <div
+        className="thread__inner"
+        data-history-collapsed={historyCollapsed}
+        data-history-loading={historyLoading && items.length === 0 ? 'true' : undefined}
+      >
+        {historyLoading && items.length === 0 ? (
+          <div className="thread__loading" role="status" aria-live="polite">
+            <span className="spinner" aria-hidden="true" />
+            {t('Loading conversation history…')}
+          </div>
+        ) : null}
+
         {historyCollapsed ? (
           <div className="thread__history">
             <button
@@ -722,30 +791,17 @@ export function Thread() {
       </div>
 
     </div>
-      {!atTop || !atBottom ? (
+      {jumpTarget ? (
         <div className="scroll-jumps">
-          {!atTop ? (
-            <button
-              type="button"
-              className="scroll-jump"
-              onClick={scrollToTop}
-              title={t('Scroll to the top')}
-              aria-label={t('Scroll to the top')}
-            >
-              <ArrowUp size={15} />
-            </button>
-          ) : null}
-          {!atBottom ? (
-            <button
-              type="button"
-              className="scroll-jump"
-              onClick={scrollToBottom}
-              title={t('Scroll to the latest')}
-              aria-label={t('Scroll to the latest')}
-            >
-              <ArrowDown size={15} />
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="scroll-jump"
+            onClick={jumpTarget === 'top' ? scrollToTop : scrollToBottom}
+            title={t(jumpTarget === 'top' ? 'Scroll to the top' : 'Scroll to the latest')}
+            aria-label={t(jumpTarget === 'top' ? 'Scroll to the top' : 'Scroll to the latest')}
+          >
+            {jumpTarget === 'top' ? <ArrowUp size={15} /> : <ArrowDown size={15} />}
+          </button>
         </div>
       ) : null}
     </div>

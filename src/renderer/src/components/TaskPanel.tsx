@@ -2,10 +2,9 @@ import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from
 import {
   Check,
   ChevronRight,
-  Diff,
+  FileDiff,
   GitBranch,
-  GitCommitHorizontal,
-  Upload
+  GitCommitHorizontal
 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { CommitDialog } from './CommitDialog'
@@ -94,7 +93,7 @@ function TaskSection({
   )
 }
 
-/** A background task: what it is on the left, how it is going on the right. */
+/** The status leads the task label so it stays visible when the goal is long. */
 function BackgroundTaskRow({ task }: { task: SubagentTreeTask }) {
   const t = useT()
   // The label is the task goal — never the live activity or the tool name.
@@ -109,12 +108,12 @@ function BackgroundTaskRow({ task }: { task: SubagentTreeTask }) {
 
   return (
     <li className="task-panel__task" data-status={task.status} title={task.task}>
-      <span className="task-panel__task-name">{task.task}</span>
       <span
         className="task-panel__dot"
         data-tone={tone}
         aria-label={t(STATUS_LABEL[task.status])}
       />
+      <span className="task-panel__task-name">{task.task}</span>
     </li>
   )
 }
@@ -133,7 +132,10 @@ function DeliverableRow({
   onToggle: (path: string) => void
   onOpenFile: (node: Extract<DeliverableNode, { kind: 'file' }>) => void
 }) {
-  const indent = { paddingLeft: `${4 + depth * 14}px` }
+  // A file is a deliverable, and the reader scans deliverables: every file row
+  // keeps the one column, whatever folder it sits under. Only a folder header
+  // steps in with the depth, because that is the row whose job is structure.
+  const indent = { paddingLeft: `${node.kind === 'file' ? 4 : 4 + depth * 14}px` }
 
   if (node.kind === 'folder') {
     const open = isOpen(node.path)
@@ -146,6 +148,10 @@ function DeliverableRow({
           aria-expanded={open}
           onClick={() => onToggle(node.path)}
         >
+          {/* The tile a file's mark sits in is always there, empty for a
+              folder: it is what keeps a folder's name on the same column as a
+              file's name at the same depth. Only the indent moves the column. */}
+          <span className="task-panel__tile" aria-hidden="true" />
           <span className="task-panel__folder-name">{node.name}</span>
           <ChevronRight
             size={14}
@@ -181,10 +187,13 @@ function DeliverableRow({
         title={node.path}
         onClick={() => onOpenFile(node)}
       >
-        <span className="task-panel__file-tile">
+        <span className="task-panel__tile task-panel__tile--file">
           <FileIcon name={node.name} size={12} />
         </span>
         <span className="task-panel__file-name">{node.name}</span>
+        {/* Which folder this file came from: the row no longer says it with an
+            indent, so it says it here, in the room the name left behind. */}
+        {node.dir ? <span className="task-panel__file-dir">{node.dir}/</span> : null}
       </button>
     </li>
   )
@@ -205,8 +214,6 @@ export function TaskPanel() {
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const draftId = useAppStore((state) => state.draftId)
   const refreshGit = useAppStore((state) => state.refreshGit)
-  const pushGit = useAppStore((state) => state.pushGit)
-  const showToast = useAppStore((state) => state.showToast)
 
   const threadKey = activeSessionFile ?? draftId ?? ''
   const plan = useMemo(() => extractPlan(items), [items])
@@ -227,7 +234,6 @@ export function TaskPanel() {
   const diff = useMemo(() => summariseDiff(git), [git])
 
   const [refreshing, setRefreshing] = useState(false)
-  const [pushing, setPushing] = useState(false)
   const [commitOpen, setCommitOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [folders, setFolders] = useState<Record<string, boolean>>({})
@@ -244,17 +250,6 @@ export function TaskPanel() {
   useEffect(() => {
     void readGitStatus()
   }, [readGitStatus, workspacePath])
-
-  const push = async () => {
-    setPushing(true)
-    try {
-      await pushGit()
-    } catch {
-      showToast(t('Could not push branch'), 'error')
-    } finally {
-      setPushing(false)
-    }
-  }
 
   const branchLabel = git?.isRepo
     ? git.branch ?? `${t('Detached')} · ${git.head?.slice(0, 7) ?? ''}`
@@ -315,36 +310,24 @@ export function TaskPanel() {
               onClick={openChanges}
               disabled={!git?.isRepo}
             >
-              <Diff size={16} strokeWidth={1.5} className="task-panel__row-icon" aria-hidden="true" />
+              <FileDiff size={16} strokeWidth={1.5} className="task-panel__row-icon" aria-hidden="true" />
               <span className="task-panel__row-label">{t('Changes')}</span>
               {changeMeta}
             </button>
-            <div className="task-panel__row" data-split="true">
-              <button
-                type="button"
-                className="task-panel__row-main"
-                disabled={!git?.isRepo || Boolean(git?.clean)}
-                onClick={() => setCommitOpen(true)}
-              >
-                <GitCommitHorizontal
-                  size={16}
-                  strokeWidth={1.5}
-                  className="task-panel__row-icon"
-                  aria-hidden="true"
-                />
-                <span className="task-panel__row-label">{t('Commit or Push')}</span>
-              </button>
-              <button
-                type="button"
-                className="task-panel__row-action"
-                disabled={!git?.isRepo || pushing}
-                onClick={() => void push()}
-                title={t('Push')}
-                aria-label={t('Push')}
-              >
-                <Upload size={13} strokeWidth={1.5} />
-              </button>
-            </div>
+            <button
+              type="button"
+              className="task-panel__row"
+              disabled={!git?.isRepo || Boolean(git?.clean)}
+              onClick={() => setCommitOpen(true)}
+            >
+              <GitCommitHorizontal
+                size={16}
+                strokeWidth={1.5}
+                className="task-panel__row-icon"
+                aria-hidden="true"
+              />
+              <span className="task-panel__row-label">{t('Commit or Push')}</span>
+            </button>
             <button type="button" className="task-panel__row" onClick={() => setHistoryOpen(true)}>
               <GitBranch
                 size={16}

@@ -39,7 +39,6 @@ import { hydrationStale, scopeEvent, scopeStatus } from '../lib/session-scope'
 import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
 import { beginStream } from '../lib/stream-events'
 import { migrateViewState } from '../lib/view-state'
-import { DEFAULT_THINKING_LEVELS } from '../lib/thinking'
 
 export type QueueKind = 'steer' | 'followUp'
 
@@ -174,7 +173,7 @@ const THREAD_KEYS = [
   'notice'
 ] as const
 
-function emptyThread(cwd?: string): SessionThread {
+function emptyThread(cwd?: string, agentMode: AgentMode = 'default'): SessionThread {
   return {
     items: [],
     run: IDLE_RUN,
@@ -185,12 +184,21 @@ function emptyThread(cwd?: string): SessionThread {
     queue: { steering: [], followUp: [] },
     status: { phase: 'ready', cwd },
     forkTargets: [],
-    agentMode: 'default',
+    agentMode,
     models: [],
     thinkingLevels: [],
     commands: APP_COMMANDS,
     version: 0
   }
+}
+
+/**
+ * The mode a draft shows before Pi boots: the same Plan Mode the runtime seeds for a
+ * session it has never written. Pi's `pi-desktop-mode` status stays the authority —
+ * this only stops a brand-new chat from claiming Default while the process starts.
+ */
+function draftMode(settings: AppSettings): AgentMode {
+  return settings.defaultPlanMode === true ? 'plan' : 'default'
 }
 
 function viewKeyOf(state: { activeSessionFile?: string; draftId?: string }): string {
@@ -231,6 +239,8 @@ export interface AppStore {
   draftId?: string
   queue: { steering: string[]; followUp: string[] }
   activeSessionFile?: string
+  /** Session file whose historical messages are being hydrated into the view. */
+  hydratingSessionFile?: string
   /** User messages the active branch can be forked from. */
   forkTargets: ForkTarget[]
   /** True while a fork is in flight, so the button cannot be pressed twice. */
@@ -397,14 +407,18 @@ const DEFAULT_SETTINGS: AppSettings = {
   language: 'en',
   fontScale: 1,
   diffSplit: false,
-  drawerWidth: 420,
+  drawerWidth: 520,
   trustProject: true,
   permissionMode: 'ask',
-  desktopNotifications: true
+  desktopNotifications: true,
+  memoriesEnabled: true,
+  memoryGeneration: true,
+  memorySkipExternalContext: true
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 let unsubscribeRuntime: (() => void) | undefined
+let bootstrapPromise: Promise<void> | undefined
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => unsubscribeRuntime?.())
@@ -676,67 +690,87 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  async bootstrap() {
-    const [info, settings] = await Promise.all([
-      window.pi.app.info(),
-      window.pi.settings.get()
-    ])
-    set({ info, settings })
-    applyAppearance(settings, info.forcedTheme)
-    void get().refreshModelCatalog()
+  bootstrap() {
+    if (bootstrapPromise) return bootstrapPromise
+    const work = (async () => {
+      const settings = await window.pi.settings.get()
+      set({ settings })
+      const startupTheme = new URLSearchParams(window.location.search).get('piDesktopTheme')
+      applyAppearance(
+        settings,
+        startupTheme === 'light' || startupTheme === 'dark' ? startupTheme : undefined
+      )
 
-    // StrictMode can repeat bootstrap while preload's IPC listeners stay alive.
-    unsubscribeRuntime?.()
-    const offEvent = window.pi.runtime.onEvent((payload) => {
-      const scoped = scopeEvent(payload, viewKeyOf(get()))
-      if (!scoped) return
-      handleEvent(bindSet(set, get, scoped.ownerId), bindGet(get, scoped.ownerId), scoped.event, get, scoped.ownerId)
-    })
-    const offRekey = window.pi.runtime.onRekey?.((change) => {
-      rekeyThread(set, get, change.from, change.to, change.replace)
-    })
-    const offStatus = window.pi.runtime.onStatus((incoming) => {
-      const scoped = scopeStatus(incoming, viewKeyOf(get()))
-      if (!scoped) return
-      const { ownerId: owner, status } = scoped
-      const ownGet = bindGet(get, owner)
-      // An intentionally retired idle worker leaves a cold, usable conversation.
-      const cold = status.phase === 'stopped' && !status.error && ownGet().run.settled
-      const nextStatus = { ...status, cwd: status.cwd ?? ownGet().status.cwd }
-      applyRuntimeStatus(bindSet(set, get, owner), cold ? { ...nextStatus, phase: 'ready' } : nextStatus)
-      if (status.phase === 'ready') {
-        void get().refreshState(owner)
-        void get().refreshCommands(owner)
-        // Pi skips the wait when retry is off, so a 429 settles the turn at
-        // once. Arm it on the live process; the settings file is raised at launch.
-        if (!retryArmed.has(owner)) {
-          retryArmed.add(owner)
-          void tracedRpc(owner, 'set_auto_retry', { enabled: true }, undefined, 'arm-retry').catch(() => {
-            retryArmed.delete(owner)
-          })
+      // Pi version probing can take several seconds on a cold start. It is for
+      // the About page, so it must not hold the saved appearance or workspace.
+      void window.pi.app.info().then((info) => {
+        set({ info })
+        applyAppearance(get().settings, info.forcedTheme)
+      }).catch((error: unknown) => {
+        console.warn('[pi-desktop] could not load app info:', error)
+      })
+      void get().refreshModelCatalog()
+
+      // StrictMode replays effects in development. bootstrapPromise above makes
+      // this single startup transaction idempotent across that replay.
+      unsubscribeRuntime?.()
+      const offEvent = window.pi.runtime.onEvent((payload) => {
+        const scoped = scopeEvent(payload, viewKeyOf(get()))
+        if (!scoped) return
+        handleEvent(bindSet(set, get, scoped.ownerId), bindGet(get, scoped.ownerId), scoped.event, get, scoped.ownerId)
+      })
+      const offRekey = window.pi.runtime.onRekey?.((change) => {
+        rekeyThread(set, get, change.from, change.to, change.replace)
+      })
+      const offStatus = window.pi.runtime.onStatus((incoming) => {
+        const scoped = scopeStatus(incoming, viewKeyOf(get()))
+        if (!scoped) return
+        const { ownerId: owner, status } = scoped
+        const ownGet = bindGet(get, owner)
+        // An intentionally retired idle worker leaves a cold, usable conversation.
+        const cold = status.phase === 'stopped' && !status.error && ownGet().run.settled
+        const nextStatus = { ...status, cwd: status.cwd ?? ownGet().status.cwd }
+        applyRuntimeStatus(bindSet(set, get, owner), cold ? { ...nextStatus, phase: 'ready' } : nextStatus)
+        if (status.phase === 'ready') {
+          void get().refreshState(owner)
+          void get().refreshCommands(owner)
+          // Pi skips the wait when retry is off, so a 429 settles the turn at
+          // once. Arm it on the live process; the settings file is raised at launch.
+          if (!retryArmed.has(owner)) {
+            retryArmed.add(owner)
+            void tracedRpc(owner, 'set_auto_retry', { enabled: true }, undefined, 'arm-retry').catch(() => {
+              retryArmed.delete(owner)
+            })
+          }
         }
+      })
+
+      unsubscribeRuntime = () => {
+        offEvent()
+        offRekey?.()
+        offStatus()
       }
+
+      const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
+      const target = active ?? settings.workspaces[0]
+      if (settings.activeWorkspaceId === null) {
+        await get().openWorkspace(undefined, undefined, 'restore-projectless')
+      } else if (target) {
+        // The project is reopened so Pi is ready where the user works, but the
+        // conversation is not: a start stays a new chat. The last conversation is
+        // still remembered for the next one and offered by name on the welcome
+        // screen, and a click there is the reader asking for it.
+        await get().openWorkspace(target, undefined, 'restore-project')
+      } else {
+        await get().refreshSessions()
+      }
+    })()
+    const guarded = work.catch((error: unknown) => {
+      if (bootstrapPromise === guarded) bootstrapPromise = undefined
+      set({ error: messageOf(error) })
     })
-
-    unsubscribeRuntime = () => {
-      offEvent()
-      offRekey?.()
-      offStatus()
-    }
-
-    await get().refreshSessions()
-
-    const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
-    const target = active ?? settings.workspaces[0]
-    if (settings.activeWorkspaceId === null) {
-      await get().openWorkspace(undefined, undefined, 'restore-projectless')
-    } else if (target) {
-      // The project is reopened so Pi is ready where the user works, but the
-      // conversation is not: a start stays a new chat. The last conversation is
-      // still remembered for the next one and offered by name on the welcome
-      // screen, and a click there is the reader asking for it.
-      await get().openWorkspace(target, undefined, 'restore-project')
-    }
+    bootstrapPromise = guarded
+    return guarded
   },
 
   async pickWorkspace() {
@@ -812,6 +846,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     drainPending()
     pendingProjectPath = undefined
     const cached = sessionFile ? get().threads[sessionFile] : undefined
+    const shouldHydrate = Boolean(sessionFile && (!cached || cached.version === 0) && !cached?.isStreaming)
+    const hydratingSessionFile = shouldHydrate ? sessionFile : undefined
     const draftId = sessionFile ? undefined : mintDraft()
     // Opening a conversation is what clears its mark: the reader has seen it.
     const thread = cached
@@ -823,6 +859,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       threads,
       draftId,
       activeSessionFile: sessionFile,
+      hydratingSessionFile,
       error: undefined,
       composerText: undefined,
       git: undefined,
@@ -833,11 +870,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       status: thread.version > 0 ? thread.status : { phase: 'ready', cwd: workspace?.path },
       transport: 'connected'
     })
+    if (shouldHydrate && sessionFile) void get().hydrateSession(sessionFile)
     if (epoch !== workspaceEpoch) return
     await get().refreshSessions()
     if (epoch !== workspaceEpoch) return
     await get().refreshGit()
-    if (sessionFile && !cached) void get().hydrateSession(sessionFile)
   },
 
   async removeWorkspace(target) {
@@ -898,11 +935,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     // conversation, not a file, so the view follows its own key and nothing
     // here may read that key as a session file.
     const live = session.file.startsWith('draft:')
+    const shouldHydrate = !live && (!cached || cached.version === 0) && !thread.isStreaming
     touchSessionLru(session.file)
     set({
       threads: { ...get().threads, [session.file]: thread },
       draftId: live ? session.file : undefined,
       activeSessionFile: live ? undefined : session.file,
+      hydratingSessionFile: shouldHydrate ? session.file : undefined,
       error: undefined,
       ...projectThread(thread)
     })
@@ -929,32 +968,47 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       // There is no file to replay for a conversation that has none yet; its
       // transcript is the live one the store already holds.
-      if (!live && (!cached || cached.version === 0)) await get().hydrateSession(session.file)
+      if (shouldHydrate) await get().hydrateSession(session.file)
     } catch (error) {
-      if ((get().activeSessionFile ?? get().draftId) === session.file) set({ error: messageOf(error) })
+      if ((get().activeSessionFile ?? get().draftId) === session.file) {
+        set({
+          error: messageOf(error),
+          ...(get().hydratingSessionFile === session.file ? { hydratingSessionFile: undefined } : {})
+        })
+      }
     }
   },
 
   async hydrateSession(file) {
     const hydrate = window.pi.sessions.hydrate
-    if (typeof hydrate !== 'function') return
+    if (typeof hydrate !== 'function') {
+      if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
+      return
+    }
     const versionAtStart = get().threads[file]?.version ?? 0
     const streaming = get().threads[file]?.isStreaming ?? false
-    if (streaming) return
-    const messages = await hydrate(file)
-    const current = get().threads[file]
-    if (!current) return
-    if (hydrationStale(versionAtStart, current.version, current.isStreaming)) return
-    const next: SessionThread = {
-      ...current,
-      items: itemsFromMessages(messages ?? []),
-      version: current.version + 1
+    if (streaming) {
+      if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
+      return
     }
-    touchSessionLru(file)
-    const rawThreads = { ...get().threads, [file]: next }
-    const threads = enforceSessionLru(rawThreads, file)
-    if (get().activeSessionFile === file) set({ threads, ...projectThread(next) })
-    else set({ threads })
+    try {
+      const messages = await hydrate(file)
+      const current = get().threads[file]
+      if (!current) return
+      if (hydrationStale(versionAtStart, current.version, current.isStreaming)) return
+      const next: SessionThread = {
+        ...current,
+        items: itemsFromMessages(messages ?? []),
+        version: current.version + 1
+      }
+      touchSessionLru(file)
+      const rawThreads = { ...get().threads, [file]: next }
+      const threads = enforceSessionLru(rawThreads, file)
+      if (get().activeSessionFile === file) set({ threads, ...projectThread(next) })
+      else set({ threads })
+    } finally {
+      if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
+    }
   },
 
   async renameSession(name: string) {
@@ -1047,7 +1101,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const draftId = mintDraft()
         const thread = emptyThread(get().workspace?.path)
         threads[draftId] = thread
-        set({ threads, draftId, activeSessionFile: undefined, ...projectThread(thread) })
+        set({ threads, draftId, activeSessionFile: undefined, hydratingSessionFile: undefined, ...projectThread(thread) })
       } else {
         set({ threads })
       }
@@ -1067,10 +1121,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     beginViewChange()
     drainPending()
     const draftId = mintDraft()
-    const thread = emptyThread(get().workspace?.path)
+    const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
     set({
       draftId,
       activeSessionFile: undefined,
+      hydratingSessionFile: undefined,
       threads: { ...get().threads, [draftId]: thread },
       stats: undefined,
       ...projectThread(thread),
@@ -1141,11 +1196,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     let key = viewKeyOf(get())
     if (!key) {
       const draftId = mintDraft()
-      const thread = emptyThread(get().workspace?.path)
+      const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
       set({
         draftId,
         threads: { ...get().threads, [draftId]: thread },
-        activeSessionFile: undefined
+        activeSessionFile: undefined,
+        hydratingSessionFile: undefined
       })
       key = draftId
     }
@@ -1439,10 +1495,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async cycleThinkingLevel(direction = 1) {
     const { thinkingLevels, piState } = get()
-    const levels =
-      thinkingLevels.length > 0 ? thinkingLevels : piState ? thinkingLevels : DEFAULT_THINKING_LEVELS
+    const levels = thinkingLevels
     if (levels.length === 0) {
-      get().showToast('This model has no reasoning levels', 'warning')
+      get().showToast(
+        piState
+          ? 'This model has no reasoning levels'
+          : 'Reasoning effort can be changed once the conversation starts.',
+        'warning'
+      )
       return
     }
     if (levels.length === 1) {
@@ -1659,7 +1719,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
             (command) =>
               !appNames.has(command.name) &&
               command.name !== 'desktop-mode' &&
-              command.name !== 'desktop-goal'
+              command.name !== 'desktop-goal' &&
+              command.name !== 'desktop-computer'
           )
         ]
       })
@@ -2190,7 +2251,7 @@ export function applyAppearance(
   // Custom Font
   if (settings.fontFamily && settings.fontFamily !== 'system') {
     const fontMap: Record<string, string> = {
-      sans: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      sans: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       chinese: "'PingFang SC', '苹方', '苹方-简', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif",
       mono: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace",
       serif: "'Newsreader', 'Georgia', 'Songti SC', 'SimSun', serif"
@@ -2211,7 +2272,7 @@ export function applyAppearance(
       pingfangWeights[settings.fontFamily] ??
       (settings.fontFamily.includes(',') || settings.fontFamily.includes('"') || settings.fontFamily.includes("'")
         ? settings.fontFamily
-        : `"${settings.fontFamily}", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif`)
+        : `"${settings.fontFamily}", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif`)
     root.style.setProperty('--font-ui', fontVal)
     root.style.setProperty('--font-sidebar', fontVal)
     root.style.setProperty('--font-reading', fontVal)
@@ -2725,7 +2786,7 @@ function handleExtensionUi(
       if (!key) break
       if (key === 'pi-desktop-mode') {
         const mode = request.statusText
-        if (mode === 'default' || mode === 'goal' || mode === 'plan' || mode === 'subagent' || mode === 'computer') set({ agentMode: mode })
+        if (mode === 'default' || mode === 'goal' || mode === 'plan' || mode === 'subagent') set({ agentMode: mode })
         break
       }
       set((state) => ({

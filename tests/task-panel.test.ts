@@ -19,15 +19,46 @@ function repo(overrides: Partial<GitStatus> = {}): GitStatus {
   }
 }
 
-test('a file in a folder becomes a folder with the file inside', () => {
+test('a folder that holds one file is a path, not a group', () => {
   const tree = buildDeliverableTree([{ path: 'audit/hover-check.mjs' }])
   assert.equal(tree.length, 1)
-  assert.equal(tree[0].kind, 'folder')
-  assert.equal(tree[0].kind === 'folder' && tree[0].name, 'audit')
-  const children = tree[0].kind === 'folder' ? tree[0].children : []
-  assert.equal(children.length, 1)
-  assert.equal(children[0].kind === 'file' && children[0].name, 'hover-check.mjs')
-  assert.equal(children[0].kind === 'file' && children[0].path, 'audit/hover-check.mjs')
+  assert.equal(tree[0].kind, 'file')
+  assert.equal(tree[0].kind === 'file' && tree[0].name, 'hover-check.mjs')
+  assert.equal(tree[0].kind === 'file' && tree[0].path, 'audit/hover-check.mjs')
+  assert.equal(tree[0].kind === 'file' && tree[0].dir, 'audit')
+})
+
+test('a chain of folders with one file at the end collapses to the file', () => {
+  const tree = buildDeliverableTree([{ path: 'output/audit/shot.png' }])
+  assert.equal(tree.length, 1)
+  assert.equal(tree[0].kind === 'file' && tree[0].name, 'shot.png')
+  assert.equal(tree[0].kind === 'file' && tree[0].dir, 'output/audit')
+})
+
+test('a folder with two files stays a folder and keeps its children inside', () => {
+  const tree = buildDeliverableTree([
+    { path: 'audit/shot.png' },
+    { path: 'audit/hover-check.mjs' },
+    { path: 'note.md' }
+  ])
+  assert.deepEqual(
+    tree.map((node) => node.name),
+    ['audit', 'note.md']
+  )
+  const folder = tree[0]
+  assert.equal(folder.kind, 'folder')
+  assert.deepEqual(
+    folder.kind === 'folder' ? folder.children.map((child) => child.name) : [],
+    ['hover-check.mjs', 'shot.png']
+  )
+})
+
+test('a folder whose only child is a folder is still a folder', () => {
+  const tree = buildDeliverableTree([{ path: 'docs/sub/a.md' }, { path: 'docs/sub/b.md' }])
+  assert.equal(tree.length, 1)
+  assert.equal(tree[0].kind === 'folder' && tree[0].name, 'docs')
+  const inner = tree[0].kind === 'folder' ? tree[0].children[0] : undefined
+  assert.equal(inner?.kind === 'folder' && inner.name, 'sub')
 })
 
 test('a file at the root of the project is not put in a folder', () => {
@@ -35,14 +66,17 @@ test('a file at the root of the project is not put in a folder', () => {
   assert.equal(tree.length, 1)
   assert.equal(tree[0].kind, 'file')
   assert.equal(tree[0].kind === 'file' && tree[0].path, 'README.md')
+  assert.equal(tree[0].kind === 'file' && tree[0].dir, '')
 })
 
 test('folders come before files, and both are read in order', () => {
   const tree = buildDeliverableTree([
     { path: 'zeta.md' },
     { path: 'src/renderer/app.tsx' },
+    { path: 'src/renderer/store.ts' },
     { path: 'alpha.md' },
-    { path: 'docs/readme.md' }
+    { path: 'docs/readme.md' },
+    { path: 'docs/design.md' }
   ])
   assert.deepEqual(
     tree.map((node) => node.name),
@@ -50,25 +84,23 @@ test('folders come before files, and both are read in order', () => {
   )
 })
 
-test('nested folders keep their depth', () => {
-  const tree = buildDeliverableTree([{ path: 'output/audit/shot.png' }])
-  const output = tree[0]
-  assert.equal(output.kind === 'folder' && output.name, 'output')
-  const audit = output.kind === 'folder' ? output.children[0] : undefined
-  assert.equal(audit?.kind === 'folder' && audit.name, 'audit')
-  const file = audit?.kind === 'folder' ? audit.children[0] : undefined
-  assert.equal(file?.kind === 'file' && file.name, 'shot.png')
-})
-
 test('a file that was written twice is listed once', () => {
   const tree = buildDeliverableTree([{ path: 'src/app.ts' }, { path: 'src/app.ts' }])
   assert.equal(tree.length, 1)
-  assert.equal(tree[0].kind === 'folder' && tree[0].children.length, 1)
+  assert.equal(tree[0].kind === 'file' && tree[0].path, 'src/app.ts')
 })
 
 test('the tree keeps the path a file is opened with', () => {
   const tree = buildDeliverableTree([
     { path: 'src/app.ts', target: 'C:/project/src/app.ts' }
+  ])
+  assert.equal(tree[0].kind === 'file' && tree[0].target, 'C:/project/src/app.ts')
+})
+
+test('a folder with two files keeps the open path of each', () => {
+  const tree = buildDeliverableTree([
+    { path: 'src/app.ts', target: 'C:/project/src/app.ts' },
+    { path: 'src/store.ts', target: 'C:/project/src/store.ts' }
   ])
   const folder = tree[0]
   const file = folder.kind === 'folder' ? folder.children[0] : undefined

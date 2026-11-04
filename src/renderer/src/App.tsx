@@ -21,7 +21,7 @@ import { Sidebar } from './components/Sidebar'
 import { Thread } from './components/Thread'
 import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
-import { SettingsDialog } from './components/SettingsDialog'
+import { SettingsDialog, type SettingsPage } from './components/SettingsDialog'
 import { AppMenuBar } from './components/AppMenuBar'
 import { InspectorPanel } from './components/InspectorPanel'
 import { BrowserView } from './components/BrowserView'
@@ -37,17 +37,23 @@ import { PlanStrip } from './components/PlanStrip'
 import { GoalBar } from './components/GoalBar'
 import { SessionTreeDialog } from './components/SessionTreeDialog'
 import { McpDialog } from './components/McpDialog'
+import { ScheduledTasksDialog } from './components/ScheduledTasksDialog'
 import { EditProjectDialog } from './components/EditProjectDialog'
 import { Popover } from './components/Popover'
 import { openingLabel, useT } from './lib/i18n'
 
 /** Matches the closing animation in global.css; the panel stays mounted that long. */
 const INSPECTOR_EXIT_MS = 200
+const AUTOMATIC_UPDATE_INTERVAL_MS = 12 * 60 * 60 * 1000
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
   const info = useAppStore((state) => state.info)
   const hasItems = useAppStore((state) => state.items.length > 0)
+  const historyLoading = useAppStore(
+    (state) => Boolean(state.activeSessionFile && state.hydratingSessionFile === state.activeSessionFile)
+  )
+  const showThread = hasItems || historyLoading
   const isStreaming = useAppStore((state) => state.isStreaming)
   const status = useAppStore((state) => state.status)
   const sessionName = useAppStore((state) => state.piState?.sessionName)
@@ -73,15 +79,24 @@ export default function App() {
   const cycleModel = useAppStore((state) => state.cycleModel)
   const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
   const compact = useAppStore((state) => state.compact)
+  const showToast = useAppStore((state) => state.showToast)
+  const anySessionStreaming = useAppStore((state) =>
+    Object.values(state.threads).some((thread) => thread.isStreaming)
+  )
   const t = useT()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [bootstrapComplete, setBootstrapComplete] = useState(false)
+  // The dialog has several doors now — the sidebar asks for Plugins directly —
+  // so the page it should open on is shell state, not a prop the caller forgets.
+  const [settingsPage, setSettingsPage] = useState<SettingsPage>('general')
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sidebarSearchSignal] = useState(0)
   const [launcherOpen, setLauncherOpen] = useState(false)
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
+  const [scheduledTasksOpen, setScheduledTasksOpen] = useState(false)
   // A command headed for the drawer. `seq` makes the same command twice two
   // requests instead of one the drawer already ran.
   const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
@@ -110,7 +125,7 @@ export default function App() {
   // Null while the panel is being dragged; the stored width takes over again
   // once the drag ends.
   const [draggedWidth, setDraggedWidth] = useState<number | null>(null)
-  const drawerWidth = draggedWidth ?? settings.drawerWidth ?? 420
+  const drawerWidth = draggedWidth ?? settings.drawerWidth ?? 520
   const [draggedSidebar, setDraggedSidebar] = useState<number | null>(null)
   const sidebarWidth = draggedSidebar ?? settings.sidebarWidth ?? 240
   const [windowWidth, setWindowWidth] = useState(
@@ -122,6 +137,50 @@ export default function App() {
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
+
+  useEffect(() => {
+    // Do not replace the built-in service while any conversation is using it.
+    if (
+      settings.automaticUpdates !== true ||
+      anySessionStreaming ||
+      info?.pi.source !== 'bundled'
+    ) return
+
+    let active = true
+    let running = false
+    const checkAndDownload = async () => {
+      if (running) return
+      running = true
+      try {
+        const result = await window.pi.app.checkUpdate()
+        if (!active) return
+        let downloaded = false
+        if (result.app.hasUpdate) {
+          const appUpdate = await window.pi.app.upgradeApp()
+          downloaded = downloaded || appUpdate.success
+        }
+        if (active && result.piCli.hasUpdate) {
+          const serviceUpdate = await window.pi.app.upgradePiCli()
+          downloaded = downloaded || serviceUpdate.success
+        }
+        if (active && downloaded) showToast(t('Update downloaded. Restart Pi Desktop to apply.'))
+      } catch {
+        // Transient update errors are retried on the next scheduled check.
+      } finally {
+        running = false
+      }
+    }
+
+    void checkAndDownload()
+    const interval = window.setInterval(
+      () => void checkAndDownload(),
+      AUTOMATIC_UPDATE_INTERVAL_MS
+    )
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [anySessionStreaming, info?.pi.source, settings.automaticUpdates, showToast, t])
 
   useEffect(() => {
     if (changesOpen) {
@@ -165,7 +224,10 @@ export default function App() {
   const inspectorOverlay = windowWidth < neededWidth
 
   const toggleSidebar = useCallback(() => setSidebarOpen((value) => !value), [])
-  const openSettings = useCallback(() => setSettingsOpen(true), [])
+  const openSettings = useCallback((page: SettingsPage = 'general') => {
+    setSettingsPage(page)
+    setSettingsOpen(true)
+  }, [])
   const openShortcuts = useCallback(() => setShortcutsOpen(true), [])
   /**
    * Open one tool of the side panel.
@@ -225,8 +287,45 @@ export default function App() {
   }, [draft, sessionName, activeSession, renameSession])
 
   useEffect(() => {
-    void bootstrap()
+    let active = true
+    void bootstrap().finally(() => {
+      if (active) setBootstrapComplete(true)
+    })
+    return () => {
+      active = false
+    }
   }, [bootstrap])
+
+  useEffect(() => {
+    if (bootstrapComplete) window.pi.app.startupReady()
+  }, [bootstrapComplete])
+
+  // Chromium can fail to find the platform emoji font through a broken
+  // registry entry (this Windows image has Segoe UI Emoji registered with an
+  // empty path). The main process hands us the font bytes; registering them
+  // through the FontFace API makes every emoji in the UI draw instead of a
+  // tofu box, without bundling a copyrighted system font.
+  useEffect(() => {
+    let cancelled = false
+    void window.pi.app
+      .emojiFont()
+      .then(async (data) => {
+        if (!data || cancelled) return
+        try {
+          const face = new FontFace('Pi Desktop Emoji', new Uint8Array(data).buffer)
+          await face.load()
+          if (!cancelled) document.fonts.add(face)
+        } catch {
+          /* The CSS fallback stack still works when the OS has no emoji font. */
+        }
+      })
+      .catch(() => {
+        /* The bridge is optional for this visual enhancement. */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     const query = window.matchMedia('(prefers-color-scheme: dark)')
@@ -416,7 +515,7 @@ export default function App() {
     const onOpenLauncher = () => setLauncherOpen(true)
     window.addEventListener('pi:open-launcher', onOpenLauncher)
     // The composer's add menu leads to the app's settings, which the shell owns.
-    const onOpenSettingsEvent = () => setSettingsOpen(true)
+    const onOpenSettingsEvent = () => openSettings()
     window.addEventListener('pi:open-settings', onOpenSettingsEvent)
     // The launcher and the `/mcp` command ask for the server list.
     const onOpenMcp = () => setMcpOpen(true)
@@ -436,6 +535,7 @@ export default function App() {
   }, [
     newChat,
     toggleSidebar,
+    openSettings,
     settings.workspaces,
     settings.hiddenProjects,
     sessions,
@@ -468,7 +568,7 @@ export default function App() {
       data-sidebar={sidebarOpen ? 'open' : 'collapsed'}
       data-drawer={panelMounted ? 'open' : 'closed'}
       data-inspector={inspectorOverlay ? 'overlay' : 'docked'}
-      data-empty={hasItems ? 'false' : 'true'}
+      data-empty={showThread ? 'false' : 'true'}
       style={
         {
           '--drawer-w': `${drawerWidth}px`,
@@ -493,7 +593,9 @@ export default function App() {
       />
 
       <Sidebar
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => openSettings()}
+        onOpenPlugins={() => openSettings('plugins')}
+        onOpenScheduledTasks={() => setScheduledTasksOpen(true)}
         focusSearchSignal={sidebarSearchSignal}
         width={sidebarWidth}
         open={sidebarOpen}
@@ -507,7 +609,7 @@ export default function App() {
       <main className="main">
         <div className="titlebar drag-region">
           <div className="titlebar__identity">
-            {!hasItems ? null : renaming ? (
+            {!showThread ? null : renaming ? (
               <input
                 className="titlebar__rename no-drag"
                 value={draft}
@@ -628,7 +730,7 @@ export default function App() {
             conversation actually has to read in. */}
         <div className="main__stage">
           <div className="main__body">
-          {!hasItems ? (
+          {!showThread ? (
             <Welcome onPick={() => openProjectDialog({ mode: 'create' })}>
               <Composer />
             </Welcome>
@@ -724,7 +826,9 @@ export default function App() {
             view={panelView}
             onViewChange={(view) => {
               setPanelView(view)
-              setInspectorFile(null)
+              // The Files page keeps the open file while the reader visits
+              // another page; its tree is the way back to the same preview.
+              if (view !== 'files') setInspectorFile(null)
             }}
             className={[inspectorOverlay ? 'tool-panel--overlay' : '', panelClosing ? 'tool-panel--closing' : '']
               .filter(Boolean)
@@ -788,7 +892,12 @@ export default function App() {
           <PanelRight size={16} strokeWidth={1.7} />
         </button>
       </div>
-      {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
+      {settingsOpen ? (
+        <SettingsDialog
+          initialPage={settingsPage}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
       {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
       {launcherOpen ? (
         <Launcher actions={launcherActions} onClose={() => setLauncherOpen(false)} />
@@ -797,6 +906,9 @@ export default function App() {
         <SessionTreeDialog onClose={() => setSessionTreeOpen(false)} />
       ) : null}
       {mcpOpen ? <McpDialog onClose={() => setMcpOpen(false)} /> : null}
+      {scheduledTasksOpen ? (
+        <ScheduledTasksDialog onClose={() => setScheduledTasksOpen(false)} />
+      ) : null}
       {projectDialog?.open ? (
         <EditProjectDialog
           mode={projectDialog.mode}

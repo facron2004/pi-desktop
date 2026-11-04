@@ -20,12 +20,16 @@ import type {
   FileContent,
   FileEntry,
   GitCommitResult,
+  MemoryGenerateOptions,
+  MemoryState,
   PickedFile,
   PiEvent,
   RuntimeEnsureOptions,
   RuntimeRekey,
   RuntimeStartOptions,
   RuntimeStatus,
+  ScheduledTask,
+  ScheduledTaskInput,
   TerminalCreateOptions,
   TextSearchHit,
   UpgradeResult,
@@ -38,6 +42,9 @@ import { resolvePiLaunch } from './pi/locate'
 import { readTraceHint } from './pi/trace'
 import type { SessionSupervisor } from './pi/supervisor'
 import { readMcpConfig } from './mcp'
+import type { MemoryService } from './memory/service'
+import type { RemoteAccessService } from './remote-access'
+import { readEmojiFont } from './emoji-font'
 import { nativeAppIcons } from './native-icons'
 import {
   addWorktree,
@@ -74,12 +81,29 @@ import {
 import { querySystemFonts } from './fonts'
 import { registerProviderIpc } from './providers/ipc'
 import { TerminalManager } from './terminal'
+import type { ScheduledTaskService } from './scheduled-tasks'
 
 export interface IpcContext {
   supervisor: SessionSupervisor
   settings: SettingsStore
   getWindow: () => BrowserWindow | null
   terminals: TerminalManager
+  memory: MemoryService
+  remote: RemoteAccessService
+  remoteReady: Promise<void>
+  scheduledTasks: ScheduledTaskService
+}
+
+/**
+ * Instructions and memory share one appended system prompt file. Memory is
+ * appended after the user's own instructions so the explicit text stays the
+ * first thing the model reads.
+ */
+function runtimeInstructions(context: IpcContext, cwd: string): string | undefined {
+  const user = context.settings.get().customInstructions?.trim()
+  const memory = context.memory.promptFor(cwd).trim()
+  const combined = [user, memory].filter(Boolean).join('\n\n---\n\n')
+  return combined || undefined
 }
 
 export const MAX_FILE_BYTES = 512 * 1024
@@ -255,6 +279,26 @@ const IMAGE_MIME: Record<string, string> = {
 }
 
 /**
+ * The picture types a pasted file may be written as, by file extension.
+ *
+ * Anything else is refused: a file the viewer cannot draw and Pi cannot read
+ * back as a picture would only get in the way of the message.
+ */
+const PASTED_IMAGE_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp'
+}
+
+/** The extension for a clipboard mime type, or `null` when it is not one. */
+function pastedImageExtension(mimeType: string): string | null {
+  const key = (mimeType || '').split(';')[0].trim().toLowerCase()
+  return PASTED_IMAGE_EXT[key] ?? null
+}
+
+/**
  * A picture of the open project as a data URL.
  *
  * The renderer may not read the disk, so the bytes come across as a data URL
@@ -413,7 +457,7 @@ export function registerIpc(context: IpcContext): void {
     return {
       // `npm_package_version` only exists when npm launched the app; a
       // packaged build reads the version it was built with instead.
-      version: process.env.npm_package_version ?? app.getVersion() ?? '0.7.3',
+      version: process.env.npm_package_version ?? app.getVersion() ?? '0.8.0',
       electron: process.versions.electron,
       node: process.versions.node,
       platform: process.platform,
@@ -428,6 +472,8 @@ export function registerIpc(context: IpcContext): void {
       forcedTheme: forcedTheme()
     }
   })
+
+  ipcMain.handle('app:emojiFont', (): Uint8Array | null => readEmojiFont())
 
   ipcMain.handle('dialog:pickDirectory', async (_event, defaultPath?: string): Promise<string | null> => {
     try {
@@ -498,8 +544,8 @@ export function registerIpc(context: IpcContext): void {
       // Keep the native window controls in step with the app chrome.
       window.setTitleBarOverlay(
         theme === 'light'
-          ? { color: '#f3f3f3', symbolColor: '#686868', height: 44 }
-          : { color: '#111317', symbolColor: '#9da4b2', height: 44 }
+          ? { color: '#ffffff', symbolColor: '#686868', height: 44 }
+          : { color: '#16181d', symbolColor: '#9da4b2', height: 44 }
       )
     } catch {
       /* the platform may not support a title bar overlay */
@@ -512,7 +558,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('app:checkUpdate', async (): Promise<VersionCheckResult> => {
     const currentPiVersion = (await piVersion(settings.get().piPath)) || '1.4.0'
-    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.7.3'
+    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.8.0'
 
     let piCliStatus: VersionItemStatus = {
       current: currentPiVersion,
@@ -560,7 +606,7 @@ export function registerIpc(context: IpcContext): void {
       if (!res.ok) {
         return { success: false, error: res.error || 'Failed to pull update' }
       }
-      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.7.3'
+      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.8.0'
       return { success: true, version: current }
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
@@ -570,8 +616,62 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('settings:get', (): AppSettings => settings.get())
 
   ipcMain.handle('settings:patch', (_event, patch: Partial<AppSettings>): AppSettings => {
-    return settings.patch(patch)
+    const next = settings.patch(patch)
+    // The extension reads the switch when its process starts. A conversation
+    // that is already running has to be told, or the toggle would wait for
+    // the next launch.
+    if ('computerUse' in patch) {
+      const message = `/desktop-computer ${patch.computerUse ? 'on' : 'off'}`
+      for (const key of supervisor.runningKeys()) {
+        void supervisor.request(key, 'prompt', { message }, 15_000, { sourceAction: 'computer-use' }).catch(() => {
+          /* a process that is exiting can miss the command; the next start reads settings */
+        })
+      }
+    }
+    return next
   })
+
+  ipcMain.handle('remote:status', async () => {
+    await context.remoteReady
+    return context.remote.status()
+  })
+  ipcMain.handle('remote:setEnabled', async (_event, enabled: boolean) => {
+    await context.remoteReady
+    return context.remote.setEnabled(enabled === true)
+  })
+  ipcMain.handle('remote:newPairing', async () => {
+    await context.remoteReady
+    return context.remote.newPairing()
+  })
+  ipcMain.handle('remote:revokeDevice', async (_event, id: string) => {
+    await context.remoteReady
+    return context.remote.revokeDevice(typeof id === 'string' ? id : '')
+  })
+
+  ipcMain.handle('memory:get', (): Promise<MemoryState> => context.memory.state())
+  ipcMain.handle('memory:remove', (_event, id: string): MemoryState => context.memory.remove(id))
+  ipcMain.handle('memory:clear', (): MemoryState => context.memory.clear())
+  ipcMain.handle(
+    'memory:generate',
+    (_event, options?: MemoryGenerateOptions) => context.memory.generate(options ?? {})
+  )
+  ipcMain.handle('memory:openFolder', async (): Promise<void> => {
+    const error = await shell.openPath(context.memory.root)
+    if (error) throw new Error(error)
+  })
+
+  ipcMain.handle('scheduled-tasks:list', (): ScheduledTask[] => context.scheduledTasks.list())
+  ipcMain.handle('scheduled-tasks:create', (_event, input: ScheduledTaskInput) =>
+    context.scheduledTasks.create(input)
+  )
+  ipcMain.handle('scheduled-tasks:update', (_event, id: string, input: ScheduledTaskInput) =>
+    context.scheduledTasks.update(id, input)
+  )
+  ipcMain.handle('scheduled-tasks:setEnabled', (_event, id: string, enabled: boolean) =>
+    context.scheduledTasks.setEnabled(id, enabled === true)
+  )
+  ipcMain.handle('scheduled-tasks:remove', (_event, id: string) => context.scheduledTasks.remove(id))
+  ipcMain.handle('scheduled-tasks:runNow', (_event, id: string) => context.scheduledTasks.runNow(id))
 
   ipcMain.handle('workspaces:pick', async (): Promise<Workspace | null> => {
     try {
@@ -873,6 +973,54 @@ export function registerIpc(context: IpcContext): void {
     shell.showItemInFolder(file)
   })
 
+  /**
+   * A picture pasted into the composer, written next to the conversation.
+   *
+   * It lands in the folder Pi runs in — the project, or the chats folder for a
+   * projectless conversation — because that is the only place the `@` list
+   * searches and a path relative to the working directory can be read back
+   * from. Unlike `fs:saveImage`, which asks the user where an exported picture
+   * should go, this one never opens a dialog: a failure is `null`, and the
+   * composer falls back to attaching the picture only.
+   */
+  ipcMain.handle(
+    'fs:savePastedImage',
+    (_event, data: string, mimeType: string): { path: string; root: string } | null => {
+      const root = workspaceRoot(context)
+      const extension = pastedImageExtension(mimeType)
+      if (!root || !extension) return null
+      const base64 = data.includes(',') ? data.split(',')[1] : data
+      const buffer = Buffer.from(base64 || '', 'base64')
+      if (!buffer.length) return null
+      try {
+        // A projectless chat has the folder made for it when Pi starts, but the
+        // setting can name a workspace that was deleted since.
+        mkdirSync(root, { recursive: true })
+      } catch (error) {
+        console.error('[pi-desktop] could not open the folder for the pasted picture:', error)
+        return null
+      }
+      const stamp = Date.now()
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const name = attempt
+          ? `pi-picture-${stamp}-${attempt}.${extension}`
+          : `pi-picture-${stamp}.${extension}`
+        const target = path.join(root, name)
+        try {
+          // `wx` fails on a name that already exists rather than overwriting a
+          // file of the project, and a read-only folder answers EROFS or EACCES.
+          writeFileSync(target, buffer, { flag: 'wx' })
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue
+          console.error('[pi-desktop] could not save the pasted picture:', error)
+          return null
+        }
+        return { path: target, root }
+      }
+      return null
+    }
+  )
+
   // A picture the model produced. It arrives as base64, so it is written
   // from here rather than fetched from somewhere.
   ipcMain.handle(
@@ -920,7 +1068,7 @@ export function registerIpc(context: IpcContext): void {
       ...options,
       sessionKey,
       cwd,
-      customInstructions: settings.get().customInstructions
+      customInstructions: runtimeInstructions(context, cwd)
     })
   })
 
@@ -931,7 +1079,7 @@ export function registerIpc(context: IpcContext): void {
     return supervisor.ensure({
       ...options,
       cwd,
-      customInstructions: settings.get().customInstructions
+      customInstructions: runtimeInstructions(context, cwd)
     })
   })
 
@@ -1103,5 +1251,11 @@ export function bridgeRuntime(context: IpcContext): void {
   })
   supervisor.on('stderr', (payload: { ownerId: string; line: string }) => {
     sendToWindow(getWindow(), 'runtime:stderr', payload.line)
+  })
+  context.memory.on('changed', (state: MemoryState) => {
+    sendToWindow(getWindow(), 'memory:changed', state)
+  })
+  context.scheduledTasks.on('changed', (tasks: ScheduledTask[]) => {
+    sendToWindow(getWindow(), 'scheduled-tasks:changed', tasks)
   })
 }

@@ -3,7 +3,6 @@ import {
   ArrowUp,
   Bot,
   ListChecks,
-  Monitor,
   Target,
   Square,
   X
@@ -77,6 +76,7 @@ export function Composer() {
   const sendShortcut = useAppStore((state) => state.settings.sendShortcut ?? 'enter')
   const defaultFollowUpMode = useAppStore((state) => state.settings.followUpMode ?? 'steer')
   const plainTextEditor = useAppStore((state) => state.settings.plainTextEditor === true)
+  const pasteMentions = useAppStore((state) => state.settings.pasteMentions === true)
   const hasDialogue = useAppStore((state) => state.items.length > 0)
   const t = useT()
   const toast = useAppStore((state) => state.toast)
@@ -100,6 +100,12 @@ export function Composer() {
   // Enter repeats while it is held, and a double-click can land before React
   // has cleared the draft. Either one used to send the same prompt again.
   const submitLock = useRef(false)
+  // Where the caret goes after a mention has been spliced in. The text is
+  // updated through the queue, so the position is only known inside the update.
+  const mentionCaret = useRef<number | null>(null)
+  // The reference already inserted for a pasted picture, keyed by its
+  // clipboard signature, so the same picture pasted twice says it once.
+  const pastedRefs = useRef<Map<string, string>>(new Map())
 
   const ready = status.phase === 'ready'
   const inputPrompt = ready
@@ -260,24 +266,49 @@ export function Composer() {
 
   const closePalette = useCallback(() => setSlash(null), [])
 
+  /**
+   * Splice a finished mention (`@path` plus a trailing space) into the composer.
+   *
+   * `at` is the `@` query the caret sits in: it is replaced, so a half-typed
+   * query never survives next to the new path. Without one the mention lands at
+   * the caret, with a space in front when the text runs into it.
+   */
+  const applyMention = useCallback((addition: string, at?: MentionMatch | null): void => {
+    setText((current) => {
+      const node = textareaRef.current
+      const cursor = node?.selectionStart ?? current.length
+      const active = at ?? detectMention(current, cursor)
+      const from = active ? active.start : cursor
+      const to = active ? active.cursor : cursor
+      const gap = active || from === 0 || /\s/.test(current[from - 1]) ? '' : ' '
+      mentionCaret.current = from + gap.length + addition.length
+      return `${current.slice(0, from)}${gap}${addition}${current.slice(to)}`
+    })
+    setMention(null)
+    requestAnimationFrame(() => {
+      const target = textareaRef.current
+      const wanted = mentionCaret.current
+      if (!target || wanted === null) return
+      mentionCaret.current = null
+      const position = Math.min(wanted, target.value.length)
+      target.focus()
+      target.setSelectionRange(position, position)
+    })
+  }, [])
+
+  /** The path of a file as the composer writes it: relative, with slashes. */
+  const mentionToken = useCallback(
+    (root: string, file: string): string => `@${relativePath(root, file).replace(/\\/g, '/')}`,
+    []
+  )
+
   /** Put the path of a picked file into the composer. */
   const insertMention = useCallback(
     (file: FileEntry) => {
       if (!mention) return
-      // Pi writes its paths with slashes, even on Windows.
-      const relative = relativePath(workspace?.path ?? '', file.path).replace(/\\/g, '/')
-      const addition = `@${relative} `
-      setText(`${text.slice(0, mention.start)}${addition}${text.slice(mention.cursor)}`)
-      setMention(null)
-      requestAnimationFrame(() => {
-        const target = textareaRef.current
-        if (!target) return
-        const position = mention.start + addition.length
-        target.focus()
-        target.setSelectionRange(position, position)
-      })
+      applyMention(`${mentionToken(workspace?.path ?? '', file.path)} `, mention)
     },
-    [mention, text, workspace?.path]
+    [applyMention, mention, mentionToken, workspace?.path]
   )
 
   const insertCommand = useCallback(
@@ -328,6 +359,8 @@ export function Composer() {
     setHistoryIndex(-1)
     setText('')
     setImages([])
+    // The draft is gone, so the next picture pasted is a fresh reference.
+    pastedRefs.current.clear()
     closePalette()
     setMention(null)
   }, [text, images, kind, send, closePalette])
@@ -429,10 +462,69 @@ export function Composer() {
     }
   }
 
-  const addFiles = (files: FileList | null) => {
-    if (!files) return
+  /** The base64 body of a file, read the way `addFiles` has always read a picture. */
+  const readBase64 = (file: File): Promise<string> =>
+    new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result ?? '').split(',')[1] ?? '')
+      reader.onerror = () => resolve('')
+      reader.readAsDataURL(file)
+    })
+
+  /**
+   * Add a batch with `pasteMentions` on: a picture is written next to the
+   * conversation first and then named in the message exactly the way a
+   * hand-picked `@` mention is, while keeping the attachment it already was.
+   *
+   * The whole batch goes in with one splice, so two pictures in one paste can
+   * never write over each other's reference. A picture the main process will
+   * not take — a type outside its allowlist, a read-only folder — silently
+   * stays the attachment it always was.
+   */
+  const addPicturesInPlace = async (items: File[]): Promise<void> => {
+    const mentions: string[] = []
     const references: string[] = []
-    for (const file of Array.from(files)) {
+    for (const file of items) {
+      if (!file.type.startsWith('image/')) {
+        const filePath = window.pi.fs.pathForFile(file)
+        if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+        continue
+      }
+      const base64 = await readBase64(file)
+      if (base64) setImages((current) => [...current, { data: base64, mimeType: file.type }])
+      // A clipboard picture keeps its name, size and stamp, so the same one
+      // pasted twice is recognised before a second copy ever reaches the disk —
+      // unless the composer no longer carries the name the first paste put in.
+      const signature = `${file.name}|${file.size}|${file.type}|${file.lastModified}`
+      const earlier = pastedRefs.current.get(signature)
+      if (earlier && (textareaRef.current?.value ?? '').includes(earlier)) continue
+      let saved: { path: string; root: string } | null = null
+      try {
+        saved = base64 ? await window.pi.fs.savePastedImage(base64, file.type) : null
+      } catch {
+        saved = null
+      }
+      if (!saved) continue
+      const token = mentionToken(saved.root, saved.path)
+      pastedRefs.current.set(signature, token)
+      mentions.push(token)
+    }
+    // Anything that is not a picture keeps the reference it has always had.
+    if (references.length) useAppStore.getState().insertIntoComposer(references.join('\n'))
+    if (mentions.length) applyMention(`${mentions.join(' ')} `)
+  }
+
+  const addFiles = async (files: FileList | null): Promise<void> => {
+    if (!files) return
+    const items = Array.from(files)
+    // The switch decides whether a pasted picture is also named in the text,
+    // and a batch without a picture does not go near the text at all.
+    if (pasteMentions && items.some((file) => file.type.startsWith('image/'))) {
+      await addPicturesInPlace(items)
+      return
+    }
+    const references: string[] = []
+    for (const file of items) {
       if (file.type.startsWith('image/')) {
         const reader = new FileReader()
         reader.onload = () => {
@@ -615,12 +707,12 @@ export function Composer() {
               const files = event.clipboardData?.files
               if (files && files.length) {
                 event.preventDefault()
-                addFiles(files)
+                void addFiles(files)
               }
             }}
             onDrop={(event) => {
               event.preventDefault()
-              addFiles(event.dataTransfer?.files ?? null)
+              void addFiles(event.dataTransfer?.files ?? null)
             }}
           />
 
@@ -648,8 +740,6 @@ export function Composer() {
                   <Target size={13} />
                 ) : agentMode === 'plan' ? (
                   <ListChecks size={13} />
-                ) : agentMode === 'computer' ? (
-                  <Monitor size={13} />
                 ) : (
                   <Bot size={13} />
                 )}
@@ -659,9 +749,7 @@ export function Composer() {
                       ? 'Goal Mode'
                       : agentMode === 'plan'
                         ? 'Plan Mode'
-                        : agentMode === 'computer'
-                          ? 'Computer Use'
-                          : 'Subagent Mode'
+                        : 'Subagent Mode'
                   )}
                 </span>
                 <X size={11} />

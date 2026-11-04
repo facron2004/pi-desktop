@@ -10,6 +10,7 @@ import type {
   RuntimeStatus
 } from '@shared/types'
 import { appendSessionName } from '../sessions'
+import { isExternalToolName } from '../memory/policy'
 import { CwdGate } from './cwd-gate'
 import { canonicalSessionFile } from './session-file'
 
@@ -59,6 +60,8 @@ interface RuntimeActivity {
   writes: number
   running: boolean
   settlements: number
+  /** The conversation used MCP, computer use, subagents or another outside tool. */
+  externalContext: boolean
   stopping?: Promise<void>
 }
 
@@ -93,6 +96,20 @@ export class SessionSupervisor extends EventEmitter {
 
   runningKeys(): string[] {
     return [...this.runtimes.keys()].filter((key) => this.runtimes.get(key)?.isRunning)
+  }
+
+  /**
+   * The folder and tool reach of one hot conversation. Memory generation uses
+   * this after a run settles: a chat that only read and edited local files is
+   * eligible, one that used MCP or computer use may not be.
+   */
+  sessionInfo(key: string): { cwd: string; externalContext: boolean; running: boolean } | undefined {
+    const id = this.canonical(key)
+    const runtime = this.runtimes.get(id)
+    if (!runtime) return undefined
+    const activity = this.activity.get(runtime)
+    if (!activity) return undefined
+    return { cwd: activity.cwd, externalContext: activity.externalContext, running: activity.running }
   }
 
   /** Desktop Git writes share the same directory gate as agent turns. */
@@ -310,7 +327,14 @@ export class SessionSupervisor extends EventEmitter {
     if (!runtime) {
       runtime = this.factory()
       this.runtimes.set(id, runtime)
-      this.activity.set(runtime, { ownerId: id, cwd: options.cwd, writes: 0, running: false, settlements: 0 })
+      this.activity.set(runtime, {
+        ownerId: id,
+        cwd: options.cwd,
+        writes: 0,
+        running: false,
+        settlements: 0,
+        externalContext: false
+      })
       this.attach(runtime)
     }
     let started: { ok: boolean; error?: string }
@@ -371,6 +395,9 @@ export class SessionSupervisor extends EventEmitter {
 
   private note(ownerId: string, runtime: ManagedSessionRuntime, event: PiEvent): void {
     const activity = this.activity.get(runtime)!
+    if (event.type === 'tool_execution_start' && isExternalToolName(event.toolName)) {
+      activity.externalContext = true
+    }
     if (event.type === 'extension_ui_request') {
       const req = event as unknown as { method?: string; sessionKey?: string }
       if (!req.sessionKey) req.sessionKey = ownerId

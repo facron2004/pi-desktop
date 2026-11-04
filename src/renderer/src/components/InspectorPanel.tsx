@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
-  ChevronDown,
   ChevronsDownUp,
   ChevronsUpDown,
   Columns2,
@@ -16,6 +15,8 @@ import {
   Globe,
   Images,
   MessageSquare,
+  PanelRightClose,
+  PanelRightOpen,
   Rows3,
   Search,
   X
@@ -157,14 +158,21 @@ export function InspectorPanel({
   const fileFilterRef = useRef<HTMLInputElement>(null)
   // `undefined` means the reader decides, one run at a time.
   const [expandAll, setExpandAll] = useState<boolean | undefined>(undefined)
-  const [openChanges, setOpenChanges] = useState<ReadonlySet<string>>(() => new Set())
+  // The changed file whose diff is in the main pane. The list on the right is
+  // the tree MCode uses; selecting a row swaps the diff without collapsing the
+  // list back into an accordion.
+  const [selectedChangePath, setSelectedChangePath] = useState<string | null>(null)
   useEffect(() => {
-    setOpenChanges(new Set())
+    setSelectedChangePath(null)
     setChangeScope('auto')
   }, [activeSessionFile, workspace?.path])
   // The Files tab browses the tree or searches inside the files. The tree stays
   // mounted while the search is on, so its open folders survive a look.
   const [filesMode, setFilesMode] = useState<'tree' | 'text'>('tree')
+  // MCode's Files page keeps the file tree in a right-hand sidebar beside the
+  // preview, so reading a file does not replace the way back to the project.
+  // The tree can be folded away for a wide preview.
+  const [fileTreeOpen, setFileTreeOpen] = useState(true)
 
   // The paths of the changed files, relative to the project, so the list
   // means the same thing to the user and to the agent.
@@ -184,26 +192,13 @@ export function InspectorPanel({
     () => entries.reduce((acc, entry) => ({ added: acc.added + entry.stat.added, removed: acc.removed + entry.stat.removed }), { added: 0, removed: 0 }),
     [entries]
   )
-  const allVisibleOpen = entries.length > 0 && entries.every((entry) => openChanges.has(entry.change.path))
-  const toggleAllChanges = () => {
-    setOpenChanges((previous) => {
-      const next = new Set(previous)
-      for (const entry of entries) {
-        if (allVisibleOpen) next.delete(entry.change.path)
-        else next.add(entry.change.path)
-      }
-      return next
-    })
-  }
-  /** Open or close one file's body; the row and its caret are the same action. */
-  const toggleChange = useCallback((path: string) => {
-    setOpenChanges((previous) => {
-      const next = new Set(previous)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
-  }, [])
+  const selectedEntry =
+    entries.find((entry) => entry.change.path === selectedChangePath) ?? entries[0] ?? null
+  const selectedChange = selectedEntry?.change ?? null
+  const selectedName = selectedChange ? basename(selectedChange.path) : ''
+  const selectedContent =
+    selectedChange && !selectedChange.diffs.length ? selectedChange.content : ''
+  const selectedPaged = !!selectedContent && countLines(selectedContent) > LOG_PAGE_LINES
 
   const scopeControl = git?.isRepo ? (
     <DiffScope
@@ -418,37 +413,74 @@ export function InspectorPanel({
         {/* The panes stay mounted, so the file tree keeps the folders the user
             opened while a file is on screen. */}
         <div className="drawer__stack">
-          <div className="drawer__pane" data-active={!openFile && tab === 'files'}>
-            <div className="file-mode">
-              <div className="segmented">
-                <button
-                  data-active={filesMode === 'tree'}
-                  aria-pressed={filesMode === 'tree'}
-                  onClick={() => setFilesMode('tree')}
-                  title={t('Browse the project files')}
-                >
-                  {t('Files')}
-                </button>
-                <button
-                  data-active={filesMode === 'text'}
-                  aria-pressed={filesMode === 'text'}
-                  onClick={() => setFilesMode('text')}
-                  title={t('Search inside the project files')}
-                >
-                  {t('Text')}
-                </button>
-              </div>
-            </div>
-            <div className="file-mode__body" hidden={filesMode !== 'tree'}>
-              <FileTree root={workspace?.path ?? ''} onOpen={(path) => setOpenFile({ path })} />
-            </div>
+          <div className="drawer__pane" data-active={tab === 'files'}>
             {filesMode === 'text' ? (
               <TextSearch
                 root={workspace?.path ?? ''}
                 onOpenFile={setOpenFile}
                 onClose={() => setFilesMode('tree')}
               />
-            ) : null}
+            ) : (
+              <div className="file-workspace" data-tree={fileTreeOpen ? 'open' : 'closed'}>
+                <div className="file-workspace__main">
+                  {openFile ? (
+                    <FileViewer
+                      file={openFile.path}
+                      root={workspace?.path}
+                      line={openFile.line}
+                    />
+                  ) : (
+                    <div className="file-workspace__empty">
+                      <Files size={22} strokeWidth={1.5} />
+                      <p>{t('Select a file from the tree to preview it here.')}</p>
+                    </div>
+                  )}
+                  {!fileTreeOpen ? (
+                    <button
+                      type="button"
+                      className="file-workspace__tree-toggle"
+                      aria-label={t('Show file tree')}
+                      title={t('Show file tree')}
+                      onClick={() => setFileTreeOpen(true)}
+                    >
+                      <PanelRightOpen size={15} />
+                    </button>
+                  ) : null}
+                </div>
+                <aside className="file-workspace__tree">
+                  <div className="file-workspace__tree-head">
+                    <div className="segmented segmented--tight">
+                      <button
+                        data-active
+                        aria-pressed
+                        onClick={() => setFilesMode('tree')}
+                        title={t('Browse the project files')}
+                      >
+                        {t('Files')}
+                      </button>
+                      <button
+                        onClick={() => setFilesMode('text')}
+                        title={t('Search inside the project files')}
+                      >
+                        {t('Text')}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      className="file-workspace__tree-close"
+                      aria-label={t('Hide file tree')}
+                      title={t('Hide file tree')}
+                      onClick={() => setFileTreeOpen(false)}
+                    >
+                      <PanelRightClose size={15} />
+                    </button>
+                  </div>
+                  <div className="file-workspace__tree-body">
+                    <FileTree root={workspace?.path ?? ''} onOpen={(path) => setOpenFile({ path })} />
+                  </div>
+                </aside>
+              </div>
+            )}
           </div>
 
           <div
@@ -468,181 +500,166 @@ export function InspectorPanel({
             className="drawer__pane"
             data-active={!openFile && tab === 'changes' && !showingGitFallback}
           >
-              <div className="drawer__body drawer__body--changes">
-                <div className="review__bar">
-                  {scopeControl}
-                  <span className="review__totals" title={t('Lines added and removed over all files')}>
-                    {totals.added ? <span data-kind="add">+{totals.added}</span> : null}
-                    {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
-                  </span>
-                  <div className="review__actions">
-                    <button className="icon-btn" onClick={() => { if (fileFilterOpen) setFileFilter(''); setFileFilterOpen((value) => !value) }} title={t('Filter the changed files')} aria-label={t('Filter the changed files')} aria-pressed={fileFilterOpen} data-active={fileFilterOpen}>
-                      <Search size={14} />
-                    </button>
-                    <button className="icon-btn" onClick={toggleAllChanges} disabled={entries.length === 0} title={allVisibleOpen ? t('Collapse all files') : t('Expand all files')} aria-label={allVisibleOpen ? t('Collapse all files') : t('Expand all files')}>
-                      {allVisibleOpen ? <ChevronsDownUp size={14} /> : <ChevronsUpDown size={14} />}
-                    </button>
-                    <button className="icon-btn" onClick={() => void updateSettings({ diffSplit: !diffSplit })} title={diffSplit ? t('Unified diff') : t('Side-by-side diff')} aria-label={diffSplit ? t('Unified diff') : t('Side-by-side diff')}>
-                      {diffSplit ? <Rows3 size={14} /> : <Columns2 size={14} />}
-                    </button>
-                    <Popover
-                      align="right"
-                      width={220}
-                      renderTrigger={({ open, toggle }) => (
-                        <button className="icon-btn" type="button" aria-label={t('More actions')} title={t('More actions')} aria-haspopup="menu" aria-expanded={open} onClick={toggle}>
-                          <Ellipsis size={15} />
+            <div className="drawer__body drawer__body--changes">
+              <div className="review__bar">
+                {scopeControl}
+                <span className="review__totals" title={t('Lines added and removed over all files')}>
+                  {totals.added ? <span data-kind="add">+{totals.added}</span> : null}
+                  {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
+                </span>
+                <div className="review__actions">
+                  <button className="icon-btn" onClick={() => { if (fileFilterOpen) setFileFilter(''); setFileFilterOpen((value) => !value) }} title={t('Filter the changed files')} aria-label={t('Filter the changed files')} aria-pressed={fileFilterOpen} data-active={fileFilterOpen}>
+                    <Search size={14} />
+                  </button>
+                  <button className="icon-btn" disabled={!selectedChange?.diffs.length} onClick={() => setExpandAll((value) => value === true ? false : true)} title={expandAll === true ? t('Fold the unchanged lines') : t('Show the unchanged lines')} aria-label={expandAll === true ? t('Fold the unchanged lines') : t('Show the unchanged lines')}>
+                    {expandAll === true ? <ChevronsDownUp size={14} /> : <ChevronsUpDown size={14} />}
+                  </button>
+                  <button className="icon-btn" onClick={() => void updateSettings({ diffSplit: !diffSplit })} title={diffSplit ? t('Unified diff') : t('Side-by-side diff')} aria-label={diffSplit ? t('Unified diff') : t('Side-by-side diff')}>
+                    {diffSplit ? <Rows3 size={14} /> : <Columns2 size={14} />}
+                  </button>
+                  <Popover
+                    align="right"
+                    width={220}
+                    renderTrigger={({ open, toggle }) => (
+                      <button className="icon-btn" type="button" aria-label={t('More actions')} title={t('More actions')} aria-haspopup="menu" aria-expanded={open} onClick={toggle}>
+                        <Ellipsis size={15} />
+                      </button>
+                    )}
+                  >
+                    {(close) => (
+                      <div role="menu" aria-label={t('More actions')}>
+                        <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); void copyDiff() }}>
+                          <FileDiff size={13} /> {t('Copy the diff')}
                         </button>
-                      )}
-                    >
-                      {(close) => (
-                        <div role="menu" aria-label={t('More actions')}>
-                          <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); void copyDiff() }}>
-                            <FileDiff size={13} /> {t('Copy the diff')}
+                        <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); void copyPaths() }}>
+                          <Copy size={13} /> {t('Copy paths')}
+                        </button>
+                        <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); askAboutChanges() }}>
+                          <MessageSquare size={13} /> {t('Ask Pi')}
+                        </button>
+                        {git?.isRepo ? (
+                          <button className="popover__item" role="menuitem" disabled={git.clean} onClick={() => { close(); setCommitOpen(true) }}>
+                            <GitCommit size={13} /> {t('Commit')}
                           </button>
-                          <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); void copyPaths() }}>
-                            <Copy size={13} /> {t('Copy paths')}
-                          </button>
-                          <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); askAboutChanges() }}>
-                            <MessageSquare size={13} /> {t('Ask Pi')}
-                          </button>
-                          <button className="popover__item" role="menuitem" onClick={() => { close(); setExpandAll((value) => value !== true) }}>
-                            {expandAll === true ? <ChevronsDownUp size={13} /> : <ChevronsUpDown size={13} />}
-                            {expandAll === true ? t('Fold the unchanged lines') : t('Show the unchanged lines')}
-                          </button>
-                          {git?.isRepo ? (
-                            <button className="popover__item" role="menuitem" disabled={git.clean} onClick={() => { close(); setCommitOpen(true) }}>
-                              <GitCommit size={13} /> {t('Commit')}
-                            </button>
-                          ) : null}
-                        </div>
-                      )}
-                    </Popover>
-                  </div>
+                        ) : null}
+                      </div>
+                    )}
+                  </Popover>
                 </div>
-                {fileFilterOpen ? (
-                  <div className="review__filter-row">
-                    <div className="review__filter">
-                      <Search size={12} />
-                      <input
-                        ref={fileFilterRef}
-                        autoFocus
-                        value={fileFilter}
-                        aria-label={t('Filter the changed files')}
-                        placeholder={t('Filter the changed files')}
-                        onChange={(event) => setFileFilter(event.target.value)}
-                      />
-                      {fileFilter ? (
-                        <button className="icon-btn" onClick={() => { setFileFilter(''); fileFilterRef.current?.focus() }} title={t('Clear the filter')} aria-label={t('Clear the filter')}>
-                          <X size={11} />
+              </div>
+
+              <div className="change-workspace">
+                <div className="change-workspace__main">
+                  {selectedEntry && selectedChange ? (
+                    <div className="change-preview">
+                      <div className="change-preview__bar">
+                        <FileIcon name={selectedName} />
+                        <span className="change-preview__name" title={selectedChange.path}>{selectedName}</span>
+                        <code className="change-preview__path" title={selectedChange.path}>{selectedEntry.path}</code>
+                        <span className="change-preview__stats">
+                          {selectedEntry.stat.added ? <span data-kind="add">+{selectedEntry.stat.added}</span> : null}
+                          {selectedEntry.stat.removed ? <span data-kind="del">−{selectedEntry.stat.removed}</span> : null}
+                        </span>
+                        {selectedChange.edits > 1 ? (
+                          <span className="change__badge">{selectedChange.edits} {t('edits')}</span>
+                        ) : null}
+                        <button className="icon-btn" title={t('Open in folder')} aria-label={`${t('Open in folder')}: ${selectedName}`} onClick={() => void window.pi.fs.reveal(selectedChange.path)}>
+                          <Folder size={14} />
                         </button>
-                      ) : null}
+                        <button className="icon-btn" title={t('Open in editor')} aria-label={`${t('Open in editor')}: ${selectedName}`} onClick={() => setOpenFile({ path: selectedChange.path })}>
+                          <FilePen size={14} />
+                        </button>
+                      </div>
+                      <div className="change-preview__body">
+                        {selectedChange.diffs.length > 0 ? (
+                          <DiffView
+                            diffs={selectedChange.diffs}
+                            mode={diffSplit ? 'split' : 'unified'}
+                            onOpenLine={(line) => setOpenFile({ path: selectedChange.path, line })}
+                            expandAll={expandAll}
+                            onExpandAllChange={setExpandAll}
+                          />
+                        ) : selectedPaged ? (
+                          <LogOutput text={selectedContent} />
+                        ) : selectedContent ? (
+                          <CodeSnippet code={selectedContent} language={languageOf(selectedName)} />
+                        ) : (
+                          <pre className="tool__pre">{t('Written to disk.')}</pre>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ) : null}
-                <div className="review__summary">
-                  <span>{entries.length} {entries.length === 1 ? t('file') : t('files')}</span>
-                  <span className="review__totals">
-                    {visibleTotals.added ? <span data-kind="add">+{visibleTotals.added}</span> : null}
-                    {visibleTotals.removed ? <span data-kind="del">−{visibleTotals.removed}</span> : null}
-                  </span>
+                  ) : (
+                    <div className="drawer__empty">
+                      {changes.length === 0
+                        ? <>
+                            {git?.isRepo && git.files.length > 0
+                              ? t('This conversation has not changed any files.')
+                              : t('No files have been changed yet.')}
+                            <br />
+                            {git?.isRepo && git.files.length > 0
+                              ? t('The working tree has changes from outside this conversation.')
+                              : t('Edits and new files show up here as Pi works.')}
+                          </>
+                        : <>{t('No changed file matches')} “{fileFilter}”.</>}
+                    </div>
+                  )}
                 </div>
 
-                {changes.length === 0 ? (
-                  <div className="drawer__empty">
-                    {git?.isRepo && git.files.length > 0
-                      ? t('This conversation has not changed any files.')
-                      : t('No files have been changed yet.')}
-                    <br />
-                    {git?.isRepo && git.files.length > 0
-                      ? t('The working tree has changes from outside this conversation.')
-                      : t('Edits and new files show up here as Pi works.')}
+                <aside className="change-workspace__files" aria-label={t('File changes')}>
+                  <div className="change-files__head">
+                    <span>{entries.length} {entries.length === 1 ? t('file') : t('files')}</span>
+                    <span className="review__totals">
+                      {visibleTotals.added ? <span data-kind="add">+{visibleTotals.added}</span> : null}
+                      {visibleTotals.removed ? <span data-kind="del">−{visibleTotals.removed}</span> : null}
+                    </span>
                   </div>
-                ) : entries.length === 0 ? (
-                  <div className="drawer__empty">{t('No changed file matches')} “{fileFilter}”.</div>
-                ) : null}
-
-                {entries.map(({ change, stat: one }) => {
-                  const isOpen = openChanges.has(change.path)
-                  const name = basename(change.path)
-                  // A file that was only written has no old side to diff
-                  // against, so its content is shown — paged like any other
-                  // long output rather than dumped whole into the panel.
-                  const content = !change.diffs.length ? change.content : ''
-                  const paged = !!content && countLines(content) > LOG_PAGE_LINES
-                  return (
-                    <section className="change" key={change.path} data-open={isOpen}>
-                      <header className="change__head">
+                  {fileFilterOpen ? (
+                    <div className="review__filter-row">
+                      <div className="review__filter">
+                        <Search size={12} />
+                        <input
+                          ref={fileFilterRef}
+                          autoFocus
+                          value={fileFilter}
+                          aria-label={t('Filter the changed files')}
+                          placeholder={t('Filter the changed files')}
+                          onChange={(event) => setFileFilter(event.target.value)}
+                        />
+                        {fileFilter ? (
+                          <button className="icon-btn" onClick={() => { setFileFilter(''); fileFilterRef.current?.focus() }} title={t('Clear the filter')} aria-label={t('Clear the filter')}>
+                            <X size={11} />
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="change-files__list">
+                    {entries.map(({ change, stat: one, path }) => {
+                      const name = basename(change.path)
+                      return (
                         <button
-                          className="change__toggle"
-                          aria-expanded={isOpen}
-                          aria-label={`${isOpen ? t('Collapse this file') : t('Show the changes of this file')}: ${name}`}
-                          title={isOpen ? t('Collapse this file') : t('Show the changes of this file')}
-                          onClick={() => toggleChange(change.path)}
+                          key={change.path}
+                          type="button"
+                          className="change-file"
+                          data-active={selectedChange?.path === change.path || undefined}
+                          title={path}
+                          onClick={() => setSelectedChangePath(change.path)}
                         >
                           <FileIcon name={name} />
-                          <span className="change__name" title={change.path}>{name}</span>
+                          <span className="change-file__body">
+                            <span className="change-file__name">{name}</span>
+                          </span>
+                          <span className="change-file__stats">
+                            {one.added ? <span data-kind="add">+{one.added}</span> : null}
+                            {one.removed ? <span data-kind="del">−{one.removed}</span> : null}
+                          </span>
                         </button>
-                        <div className="change__actions">
-                          <button
-                            className="icon-btn change__caret"
-                            tabIndex={-1}
-                            aria-hidden="true"
-                            onClick={() => toggleChange(change.path)}
-                          >
-                            <ChevronDown size={13} />
-                          </button>
-                        </div>
-                      </header>
-
-                      {isOpen ? (
-                        <div className="change__body">
-                          {/* Where the file is, what it cost to change, and how
-                              to reach it: the row is only a name, so this is the
-                              place the path can be read in full and wrapped. */}
-                          <div className="change__meta">
-                            <code className="change__file" title={change.path}>{change.path}</code>
-                            <div className="change__meta-side">
-                              {one.added || one.removed ? (
-                                <span className="change__stats">
-                                  {one.added ? <span data-kind="add">+{one.added}</span> : null}
-                                  {one.removed ? <span data-kind="del">−{one.removed}</span> : null}
-                                </span>
-                              ) : null}
-                              {change.edits > 1 ? (
-                                <span className="change__badge">{change.edits} {t('edits')}</span>
-                              ) : null}
-                              <button className="icon-btn" title={t('Open in folder')} aria-label={`${t('Open in folder')}: ${name}`} onClick={() => void window.pi.fs.reveal(change.path)}>
-                                <Folder size={13} />
-                              </button>
-                              <button className="icon-btn" title={t('Open in editor')} aria-label={`${t('Open in editor')}: ${name}`} onClick={() => setOpenFile({ path: change.path })}>
-                                <FilePen size={13} />
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="change__content">
-                            {change.diffs.length > 0 ? (
-                              <DiffView
-                                diffs={change.diffs}
-                                mode={diffSplit ? 'split' : 'unified'}
-                                onOpenLine={(line) => setOpenFile({ path: change.path, line })}
-                                expandAll={expandAll}
-                                onExpandAllChange={setExpandAll}
-                              />
-                            ) : paged ? (
-                              <LogOutput text={content} />
-                            ) : content ? (
-                              <CodeSnippet code={content} language={languageOf(name)} />
-                            ) : (
-                              <pre className="tool__pre">{t('Written to disk.')}</pre>
-                            )}
-                          </div>
-                        </div>
-                      ) : null}
-                    </section>
-                  )
-                })}
+                      )
+                    })}
+                  </div>
+                </aside>
               </div>
+            </div>
           </div>
 
           <div className="drawer__pane" data-active={!openFile && tab === 'browser'}>
@@ -653,8 +670,8 @@ export function InspectorPanel({
             <ImageViewer />
           </div>
 
-          <div className="drawer__pane" data-active={Boolean(openFile)}>
-            {openFile ? (
+          <div className="drawer__pane" data-active={Boolean(openFile) && tab !== 'files'}>
+            {openFile && tab !== 'files' ? (
               <div className="drawer__body drawer__body--flush">
                 <div className="viewer__back">
                   <button className="ghost-btn" onClick={() => setOpenFile(null)}>

@@ -23,6 +23,8 @@ const LF = 0x0a
 const CR = 0x0d
 const CHUNK_SIZE = 64 * 1024
 const MAX_CACHE_ENTRIES = 2000
+const MAX_CACHED_SESSION_MESSAGE_FILES = 12
+const MAX_CACHED_SESSION_MESSAGE_BYTES = 16 * 1024 * 1024
 
 interface SessionHeader {
   type: 'session'
@@ -50,6 +52,12 @@ export interface SessionCacheEntry {
 
 const sessionMetaCache = new Map<string, SessionCacheEntry>()
 const inFlightReads = new Map<string, Promise<SessionMeta | null>>()
+// Reuse messages parsed for the sidebar, while keeping memory bounded.
+const sessionMessagesCache = new Map<
+  string,
+  { mtime: number; size: number; messages: AgentMessage[] }
+>()
+let sessionMessagesCacheBytes = 0
 
 interface CachedFileUsage {
   mtime: number
@@ -275,6 +283,8 @@ export async function* readJsonlLines(
 
 export function clearSessionCache(): void {
   sessionMetaCache.clear()
+  sessionMessagesCache.clear()
+  sessionMessagesCacheBytes = 0
   usageCache.clear()
 }
 
@@ -282,11 +292,47 @@ export function invalidateSessionCache(file?: string): void {
   if (file) {
     const key = canonicalSessionFile(file)
     sessionMetaCache.delete(key)
+    deleteCachedSessionMessages(key)
     usageCache.delete(key)
   } else {
     sessionMetaCache.clear()
+    sessionMessagesCache.clear()
+    sessionMessagesCacheBytes = 0
     usageCache.clear()
   }
+}
+
+function deleteCachedSessionMessages(key: string): void {
+  const cached = sessionMessagesCache.get(key)
+  if (!cached) return
+  sessionMessagesCacheBytes -= cached.size
+  sessionMessagesCache.delete(key)
+}
+
+function cacheSessionMessages(
+  file: string,
+  fileStats: { size: number; mtimeMs: number },
+  messages: AgentMessage[]
+): void {
+  const key = canonicalSessionFile(file)
+  deleteCachedSessionMessages(key)
+  if (!messages.length || fileStats.size > MAX_CACHED_SESSION_MESSAGE_BYTES) return
+
+  while (
+    sessionMessagesCache.size >= MAX_CACHED_SESSION_MESSAGE_FILES ||
+    sessionMessagesCacheBytes + fileStats.size > MAX_CACHED_SESSION_MESSAGE_BYTES
+  ) {
+    const oldestKey = sessionMessagesCache.keys().next().value
+    if (!oldestKey) break
+    deleteCachedSessionMessages(oldestKey)
+  }
+
+  sessionMessagesCache.set(key, {
+    mtime: fileStats.mtimeMs,
+    size: fileStats.size,
+    messages
+  })
+  sessionMessagesCacheBytes += fileStats.size
 }
 
 export function getSessionCacheSize(): number {
@@ -385,27 +431,55 @@ function activeBranch(lines: string[]): TreeEntry[] {
   return branch
 }
 
-/**
- * Messages on the active branch, without starting Pi.
- * Compaction and bookkeeping entries stay out; the leaf walk already follows
- * the branch Pi would show.
- */
-export async function readSessionMessages(file: string): Promise<AgentMessage[]> {
-  const lines: string[] = []
-  for await (const line of readJsonlLines(file, MAX_SESSION_BYTES)) {
-    lines.push(line)
-  }
-  if (!lines.length) return []
+function messagesFromBranch(entries: BaseEntry[]): AgentMessage[] {
   const messages: AgentMessage[] = []
-  for (const entry of activeBranch(lines)) {
-    if (entry.type !== 'message' || !entry.message) continue
-    const message = entry.message
+  for (const entry of entries) {
+    if (entry.type !== 'message') continue
+    const message = (entry as BaseEntry & { message?: AgentMessage }).message
+    if (!message) continue
     const timestamp = message.timestamp
     messages.push({
       ...message,
       timestamp: typeof timestamp === 'number' ? timestamp : Date.parse(String(timestamp ?? '')) || Date.now()
     })
   }
+  return messages
+}
+
+/**
+ * Messages on the active branch, without starting Pi.
+ * Compaction and bookkeeping entries stay out; the leaf walk already follows
+ * the branch Pi would show.
+ */
+export async function readSessionMessages(file: string): Promise<AgentMessage[]> {
+  let fileStats: Stats
+  try {
+    fileStats = await stat(file)
+  } catch {
+    deleteCachedSessionMessages(canonicalSessionFile(file))
+    return []
+  }
+  if (fileStats.size > MAX_SESSION_BYTES) {
+    deleteCachedSessionMessages(canonicalSessionFile(file))
+    return []
+  }
+
+  const key = canonicalSessionFile(file)
+  const cached = sessionMessagesCache.get(key)
+  if (cached && cached.mtime === fileStats.mtimeMs && cached.size === fileStats.size) {
+    sessionMessagesCache.delete(key)
+    sessionMessagesCache.set(key, cached)
+    return cached.messages
+  }
+  if (cached) deleteCachedSessionMessages(key)
+
+  const lines: string[] = []
+  for await (const line of readJsonlLines(file, MAX_SESSION_BYTES)) {
+    lines.push(line)
+  }
+  if (!lines.length) return []
+  const messages = messagesFromBranch(activeBranch(lines))
+  cacheSessionMessages(file, fileStats, messages)
   return messages
 }
 
@@ -508,6 +582,11 @@ export async function parseSession(
     cursor = cursor.id ? byId.get(cursor.parentId ?? '') ?? null : null
   }
   branch.reverse()
+  if (stats.size <= MAX_CACHED_SESSION_MESSAGE_BYTES) {
+    cacheSessionMessages(file, stats, messagesFromBranch(branch))
+  } else {
+    deleteCachedSessionMessages(canonicalSessionFile(file))
+  }
 
   let name: string | undefined
   let preview = ''
@@ -823,13 +902,24 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
 
   const modelStats = new Map<string, ModelUsageStat>()
 
-  // Recent 7 days buckets
-  const recentDaysMap = new Map<string, { totalTokens: number; conversations: Set<string>; messageCount: number }>()
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    recentDaysMap.set(key, { totalTokens: 0, conversations: new Set(), messageCount: 0 })
+  const createDailyBuckets = (count: number) => {
+    const buckets = new Map<string, { totalTokens: number; conversations: Set<string>; messageCount: number }>()
+    for (let i = count - 1; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      buckets.set(key, { totalTokens: 0, conversations: new Set(), messageCount: 0 })
+    }
+    return buckets
   }
+  const recentDaysMap = createDailyBuckets(7)
+  const heatmapDaysMap = createDailyBuckets(365)
+  const toDailyStats = (days: typeof recentDaysMap): DailyUsageStat[] =>
+    Array.from(days.entries()).map(([date, d]) => ({
+      date,
+      totalTokens: d.totalTokens,
+      conversationsCount: d.conversations.size,
+      messageCount: d.messageCount
+    }))
 
   let rootStat: Stats
   try {
@@ -842,12 +932,8 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
       month,
       allTime,
       byModel: [],
-      recentDays: Array.from(recentDaysMap.entries()).map(([date, d]) => ({
-        date,
-        totalTokens: d.totalTokens,
-        conversationsCount: d.conversations.size,
-        messageCount: d.messageCount
-      })),
+      recentDays: toDailyStats(recentDaysMap),
+      heatmapDays: toDailyStats(heatmapDaysMap),
       updatedAt: Date.now()
     }
   }
@@ -1009,11 +1095,13 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
         if (m.ts > 0) {
           const d = new Date(m.ts)
           const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-          const dayBucket = recentDaysMap.get(dateKey)
-          if (dayBucket) {
-            dayBucket.totalTokens += m.total
-            dayBucket.messageCount += 1
-            dayBucket.conversations.add(usageData.sessionId)
+          for (const days of [recentDaysMap, heatmapDaysMap]) {
+            const dayBucket = days.get(dateKey)
+            if (dayBucket) {
+              dayBucket.totalTokens += m.total
+              dayBucket.messageCount += 1
+              dayBucket.conversations.add(usageData.sessionId)
+            }
           }
         }
       }
@@ -1026,20 +1114,14 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
   allTime.conversationsCount = activeInAllTime.size
 
   const byModel = Array.from(modelStats.values()).sort((a, b) => b.totalTokens - a.totalTokens)
-  const recentDays: DailyUsageStat[] = Array.from(recentDaysMap.entries()).map(([date, d]) => ({
-    date,
-    totalTokens: d.totalTokens,
-    conversationsCount: d.conversations.size,
-    messageCount: d.messageCount
-  }))
-
   return {
     today,
     week,
     month,
     allTime,
     byModel,
-    recentDays,
+    recentDays: toDailyStats(recentDaysMap),
+    heatmapDays: toDailyStats(heatmapDaysMap),
     updatedAt: Date.now()
   }
 }

@@ -16,6 +16,73 @@
  * component that wrote it.
  * ------------------------------------------------------------------ */
 
+/* MCode's code face. The reference app bundles JetBrains Mono and selects it
+   in Appearance; the same OFL files live here so code, diffs and the terminal
+   render with the same glyphs instead of falling through to Consolas. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono/JetBrainsMono-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono/JetBrainsMono-Medium.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono/JetBrainsMono-SemiBold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono/JetBrainsMono-Bold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono/JetBrainsMono-Italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono/JetBrainsMono-MediumItalic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono/JetBrainsMono-SemiBoldItalic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono/JetBrainsMono-BoldItalic.woff2') format('woff2');
+}
+
 :root {
   color-scheme: dark;
   accent-color: var(--accent);
@@ -87,31 +154,83 @@
   --diff-del-text: #ffa198;
 
   /* ---- type ------------------------------------------------------ *
-   * Seven steps. The scale lives here so that the font size setting
-   * multiplies every step at once and no component has to repeat the
-   * calculation.                                                       */
-  --text-2xs: calc(11px * var(--font-scale, 1));
-  --text-xs: calc(12px * var(--font-scale, 1));
-  --text-sm: calc(13px * var(--font-scale, 1));
-  --text-md: calc(14px * var(--font-scale, 1));
-  --text-lg: calc(16px * var(--font-scale, 1));
-  --text-xl: calc(20px * var(--font-scale, 1));
-  --text-2xl: calc(28px * var(--font-scale, 1));
+   * MCode's standard preset (UI 14 / code 12), copied 1:1:
+   *   assist 12/16, small 13/18.57, body 14/21, large 16/24.89,
+   *   dialog title 20/28, hero 28/35, chat 14/22.75, code 12/20.
+   * The role tokens are the source of truth; the numeric names below are
+   * kept as aliases for stylesheets that were written before the rename.   */
+  --code-scale: 1;
+  --text-assist: calc(12px * var(--font-scale, 1));
+  --text-small: calc(13px * var(--font-scale, 1));
+  --text-body: calc(14px * var(--font-scale, 1));
+  --text-chat: calc(14px * var(--font-scale, 1));
+  --text-large: calc(16px * var(--font-scale, 1));
+  --text-dialog-title: calc(20px * var(--font-scale, 1));
+  --text-empty-title: calc(16px * var(--font-scale, 1));
+  --text-button: calc(14px * var(--font-scale, 1));
+  --text-hero: calc(28px * var(--font-scale, 1));
+  --text-disclaimer: calc(10px * var(--font-scale, 1));
+  --text-composer-placeholder: calc(15px * var(--font-scale, 1));
+  --text-code-block: calc(12px * var(--code-scale, 1));
+  --text-code-diff: calc(12px * var(--code-scale, 1));
+  --text-code-terminal: calc(12px * var(--code-scale, 1));
 
-  /* Codex Desktop 26.1027 uses the platform stack for both chrome and text. */
-  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --text-2xs: var(--text-assist);
+  --text-xs: var(--text-small);
+  --text-sm: var(--text-body);
+  --text-md: var(--text-body);
+  --text-lg: var(--text-large);
+  --text-xl: var(--text-dialog-title);
+  --text-2xl: var(--text-hero);
+
+  /* The platform's colour emoji comes from FontFace (`Pi Desktop Emoji`,
+     registered in App) because this Windows image has the font file but no
+     usable registry entry for it. The rest of the stack keeps the UI type. */
+  --font-emoji: 'Pi Desktop Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Emoji';
+  /* MCode's system typography recipe. Leaving the CJK fallback to the generic
+     sans-serif family is what resolves Chinese to Noto Sans SC in MCode; an
+     explicit Microsoft YaHei family would change every Chinese glyph. */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', var(--font-emoji), sans-serif;
   --font-reading: var(--font-ui);
-  --font-mono: ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Consolas,
-    'Liberation Mono', monospace;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', var(--font-emoji), monospace;
   --font-sidebar: var(--font-ui);
   --font-weight-ui: 430;
-  --text-code: var(--text-xs);
+  --text-code: var(--text-code-block);
   --text-inline-code: 0.92em;
   --leading-ui: 1.5;
   --leading-reading: 1.625;
-  --leading-composer: calc(20px * var(--font-scale, 1));
-  --leading-code: max(1.5em, calc(20px * var(--font-scale, 1)));
+  --leading-composer: calc(22.75px * var(--font-scale, 1));
+  --leading-code: var(--leading-code-block);
   --leading-diff: 1.8;
+  /* Per-role line heights from MCode's type styles. */
+  --leading-assist: calc(16px * var(--font-scale, 1));
+  --leading-small: calc(18.57px * var(--font-scale, 1));
+  --leading-body: calc(21px * var(--font-scale, 1));
+  --leading-large: calc(24.89px * var(--font-scale, 1));
+  --leading-chat: calc(22.75px * var(--font-scale, 1));
+  --leading-dialog: calc(28px * var(--font-scale, 1));
+  --leading-hero: calc(35px * var(--font-scale, 1));
+  --leading-empty-title: calc(26px * var(--font-scale, 1));
+  --leading-button: calc(20px * var(--font-scale, 1));
+  --leading-composer-placeholder: calc(24px * var(--font-scale, 1));
+  --leading-code-block: calc(20px * var(--code-scale, 1));
+  --leading-code-diff: calc(21.6px * var(--code-scale, 1));
+  --leading-code-terminal: calc(14.4px * var(--code-scale, 1));
+  --weight-regular: 400;
+  --weight-ui: 430;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --tracking-dialog-title: -0.36px;
+  /* MCode's markdown scale: h1 21/28, h2 17.5/24.5, h3 15.75/24.5. */
+  --text-markdown-h1: calc(21px * var(--font-scale, 1));
+  --text-markdown-h2: calc(17.5px * var(--font-scale, 1));
+  --text-markdown-h3: calc(15.75px * var(--font-scale, 1));
+  --leading-markdown-h1: calc(28px * var(--font-scale, 1));
+  --leading-markdown-h2: calc(24.5px * var(--font-scale, 1));
+  --leading-markdown-h3: calc(24.5px * var(--font-scale, 1));
+  --leading-table-header: calc(14px * var(--font-scale, 1));
 
   /* ---- spacing ---------------------------------------------------- *
    * A 4px rhythm with a 2px half step. The half step is not a second
@@ -177,16 +296,31 @@
    * Latin to stay readable, and a wide window does not make a line easier
    * to follow past ~40 characters. */
   --content-w: 720px;
-  --drawer-w: 420px;
+  --drawer-w: 520px;
   /* Status card beside the conversation (not the Tools drawer). */
   --task-rail-w: 280px;
   --shell-inset: var(--sp-3);
   --titlebar-h: 44px;
+  /* The 1px rule that closes the title bar. The content headers sit under it,
+     so anything pinned to the shell has to start there too or its controls
+     stand a pixel above the line they belong to. */
+  --panel-head-rule: 1px;
   --panel-head-h: 52px;
+  /* MCode's right workspace panel: a 46px header with 30px, 160px-wide page
+     tabs. The panel can grow past this, but a tab must not grow with a file
+     name, so its width is a token rather than content. */
+  --toolpanel-head-h: 46px;
+  --toolpanel-tab-h: 30px;
+  --toolpanel-tab-w: 160px;
+  --toolpanel-tab-min-w: 120px;
+  --toolpanel-tab-radius: 8px;
   /* The shell pins the side panel's one toggle to the right corner of the
    * content row, over whichever header is there. Both headers keep this width
-   * free so their own controls never slide under it. */
-  --panel-toggle-reserve: calc(var(--sp-5) + var(--ctl-sm) + var(--sp-1));
+   * free so their own controls never slide under it: the toggle's own inset
+   * from the panel edge, the button — which is the 30px corner control, not the
+   * 28px small step — and the strip's one gap, so the corner reads as the last
+   * button of the row rather than something that drifted away from it. */
+  --panel-toggle-reserve: calc(var(--sp-5) + var(--toolpanel-tab-h) + var(--sp-1));
 
   /* ---- shadows ----------------------------------------------------- */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32), var(--border-specular);
@@ -265,6 +399,13 @@
   --sidebar-row-h: var(--ctl-sm);
   --sidebar-project-h: var(--ctl-md);
   --sidebar-action-slot: 60px;
+  /* The conversation list is indented under its project, and the indent is the
+     project's own text column (8px padding + 20px icon + 8px gap) so a chat
+     name starts where the project name does. A row's mark hangs in that indent
+     rather than taking room in front of the name, so every title stays on the
+     same column whether the row has something to say or not. */
+  --sidebar-session-indent: 36px;
+  --sidebar-mark-slot: 14px;
 
   /* The tint of a project icon. One hue per name; the component only writes
      the name into `data-icon-color`. */

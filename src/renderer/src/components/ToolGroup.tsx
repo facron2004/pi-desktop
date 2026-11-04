@@ -16,7 +16,9 @@ export type ActivityStatus = 'error' | 'running' | 'aborted' | 'proposed' | 'ok'
  *
  * The title is the kind of work (explored, activity, still running) and the
  * summary is the counts. Both the grouped row and the settled process fold
- * speak this way, so a batch does not change its name when it collapses.
+ * speak this way, so a batch does not change its name when it collapses — and
+ * neither does a live stretch gathered by the `toolCallSummary` setting, which
+ * borrows this headline and this row's `group-<first call id>` key.
  */
 export function activityHeadline(
   items: ToolItem[],

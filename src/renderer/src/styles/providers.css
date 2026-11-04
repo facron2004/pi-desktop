@@ -75,8 +75,9 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--sp-2);
-  font-size: var(--text-sm);
-  font-weight: 600;
+  font-size: var(--text-body);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-body);
   color: var(--text);
 }
 
@@ -184,7 +185,9 @@
 
 .provider-field-label {
   flex-wrap: wrap;
-  font-size: var(--text-sm);
+  font-size: var(--text-small);
+  font-weight: var(--weight-ui);
+  line-height: var(--leading-small);
   color: var(--text);
 }
 

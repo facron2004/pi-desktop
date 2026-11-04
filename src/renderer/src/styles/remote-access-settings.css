@@ -1,0 +1,39 @@
+.remote-access-settings .remote-access-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  margin: 18px 0 22px;
+  padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, var(--warning, #d7a44c) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warning, #d7a44c) 8%, transparent);
+  color: var(--warning, #d7a44c);
+}
+
+.remote-access-warning svg { flex: 0 0 auto; margin-top: 1px; }
+.remote-access-warning p { margin: 0; color: var(--text-secondary, #a6a8b0); font-size: 12px; line-height: 1.55; }
+.remote-access-pairing__content { display: flex; align-items: center; gap: 22px; padding: 4px 0 8px; }
+.remote-access-pairing__content > img { flex: 0 0 176px; border: 7px solid #fff; border-radius: 8px; image-rendering: pixelated; }
+.remote-access-pairing__info { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 8px; }
+.remote-access-pairing__info > strong { color: var(--text-primary, #e7e7e9); font-size: 13px; }
+.remote-access-pairing__info > span, .remote-access-pairing__info small, .remote-access-new-pairing > span { color: var(--text-secondary, #a6a8b0); font-size: 12px; line-height: 1.5; }
+.remote-access-expiry { color: var(--text-muted, #858791); font-size: 11px; }
+.remote-access-address { display: flex; max-width: 100%; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 5px; }
+.remote-access-address code { overflow: hidden; max-width: 100%; color: var(--text-primary, #e7e7e9); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.remote-access-address .btn { display: inline-flex; align-items: center; gap: 5px; }
+.remote-access-new-pairing { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; padding: 4px 0 8px; }
+.remote-access-new-pairing .btn { display: inline-flex; align-items: center; gap: 6px; }
+.remote-access-device { display: flex; align-items: center; gap: 10px; }
+.remote-access-device > svg { flex: 0 0 auto; color: var(--text-secondary, #a6a8b0); }
+.remote-access-device strong, .remote-access-device small { display: block; }
+.remote-access-device strong { color: var(--text-primary, #e7e7e9); font-size: 12px; font-weight: 550; }
+.remote-access-device small { margin-top: 3px; color: var(--text-muted, #858791); font-size: 10px; }
+.remote-access-revoke { color: var(--text-muted, #858791); }
+.remote-access-revoke:hover { color: var(--danger, #e97770); }
+.remote-access-empty { margin: 0; padding: 12px 0; color: var(--text-muted, #858791); font-size: 12px; }
+.remote-access-error { margin: 12px 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger, #e97770) 35%, transparent); border-radius: 9px; color: var(--danger, #e97770); font-size: 12px; line-height: 1.5; }
+
+@media (max-width: 720px) {
+  .remote-access-pairing__content { align-items: flex-start; flex-direction: column; }
+  .remote-access-pairing__content > img { align-self: center; }
+}

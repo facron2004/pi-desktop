@@ -14,6 +14,7 @@ npmRebuild: false
 files:
   - out/main/**/*
   - out/preload/**/*
+  - out/remote/**/*
   - out/renderer/**/*
   - package.json
   - '!**/*.map'

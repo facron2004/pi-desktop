@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, Monitor, Paperclip, Plus, Sparkles, Target, Wrench } from 'lucide-react'
+import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, Target, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { useT } from '../lib/i18n'
 import { Popover } from './Popover'
@@ -10,8 +10,7 @@ type AddMenuPage = 'actions' | 'skills' | 'plugins'
 const MODES = [
   { value: 'goal', label: 'Goal Mode', icon: Target, description: 'Continue until the goal is complete or blocked' },
   { value: 'plan', label: 'Plan Mode', icon: ListChecks, description: 'Explore and plan without changing files' },
-  { value: 'subagent', label: 'Subagent Mode', icon: Bot, description: 'Delegate self-contained work to isolated subagents' },
-  { value: 'computer', label: 'Computer Use', icon: Monitor, description: 'Operate native apps with the mouse, keyboard and screenshots' }
+  { value: 'subagent', label: 'Subagent Mode', icon: Bot, description: 'Delegate self-contained work to isolated subagents' }
 ] as const
 
 const PAGES = [

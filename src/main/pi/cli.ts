@@ -13,7 +13,7 @@ const CLI_TIMEOUT_MS = 10_000
 /** Run the Pi CLI once and capture its output. */
 export function runPiCli(
   args: string[],
-  options: { cwd?: string; customPiPath?: string; timeoutMs?: number } = {}
+  options: { cwd?: string; customPiPath?: string; timeoutMs?: number; input?: string } = {}
 ): Promise<CliResult> {
   const launch = resolvePiLaunch(options.customPiPath)
   if (launch.source === 'none') {
@@ -27,9 +27,15 @@ export function runPiCli(
     const child = spawn(launch.command, [...launch.prefixArgs, ...args], {
       cwd: options.cwd ?? process.cwd(),
       env: launch.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       windowsHide: true
     })
+    if (options.input !== undefined) {
+      child.stdin?.on('error', () => {
+        /* the child may exit before consuming its prompt; close handles it */
+      })
+      child.stdin?.end(options.input, 'utf8')
+    }
     let stdout = ''
     let stderr = ''
     let settled = false
@@ -49,10 +55,10 @@ export function runPiCli(
       })
     }, options.timeoutMs ?? CLI_TIMEOUT_MS)
 
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf8')
     })
-    child.stderr.on('data', (chunk: Buffer) => {
+    child.stderr?.on('data', (chunk: Buffer) => {
       stderr += chunk.toString('utf8')
     })
     child.on('error', (error) => {

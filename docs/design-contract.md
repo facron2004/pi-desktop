@@ -22,8 +22,9 @@
 |---|---|---|
 | 阅读列（对话/Composer） | 720px | `--content-w`（740 → 720，长中文行更稳） |
 | 侧栏 default / min / max | 240 / 200 / 480 | `--sidebar-w` |
-| 抽屉 | 420 | `--drawer-w` |
-| 标题栏 / 面板头 | 44 / 52 | `--titlebar-h` / `--panel-head-h` |
+| 右侧工作区面板 | default 520 / min 360 / max 760 | `--drawer-w`（MCode 对齐轮改；任务栏另占 280） |
+| 标题栏 / 通用面板头 | 44 / 52 | `--titlebar-h` / `--panel-head-h` |
+| 右侧工作区面板头 | 46 | `--toolpanel-head-h` |
 | 外壳内缩 | 8 | `--shell-inset` |
 | 主列最小宽 | 480 | grid `minmax(480px, 1fr)` |
 | 断点 | 1099 / 719（容器查询 `conversation`）；900（`ui-polish`） | 不改 |
@@ -44,20 +45,30 @@ controls.css      primitives: .btn .btn--primary .icon-btn .pill .ghost-btn .inp
 
 新代码只允许引用 semantic 名与 scale；别名（`--bg` `--text` `--border` …）保留给旧样式，不再新增使用。
 
-## 4. 密度与排版（本次统一）
+## 4. 密度与排版（MCode standard preset）
 
-| 角色 | 字号 | 行高 | 说明 |
+字号、行高与字重按 MCode 的 standard preset（UI 14 / code 12）1:1 对齐，
+来源与例外见 [mcode-typography-alignment.md](mcode-typography-alignment.md)。
+
+| 角色 | Token | 字号 / 行高 | 字重 |
 |---|---|---|---|
-| 助手正文 / 用户消息 | `--text-md` 14 | 1.62 | 唯一焦点 |
-| 工具行（名称+路径） | `--text-xs` 12 | — | 与正文不同字体层级（等宽 summary） |
-| 工具行次信息（状态/耗时） | `--text-2xs` 11 | — | 形态区分，不靠颜色 |
-| 元信息（模型/token/时间） | `--text-2xs` 11 | — | `--text-tertiary` |
-| 组标题（项目/会话） | `--text-sm` 13 | — | 400 字重 |
-| 品牌 | `--text-lg` 16 | — | 600 字重 |
+| 助手正文 / 用户消息 | `--text-chat` | 14 / 22.75 | 430 |
+| 界面正文（侧栏、菜单、设置导航） | `--text-body` | 14 / 21 | 430 |
+| 工具行（名称+路径） | `--text-small` | 13 / 18.57 | 430 |
+| 工具行次信息（状态/耗时） | `--text-assist` | 12 / 16 | 430 |
+| 元信息（模型/token/时间） | `--text-assist` | 12 / 16 | 430 |
+| 组标题（项目/会话） | `--text-small` | 13 / 18.57 | 430 |
+| 设置行标题 / 说明 | `--text-small` / `--text-assist` | 13/18.57 · 12/16 | 430 |
+| 对话框标题 | `--text-dialog-title` | 20 / 28 · `letter-spacing: -0.36px` | 500 |
+| 品牌 / 页标题 | `--text-body` / `--text-large` | 14/21 · 16/24.89 | 600 / 500 |
+| 欢迎页主标题 | `--text-hero` | 28 / 35 | 600 |
+| 代码 / diff / 终端 | `--text-code-block` 等 | 12/20 · 12/21.6 · 12/14.4 | 400 |
 
+- 界面字体为 MCode 的 system stack（`-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`）；中文由 generic `sans-serif` 落到 Noto Sans SC。
+- 代码字体为随包分发的 JetBrains Mono（`src/renderer/src/assets/fonts/jetbrains-mono/`），行内代码 `0.92em`。
 - 浮控高度只有 28 / 32 / 36 三档；行内小 chip 用 `--ctl-xs` 24。
 - 过渡 120/180/240ms，统一 `--ease`；`prefers-reduced-motion` 下关闭位移与淡入。
-- 字面量 `font-size: 10px/15px` 一律折算到 Token（`--text-2xs` / `--text-lg`）。
+- 字面量 `font-size` 一律折算到 role token；新增代码用 role 名（`--text-body` 等），不要再写 `--text-2xs`。
 
 ## 5. 圆角语义（本次统一）
 

@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ArrowDown,
   ArrowUp,
@@ -11,6 +12,7 @@ import {
   Pencil,
   Pin,
   Plus,
+  Puzzle,
   Search,
   Settings,
   Smile,
@@ -59,6 +61,8 @@ function matches(session: SessionMeta, needle: string): boolean {
 
 export function Sidebar({
   onOpenSettings,
+  onOpenPlugins,
+  onOpenScheduledTasks,
   focusSearchSignal,
   width,
   open = true,
@@ -66,6 +70,8 @@ export function Sidebar({
   onResizeEnd
 }: {
   onOpenSettings: () => void
+  onOpenPlugins: () => void
+  onOpenScheduledTasks: () => void
   focusSearchSignal: number
   width: number
   open?: boolean
@@ -103,6 +109,7 @@ export function Sidebar({
   const [expandedLists, setExpandedLists] = useState<Set<string>>(() => new Set())
   const [searchOpen, setSearchOpen] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const searchTriggerRef = useRef<HTMLButtonElement>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
@@ -212,11 +219,12 @@ export function Sidebar({
     [onResizeEnd]
   )
 
-  const needle = query.trim().toLowerCase()
+  const trimmedQuery = query.trim()
+  const searchNeedle = trimmedQuery.toLowerCase()
+  const needle = searchOpen ? '' : searchNeedle
 
   // The input filters titles and projects at once; full text is a different,
   // slower question, so it is asked separately and debounced.
-  const trimmedQuery = query.trim()
   const contentSearch = useSessionSearch(trimmedQuery, sessions.length > 0)
   const contentHits = contentSearch.hits
   const showContentSearch =
@@ -335,6 +343,20 @@ export function Sidebar({
     () => listed.filter((session) => !session.cwd && !pinned.has(session.file) && matches(session, needle)),
     [listed, pinned, needle]
   )
+
+  const projectSearchResults = useMemo(
+    () => shown.filter((project) => !searchNeedle || `${project.name}\n${project.path}`.toLowerCase().includes(searchNeedle)),
+    [shown, searchNeedle]
+  )
+  const conversationSearchResults = useMemo(() => {
+    const unique = new Map<string, ConversationRow>()
+    for (const session of listed) {
+      if (!unique.has(session.file)) unique.set(session.file, session)
+    }
+    return [...unique.values()]
+      .filter((session) => !searchNeedle || matches(session, searchNeedle))
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+  }, [listed, searchNeedle])
 
   const persistOrder = async (next: Project<ConversationRow>[]) => {
     const current = (await window.pi.settings.get()).workspaces
@@ -502,10 +524,32 @@ export function Sidebar({
       />
     ))
 
+  const closeSearch = (restoreFocus = false) => {
+    setSearchOpen(false)
+    setQuery('')
+    setSearchFocused(false)
+    setRecentsOpen(false)
+    setRecentIndex(-1)
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => searchTriggerRef.current?.focus())
+    }
+  }
+
   // A hit opens the conversation and asks the thread to scroll to the message
   // it belongs to; the query comes along so the words stay marked.
   const openContentHit = (hit: SessionSearchHit) => {
+    closeSearch()
     void openSearchHit(hit, trimmedQuery)
+  }
+
+  const openProjectResult = (project: Project<ConversationRow>) => {
+    closeSearch()
+    void switchProject(project.path, { allowWhileRunning: true })
+  }
+
+  const openConversationResult = (session: ConversationRow) => {
+    closeSearch()
+    void selectSession(session)
   }
 
   // A conversation can appear more than once — one row per matching message —
@@ -570,10 +614,19 @@ export function Sidebar({
       node.removeEventListener('scroll', measure)
       observer?.disconnect()
     }
-  }, [sessions, query, searchOpen])
+  }, [sessions, query])
+
+  const searchHost = searchOpen && typeof document !== 'undefined'
+    ? document.querySelector<HTMLElement>('.main__body')
+    : null
 
   return (
-    <aside className="sidebar" inert={open ? undefined : true} aria-hidden={open ? undefined : true}>
+    <>
+    <aside
+      className="sidebar"
+      inert={open && !searchOpen ? undefined : true}
+      aria-hidden={open && !searchOpen ? undefined : true}
+    >
       <div
         className="sidebar__resizer"
         role="separator"
@@ -595,11 +648,12 @@ export function Sidebar({
         </div>
         <div className="sidebar__head-actions no-drag">
           <button
+            ref={searchTriggerRef}
             className="sidebar__head-btn"
-            aria-label={t('Filter conversations')}
-            title={t('Filter conversations')}
+            aria-label={t('Search projects and conversations')}
+            title={t('Search projects and conversations')}
             aria-expanded={searchOpen}
-            aria-controls="sidebar-search"
+            aria-controls="conversation-search-dialog"
             onClick={() => {
               setSearchOpen((open) => !open)
               setQuery('')
@@ -623,155 +677,39 @@ export function Sidebar({
         </button>
       </div>
 
+      <div className="sidebar__plugin-entry">
+        {/* Plugins stays one step from starting a conversation because it
+            configures the tools and extensions available to that work. */}
+        <button
+          type="button"
+          className="sidebar__foot-btn"
+          onClick={onOpenPlugins}
+          title={t('Plugins')}
+        >
+          <Puzzle size={15} strokeWidth={1.6} />
+          <span>{t('Plugins')}</span>
+        </button>
+      </div>
+
+      <div className="sidebar__scheduled-entry">
+        <button
+          type="button"
+          className="sidebar__foot-btn"
+          onClick={onOpenScheduledTasks}
+          title={t('Scheduled tasks')}
+        >
+          <Clock size={15} strokeWidth={1.6} />
+          <span>{t('Scheduled tasks')}</span>
+        </button>
+      </div>
+
       <div className="sidebar__body" id="sidebar-content" ref={listRef}>
-        {searchOpen ? (
-          <>
-            <div className="sidebar__search" id="sidebar-search">
-              <Search size={13} />
-              <input
-                ref={searchInputRef}
-                value={query}
-                role="combobox"
-                aria-autocomplete="list"
-                aria-expanded={recentsVisible}
-                aria-controls={recentsVisible ? 'session-search-recents' : undefined}
-                aria-activedescendant={
-                  recentsVisible && recentIndex >= 0
-                    ? `session-search-recent-${recentIndex}`
-                    : undefined
-                }
-                aria-label={t('Filter conversations')}
-                placeholder={t('Filter conversations')}
-                onChange={(event) => {
-                  setQuery(event.target.value)
-                  setRecentIndex(-1)
-                }}
-                onFocus={focusSearch}
-                onBlur={leaveSearch}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') {
-                    event.preventDefault()
-                    event.stopPropagation()
-                    if (recentsVisible) {
-                      setRecentsOpen(false)
-                      setRecentIndex(-1)
-                    } else {
-                      setSearchOpen(false)
-                      setQuery('')
-                      document.querySelector<HTMLButtonElement>('.sidebar__head-btn[aria-controls="sidebar-search"]')?.focus()
-                    }
-                    return
-                  }
-                  if (!recentsVisible) return
-                  if (event.key === 'ArrowDown') {
-                    event.preventDefault()
-                    setRecentIndex((current) => (current + 1) % recents.length)
-                    return
-                  }
-                  if (event.key === 'ArrowUp') {
-                    event.preventDefault()
-                    setRecentIndex((current) => (current <= 0 ? recents.length - 1 : current - 1))
-                    return
-                  }
-                  if (event.key === 'Enter') {
-                    if (recentIndex < 0) return
-                    event.preventDefault()
-                    pickRecent(recents[recentIndex])
-                    return
-                  }
-                }}
-              />
-              {query ? (
-                <button
-                  className="icon-btn"
-                  onClick={() => {
-                    setQuery('')
-                    searchInputRef.current?.focus()
-                  }}
-                  title={t('Clear the filter')}
-                  aria-label={t('Clear the filter')}
-                >
-                  <X size={11} />
-                </button>
-              ) : null}
-            </div>
-
-            {recentsVisible ? (
-              <div
-                className="session-search__recents"
-              >
-                <div className="session-search__recents-head">
-                  <span>{t('Recent searches')}</span>
-                  <button onMouseDown={(event) => event.preventDefault()} onClick={clearRecents}>
-                    {t('Clear')}
-                  </button>
-                </div>
-                <div
-                  className="session-search__recents-list"
-                  id="session-search-recents"
-                  role="listbox"
-                  aria-label={t('Recent searches')}
-                  ref={recentsRef}
-                >
-                  {recents.map((entry, index) => (
-                    <button
-                      key={entry.toLowerCase()}
-                      id={`session-search-recent-${index}`}
-                      className="session-search__recent"
-                      role="option"
-                      aria-selected={index === recentIndex}
-                      tabIndex={-1}
-                      data-recent-index={index}
-                      data-active={index === recentIndex || undefined}
-                      title={entry}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => pickRecent(entry)}
-                    >
-                      <Clock size={11} />
-                      <span className="session-search__recent-text">{entry}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </>
-        ) : null}
-
-        {showContentSearch ? (
-          <div className="sidebar__section session-search">
-            <div className="sidebar__section-head">
-              <span>{t('Matches in conversations')}</span>
-              {contentHits.length > 0 ? (
-                <span className="session-search__count">{contentHits.length}</span>
-              ) : null}
-            </div>
-            {contentSearch.status === 'searching' ? (
-              <div className="session-search__state">{t('Searching…')}</div>
-            ) : contentHits.length > 0 ? (
-              <div className="session-list">{renderContentHits(contentHits)}</div>
-            ) : (
-              <div className="session-search__state">
-                {t('No matches in conversation text')}
-              </div>
-            )}
-          </div>
-        ) : null}
-
         {pinnedSessions.length > 0 ? (
           <div className="sidebar__section">
             <div className="sidebar__section-head">
               <span>{t('Pinned')}</span>
             </div>
             <div className="session-list">{renderSessions(pinnedSessions, true)}</div>
-          </div>
-        ) : null}
-
-        {projectlessSessions.length > 0 ? (
-          <div className="sidebar__section">
-            <div className="sidebar__section-head">
-              <span>{t('Chats without a project')}</span>
-            </div>
-            <div className="session-list">{renderSessions(projectlessSessions)}</div>
           </div>
         ) : null}
 
@@ -931,14 +869,6 @@ export function Sidebar({
                       ) : null}
 
                       <div className="project__actions">
-                        {/* The count sits in the slot the buttons take over on
-                            hover, so the title never changes width. */}
-                        <span
-                          className="project__count"
-                          data-visible={expanded && projectSessions.length > 0 ? 'true' : undefined}
-                        >
-                          {projectSessions.length}
-                        </span>
                         <div className="project__buttons">
                           <Popover
                             placement="bottom"
@@ -1087,6 +1017,15 @@ export function Sidebar({
           )}
         </div>
 
+        {projectlessSessions.length > 0 ? (
+          <div className="sidebar__section">
+            <div className="sidebar__section-head">
+              <span>{t('Chats')}</span>
+            </div>
+            <div className="session-list">{renderSessions(projectlessSessions)}</div>
+          </div>
+        ) : null}
+
         {sessions.length > 0 &&
         needle &&
         groups.length === 0 &&
@@ -1179,6 +1118,227 @@ export function Sidebar({
         />
       ) : null}
     </aside>
+    {searchHost ? createPortal(
+      <div
+        className="search-dialog-layer"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeSearch(true)
+        }}
+      >
+        <section
+          className="modal search-dialog"
+          id="conversation-search-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('Search projects and conversations')}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <header className="search-dialog__head">
+            <h2>{t('Search projects and conversations')}</h2>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label={t('Close')}
+              title={t('Close')}
+              onClick={() => closeSearch(true)}
+            >
+              <X size={15} />
+            </button>
+          </header>
+
+          <div className="search-dialog__input">
+            <Search size={15} aria-hidden="true" />
+            <input
+              ref={searchInputRef}
+              value={query}
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={recentsVisible}
+              aria-controls={recentsVisible
+                ? 'session-search-recents conversation-search-results'
+                : 'conversation-search-results'}
+              aria-activedescendant={
+                recentsVisible && recentIndex >= 0
+                  ? `session-search-recent-${recentIndex}`
+                  : undefined
+              }
+              aria-label={t('Search projects and conversations')}
+              placeholder={t('Search projects and conversations')}
+              onChange={(event) => {
+                setQuery(event.target.value)
+                setRecentIndex(-1)
+              }}
+              onFocus={focusSearch}
+              onBlur={leaveSearch}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  if (recentsVisible) {
+                    setRecentsOpen(false)
+                    setRecentIndex(-1)
+                  } else {
+                    closeSearch(true)
+                  }
+                  return
+                }
+                if (!recentsVisible) return
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault()
+                  setRecentIndex((current) => (current + 1) % recents.length)
+                  return
+                }
+                if (event.key === 'ArrowUp') {
+                  event.preventDefault()
+                  setRecentIndex((current) => (current <= 0 ? recents.length - 1 : current - 1))
+                  return
+                }
+                if (event.key === 'Enter' && recentIndex >= 0) {
+                  event.preventDefault()
+                  pickRecent(recents[recentIndex])
+                }
+              }}
+            />
+            {query ? (
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => {
+                  setQuery('')
+                  searchInputRef.current?.focus()
+                }}
+                title={t('Clear the filter')}
+                aria-label={t('Clear the filter')}
+              >
+                <X size={12} />
+              </button>
+            ) : null}
+          </div>
+
+          <div className="search-dialog__results" id="conversation-search-results">
+            {recentsVisible ? (
+              <div className="session-search__recents">
+                <div className="session-search__recents-head">
+                  <span>{t('Recent searches')}</span>
+                  <button onMouseDown={(event) => event.preventDefault()} onClick={clearRecents}>
+                    {t('Clear')}
+                  </button>
+                </div>
+                <div
+                  className="session-search__recents-list"
+                  id="session-search-recents"
+                  role="listbox"
+                  aria-label={t('Recent searches')}
+                  ref={recentsRef}
+                >
+                  {recents.map((entry, index) => (
+                    <button
+                      key={entry.toLowerCase()}
+                      id={`session-search-recent-${index}`}
+                      className="session-search__recent"
+                      role="option"
+                      aria-selected={index === recentIndex}
+                      tabIndex={-1}
+                      data-recent-index={index}
+                      data-active={index === recentIndex || undefined}
+                      title={entry}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => pickRecent(entry)}
+                    >
+                      <Clock size={12} />
+                      <span className="session-search__recent-text">{entry}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {projectSearchResults.length > 0 ? (
+              <section className="search-dialog__section" aria-label={t('Projects')}>
+                <div className="search-dialog__section-head">
+                  <span>{t('Projects')}</span>
+                  <span className="session-search__count">{projectSearchResults.length}</span>
+                </div>
+                {projectSearchResults.map((project) => (
+                  <button
+                    key={normalisePathKey(project.path)}
+                    type="button"
+                    className="search-dialog__result"
+                    onClick={() => openProjectResult(project)}
+                    title={project.path}
+                  >
+                    <FolderOpen size={16} aria-hidden="true" />
+                    <span className="search-dialog__result-copy">
+                      <span className="search-dialog__result-title">{project.name}</span>
+                      <span className="search-dialog__result-meta">{project.path}</span>
+                    </span>
+                    <span className="search-dialog__result-hint">{t('Open project')}</span>
+                  </button>
+                ))}
+              </section>
+            ) : null}
+
+            {conversationSearchResults.length > 0 ? (
+              <section className="search-dialog__section" aria-label={t('Search conversations')}>
+                <div className="search-dialog__section-head">
+                  <span>{t('Search conversations')}</span>
+                  <span className="session-search__count">{conversationSearchResults.length}</span>
+                </div>
+                {conversationSearchResults.map((session) => (
+                  <button
+                    key={session.file}
+                    type="button"
+                    className="search-dialog__result"
+                    onClick={() => openConversationResult(session)}
+                    title={session.name || session.preview || session.file}
+                  >
+                    <SquarePen size={15} aria-hidden="true" />
+                    <span className="search-dialog__result-copy">
+                      <span className="search-dialog__result-title">
+                        {session.name || session.preview || t('Untitled session')}
+                      </span>
+                      <span className="search-dialog__result-meta">
+                        {session.cwd ? basename(session.cwd) : t('Chats without a project')}
+                        {' · '}
+                        {formatRelativeTime(session.updatedAt, settings.language)}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </section>
+            ) : null}
+
+            {showContentSearch ? (
+              <section className="search-dialog__section session-search" aria-label={t('Matches in conversations')}>
+                <div className="search-dialog__section-head">
+                  <span>{t('Matches in conversations')}</span>
+                  {contentHits.length > 0 ? (
+                    <span className="session-search__count">{contentHits.length}</span>
+                  ) : null}
+                </div>
+                {contentSearch.status === 'searching' ? (
+                  <div className="session-search__state">{t('Searching…')}</div>
+                ) : contentHits.length > 0 ? (
+                  <div className="search-dialog__text-hits">{renderContentHits(contentHits)}</div>
+                ) : (
+                  <div className="session-search__state">{t('No matches in conversation text')}</div>
+                )}
+              </section>
+            ) : null}
+
+            {projectSearchResults.length === 0 &&
+            conversationSearchResults.length === 0 &&
+            !showContentSearch ? (
+              <div className="search-dialog__empty">
+                {needle ? t('No project or conversation matches') : t('No projects or conversations yet')}
+              </div>
+            ) : null}
+          </div>
+        </section>
+      </div>,
+      searchHost
+    ) : null}
+    </>
   )
 }
 

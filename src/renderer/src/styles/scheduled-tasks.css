@@ -1,0 +1,264 @@
+.scheduled-tasks {
+  width: min(760px, 100%);
+  height: min(720px, 100%);
+}
+
+.scheduled-tasks__head {
+  gap: var(--sp-4);
+}
+
+.scheduled-tasks__heading,
+.scheduled-tasks__head-actions,
+.scheduled-tasks__title-row,
+.scheduled-tasks__actions,
+.scheduled-tasks__notice,
+.scheduled-tasks__hint,
+.scheduled-tasks__error,
+.scheduled-tasks__form-error {
+  display: flex;
+  align-items: center;
+}
+
+.scheduled-tasks__heading {
+  min-width: 0;
+  gap: var(--sp-3);
+}
+
+.scheduled-tasks__head-actions {
+  gap: var(--sp-2);
+}
+
+.scheduled-tasks__count {
+  display: grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-full);
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: var(--text-assist);
+}
+
+.scheduled-tasks__body,
+.scheduled-tasks__form {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.scheduled-tasks__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  overflow-y: auto;
+  padding: var(--sp-5) var(--sp-6);
+}
+
+.scheduled-tasks__notice {
+  flex: 0 0 auto;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  color: var(--text-secondary);
+  font-size: var(--text-assist);
+}
+
+.scheduled-tasks__notice svg,
+.scheduled-tasks__hint svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.scheduled-tasks__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.scheduled-task {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+}
+
+.scheduled-task__main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.scheduled-task__title-row {
+  min-width: 0;
+  gap: var(--sp-3);
+}
+
+.scheduled-task__title-row strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-body);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-task__status {
+  flex: 0 0 auto;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-full);
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+}
+
+.scheduled-task__status[data-status='running'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.scheduled-task__status[data-status='completed'],
+.scheduled-task__status[data-status='enabled'] {
+  color: var(--green);
+}
+
+.scheduled-task__status[data-status='error'] {
+  color: var(--red);
+}
+
+.scheduled-task__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--sp-4);
+  margin-top: var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--text-assist);
+}
+
+.scheduled-task__error {
+  margin-top: var(--sp-2);
+  color: var(--red);
+  font-size: var(--text-assist);
+  overflow-wrap: anywhere;
+}
+
+.scheduled-task__actions {
+  flex: 0 0 auto;
+  gap: 1px;
+}
+
+.scheduled-task__delete:hover {
+  color: var(--red);
+}
+
+.scheduled-tasks__empty {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 180px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  color: var(--text-muted);
+  text-align: center;
+  font-size: var(--text-assist);
+}
+
+.scheduled-tasks__empty strong {
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  font-weight: var(--weight-medium);
+}
+
+.scheduled-tasks__empty > svg {
+  margin-bottom: var(--sp-2);
+}
+
+.scheduled-tasks__form {
+  display: flex;
+  flex-direction: column;
+}
+
+.scheduled-tasks__form-body {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--sp-4);
+  overflow-y: auto;
+  padding: var(--sp-5) var(--sp-6);
+}
+
+.scheduled-tasks__field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--sp-2);
+  color: var(--text-secondary);
+  font-size: var(--text-assist);
+}
+
+.scheduled-tasks__field > .input {
+  width: 100%;
+}
+
+.scheduled-tasks__prompt {
+  min-height: 132px;
+  padding: var(--sp-3);
+  resize: vertical;
+  font-family: var(--font-ui);
+  line-height: var(--leading-body);
+}
+
+.scheduled-tasks__schedule-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+
+.scheduled-tasks__hint {
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-assist);
+}
+
+.scheduled-tasks__form-error,
+.scheduled-tasks__error {
+  gap: var(--sp-2);
+  color: var(--red);
+  font-size: var(--text-assist);
+}
+
+.scheduled-tasks__form-error {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-6) var(--sp-3);
+}
+
+.scheduled-tasks__error {
+  flex: 0 0 auto;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid color-mix(in oklab, var(--red) 35%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in oklab, var(--red) 8%, transparent);
+}
+
+@media (max-width: 620px) {
+  .scheduled-task {
+    align-items: flex-start;
+  }
+
+  .scheduled-task__actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: 72px;
+  }
+
+  .scheduled-tasks__schedule-fields {
+    grid-template-columns: 1fr;
+  }
+}

@@ -150,13 +150,15 @@ export function ImageViewer() {
             <span className="image-viewer__dim">{formatBytes(activeInfo.size)}</span>
           ) : null}
           <span className="image-viewer__spacer" />
+          {/* The meta line is narrow and the label wrapped to three lines; the
+              icon carries the action and the tooltip says what it does. */}
           <button
-            className="ghost-btn"
+            className="icon-btn"
             onClick={() => void window.pi.fs.reveal(activeInfo.path)}
-            title={t('Show in the file manager')}
+            aria-label={t('Reveal in the file manager')}
+            title={t('Reveal in the file manager')}
           >
-            <ExternalLink size={11} />
-            {t('Reveal')}
+            <ExternalLink size={13} />
           </button>
         </div>
       ) : null}

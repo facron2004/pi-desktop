@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { AppSettings, Workspace } from '@shared/types'
+import { normalizeFontScale } from '@shared/font-scale'
 import { forgetDefaultModel, rememberDefaultModel, rememberDefaultThinkingLevel } from './pi/retry-policy'
 
 /** Same folder, whatever slash style or drive-letter case it was opened with. */
@@ -30,7 +31,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   language: 'en',
   fontScale: 1,
   diffSplit: false,
-  drawerWidth: 420,
+  drawerWidth: 520,
   trustProject: true,
   permissionMode: 'ask',
   desktopNotifications: true,
@@ -42,7 +43,29 @@ const DEFAULT_SETTINGS: AppSettings = {
   plainTextEditor: false,
   showContextUsage: true,
   sendShortcut: 'enter',
-  followUpMode: 'steer'
+  followUpMode: 'steer',
+  computerUse: false,
+  // Folding is what a settled turn already does today (ProcessTrail keeps the
+  // trail closed until the reader opens it), so that one ships on and the row
+  // only ever gives the behaviour back. Everything else here is new behaviour:
+  // off, so adding the page cannot spend tokens or change a run's tools by
+  // surprise.
+  defaultPlanMode: false,
+  pasteMentions: false,
+  autoFoldProcess: true,
+  toolCallSummary: false,
+  autoTitle: false,
+  automaticUpdates: false,
+  memoriesEnabled: true,
+  memoryGeneration: true,
+  memorySkipExternalContext: true
+}
+
+/** "Segoe UI" was the old explicit choice; MCode's system recipe is the same
+ *  Latin face plus the platform CJK fallback, so it becomes the system preset. */
+function normalizeFontFamily(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value) return undefined
+  return value === 'Segoe UI' ? 'system' : value
 }
 
 /**
@@ -69,6 +92,8 @@ export class SettingsStore {
       return {
         ...DEFAULT_SETTINGS,
         ...parsed,
+        fontScale: normalizeFontScale(parsed.fontScale),
+        fontFamily: normalizeFontFamily(parsed.fontFamily),
         workspaces: dedupeWorkspaces(Array.isArray(parsed.workspaces) ? parsed.workspaces : []),
         pinnedSessions: Array.isArray(parsed.pinnedSessions) ? parsed.pinnedSessions : []
       }

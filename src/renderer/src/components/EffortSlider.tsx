@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
-import { DEFAULT_THINKING_LEVELS, resolveThinkingLevel } from '../lib/thinking'
+import { resolveThinkingLevel } from '../lib/thinking'
 
 /**
  * The reasoning effort card with stepped capsule slider.
@@ -57,10 +57,9 @@ export function EffortSlider({
   const liveLevel = useAppStore((state) => state.piState?.thinkingLevel)
   const savedLevel = useAppStore((state) => state.settings.thinkingLevel)
   const piState = useAppStore((state) => state.piState)
-  // No list yet, and no live session: Pi has not been asked. The saved level
-  // is already on the chip, so the same standard scale has to be draggable.
-  const levels =
-    reportedLevels.length > 0 ? reportedLevels : piState ? reportedLevels : DEFAULT_THINKING_LEVELS
+  // A cold chat has no Pi process to report model-specific levels. Keep the
+  // saved effort visible, but don't present the generic scale as supported.
+  const levels = reportedLevels
   // A saved level can belong to another model. Never position the slider on a
   // level this model does not offer; fall back to the closest supported one.
   const current = resolveThinkingLevel(levels, liveLevel, savedLevel)
@@ -198,15 +197,14 @@ export function EffortSlider({
   }
 
   if (levels.length === 0) {
-    // Pi has not reported any levels for this model. A saved level from
-    // another model is still useful while a chat is cold, but there is no
-    // scale to point at: show the state as text instead of an empty track.
-    const showSavedTitle = Boolean(savedLevel) && !piState
+    // A cold chat has not queried the model yet. A live model with no levels
+    // has reported that it cannot reason, so distinguish the two states.
+    const coldTitle = savedLevel ? t(levelLabel(savedLevel)) : t('Automatic (Pi default)')
     return (
       <div className="effort-card">
         <div className="effort-card__header">
-          <div className="effort-card__title" data-off={showSavedTitle ? undefined : 'true'}>
-            {showSavedTitle ? t(levelLabel(savedLevel!)) : t('No reasoning')}
+          <div className="effort-card__title" data-off={piState || !savedLevel ? 'true' : undefined}>
+            {piState ? t('No reasoning') : coldTitle}
           </div>
           <button
             type="button"

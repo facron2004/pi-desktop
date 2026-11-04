@@ -209,6 +209,23 @@
   margin-bottom: 0;
 }
 
+/* Keep the assistant's Markdown hierarchy distinct instead of promoting h2
+   to the same size as h1. */
+.assistant__text .md h2 {
+  font-size: var(--text-markdown-h2);
+  line-height: var(--leading-markdown-h2);
+}
+
+.assistant__text .md h3 {
+  font-size: var(--text-markdown-h3);
+  line-height: var(--leading-markdown-h3);
+}
+
+.assistant__text .md h4 {
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+
 /* Activity is a disclosure in the document, with a guide only when opened.
    Finished stretches leave the column entirely: ProcessTrail indents them
    and collapses thinking plus tool calls into one line. */
@@ -285,7 +302,8 @@
 
 .process__label {
   flex: 0 0 auto;
-  font-weight: 500;
+  font-weight: var(--weight-ui);
+  line-height: var(--leading-small);
   color: var(--text-secondary);
 }
 
@@ -294,6 +312,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: var(--leading-small);
   color: var(--text-tertiary);
 }
 
@@ -305,6 +324,10 @@
 .process[data-status='aborted'] .process__label {
   color: var(--status-warning);
 }
+
+/* A live batch gathered by `toolCallSummary` is this same head, so it borrows
+   the same words, caret, ink and status colours: `data-live` only marks that
+   the line is still working, and the spinner above it says so too. */
 
 .process__body {
   margin: var(--sp-1) 0 var(--sp-1) 6px;
@@ -358,8 +381,9 @@
 }
 
 .tool-link__verb {
-  font-size: var(--text-xs);
-  font-weight: 500;
+  font-size: var(--text-small);
+  font-weight: var(--weight-ui);
+  line-height: var(--leading-small);
   color: var(--text-secondary);
 }
 
@@ -372,8 +396,8 @@
   background: none;
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  line-height: 1.4;
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -389,13 +413,15 @@
 .tool-link__time {
   flex: 0 0 auto;
   color: var(--text-faint);
-  font-size: var(--text-2xs);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
   font-variant-numeric: tabular-nums;
 }
 
 .tool-link__state {
   flex: 0 0 auto;
-  font-size: var(--text-2xs);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
   color: var(--text-tertiary);
 }
 

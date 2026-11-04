@@ -100,17 +100,18 @@ body.terminal-resizing {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
-  min-height: 36px;
+  gap: var(--sp-1);
+  height: var(--toolpanel-head-h);
+  min-height: var(--toolpanel-head-h);
   padding: 0 var(--sp-2);
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--surface-canvas);
+  background: var(--surface-chrome);
 }
 
 .terminal__tabstrip {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--sp-1);
   flex: 1 1 auto;
   min-width: 0;
   overflow-x: auto;
@@ -122,78 +123,92 @@ body.terminal-resizing {
 }
 
 .terminal__tab {
+  position: relative;
   display: flex;
   align-items: center;
-  flex: 0 0 auto;
-  height: 26px;
-  padding: 0 4px 0 8px;
-  border-radius: var(--r-sm);
-  color: var(--text-tertiary);
-  font-size: var(--text-xs);
+  flex: 0 1 var(--toolpanel-tab-w);
+  width: var(--toolpanel-tab-w);
+  min-width: var(--toolpanel-tab-min-w);
+  max-width: var(--toolpanel-tab-w);
+  height: var(--toolpanel-tab-h);
+  padding: 0 var(--sp-2);
+  border-radius: var(--toolpanel-tab-radius);
+  color: var(--text-secondary);
+  font-size: var(--text-md);
   white-space: nowrap;
 }
 
 .terminal__tab:hover {
   background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .terminal__tab[data-active] {
   background: var(--bg-active);
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 .terminal__tab-main {
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
+  flex: 1 1 auto;
   height: 100%;
   min-width: 0;
+  text-align: left;
 }
 
 .terminal__tab-icon {
   flex: 0 0 auto;
-  color: var(--text-faint);
-}
-
-.terminal__tab[data-active] .terminal__tab-icon {
-  color: var(--accent);
+  color: inherit;
 }
 
 .terminal__tab-label {
-  max-width: 130px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .terminal__tab-close {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-2);
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  margin-left: 2px;
+  width: var(--ctl-xs);
+  height: var(--ctl-xs);
   border-radius: var(--r-sm);
-  color: var(--text-faint);
+  color: var(--text-tertiary);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.terminal__tab:hover .terminal__tab-close,
+.terminal__tab:focus-within .terminal__tab-close {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .terminal__tab-close:hover {
-  background: var(--bg-hover);
-  color: var(--text);
+  background: var(--bg-active);
+  color: var(--text-primary);
 }
 
 .terminal__new {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--r-sm);
-  color: var(--text-tertiary);
+  width: var(--toolpanel-tab-h);
+  height: var(--toolpanel-tab-h);
+  border-radius: var(--toolpanel-tab-radius);
+  color: var(--text-secondary);
 }
 
 .terminal__new:hover {
   background: var(--bg-hover);
-  color: var(--text);
+  color: var(--text-primary);
 }
 
 .terminal__pane {

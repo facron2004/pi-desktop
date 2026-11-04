@@ -189,7 +189,7 @@ PiEvent
 - `Thread` 维护 `Map<sessionKey, ScrollMemoryEntry>`；滚动事件持续记录；首次访问滚动到底部；从历史折叠打开长会话时置顶。
 - `ResizeObserver` 监听滚动容器：Composer 增高导致 clientHeight 变小时，只有原本在底部（stick=true）的读者会被拉到底部。
 - 展开工具日志时依赖浏览器 scroll anchoring（`.thread { overflow-anchor: auto }`），不在每次 items 更新时调用 `scrollToBottom`。
-- 用户向上滚动超过 `FOLLOW_RANGE=80px` 即停止跟随，右下角出现“Scroll to the latest”。
+- 用户向上滚动超过 `FOLLOW_RANGE=80px` 即停止跟随，「Scroll to the latest」/「Scroll to the top」横排悬浮在输入框正上方，与 `.composer` 共用同一条中轴（`.main__stage:has(.task-rail)` 收窄右侧留白时一起收窄）；悬浮带 `pointer-events: none`，只有按钮本身接收点击。
 
 ### 5.4 长输出
 

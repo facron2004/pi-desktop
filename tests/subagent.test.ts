@@ -87,11 +87,17 @@ if (mode === 'slow') {
   'utf8'
 )
 writeFileSync(extensionFile, subagentExtension(), 'utf8')
+// The same tool with the Settings choices baked in: the spawn contract must show
+// them winning over the dispatching session and losing to the call's own argument.
+const settingsExtensionFile = path.join(dir, 'subagent-extension-settings.mjs')
+writeFileSync(settingsExtensionFile, subagentExtension({ model: 'x/y', thinking: 'low' }), 'utf8')
 
 after(() => rmSync(dir, { recursive: true, force: true }))
 
-async function loadFactory(): Promise<(pi: { registerTool: (tool: Tool) => void }) => void> {
-  const module = (await import(pathToFileURL(extensionFile).href)) as {
+async function loadFactory(
+  file = extensionFile
+): Promise<(pi: { registerTool: (tool: Tool) => void }) => void> {
+  const module = (await import(pathToFileURL(file).href)) as {
     default: (pi: { registerTool: (tool: Tool) => void }) => void
   }
   return module.default
@@ -195,6 +201,57 @@ test('omitted model and thinking inherit the dispatching session', async () => {
   )
   const args = readArgs()[0]
   assert.deepEqual(args.slice(5, 9), ['--model', 'anthropic/claude-sonnet', '--thinking', 'medium'])
+})
+
+test('a Settings model and thinking replace the dispatching session', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory(settingsExtensionFile))
+  await withFakePi({ text: 'from settings' }, () =>
+    tool.execute('call-settings', { task: 'Use the configured model' }, undefined, undefined, {
+      cwd: process.cwd(),
+      model: { provider: 'anthropic', id: 'claude-sonnet' },
+      thinkingLevel: 'medium'
+    })
+  )
+  assert.deepEqual(readArgs()[0].slice(5, 9), ['--model', 'x/y', '--thinking', 'low'])
+})
+
+test('the model the call names still beats the Settings choice', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory(settingsExtensionFile))
+  await withFakePi({ text: 'override' }, () =>
+    tool.execute('call-override', { task: 'Name a model', model: 'openai/gpt', thinking: 'high' }, undefined, undefined, {
+      cwd: process.cwd(),
+      model: { provider: 'anthropic', id: 'claude-sonnet' },
+      thinkingLevel: 'medium'
+    })
+  )
+  assert.deepEqual(readArgs()[0].slice(5, 9), ['--model', 'openai/gpt', '--thinking', 'high'])
+})
+
+test('only a provider/id model and a plain thinking level are baked into the source', () => {
+  const unset = subagentExtension()
+  assert.ok(unset.includes('const SETTINGS_MODEL = "";'))
+  assert.ok(unset.includes('const SETTINGS_THINKING = "";'))
+
+  const trimmed = subagentExtension({ model: ' openai/gpt-4.1 ', thinking: 'low' })
+  assert.ok(trimmed.includes('const SETTINGS_MODEL = "openai/gpt-4.1";'))
+  assert.ok(trimmed.includes('const SETTINGS_THINKING = "low";'))
+
+  // A gateway provider's model id holds a second slash, and the catalog splits a
+  // saved spec on its FIRST slash only. The picker can choose such a model, so the
+  // setting must survive the shape check — or the row would look set and do nothing.
+  const gateway = subagentExtension({ model: 'openrouter/anthropic/claude-3.5-sonnet' })
+  assert.ok(
+    gateway.includes('const SETTINGS_MODEL = "openrouter/anthropic/claude-3.5-sonnet";')
+  )
+
+  // A free-text id would land in a shell argv, so it becomes the empty string
+  // and the call follows the session again.
+  const junk = subagentExtension({ model: 'x"; process.exit(0); //', thinking: 'very high' })
+  assert.ok(junk.includes('const SETTINGS_MODEL = "";'))
+  assert.ok(junk.includes('const SETTINGS_THINKING = "";'))
+  assert.doesNotMatch(junk, /process\.exit/)
 })
 
 test('a failing subagent reports its stderr and exit code', async () => {

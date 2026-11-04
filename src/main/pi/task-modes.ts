@@ -1,5 +1,20 @@
-/** Runs inside Pi so mode state, tool selection and goal continuation belong to the session. */
-export function taskModesExtension(): string {
+/** The modes Settings can seed into a process: Plan Mode on or off. */
+export type TaskModeSeed = 'default' | 'plan'
+
+/**
+ * Runs inside Pi so mode state, tool selection and goal continuation belong to the session.
+ *
+ * `computerUse` is the Settings switch at the moment this process starts.
+ * A later toggle arrives as `/desktop-computer on|off` and does not change the mode.
+ *
+ * `defaultMode` is the mode a session with nothing recorded starts in, which is how
+ * "start new conversations in Plan Mode" reaches the agent. The extension source is
+ * regenerated per process, so the seed is baked here and never broadcast to running
+ * conversations — one already in progress is the user's, not the switch's to flip.
+ */
+export function taskModesExtension(computerUse = false, defaultMode: TaskModeSeed = 'default'): string {
+  // Narrowed before it is interpolated, so the literal can only ever be a known mode.
+  const seededMode = defaultMode === 'plan' ? 'plan' : 'default'
   return `import { Type } from 'typebox';
 export default function (pi) {
   const stateType = 'pi-desktop-mode';
@@ -9,11 +24,14 @@ export default function (pi) {
   const subagentTool = 'subagent';
   const computerTool = 'computer';
   const readTools = new Set(['read', 'grep', 'find', 'ls']);
-  // Computer Use is added only while that mode is on, so it must not stick
-  // in the loadout the other modes restore.
+  // Kept out of the restored loadout and added back only while the setting is on.
+  // Plan Mode never receives it.
   const managedTools = new Set([finishTool, exitPlanTool, computerTool]);
-  const modes = ['default', 'goal', 'plan', 'subagent', 'computer'];
-  let mode = 'default';
+  const modes = ['default', 'goal', 'plan', 'subagent'];
+  // The mode a conversation starts in when its own session entries say nothing.
+  const startMode = ${JSON.stringify(seededMode)};
+  let mode = startMode;
+  let computerEnabled = ${computerUse ? 'true' : 'false'};
   let goal;
   let originalTools;
 
@@ -34,11 +52,11 @@ export default function (pi) {
     if (mode !== 'default' && !originalTools) originalTools = base;
     const registered = new Set(pi.getAllTools().map(tool => tool.name));
     const available = names => names.filter(name => registered.has(name));
+    const withComputer = (names) => computerEnabled ? [...new Set([...names, computerTool])] : names;
     if (mode === 'plan') pi.setActiveTools(available([...readTools, exitPlanTool]));
-    else if (mode === 'goal') pi.setActiveTools(available([...base, finishTool]));
-    else if (mode === 'subagent') pi.setActiveTools(available([...new Set([...base, subagentTool])]));
-    else if (mode === 'computer') pi.setActiveTools(available([...new Set([...base, computerTool])]));
-    else pi.setActiveTools(base);
+    else if (mode === 'goal') pi.setActiveTools(available(withComputer([...base, finishTool])));
+    else if (mode === 'subagent') pi.setActiveTools(available(withComputer([...base, subagentTool])));
+    else pi.setActiveTools(available(withComputer(base)));
     if (mode === 'default') originalTools = undefined;
   }
   function setMode(value, ctx) {
@@ -89,7 +107,7 @@ export default function (pi) {
 
   pi.on('session_start', (_event, ctx) => {
     if (originalTools) pi.setActiveTools(originalTools);
-    mode = 'default'; goal = undefined; originalTools = undefined;
+    mode = startMode; goal = undefined; originalTools = undefined;
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === 'custom' && entry.customType === stateType && entry.data) {
         mode = modes.includes(entry.data.mode) ? entry.data.mode : 'default';
@@ -98,6 +116,9 @@ export default function (pi) {
       }
     }
     applyTools(); publish(ctx);
+    // A seeded default belongs to the process, not to the conversation. Writing it
+    // down is what keeps this one in Plan Mode after the setting is turned off.
+    if (mode !== 'default') persist(ctx);
   });
 
   pi.registerCommand('desktop-mode', {
@@ -114,16 +135,13 @@ export default function (pi) {
     }
   });
 
-  pi.registerCommand('computer', {
-    description: 'Enter Computer Use, or use /computer off to leave it',
-    handler: async (value, ctx) => {
-      const text = (value || '').trim();
-      if (text.toLowerCase() === 'off') {
-        setMode('default', ctx);
-        return;
-      }
-      setMode('computer', ctx);
-      if (text) pi.sendUserMessage(text);
+  pi.registerCommand('desktop-computer', {
+    description: 'Turn Computer Use on or off without changing the task mode',
+    handler: async (value) => {
+      const text = (value || '').trim().toLowerCase();
+      if (text !== 'on' && text !== 'off') throw new Error('Usage: /desktop-computer on|off');
+      computerEnabled = text === 'on';
+      applyTools();
     }
   });
 
@@ -191,9 +209,9 @@ export default function (pi) {
       customType: 'desktop-subagent-context', display: false,
       content: 'Subagent Mode is active. Delegate self-contained work to isolated subagents with the subagent tool instead of doing it in the main context. Keep the main conversation focused on orchestrating the subagents and reviewing their results. Do not delegate Computer Use; the computer tool is main-agent only.'
     } };
-    if (mode === 'computer') return { message: {
+    if (computerEnabled) return { message: {
       customType: 'desktop-computer-context', display: false,
-      content: 'Computer Use is active. Operate the Windows desktop with the computer tool. Call screenshot before any click, move or scroll, and use only pixels from that image (origin top-left). Window bounds are not click coordinates. After each action, screenshot again before deciding the next step. Prefer a file, command or API when one can do the job; use the desktop for a native app UI. Do not delegate Computer Use to a subagent. Choosing this mode already approved these actions.'
+      content: 'Computer Use is enabled in Settings. Operate the Windows desktop with the computer tool. Call screenshot before any click, move or scroll, and use only pixels from that image (origin top-left). Window bounds are not click coordinates. After each action, screenshot again before deciding the next step. Prefer a file, command or API when one can do the job; use the desktop for a native app UI. Do not delegate Computer Use to a subagent. The setting already approved these actions.'
     } };
   });
 
@@ -263,7 +281,7 @@ export default function (pi) {
     if (message.customType === 'desktop-plan-context') return mode === 'plan';
     if (message.customType === 'desktop-goal-context' || message.customType === 'desktop-goal-continue') return mode === 'goal' && goal?.status === 'active';
     if (message.customType === 'desktop-subagent-context') return mode === 'subagent';
-    if (message.customType === 'desktop-computer-context') return mode === 'computer';
+    if (message.customType === 'desktop-computer-context') return computerEnabled && mode !== 'plan';
     return true;
   }) }));
 }`

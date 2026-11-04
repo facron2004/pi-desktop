@@ -39,6 +39,18 @@ export interface RuntimeOptions {
   /** Trust project-local configuration such as `.pi/settings.json`. */
   trustProject?: boolean
   getPermissionMode?: () => PermissionMode
+  /** Read at process start. A later Settings change reaches a live process by command. */
+  getComputerUse?: () => boolean
+  /**
+   * Read at process start, and only used for a session Pi has never written:
+   * a conversation that exists keeps the mode its own entries recorded.
+   */
+  getDefaultPlanMode?: () => boolean
+  /**
+   * Model and thinking level for a subagent whose tool call names neither.
+   * Read when the extension is generated; empty follows the dispatching session.
+   */
+  getSubagentModel?: () => { model?: string; thinking?: string }
 }
 
 /**
@@ -125,9 +137,13 @@ export class PiRuntime extends EventEmitter {
       mkdirSync(userData, { recursive: true })
       files.push(permissionFile, modeFile, providerFile, subagentFile, computerFile)
       writeFileSync(permissionFile, permissionExtension(permissionTitle), 'utf8')
-      writeFileSync(modeFile, taskModesExtension(), 'utf8')
+      // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
+      // is the one moment "a brand-new conversation starts in Plan Mode" is true.
+      const defaultMode =
+        !sessionFile && this.options.getDefaultPlanMode?.() === true ? 'plan' : 'default'
+      writeFileSync(modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode), 'utf8')
       writeFileSync(providerFile, providerControlsExtension(), 'utf8')
-      writeFileSync(subagentFile, subagentExtension(), 'utf8')
+      writeFileSync(subagentFile, subagentExtension(this.options.getSubagentModel?.() ?? {}), 'utf8')
       writeFileSync(computerFile, computerUseExtension(), 'utf8')
       if (options.customInstructions?.trim()) {
         files.push(customInstructionsFile)

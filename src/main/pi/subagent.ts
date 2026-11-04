@@ -1,11 +1,42 @@
+/** Settings choices for a spawned subagent; an absent one follows the conversation. */
+export interface SubagentDefaults {
+  /** A catalog id in `provider/id` form, where the id may itself hold slashes. Anything else is dropped. */
+  model?: string
+  /** One of Pi's thinking levels. */
+  thinking?: string
+}
+
+/**
+ * Both values end up in the argv of a spawned process, so only the shapes the model
+ * catalog and Pi itself use are interpolated; a stray string from the settings file
+ * becomes the empty string, which the extension reads as "follow the session".
+ *
+ * The id half keeps its slashes on purpose: a gateway provider's model id is
+ * `vendor/model`, and the catalog splits a saved spec on its FIRST slash only
+ * (`resolveSavedModel`). Rejecting them here would make a model the picker can
+ * choose land in the settings file and then do nothing.
+ */
+const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*\/[A-Za-z0-9][A-Za-z0-9._:/-]*$/
+const THINKING_PATTERN = /^[a-z][a-z0-9-]*$/
+
+function bounded(value: string | undefined, pattern: RegExp): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return pattern.test(text) ? text : ''
+}
+
 /**
  * Builds the Pi extension that adds the `subagent` tool.
  *
  * The app writes this source to a per-process `.mjs` file next to the other
  * runtime extensions, so it stays a self-contained ESM module: no imports
  * from the main process and no generated TypeScript.
+ *
+ * `defaults` come from Settings. A call that names its own model or thinking level
+ * still wins; the defaults only replace the dispatching session's live values.
  */
-export function subagentExtension(): string {
+export function subagentExtension(defaults: SubagentDefaults = {}): string {
+  const settingsModel = bounded(defaults.model, MODEL_PATTERN)
+  const settingsThinking = bounded(defaults.thinking, THINKING_PATTERN)
   return `import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
@@ -13,6 +44,10 @@ import { Type } from 'typebox';
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
+// Settings for this process. '' means the setting is unset and the call follows
+// the dispatching session, exactly as it did before the setting existed.
+const SETTINGS_MODEL = ${JSON.stringify(settingsModel)};
+const SETTINGS_THINKING = ${JSON.stringify(settingsThinking)};
 const SUBAGENT_SYSTEM_PROMPT = 'You are a subagent working on one self-contained task. Work autonomously, inspect anything you need, make the requested changes, and finish with a concise report of what you did and how you verified it. Never ask the user questions; if an external blocker prevents completion, report it.';
 
 const TaskItem = Type.Object({
@@ -301,8 +336,9 @@ export default function (pi) {
         task: params.task,
         tasks: params.tasks,
         cwd: params.cwd,
-        model: params.model || (ctx.model ? ctx.model.provider + '/' + ctx.model.id : undefined),
-        thinking: params.thinking || ctx.thinkingLevel,
+        // Precedence: what the call asked for, then Settings, then the session that dispatched it.
+        model: params.model || SETTINGS_MODEL || (ctx.model ? ctx.model.provider + '/' + ctx.model.id : undefined),
+        thinking: params.thinking || SETTINGS_THINKING || ctx.thinkingLevel,
         tools: params.tools
       };
       if (single) {

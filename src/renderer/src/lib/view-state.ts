@@ -18,6 +18,13 @@ function keyOf(threadId: string, id: string): string {
   return `${threadId}\u0000${id}`
 }
 
+/**
+ * Whether one row of the stream is opened.
+ *
+ * The id is a tool call's own node id, or `group-<first call id>` for a batch
+ * of consecutive calls gathered into one line — a batch is presentation, so it
+ * borrows this map instead of adding a fourth kind of state.
+ */
 export function readToolOpen(threadId: string, toolId: string): boolean | undefined {
   return toolOpen.get(keyOf(threadId, toolId))
 }

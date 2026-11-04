@@ -99,8 +99,8 @@
 :root .project-edit__empty,
 :root .mention__empty {
   color: var(--text-tertiary);
-  font-size: var(--text-sm);
-  line-height: 1.6;
+  font-size: var(--text-body);
+  line-height: var(--leading-button);
 }
 
 :root .session-item:focus-visible,

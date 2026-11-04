@@ -1,10 +1,186 @@
 /**
- * Full-text matches in the sidebar.
+ * Search results and recent queries in the centered search dialog.
  *
  * The rows mirror the conversation rows of global.css, but they carry a
  * snippet and a role instead of the message count, so they get their own
  * rules. Only tokens from tokens.css are used here.
  */
+
+.search-dialog-layer {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: grid;
+  place-items: center;
+  padding: var(--sp-6);
+}
+
+.modal.search-dialog {
+  width: min(680px, 100%);
+  max-height: min(520px, 100%);
+}
+
+.search-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-height: 52px;
+  padding: 0 var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.search-dialog__head h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-body);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-body);
+}
+
+.search-dialog__input {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 40px;
+  margin: var(--sp-4) var(--sp-5) var(--sp-2);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--text-muted);
+}
+
+.search-dialog__input:focus-within {
+  border-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.search-dialog__input input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 38px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+
+.search-dialog__input input::placeholder {
+  color: var(--text-faint);
+}
+
+.search-dialog__results {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 var(--sp-4) var(--sp-4);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.search-dialog__section + .search-dialog__section {
+  margin-top: var(--sp-4);
+}
+
+.search-dialog__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--text-assist);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-assist);
+}
+
+.search-dialog__result {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.search-dialog__result:hover,
+.search-dialog__result:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.search-dialog__result:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.search-dialog__result > svg {
+  color: var(--text-tertiary);
+}
+
+.search-dialog__result-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-hair);
+  min-width: 0;
+}
+
+.search-dialog__result-title,
+.search-dialog__result-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-dialog__result-title {
+  color: var(--text);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+}
+
+.search-dialog__result-meta {
+  color: var(--text-faint);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+}
+
+.search-dialog__result-hint {
+  color: var(--text-faint);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+}
+
+.search-dialog__text-hits {
+  display: flex;
+  flex-direction: column;
+}
+
+.search-dialog__empty {
+  padding: var(--sp-6) var(--sp-3);
+  color: var(--text-faint);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+  text-align: center;
+}
+
+@media (max-width: 560px) {
+  .search-dialog-layer {
+    padding: var(--sp-3);
+  }
+
+  .search-dialog__result-hint {
+    display: none;
+  }
+}
 
 .session-search__count {
   font-variant-numeric: tabular-nums;

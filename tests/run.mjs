@@ -42,6 +42,7 @@ const suites = [
   'subagent.test.ts',
   'subagent-tree.test.ts',
   'fonts.test.ts',
+  'font-scale.test.ts',
   'providers.test.ts',
   'retry-policy.test.ts',
   'rpc-trace.test.ts',
@@ -70,7 +71,9 @@ const suites = [
   'workspace-panel.test.ts',
   'task-panel.test.ts',
   'session-tree.test.ts',
-  'renderer-utils.test.ts'
+  'renderer-utils.test.ts',
+  'memory.test.ts',
+  'auto-title.test.ts'
 ]
 const debug = process.argv[2] === '--debug'
 

@@ -7,7 +7,8 @@ import {
   Eye,
   GitCommit,
   Info,
-  RefreshCw
+  RefreshCw,
+  Upload
 } from 'lucide-react'
 import type { GitCommit as GitCommitEntry, GitFileStatus } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
@@ -139,6 +140,7 @@ export function CommitDialog({
 }) {
   const git = useAppStore((state) => state.git)
   const commitChanges = useAppStore((state) => state.commitChanges)
+  const pushGit = useAppStore((state) => state.pushGit)
   const refreshGit = useAppStore((state) => state.refreshGit)
   const showToast = useAppStore((state) => state.showToast)
   const language = useAppStore((state) => state.settings.language)
@@ -147,7 +149,8 @@ export function CommitDialog({
   useDialogFocus(dialogRef, onClose)
 
   const [message, setMessage] = useState(readDraft)
-  const [busy, setBusy] = useState(false)
+  const [busyAction, setBusyAction] = useState<'commit' | 'commit-push' | 'push' | null>(null)
+  const busy = busyAction !== null
   const [error, setError] = useState<string>()
   // `null` means "the default for this index": staged files only when there
   // is something staged, everything otherwise.
@@ -280,11 +283,12 @@ export function CommitDialog({
   const canCommit =
     Boolean(git?.isRepo) &&
     files.length > 0 &&
-    message.trim().length > 0 &&
     !busy &&
     // Committing what is staged is the default; with nothing staged the
     // toggle has to be on, or the commit would have an empty index.
     (includeAll || stagedCount > 0)
+
+  const canPush = Boolean(git?.isRepo) && !busy
 
   // Advice about the commit that is about to land: what it would take, what it
   // would leave behind, and how the message reads. Nothing here blocks the
@@ -371,14 +375,37 @@ export function CommitDialog({
     return found.slice(0, MAX_CHECKS)
   }, [message, includeAll, files, stagedCount, t])
 
-  const submit = async () => {
-    if (!canCommit) return
-    setBusy(true)
+  const submit = async (action: 'commit' | 'commit-push' | 'push') => {
+    if (busy) return
     setError(undefined)
+
+    if (action === 'push') {
+      if (!canPush) return
+      setBusyAction('push')
+      try {
+        const result = await pushGit()
+        if (result.ok) onClose()
+      } catch (cause) {
+        setError(cause instanceof Error && cause.message ? cause.message : t('Could not push branch'))
+      } finally {
+        setBusyAction(null)
+      }
+      return
+    }
+
+    if (!canCommit) return
+    setBusyAction(action)
     try {
       const result = await commitChanges(message.trim(), includeAll)
       if (result.ok) {
         writeDraft('')
+        if (action === 'commit-push') {
+          try {
+            await pushGit()
+          } catch (cause) {
+            showToast(cause instanceof Error && cause.message ? cause.message : t('Could not push branch'), 'error')
+          }
+        }
         onClose()
       } else {
         // A failed commit keeps the message and the list exactly as they are.
@@ -387,7 +414,7 @@ export function CommitDialog({
     } catch (cause) {
       setError(cause instanceof Error && cause.message ? cause.message : t('The commit failed'))
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
@@ -512,7 +539,7 @@ export function CommitDialog({
                 rows={3}
                 autoFocus
                 value={message}
-                placeholder={t('What changed, and why?')}
+                placeholder={t('Leave blank to auto-generate')}
                 onChange={(event) => {
                   setUndoMessage(undefined)
                   setMessage(event.target.value)
@@ -520,7 +547,7 @@ export function CommitDialog({
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
                     event.preventDefault()
-                    void submit()
+                    void submit('commit')
                   }
                 }}
               />
@@ -648,9 +675,17 @@ export function CommitDialog({
           <button className="btn" onClick={onClose}>
             {t('Cancel')}
           </button>
-          <button className="btn btn--primary" disabled={!canCommit} onClick={() => void submit()}>
+          <button className="btn" disabled={!canPush} onClick={() => void submit('push')}>
+            <Upload size={13} />
+            {busyAction === 'push' ? t('Pushing…') : t('Push')}
+          </button>
+          <button className="btn" disabled={!canCommit} onClick={() => void submit('commit-push')}>
             <GitCommit size={13} />
-            {busy ? t('Committing…') : t('Commit')}
+            {busyAction === 'commit-push' ? t('Committing and pushing…') : t('Commit and push')}
+          </button>
+          <button className="btn btn--primary" disabled={!canCommit} onClick={() => void submit('commit')}>
+            <GitCommit size={13} />
+            {busyAction === 'commit' ? t('Committing…') : t('Commit')}
           </button>
         </div>
       </div>

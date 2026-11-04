@@ -64,8 +64,9 @@ written by `agent_settled` and cleared by `selectSession`.
 
 This was the change with the most proof behind it. Before, hovering a project
 row changed the row's padding, so the title re-flowed. Now the actions live in
-a slot that is always there, the count of the conversations and the buttons
-take turns in it, and the title keeps the same width.
+a slot that is always there and the title keeps the same width. (The
+conversation count that used to share this slot was removed later at the
+user's request.)
 
 Measured, not assumed — `output/audit/hover-check.mjs` drives a real mouse
 over the row and compares the geometry:
@@ -76,7 +77,9 @@ over the row and compares the geometry:
 | after hover | 53 | 161 | 109 | 60 | opacity 0 | opacity 1 |
 
 The title does not move. The gap between the title and the slot is 8px in
-both states, so the title can never run under the buttons.
+both states, so the title can never run under the buttons. The `count`
+column records the state at the time of that measurement; the count is no
+longer rendered.
 
 A conversation row is the same rule one step down: the dot and the spinner
 share one 14px slot, so switching between them leaves the title where it
@@ -104,10 +107,47 @@ shared rather than invented.
 
 ## A note on this machine
 
-`Segoe UI Emoji` is installed here but registered with an empty path, so
-Chromium cannot use it and every emoji renders as a box. That is a defect of
-this Windows image, not of the app — the picker was captured with the font
-loaded into the page by hand to prove it (`output/audit/sidebar-final.png`).
-The app asks for the platform emoji font by name
-(`'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji'`), so it follows
-whatever the system provides, exactly like MCode's picker does.
+`Segoe UI Emoji` is installed here but was registered with an empty path, so
+Chromium could not resolve it and every emoji rendered as a box. The machine's
+`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts` value now points at
+`seguiemj.ttf`. Pi Desktop also asks the main process for the platform's emoji
+font bytes and registers them with the FontFace API (`app:emojiFont`,
+`Pi Desktop Emoji` in `tokens.css`), so a broken registry on another machine
+does not bring the boxes back. The fallback stack still names Apple Color Emoji
+and Noto Color Emoji for other platforms.
+
+### The empty-path damage was wider than the emoji face
+
+The same key had **14 more faces registered with an empty value** — every
+`Segoe UI` weight and italic (`segoeui*.ttf`, `seguis*.ttf`, `seguihis.ttf`,
+`seguisym.ttf`) — plus `Marlett`, whose value was missing outright. The files
+were all on disk, so the families existed but no application could name them:
+GDI did not enumerate six of them, and Chromium fell back for the rest.
+`Segoe UI Symbol` was among the empties, which is the family the emoji fallback
+chain ends in, so this was the same bug class as the emoji boxes.
+
+They were repaired from the font files' own `name` tables (nameID 1 + nameID 2,
+with `Regular`/`Normal` omitted) rather than from a guess at what `seguisli.ttf`
+means — that mapping is what `output/audit/font-name-map.mjs` derives. Note the
+two traps it catches: `segoeuiz.ttf` is Bold Italic, not Light Italic
+(`seguili.ttf`), and the `Segoe UI Light/Semilight/Semibold/Black` faces carry
+their weight in nameID 1, not nameID 2.
+
+Five more entries in `HKCU\...\Fonts` pointed at files that had been uninstalled
+(phantom families, which still show up in every font picker). Those were removed.
+
+Re-check with `powershell -File output/audit/font-registry-audit.ps1 -ResolveNames`
+(it reads HKLM, the WOW6432Node mirror that 32-bit apps use, and HKCU) and
+`output/audit/remove-phantom-user-fonts.ps1` for the per-user key.
+
+Two things this machine still cannot do, neither of them a registration fault:
+
+- **Flag emoji render as letter pairs** (`🇩` shows `DE`). `seguiemj.ttf` has the
+  regional-indicator letters in its cmap but no flag ligatures, so every flag in
+  `project-icon-data.ts` draws two letters. Plain emoji are fine — verified by
+  screenshotting `output/audit/emoji-flag-visual.html` in headless Chrome.
+- **`Segoe UI Semilight` is not reachable by family name** in Chromium even though
+  the registry value and GDI enumeration are both correct. Weight selection works
+  (`'Segoe UI'` at 292 gives the face), and the app only ever asks for the family
+  plus a weight, so nothing here is visible. A full font-cache rebuild would
+  probably restore the name.
