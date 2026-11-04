@@ -53,10 +53,10 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.8.2/Pi%20Desktop-0.8.2-x64.exe) |
-| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.8.2/Pi%20Desktop-0.8.2-arm64.exe) |
-| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.8.2/Pi%20Desktop-0.8.2.exe) |
-| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.8.2/Pi%20Desktop-0.8.2-portable-x64.zip) |
+| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.8.2/Pi.Desktop-0.8.2-x64.exe) |
+| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.8.2/Pi.Desktop-0.8.2-arm64.exe) |
+| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.8.2/Pi.Desktop-0.8.2.exe) |
+| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.8.2/Pi.Desktop-0.8.2-portable-x64.zip) |
 
 免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.8.2/SHA256SUMS.txt)，版本说明见 [v0.8.2 更新说明](docs/releases/v0.8.2.md)。
 
