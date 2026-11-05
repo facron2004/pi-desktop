@@ -724,6 +724,12 @@ export interface AppSettings {
   autoTitle?: boolean
   /** Automatically download available application and service updates. */
   automaticUpdates?: boolean
+  /**
+   * Closing the window hides the app in the system tray instead of quitting.
+   * Off leaves the close button as a quit, which is how the app behaved before
+   * the switch existed.
+   */
+  trayPersistent?: boolean
 }
 
 export interface PiLaunchInfo {

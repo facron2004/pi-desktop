@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { countChangedFiles } from '../src/renderer/src/lib/changes'
 import { diffableEdits } from '../src/renderer/src/lib/tool-renderers'
 import { filterModels, normalizeModelSearchText } from '../src/renderer/src/lib/model-search'
+import { formatUsageTokens } from '../src/renderer/src/lib/format'
 import { sortModelsByRecency } from '../src/renderer/src/lib/model-recency'
 import type { ModelInfo } from '../src/shared/types'
 import {
@@ -201,4 +202,16 @@ test('model recency ordering keeps first-seen order for unused models', () => {
     ['two', 'three', 'one']
   )
   assert.deepEqual(sortModelsByRecency(models, {}), models)
+})
+
+test('the usage measure keeps one decimal at every scale', () => {
+  // The overview reads as a column of digits (20.4K / 81.9K / 61.2K / 325), so
+  // the reading must not switch between "20k" and "20.4K" with the magnitude.
+  assert.equal(formatUsageTokens(0), '0')
+  assert.equal(formatUsageTokens(325), '325')
+  assert.equal(formatUsageTokens(1_000), '1.0K')
+  assert.equal(formatUsageTokens(20_400), '20.4K')
+  assert.equal(formatUsageTokens(81_945), '81.9K')
+  assert.equal(formatUsageTokens(1_250_000), '1.3M')
+  assert.equal(formatUsageTokens(undefined), '—')
 })

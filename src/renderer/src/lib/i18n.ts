@@ -168,6 +168,9 @@ const zhCN: Record<string, string> = {
   'Compact older local chat history to save disk space. Changes take effect after restarting.':
     '压缩较早的本地聊天历史记录，以节省磁盘空间。重启应用后更改生效。',
   'Allow using installed plugins': '允许使用已安装的插件',
+  'Keep running in the tray': '托盘持久化',
+  'Closing the window hides Pi Desktop in the system tray instead of quitting.':
+    '关闭窗口时留在系统托盘，而不是退出应用。',
   Editor: '编辑器',
   'Plain text editor': '纯文本编辑器',
   'When composing messages, keep code, Markdown, and tables as plain text only':
@@ -515,6 +518,15 @@ const zhCN: Record<string, string> = {
   Total: '总计',
   Cost: '费用',
   Requests: '请求数',
+  'Total requests': '总请求数',
+  'Real tokens': '真实消耗 Tokens',
+  'New input': '新增输入',
+  'Every token billed in this period: input, output and cache reads and writes.':
+    '这个周期实际计费的 Token 全量：输入、输出与缓存读写之和。',
+  'Cache hits divided by all prompt tokens, cached and new.':
+    '缓存命中 ÷（缓存命中 + 新增输入）。',
+  'Tokens written into the prompt cache.': '写入缓存的 Token 数。',
+  'Show how this is calculated': '查看这个数值怎么算',
   'Total cost': '总成本',
   'Cache hit rate': '缓存命中率',
   Period: '时间范围',
@@ -1369,7 +1381,7 @@ const zhCN: Record<string, string> = {
   'Global token consumption statistics and conversation activity across time horizons.':
     '查看当天、每周、每月及全部周期的 Token 消耗与对话数统计。',
   'Usage heatmap': '用量热力图',
-  'Past 365 days': '过去 365 天',
+  'Past 180 days': '过去 180 天',
   'Active days': '活跃天数',
   'Usage intensity': '用量强度',
   Less: '少',

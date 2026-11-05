@@ -10,9 +10,18 @@ import { ScheduledTaskService } from './scheduled-tasks'
 import { PiRuntime } from './pi/runtime'
 import { SessionSupervisor } from './pi/supervisor'
 import { RemoteAccessService } from './remote-access'
+import { applyTaskbarIcon, windowIconImage } from './app-icon'
 import { scheduleCapture, scheduleWindowClose } from './screenshot'
 import { SettingsStore } from './settings'
 import { TerminalManager } from './terminal'
+import {
+  claimTrayInstance,
+  noteQuitting,
+  shouldHideToTray,
+  showWindow,
+  syncTray,
+  trayWantedAtStartup
+} from './tray'
 import { initialBounds, wasMaximized, watchWindowState } from './window-state'
 
 const isMac = process.platform === 'darwin'
@@ -33,10 +42,18 @@ for (const stream of [process.stdout, process.stderr]) {
   })
 }
 
-// Keep screenshot runs from reading or writing the user's regular app data.
-if (process.env.PI_DESKTOP_SCREENSHOT && process.env.PI_DESKTOP_USER_DATA) {
+// Keep a harness run from reading or writing the user's regular app data.
+// The name of the variable is the whole contract: it points the app at a
+// throwaway data folder, whatever else the run is doing.
+if (process.env.PI_DESKTOP_USER_DATA) {
   app.setPath('userData', path.resolve(process.env.PI_DESKTOP_USER_DATA))
 }
+
+// A second launch while the app is only in the tray would open another window
+// the user cannot find. The lock is taken only when that mode is already on,
+// and never for the screenshot harness, which has to be able to start beside
+// a running copy.
+const primaryInstance = !trayWantedAtStartup() || claimTrayInstance()
 
 let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore | null = null
@@ -72,6 +89,7 @@ function createWindow(): BrowserWindow {
   const bounds = initialBounds()
   const theme = startupTheme()
   const dark = theme === 'dark'
+  const icon = windowIconImage()
   const window = new BrowserWindow({
     width: bounds.width,
     height: bounds.height,
@@ -85,6 +103,10 @@ function createWindow(): BrowserWindow {
     show: false,
     backgroundColor: dark ? '#16181d' : '#ffffff',
     title: 'Pi Desktop',
+    // Dev runs are electron.exe, whose own icon is what the taskbar shows
+    // until the window carries the pixel mark. Packaged builds set the same
+    // image so the button matches the shortcut.
+    ...(icon ? { icon } : {}),
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac
       ? { trafficLightPosition: { x: 18, y: 18 } }
@@ -133,6 +155,8 @@ function createWindow(): BrowserWindow {
     }
   })
 
+  applyTaskbarIcon(window)
+
   // Windows rounds the frame to physical pixels at fractional display scaling,
   // so a requested content size can come back a pixel or two larger. Re-assert
   // the stored size before the window is shown; otherwise the rounding becomes
@@ -158,6 +182,14 @@ function createWindow(): BrowserWindow {
   // The size and place the user left the window in are kept for the next run.
   if (wasMaximized()) window.maximize()
   watchWindowState(window)
+
+  window.on('close', (event) => {
+    // Hide only when the tray is up. A real quit sets the quitting flag first,
+    // so this does not swallow the shutdown path.
+    if (!shouldHideToTray()) return
+    event.preventDefault()
+    window.hide()
+  })
 
   // The window can be closed while Pi is still shutting down; drop the
   // reference so nothing tries to push events into a destroyed renderer.
@@ -217,8 +249,6 @@ function createWindow(): BrowserWindow {
 
   return window
 }
-
-app.setAppUserModelId('dev.pi.desktop')
 
 /**
  * A stray exception in the main process must not surface as a native error
@@ -292,7 +322,26 @@ function handleTerminationSignal(): void {
 process.on('SIGINT', handleTerminationSignal)
 process.on('SIGTERM', handleTerminationSignal)
 
-app.whenReady().then(async () => {
+function revealMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    // Settings exist only after startup. A second launch that arrives before
+    // the first window is up has nothing to reveal yet.
+    if (!settings) return
+    mainWindow = createWindow()
+  }
+  showWindow(mainWindow)
+}
+
+function applyTray(): void {
+  const current = settings?.get()
+  syncTray({
+    enabled: current?.trayPersistent === true,
+    language: current?.language,
+    show: () => revealMainWindow()
+  })
+}
+
+async function start(): Promise<void> {
   const settingsStore = new SettingsStore()
   settings = settingsStore
 
@@ -377,6 +426,7 @@ app.whenReady().then(async () => {
   })
 
   mainWindow = createWindow()
+  applyTray()
 
   const context = {
     supervisor,
@@ -386,7 +436,8 @@ app.whenReady().then(async () => {
     memory: memoryService,
     remote: remoteAccess,
     remoteReady,
-    scheduledTasks: scheduledTaskService
+    scheduledTasks: scheduledTaskService,
+    syncTray: () => applyTray()
   }
   registerIpc(context)
   bridgeRuntime(context)
@@ -395,13 +446,27 @@ app.whenReady().then(async () => {
   scheduleWindowClose({ window: mainWindow })
 
   app.on('activate', () => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      showWindow(mainWindow)
+      return
+    }
     if (BrowserWindow.getAllWindows().length === 0) {
       mainWindow = createWindow()
+      applyTray()
     }
   })
-})
+}
+
+if (primaryInstance) {
+  // Registered for the life of the process, so turning the tray on later still
+  // focuses this window when a second launch asks for the lock.
+  app.on('second-instance', () => revealMainWindow())
+  app.whenReady().then(start)
+}
 
 app.on('before-quit', () => {
+  // Set before any window closes, so the close handler does not hide a quit.
+  noteQuitting()
   // PTY children belong to this process; leaving them behind leaks shells.
   terminalManager?.disposeAll()
   disposeRemoteAccess()
@@ -440,3 +505,7 @@ app.on('before-quit', (event) => {
     app.quit()
   })
 })
+
+// Quit only after the shutdown listeners exist. A second launch loses the
+// lock before `ready`, and `app.quit()` at that point still emits `before-quit`.
+if (!primaryInstance) app.quit()

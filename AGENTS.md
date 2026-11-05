@@ -290,6 +290,75 @@ it is drawn in one colour, the control's own foreground. Do not add a colour
 scale: the length says how much, and the numbers stay in the `ContextPanel`
 popover behind it, which reads Pi's `get_session_stats`.
 
+## The window's own controls
+
+Maximize, minimize and close are drawn by the OS over the top-right corner of the
+content, so their colours come from the renderer: `applyAppearance` resolves
+`--chrome-bg` (usually a `color-mix(...)`, which the main process cannot evaluate)
+through a canvas probe and hands the channels to `app:setTheme`, which sets
+`titleBarOverlay`. Two things follow, and each one is the visible bug when it is
+missed: a translucent token has to be composited down to an opaque colour, and the
+strip is not always the chrome — a full-window layer (`.modal-layer`,
+`.lightbox-layer`) paints its scrim over it first. So the colour pushed while a
+dialog is open is the scrim composited over the chrome, recomputed when such a
+layer mounts or unmounts (`watchChromeOverlays`, after the layer's fade). Do not
+hard-code the strip colour in the main process: the user's background is arbitrary.
+That overlay is drawn outside the web content, so a screenshot cannot show it —
+`PI_DESKTOP_SCREENSHOT` makes the handler log what it was told to use.
+
+## The tray and the taskbar icon
+
+Two things belong to the main process and nowhere else: the system tray and
+the icon Windows draws for the app. The renderer owns the switch and nothing
+else — the tray is a projection of one setting, `trayPersistent`.
+
+With the tray on, closing the window hides it instead of quitting, and the
+tray icon is the way back: a click opens the window, the menu offers *show*
+and *quit*. The rules that keep the window from disappearing for good:
+
+- Hide only while the tray icon is really there. A missing icon, a real quit
+  and the screenshot harness all close the window for real; hiding without a
+  tray would leave no way back at all.
+- The single-instance lock is taken only in tray mode. A second launch then
+  focuses the window that already sits in the tray instead of opening a
+  second one the user cannot find. With the tray off, no lock is taken and
+  the app opens a second window as it always did.
+- The flag is read from the settings file *before* the app is ready, because
+  the lock has to be claimed before `start` builds the store.
+  `readPersistedFlag` in `settings.ts` is that early reader. It must stay
+  the only one: two readers of one file are two notions of a byte order mark.
+
+The taskbar icon is the window icon. Windows draws the taskbar button from
+the window's own icon, so a dev run of `electron.exe` shows the Electron
+logo until the window carries the pixel mark. `app-icon.ts` owns all of it:
+the `.ico` next to the asar (`extraResources`), the `BrowserWindow` icon,
+and the AppUserModelID, which has to be the same id electron-builder stamps
+on the shortcut (`appId` in `electron-builder.yml`) or Windows treats the
+dev run and the installed run as two different apps.
+
+Two rules about that id decide whether the taskbar draws the pixel mark or
+the Electron atom. Both were measured on a real taskbar (`output/audit/`
+renders `Shell_TrayWnd` with `PrintWindow`, and UI Automation names the
+buttons):
+
+- **The id belongs to the window, not to the process.**
+  `app.setAppUserModelId` registers the id for the *process*, and the shell
+  files that registration under the executable's own icon. A window that
+  reuses the registered id inherits that entry, and its own `appIconPath` is
+  ignored. So the id goes onto the window through `setAppDetails` and the
+  process keeps no explicit id.
+- **An id is remembered with the icon it was first seen with.** Windows
+  caches an AppUserModelID together with the name and the icon of its first
+  registration and never gives them back: a newer icon, a refreshed icon
+  cache and a new shortcut all leave it alone. `dev.pi.desktop` was first
+  claimed by a dev run that still carried electron.exe's icon, so that id is
+  stuck on the Electron atom for good. The id in use is `dev.pi.desktop.v2`.
+
+An `.ico` stores a PNG per size and Electron's loader keeps only the
+largest frame, so a reader that wants one particular size walks the
+directory itself: `src/main/ico.ts`. The tray wants 32px, and the shell
+wants a real file path — neither can be served by a resample of the other.
+
 ## Starting the app
 
 `bootstrap()` reopens the *project* that was active, never the conversation.
@@ -703,6 +772,10 @@ npm run build && npx electron .
 
 `PI_DESKTOP_THEME=light|dark|system` overrides the theme for the run. It only changes
 what is rendered; the stored setting stays as the user left it.
+
+`PI_DESKTOP_USER_DATA` points the run at a throwaway data folder, so a harness
+run neither reads nor writes the user's own settings, sessions and workspaces.
+It works on its own, without the screenshot flag.
 
 Other flags, all off by default: `PI_DESKTOP_PREFILL` fills the composer,
 `PI_DESKTOP_OPEN_CHANGES` and `PI_DESKTOP_OPEN_FILES` open an inspector tab,

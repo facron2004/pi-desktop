@@ -1,4 +1,4 @@
-appId: dev.pi.desktop
+appId: dev.pi.desktop.v2
 productName: Pi Desktop
 copyright: Copyright © 2026 Pi Desktop contributors
 
@@ -19,6 +19,14 @@ files:
   - package.json
   - '!**/*.map'
   - '!**/node_modules/*/{test,tests,__tests__,example,examples,docs,doc}/**'
+
+# The Windows shell reads the taskbar icon itself, so the .ico has to sit
+# outside the asar. `win.icon` still embeds it in the executable.
+extraResources:
+  - from: build/icon-pixel.ico
+    to: icon-pixel.ico
+  - from: build/icon-pixel.png
+    to: icon-pixel.png
 
 asarUnpack:
   # Pi runs as a plain Node child process, so the modules it resolves at

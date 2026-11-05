@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { icoPngDataUrl } from './ico'
 
 const execFileAsync = promisify(execFile)
 
@@ -106,36 +107,6 @@ function exeFromLauncher(file: string): string | undefined {
   }
 }
 
-/**
- * An .ico file can carry a PNG frame. Electron's file-icon lookup treats the
- * .ico as a document and returns a blank page, so read the frame directly:
- * the largest PNG entry is the icon Git for Windows ships.
- */
-function pngFromIco(file: string): string | undefined {
-  try {
-    const data = readFileSync(file)
-    if (data.length < 6 || data.readUInt16LE(0) !== 0 || data.readUInt16LE(2) !== 1) return undefined
-    const count = data.readUInt16LE(4)
-    let best: { size: number; offset: number; length: number } | undefined
-    for (let index = 0; index < count; index += 1) {
-      const entry = 6 + index * 16
-      const width = data[entry] === 0 ? 256 : data[entry]
-      const length = data.readUInt32LE(entry + 8)
-      const offset = data.readUInt32LE(entry + 12)
-      if (
-        offset + length <= data.length &&
-        data.readUInt32LE(offset) === 0x474e5089 // PNG signature
-      ) {
-        if (!best || width > best.size) best = { size: width, offset, length }
-      }
-    }
-    if (!best) return undefined
-    return `data:image/png;base64,${data.subarray(best.offset, best.offset + best.length).toString('base64')}`
-  } catch {
-    return undefined
-  }
-}
-
 async function iconFor(id: string): Promise<string | undefined> {
   const cached = cache.get(id)
   if (cached) return cached
@@ -145,7 +116,7 @@ async function iconFor(id: string): Promise<string | undefined> {
   }
   if (!file) return undefined
   if (/\.ico$/i.test(file)) {
-    const fromIco = pngFromIco(file)
+    const fromIco = icoPngDataUrl(file)
     if (fromIco) {
       cache.set(id, fromIco)
       return fromIco

@@ -93,6 +93,8 @@ export interface IpcContext {
   remote: RemoteAccessService
   remoteReady: Promise<void>
   scheduledTasks: ScheduledTaskService
+  /** Rebuild the tray after a setting that changes it. Optional for tests. */
+  syncTray?: () => void
 }
 
 /**
@@ -559,6 +561,15 @@ export function registerIpc(context: IpcContext): void {
           symbolColor: hex(colors?.symbolColor) ?? fallback.symbolColor,
           height: 44
         })
+        if (process.env.PI_DESKTOP_SCREENSHOT) {
+          // The overlay is drawn outside the web content, so a screenshot cannot
+          // show it — this is the only way to see what the strip was told to use.
+          console.log(
+            `[pi-desktop] title bar overlay ${theme} ${hex(colors?.color) ?? fallback.color}/${
+              hex(colors?.symbolColor) ?? fallback.symbolColor
+            }`
+          )
+        }
       } catch {
         /* the platform may not support a title bar overlay */
       }
@@ -641,6 +652,7 @@ export function registerIpc(context: IpcContext): void {
         })
       }
     }
+    if ('trayPersistent' in patch || 'language' in patch) context.syncTray?.()
     return next
   })
 

@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleHelp,
   Copy,
   Download,
   FileJson,
@@ -29,7 +30,7 @@ import type {
   VersionCheckResult
 } from '@shared/types'
 import { resolveSavedModel, selectableModels } from '@shared/provider-models'
-import { formatCost, formatTokens } from '../lib/format'
+import { formatCost, formatTokens, formatUsageTokens } from '../lib/format'
 import {
   FONT_SCALE_LABELS,
   FONT_SCALE_PRESETS,
@@ -309,6 +310,21 @@ export function GeneralSettings(_props: GeneralSettingsProps = {}) {
             checked={settings.pluginsEnabled !== false}
             onChange={(checked) => void updateSettings({ pluginsEnabled: checked })}
             label={t('Plugins')}
+          />
+        </div>
+
+        {/* Closing hides to the tray instead of quitting. The process reads this live. */}
+        <div className="settings-item-row">
+          <div className="settings-item-row__info">
+            <span className="settings-item-row__title">{t('Keep running in the tray')}</span>
+            <span className="settings-item-row__desc">
+              {t('Closing the window hides Pi Desktop in the system tray instead of quitting.')}
+            </span>
+          </div>
+          <Switch
+            checked={settings.trayPersistent === true}
+            onChange={(checked) => void updateSettings({ trayPersistent: checked })}
+            label={t('Keep running in the tray')}
           />
         </div>
 
@@ -1227,6 +1243,53 @@ export function AppearanceSettings() {
   )
 }
 
+/**
+ * A help mark with the app's own bubble. The usage page is read for numbers, and
+ * the native title tooltip is both slower and the one chrome the user asked not
+ * to see here.
+ */
+function UsageHint({ text }: { text: string }) {
+  const t = useT()
+  const [tip, setTip] = useState<{ x: number; y: number } | null>(null)
+  const show = (target: HTMLElement) => {
+    const rect = target.getBoundingClientRect()
+    setTip({
+      x: Math.min(Math.max(rect.left + rect.width / 2, 150), window.innerWidth - 150),
+      y: rect.bottom + 8
+    })
+  }
+  return (
+    <>
+      <span
+        className="usage-metric__hint"
+        role="note"
+        aria-label={t('Show how this is calculated')}
+        tabIndex={0}
+        onMouseEnter={(event) => show(event.currentTarget)}
+        onMouseLeave={() => setTip(null)}
+        onFocus={(event) => show(event.currentTarget)}
+        onBlur={() => setTip(null)}
+      >
+        <CircleHelp size={11} aria-hidden="true" />
+      </span>
+      {tip
+        ? createPortal(
+            <div className="usage-tip" role="tooltip" style={{ left: tip.x, top: tip.y }}>
+              {text}
+            </div>,
+            document.body
+          )
+        : null}
+    </>
+  )
+}
+
+/**
+ * Half a year is what fits the settings column without a sideways scroll: at
+ * ~25px per day the grid fills the row and still shows a season of activity.
+ */
+const HEATMAP_DAYS = 180
+
 export function UsageSettings() {
   const settings = useAppStore((state) => state.settings)
   const piState = useAppStore((state) => state.piState)
@@ -1281,9 +1344,9 @@ export function UsageSettings() {
     const locale = settings.language === 'zh-CN' ? 'zh-CN' : 'en'
     const now = new Date()
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 364)
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (HEATMAP_DAYS - 1))
     const leadingDays = (start.getDay() + 6) % 7
-    const weekCount = Math.ceil((leadingDays + 365) / 7)
+    const weekCount = Math.ceil((leadingDays + HEATMAP_DAYS) / 7)
     const gridStart = new Date(start)
     gridStart.setDate(gridStart.getDate() - leadingDays)
     const usageByDate = new Map(
@@ -1306,7 +1369,7 @@ export function UsageSettings() {
       day: 'numeric'
     })
     const weekdayFormatter = new Intl.DateTimeFormat(locale, { weekday: 'short' })
-    let yearTokens = 0
+    let rangeTokens = 0
     let activeDays = 0
 
     for (let week = 0; week < weekCount; week++) {
@@ -1321,7 +1384,7 @@ export function UsageSettings() {
           conversationsCount: 0,
           messageCount: 0
         }
-        yearTokens += day.totalTokens
+        rangeTokens += day.totalTokens
         if (day.totalTokens > 0) activeDays += 1
         if (date.getDate() === 1) {
           monthLabels.push({
@@ -1346,8 +1409,48 @@ export function UsageSettings() {
       return weekdayFormatter.format(date)
     })
 
-    return { cells, monthLabels, weekdays, weekCount, yearTokens, activeDays, fullDateFormatter, locale }
+    return { cells, monthLabels, weekdays, weekCount, rangeTokens, activeDays, fullDateFormatter, locale }
   }, [settings.language, usageStats])
+
+  // Two rows of four: what the period cost and how much it moved, then the
+  // token split underneath it. The real-token reading is the one to look at,
+  // so it is the only cell carrying an emphasis.
+  const overviewMetrics: Array<{
+    key: string
+    label: string
+    value: string
+    hint?: string
+    emphasis?: boolean
+  }> = [
+    { key: 'cost', label: t('Total cost'), value: formatCost(activeTokens?.cost) },
+    { key: 'requests', label: t('Total requests'), value: String(activeRequests) },
+    {
+      key: 'tokens',
+      label: t('Real tokens'),
+      value: formatUsageTokens(activeTokens?.totalTokens),
+      hint: t('Every token billed in this period: input, output and cache reads and writes.'),
+      emphasis: true
+    },
+    {
+      key: 'hit-rate',
+      label: t('Cache hit rate'),
+      value: `${activeCacheHitRate.toFixed(1)}%`,
+      hint: t('Cache hits divided by all prompt tokens, cached and new.')
+    },
+    { key: 'input', label: t('New input'), value: formatUsageTokens(activeTokens?.input) },
+    { key: 'output', label: t('Output'), value: formatUsageTokens(activeTokens?.output) },
+    {
+      key: 'cache-write',
+      label: t('Cache write'),
+      value: formatUsageTokens(activeTokens?.cacheWrite),
+      hint: t('Tokens written into the prompt cache.')
+    },
+    { key: 'cache-hit', label: t('Cache hit'), value: formatUsageTokens(activeCacheRead) }
+  ]
+
+  // The plot scales against its own tallest model, the list against everything.
+  const modelPeak = Math.max(1, ...(usageStats?.byModel ?? []).map((model) => model.totalTokens))
+  const modelTotal = usageStats?.allTime.tokens.totalTokens || 1
 
   return (
     <div className="settings-page">
@@ -1372,9 +1475,9 @@ export function UsageSettings() {
       >
         <div className="usage-heatmap">
           <div className="usage-heatmap__summary">
-            <span>{t('Past 365 days')}</span>
+            <span>{t('Past 180 days')}</span>
             <span>
-              {heatmap.activeDays} {t('Active days')} · {formatTokens(heatmap.yearTokens)} {t('Total tokens')}
+              {heatmap.activeDays} {t('Active days')} · {formatTokens(heatmap.rangeTokens)} {t('Total tokens')}
             </span>
           </div>
           <div className="usage-heatmap__viewport">
@@ -1388,7 +1491,7 @@ export function UsageSettings() {
               <div className="usage-heatmap__calendar">
                 <div
                   className="usage-heatmap__months"
-                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 12px)` }}
+                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, minmax(0, 1fr))` }}
                   aria-hidden="true"
                 >
                   {heatmap.monthLabels.map(({ week, label, fullLabel }) => (
@@ -1401,11 +1504,11 @@ export function UsageSettings() {
                   className="usage-heatmap__cells"
                   role="grid"
                   aria-label={t('Usage heatmap')}
-                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, 12px)` }}
+                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, minmax(0, 1fr))` }}
                 >
                   {heatmap.cells.map(({ date, day, week, weekday, level }) => {
                     const dateLabel = heatmap.fullDateFormatter.format(date)
-                    const description = `${dateLabel} · ${t('Total tokens')}: ${day.totalTokens.toLocaleString(heatmap.locale)} · ${t('Cache hit rate')}: ${cacheHitRate(day.cacheRead, day.input)}%`
+                    const description = `${dateLabel} · ${t('Total tokens')}: ${day.totalTokens.toLocaleString(heatmap.locale)} · ${t('Cache hit rate')}: ${cacheHitRate(day.cacheRead, day.input).toFixed(1)}%`
                     return (
                       <span
                         key={day.date}
@@ -1441,7 +1544,7 @@ export function UsageSettings() {
         </div>
       </SettingsGroup>
 
-      {/* Compact overview: one period selector, six readings. */}
+      {/* Compact overview: one period selector, eight readings in two rows. */}
       <SettingsGroup
         title={t('Token usage overview')}
         action={
@@ -1462,72 +1565,56 @@ export function UsageSettings() {
         }
       >
         <div className="usage-overview">
-          <div className="usage-overview__metric">
-            <span className="usage-overview__label">{t('Requests')}</span>
-            <span className="usage-overview__value">{activeRequests}</span>
-          </div>
-          <div className="usage-overview__metric">
-            <span className="usage-overview__label">{t('Total cost')}</span>
-            <span className="usage-overview__value">{formatCost(activeTokens?.cost)}</span>
-          </div>
-          <div className="usage-overview__metric">
-            <span className="usage-overview__label">{t('Input')}</span>
-            <span className="usage-overview__value">{formatTokens(activeTokens?.input)}</span>
-          </div>
-          <div className="usage-overview__metric">
-            <span className="usage-overview__label">{t('Output')}</span>
-            <span className="usage-overview__value">{formatTokens(activeTokens?.output)}</span>
-          </div>
-          <div className="usage-overview__metric">
-            <span className="usage-overview__label">{t('Cache hit')}</span>
-            <span className="usage-overview__value">{formatTokens(activeCacheRead)}</span>
-          </div>
-          <div className="usage-overview__metric">
-            <span className="usage-overview__label">{t('Cache hit rate')}</span>
-            <span className="usage-overview__value">{activeCacheHitRate}%</span>
-          </div>
+          {overviewMetrics.map((metric) => (
+            <div
+              key={metric.key}
+              className="usage-overview__metric"
+              data-emphasis={metric.emphasis ? 'true' : undefined}
+            >
+              <span className="usage-overview__label">
+                <span className="usage-overview__label-text">{metric.label}</span>
+                {metric.hint ? <UsageHint text={metric.hint} /> : null}
+              </span>
+              <span className="usage-overview__value">{metric.value}</span>
+            </div>
+          ))}
         </div>
       </SettingsGroup>
 
-      {/* Model Distribution */}
+      {/* Model Distribution: the plot on the left, a drawer of facts on the
+          right. The list is capped so eleven models do not stretch the page. */}
       {usageStats && usageStats.byModel.length > 0 && (
         <SettingsGroup title={t('Model distribution')}>
           <div className="usage-model-chart">
             <div className="usage-model-chart__plot">
-              {usageStats.byModel.map((m, index) => {
-                const maxTokens = Math.max(1, ...usageStats.byModel.map((item) => item.totalTokens))
-                const height = Math.max(4, Math.round((m.totalTokens / maxTokens) * 100))
-                return (
-                  <div key={m.model} className="usage-model-chart__column" title={m.model}>
-                    <div
-                      className="usage-model-chart__bar"
-                      data-series={index % 6}
-                      style={{ height: `${height}%` }}
-                    />
-                    <span className="usage-model-chart__xlabel">
-                      {m.model.split('/').pop() ?? m.model}
-                    </span>
-                  </div>
-                )
-              })}
+              {usageStats.byModel.map((m, index) => (
+                <div key={m.model} className="usage-model-chart__column" title={m.model}>
+                  <div
+                    className="usage-model-chart__bar"
+                    data-series={index % 6}
+                    style={{ height: `${Math.max(4, Math.round((m.totalTokens / modelPeak) * 100))}%` }}
+                  />
+                  <span className="usage-model-chart__xlabel">
+                    {m.model.split('/').pop() ?? m.model}
+                  </span>
+                </div>
+              ))}
             </div>
             <div className="usage-model-chart__info">
-              {usageStats.byModel.map((m, index) => {
-                const allTimeTotal = usageStats.allTime.tokens.totalTokens || 1
-                const pct = Math.min(100, Math.round((m.totalTokens / allTimeTotal) * 100))
-                return (
-                  <div key={m.model} className="usage-model-chart__info-row">
-                    <span className="usage-model-chart__dot" data-series={index % 6} aria-hidden="true" />
-                    <div className="usage-model-chart__info-main">
-                      <span className="usage-model-chart__name">{m.model}</span>
-                      <span className="usage-model-chart__stats">
-                        {formatTokens(m.totalTokens)} · {pct}% · {m.messageCount} {t('turns')}
-                        {m.cost > 0 ? ` · ${formatCost(m.cost)}` : ''}
-                      </span>
-                    </div>
+              {usageStats.byModel.map((m, index) => (
+                <div key={m.model} className="usage-model-chart__info-row">
+                  <span className="usage-model-chart__dot" data-series={index % 6} aria-hidden="true" />
+                  <div className="usage-model-chart__info-main">
+                    <span className="usage-model-chart__name">{m.model}</span>
+                    <span className="usage-model-chart__stats">
+                      {formatUsageTokens(m.totalTokens)} ·{' '}
+                      {Math.min(100, (m.totalTokens / modelTotal) * 100).toFixed(1)}% · {m.messageCount}{' '}
+                      {t('turns')}
+                      {m.cost > 0 ? ` · ${formatCost(m.cost)}` : ''}
+                    </span>
                   </div>
-                )
-              })}
+                </div>
+              ))}
             </div>
           </div>
         </SettingsGroup>
@@ -1593,11 +1680,11 @@ export function UsageSettings() {
               <div className="usage-heatmap-tooltip__date">{hoveredDay.dateLabel}</div>
               <div className="usage-heatmap-tooltip__row">
                 <span>{t('Total tokens')}</span>
-                <strong>{formatTokens(hoveredDay.day.totalTokens)}</strong>
+                <strong>{formatUsageTokens(hoveredDay.day.totalTokens)}</strong>
               </div>
               <div className="usage-heatmap-tooltip__row">
                 <span>{t('Cache hit rate')}</span>
-                <strong>{cacheHitRate(hoveredDay.day.cacheRead, hoveredDay.day.input)}%</strong>
+                <strong>{cacheHitRate(hoveredDay.day.cacheRead, hoveredDay.day.input).toFixed(1)}%</strong>
               </div>
             </div>,
             document.body

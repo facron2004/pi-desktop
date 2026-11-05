@@ -881,57 +881,56 @@
 
 .usage-heatmap__viewport {
   min-width: 0;
-  overflow-x: auto;
-  padding-bottom: 2px;
 }
 
 .usage-heatmap__layout {
   display: grid;
-  grid-template-columns: 24px max-content;
+  grid-template-columns: 24px minmax(0, 1fr);
   gap: 7px;
-  width: max-content;
-  min-width: 100%;
+  min-width: 0;
 }
 
 .usage-heatmap__weekdays {
   display: grid;
-  grid-template-rows: 12px repeat(7, 12px);
-  gap: 3px;
+  grid-template-rows: 14px repeat(7, 20px);
+  gap: 4px;
   color: var(--text-faint);
   font-size: 9px;
-  line-height: 12px;
+  line-height: 20px;
   text-align: right;
 }
 
 .usage-heatmap__calendar {
   display: grid;
-  grid-template-rows: 12px 102px;
-  gap: 3px;
-  width: max-content;
+  grid-template-rows: 14px auto;
+  gap: 4px;
+  min-width: 0;
 }
 
 .usage-heatmap__months,
 .usage-heatmap__cells {
   display: grid;
-  column-gap: 3px;
+  column-gap: 4px;
+  min-width: 0;
 }
 
 .usage-heatmap__months {
+  overflow: hidden;
   color: var(--text-faint);
   font-size: var(--text-2xs);
-  line-height: 12px;
+  line-height: 14px;
   white-space: nowrap;
 }
 
 .usage-heatmap__cells {
-  grid-template-rows: repeat(7, 12px);
-  row-gap: 3px;
+  grid-template-rows: repeat(7, 20px);
+  row-gap: 4px;
 }
 
 .usage-heatmap__cell {
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
+  width: 100%;
+  height: 20px;
+  border-radius: 4px;
   background: var(--surface-sunken);
 }
 
@@ -957,11 +956,13 @@
 }
 
 .usage-heatmap__legend .usage-heatmap__cell {
+  width: 14px;
+  height: 14px;
   flex: 0 0 auto;
 }
 
-/* Compact overview: one period selector in the group header and six readings
-   in a single narrow row, instead of four large period cards. */
+/* Compact overview: one period selector in the group header and eight readings
+   in two rows of four — the money and the volume above, the split below. */
 .usage-period-select {
   min-width: 104px;
   max-width: 150px;
@@ -969,7 +970,7 @@
 
 .usage-overview {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   min-width: 0;
 }
 
@@ -978,25 +979,41 @@
   min-width: 0;
   flex-direction: column;
   gap: var(--sp-1);
-  padding: 2px var(--sp-4) 2px 0;
-  border-right: 1px solid var(--border-soft);
+  /* Every cell of the first row draws its own half of the one rule that
+     divides the two rows, so the line spans the grid without a wrapper. */
+  padding: 0 var(--sp-4) var(--sp-4) 0;
+  border-bottom: 1px solid var(--border-soft);
 }
 
-.usage-overview__metric:last-child {
-  border-right: 0;
+.usage-overview__metric:nth-child(n + 5) {
+  padding-top: var(--sp-4);
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.usage-overview__metric:nth-child(4n) {
   padding-right: 0;
 }
 
 .usage-overview__label {
-  overflow: hidden;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--sp-1);
   color: var(--text-faint);
   font-size: var(--text-2xs);
   line-height: var(--leading-assist);
+}
+
+.usage-overview__label-text {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .usage-overview__value {
+  width: fit-content;
+  max-width: 100%;
   overflow: hidden;
   color: var(--text);
   font-size: var(--text-md);
@@ -1007,14 +1024,58 @@
   white-space: nowrap;
 }
 
-@media (max-width: 680px) {
+/* The reference underlines the one reading to look at first: what was billed. */
+.usage-overview__metric[data-emphasis] .usage-overview__value {
+  padding-bottom: 2px;
+  border-bottom: 2px solid var(--text-primary);
+}
+
+.usage-metric__hint {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--text-faint);
+  cursor: help;
+}
+
+.usage-metric__hint:hover,
+.usage-metric__hint:focus-visible {
+  color: var(--text-muted);
+  outline: none;
+}
+
+/* The hint's own bubble. The native title tooltip is the chrome the usage page
+   is not supposed to show. */
+.usage-tip {
+  position: fixed;
+  z-index: var(--z-overlay);
+  max-width: 260px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-assist);
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+@media (max-width: 560px) {
   .usage-overview {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     row-gap: var(--sp-4);
   }
 
-  .usage-overview__metric:nth-child(3n) {
-    border-right: 0;
+  .usage-overview__metric,
+  .usage-overview__metric:nth-child(n + 5) {
+    padding: 0 var(--sp-4) var(--sp-4) 0;
+    border-bottom: 0;
+  }
+
+  .usage-overview__metric:nth-child(2n) {
+    padding-right: 0;
   }
 }
 
@@ -1070,29 +1131,33 @@
 .usage-model-chart__plot {
   display: flex;
   align-items: flex-end;
-  gap: var(--sp-3);
-  height: 180px;
-  min-height: 180px;
-  padding: var(--sp-3) var(--sp-4) 0;
+  gap: var(--sp-2);
+  height: 208px;
+  min-height: 208px;
+  padding: var(--sp-3) var(--sp-3) 0;
   border-bottom: 1px solid var(--border-soft);
   box-sizing: border-box;
 }
 
+/* The label is a row of its own. With the column as a flex stack a 100% bar
+   overflowed above the plot, so the tallest model never lined up with its
+   neighbours. */
 .usage-model-chart__column {
-  display: flex;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  justify-items: center;
   height: 100%;
   min-width: 0;
   flex: 1 1 0;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
   gap: var(--sp-2);
 }
 
 .usage-model-chart__bar {
-  width: min(100%, 32px);
+  grid-row: 1;
+  width: min(100%, 28px);
   min-height: 4px;
-  flex: 0 0 auto;
+  align-self: end;
+  justify-self: center;
   border-radius: 4px 4px 0 0;
   background: var(--series-color, var(--accent));
   transition: height var(--dur-base) var(--ease);
@@ -1113,8 +1178,14 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-  justify-content: center;
   gap: var(--sp-3);
+  /* A drawer: the list stops at the plot's own height and the rest of the
+     models are one scroll down, instead of stretching the page. */
+  max-height: 208px;
+  padding-right: var(--sp-2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .usage-model-chart__info-row {
@@ -1186,191 +1257,9 @@
   }
 
   .usage-model-chart__plot {
-    height: 140px;
-    min-height: 140px;
+    height: 160px;
+    min-height: 160px;
   }
-}
-
-.usage-period-grid {
-  display: grid;
-  /* Four ~140px cards at the 620px settings measure; `minmax(0, 1fr)`
-     lets the track shrink instead of being forced wide by nowrap badges. */
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-@media (max-width: 680px) {
-  .usage-period-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-.usage-period-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  padding: 9px 10px;
-  border-radius: var(--r-md, 8px);
-  border: 1px solid var(--border-soft);
-  background: var(--surface-raised, var(--bg-panel));
-  cursor: pointer;
-  text-align: left;
-  overflow-wrap: normal;
-  word-break: normal;
-  transition:
-    background-color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease),
-    box-shadow var(--dur-fast) var(--ease);
-  position: relative;
-}
-
-.usage-period-card:hover {
-  background: var(--bg-hover);
-  border-color: var(--border);
-}
-
-.usage-period-card[data-active='true'] {
-  border-color: var(--accent);
-  background: var(--accent-soft, rgba(76, 154, 255, 0.12));
-  box-shadow: 0 0 0 1px var(--accent);
-}
-
-.usage-period-card__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 2px 4px;
-  font-size: var(--text-2xs);
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.usage-period-card[data-active='true'] .usage-period-card__header {
-  color: var(--accent);
-}
-
-.usage-period-card__tokens {
-  font-size: var(--text-lg);
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-  line-height: 1.1;
-  letter-spacing: -0.02em;
-}
-
-.usage-period-card__footer {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 1px 5px;
-  font-size: var(--text-2xs);
-  line-height: 1.35;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* A badge is one lexical unit: it may move to the next line whole, but a
-   word inside it never breaks ("Conversatio / ns"). */
-.usage-period-card__footer > span {
-  white-space: nowrap;
-}
-
-.usage-period-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 5px;
-  border-radius: var(--r-xs, 4px);
-  background: var(--surface-sunken);
-  font-size: var(--text-2xs);
-  line-height: 1.3;
-  font-weight: 500;
-  white-space: nowrap;
-  flex: 0 0 auto;
-}
-
-.usage-detail-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 8px;
-}
-
-.usage-detail-metric {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px;
-  border-radius: var(--r-sm, 6px);
-  border: 1px solid var(--border-soft);
-  background: var(--surface-raised, var(--bg-panel));
-}
-
-.usage-detail-metric__label {
-  font-size: var(--text-2xs);
-  color: var(--text-faint);
-}
-
-.usage-detail-metric__value {
-  font-size: var(--text-md);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-
-/* Model breakdown list */
-.usage-model-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.usage-model-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
-  border-radius: var(--r-sm, 6px);
-  background: var(--surface-raised, var(--bg-panel));
-  border: 1px solid var(--border-soft);
-}
-
-.usage-model-row__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: var(--text-2xs);
-}
-
-.usage-model-row__name {
-  font-weight: 600;
-  font-family: var(--font-mono);
-  color: var(--text);
-}
-
-.usage-model-row__stats {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-variant-numeric: tabular-nums;
-  font-size: var(--text-2xs);
-  color: var(--text-muted);
-}
-
-.usage-model-row__bar {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--surface-sunken);
-  overflow: hidden;
-}
-
-.usage-model-row__bar-fill {
-  height: 100%;
-  border-radius: 2px;
-  background: var(--accent);
-  transition: width var(--dur-base) var(--ease);
 }
 
 /* Recent days table */

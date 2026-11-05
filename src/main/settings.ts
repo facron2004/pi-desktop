@@ -56,6 +56,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   toolCallSummary: false,
   autoTitle: false,
   automaticUpdates: false,
+  trayPersistent: false,
   memoriesEnabled: true,
   memoryGeneration: true,
   memorySkipExternalContext: true
@@ -79,6 +80,33 @@ function normalizeThemeForeground(parsed: Partial<AppSettings>): string | undefi
 }
 
 /**
+ * The settings file as it sits on disk, or null when it is missing or
+ * unreadable. Windows editors happily add a byte order mark and JSON.parse
+ * rejects it, so the mark is stripped here: without this the whole file
+ * would be discarded and the user would lose every workspace they opened.
+ */
+function readSettingsFile(file: string): Partial<AppSettings> | null {
+  try {
+    if (!existsSync(file)) return null
+    const raw = readFileSync(file, 'utf8')
+    return JSON.parse(raw.replace(/^\uFEFF/, '')) as Partial<AppSettings>
+  } catch {
+    return null
+  }
+}
+
+/**
+ * One persisted flag, read before the store exists.
+ *
+ * The tray takes the single-instance lock before the app is ready, and the
+ * store is built in `start`, so this is the one early reader of the file.
+ */
+export function readPersistedFlag(key: 'trayPersistent'): boolean {
+  const file = path.join(app.getPath('userData'), 'settings.json')
+  return readSettingsFile(file)?.[key] === true
+}
+
+/**
  * Tiny JSON-file settings store in the Electron userData directory.
  * Writes are atomic (temp file + rename) so a crash cannot corrupt the file.
  */
@@ -92,24 +120,16 @@ export class SettingsStore {
   }
 
   private read(): AppSettings {
-    try {
-      if (!existsSync(this.file)) return { ...DEFAULT_SETTINGS }
-      const raw = readFileSync(this.file, 'utf8')
-      // Windows editors happily add a byte order mark, and JSON.parse
-      // rejects it. Without this the whole file would be discarded and the
-      // user would lose every workspace they had opened.
-      const parsed = JSON.parse(raw.replace(/^\uFEFF/, '')) as Partial<AppSettings>
-      return {
-        ...DEFAULT_SETTINGS,
-        ...parsed,
-        fontScale: normalizeFontScale(parsed.fontScale),
-        fontFamily: normalizeFontFamily(parsed.fontFamily),
-        customFg: normalizeThemeForeground(parsed),
-        workspaces: dedupeWorkspaces(Array.isArray(parsed.workspaces) ? parsed.workspaces : []),
-        pinnedSessions: Array.isArray(parsed.pinnedSessions) ? parsed.pinnedSessions : []
-      }
-    } catch {
-      return { ...DEFAULT_SETTINGS }
+    const parsed = readSettingsFile(this.file)
+    if (!parsed) return { ...DEFAULT_SETTINGS }
+    return {
+      ...DEFAULT_SETTINGS,
+      ...parsed,
+      fontScale: normalizeFontScale(parsed.fontScale),
+      fontFamily: normalizeFontFamily(parsed.fontFamily),
+      customFg: normalizeThemeForeground(parsed),
+      workspaces: dedupeWorkspaces(Array.isArray(parsed.workspaces) ? parsed.workspaces : []),
+      pinnedSessions: Array.isArray(parsed.pinnedSessions) ? parsed.pinnedSessions : []
     }
   }
 

@@ -6,6 +6,17 @@ export function formatTokens(value: number | undefined | null): string {
   if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`
   return String(value)
 }
+/**
+ * The usage page's measure: one decimal at every scale and an uppercase K, so
+ * the readings in the overview row line up as a column of digits.
+ */
+export function formatUsageTokens(value: number | undefined | null): string {
+  if (value === undefined || value === null || Number.isNaN(value)) return '—'
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`
+  return String(Math.round(value))
+}
+
 export function formatCost(value: number | undefined | null): string {
   if (value === undefined || value === null || Number.isNaN(value)) return '—'
   if (value === 0) return '$0.00'

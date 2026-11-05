@@ -2274,6 +2274,104 @@ function resolveCssColor(expression: string): { r: number; g: number; b: number;
   return parseCssColor(computed)
 }
 
+type Rgba = { r: number; g: number; b: number; a: number }
+
+/** The colour a translucent layer leaves on an opaque backdrop. */
+function compositeOver(layer: Rgba, base: Rgba): Rgba {
+  const keep = 1 - layer.a
+  return {
+    r: layer.r * layer.a + base.r * keep,
+    g: layer.g * layer.a + base.g * keep,
+    b: layer.b * layer.a + base.b * keep,
+    a: 1
+  }
+}
+
+let chromeWatcher: MutationObserver | null = null
+let chromeOverlayCount = -1
+// The watcher outlives the appearance pass that installed it, so it reads the
+// theme from here rather than from a captured argument.
+let chromeDark = false
+
+/** Full-window layers: whatever paints here also paints under the native controls. */
+const CHROME_OVERLAYS = '.modal-layer, .lightbox-layer'
+
+/**
+ * The native window controls are drawn by the OS over the top-right corner of
+ * the web content, so their colour has to be what the page actually paints
+ * there. The strip is the chrome token — and while a dialog is open it is the
+ * scrim over that chrome, because the modal layer covers the whole window.
+ */
+function syncWindowChrome(dark: boolean): void {
+  // The store also runs in the unit tests, where there is no layout engine
+  // to read a computed style from. The native controls then keep the theme
+  // default instead of a colour that was never measured.
+  if (typeof getComputedStyle !== 'function' || typeof document.querySelectorAll !== 'function') {
+    void window.pi.app.setTheme(dark ? 'dark' : 'light')
+    return
+  }
+  const rootStyles = getComputedStyle(document.documentElement)
+  const chrome = resolveCssColor(rootStyles.getPropertyValue('--chrome-bg'))
+  if (!chrome) {
+    void window.pi.app.setTheme(dark ? 'dark' : 'light')
+    return
+  }
+  const muted = resolveCssColor(rootStyles.getPropertyValue('--text-muted'))
+  let base = chrome
+  for (const layer of Array.from(document.querySelectorAll(CHROME_OVERLAYS))) {
+    const scrim = parseCssColor(getComputedStyle(layer).backgroundColor)
+    if (scrim && scrim.a > 0) base = compositeOver(scrim, base)
+  }
+  void window.pi.app.setTheme(dark ? 'dark' : 'light', {
+    color: rgbToHex(base.r, base.g, base.b),
+    // The menu glyphs sit on this strip, so a translucent --text-muted is
+    // composited down to the opaque colour the native buttons should use.
+    symbolColor: muted
+      ? rgbToHex(
+          muted.r * muted.a + base.r * (1 - muted.a),
+          muted.g * muted.a + base.g * (1 - muted.a),
+          muted.b * muted.a + base.b * (1 - muted.a)
+        )
+      : dark
+        ? '#9da4b2'
+        : '#686868'
+  })
+}
+
+/**
+ * A dialog being opened or closed is the one appearance change the store is not
+ * told about, so watch the DOM for it. The layer fades in, hence the second pass
+ * — measuring while it is still transparent would keep the bare chrome.
+ */
+function watchChromeOverlays(): void {
+  if (chromeWatcher || typeof MutationObserver === 'undefined') return
+  // Streaming text mutates the DOM on every frame, so the check runs on the
+  // records first: only a node that is, or carries, a modal layer can move the
+  // strip. Querying the document on every batch would sit in the delta budget.
+  const touchesLayer = (records: MutationRecord[]): boolean =>
+    records.some((record) => {
+      for (const node of [...record.addedNodes, ...record.removedNodes]) {
+        if (!(node instanceof Element)) continue
+        if (node.matches(CHROME_OVERLAYS) || node.querySelector(CHROME_OVERLAYS)) return true
+      }
+      return false
+    })
+  const repaint = (records: MutationRecord[]) => {
+    if (!touchesLayer(records)) return
+    const count = document.querySelectorAll(CHROME_OVERLAYS).length
+    if (count === chromeOverlayCount) return
+    chromeOverlayCount = count
+    syncWindowChrome(chromeDark)
+    window.setTimeout(() => {
+      if (document.querySelectorAll(CHROME_OVERLAYS).length === chromeOverlayCount) {
+        syncWindowChrome(chromeDark)
+      }
+    }, 240)
+  }
+  chromeWatcher = new MutationObserver(repaint)
+  chromeWatcher.observe(document.documentElement, { childList: true, subtree: true })
+}
+
 export function applyAppearance(
   settings: AppSettings,
   forcedTheme?: 'light' | 'dark' | 'system'
@@ -2396,34 +2494,14 @@ export function applyAppearance(
     remove('--font-reading')
   }
 
-  // The native window controls share the menu bar's strip; hand the browser's
-  // resolved colours to the main process so a custom background does not leave
-  // the control region a shade off the bar next to it.
-  const rootStyles = getComputedStyle(root)
-  const chrome = resolveCssColor(rootStyles.getPropertyValue('--chrome-bg'))
-  const muted = resolveCssColor(rootStyles.getPropertyValue('--text-muted'))
-  const overlay = chrome
-    ? {
-        color: rgbToHex(chrome.r, chrome.g, chrome.b),
-        // The menu glyphs sit on the chrome, so a translucent --text-muted is
-        // composited down to the opaque colour the native buttons should use.
-        symbolColor: muted
-          ? rgbToHex(
-              muted.r * muted.a + chrome.r * (1 - muted.a),
-              muted.g * muted.a + chrome.g * (1 - muted.a),
-              muted.b * muted.a + chrome.b * (1 - muted.a)
-            )
-          : undefined
-      }
-    : undefined
-  if (overlay) {
-    void window.pi.app.setTheme(dark ? 'dark' : 'light', {
-      color: overlay.color,
-      symbolColor: overlay.symbolColor ?? (dark ? '#9da4b2' : '#686868')
-    })
-  } else {
-    void window.pi.app.setTheme(dark ? 'dark' : 'light')
-  }
+  // Hand the browser's resolved colours to the main process: a custom
+  // background, a tone change or an open dialog all move the strip the native
+  // buttons share with the menu bar.
+  chromeDark = dark
+  chromeOverlayCount =
+    typeof document.querySelectorAll === 'function' ? document.querySelectorAll(CHROME_OVERLAYS).length : 0
+  watchChromeOverlays()
+  syncWindowChrome(dark)
 }
 
 function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEYS)[number]> {
