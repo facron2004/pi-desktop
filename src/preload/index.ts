@@ -67,7 +67,10 @@ const bridge: PiDesktopBridge = {
   app: {
     info: (): Promise<AppInfo> => ipcRenderer.invoke('app:info'),
     startupReady: (): void => ipcRenderer.send('app:startup-ready'),
-    setTheme: (theme: 'dark' | 'light'): Promise<void> => ipcRenderer.invoke('app:setTheme', theme),
+    setTheme: (
+      theme: 'dark' | 'light',
+      colors?: { color: string; symbolColor: string }
+    ): Promise<void> => ipcRenderer.invoke('app:setTheme', theme, colors),
     getSystemFonts: (): Promise<string[]> => ipcRenderer.invoke('app:getSystemFonts'),
     emojiFont: (): Promise<Uint8Array | null> => ipcRenderer.invoke('app:emojiFont'),
     checkUpdate: (): Promise<VersionCheckResult> => ipcRenderer.invoke('app:checkUpdate'),

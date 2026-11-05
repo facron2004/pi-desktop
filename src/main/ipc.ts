@@ -541,20 +541,29 @@ export function registerIpc(context: IpcContext): void {
     return picked
   })
 
-  ipcMain.handle('app:setTheme', (_event, theme: 'dark' | 'light') => {
-    const window = getWindow()
-    if (!window || window.isDestroyed() || process.platform === 'darwin') return
-    try {
-      // Keep the native window controls in step with the app chrome.
-      window.setTitleBarOverlay(
-        theme === 'light'
-          ? { color: '#f3f3f3', symbolColor: '#686868', height: 44 }
-          : { color: '#111317', symbolColor: '#9da4b2', height: 44 }
-      )
-    } catch {
-      /* the platform may not support a title bar overlay */
+  ipcMain.handle(
+    'app:setTheme',
+    (_event, theme: 'dark' | 'light', colors?: { color: string; symbolColor: string }) => {
+      const window = getWindow()
+      if (!window || window.isDestroyed() || process.platform === 'darwin') return
+      // Fall back to the theme default when the renderer could not resolve a
+      // concrete colour (first paint, or a platform without a title bar overlay).
+      const fallback = theme === 'light'
+        ? { color: '#f3f3f3', symbolColor: '#686868' }
+        : { color: '#111317', symbolColor: '#9da4b2' }
+      const hex = (value?: string) => (value && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value.trim()) ? value.trim() : undefined)
+      try {
+        // Keep the native window controls in step with the app chrome.
+        window.setTitleBarOverlay({
+          color: hex(colors?.color) ?? fallback.color,
+          symbolColor: hex(colors?.symbolColor) ?? fallback.symbolColor,
+          height: 44
+        })
+      } catch {
+        /* the platform may not support a title bar overlay */
+      }
     }
-  })
+  )
 
   ipcMain.handle('app:getSystemFonts', async (): Promise<string[]> => {
     return querySystemFonts()

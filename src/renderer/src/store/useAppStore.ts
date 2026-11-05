@@ -2225,6 +2225,55 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+function rgbToHex(r: number, g: number, b: number): string {
+  const part = (n: number) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0')
+  return `#${part(r)}${part(g)}${part(b)}`
+}
+
+let colorProbeCanvas: HTMLCanvasElement | null = null
+
+/**
+ * Turn any CSS colour string — including the `color(srgb …)` form Chromium
+ * resolves `color-mix(...)` to — into opaque-capable rgba channels. A canvas is
+ * the only reliable normaliser: hand-parsing every CSS colour grammar, or even
+ * `rgba()`, misses the serialisation `getComputedStyle` actually produces.
+ */
+function parseCssColor(color: string): { r: number; g: number; b: number; a: number } | null {
+  const value = color.trim()
+  if (!value || typeof document === 'undefined') return null
+  if (!colorProbeCanvas) colorProbeCanvas = document.createElement('canvas')
+  const ctx = colorProbeCanvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return null
+  // The setter ignores an unparseable colour and keeps the sentinel, which is
+  // how we detect a value the browser will not accept.
+  ctx.fillStyle = '#123456'
+  ctx.fillStyle = value
+  if (ctx.fillStyle === '#123456') return null
+  ctx.clearRect(0, 0, 1, 1)
+  ctx.fillRect(0, 0, 1, 1)
+  const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data
+  return { r, g, b, a: a / 255 }
+}
+
+/**
+ * Resolve a CSS colour expression — often a token whose value is itself a
+ * `color-mix(...)` — to concrete channels. A throwaway element lets the browser
+ * do the mixing, which the renderer could not replicate for arbitrary palettes.
+ */
+function resolveCssColor(expression: string): { r: number; g: number; b: number; a: number } | null {
+  const trimmed = expression.trim()
+  if (!trimmed || typeof document === 'undefined' || !document.body) return null
+  const probe = document.createElement('span')
+  probe.style.color = trimmed
+  probe.style.position = 'absolute'
+  probe.style.opacity = '0'
+  probe.style.pointerEvents = 'none'
+  document.body.appendChild(probe)
+  const computed = getComputedStyle(probe).color
+  probe.remove()
+  return parseCssColor(computed)
+}
+
 export function applyAppearance(
   settings: AppSettings,
   forcedTheme?: 'light' | 'dark' | 'system'
@@ -2347,7 +2396,34 @@ export function applyAppearance(
     remove('--font-reading')
   }
 
-  void window.pi.app.setTheme(dark ? 'dark' : 'light')
+  // The native window controls share the menu bar's strip; hand the browser's
+  // resolved colours to the main process so a custom background does not leave
+  // the control region a shade off the bar next to it.
+  const rootStyles = getComputedStyle(root)
+  const chrome = resolveCssColor(rootStyles.getPropertyValue('--chrome-bg'))
+  const muted = resolveCssColor(rootStyles.getPropertyValue('--text-muted'))
+  const overlay = chrome
+    ? {
+        color: rgbToHex(chrome.r, chrome.g, chrome.b),
+        // The menu glyphs sit on the chrome, so a translucent --text-muted is
+        // composited down to the opaque colour the native buttons should use.
+        symbolColor: muted
+          ? rgbToHex(
+              muted.r * muted.a + chrome.r * (1 - muted.a),
+              muted.g * muted.a + chrome.g * (1 - muted.a),
+              muted.b * muted.a + chrome.b * (1 - muted.a)
+            )
+          : undefined
+      }
+    : undefined
+  if (overlay) {
+    void window.pi.app.setTheme(dark ? 'dark' : 'light', {
+      color: overlay.color,
+      symbolColor: overlay.symbolColor ?? (dark ? '#9da4b2' : '#686868')
+    })
+  } else {
+    void window.pi.app.setTheme(dark ? 'dark' : 'light')
+  }
 }
 
 function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEYS)[number]> {

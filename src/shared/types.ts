@@ -889,8 +889,13 @@ export interface PiDesktopBridge {
     info(): Promise<AppInfo>
     /** Let the main process show the window after the initial UI is ready. */
     startupReady(): void
-    /** Sync the native window controls with the current theme. */
-    setTheme(theme: 'dark' | 'light'): Promise<void>
+    /**
+     * Sync the native window controls with the current theme. `colors` carries
+     * the chrome background and glyph colour the renderer actually resolved, so
+     * a custom background keeps the control strip on the same colour as the
+     * menu bar instead of drifting back to a hard-coded default.
+     */
+    setTheme(theme: 'dark' | 'light', colors?: { color: string; symbolColor: string }): Promise<void>
     /** Query the font families installed on the operating system. */
     getSystemFonts(): Promise<string[]>
     /**
