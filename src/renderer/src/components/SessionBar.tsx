@@ -28,11 +28,19 @@ export function SessionBar({ showProject }: { showProject: boolean }) {
   const switchProject = useAppStore((state) => state.switchProject)
   const t = useT()
 
-  // The active project first, then the ones used most recently, so the menu
-  // reads like the sidebar rather than in the order the folders were opened.
+  // The stored project order is the sidebar order; the menu reads the same
+  // rows rather than inventing a recent-use order of its own.
   const projects = useMemo(
-    () => sortProjects(collectProjects(settings.workspaces, sessions, settings.hiddenProjects), workspace?.path),
-    [settings.workspaces, settings.hiddenProjects, sessions, workspace?.path]
+    () => sortProjects(
+      collectProjects(
+        settings.workspaces,
+        sessions,
+        settings.hiddenProjects,
+        settings.projectOrder
+      ),
+      workspace?.path
+    ),
+    [settings.workspaces, settings.hiddenProjects, settings.projectOrder, sessions, workspace?.path]
   )
 
   const openInspector = () =>

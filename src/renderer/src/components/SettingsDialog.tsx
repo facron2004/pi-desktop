@@ -5,8 +5,8 @@ import {
   Cpu,
   Gauge,
   Info,
+  Keyboard,
   Palette,
-  Puzzle,
   SlidersHorizontal,
   Smartphone,
   UserRound,
@@ -21,7 +21,7 @@ import {
   AppearanceSettings,
   GeneralSettings,
   PersonalizationSettings,
-  PluginsSettings,
+  ShortcutsSettings,
   UsageSettings
 } from './SettingsSections'
 import { MemorySettings } from './MemorySettings'
@@ -34,7 +34,7 @@ export type SettingsPage =
   | 'models'
   | 'appearance'
   | 'usage'
-  | 'plugins'
+  | 'shortcuts'
   | 'personalization'
   | 'remote'
   | 'memory'
@@ -46,7 +46,7 @@ const PAGES = [
   { id: 'models', label: 'Model management', Icon: Cpu },
   { id: 'appearance', label: 'Appearance', Icon: Palette },
   { id: 'usage', label: 'Usage', Icon: Gauge },
-  { id: 'plugins', label: 'Plugins', Icon: Puzzle },
+  { id: 'shortcuts', label: 'Keyboard shortcuts', Icon: Keyboard },
   { id: 'personalization', label: 'Personalization', Icon: UserRound },
   { id: 'remote', label: 'Remote access', Icon: Smartphone },
   { id: 'memory', label: 'Memory', Icon: Brain },
@@ -154,7 +154,7 @@ export function SettingsDialog({
             {page === 'models' ? <ModelsSettings /> : null}
             {page === 'appearance' ? <AppearanceSettings /> : null}
             {page === 'usage' ? <UsageSettings /> : null}
-            {page === 'plugins' ? <PluginsSettings onClose={onClose} /> : null}
+            {page === 'shortcuts' ? <ShortcutsSettings /> : null}
             {page === 'personalization' ? (
               <PersonalizationSettings
                 value={customInstructions}

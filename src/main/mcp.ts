@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { MarketplaceActionResult } from '@shared/marketplace'
 import type { McpConfig, McpServerInfo } from '@shared/types'
 
 const MAX_CONFIG_BYTES = 1024 * 1024
@@ -54,6 +55,52 @@ function readConfigFile(file: string): ParsedFile {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+interface ConfigDocument {
+  document: Record<string, unknown> | null
+  error?: string
+}
+
+/** Read a whole mcp.json, keeping every top-level key so a rewrite preserves
+ *  values this module does not understand. */
+function readConfigDocument(file: string): ConfigDocument {
+  if (!file || !existsSync(file)) return { document: null }
+  try {
+    if (statSync(file).size > MAX_CONFIG_BYTES) {
+      return { document: null, error: `${file}: the file is too large to read.` }
+    }
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))
+    const document = recordValue(parsed)
+    if (!document) return { document: null, error: `${file}: the file does not contain an object.` }
+    return { document }
+  } catch (error) {
+    return {
+      document: null,
+      error: `${file}: ${error instanceof Error ? error.message : 'the file could not be read.'}`
+    }
+  }
+}
+
+function writeConfigDocument(file: string, document: Record<string, unknown>): void {
+  mkdirSync(path.dirname(file), { recursive: true })
+  const temporary = `${file}.tmp`
+  writeFileSync(temporary, JSON.stringify(document, null, 2), 'utf8')
+  renameSync(temporary, file)
+}
+
+/** User config first, then the project config of the open workspace. */
+function mcpConfigFiles(workspacePath: string): string[] {
+  const files = [path.join(os.homedir(), '.pi', 'agent', 'mcp.json')]
+  const workspace = workspacePath && workspacePath.trim() ? path.resolve(workspacePath.trim()) : ''
+  if (workspace) files.push(path.join(workspace, '.pi', 'mcp.json'))
+  return files
 }
 
 export function sanitizeUrl(rawUrl?: string): string | undefined {
@@ -252,4 +299,85 @@ export function readMcpConfig(workspacePath: string, trusted: boolean): McpConfi
     servers,
     errors
   }
+}
+
+/**
+ * Enable or disable one MCP server in every config file that declares it.
+ * Other servers, command arguments and credentials are preserved as-is; only
+ * `mcpServers[name].enabled` changes.
+ */
+export async function setMcpServerEnabled(
+  name: string,
+  enabled: boolean,
+  workspacePath = ''
+): Promise<MarketplaceActionResult> {
+  const serverName = typeof name === 'string' ? name.trim() : ''
+  if (!serverName) return { ok: false, output: 'Invalid MCP server name.' }
+
+  const updated: string[] = []
+  const errors: string[] = []
+  for (const file of mcpConfigFiles(workspacePath)) {
+    if (!existsSync(file)) continue
+    const read = readConfigDocument(file)
+    if (!read.document) {
+      if (read.error) errors.push(read.error)
+      continue
+    }
+    const servers = recordValue(read.document.mcpServers)
+    if (!servers) {
+      if (read.document.mcpServers !== undefined) {
+        errors.push(`${file}: mcpServers is not an object.`)
+      }
+      continue
+    }
+    const entry = recordValue(servers[serverName])
+    if (!entry) continue
+    entry.enabled = enabled
+    try {
+      writeConfigDocument(file, read.document)
+      updated.push(file)
+    } catch (error) {
+      errors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  if (errors.length) return { ok: false, output: errors.join('\n') }
+  if (!updated.length) return { ok: false, output: `MCP server "${serverName}" was not found.` }
+  return {
+    ok: true,
+    output: `${enabled ? 'Enabled' : 'Disabled'} MCP server "${serverName}" in ${updated.length} file(s).`
+  }
+}
+
+/** Remove one MCP server from every config file that declares it. */
+export async function removeMcpServer(
+  name: string,
+  workspacePath = ''
+): Promise<MarketplaceActionResult> {
+  const serverName = typeof name === 'string' ? name.trim() : ''
+  if (!serverName) return { ok: false, output: 'Invalid MCP server name.' }
+
+  const removed: string[] = []
+  const errors: string[] = []
+  for (const file of mcpConfigFiles(workspacePath)) {
+    if (!existsSync(file)) continue
+    const read = readConfigDocument(file)
+    if (!read.document) {
+      if (read.error) errors.push(read.error)
+      continue
+    }
+    const servers = recordValue(read.document.mcpServers)
+    if (!servers || !(serverName in servers)) continue
+    delete servers[serverName]
+    try {
+      writeConfigDocument(file, read.document)
+      removed.push(file)
+    } catch (error) {
+      errors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  if (errors.length) return { ok: false, output: errors.join('\n') }
+  if (!removed.length) return { ok: false, output: `MCP server "${serverName}" was not found.` }
+  return { ok: true, output: `Removed MCP server "${serverName}" from ${removed.length} file(s).` }
 }

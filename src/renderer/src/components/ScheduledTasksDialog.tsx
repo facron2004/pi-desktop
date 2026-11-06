@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { AlertTriangle, Clock, Loader2, Pause, Pencil, Play, Plus, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { AlertTriangle, Clock, Loader2, Pause, Pencil, Play, Plus, Trash2 } from 'lucide-react'
 import type { ScheduledTask, ScheduledTaskInput, ScheduledTaskSchedule, Workspace } from '@shared/types'
-import { useDialogFocus } from '../hooks/useDialogFocus'
+import { DateTimeField } from './DateTimeField'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import '../styles/scheduled-tasks.css'
@@ -80,16 +80,16 @@ function statusLabel(task: ScheduledTask, t: (text: string) => string): string {
   return task.enabled ? t('Enabled') : t('Paused')
 }
 
-export function ScheduledTasksDialog({ onClose }: { onClose: () => void }) {
+export function ScheduledTasksDialog() {
   const t = useT()
-  const dialogRef = useRef<HTMLDivElement>(null)
-  useDialogFocus(dialogRef, onClose)
   const settings = useAppStore((state) => state.settings)
   const [tasks, setTasks] = useState<ScheduledTask[]>([])
   const [loading, setLoading] = useState(true)
   const [form, setForm] = useState<TaskForm | null>(null)
   const [saving, setSaving] = useState(false)
   const [workingId, setWorkingId] = useState<string | null>(null)
+  /** Row awaiting a second click. No native or modal dialog on this page. */
+  const [confirmingId, setConfirmingId] = useState<string | null>(null)
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
@@ -150,15 +150,9 @@ export function ScheduledTasksDialog({ onClose }: { onClose: () => void }) {
   const currentWorkspaceName = (id: string) => workspaces.find((workspace) => workspace.id === id)?.name ?? t('Project unavailable')
 
   return (
-    <div className="modal-layer" onMouseDown={onClose}>
       <div
-        ref={dialogRef}
-        className="modal scheduled-tasks"
-        role="dialog"
-        aria-modal="true"
+        className="scheduled-tasks"
         aria-labelledby="scheduled-tasks-title"
-        tabIndex={-1}
-        onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="modal__head scheduled-tasks__head">
           <div className="scheduled-tasks__heading">
@@ -174,6 +168,7 @@ export function ScheduledTasksDialog({ onClose }: { onClose: () => void }) {
                 className="btn btn--primary btn--sm"
                 onClick={() => {
                   setForm(newForm(workspaces, settings.activeWorkspaceId))
+                  setConfirmingId(null)
                   setError('')
                 }}
               >
@@ -181,9 +176,6 @@ export function ScheduledTasksDialog({ onClose }: { onClose: () => void }) {
                 {t('New task')}
               </button>
             ) : null}
-            <button className="icon-btn" onClick={onClose} aria-label={t('Close')} title={t('Close')}>
-              <X size={15} />
-            </button>
           </div>
         </div>
 
@@ -239,11 +231,10 @@ export function ScheduledTasksDialog({ onClose }: { onClose: () => void }) {
                 {form.kind === 'once' ? (
                   <label className="scheduled-tasks__field">
                     <span>{t('Date and time')}</span>
-                    <input
-                      className="input"
-                      type="datetime-local"
+                    <DateTimeField
+                      mode="datetime"
                       value={form.dateTime}
-                      onChange={(event) => setForm({ ...form, dateTime: event.target.value })}
+                      onChange={(dateTime) => setForm({ ...form, dateTime })}
                     />
                   </label>
                 ) : (
@@ -262,11 +253,10 @@ export function ScheduledTasksDialog({ onClose }: { onClose: () => void }) {
                     ) : null}
                     <label className="scheduled-tasks__field">
                       <span>{t('Time')}</span>
-                      <input
-                        className="input"
-                        type="time"
+                      <DateTimeField
+                        mode="time"
                         value={form.time}
-                        onChange={(event) => setForm({ ...form, time: event.target.value })}
+                        onChange={(time) => setForm({ ...form, time })}
                       />
                     </label>
                   </>
@@ -355,24 +345,44 @@ export function ScheduledTasksDialog({ onClose }: { onClose: () => void }) {
                           title={t('Edit')}
                           aria-label={t('Edit')}
                           disabled={busy}
-                          onClick={() => { setForm(editForm(task)); setError('') }}
+                          onClick={() => { setForm(editForm(task)); setConfirmingId(null); setError('') }}
                         >
                           <Pencil size={14} />
                         </button>
-                        <button
-                          className="icon-btn scheduled-task__delete"
-                          type="button"
-                          title={t('Delete')}
-                          aria-label={t('Delete')}
-                          disabled={busy}
-                          onClick={() => {
-                            if (window.confirm(t('Delete this scheduled task?'))) {
-                              void perform(task.id, () => window.pi.scheduledTasks.remove(task.id))
-                            }
-                          }}
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        {confirmingId === task.id ? (
+                          <div className="scheduled-task__confirm">
+                            <span>{t('Delete this scheduled task?')}</span>
+                            <button
+                              type="button"
+                              className="btn btn--sm btn--danger"
+                              disabled={busy}
+                              onClick={() => {
+                                setConfirmingId(null)
+                                void perform(task.id, () => window.pi.scheduledTasks.remove(task.id))
+                              }}
+                            >
+                              {t('Delete')}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--sm"
+                              onClick={() => setConfirmingId(null)}
+                            >
+                              {t('Cancel')}
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            className="icon-btn scheduled-task__delete"
+                            type="button"
+                            title={t('Delete')}
+                            aria-label={t('Delete')}
+                            disabled={busy}
+                            onClick={() => setConfirmingId(task.id)}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </div>
                     </article>
                   )
@@ -383,6 +393,5 @@ export function ScheduledTasksDialog({ onClose }: { onClose: () => void }) {
         )}
         {error && form ? <div className="scheduled-tasks__form-error"><AlertTriangle size={14} />{error}</div> : null}
       </div>
-    </div>
   )
 }

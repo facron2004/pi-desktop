@@ -10,22 +10,50 @@ function workspaceKey(value: string): string {
   return path.resolve(value).replace(/[/\\]+$/, '').toLowerCase()
 }
 
-/** One entry per folder. A later open of the same path replaces the earlier one. */
-function dedupeWorkspaces(workspaces: Workspace[]): Workspace[] {
+/**
+ * The project row order is stored by path and is independent of whether the
+ * folder is registered yet. Keep the user's order and drop duplicate spellings
+ * of the same folder.
+ */
+function normalizeProjectOrder(paths: unknown): string[] {
+  if (!Array.isArray(paths)) return []
+  const seen = new Set<string>()
+  const order: string[] = []
+  for (const item of paths) {
+    if (typeof item !== 'string' || !item) continue
+    const key = workspaceKey(item)
+    if (seen.has(key)) continue
+    seen.add(key)
+    order.push(item)
+  }
+  return order
+}
+
+/** One entry per folder. A later open of the same path replaces the earlier one.
+ *
+ * The array order is the sidebar order, and only an explicit drag may change
+ * it. `lastOpenedAt` records activity for other readers; it must never sort
+ * this list — opening a project used to pull it to the top on every settings
+ * write and undo the order the user dragged.
+ */
+export function dedupeWorkspaces(workspaces: Workspace[]): Workspace[] {
   const map = new Map<string, Workspace>()
   for (const item of workspaces) {
     if (!item?.path) continue
     const key = workspaceKey(item.path)
     const existing = map.get(key)
     if (!existing || (item.lastOpenedAt || 0) >= (existing.lastOpenedAt || 0)) {
+      // `Map.set` on an existing key keeps its original position, so replacing
+      // the newer duplicate does not move the project.
       map.set(key, item)
     }
   }
-  return [...map.values()].sort((a, b) => (b.lastOpenedAt || 0) - (a.lastOpenedAt || 0))
+  return [...map.values()]
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
+  projectOrder: [],
   pinnedSessions: [],
   theme: 'dark',
   language: 'en',
@@ -129,6 +157,7 @@ export class SettingsStore {
       fontFamily: normalizeFontFamily(parsed.fontFamily),
       customFg: normalizeThemeForeground(parsed),
       workspaces: dedupeWorkspaces(Array.isArray(parsed.workspaces) ? parsed.workspaces : []),
+      projectOrder: normalizeProjectOrder(parsed.projectOrder),
       pinnedSessions: Array.isArray(parsed.pinnedSessions) ? parsed.pinnedSessions : []
     }
   }
@@ -141,7 +170,8 @@ export class SettingsStore {
     this.data = {
       ...this.data,
       ...patch,
-      workspaces: dedupeWorkspaces(patch.workspaces ?? this.data.workspaces)
+      workspaces: dedupeWorkspaces(patch.workspaces ?? this.data.workspaces),
+      projectOrder: normalizeProjectOrder(patch.projectOrder ?? this.data.projectOrder)
     }
     this.write()
     // Pi reads its own startup model from the agent directory, not from this

@@ -27,13 +27,12 @@
 .viewer__actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--sp-1);
-  flex: 1 0 100%;
+  flex: 1 1 auto;
   flex-wrap: wrap;
   min-width: 0;
   max-width: 100%;
-  padding-top: var(--sp-2);
-  border-top: 1px solid var(--border-subtle);
 }
 
 @container inspector-content (max-width: 360px) {
@@ -54,6 +53,25 @@
 .viewer__code:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
+}
+
+/* The viewer is code, so it keeps the code face even when a parent sets the
+   UI font. Shiki paints colour on the spans; it must not change the face. */
+.viewer .viewer__code,
+.viewer .viewer__code pre,
+.viewer .viewer__code code,
+.viewer .viewer__code .line,
+.viewer .viewer__code .line span,
+.viewer .line::before {
+  font-family: var(--font-mono) !important;
+  font-weight: var(--weight-regular);
+  font-variant-ligatures: none;
+}
+
+.viewer .viewer__code pre.shiki,
+.viewer .viewer__code.snippet--plain {
+  font-size: var(--text-code-block);
+  line-height: var(--leading-code-block);
 }
 
 .viewer .viewer__code pre.shiki,
@@ -103,11 +121,12 @@
   border-radius: var(--r-sm);
   background: var(--bg-elevated);
   color: var(--text);
-  font-size: var(--text-2xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-code-block);
   font-variant-numeric: tabular-nums;
   text-align: center;
   outline: none;
-transition: border-color var(--dur-fast) var(--ease);
+  transition: border-color var(--dur-fast) var(--ease);
 }
 
 .fv-jump::placeholder {

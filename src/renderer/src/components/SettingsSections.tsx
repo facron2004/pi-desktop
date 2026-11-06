@@ -1,20 +1,15 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  AlertTriangle,
   Check,
   ChevronDown,
   ChevronRight,
   CircleHelp,
   Copy,
   Download,
-  FileJson,
   RefreshCw,
   Search,
-  Server,
-  ShieldOff,
   Sparkles,
-  Wrench,
   X
 } from 'lucide-react'
 import '../styles/appearance.css'
@@ -23,8 +18,6 @@ import type {
   AggregatedUsageStats,
   AuthStatus,
   DailyUsageStat,
-  McpConfig,
-  McpServerInfo,
   ModelInfo,
   PermissionMode,
   VersionCheckResult
@@ -42,6 +35,7 @@ import { DEFAULT_THINKING_LEVELS } from '../lib/thinking'
 import { useAppStore } from '../store/useAppStore'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Popover } from './Popover'
+import { ShortcutsList } from './ShortcutsList'
 import { Switch } from './Switch'
 
 function NativeMark({ src }: { src?: string }) {
@@ -1473,7 +1467,10 @@ export function UsageSettings() {
           </button>
         }
       >
-        <div className="usage-heatmap">
+        <div
+          className="usage-heatmap"
+          style={{ '--usage-week-count': heatmap.weekCount } as CSSProperties}
+        >
           <div className="usage-heatmap__summary">
             <span>{t('Past 180 days')}</span>
             <span>
@@ -1491,7 +1488,6 @@ export function UsageSettings() {
               <div className="usage-heatmap__calendar">
                 <div
                   className="usage-heatmap__months"
-                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, minmax(0, 1fr))` }}
                   aria-hidden="true"
                 >
                   {heatmap.monthLabels.map(({ week, label, fullLabel }) => (
@@ -1504,7 +1500,6 @@ export function UsageSettings() {
                   className="usage-heatmap__cells"
                   role="grid"
                   aria-label={t('Usage heatmap')}
-                  style={{ gridTemplateColumns: `repeat(${heatmap.weekCount}, minmax(0, 1fr))` }}
                 >
                   {heatmap.cells.map(({ date, day, week, weekday, level }) => {
                     const dateLabel = heatmap.fullDateFormatter.format(date)
@@ -1694,304 +1689,6 @@ export function UsageSettings() {
   )
 }
 
-export function PluginsSettings({ onClose }: { onClose?: () => void }) {
-  const settings = useAppStore((state) => state.settings)
-  const updateSettings = useAppStore((state) => state.updateSettings)
-  const commands = useAppStore((state) => state.commands)
-  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
-  const t = useT()
-
-  const [mcpConfig, setMcpConfig] = useState<McpConfig | null>(null)
-  const [mcpState, setMcpState] = useState<'loading' | 'error' | 'ready'>('loading')
-  const [filterKind, setFilterKind] = useState<'all' | 'extension' | 'skill'>('all')
-  const [query, setQuery] = useState('')
-
-  const loadMcp = useCallback(async () => {
-    setMcpState('loading')
-    try {
-      setMcpConfig(await window.pi.mcp.read())
-      setMcpState('ready')
-    } catch {
-      setMcpState('error')
-    }
-  }, [])
-
-  useEffect(() => {
-    void loadMcp()
-  }, [loadMcp, settings.trustProject])
-
-  const extensionCommands = useMemo(
-    () => commands.filter((cmd) => cmd.source === 'extension' || cmd.source === 'skill'),
-    [commands]
-  )
-
-  const filteredCommands = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    return extensionCommands.filter((cmd) => {
-      if (filterKind !== 'all' && cmd.source !== filterKind) return false
-      if (!needle) return true
-      return (
-        cmd.name.toLowerCase().includes(needle) ||
-        (cmd.description ?? '').toLowerCase().includes(needle)
-      )
-    })
-  }, [extensionCommands, filterKind, query])
-
-  const servers = mcpConfig?.servers ?? []
-  const enabledServers = servers.filter((s) => s.enabled).length
-
-  return (
-    <div className="settings-page">
-      <PageIntro
-        title={t('Plugins')}
-        description={t('Manage MCP servers, project extensions, and loaded skills or plugin commands.')}
-      />
-
-      <SettingsGroup title={t('Project resources')}>
-        <div className="field">
-          <div className="field__row settings-switch-row">
-            <Switch
-              checked={settings.trustProject !== false}
-              onChange={(value) => void updateSettings({ trustProject: value })}
-              label={t('Trust project-local extensions and settings')}
-            />
-            <span className="field__hint">
-              {t('Allow project-local .pi/extensions, .pi/skills and .pi/settings.json to load in all workspaces. Turn this off for untrusted code.')}
-            </span>
-          </div>
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup
-        title={t('MCP servers')}
-        action={
-          <div className="settings-inline-actions">
-            {mcpState === 'ready' ? (
-              <span className="settings-badge">
-                {enabledServers}/{servers.length} {t('enabled')}
-              </span>
-            ) : null}
-            <button
-              type="button"
-              className="btn btn--sm"
-              onClick={() => void loadMcp()}
-              disabled={mcpState === 'loading'}
-            >
-              <RefreshCw size={12} className={mcpState === 'loading' ? 'spin' : undefined} />
-              {t('Refresh')}
-            </button>
-          </div>
-        }
-      >
-        {mcpState === 'loading' ? (
-          <div className="settings-empty">
-            <RefreshCw size={13} className="spin" /> {t('Reading the MCP configuration…')}
-          </div>
-        ) : mcpState === 'error' || !mcpConfig ? (
-          <div className="settings-empty">
-            <AlertTriangle size={13} /> {t('Could not read the MCP configuration.')}
-          </div>
-        ) : (
-          <>
-            <div className="mcp__files">
-              <div className="mcp__file" data-missing={!mcpConfig.userExists || undefined}>
-                <FileJson size={12} />
-                <span className="mcp__file-scope">{t('User configuration')}</span>
-                <span className="mcp__file-path" title={mcpConfig.userPath}>
-                  {mcpConfig.userPath}
-                </span>
-                {!mcpConfig.userExists ? (
-                  <span className="mcp__file-badge">{t('not found')}</span>
-                ) : null}
-              </div>
-              <div className="mcp__file" data-missing={!mcpConfig.projectExists || undefined}>
-                <FileJson size={12} />
-                <span className="mcp__file-scope">{t('Project configuration')}</span>
-                <span className="mcp__file-path" title={mcpConfig.projectPath}>
-                  {mcpConfig.projectPath || '—'}
-                </span>
-                {!mcpConfig.projectExists ? (
-                  <span className="mcp__file-badge">{t('not found')}</span>
-                ) : null}
-              </div>
-            </div>
-
-            {mcpConfig.projectIgnored ? (
-              <p className="mcp__trust">
-                <ShieldOff size={12} />
-                {t('The project MCP configuration is ignored while project trust is off.')}
-              </p>
-            ) : null}
-
-            {mcpConfig.errors.map((err) => (
-              <p className="mcp__error" key={err}>
-                <AlertTriangle size={12} />
-                {err}
-              </p>
-            ))}
-
-            {servers.length === 0 ? (
-              <div className="settings-empty">
-                {t('No MCP servers are configured.')}{' '}
-                {t('Add servers with “pi mcp add …” or edit the JSON files above.')}
-              </div>
-            ) : (
-              <div className="settings-card-list">
-                {servers.map((server) => (
-                  <McpPluginCard key={server.name} server={server} />
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </SettingsGroup>
-
-      <SettingsGroup
-        title={t('Extensions & skills')}
-        action={<span className="settings-badge">{extensionCommands.length}</span>}
-      >
-        {extensionCommands.length === 0 ? (
-          <div className="settings-empty">
-            {t('No plugins or skills loaded in the current session.')}
-          </div>
-        ) : (
-          <>
-            <div className="settings-filter-bar">
-              <div className="segmented" role="group" aria-label={t('Extensions & skills')}>
-                <button
-                  type="button"
-                  data-active={filterKind === 'all'}
-                  aria-pressed={filterKind === 'all'}
-                  onClick={() => setFilterKind('all')}
-                >
-                  {t('All')}
-                </button>
-                <button
-                  type="button"
-                  data-active={filterKind === 'extension'}
-                  aria-pressed={filterKind === 'extension'}
-                  onClick={() => setFilterKind('extension')}
-                >
-                  {t('Plugins')}
-                </button>
-                <button
-                  type="button"
-                  data-active={filterKind === 'skill'}
-                  aria-pressed={filterKind === 'skill'}
-                  onClick={() => setFilterKind('skill')}
-                >
-                  {t('Skills')}
-                </button>
-              </div>
-              <div className="settings-search">
-                <Search size={13} />
-                <input
-                  value={query}
-                  placeholder={t('Filter plugins or skills…')}
-                  aria-label={t('Filter plugins or skills…')}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-                {query ? (
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    onClick={() => setQuery('')}
-                    aria-label={t('Clear the filter')}
-                  >
-                    <X size={12} />
-                  </button>
-                ) : null}
-              </div>
-            </div>
-
-            {filteredCommands.length === 0 ? (
-              <div className="settings-empty">
-                {t('No command matches')} “{query}”
-              </div>
-            ) : (
-              <div className="settings-card-list">
-                {filteredCommands.map((cmd) => (
-                  <div key={`${cmd.source}:${cmd.name}`} className="settings-card">
-                    <div className="settings-card__main">
-                      <div className="settings-card__title-row">
-                        {cmd.source === 'skill' ? <Sparkles size={13} /> : <Wrench size={13} />}
-                        <span className="settings-card__title">/{cmd.name}</span>
-                        <span
-                          className="settings-tag"
-                          data-tone={cmd.source === 'extension' ? 'accent' : undefined}
-                        >
-                          {cmd.source === 'extension' ? t('Plugin') : t('Skill')}
-                        </span>
-                        {cmd.sourceInfo?.scope ? (
-                          <span className="settings-tag">{cmd.sourceInfo.scope}</span>
-                        ) : null}
-                      </div>
-                      {cmd.description ? (
-                        <span className="settings-card__sub">{cmd.description}</span>
-                      ) : null}
-                    </div>
-                    <div className="settings-card__actions">
-                      <button
-                        type="button"
-                        className="btn btn--sm"
-                        onClick={() => {
-                          insertIntoComposer(`/${cmd.name} `, 'replace')
-                          onClose?.()
-                        }}
-                      >
-                        {t('Use in chat')}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </SettingsGroup>
-    </div>
-  )
-}
-
-function McpPluginCard({ server }: { server: McpServerInfo }) {
-  const t = useT()
-  const commandLine = [server.command, ...(server.args ?? [])].filter(Boolean).join(' ')
-  const meta = [
-    server.timeout ? `${t('timeout')} ${server.timeout}s` : null,
-    server.envKeys.length > 0 ? `${t('env')}: ${server.envKeys.join(', ')}` : null,
-    server.headerKeys.length > 0 ? `${t('headers')}: ${server.headerKeys.join(', ')}` : null
-  ].filter((part): part is string => Boolean(part))
-
-  return (
-    <div className="settings-card" data-disabled={!server.enabled || undefined}>
-      <div className="settings-card__main">
-        <div className="settings-card__title-row">
-          <Server size={13} />
-          <span className="settings-card__title">{server.name}</span>
-          <span className="settings-tag">
-            {server.scope === 'both'
-              ? t('project override')
-              : server.scope === 'project'
-                ? t('project')
-                : t('user')}
-          </span>
-          <span className="settings-tag">
-            {server.transport === 'unknown' ? t('unknown') : server.transport}
-          </span>
-          <span className="settings-tag" data-tone={server.enabled ? 'accent' : undefined}>
-            {server.enabled ? t('enabled') : t('disabled')}
-          </span>
-        </div>
-        {server.description ? <span className="settings-card__sub">{server.description}</span> : null}
-        <span className="settings-card__code">
-          {server.transport === 'http' && server.url ? server.url : commandLine || '—'}
-        </span>
-        {meta.length > 0 ? <span className="settings-card__sub">{meta.join(' · ')}</span> : null}
-      </div>
-    </div>
-  )
-}
-
 export function PersonalizationSettings({
   value,
   onChange
@@ -2055,6 +1752,22 @@ function ProjectSafetySettings() {
         />
       </div>
     </SettingsGroup>
+  )
+}
+
+/** The shortcut table as a settings page. `Ctrl+/` opens the same list in a
+ *  modal; both render `ShortcutsList`, so they can never show two different
+ *  tables. */
+export function ShortcutsSettings() {
+  const t = useT()
+  return (
+    <div className="settings-page">
+      <PageIntro
+        title={t('Keyboard shortcuts')}
+        description={t('All shortcuts in one place. Ctrl+/ opens this list from anywhere.')}
+      />
+      <ShortcutsList />
+    </div>
   )
 }
 

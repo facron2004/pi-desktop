@@ -34,7 +34,8 @@ export interface Project<Session extends SessionMeta = SessionMeta> {
 export function collectProjects<Session extends SessionMeta>(
   workspaces: Workspace[],
   sessions: Session[],
-  hiddenPaths: readonly string[] = []
+  hiddenPaths: readonly string[] = [],
+  projectOrder: readonly string[] = []
 ): Project<Session>[] {
   const hidden = new Set(hiddenPaths.map((path) => normalisePathKey(path)))
   const map = new Map<string, Project<Session>>()
@@ -89,16 +90,30 @@ export function collectProjects<Session extends SessionMeta>(
     project.sessions.push(session)
   }
 
-  return Array.from(map.values())
+  // `projectOrder` includes projects that are known only from sessions, so a
+  // folder keeps its row when it is registered later. Anything the list has
+  // not seen yet joins at the end instead of jumping above the rest.
+  const ordered: Project<Session>[] = []
+  const placed = new Set<string>()
+  for (const item of projectOrder) {
+    const key = normalisePathKey(item)
+    const project = map.get(key)
+    if (!project || placed.has(key)) continue
+    placed.add(key)
+    ordered.push(project)
+  }
+  for (const [key, project] of map) {
+    if (!placed.has(key)) ordered.push(project)
+  }
+  return ordered
 }
 
 /**
- * Keep the order the projects were added in.
+ * Keep the order `collectProjects` returned.
  *
- * Opening a conversation must not pull its folder to the top. `collectProjects`
- * already walks the settings list first, and that list is the creation order
- * until the user drags a row. `activePath` is unused on purpose: the open
- * project is marked, not moved.
+ * `collectProjects` already applies `settings.projectOrder`, which includes
+ * session-only projects; `activePath` is unused on purpose — the open project
+ * is marked, not moved.
  */
 export function sortProjects<Session extends SessionMeta>(
   projects: Project<Session>[],

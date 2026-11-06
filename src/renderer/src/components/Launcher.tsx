@@ -25,6 +25,7 @@ import {
   Sparkles,
   SquarePen,
   SquareTerminal,
+  Store,
   Sun,
   Target,
   Type
@@ -71,6 +72,7 @@ export interface LauncherShell {
   toggleSidebar: () => void
   openSettings: () => void
   openShortcuts: () => void
+  openMarketplace: () => void
 }
 
 /**
@@ -91,6 +93,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const updateSettings = useAppStore((state) => state.updateSettings)
   const workspaces = useAppStore((state) => state.settings.workspaces)
   const hiddenProjects = useAppStore((state) => state.settings.hiddenProjects)
+  const projectOrder = useAppStore((state) => state.settings.projectOrder)
   const sessions = useAppStore((state) => state.sessions)
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
@@ -358,18 +361,27 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       run: () => updateSettings({ fontScale: smallerFont })
     },
     {
+      id: 'marketplace',
+      title: 'Plugin and skill marketplace',
+      group: 'View',
+      icon: Store,
+      run: () => shell.openMarketplace()
+    },
+    {
       id: 'settings',
       title: 'Settings',
       group: 'View',
       icon: Settings,
+      hint: 'Ctrl+,',
       run: () => shell.openSettings()
     }
   ]
 
   // The projects come last, so the actions are what the user sees first.
-  const projects = sortProjects(collectProjects(workspaces, sessions, hiddenProjects), workspace?.path).filter(
-    (project) => !workspace || !samePath(project.path, workspace.path)
-  )
+  const projects = sortProjects(
+    collectProjects(workspaces, sessions, hiddenProjects, projectOrder),
+    workspace?.path
+  ).filter((project) => !workspace || !samePath(project.path, workspace.path))
   for (const project of projects) {
     actions.push({
       id: `project:${project.path}`,

@@ -169,6 +169,31 @@
   margin-bottom: 8px;
 }
 
+/* One effort is the same tick the stepped selector uses, not a second mark. */
+.effort-card[data-single='true'] .effort-card__header {
+  margin-bottom: 2px;
+}
+
+.effort-card__point {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: default;
+}
+
+button.effort-card__point:not(:disabled) {
+  cursor: pointer;
+}
+
+button.effort-card__point:disabled {
+  cursor: default;
+}
+
 .effort-card__title {
   font-size: var(--text-lg);
   font-weight: 600;
@@ -221,7 +246,8 @@
   color: var(--text-tertiary);
 }
 
-/* Slider Track & Thumb */
+/* Original capsule: solid fill, tick dots, round thumb.
+   The highest step adds a meteor across the fill. */
 
 .effort-card__slider {
   position: relative;
@@ -255,6 +281,7 @@
   border-radius: var(--r-full);
   background: var(--bg-active);
   overflow: hidden;
+  container-type: inline-size;
 }
 
 :root[data-theme='light'] .effort-card__track {
@@ -268,12 +295,93 @@
   bottom: 0;
   background: var(--accent);
   border-radius: var(--r-full);
+  overflow: hidden;
   transition: width 0.15s cubic-bezier(0.2, 0, 0, 1);
   pointer-events: none;
 }
 
 .effort-card__slider[data-dragging='true'] .effort-card__fill {
   transition: none;
+}
+
+/* Shooting stars only at the top step: a bright point and the dots of its tail. */
+.effort-card__meteors {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.effort-card__meteors i {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 3px;
+  margin-top: -1.5px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    -6px 0 0 -0.4px rgba(255, 255, 255, 0.9),
+    -11px 0 0 -0.8px rgba(255, 255, 255, 0.65),
+    -16px 0 0 -1.1px rgba(255, 255, 255, 0.4),
+    -21px 0 0 -1.3px rgba(255, 255, 255, 0.18);
+  animation: effort-meteor 1.7s linear infinite;
+}
+
+.effort-card__meteors i:nth-child(1) {
+  top: 28%;
+  animation-duration: 1.45s;
+}
+
+.effort-card__meteors i:nth-child(2) {
+  top: 70%;
+  width: 2px;
+  height: 2px;
+  animation-duration: 2.05s;
+  animation-delay: 0.55s;
+}
+
+.effort-card__meteors i:nth-child(3) {
+  top: 46%;
+  animation-duration: 1.8s;
+  animation-delay: 0.95s;
+}
+
+.effort-card__meteors i:nth-child(4) {
+  top: 62%;
+  width: 2px;
+  height: 2px;
+  animation-duration: 2.3s;
+  animation-delay: 1.35s;
+}
+
+.effort-card__meteors i:nth-child(5) {
+  top: 36%;
+  animation-duration: 1.6s;
+  animation-delay: 1.7s;
+}
+
+@keyframes effort-meteor {
+  0% {
+    transform: translate3d(-28px, 0, 0);
+    opacity: 0;
+  }
+  14% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(100cqi, 0, 0);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .effort-card__meteors {
+    display: none;
+  }
 }
 
 .effort-card__dot {
@@ -297,6 +405,11 @@
 
 :root:not([data-theme='light']) .effort-card__dot[data-filled='false'] {
   background: rgba(255, 255, 255, 0.22);
+}
+
+.effort-card__point .effort-card__dot {
+  position: static;
+  transform: none;
 }
 
 .effort-card__thumb {

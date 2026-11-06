@@ -3,6 +3,20 @@
  * and the renderer. Everything crossing the IPC boundary is described here.
  */
 import type { ProviderConnection, ProviderModel, ProviderProbeResult, ProviderProfile, SaveProviderInput } from './providers'
+import type {
+  CreateResourceInput,
+  ManagedPackage,
+  MarketplaceActionResult,
+  MarketplaceInstallResult,
+  MarketplaceSnapshot
+} from './marketplace'
+export type {
+  CreateResourceInput,
+  ManagedPackage,
+  MarketplaceActionResult,
+  MarketplaceInstallResult,
+  MarketplaceSnapshot
+} from './marketplace'
 
 /* ------------------------------------------------------------------ *
  * Pi RPC protocol
@@ -274,6 +288,7 @@ export interface Workspace {
   id: string
   path: string
   name: string
+  /** Activity metadata; the sidebar order is the array order, never this. */
   lastOpenedAt: number
   folders?: string[]
   /** Emoji the project wears instead of the folder icon. */
@@ -625,6 +640,11 @@ export interface ToolApproval {
 
 export interface AppSettings {
   workspaces: Workspace[]
+  /**
+   * Display order of every project row, including folders only known from
+   * sessions. This is the sidebar order; selecting a project never changes it.
+   */
+  projectOrder?: string[]
   /** Null explicitly selects working without a project. */
   activeWorkspaceId?: string | null
   /** Session files the user pinned to the top of the sidebar. */
@@ -1010,6 +1030,28 @@ export interface PiDesktopBridge {
   mcp: {
     /** The MCP servers the configuration files describe for the open project. */
     read(): Promise<McpConfig>
+    setEnabled(name: string, enabled: boolean): Promise<MarketplaceActionResult>
+    remove(name: string): Promise<MarketplaceActionResult>
+  }
+  marketplace: {
+    /** Curated GitHub snapshot, with a cached refresh layered on top when one exists. */
+    list(): Promise<MarketplaceSnapshot>
+    /** Query GitHub for current star counts and merge them into the snapshot. */
+    refresh(): Promise<MarketplaceSnapshot>
+    /** Ids (`owner/repo`) of marketplace entries already installed in Pi. */
+    installed(): Promise<string[]>
+    /** Install one entry through `pi install`; `id` must exist in the snapshot. */
+    install(id: string): Promise<MarketplaceInstallResult>
+    /** Install an arbitrary npm package by name through `pi install npm:<name>`. */
+    installNpm(packageName: string): Promise<MarketplaceInstallResult>
+    /** Installed packages that can be switched or removed. */
+    managed(): Promise<ManagedPackage[]>
+    setPackageEnabled(id: string, enabled: boolean): Promise<MarketplaceActionResult>
+    removePackage(id: string): Promise<MarketplaceActionResult>
+    /** Create a local plugin or skill scaffold under the Pi agent directory. */
+    createResource(input: CreateResourceInput): Promise<MarketplaceActionResult>
+    /** Import and install a GitHub repository as a Pi package. */
+    installGitRepository(repository: string): Promise<MarketplaceInstallResult>
   }
   git: {
     /** Branch, ahead/behind and the working tree of the open workspace. */

@@ -10,8 +10,9 @@ import { resolveThinkingLevel } from '../lib/thinking'
  * Compact & refined design:
  * - Centered level title in bold accent color
  * - Clickable model switch subtitle
- * - Stepped capsule slider with accent fill, tick dots, and round white thumb
- * - Smooth dragging with pointer capture, discrete step snapping on release
+ * - Stepped capsule slider when the model offers more than one effort
+ * - At the highest step a meteor crosses the fill
+ * - A single effort has nothing to slide: one tick, no track
  */
 
 const LEVEL_LABELS: Record<string, string> = {
@@ -76,6 +77,27 @@ export function EffortSlider({
   const [dragRatio, setDragRatio] = useState<number | null>(null)
 
   const last = Math.max(0, levels.length - 1)
+  const onlyLevel = levels.length === 1 ? levels[0] : undefined
+  // A lone level is already the choice. Matching it exactly means the click
+  // already happened (or the session restored it); anything else is one click.
+  const onlyApplied = Boolean(
+    onlyLevel &&
+      ((liveLevel && liveLevel.toLowerCase() === onlyLevel.toLowerCase()) ||
+        (!piState && savedLevel && savedLevel.toLowerCase() === onlyLevel.toLowerCase()))
+  )
+  const applyOnly = useCallback(async () => {
+    if (!onlyLevel || onlyApplied || busyRef.current || !ready || disabled) return
+    busyRef.current = true
+    setBusy(true)
+    onBusyChange(true)
+    try {
+      await setThinkingLevel(onlyLevel)
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+      onBusyChange(false)
+    }
+  }, [disabled, onlyApplied, onlyLevel, onBusyChange, ready, setThinkingLevel])
   const hasSelection = current !== undefined || previewIndex !== null
   const currentIndex = current
     ? Math.max(0, levels.findIndex((level) => level === current))
@@ -84,7 +106,6 @@ export function EffortSlider({
   const enabled = ready && !disabled && !busy && levels.length > 1
   const shownLevel = previewIndex === null ? current : levels[previewIndex]
   const label = shownLevel ? t(levelLabel(shownLevel)) : t('Automatic (Pi default)')
-
   const activeRatio = dragRatio !== null ? dragRatio : last > 0 && hasSelection ? index / last : 0
 
   const commit = useCallback(
@@ -233,7 +254,8 @@ export function EffortSlider({
   }
 
   const isOff = shownLevel?.toLowerCase() === 'off'
-
+  const singleNeedsClick = Boolean(onlyLevel) && !onlyApplied && ready && !disabled
+  const atPeak = hasSelection && index === last && !isOff
   const fillWidth = !hasSelection
     ? '0%'
     : last > 0
@@ -243,12 +265,10 @@ export function EffortSlider({
           ? '100%'
           : `calc(12px + (100% - 24px) * ${activeRatio})`
       : '100%'
-
-  const thumbRatio = hasSelection ? activeRatio : 0.5
-  const thumbLeft = last > 0 ? `calc(12px + (100% - 24px) * ${thumbRatio})` : '50%'
+  const thumbLeft = last > 0 ? `calc(12px + (100% - 24px) * ${hasSelection ? activeRatio : 0.5})` : '50%'
 
   return (
-    <div className="effort-card">
+    <div className="effort-card" data-single={onlyLevel ? 'true' : undefined}>
       <div className="effort-card__header">
         <div className="effort-card__title" data-off={isOff ? 'true' : undefined}>
           {label}
@@ -265,44 +285,69 @@ export function EffortSlider({
         </button>
       </div>
 
-      <div
-        ref={trackRef}
-        className="effort-card__slider"
-        data-disabled={enabled ? undefined : 'true'}
-        data-dragging={dragRatio !== null ? 'true' : undefined}
-        role="slider"
-        tabIndex={enabled ? 0 : -1}
-        aria-label={t('Reasoning effort')}
-        aria-valuemin={0}
-        aria-valuemax={Math.max(0, last)}
-        aria-valuenow={index}
-        aria-valuetext={label}
-        aria-disabled={!enabled}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerCancel}
-        onKeyDown={handleKeyDown}
-        title={shownLevel ? t(levelHint(shownLevel)) : undefined}
-      >
-        <div className="effort-card__track">
-          <div className="effort-card__fill" style={{ width: fillWidth }} />
-          {levels.map((lvl, i) => {
-            const isFilled = hasSelection && activeRatio > 0.001 && i <= (previewIndex ?? currentIndex)
-            const dotPosition = last > 0 ? `calc(12px + (100% - 24px) * ${i / last})` : '50%'
-            return (
-              <span
-                key={lvl}
-                className="effort-card__dot"
-                data-filled={isFilled ? 'true' : 'false'}
-                style={{ left: dotPosition }}
-                aria-hidden="true"
-              />
-            )
-          })}
+      {onlyLevel ? (
+        <button
+          type="button"
+          className="effort-card__point"
+          aria-label={label}
+          title={t(levelHint(onlyLevel))}
+          disabled={!singleNeedsClick || busy}
+          onClick={() => {
+            if (singleNeedsClick) void applyOnly()
+          }}
+        >
+          <span className="effort-card__dot" data-filled="false" aria-hidden="true" />
+        </button>
+      ) : (
+        <div
+          ref={trackRef}
+          className="effort-card__slider"
+          data-disabled={enabled ? undefined : 'true'}
+          data-dragging={dragRatio !== null ? 'true' : undefined}
+          data-peak={atPeak ? 'true' : undefined}
+          role="slider"
+          tabIndex={enabled ? 0 : -1}
+          aria-label={t('Reasoning effort')}
+          aria-valuemin={0}
+          aria-valuemax={Math.max(0, last)}
+          aria-valuenow={index}
+          aria-valuetext={label}
+          aria-disabled={!enabled}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
+          onKeyDown={handleKeyDown}
+          title={shownLevel ? t(levelHint(shownLevel)) : undefined}
+        >
+          <div className="effort-card__track">
+            <div className="effort-card__fill" style={{ width: fillWidth }} />
+            {atPeak ? (
+              <span className="effort-card__meteors" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+                <i />
+                <i />
+              </span>
+            ) : null}
+            {levels.map((lvl, i) => {
+              const dotPosition = last > 0 ? `calc(12px + (100% - 24px) * ${i / last})` : '50%'
+              const filled = hasSelection && activeRatio > 0.001 && i <= index
+              return (
+                <span
+                  key={lvl}
+                  className="effort-card__dot"
+                  data-filled={filled ? 'true' : 'false'}
+                  style={{ left: dotPosition }}
+                  aria-hidden="true"
+                />
+              )
+            })}
+          </div>
+          <div className="effort-card__thumb" style={{ left: thumbLeft }} aria-hidden="true" />
         </div>
-        <div className="effort-card__thumb" style={{ left: thumbLeft }} aria-hidden="true" />
-      </div>
+      )}
     </div>
   )
 }

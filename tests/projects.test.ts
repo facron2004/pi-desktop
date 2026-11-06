@@ -83,3 +83,38 @@ test('chats without a project do not create a project entry', () => {
   ]
   assert.deepEqual(collectProjects([], sessions), [])
 })
+
+test('projectOrder keeps a session-only project in place when it becomes registered', () => {
+  const sessions = [
+    { id: 'a', file: 'a.jsonl', cwd: 'C:/alpha', preview: 'a', updatedAt: 30, messageCount: 1 },
+    { id: 'b', file: 'b.jsonl', cwd: 'C:/beta', preview: 'b', updatedAt: 20, messageCount: 1 }
+  ]
+  const order = ['C:/alpha', 'C:/beta']
+
+  assert.deepEqual(
+    collectProjects([], sessions, [], order).map((project) => project.name),
+    ['alpha', 'beta']
+  )
+  // Registering beta (as opening it does) must not move it ahead of alpha.
+  assert.deepEqual(
+    collectProjects(
+      [{ id: 'beta', path: 'C:/beta', name: 'beta', lastOpenedAt: Date.now() }],
+      sessions,
+      [],
+      order
+    ).map((project) => project.name),
+    ['alpha', 'beta']
+  )
+})
+
+test('a project missing from projectOrder joins at the end', () => {
+  const sessions = [
+    { id: 'a', file: 'a.jsonl', cwd: 'C:/alpha', preview: 'a', updatedAt: 30, messageCount: 1 },
+    { id: 'b', file: 'b.jsonl', cwd: 'C:/beta', preview: 'b', updatedAt: 20, messageCount: 1 }
+  ]
+
+  assert.deepEqual(
+    collectProjects([], sessions, [], ['C:/beta']).map((project) => project.name),
+    ['beta', 'alpha']
+  )
+})

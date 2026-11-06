@@ -42,7 +42,19 @@ import { resolvePiLaunch } from './pi/locate'
 import { getModelThinkingLevels } from './pi/model-catalog'
 import { readTraceHint } from './pi/trace'
 import type { SessionSupervisor } from './pi/supervisor'
-import { readMcpConfig } from './mcp'
+import { readMcpConfig, removeMcpServer, setMcpServerEnabled } from './mcp'
+import {
+  createResource,
+  installGitRepository,
+  installMarketplaceEntry,
+  installNpmPackage,
+  listInstalledMarketplaceIds,
+  listManagedPackages,
+  listMarketplace,
+  refreshMarketplace,
+  removePackage,
+  setPackageEnabled
+} from './marketplace'
 import type { MemoryService } from './memory/service'
 import type { RemoteAccessService } from './remote-access'
 import { readEmojiFont } from './emoji-font'
@@ -226,13 +238,22 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   dockerfile: 'dockerfile'
 }
 
-function projectlessRoot(): string {
+function projectlessPath(): string {
   return path.join(app.getPath('userData'), 'chats')
+}
+
+function projectlessRoot(): string {
+  const dir = projectlessPath()
+  // This folder is also handed to child processes as their cwd (Pi CLI
+  // installs, one-shot titles). Windows spawn fails with ENOENT when the cwd
+  // does not exist, so it has to be there before anything runs inside it.
+  mkdirSync(dir, { recursive: true })
+  return dir
 }
 
 /** Keep the default working directory out of the user's project list. */
 function withoutProjectFolder<T extends { cwd: string }>(session: T): T {
-  return session.cwd && path.relative(projectlessRoot(), session.cwd) === ''
+  return session.cwd && path.relative(projectlessPath(), session.cwd) === ''
     ? { ...session, cwd: '' }
     : session
 }
@@ -1154,6 +1175,68 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('mcp:read', () =>
     readMcpConfig(workspaceRoot(context), settings.get().trustProject)
   )
+  ipcMain.handle('mcp:setEnabled', (_event, name: string, enabled: boolean) =>
+    setMcpServerEnabled(name, enabled, workspaceRoot(context))
+  )
+  ipcMain.handle('mcp:remove', (_event, name: string) =>
+    removeMcpServer(name, workspaceRoot(context))
+  )
+
+  // The marketplace snapshot is bundled; refresh and install are the only
+  // paths that touch the network or the Pi CLI.
+  ipcMain.handle('marketplace:list', () => listMarketplace())
+  ipcMain.handle('marketplace:refresh', () => refreshMarketplace())
+  ipcMain.handle('marketplace:installed', () =>
+    listInstalledMarketplaceIds({ cwd: workspaceRoot(context) })
+  )
+  ipcMain.handle('marketplace:managed', () =>
+    listManagedPackages({ cwd: workspaceRoot(context) })
+  )
+  ipcMain.handle('marketplace:install', (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id.trim()) {
+      return { ok: false, output: 'Invalid marketplace entry id.' }
+    }
+    return installMarketplaceEntry(id, {
+      cwd: workspaceRoot(context),
+      customPiPath: settings.get().piPath
+    })
+  })
+  ipcMain.handle('marketplace:installNpm', (_event, packageName: unknown) => {
+    if (typeof packageName !== 'string' || !packageName.trim()) {
+      return { ok: false, output: 'Invalid npm package name.' }
+    }
+    return installNpmPackage(packageName, {
+      cwd: workspaceRoot(context),
+      customPiPath: settings.get().piPath
+    })
+  })
+  ipcMain.handle('marketplace:installGitRepository', (_event, repository: unknown) => {
+    if (typeof repository !== 'string' || !repository.trim()) {
+      return { ok: false, output: 'Invalid GitHub repository.' }
+    }
+    return installGitRepository(repository, {
+      cwd: workspaceRoot(context),
+      customPiPath: settings.get().piPath
+    })
+  })
+  ipcMain.handle('marketplace:createResource', (_event, input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      return { ok: false, output: 'Invalid resource input.' }
+    }
+    return createResource(input as Parameters<typeof createResource>[0])
+  })
+  ipcMain.handle('marketplace:setPackageEnabled', (_event, id: unknown, enabled: unknown) => {
+    if (typeof id !== 'string' || !id.trim() || typeof enabled !== 'boolean') {
+      return { ok: false, output: 'Invalid package action.' }
+    }
+    return setPackageEnabled(id, enabled, workspaceRoot(context))
+  })
+  ipcMain.handle('marketplace:removePackage', (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id.trim()) {
+      return { ok: false, output: 'Invalid package id.' }
+    }
+    return removePackage(id, workspaceRoot(context))
+  })
 
   ipcMain.handle('shell:nativeIcons', () => nativeAppIcons())
 

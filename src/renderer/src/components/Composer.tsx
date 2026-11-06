@@ -19,6 +19,7 @@ import { ProjectSelector } from './ProjectSelector'
 import { BranchMenu } from './BranchMenu'
 import { PermissionPicker } from './PermissionPicker'
 import { AddMenu } from './AddMenu'
+import { UsageBar } from './UsageBar'
 
 interface SlashMatch {
   query: string
@@ -789,6 +790,7 @@ export function Composer() {
             )}
           </div>
         </div>
+        <UsageBar />
       </div>
     </div>
   )

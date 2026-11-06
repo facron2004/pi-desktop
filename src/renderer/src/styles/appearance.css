@@ -860,9 +860,13 @@
 
 /* ---- Usage stats overview & breakdowns ---- */
 .usage-heatmap {
+  --usage-cell-size: 12px;
+  --usage-cell-gap: 4px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  width: 100%;
+  max-width: 100%;
 }
 
 .usage-heatmap__summary,
@@ -885,32 +889,34 @@
 
 .usage-heatmap__layout {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
-  gap: 7px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 6px;
   min-width: 0;
 }
 
 .usage-heatmap__weekdays {
   display: grid;
-  grid-template-rows: 14px repeat(7, 20px);
-  gap: 4px;
+  grid-template-rows: 14px repeat(7, var(--usage-cell-size));
+  gap: var(--usage-cell-gap);
   color: var(--text-faint);
   font-size: 9px;
-  line-height: 20px;
+  line-height: var(--usage-cell-size);
   text-align: right;
 }
 
 .usage-heatmap__calendar {
   display: grid;
   grid-template-rows: 14px auto;
-  gap: 4px;
+  gap: var(--usage-cell-gap);
   min-width: 0;
 }
 
 .usage-heatmap__months,
 .usage-heatmap__cells {
   display: grid;
-  column-gap: 4px;
+  grid-template-columns: repeat(var(--usage-week-count), minmax(0, 1fr));
+  column-gap: var(--usage-cell-gap);
+  width: 100%;
   min-width: 0;
 }
 
@@ -923,14 +929,14 @@
 }
 
 .usage-heatmap__cells {
-  grid-template-rows: repeat(7, 20px);
-  row-gap: 4px;
+  grid-template-rows: repeat(7, var(--usage-cell-size));
+  row-gap: var(--usage-cell-gap);
 }
 
 .usage-heatmap__cell {
   width: 100%;
-  height: 20px;
-  border-radius: 4px;
+  height: var(--usage-cell-size);
+  border-radius: 3px;
   background: var(--surface-sunken);
 }
 
@@ -956,8 +962,8 @@
 }
 
 .usage-heatmap__legend .usage-heatmap__cell {
-  width: 14px;
-  height: 14px;
+  width: var(--usage-cell-size);
+  height: var(--usage-cell-size);
   flex: 0 0 auto;
 }
 

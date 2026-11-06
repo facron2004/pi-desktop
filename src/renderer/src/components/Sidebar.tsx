@@ -92,6 +92,7 @@ export function Sidebar({
   const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const pendingProject = useAppStore((state) => state.pendingProject)
   const selectSession = useAppStore((state) => state.selectSession)
+  const deskPage = useAppStore((state) => state.deskPage)
   const stop = useAppStore((state) => state.stop)
   const stopSession = useAppStore((state) => state.stopSession)
   const newChat = useAppStore((state) => state.newChat)
@@ -141,10 +142,6 @@ export function Sidebar({
 
   // Drag the right edge to make the sidebar wider or narrower.
   const widthRef = useRef(0)
-  const listRef = useRef<HTMLDivElement>(null)
-  const [listAtTop, setListAtTop] = useState(true)
-  const [listAtBottom, setListAtBottom] = useState(true)
-  const [listOverflows, setListOverflows] = useState(false)
   const startResize = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       if (!onResize) return
@@ -287,19 +284,37 @@ export function Sidebar({
   )
 
   const projects = useMemo(() => {
-    const list = collectProjects(settings.workspaces, listed, settings.hiddenProjects)
+    const list = collectProjects(
+      settings.workspaces,
+      listed,
+      settings.hiddenProjects,
+      settings.projectOrder
+    )
     if (!needle) return list
     for (const project of list) {
       project.sessions = project.sessions.filter((session) => matches(session, needle))
     }
     return list
-  }, [settings.workspaces, settings.hiddenProjects, listed, needle])
+  }, [settings.workspaces, settings.hiddenProjects, settings.projectOrder, listed, needle])
+
+  // Folders first seen through a session become rows without being registered.
+  // Give each one a place in the order now, so opening it later cannot move it
+  // into the registered block.
+  useEffect(() => {
+    const order = settings.projectOrder ?? []
+    if (projects.length === 0) return
+    const known = new Set(order.map((path) => normalisePathKey(path)))
+    const missing = projects
+      .filter((project) => project.path && !known.has(normalisePathKey(project.path)))
+      .map((project) => project.path)
+    if (missing.length > 0) void updateSettings({ projectOrder: [...order, ...missing] })
+  }, [projects, settings.projectOrder, updateSettings])
 
   const ordered = useMemo(() => sortProjects(projects), [projects])
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null)
   const [draggingPath, setDraggingPath] = useState<string | null>(null)
+  const [dropLineTop, setDropLineTop] = useState<number | null>(null)
   const dragPath = useRef<string | null>(null)
-  const pressTimer = useRef<number | null>(null)
   const suppressClick = useRef(false)
   const orderRef = useRef<Project<ConversationRow>[] | null>(null)
   const shown = useMemo(() => {
@@ -315,6 +330,12 @@ export function Sidebar({
     }
     return next
   }, [ordered, orderOverride])
+  // Pointer handlers live for the duration of a drag; they must read the list
+  // as it is now, not the one captured when the press started.
+  const shownRef = useRef(shown)
+  useEffect(() => {
+    shownRef.current = shown
+  }, [shown])
 
   const pinned = useMemo(
     () => new Set(settings.pinnedSessions ?? []),
@@ -377,7 +398,23 @@ export function Sidebar({
     for (const item of current) {
       if (!rebuilt.some((entry) => entry.id === item.id)) rebuilt.push(item)
     }
-    await updateSettings({ workspaces: rebuilt })
+    await updateSettings({
+      workspaces: rebuilt,
+      projectOrder: next.map((project) => project.path)
+    })
+  }
+
+  /** Move a project one row up or down from its action menu. */
+  const moveProject = (project: Project<ConversationRow>, delta: number) => {
+    const list = shownRef.current
+    const from = list.findIndex((item) => samePath(item.path, project.path))
+    const to = from + delta
+    if (from < 0 || to < 0 || to >= list.length) return
+    const next = list.slice()
+    const [item] = next.splice(from, 1)
+    next.splice(to, 0, item)
+    setOrderOverride(next.map((entry) => normalisePathKey(entry.path)))
+    void persistOrder(next).finally(() => setOrderOverride(null))
   }
 
   // The icon belongs to the project, not to the conversation list, so it is
@@ -399,65 +436,163 @@ export function Sidebar({
     }
   }
 
-  const onProjectPointerDown = (project: Project<ConversationRow>, event: React.PointerEvent<HTMLButtonElement>) => {
+  // Dragging starts as soon as the pointer travels a few pixels. The row is a
+  // button, so a plain click still folds the list; only a real move starts the
+  // drag and suppresses the click that follows.
+  const onProjectPointerDown = (
+    project: Project<ConversationRow>,
+    event: React.PointerEvent<HTMLButtonElement>
+  ) => {
     if (event.button !== 0 || needle) return
-    const startY = event.clientY
-    if (pressTimer.current !== null) window.clearTimeout(pressTimer.current)
-    pressTimer.current = window.setTimeout(() => {
-      dragPath.current = project.path
-      orderRef.current = shown
-      setDraggingPath(project.path)
-      suppressClick.current = true
-    }, 420)
+    // Renaming happens in an input inside the row; selecting its text is not a
+    // drag.
+    if ((event.target as HTMLElement).closest('input, textarea, [contenteditable="true"]')) return
 
-    const move = (moveEvent: PointerEvent) => {
-      if (!dragPath.current) {
-        if (Math.abs(moveEvent.clientY - startY) > 8 && pressTimer.current !== null) {
-          window.clearTimeout(pressTimer.current)
-          pressTimer.current = null
-        }
-        return
-      }
-      const rows = document.querySelectorAll<HTMLElement>('.project-tree > .project')
-      let targetPath: string | null = null
+    const handle = event.currentTarget
+    const pointerId = event.pointerId
+    try {
+      handle.setPointerCapture(pointerId)
+    } catch {
+      /* pointer capture is best-effort */
+    }
+    const startX = event.clientX
+    const startY = event.clientY
+    const tree = event.currentTarget.closest<HTMLElement>('.project-tree')
+    const scroller = document.getElementById('sidebar-content')
+    let pointerX = startX
+    let pointerY = startY
+    let started = false
+    let frame = 0
+
+    const listWithoutDragged = (): Project<ConversationRow>[] => {
+      const dragging = dragPath.current
+      if (!dragging) return shownRef.current
+      return shownRef.current.filter((item) => !samePath(item.path, dragging))
+    }
+
+    // The line is measured against the tree rather than the scroller, so the
+    // same number works while the list scrolls under the pointer.
+    const placeDrop = () => {
+      const dragging = dragPath.current
+      if (!dragging || !tree) return
+      const items = listWithoutDragged()
+      const treeTop = tree.getBoundingClientRect().top
+      const rows = Array.from(tree.children).filter(
+        (node): node is HTMLElement =>
+          node instanceof HTMLElement && node.classList.contains('project')
+      )
+      let insertAt = items.length
+      let lineTop: number | null = null
+
       for (const row of rows) {
-        const head = row.querySelector('.project__row') ?? row
+        const path = row.dataset.path
+        if (!path || samePath(path, dragging)) continue
+        const head = row.querySelector<HTMLElement>('.project__row') ?? row
         const box = head.getBoundingClientRect()
-        if (moveEvent.clientY >= box.top && moveEvent.clientY <= box.bottom) {
-          targetPath = row.dataset.path ?? null
+        if (pointerY < box.top + box.height / 2) {
+          const index = items.findIndex((item) => samePath(item.path, path))
+          if (index >= 0) insertAt = index
+          lineTop = box.top - treeTop
           break
         }
       }
-      if (!targetPath || samePath(targetPath, dragPath.current)) return
-      const list = orderRef.current ?? shown
-      const from = list.findIndex((item) => samePath(item.path, dragPath.current ?? ''))
-      const to = list.findIndex((item) => samePath(item.path, targetPath))
-      if (from < 0 || to < 0 || from === to) return
-      const next = list.slice()
-      const [item] = next.splice(from, 1)
-      next.splice(to, 0, item)
+      if (lineTop === null) {
+        const lastProject = [...rows]
+          .reverse()
+          .find((row) => Boolean(row.dataset.path) && !samePath(row.dataset.path!, dragging))
+        // The drop lands after the whole project block, conversations included,
+        // so the indicator belongs below the block rather than under its header.
+        lineTop = lastProject ? lastProject.getBoundingClientRect().bottom - treeTop : 0
+      }
+
+      const dragged = shownRef.current.find((item) => samePath(item.path, dragging))
+      if (!dragged) return
+      const next = items.slice()
+      next.splice(insertAt, 0, dragged)
       orderRef.current = next
-      setOrderOverride(next.map((item) => normalisePathKey(item.path)))
+      setDropLineTop(lineTop)
     }
 
-    const up = () => {
-      if (pressTimer.current !== null) window.clearTimeout(pressTimer.current)
-      pressTimer.current = null
-      const next = orderRef.current
-      const moved = dragPath.current
-      const before = shown.map((item) => normalisePathKey(item.path)).join('\n')
-      const after = (next ?? []).map((item) => normalisePathKey(item.path)).join('\n')
-      dragPath.current = null
-      orderRef.current = null
+    const scrollWhileDragging = () => {
+      if (!started || !dragPath.current) return
+      if (scroller) {
+        const box = scroller.getBoundingClientRect()
+        if (pointerX >= box.left && pointerX <= box.right) {
+          const edge = 44
+          const distance =
+            pointerY < box.top + edge
+              ? pointerY - (box.top + edge)
+              : pointerY > box.bottom - edge
+                ? pointerY - (box.bottom - edge)
+                : 0
+          if (distance !== 0) {
+            const before = scroller.scrollTop
+            const delta = Math.max(-18, Math.min(18, distance / 2))
+            scroller.scrollTop = before + delta
+            if (scroller.scrollTop !== before) placeDrop()
+          }
+        }
+      }
+      frame = window.requestAnimationFrame(scrollWhileDragging)
+    }
+
+    const move = (moveEvent: PointerEvent) => {
+      pointerX = moveEvent.clientX
+      pointerY = moveEvent.clientY
+      if (!started) {
+        if (Math.hypot(pointerX - startX, pointerY - startY) < 4) return
+        started = true
+        dragPath.current = project.path
+        orderRef.current = shownRef.current
+        suppressClick.current = true
+        setDraggingPath(project.path)
+        document.body.classList.add('is-project-dragging')
+        frame = window.requestAnimationFrame(scrollWhileDragging)
+      }
+      placeDrop()
+    }
+
+    const finish = (commit: boolean) => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
+      window.removeEventListener('blur', cancel)
+      handle.removeEventListener('lostpointercapture', lost)
+      try {
+        if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId)
+      } catch {
+        /* pointer capture may already be gone */
+      }
+      if (frame) window.cancelAnimationFrame(frame)
+      document.body.classList.remove('is-project-dragging')
+      const next = orderRef.current
+      const wasDragging = started
+      dragPath.current = null
+      orderRef.current = null
       setDraggingPath(null)
-      if (moved && next && before !== after) void persistOrder(next).finally(() => setOrderOverride(null))
-      else setOrderOverride(null)
+      setDropLineTop(null)
+      if (wasDragging) {
+        // The click that follows pointerup would otherwise fold the row.
+        window.setTimeout(() => {
+          suppressClick.current = false
+        }, 0)
+      }
+      if (!commit || !wasDragging || !next) return
+      const before = shownRef.current.map((item) => normalisePathKey(item.path)).join('\n')
+      const after = next.map((item) => normalisePathKey(item.path)).join('\n')
+      if (before === after) return
+      setOrderOverride(next.map((item) => normalisePathKey(item.path)))
+      void persistOrder(next).finally(() => setOrderOverride(null))
     }
+    const up = () => finish(true)
+    const cancel = () => finish(false)
+    const lost = () => finish(false)
 
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
+    window.addEventListener('blur', cancel)
+    handle.addEventListener('lostpointercapture', lost)
   }
 
   const openProject = async (project: Project<ConversationRow>) => {
@@ -596,26 +731,6 @@ export function Sidebar({
       )
     })
 
-  useEffect(() => {
-    const node = listRef.current
-    if (!node) return
-    const measure = () => {
-      const overflow = node.scrollHeight - node.clientHeight > 8
-      setListOverflows(overflow)
-      setListAtTop(node.scrollTop < 8)
-      setListAtBottom(node.scrollHeight - node.scrollTop - node.clientHeight < 8)
-    }
-    measure()
-    node.addEventListener('scroll', measure, { passive: true })
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
-    observer?.observe(node)
-    if (node.firstElementChild) observer?.observe(node.firstElementChild)
-    return () => {
-      node.removeEventListener('scroll', measure)
-      observer?.disconnect()
-    }
-  }, [sessions, query])
-
   const searchHost = searchOpen && typeof document !== 'undefined'
     ? document.querySelector<HTMLElement>('.main__body')
     : null
@@ -678,16 +793,16 @@ export function Sidebar({
       </div>
 
       <div className="sidebar__plugin-entry">
-        {/* Plugins stays one step from starting a conversation because it
-            configures the tools and extensions available to that work. */}
         <button
           type="button"
           className="sidebar__foot-btn"
           onClick={onOpenPlugins}
-          title={t('Plugins')}
+          data-active={deskPage === 'marketplace' || undefined}
+          aria-current={deskPage === 'marketplace' ? 'page' : undefined}
+          title={t('Plugins & skills')}
         >
           <Puzzle size={15} strokeWidth={1.6} />
-          <span>{t('Plugins')}</span>
+          <span>{t('Plugins & skills')}</span>
         </button>
       </div>
 
@@ -696,6 +811,8 @@ export function Sidebar({
           type="button"
           className="sidebar__foot-btn"
           onClick={onOpenScheduledTasks}
+          data-active={deskPage === 'scheduled' || undefined}
+          aria-current={deskPage === 'scheduled' ? 'page' : undefined}
           title={t('Scheduled tasks')}
         >
           <Clock size={15} strokeWidth={1.6} />
@@ -703,7 +820,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="sidebar__body" id="sidebar-content" ref={listRef}>
+      <div className="sidebar__body" id="sidebar-content">
         {pinnedSessions.length > 0 ? (
           <div className="sidebar__section">
             <div className="sidebar__section-head">
@@ -729,8 +846,16 @@ export function Sidebar({
             <div className="sidebar__empty">{t('No project selected yet.')}</div>
           ) : (
             <div className="project-tree">
+              {dropLineTop !== null ? (
+                <div
+                  className="project-drop-line"
+                  style={{ top: dropLineTop }}
+                  aria-hidden="true"
+                />
+              ) : null}
               {groups.map(({ project, sessions: projectSessions }) => {
                 const projectId = project.id
+                const projectIndex = shown.findIndex((item) => samePath(item.path, project.path))
                 const active = Boolean(workspace && samePath(workspace.path, project.path))
                 const expanded = Boolean(needle) || !collapsedProjects.has(project.path)
                 const showAll = Boolean(needle) || expandedLists.has(project.path)
@@ -957,6 +1082,33 @@ export function Sidebar({
                               </button>
                               <div className="popover__divider" />
                               <button
+                                className="popover__item"
+                                type="button"
+                                role="menuitem"
+                                disabled={Boolean(needle) || projectIndex <= 0}
+                                onClick={() => {
+                                  close()
+                                  moveProject(project, -1)
+                                }}
+                              >
+                                <ArrowUp size={13} />
+                                <span>{t('Move up')}</span>
+                              </button>
+                              <button
+                                className="popover__item"
+                                type="button"
+                                role="menuitem"
+                                disabled={Boolean(needle) || projectIndex < 0 || projectIndex >= shown.length - 1}
+                                onClick={() => {
+                                  close()
+                                  moveProject(project, 1)
+                                }}
+                              >
+                                <ArrowDown size={13} />
+                                <span>{t('Move down')}</span>
+                              </button>
+                              <div className="popover__divider" />
+                              <button
                                 className="popover__item popover__item--danger"
                                 type="button"
                                 role="menuitem"
@@ -1037,37 +1189,6 @@ export function Sidebar({
           </div>
         ) : null}
       </div>
-
-      {listOverflows ? (
-        <div className="scroll-jumps scroll-jumps--sidebar">
-          {!listAtTop ? (
-            <button
-              type="button"
-              className="scroll-jump"
-              title={t('Scroll to the top')}
-              aria-label={t('Scroll to the top')}
-              onClick={() => listRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
-            >
-              <ArrowUp size={15} />
-            </button>
-          ) : null}
-          {!listAtBottom ? (
-            <button
-              type="button"
-              className="scroll-jump"
-              title={t('Scroll to the bottom')}
-              aria-label={t('Scroll to the bottom')}
-              onClick={() => {
-                const node = listRef.current
-                if (!node) return
-                node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' })
-              }}
-            >
-              <ArrowDown size={15} />
-            </button>
-          ) : null}
-        </div>
-      ) : null}
 
       <div className="sidebar__foot">
         <button

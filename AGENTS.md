@@ -145,7 +145,11 @@ paged by lines (200 per page) — never render a whole build log at once.
 `RunSummary` is the completed turn's top row (label, duration, chevron), not a
 divider at the end. Its chevron folds the tool/thinking process; the answer
 stays visible. `AssistantMessage` receives `processOpen` so hiding the process
-never hides the reply.
+never hides the reply. Retry, compaction and other stream notices are process
+too, not answer: `hasProcess` counts them and they render only while
+`processVisible`, so a settled turn folds them away instead of leaving a stack
+of "retry succeeded" lines outside the fold. A turn with nothing but notices is
+still foldable, so the reader can always expand to read them.
 
 `Thread` remembers the scroll position per conversation (session file or draft
 key) in a process-level map so switching to an empty chat cannot forget it;
@@ -238,6 +242,33 @@ list. The icon list and its keywords come from MCode's own picker
 find the same emoji in both apps. The tint is a token, never a literal: the
 component writes `data-icon-color` and the stylesheet picks the hue.
 
+### Project order
+
+The order of project rows is `settings.projectOrder` — the path list the user
+arranged, and it includes folders that are only known from sessions. The
+`workspaces` array is registration data, not a sort key; selecting a project
+adds its workspace without moving its row. `lastOpenedAt` is activity metadata
+and never sorts anything. `dedupeWorkspaces` keeps a duplicate in its original
+array position, so saving any setting cannot pull the active project to the top
+and undo a drag. A drag starts as soon as the pointer moves a few pixels (no
+long press), shows a drop line where the row will land and auto-scrolls near the
+list edges; the project action menu offers the same move as *Move up* /
+*Move down* for people who would rather not drag. Both paths write
+`projectOrder` and the workspace array. `output/audit/sidebar-order-check.mjs`
+drives a real mouse through both; `output/audit/sidebar-session-order-check.mjs`
+covers a folder discovered from a session becoming registered.
+
+### Desk pages
+
+「插件与技能 / Plugins & skills」and「定时任务 / Scheduled tasks」are desk
+pages, not dialogs. Their sidebar entries set `deskPage`, and `App` renders
+only `<div className="desk-page">` inside `main__body`: the composer, GoalBar,
+PlanStrip, status strip, widgets and task rail all belong to the conversation
+branch and must not sit underneath the page. The titlebar's Back control clears
+`deskPage` and restores the conversation unchanged. Destructive confirmations
+stay inline as well: deleting a scheduled task asks in its own row, so these
+pages never open a native or modal dialog.
+
 ### The row never moves
 
 The actions of a project row live in a **slot that is always there**
@@ -269,6 +300,21 @@ when the agent is working. It stops only while there is no draft — with text i
 the box the button is the way to send (steer or queue), so the stop moves into
 the row under the box as `session-bar__stop`. Both call the same `stop()`; there
 is no second abort path.
+
+### The usage line under the composer
+
+`UsageBar` is one compact line **centred** under the input after a run: the
+context ring, then tokens used, cache hit rate, TPS and TTFT as one clickable
+summary. The ring is `ContextRing` — it opens `ContextPanel`, Pi's own
+`get_session_stats` readings and context controls, and follows the
+`showContextUsage` setting. The summary opens `UsagePanel`, which formats what
+`lib/session-metrics.ts` derived: the token split and cost, the hit rate with
+its formula, and the generation readings. Token totals and the hit rate come
+from `get_session_stats`, with the visible transcript as a fallback. Pi reports
+no timing, so `run` mints `firstTokenAt` on the first text delta and
+`lastTokenAt` on `message_end` (or `message_update:done`); `session-metrics.ts`
+derives TTFT and the newest turn's TPS from those two marks — it is the only
+place that calculates them, and it stores nothing.
 
 ## The session bar
 
@@ -367,6 +413,27 @@ screen's "recent in this project" list, but only a click there opens a session �
 a start is a new chat. If no saved project can be restored, the start becomes a
 projectless chat and `activeWorkspaceId` is persisted as `null`; the welcome
 screen never falls back to a dead "open project folder" state.
+
+### One-shot Pi CLI processes
+
+`runPiCli` (`src/main/pi/cli.ts`) launches the bundled CLI through
+`process.execPath` with `ELECTRON_RUN_AS_NODE=1`. On Windows, `spawn` with a cwd
+that does not exist fails with `spawn <exe> ENOENT` — a misleading error that
+reads like a missing binary. That made every marketplace install fail whenever
+the active folder was `<userData>/chats` and that folder had never been
+created. `projectlessRoot()` now creates it, and `runPiCli` falls back to
+`process.cwd()` when the requested folder has disappeared. A workspace can be
+deleted between listing it and running a command, so never assume a path from
+`workspaceRoot()` still exists.
+
+### Settings and shortcuts
+
+The settings dialog has no Plugins page: plugins, skills and MCP servers are
+managed on the Marketplace desk page (`ResourceManager`), and the project-trust
+switch lives in General → Project safety. `Ctrl+,` opens the dialog. Its
+**Keyboard shortcuts** page and the `Ctrl+/` modal both render `ShortcutsList`
+from the single `SHORTCUTS` table in `lib/shortcuts.ts`, so a new chord needs
+adding in exactly one place and the launcher's Settings action shows its hint.
 
 ## The launcher
 

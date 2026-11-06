@@ -200,7 +200,12 @@ export function TaskPanel() {
         ? t('Reading Git status')
         : t('Git status is unavailable')
 
-  const changeMeta = diff ? (
+  // A clean working tree has nothing to count. A lone 0 next to "Changes"
+  // reads as a pending change rather than as "no changes at all".
+  const hasChanges = Boolean(
+    diff && (diff.files > 0 || diff.added > 0 || diff.removed > 0)
+  )
+  const changeMeta = hasChanges && diff ? (
     diff.hasLineStats ? (
       <span className="task-panel__diff" aria-label={t('Changes')}>
         <span className="task-panel__diff-add">+{diff.added}</span>

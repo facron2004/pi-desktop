@@ -896,10 +896,14 @@ const ThreadTurnView = memo(function ThreadTurnView({
   const hasProcess = useMemo(
     () =>
       turn.tools.length > 0 ||
+      // Retry, compaction and other stream notices are part of the process,
+      // not part of the answer. They fold with the tools so a settled turn does
+      // not leave a stack of "retry succeeded" lines outside the fold.
+      turn.notices.length > 0 ||
       turn.assistants.some((assistant) =>
         assistant.blocks.some((block) => block.type === 'thinking')
       ),
-    [turn.tools, turn.assistants]
+    [turn.tools, turn.notices, turn.assistants]
   )
   // A completed turn follows the reader's fold setting; a live, failed or
   // stopped turn must keep its process visible, because hiding it there would
@@ -962,9 +966,11 @@ const ThreadTurnView = memo(function ThreadTurnView({
               </ProcessTrail>
             ) : null}
 
-            {turn.notices.map((notice) => (
-              <NoticeMessage key={notice.id} item={notice} />
-            ))}
+            {processVisible
+              ? turn.notices.map((notice) => (
+                  <NoticeMessage key={notice.id} item={notice} />
+                ))
+              : null}
             {turnChanges.length > 0 && !liveTail ? (
               <FileChangeSummary
                 changes={turnChanges}

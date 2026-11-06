@@ -435,18 +435,18 @@ export function InspectorPanel({
                       <p>{t('Select a file from the tree to preview it here.')}</p>
                     </div>
                   )}
-                  {!fileTreeOpen ? (
-                    <button
-                      type="button"
-                      className="file-workspace__tree-toggle"
-                      aria-label={t('Show file tree')}
-                      title={t('Show file tree')}
-                      onClick={() => setFileTreeOpen(true)}
-                    >
-                      <PanelRightOpen size={15} />
-                    </button>
-                  ) : null}
                 </div>
+                {!fileTreeOpen ? (
+                  <button
+                    type="button"
+                    className="file-workspace__tree-reveal"
+                    aria-label={t('Show file tree')}
+                    title={t('Show file tree')}
+                    onClick={() => setFileTreeOpen(true)}
+                  >
+                    <PanelRightOpen size={15} />
+                  </button>
+                ) : null}
                 <aside className="file-workspace__tree">
                   <div className="file-workspace__tree-head">
                     <div className="segmented segmented--tight">

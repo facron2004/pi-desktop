@@ -1,0 +1,133 @@
+/* The compact usage reading centred under the composer: the context ring plus
+   one clickable summary that opens the detail popover. One line, centred —
+   it must not read as a second input row. */
+
+.usage-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-1) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The summary is one button, so the whole reading is one click target and
+   the focus ring lands on the group rather than on each number. */
+.usage-bar__summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-4);
+  min-width: 0;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.usage-bar__summary:hover,
+.usage-bar__summary[data-active='true'] {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.usage-bar__item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.usage-bar__label {
+  color: var(--text-faint);
+}
+
+.usage-bar__item strong,
+.usage-bar__summary strong {
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+}
+
+/* The ring sits with the same baseline the summary reads on. */
+.usage-bar .context-ring {
+  width: 20px;
+  height: 20px;
+}
+
+/* ---- detail popover ---------------------------------------------------- */
+
+.usage-popover {
+  max-height: min(460px, calc(100vh - 160px));
+  overflow-y: auto;
+}
+
+.usage-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.usage-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.usage-panel__rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.usage-panel__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-1) 0;
+  color: var(--text-muted);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.usage-panel__row:last-child {
+  border-bottom: none;
+}
+
+.usage-panel__row--strong {
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+}
+
+.usage-panel__row strong {
+  color: var(--text-primary);
+  font-weight: var(--weight-medium);
+}
+
+.usage-panel__headline {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+}
+
+.usage-panel__headline strong {
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  font-weight: var(--weight-medium);
+}
+
+.usage-panel__hint {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+}
+
+.usage-panel__none {
+  color: var(--text-faint);
+}

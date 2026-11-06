@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import type { AuthStatus } from '@shared/types'
 import { resolvePiLaunch } from './locate'
 
@@ -23,9 +24,14 @@ export function runPiCli(
       stderr: 'Pi CLI not found. Install it or set a custom path in Settings.'
     })
   }
+  // A workspace folder can disappear between listing it and running a CLI
+  // command. Windows spawn reports that as "spawn <exe> ENOENT", which looks
+  // like a missing binary; fall back to a cwd that certainly exists instead.
+  const requestedCwd = options.cwd && options.cwd.trim() ? options.cwd.trim() : ''
+  const cwd = requestedCwd && existsSync(requestedCwd) ? requestedCwd : process.cwd()
   return new Promise((resolve) => {
     const child = spawn(launch.command, [...launch.prefixArgs, ...args], {
-      cwd: options.cwd ?? process.cwd(),
+      cwd,
       env: launch.env,
       stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       windowsHide: true

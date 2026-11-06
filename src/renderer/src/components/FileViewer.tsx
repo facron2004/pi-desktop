@@ -9,6 +9,7 @@ import {
   Link2,
   MessageSquarePlus,
   Search,
+  WrapText,
   X
 } from 'lucide-react'
 import type { FileContent } from '@shared/types'
@@ -500,9 +501,10 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
             data-active={wrap ? 'true' : 'false'}
             onClick={() => setWrap((value) => !value)}
             title={t('Wrap long lines')}
+            aria-label={t('Wrap long lines')}
             aria-pressed={wrap}
           >
-            {t('Wrap')}
+            <WrapText size={14} />
           </button>
           <button
             className="ghost-btn"

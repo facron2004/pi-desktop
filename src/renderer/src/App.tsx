@@ -6,6 +6,7 @@ import {
   useState
 } from 'react'
 import {
+  ArrowLeft,
   Download,
   Ellipsis,
   GitBranch,
@@ -38,6 +39,7 @@ import { GoalBar } from './components/GoalBar'
 import { SessionTreeDialog } from './components/SessionTreeDialog'
 import { McpDialog } from './components/McpDialog'
 import { ScheduledTasksDialog } from './components/ScheduledTasksDialog'
+import { Marketplace } from './components/Marketplace'
 import { EditProjectDialog } from './components/EditProjectDialog'
 import { Popover } from './components/Popover'
 import { openingLabel, useT } from './lib/i18n'
@@ -87,8 +89,9 @@ export default function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [bootstrapComplete, setBootstrapComplete] = useState(false)
-  // The dialog has several doors now — the sidebar asks for Plugins directly —
-  // so the page it should open on is shell state, not a prop the caller forgets.
+  // The dialog has several doors now — the launcher and the settings button
+  // can ask for a page — so the page it should open on is shell state, not a
+  // prop the caller forgets.
   const [settingsPage, setSettingsPage] = useState<SettingsPage>('general')
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -96,7 +99,8 @@ export default function App() {
   const [launcherOpen, setLauncherOpen] = useState(false)
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
-  const [scheduledTasksOpen, setScheduledTasksOpen] = useState(false)
+  const deskPage = useAppStore((state) => state.deskPage)
+  const setDeskPage = useAppStore((state) => state.setDeskPage)
   // A command headed for the drawer. `seq` makes the same command twice two
   // requests instead of one the drawer already ran.
   const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
@@ -256,7 +260,8 @@ export default function App() {
     sidebarOpen,
     toggleSidebar,
     openSettings,
-    openShortcuts
+    openShortcuts,
+    openMarketplace: () => setDeskPage('marketplace')
   })
 
   const activeSession = useMemo(
@@ -430,6 +435,12 @@ export default function App() {
         window.dispatchEvent(new CustomEvent('pi:focus-composer'))
         return
       }
+      // `Ctrl+,` is the conventional chord for preferences across editors.
+      if (mod && (event.key === ',' || event.code === 'Comma')) {
+        event.preventDefault()
+        openSettings()
+        return
+      }
       // `Ctrl+\`` is the terminal, in every editor that has one: the side
       // panel opens on it, or closes when it is already showing.
       if (mod && !event.shiftKey && (event.key === '`' || event.code === 'Backquote')) {
@@ -473,7 +484,12 @@ export default function App() {
       if (mod && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
         const index = Number(event.key) - 1
         const projects = sortProjects(
-          collectProjects(settings.workspaces, sessions, settings.hiddenProjects)
+          collectProjects(
+            settings.workspaces,
+            sessions,
+            settings.hiddenProjects,
+            settings.projectOrder
+          )
         )
         const target = projects[index]
         if (!target) return
@@ -538,6 +554,7 @@ export default function App() {
     openSettings,
     settings.workspaces,
     settings.hiddenProjects,
+    settings.projectOrder,
     sessions,
     workspace?.path,
     switchProject,
@@ -594,8 +611,8 @@ export default function App() {
 
       <Sidebar
         onOpenSettings={() => openSettings()}
-        onOpenPlugins={() => openSettings('plugins')}
-        onOpenScheduledTasks={() => setScheduledTasksOpen(true)}
+        onOpenPlugins={() => setDeskPage('marketplace')}
+        onOpenScheduledTasks={() => setDeskPage('scheduled')}
         focusSearchSignal={sidebarSearchSignal}
         width={sidebarWidth}
         open={sidebarOpen}
@@ -609,7 +626,16 @@ export default function App() {
       <main className="main">
         <div className="titlebar drag-region">
           <div className="titlebar__identity">
-            {!showThread ? null : renaming ? (
+            {deskPage ? (
+              <button
+                type="button"
+                className="titlebar__back no-drag"
+                onClick={() => setDeskPage(null)}
+              >
+                <ArrowLeft size={16} strokeWidth={1.7} />
+                <span>{t('Back')}</span>
+              </button>
+            ) : !showThread ? null : renaming ? (
               <input
                 className="titlebar__rename no-drag"
                 value={draft}
@@ -650,7 +676,7 @@ export default function App() {
                 header keeps the conversation's name and the app's actions. */}
           </div>
           <div className="titlebar__actions no-drag">
-            {hasItems ? (
+            {!deskPage && hasItems ? (
               <button
                 type="button"
                 className="icon-btn"
@@ -662,7 +688,7 @@ export default function App() {
                 <ListTodo size={16} strokeWidth={1.6} />
               </button>
             ) : null}
-            {hasItems ? (
+            {!deskPage && hasItems ? (
               <Popover
                 align="right"
                 width={220}
@@ -730,79 +756,97 @@ export default function App() {
             conversation actually has to read in. */}
         <div className="main__stage">
           <div className="main__body">
-          {!showThread ? (
-            <Welcome>
-              <Composer />
-            </Welcome>
+          {deskPage ? (
+            <div className="desk-page">
+              {deskPage === 'marketplace' ? (
+                <Marketplace />
+              ) : (
+                <ScheduledTasksDialog />
+              )}
+            </div>
           ) : (
-            <Thread />
+            <>
+              {!showThread ? (
+                <Welcome>
+                  <Composer />
+                </Welcome>
+              ) : (
+                <Thread />
+              )}
+
+              {/* A project switch keeps the previous transcript up. This is the
+                  handoff, not a failure — the connection was not lost. */}
+              {status.phase === 'starting' && hasItems ? (
+                <div className="retry-wrap">
+                  <div className="retry" data-kind="handoff" role="status">
+                    <span className="spinner" aria-hidden="true" />
+                    <span className="retry__text">{openingLabel(workspace, t)}</span>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* The transport is not the run: Pi can still be working behind a
+                  broken channel, so this says what is known rather than declaring
+                  the run failed. "starting" is a switch in progress. */}
+              {transport === 'disconnected' && status.phase !== 'ready' && status.phase !== 'starting' ? (
+                <div className="retry-wrap">
+                  <div className="retry" data-kind="transport" role="status">
+                    <TriangleAlert size={13} />
+                    <span className="retry__text">{t('Lost connection to Pi')}</span>
+                    {run.phase !== 'idle' ? (
+                      <span className="retry__note">{t('The run may still be going')}</span>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {uiStatuses.some((entry) => entry.key !== 'pi-desktop-goal') ? (
+                <div className="status-strip">
+                  {uiStatuses
+                    .filter((entry) => entry.key !== 'pi-desktop-goal')
+                    .map((entry) => (
+                      <span className="status-strip__item" key={entry.key}>
+                        <span className="status-strip__dot" />
+                        {entry.text}
+                      </span>
+                    ))}
+                </div>
+              ) : null}
+
+              {widgetsAbove.map((widget) => (
+                <div className="widget" key={widget.key}>
+                  {widget.lines.map((line, index) => (
+                    // An extension republishes the whole line list, so a line
+                    // keeps its identity across a growing widget by its text; the
+                    // index only disambiguates two identical lines.
+                    <span key={`${line}-${index}`}>{line}</span>
+                  ))}
+                </div>
+              ))}
+
+              <GoalBar key={activeSessionFile ?? draftId ?? 'draft'} />
+              <PlanStrip />
+
+              {hasItems ? <Composer /> : null}
+
+              {widgetsBelow.map((widget) => (
+                <div className="widget widget--below" key={widget.key}>
+                  {widget.lines.map((line, index) => (
+                    <span key={`${line}-${index}`}>{line}</span>
+                  ))}
+                </div>
+              ))}
+            </>
           )}
-
-          {/* A project switch keeps the previous transcript up. This is the
-              handoff, not a failure — the connection was not lost. */}
-          {status.phase === 'starting' && hasItems ? (
-            <div className="retry-wrap">
-              <div className="retry" data-kind="handoff" role="status">
-                <span className="spinner" aria-hidden="true" />
-                <span className="retry__text">{openingLabel(workspace, t)}</span>
-              </div>
-            </div>
-          ) : null}
-
-          {/* The transport is not the run: Pi can still be working behind a
-              broken channel, so this says what is known rather than declaring
-              the run failed. "starting" is a switch in progress. */}
-          {transport === 'disconnected' && status.phase !== 'ready' && status.phase !== 'starting' ? (
-            <div className="retry-wrap">
-              <div className="retry" data-kind="transport" role="status">
-                <TriangleAlert size={13} />
-                <span className="retry__text">{t('Lost connection to Pi')}</span>
-                {run.phase !== 'idle' ? (
-                  <span className="retry__note">{t('The run may still be going')}</span>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-
-          {uiStatuses.some((entry) => entry.key !== 'pi-desktop-goal') ? (
-            <div className="status-strip">
-              {uiStatuses
-                .filter((entry) => entry.key !== 'pi-desktop-goal')
-                .map((entry) => (
-                  <span className="status-strip__item" key={entry.key}>
-                    <span className="status-strip__dot" />
-                    {entry.text}
-                  </span>
-                ))}
-            </div>
-          ) : null}
-
-          {widgetsAbove.map((widget) => (
-            <div className="widget" key={widget.key}>
-              {widget.lines.map((line, index) => (
-                // An extension republishes the whole line list, so a line
-                // keeps its identity across a growing widget by its text; the
-                // index only disambiguates two identical lines.
-                <span key={`${line}-${index}`}>{line}</span>
-              ))}
-            </div>
-          ))}
-
-          <GoalBar key={activeSessionFile ?? draftId ?? 'draft'} />
-          <PlanStrip />
-
-          {hasItems ? <Composer /> : null}
-
-          {widgetsBelow.map((widget) => (
-            <div className="widget widget--below" key={widget.key}>
-              {widget.lines.map((line, index) => (
-                <span key={`${line}-${index}`}>{line}</span>
-              ))}
-            </div>
-          ))}
           </div>
-          {hasItems && taskRailOpen ? (
-            <aside className="task-rail" aria-label={t('Task status')}>
+          {!deskPage && hasItems ? (
+            <aside
+              className="task-rail"
+              data-open={taskRailOpen || undefined}
+              aria-hidden={!taskRailOpen || undefined}
+              inert={!taskRailOpen || undefined}
+              aria-label={t('Task status')}
+            >
               <div className="task-rail__body">
                 <TaskPanel />
               </div>
@@ -906,9 +950,6 @@ export default function App() {
         <SessionTreeDialog onClose={() => setSessionTreeOpen(false)} />
       ) : null}
       {mcpOpen ? <McpDialog onClose={() => setMcpOpen(false)} /> : null}
-      {scheduledTasksOpen ? (
-        <ScheduledTasksDialog onClose={() => setScheduledTasksOpen(false)} />
-      ) : null}
       {projectDialog?.open ? (
         <EditProjectDialog
           mode={projectDialog.mode}

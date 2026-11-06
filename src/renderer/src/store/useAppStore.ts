@@ -103,6 +103,9 @@ export interface RunState {
   turns: number
   /** When the run started, for the elapsed counter. */
   startedAt?: number
+  /** First / last text delta, minted by the client: Pi reports no timing. */
+  firstTokenAt?: number
+  lastTokenAt?: number
   /** Wall-clock duration of the finished run, once it settled. */
   durationMs?: number
   /** True once the run finished on purpose (completed or aborted). */
@@ -240,6 +243,9 @@ export interface AppStore {
   draftId?: string
   queue: { steering: string[]; followUp: string[] }
   activeSessionFile?: string
+  /** The conversation column is showing the plugin/skill marketplace or scheduled tasks instead of the thread. */
+  deskPage: 'marketplace' | 'scheduled' | null
+  setDeskPage: (page: 'marketplace' | 'scheduled' | null) => void
   /** Session file whose historical messages are being hydrated into the view. */
   hydratingSessionFile?: string
   /** User messages the active branch can be forked from. */
@@ -403,6 +409,7 @@ export interface AppStore {
 
 const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
+  projectOrder: [],
   activeWorkspaceId: null,
   pinnedSessions: [],
   theme: 'dark',
@@ -560,7 +567,8 @@ function projectNameOf(state: AppStore, path: string | null): string {
   const known = collectProjects(
     state.settings.workspaces,
     state.sessions,
-    state.settings.hiddenProjects
+    state.settings.hiddenProjects,
+    state.settings.projectOrder
   ).find((project) => samePath(project.path, path))
   return known?.name ?? basename(path) ?? path
 }
@@ -604,6 +612,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   items: [],
   threads: {},
   queue: { steering: [], followUp: [] },
+  deskPage: null,
+  setDeskPage: (deskPage) => set({ deskPage }),
   forkTargets: [],
   forking: false,
   commitRequest: 0,
@@ -964,6 +974,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       draftId: live ? session.file : undefined,
       activeSessionFile: live ? undefined : session.file,
       hydratingSessionFile: shouldHydrate ? session.file : undefined,
+      deskPage: null,
       error: undefined,
       ...projectThread(thread)
     })
@@ -1148,6 +1159,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       draftId,
       activeSessionFile: undefined,
       hydratingSessionFile: undefined,
+      deskPage: null,
       threads: { ...get().threads, [draftId]: thread },
       stats: undefined,
       ...projectThread(thread),
@@ -2989,15 +3001,33 @@ function handleEvent(
           }
         }))
       }
+      if (event.type === 'message_end') {
+        // The last message_end bounds the generation window used for TPS.
+        set((state) => ({ run: { ...state.run, lastTokenAt: Date.now() } }))
+      }
       // Assistant text arriving is the only evidence that the model is
       // actually producing words right now, as opposed to still being
       // waited on. A tool call or a thinking delta does not count.
       if (event.type === 'message_update') {
         const payload = event.assistantMessageEvent as { type?: string } | undefined
-        const delta = payload?.type === 'text_delta' || payload?.type === 'text_start'
-        if (delta && get().run.phase !== phaseFor(get(), 'generating')) {
+        const kind = payload?.type
+        const delta = kind === 'text_delta' || kind === 'text_start'
+        const finished = kind === 'done' || kind === 'text_end'
+        if (finished) {
+          // Some providers close a message through `message_update:done`
+          // instead of a top-level `message_end`; both bound TPS.
+          set((state) => ({ run: { ...state.run, lastTokenAt: Date.now() } }))
+        }
+        const first = get().run.firstTokenAt === undefined
+        if (delta && (first || get().run.phase !== phaseFor(get(), 'generating'))) {
+          const now = Date.now()
           set((state) => ({
-            run: { ...state.run, phase: phaseFor(state, 'generating'), settled: false }
+            run: {
+              ...state.run,
+              phase: phaseFor(state, 'generating'),
+              settled: false,
+              ...(state.run.firstTokenAt === undefined ? { firstTokenAt: now } : {})
+            }
           }))
         }
       }

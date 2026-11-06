@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { ProviderConnection, SaveProviderInput } from '@shared/providers'
 import type {
+  CreateResourceInput,
+  ManagedPackage,
+  MarketplaceActionResult,
+  MarketplaceInstallResult,
+  MarketplaceSnapshot
+} from '@shared/marketplace'
+import type {
   AggregatedUsageStats,
   AgentMessage,
   AppInfo,
@@ -171,7 +178,29 @@ const bridge: PiDesktopBridge = {
     check: (provider?: string): Promise<AuthStatus> => ipcRenderer.invoke('auth:check', provider)
   },
   mcp: {
-    read: (): Promise<McpConfig> => ipcRenderer.invoke('mcp:read')
+    read: (): Promise<McpConfig> => ipcRenderer.invoke('mcp:read'),
+    setEnabled: (name: string, enabled: boolean): Promise<MarketplaceActionResult> =>
+      ipcRenderer.invoke('mcp:setEnabled', name, enabled),
+    remove: (name: string): Promise<MarketplaceActionResult> =>
+      ipcRenderer.invoke('mcp:remove', name)
+  },
+  marketplace: {
+    list: (): Promise<MarketplaceSnapshot> => ipcRenderer.invoke('marketplace:list'),
+    refresh: (): Promise<MarketplaceSnapshot> => ipcRenderer.invoke('marketplace:refresh'),
+    installed: (): Promise<string[]> => ipcRenderer.invoke('marketplace:installed'),
+    install: (id: string): Promise<MarketplaceInstallResult> =>
+      ipcRenderer.invoke('marketplace:install', id),
+    installNpm: (packageName: string): Promise<MarketplaceInstallResult> =>
+      ipcRenderer.invoke('marketplace:installNpm', packageName),
+    managed: (): Promise<ManagedPackage[]> => ipcRenderer.invoke('marketplace:managed'),
+    setPackageEnabled: (id: string, enabled: boolean): Promise<MarketplaceActionResult> =>
+      ipcRenderer.invoke('marketplace:setPackageEnabled', id, enabled),
+    removePackage: (id: string): Promise<MarketplaceActionResult> =>
+      ipcRenderer.invoke('marketplace:removePackage', id),
+    createResource: (input: CreateResourceInput): Promise<MarketplaceActionResult> =>
+      ipcRenderer.invoke('marketplace:createResource', input),
+    installGitRepository: (repository: string): Promise<MarketplaceInstallResult> =>
+      ipcRenderer.invoke('marketplace:installGitRepository', repository)
   },
   git: {
     status: (): Promise<GitStatus> => ipcRenderer.invoke('git:status'),

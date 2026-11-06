@@ -488,13 +488,6 @@ transition: background var(--dur-fast) var(--ease);
   padding: 0 var(--sp-3);
 }
 
-.sidebar__plugin-entry .sidebar__foot-btn,
-.sidebar__plugin-entry .sidebar__foot-btn:hover,
-.sidebar__scheduled-entry .sidebar__foot-btn,
-.sidebar__scheduled-entry .sidebar__foot-btn:hover {
-  color: #000;
-}
-
 .sidebar__body {
   flex: 1 1 auto;
   min-height: 0;
@@ -590,8 +583,30 @@ transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(
 }
 
 .project-tree {
+  position: relative;
   display: flex;
   flex-direction: column;
+}
+
+/* The line is drawn over the gap the dragged project will occupy. It is
+   measured by the pointer code and lives outside the flow, so moving it never
+   shifts the rows under the pointer. */
+.project-drop-line {
+  position: absolute;
+  left: var(--sp-2);
+  right: var(--sp-2);
+  height: 2px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 2;
+  transform: translateY(-1px);
+}
+
+body.is-project-dragging,
+body.is-project-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
 }
 
 .project:has(.session-item) + .project {
@@ -1005,9 +1020,41 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
-.sidebar__foot-btn:hover {
+.sidebar__foot-btn:hover,
+.sidebar__foot-btn[data-active='true'] {
   background: var(--sidebar-hover);
   color: var(--sidebar-text);
+}
+
+.titlebar__back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  font-weight: var(--weight-medium);
+}
+
+.titlebar__back:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.desk-page {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface-canvas);
+}
+
+.desk-page > .settings-page {
+  width: min(100%, 720px);
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-6) var(--sp-8);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1066,12 +1113,37 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   min-height: 0;
 
   background: var(--surface-raised, var(--surface-chrome));
-  align-self: stretch;
+  /* The card is only as tall as its sections; it may scroll internally when
+     the content is taller than the stage, but it must not leave an empty
+     full-height column when the run produced a few rows. */
+  align-self: flex-start;
+  height: auto;
+  max-height: calc(100% - 20px);
   margin: 10px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-card);
   overflow: hidden;
+  transition:
+    width var(--dur-base) var(--ease),
+    min-width var(--dur-base) var(--ease),
+    max-width var(--dur-base) var(--ease),
+    margin var(--dur-base) var(--ease),
+    opacity var(--dur-base) var(--ease),
+    border-width var(--dur-base) var(--ease);
+}
+
+/* The status card folds away to zero width, carrying the conversation column
+   with it, instead of disappearing in one frame. */
+.task-rail:not([data-open]) {
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  margin-right: 0;
+  margin-left: 0;
+  border-width: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .task-rail__body {
@@ -1131,13 +1203,14 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
     position: absolute;
     top: 10px;
     right: 10px;
-    bottom: 10px;
+    bottom: auto;
+    max-height: calc(100% - 20px);
     z-index: var(--z-drawer);
     max-width: min(var(--task-rail-w), calc(100% - 20px));
     box-shadow: var(--shadow-md);
-  border-radius: var(--r-lg);
-  border: 1px solid var(--border-subtle);
-}
+    border-radius: var(--r-lg);
+    border: 1px solid var(--border-subtle);
+  }
 
   .main__stage {
     position: relative;
@@ -2212,14 +2285,6 @@ transition: background var(--dur-fast) var(--ease);
   transform: translateY(-2px);
 }
 
-/* The sidebar list keeps the pair pinned to its own right edge. */
-.sidebar .scroll-jumps {
-  bottom: 58px;
-  right: 10px;
-  left: auto;
-  flex-direction: column;
-}
-
 .user-msg__images {
   display: flex;
   gap: var(--sp-3);
@@ -2871,18 +2936,23 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
    gradient that turns the last paragraph grey. */
 .composer-wrap {
   flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
   padding: var(--sp-2) var(--sp-6) var(--sp-4);
   background: transparent;
 }
 
 .composer-stack {
   position: relative;
+  width: 100%;
   max-width: var(--content-w);
+  min-width: 0;
   margin: 0 auto;
   container-type: inline-size;
 }
 
 .composer {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--composer-radius);
   /* Solid sheet: glass blur washed the message tail and fought the hairline. */
@@ -2892,7 +2962,9 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
     border-color var(--dur-fast) var(--ease),
     box-shadow var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease);
-  overflow: visible;
+  /* Popovers are portaled, so clipping the box cannot hide a menu. It does
+     stop the model chip and the send button from painting onto the rail. */
+  overflow: clip;
 }
 
 :root[data-theme='light'] .composer {
@@ -3175,6 +3247,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 .composer__input {
   width: 100%;
+  min-width: 0;
   border: none;
   outline: none;
   resize: none;
@@ -3199,11 +3272,52 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   gap: var(--sp-2);
   padding: var(--sp-1) var(--sp-3) var(--sp-3);
   min-width: 0;
+  max-width: 100%;
 }
 
 .composer__bar-spacer {
-  flex: 1 1 auto;
-  min-width: var(--sp-2);
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* The add button and the send button are the row's fixed ends. The permission
+   label and the model name are what give up width when the right panel
+   squeezes the conversation — otherwise the send button leaves the box. */
+.composer__bar > .popover-wrap:has(.composer__add-trigger) {
+  flex: 0 0 auto;
+}
+
+.composer__bar > .popover-wrap:has(.permission-picker),
+.composer__bar > .popover-wrap:has(.model-chip) {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.composer__bar > .popover-wrap:has(.permission-picker) {
+  flex: 0 1 auto;
+}
+
+.composer__bar > .popover-wrap:has(.model-chip) {
+  flex: 0 2 auto;
+}
+
+.composer__bar .permission-picker,
+.composer__bar .model-chip {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.composer__bar .permission-picker {
+  flex: 0 1 auto;
+}
+
+.composer__bar .permission-picker > span,
+.composer__bar .model-chip__name,
+.composer__bar .model-chip__effort {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .btn.composer__send {
@@ -3716,7 +3830,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   place-items: center;
   width: 20px;
   height: 22px;
-  margin-right: 4px;
   border-radius: var(--r-xs);
   color: var(--text-tertiary);
 }
@@ -6997,6 +7110,25 @@ button:focus-visible,
   }
 }
 
+/* The docked panel and the task rail can leave the conversation a few
+   controls wide. Keep the send button; the words are what leave. */
+@container conversation (max-width: 520px) {
+  .composer-wrap {
+    padding-inline: var(--sp-3);
+  }
+
+  .permission-picker > span,
+  .composer__mode > span,
+  .model-chip__sep,
+  .model-chip__effort {
+    display: none;
+  }
+
+  .model-chip__name {
+    max-width: 8ch;
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * Git branch menu and commit dialog
  * ------------------------------------------------------------------ */
@@ -7631,6 +7763,10 @@ button:focus-visible,
   position: absolute;
   top: 50%;
   right: var(--sp-2);
+  /* An older tab strip rule left a 4px margin on this control; with absolute
+     positioning it shifted the close button onto the label's fade instead of
+     parking it in the slot the mask reserves. */
+  margin: 0;
   display: grid;
   place-items: center;
   width: var(--ctl-xs);
@@ -7964,8 +8100,7 @@ button:focus-visible,
   padding: var(--sp-1) var(--sp-3);
 }
 
-.file-workspace__tree-close,
-.file-workspace__tree-toggle {
+.file-workspace__tree-close {
   display: grid;
   place-items: center;
   width: var(--ctl-sm);
@@ -7974,8 +8109,27 @@ button:focus-visible,
   color: var(--text-tertiary);
 }
 
-.file-workspace__tree-close:hover,
-.file-workspace__tree-toggle:hover {
+.file-workspace__tree-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* The tree's own header goes with it. This strip stays in that column so
+   hiding the tree never removes the only way to bring it back. */
+.file-workspace__tree-reveal {
+  display: flex;
+  flex: 0 0 32px;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: var(--sp-2);
+  border: none;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--surface-chrome);
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.file-workspace__tree-reveal:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
@@ -7985,16 +8139,6 @@ button:focus-visible,
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-}
-
-.file-workspace__tree-toggle {
-  position: absolute;
-  right: var(--sp-3);
-  bottom: var(--sp-3);
-  z-index: 2;
-  border: 1px solid var(--border-default);
-  background: var(--surface-raised);
-  box-shadow: var(--shadow-sm);
 }
 
 /* The tree is already the files surface; a second scroll container would only
