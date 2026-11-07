@@ -1,0 +1,28 @@
+/**
+ * Settings → Archived conversations.
+ *
+ * One row per conversation, the same height whatever the title is long: the
+ * preview can be a whole first prompt, so it ellipsizes on one line and the
+ * full text stays in the row's tooltip.
+ */
+.archived-session-row .settings-card__title-row {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.archived-session-row .settings-card__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-session-row .settings-card__meta {
+  min-width: 0;
+}
+
+.archived-session-row .settings-card__meta > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

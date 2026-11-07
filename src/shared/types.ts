@@ -649,6 +649,8 @@ export interface AppSettings {
   activeWorkspaceId?: string | null
   /** Session files the user pinned to the top of the sidebar. */
   pinnedSessions?: string[]
+  /** Session files the user archived. They leave the sidebar and live in Settings. */
+  archivedSessions?: string[]
   /**
    * Project paths the user removed from the sidebar. Conversations on disk
    * would otherwise put the folder back. A project that is opened again is
@@ -713,6 +715,12 @@ export interface AppSettings {
   showContextUsage?: boolean
   /** Send shortcut key: 'enter' (Enter to send) or 'ctrlEnter' (Ctrl+Enter to send). */
   sendShortcut?: 'enter' | 'ctrlEnter'
+  /**
+   * Rebound app shortcuts, keyed by the id in `lib/shortcuts.ts`. A chord is
+   * the display names of its keys in canonical order (`['Ctrl','Shift','P']`);
+   * an id that is absent keeps the built-in chord.
+   */
+  shortcutBindings?: Record<string, string[]>
   /** Follow-up handling method: 'queue' or 'steer'. */
   followUpMode?: 'queue' | 'steer'
   /**

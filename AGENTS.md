@@ -261,13 +261,14 @@ covers a folder discovered from a session becoming registered.
 ### Desk pages
 
 「插件与技能 / Plugins & skills」and「定时任务 / Scheduled tasks」are desk
-pages, not dialogs. Their sidebar entries set `deskPage`, and `App` renders
+pages, not dialogs. Their sidebar entries toggle `deskPage`, and `App` renders
 only `<div className="desk-page">` inside `main__body`: the composer, GoalBar,
 PlanStrip, status strip, widgets and task rail all belong to the conversation
-branch and must not sit underneath the page. The titlebar's Back control clears
-`deskPage` and restores the conversation unchanged. Destructive confirmations
-stay inline as well: deleting a scheduled task asks in its own row, so these
-pages never open a native or modal dialog.
+branch and must not sit underneath the page. There is no Back control in the
+titlebar; selecting a conversation, starting a new chat, or clicking the same
+sidebar entry again clears `deskPage` and restores the conversation unchanged.
+Destructive confirmations stay inline as well: deleting a scheduled task asks
+in its own row, so these pages never open a native or modal dialog.
 
 ### The row never moves
 
@@ -303,18 +304,41 @@ is no second abort path.
 
 ### The usage line under the composer
 
-`UsageBar` is one compact line **centred** under the input after a run: the
-context ring, then tokens used, cache hit rate, TPS and TTFT as one clickable
-summary. The ring is `ContextRing` — it opens `ContextPanel`, Pi's own
-`get_session_stats` readings and context controls, and follows the
-`showContextUsage` setting. The summary opens `UsagePanel`, which formats what
-`lib/session-metrics.ts` derived: the token split and cost, the hit rate with
-its formula, and the generation readings. Token totals and the hit rate come
-from `get_session_stats`, with the visible transcript as a fallback. Pi reports
-no timing, so `run` mints `firstTokenAt` on the first text delta and
-`lastTokenAt` on `message_end` (or `message_update:done`); `session-metrics.ts`
-derives TTFT and the newest turn's TPS from those two marks — it is the only
-place that calculates them, and it stores nothing.
+`UsageBar` is one compact line **centred** under the input after a run, and it
+carries three readings plus the ring, in that order: turns/steps with TPS, token
+usage with cache hit rate, then `ContextRing` at the end of the line. The bar is
+a summary, not a report: **the first-token delay is not on it.** Speed and TTFT
+describe one answer rather than the conversation's running totals, so they share
+a second popover behind the turns/steps and speed reading (`GenerationPanel`). It
+uses the compact session statistics layout: turns and steps, model time, tool
+execution time, average TTFT and output speed. Unavailable readings say
+`Not measured yet`. Pi reports tool `durationMs` when available; the client
+measures tool start-to-end as a fallback. Model time sums client-observed
+`turn_start` to assistant-message completion intervals. Average TTFT is one
+prompt/run's `agent_start` to first text token, averaged across recorded runs.
+These timing samples live in localStorage per conversation and migrate when a
+draft gets its session file; timing Pi never recorded cannot be reconstructed
+for earlier turns. The tokens and the hit rate open `UsagePanel` — total Token,
+cache hit rate, uncached input, cache read and output. Two questions, two cards;
+a reading printed in both would be two things to keep in sync.
+
+The ring is `ContextRing`: the arc plus its percentage, one colour, following
+the `showContextUsage` setting. It opens `ContextPanel`, which asks Pi for
+`get_session_stats` on open (`readSessionStats`) and offers a refresh. Both
+components read through `lib/context-reading.ts`, never off `stats` directly:
+`get_session_stats` only answers while a process is running, so a conversation
+merely reopened from disk has no `stats` at all. That module falls back to the
+newest assistant message's usage and the model's `contextWindow` — the saved
+model's when there is no live process — and reports `source` so the panel can
+say whether the reading is Pi's or an estimate. Pi's own `contextWindow` must
+outrank the saved model, or a stale window renders an impossible percentage.
+
+Token totals and the hit rate come from `get_session_stats`, with the visible
+transcript as a fallback. Pi reports no generation timing, so `run` mints
+`firstTokenAt` on the first text delta and `lastTokenAt` on `message_end` (or
+`message_update:done`); `session-timing.ts` stores per-conversation model time,
+TTFT and fallback tool durations, while `session-metrics.ts` derives the
+displayed totals and newest-turn TPS.
 
 ## The session bar
 
@@ -504,7 +528,10 @@ Every part of it is a projection, not state:
   subtitle under the title, the line counts sit on the right of the Changes
   row, and the other two rows open the commit dialog and the change graph;
 - background tasks are the subagent calls of the thread (`lib/subagents.ts`),
-  and the dot on the right of a row says how the task is going;
+  and the dot on the right of a row says how the task is going. Clicking a row
+  opens that task's `SubagentConversation` on the Subagents page. The shell
+  keeps only its session key and task id; the detail reads the current thread,
+  so status and output keep updating while it is open;
 - progress is the checklist of the newest assistant message that carries one
   (`lib/plan.ts`) — the same source the plan strip reads;
 - deliverables are the files the run wrote (`lib/changes.ts`), listed flat by
@@ -609,6 +636,22 @@ file (`stageFile`/`unstageFile`) or all at once, and the staged flag of each fil
 comes from `git status --porcelain` in `GitStatus.files`. `git:patch` returns a
 unified HEAD→worktree patch (all files or one) with untracked files synthesized as
 `new file` patches; it is meant to be pasted into `git apply`.
+
+**The working tree is read while a run is going, not only when it settles.** The
+agent edits files in the middle of a run, so waiting for `agent_settled` left the
+Review list showing the previous batch for the rest of it. `tool_execution_end`
+for `edit`/`write`/`bash` now calls `scheduleGitRefresh`, which collapses a burst
+of edits into one trailing `refreshGit`. `ReviewView` then has to notice, and
+that is a cache question, not a polling one: a cached diff is tagged with the
+file's status signature (`path\0oldPath\0index\0worktree\0added\0removed`) *and*
+the whole `git` reading it was made under, and an entry whose tag moved is
+dropped and re-read. The signature catches an edit that moved the line counts;
+the reading catches one that rewrote a line it had already changed, leaving the
+counts identical. Only the selected file is re-read, so a run touching twenty
+files costs at most one `fileDiff` per git push, and a read that resolves after
+a newer one started never paints over it. Do not add a poller, and do not clear
+the cache from the component's own refresh path — the store's push invalidates,
+the effect re-reads.
 
 `git:commitDetail` reads a commit (metadata, `--numstat -z -M` file list and the
 `git show` patch); `git:commitFileDiff` reads the two sides at `hash^` and `hash`,
@@ -784,9 +827,11 @@ degrades to attach-only when the write fails.
 that used MCP or subagents. It runs the throwaway `pi --print` CLI, names through
 `supervisor.rename` (hot → `set_session_name`, cold → one `session_info` line) and never
 writes the JSONL itself, because a second writer of a session file is the bug AGENTS.md
-warns about. The model's reply is data: one line, length-capped, and a first line ending in
-`.`/`!` is rejected so a refusal never becomes a plausible title. Every failure path logs at
-most one line.
+warns about. The model's reply is data: one line, length-capped, short trailing punctuation
+is removed, and refusal/prose answers are rejected. A new draft can still use its first
+exchange after a quick follow-up; an image-only request uses the first answer to pick the
+title language. If the throwaway model call fails, a secret-redacted prompt title is used.
+Read races get one short retry, and every failure path logs at most one line.
 
 ## Jumping to a search hit
 

@@ -37,6 +37,8 @@ const suites = [
   'settings.test.ts',
   'pi-cli.test.ts',
   'session-metrics.test.ts',
+  'session-timing.test.ts',
+  'context-reading.test.ts',
   'git-status.test.ts',
   'diff-fold.test.ts',
   'permissions.test.ts',
@@ -93,6 +95,8 @@ export const BrowserWindow = class { static getAllWindows() { return [] } isDest
 export const ipcMain = { handle: () => {}, on: () => {} };
 export const shell = { showItemInFolder: () => {}, trashItem: async () => {} };
 export const Notification = class { show() {} };
+export const nativeTheme = { shouldUseDarkColors: false };
+export const screen = { getDisplayMatching: () => ({ id: 1, workArea: { x: 0, y: 0, width: 1280, height: 720 } }) };
 `
 )
 

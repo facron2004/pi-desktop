@@ -36,7 +36,7 @@ import { FONT_SCALE_PRESETS, nearestFontStepIndex } from '@shared/font-scale'
 import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
 import { samePath } from '../lib/path'
-import { formatPlatformShortcut } from '../lib/shortcuts'
+import { formatPlatformShortcut, keysFor, type ShortcutId } from '../lib/shortcuts'
 import { COMMAND_SOURCE } from '../lib/command-source'
 import { transcriptOf } from '../lib/thread'
 import { useT } from '../lib/i18n'
@@ -116,7 +116,11 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   )
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
   const fontScale = useAppStore((state) => state.settings.fontScale ?? 1)
+  const shortcutBindings = useAppStore((state) => state.settings.shortcutBindings)
   const showToast = useAppStore((state) => state.showToast)
+  // The hint follows the binding the user recorded, so the palette never
+  // advertises a key the app no longer listens for.
+  const chordOf = (id: ShortcutId) => keysFor(id, shortcutBindings).join('+')
 
   // The theme that is on screen, which is what the reader sees — the setting
   // itself may still be "follow the system".
@@ -132,7 +136,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     {
       id: 'new',
       title: 'Start a new conversation',
-      hint: 'Ctrl+N',
+      hint: chordOf('new-chat'),
       group: 'Conversation',
       icon: MessageSquarePlus,
       run: () => runAppCommand('new')
@@ -163,7 +167,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     {
       id: 'tree',
       title: 'Show the session tree',
-      hint: 'Ctrl+Shift+T',
+      hint: chordOf('session-tree'),
       group: 'Conversation',
       icon: GitFork,
       run: () => runAppCommand('tree')
@@ -223,7 +227,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     {
       id: 'model-next',
       title: 'Use the next model',
-      hint: models.length > 1 ? 'Ctrl+P' : undefined,
+      hint: models.length > 1 ? chordOf('next-model') : undefined,
       group: 'Model',
       icon: Cpu,
       run: () => cycleModel(1)
@@ -238,7 +242,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     {
       id: 'thinking-next',
       title: 'Use the next reasoning effort',
-      hint: thinkingLevels.length > 1 ? 'Ctrl+T' : undefined,
+      hint: thinkingLevels.length > 1 ? chordOf('next-thinking') : undefined,
       group: 'Model',
       icon: Sparkles,
       run: () => cycleThinkingLevel(1)
@@ -281,7 +285,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     {
       id: 'sidebar',
       title: shell.sidebarOpen ? 'Hide the sidebar' : 'Show the sidebar',
-      hint: 'Ctrl+B',
+      hint: chordOf('toggle-sidebar'),
       group: 'View',
       icon: PanelLeft,
       run: () => shell.toggleSidebar()
@@ -303,7 +307,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     {
       id: 'terminal',
       title: 'Toggle the terminal',
-      hint: 'Ctrl+`',
+      hint: chordOf('toggle-terminal'),
       group: 'View',
       icon: SquareTerminal,
       run: () => runAppCommand('terminal')
@@ -334,7 +338,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     {
       id: 'shortcuts',
       title: 'Keyboard shortcuts',
-      hint: 'Ctrl+/',
+      hint: chordOf('shortcut-list'),
       group: 'View',
       icon: Keyboard,
       run: () => shell.openShortcuts()
@@ -372,7 +376,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       title: 'Settings',
       group: 'View',
       icon: Settings,
-      hint: 'Ctrl+,',
+      hint: chordOf('open-settings'),
       run: () => shell.openSettings()
     }
   ]

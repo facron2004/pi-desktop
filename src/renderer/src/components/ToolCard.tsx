@@ -244,7 +244,12 @@ export const ToolCard = memo(function ToolCard({
                 {linkText}
               </button>
             ) : (
-              <button type="button" className="tool-link__target" onClick={toggleOpen}>
+              <button
+                type="button"
+                className="tool-link__target"
+                title={linkText}
+                onClick={toggleOpen}
+              >
                 {linkText}
               </button>
             )}
@@ -276,7 +281,9 @@ export const ToolCard = memo(function ToolCard({
               <Icon size={12} strokeWidth={2.2} />
             </span>
             <span className="tool__name">{t(summary.label)}</span>
-            <span className="tool__summary">{summary.detail}</span>
+            <span className="tool__summary" title={summary.detail}>
+              {summary.detail}
+            </span>
             {item.status === 'running' ? (
               <span className="spinner" />
             ) : StateIcon ? (

@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
   projectOrder: [],
   pinnedSessions: [],
+  archivedSessions: [],
   theme: 'dark',
   language: 'en',
   fontScale: 1,
@@ -158,7 +159,8 @@ export class SettingsStore {
       customFg: normalizeThemeForeground(parsed),
       workspaces: dedupeWorkspaces(Array.isArray(parsed.workspaces) ? parsed.workspaces : []),
       projectOrder: normalizeProjectOrder(parsed.projectOrder),
-      pinnedSessions: Array.isArray(parsed.pinnedSessions) ? parsed.pinnedSessions : []
+      pinnedSessions: Array.isArray(parsed.pinnedSessions) ? parsed.pinnedSessions : [],
+      archivedSessions: Array.isArray(parsed.archivedSessions) ? parsed.archivedSessions : []
     }
   }
 

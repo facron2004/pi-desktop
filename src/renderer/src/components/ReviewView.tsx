@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ChevronsDownUp,
   ChevronsUpDown,
@@ -18,7 +18,7 @@ import {
   SquareArrowOutUpRight,
   X
 } from 'lucide-react'
-import type { GitFileDiff, GitFileStatus } from '@shared/types'
+import type { GitFileDiff, GitFileStatus, GitStatus } from '@shared/types'
 import { buildWorkingTreeDiff, CONTEXT_LINES, type DiffBlock, type DiffRow } from '../lib/diff-fold'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
@@ -28,10 +28,52 @@ import { FileIcon } from './FileIcon'
 import { Popover } from './Popover'
 import '../styles/review.css'
 
-type DiffState =
-  | { status: 'loading' }
-  | { status: 'ready'; diff: GitFileDiff }
-  | { status: 'error' }
+/**
+ * A cached per-file diff, tagged with what it was read from.
+ *
+ * `signature` is the file's status as git reported it (see `signatureOf`).
+ * `snapshot` is the whole `git` reading the diff was read under: an edit can
+ * rewrite the text of an already-changed line without moving its counts, so the
+ * counts alone are not enough to call a diff fresh. The reading is compared by
+ * identity — the store builds a new `GitStatus` on every read.
+ */
+type DiffState = ReadRequest &
+  (
+    | { status: 'loading' }
+    | { status: 'ready'; diff: GitFileDiff }
+    | { status: 'error' }
+  )
+
+/** What a per-file diff read was asked for: the file's state, and the tree. */
+interface ReadRequest {
+  /** The file's status as git reported it when this read started. */
+  signature: string
+  /** The `git` reading this read started under; a newer one makes it stale. */
+  snapshot: GitStatus | undefined
+}
+
+/** One array for the "not read yet" case, so its identity does not churn. */
+const NO_FILES: GitFileStatus[] = []
+
+/**
+ * Everything about a changed file that a cached diff depends on.
+ *
+ * The diff is HEAD against the working tree, so it is stale when the status
+ * codes move (a file becomes staged, deleted or untracked), when the line
+ * counts move (the edit landed), or when a rename picks up a different source.
+ * A file that left the tree has no signature at all, which is what drops its
+ * entry.
+ */
+function signatureOf(file: GitFileStatus): string {
+  return [
+    file.path,
+    file.oldPath ?? '',
+    file.index,
+    file.worktree,
+    file.added ?? '',
+    file.removed ?? ''
+  ].join('\u0000')
+}
 
 /**
  * The working tree as git sees it.
@@ -75,66 +117,96 @@ export function ReviewView({
   const [refreshing, setRefreshing] = useState(false)
   const [revertTarget, setRevertTarget] = useState<string | null>(null)
   const [expandAll, setExpandAll] = useState<boolean | undefined>(undefined)
+  // The read that is running or was last asked for, per path. The object is its
+  // own token: a read that finishes after a newer one started must not paint,
+  // or the pane would show the older of the two diffs.
+  const readsInFlight = useRef<Record<string, ReadRequest>>({})
 
   // The panel is opened when the user wants to review, so it reads git then.
   useEffect(() => {
     if (active) void refreshGit()
   }, [active, refreshGit, workspace?.path])
 
-  const files = git?.files ?? []
+  const files = git?.files ?? NO_FILES
 
-  const load = useCallback(async (path: string) => {
-    setDiffs((previous) => ({ ...previous, [path]: { status: 'loading' } }))
+  // What a cached diff was read from, per path. The status codes, the rename
+  // source and the line counts all move when the file changes on disk, so the
+  // tuple tells a fresh read from a stale one without reading every file.
+  const signatures = useMemo(() => {
+    const next: Record<string, string> = {}
+    for (const file of files) next[file.path] = signatureOf(file)
+    return next
+  }, [files])
+
+  const load = useCallback(async (path: string, request: ReadRequest) => {
+    const mine = request
+    readsInFlight.current[path] = mine
+    setDiffs((previous) => {
+      const entry = previous[path]
+      // The diff on screen stays there while the newer one is read. The store
+      // reads the tree after every edit, and a spinner for each of those reads
+      // would flash the pane instead of letting the edit land in place.
+      if (entry?.status === 'ready' && entry.signature === request.signature) return previous
+      return { ...previous, [path]: { status: 'loading', ...request } }
+    })
     try {
       const diff = await window.pi.git.fileDiff(path)
-      setDiffs((previous) => ({ ...previous, [path]: { status: 'ready', diff } }))
+      if (readsInFlight.current[path] !== mine) return
+      delete readsInFlight.current[path]
+      setDiffs((previous) => ({ ...previous, [path]: { status: 'ready', ...request, diff } }))
     } catch {
-      setDiffs((previous) => ({ ...previous, [path]: { status: 'error' } }))
+      if (readsInFlight.current[path] !== mine) return
+      delete readsInFlight.current[path]
+      setDiffs((previous) => {
+        // A diff that was read before and is still current is worth more than
+        // an error notice: the tree was read again, not the file broken.
+        const entry = previous[path]
+        if (entry?.status === 'ready' && entry.signature === request.signature) {
+          return { ...previous, [path]: { status: 'ready', ...request, diff: entry.diff } }
+        }
+        return { ...previous, [path]: { status: 'error', ...request } }
+      })
     }
   }, [])
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
-    const current = selectedPath
     try {
+      // The new `git` reading is what invalidates the cached diffs, and the
+      // selected-file effect reads that file again under it. Nothing is read
+      // here directly: one read of the selected file per tree reading.
       await refreshGit()
-      setDiffs({})
-      if (current) await load(current)
     } finally {
       setRefreshing(false)
     }
-  }, [refreshGit, load, selectedPath])
+  }, [refreshGit])
 
-  // Reverting a hunk rewrites the work tree, so this file's cached diff is
-  // stale: drop it, re-read the status and read the file again.
-  const reloadAfterHunk = useCallback(
-    async (path: string) => {
-      setDiffs((previous) => {
-        const next = { ...previous }
-        delete next[path]
-        return next
-      })
-      await refreshGit()
-      await load(path)
-    },
-    [refreshGit, load]
-  )
+  // Reverting a hunk rewrites the work tree, so every cached diff is stale.
+  // The new `git` reading invalidates them, and the selected-file effect reads
+  // this file again from disk under it.
+  const reloadAfterHunk = useCallback(async () => {
+    await refreshGit()
+  }, [refreshGit])
 
-  // A file that left the working tree (committed or reverted) cannot keep its
-  // cached diff, or the list would show a change that no longer exists.
-  const paths = useMemo(() => files.map((file) => file.path).join('\n'), [files])
+  // A cached diff belongs to the state of the file it was read from. When the
+  // signature moves, the entry goes: the edit landed and its counts changed, a
+  // file was staged or deleted, or a rename picked up a different source. A
+  // path that left the working tree — committed or reverted — has no signature
+  // at all and goes the same way, instead of keeping a change that no longer
+  // exists. The snapshot is not checked here: it is what makes the selected
+  // file be read again below, and dropping the entry first would flash the
+  // spinner on every read the store pushes during a run.
   useEffect(() => {
-    const current = new Set(paths ? paths.split('\n') : [])
     setDiffs((previous) => {
       let changed = false
       const next: Record<string, DiffState> = {}
-      for (const [path, value] of Object.entries(previous)) {
-        if (current.has(path)) next[path] = value
+      for (const [path, entry] of Object.entries(previous)) {
+        if (signatures[path] === entry.signature) next[path] = entry
         else changed = true
       }
       return changed ? next : previous
     })
-  }, [paths])
+  }, [signatures])
 
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase()
@@ -152,10 +224,22 @@ export function ReviewView({
 
   // Selecting a row is the only way its diff is read; keeping this effect at
   // the top means the first file is loaded as soon as the tree is available.
+  // The read is keyed by the file's signature and the git reading it happens
+  // under, so a file whose status or counts moved — or whose tree was read
+  // again — is read once more, and a file that did not move is not read at all.
+  // Only the selected file is read: a run that touches twenty files must not
+  // turn one git update into twenty diff reads. The store pushes `git`; nothing
+  // here asks git for anything, so a read cannot feed the refresh behind it.
   useEffect(() => {
-    if (!selectedFile) return
-    if (!diffs[selectedFile.path]) void load(selectedFile.path)
-  }, [selectedFile, diffs, load])
+    if (!active || !selectedFile) return
+    const signature = signatures[selectedFile.path]
+    if (!signature) return
+    const entry = diffs[selectedFile.path]
+    if (entry && entry.signature === signature && entry.snapshot === git) return
+    const running = readsInFlight.current[selectedFile.path]
+    if (running && running.signature === signature && running.snapshot === git) return
+    void load(selectedFile.path, { signature, snapshot: git })
+  }, [active, selectedFile, signatures, diffs, git, load])
 
   const [stageBusy, setStageBusy] = useState(false)
 
@@ -255,11 +339,8 @@ export function ReviewView({
       showToast(result.error ?? t('The file could not be reverted'), 'error')
       return
     }
-    setDiffs((previous) => {
-      const next = { ...previous }
-      delete next[target]
-      return next
-    })
+    // The file went back to HEAD, so its entry has no signature any more and
+    // the new reading drops it.
     await refreshGit()
     showToast(t('The changes were reverted'))
   }, [revertTarget, refreshGit, showToast, t])
@@ -390,7 +471,7 @@ export function ReviewView({
                 onToggleStage={() => void toggleStage(selectedFile)}
                 onCopyPatch={() => void copyPatch(selectedFile.path)}
                 onRevert={() => setRevertTarget(selectedFile.path)}
-                onHunkReverted={() => void reloadAfterHunk(selectedFile.path)}
+                onHunkReverted={() => void reloadAfterHunk()}
               />
             ) : (
               <div className="review__empty">

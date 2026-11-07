@@ -39,7 +39,7 @@ export function SubagentTree({ sessions, threads, onSelect, onOpenTask, showEmpt
   sessions: readonly SessionMeta[]
   threads: Readonly<Record<string, SessionThread>>
   onSelect: (session: SessionMeta) => void
-  onOpenTask?: (task: SubagentTreeTask, sessionName: string) => void
+  onOpenTask?: (task: SubagentTreeTask, session: SessionMeta) => void
   showEmpty?: boolean
 }) {
   const t = useT()
@@ -95,7 +95,7 @@ function ConversationBranch({ session, calls, now, onSelect, onOpenTask }: {
   calls: SubagentCall[]
   now: number
   onSelect: (session: SessionMeta) => void
-  onOpenTask?: (task: SubagentTreeTask, sessionName: string) => void
+  onOpenTask?: (task: SubagentTreeTask, session: SessionMeta) => void
 }) {
   const t = useT()
   const [open, setOpen] = useState(() => readProcessOpen(session.file, 'subagent-tree') ?? true)
@@ -146,7 +146,7 @@ function ConversationBranch({ session, calls, now, onSelect, onOpenTask }: {
               key={task.id}
               task={task}
               now={now}
-              onOpen={() => onOpenTask?.(task, name)}
+              onOpen={() => onOpenTask?.(task, session)}
             />
           ))}
         </ul>

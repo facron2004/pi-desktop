@@ -93,7 +93,10 @@ function TaskSection({
 }
 
 /** The status leads the task label so it stays visible when the goal is long. */
-function BackgroundTaskRow({ task }: { task: SubagentTreeTask }) {
+function BackgroundTaskRow({ task, onOpen }: {
+  task: SubagentTreeTask
+  onOpen: (taskId: string) => void
+}) {
   const t = useT()
   // The label is the task goal — never the live activity or the tool name.
   const tone =
@@ -106,13 +109,17 @@ function BackgroundTaskRow({ task }: { task: SubagentTreeTask }) {
           : 'idle'
 
   return (
-    <li className="task-panel__task" data-status={task.status} title={task.task}>
-      <span
-        className="task-panel__dot"
-        data-tone={tone}
-        aria-label={t(STATUS_LABEL[task.status])}
-      />
-      <span className="task-panel__task-name">{task.task}</span>
+    <li className="task-panel__task" data-status={task.status}>
+      <button
+        type="button"
+        className="task-panel__task-action"
+        title={task.task}
+        aria-label={`${t(STATUS_LABEL[task.status])}: ${task.task}`}
+        onClick={() => onOpen(task.id)}
+      >
+        <span className="task-panel__dot" data-tone={tone} aria-hidden="true" />
+        <span className="task-panel__task-name">{task.task}</span>
+      </button>
     </li>
   )
 }
@@ -151,7 +158,7 @@ function DeliverableRow({
  * Every part of it is a projection of the thread and the Git state, so the rail
  * keeps no state of its own at all.
  */
-export function TaskPanel() {
+export function TaskPanel({ onOpenTask }: { onOpenTask: (taskId: string) => void }) {
   const t = useT()
   const items = useAppStore((state) => state.items)
   const git = useAppStore((state) => state.git)
@@ -276,7 +283,7 @@ export function TaskPanel() {
           <TaskSection title={t('Background tasks')}>
             <ul className="task-panel__list">
               {backgroundTasks.map((task) => (
-                <BackgroundTaskRow key={task.id} task={task} />
+                <BackgroundTaskRow key={task.id} task={task} onOpen={onOpenTask} />
               ))}
             </ul>
           </TaskSection>

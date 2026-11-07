@@ -1,112 +1,115 @@
+import { Database, Gauge } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
-import { formatCost, formatTokens } from '../lib/format'
+import { formatDuration } from '../lib/format'
 import type { SessionMetrics } from '../lib/session-metrics'
 
+function formatExactTokens(value: number | null | undefined): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${value.toLocaleString()} tok`
+    : '—'
+}
+
 /**
- * The detail popover behind the usage line: the token split, the cache hit
- * rate with its formula, and the generation readings with where they come
- * from. Everything is derived by `lib/session-metrics.ts`; this panel only
- * formats what that function handed over.
+ * The popover behind the tokens and the cache hit rate: a compact total and
+ * token breakdown.
+ *
+ * Generation is deliberately not here. Speed and first-token delay describe one
+ * answer rather than the conversation's running totals, so they live in the
+ * card behind the session statistics reading (`GenerationPanel`) and must not
+ * be printed twice.
+ * Everything is derived by `lib/session-metrics.ts`; this panel only formats
+ * what that function handed over.
  */
 export function UsagePanel({ metrics }: { metrics: SessionMetrics }) {
   const stats = useAppStore((state) => state.stats)
   const t = useT()
+  const hasLiveStats = Boolean(stats?.tokens.total)
 
   return (
     <div className="usage-panel">
-      <div className="usage-panel__section">
-        <div className="popover__label">{t('Usage details')}</div>
-        <div className="usage-panel__rows">
-          <div className="usage-panel__row usage-panel__row--strong">
-            <span>{t('Total tokens')}</span>
-            <span>{formatTokens(metrics.totalTokens)}</span>
-          </div>
-          <div className="usage-panel__row">
-            <span>{t('Input')}</span>
-            <span>{formatTokens(stats?.tokens.input)}</span>
-          </div>
-          <div className="usage-panel__row">
-            <span>{t('Output')}</span>
-            <span>{formatTokens(stats?.tokens.output)}</span>
-          </div>
-          <div className="usage-panel__row">
-            <span>{t('Cache read')}</span>
-            <span>{formatTokens(stats?.tokens.cacheRead)}</span>
-          </div>
-          <div className="usage-panel__row">
-            <span>{t('Cache write')}</span>
-            <span>{formatTokens(stats?.tokens.cacheWrite)}</span>
-          </div>
-          <div className="usage-panel__row">
-            <span>{t('Cost')}</span>
-            <span>{formatCost(stats?.cost)}</span>
-          </div>
+      <div className="usage-panel__rows" role="group" aria-label={t('Token usage')}>
+        <div className="usage-panel__row usage-panel__row--strong">
+          <span className="usage-panel__title">
+            <Database size={14} aria-hidden="true" />
+            {t('Token usage')}
+          </span>
+          <span title={t(hasLiveStats ? 'From the live session' : 'Estimated from the transcript')}>
+            <strong>{metrics.totalTokens.toLocaleString()}</strong> tok
+          </span>
+        </div>
+        <div className="usage-panel__row">
+          <span>{t('Cache hit rate')}</span>
+          <span>{metrics.cacheHitPercent !== null ? `${metrics.cacheHitPercent}%` : '—'}</span>
+        </div>
+        <div className="usage-panel__row">
+          <span>{t('Uncached input')}</span>
+          <span>{formatExactTokens(metrics.inputTokens)}</span>
+        </div>
+        <div className="usage-panel__row">
+          <span>{t('Cache read')}</span>
+          <span>{formatExactTokens(metrics.cacheReadTokens)}</span>
+        </div>
+        <div className="usage-panel__row">
+          <span>{t('Output')}</span>
+          <span>{formatExactTokens(metrics.outputTokens)}</span>
         </div>
       </div>
+    </div>
+  )
+}
 
-      <div className="usage-panel__section">
-        <div className="popover__label">{t('Cache hit rate')}</div>
-        <div className="usage-panel__headline">
-          <strong>{metrics.cacheHitPercent !== null ? `${metrics.cacheHitPercent}%` : '—'}</strong>
-          <span className="usage-panel__hint">{t('Cache hits divided by all prompt tokens, cached and new.')}</span>
+/**
+ * The session-statistics card behind the turn/step and speed reading.
+ *
+ * Counts, tool duration and generation timing come from `lib/session-metrics.ts`.
+ * Model time, TTFT history and tool durations omitted by Pi are measured by
+ * the desktop and retained locally for this session.
+ */
+export function GenerationPanel({ metrics }: { metrics: SessionMetrics }) {
+  const t = useT()
+  const countLabel =
+    t('turns') === '轮'
+      ? `${metrics.turnCount}轮 ${metrics.stepCount}步`
+      : `${metrics.turnCount} ${metrics.turnCount === 1 ? t('turn') : t('turns')} · ${metrics.stepCount} ${t('steps')}`
+
+  return (
+    <div className="usage-panel">
+      <div
+        className="usage-panel__rows"
+        role="group"
+        aria-label={t('Session statistics')}
+      >
+        <div className="usage-panel__row usage-panel__row--strong">
+          <span className="usage-panel__title">
+            <Gauge size={14} aria-hidden="true" />
+            {t('Session statistics')}
+          </span>
+          <span>{countLabel}</span>
         </div>
-      </div>
-
-      <div className="usage-panel__section">
-        <div className="popover__label">{t('Generation')}</div>
-        <div className="usage-panel__rows">
-          <div className="usage-panel__row">
-            <span title={t('Output tokens per second')}>{t('TPS')}</span>
-            <span>
-              {metrics.tps !== null ? (
-                <>
-                  <strong>{metrics.tps}</strong> {t('tok/s')}
-                </>
-              ) : (
-                <span className="usage-panel__none" title={t('Timing is recorded while a run is live in this session')}>
-                  —
-                </span>
-              )}
-            </span>
-          </div>
-          <div className="usage-panel__row">
-            <span title={t('Time to first token')}>{t('TTFT')}</span>
-            <span>
-              {metrics.ttftMs !== null ? (
-                <>
-                  <strong>{metrics.ttftMs}</strong> ms
-                </>
-              ) : (
-                <span className="usage-panel__none" title={t('Timing is recorded while a run is live in this session')}>
-                  —
-                </span>
-              )}
-            </span>
-          </div>
+        <div className="usage-panel__row">
+          <span>{t('Model time')}</span>
+          <span title={t('Measured by this app; earlier history may be unavailable')}>
+            {metrics.modelTimeMs !== null ? formatDuration(metrics.modelTimeMs) : t('Not measured yet')}
+          </span>
         </div>
-        <p className="usage-panel__hint">
-          {metrics.tps !== null
-            ? t('Measured from the first to the last token of the newest answer.')
-            : t('Timing is recorded while a run is live in this session')}
-        </p>
-      </div>
-
-      <div className="usage-panel__section">
-        <div className="popover__label">{t('Messages')}</div>
-        <div className="usage-panel__rows">
-          <div className="usage-panel__row">
-            <span>{t('Prompts')}</span>
-            <span>{stats?.userMessages ?? '—'}</span>
-          </div>
-          <div className="usage-panel__row">
-            <span>{t('Replies')}</span>
-            <span>{stats?.assistantMessages ?? '—'}</span>
-          </div>
-          <div className="usage-panel__row">
-            <span>{t('Tool calls')}</span>
-            <span>{stats?.toolCalls ?? '—'}</span>
-          </div>
+        <div className="usage-panel__row">
+          <span>{t('Tool execution time')}</span>
+          <span title={`${metrics.timedToolCalls}/${metrics.stepCount} ${t('tool calls timed')}`}>
+            {metrics.toolTimeMs !== null ? formatDuration(metrics.toolTimeMs) : t('Not measured yet')}
+          </span>
+        </div>
+        <div className="usage-panel__row">
+          <span>{t('Average TTFT')}</span>
+          <span title={t('Average of recorded runs; earlier history may be unavailable')}>
+            {metrics.averageTtftMs !== null ? formatDuration(metrics.averageTtftMs) : t('Not measured yet')}
+          </span>
+        </div>
+        <div className="usage-panel__row">
+          <span>{t('Output speed (TPS)')}</span>
+          <span>
+            {metrics.tps !== null ? `${metrics.tps.toLocaleString()} ${t('tok/s')}` : '—'}
+          </span>
         </div>
       </div>
     </div>

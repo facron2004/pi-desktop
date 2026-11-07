@@ -227,15 +227,29 @@
   list-style: none;
 }
 
-.task-panel__task {
+.task-panel__task-action {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  width: 100%;
   min-height: 28px;
   padding: 0 8px;
+  border: 0;
   border-radius: var(--r-sm);
+  background: transparent;
   color: var(--text-primary);
-  font-size: var(--text-md);
+  font-size: var(--text-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-panel__task-action:hover {
+  background: var(--bg-hover);
+}
+
+.task-panel__task-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .task-panel__task-name {

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
   Copy,
   Download,
   ExternalLink,
+  GitBranch,
   GitFork,
   Loader2,
   Package,
@@ -35,10 +37,42 @@ import { formatRelativeTime } from '../lib/format'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
 import { ConfirmDialog } from './ConfirmDialog'
-import { CreateResourceDialog, ResourceManager } from './ResourceManager'
+import { Popover } from './Popover'
+import { CreateResourceDialog, ResourceManager, type CreateMode } from './ResourceManager'
 import '../styles/marketplace.css'
 
 const INSTALLED_STORAGE_KEY = 'pi-desktop.marketplace.installed'
+
+/**
+ * The create control is a menu, not a single button: a local plugin, an npm
+ * package and a cloned repository are three different doors, and the dialog
+ * opens on the one the user picked.
+ */
+const CREATE_OPTIONS: {
+  mode: CreateMode
+  icon: typeof Plus
+  label: string
+  description: string
+}[] = [
+  {
+    mode: 'custom',
+    icon: Plus,
+    label: 'Create your own',
+    description: 'Create a plugin or skill in this project.'
+  },
+  {
+    mode: 'npm',
+    icon: Package,
+    label: 'npm package',
+    description: 'Install from npm'
+  },
+  {
+    mode: 'github',
+    icon: GitBranch,
+    label: 'GitHub repository',
+    description: 'Clone a repository and install it.'
+  }
+]
 
 type MarketplaceStatus = 'loading' | 'ready' | 'error'
 type ToastTone = 'success' | 'error'
@@ -57,9 +91,6 @@ const SORT_OPTIONS: { value: MarketplaceSort; label: string }[] = [
 ]
 
 const MIN_STARS_OPTIONS = [0, 100, 300, 1000]
-
-/** The same loose shape npm itself accepts for a package name. */
-const NPM_PACKAGE_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
@@ -285,20 +316,16 @@ export function Marketplace() {
   const [installed, setInstalled] = useState<Record<string, boolean>>(readInstalledIds)
   const [serverInstalled, setServerInstalled] = useState<string[]>([])
   const [mineOnly, setMineOnly] = useState(false)
-  const [npmName, setNpmName] = useState('')
-  const [npmInstalling, setNpmInstalling] = useState(false)
-  const [npmError, setNpmError] = useState('')
-  const [pendingNpm, setPendingNpm] = useState<string | null>(null)
   const [installErrors, setInstallErrors] = useState<Record<string, string>>({})
   const [pendingInstall, setPendingInstall] = useState<MarketplaceEntry | null>(null)
   const [view, setView] = useState<'marketplace' | 'manage'>('marketplace')
   const [createOpen, setCreateOpen] = useState(false)
+  const [createMode, setCreateMode] = useState<CreateMode>('custom')
   const [toast, setToast] = useState<ToastState | null>(null)
   // A slow `list()` from the mount must not overwrite a newer `refresh()`.
   const requestSeq = useRef(0)
 
   const canInstall = typeof window.pi?.marketplace?.install === 'function'
-  const canInstallNpm = typeof window.pi?.marketplace?.installNpm === 'function'
   const canRefresh = typeof window.pi?.marketplace?.refresh === 'function'
   const hasFilters =
     query.trim().length > 0 || minStars > 0 || category !== null || mineOnly
@@ -443,10 +470,10 @@ export function Marketplace() {
         }))
         return
       }
-      if (installingId || npmInstalling) return
+      if (installingId) return
       setPendingInstall(entry)
     },
-    [canInstall, installingId, npmInstalling, t]
+    [canInstall, installingId, t]
   )
 
   const copyCommand = useCallback(
@@ -481,62 +508,6 @@ export function Marketplace() {
         .catch(() => showToast('error', t('Could not open the npm page')))
     },
     [showToast, t]
-  )
-
-  const installNpm = useCallback(
-    async (packageName: string) => {
-      const installNpmFn = window.pi?.marketplace?.installNpm
-      if (typeof installNpmFn !== 'function') {
-        setNpmError(t('The marketplace is not available in this build.'))
-        return
-      }
-      setNpmInstalling(true)
-      setNpmError('')
-      try {
-        const result = await installNpmFn(packageName)
-        if (result.ok) {
-          const needle = packageName.toLowerCase()
-          const match = snapshot.entries.find(
-            (entry) =>
-              entry.npmPackage?.toLowerCase() === needle ||
-              entry.install.toLowerCase() === `npm:${needle}`
-          )
-          if (match) setInstalled((prev) => ({ ...prev, [match.id]: true }))
-          setNpmName('')
-          showToast('success', t('Install complete'), t('Restart Pi Desktop to load it.'))
-        } else {
-          const output = truncateOutput(result.output) || t('Install failed')
-          setNpmError(output)
-          showToast('error', t('Install failed'), output)
-        }
-      } catch (cause) {
-        const output = truncateOutput(errorMessage(cause))
-        setNpmError(output || t('Install failed'))
-        showToast('error', t('Install failed'), output || undefined)
-      } finally {
-        setNpmInstalling(false)
-      }
-    },
-    [showToast, snapshot.entries, t]
-  )
-
-  const submitNpm = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault()
-      const packageName = npmName.trim()
-      if (!packageName || npmInstalling) return
-      if (!canInstallNpm) {
-        setNpmError(t('The marketplace is not available in this build.'))
-        return
-      }
-      if (!NPM_PACKAGE_RE.test(packageName)) {
-        setNpmError(t('Invalid npm package name.'))
-        return
-      }
-      setNpmError('')
-      setPendingNpm(packageName)
-    },
-    [canInstallNpm, npmInstalling, npmName, t]
   )
 
   const counts = useMemo(() => {
@@ -651,14 +622,56 @@ export function Marketplace() {
               </button>
             </div>
             <div className="marketplace-top__actions">
-              <button
-                type="button"
-                className="btn btn--sm btn--primary"
-                onClick={() => setCreateOpen(true)}
+              <Popover
+                align="left"
+                width={256}
+                className="marketplace-create-menu__popover"
+                renderTrigger={({ open, toggle }) => (
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--primary"
+                    aria-haspopup="menu"
+                    aria-expanded={open}
+                    onClick={toggle}
+                  >
+                    <Plus size={13} />
+                    {t('Create')}
+                    <ChevronDown
+                      size={12}
+                      className="marketplace-create-menu__caret"
+                      data-open={open}
+                    />
+                  </button>
+                )}
               >
-                <Plus size={13} />
-                {t('Create')}
-              </button>
+                {(close) => (
+                  <div className="marketplace-create-menu" role="menu">
+                    {CREATE_OPTIONS.map(({ mode, icon: Icon, label, description }) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        role="menuitem"
+                        className="marketplace-create-menu__item"
+                        onClick={() => {
+                          close()
+                          setCreateMode(mode)
+                          setCreateOpen(true)
+                        }}
+                      >
+                        <span className="marketplace-create-menu__icon">
+                          <Icon size={15} />
+                        </span>
+                        <span className="marketplace-create-menu__text">
+                          <span className="marketplace-create-menu__title">{t(label)}</span>
+                          <span className="marketplace-create-menu__desc" title={t(description)}>
+                            {t(description)}
+                          </span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </Popover>
               <button type="button" className="btn btn--sm" onClick={() => setView('manage')}>
                 <Settings2 size={13} />
                 {t('Manage')}
@@ -787,45 +800,6 @@ export function Marketplace() {
         })}
       </div>
 
-      <form className="marketplace-npm" onSubmit={submitNpm}>
-        <label className="marketplace-npm__label" htmlFor="marketplace-npm-input">
-          {t('Install from npm')}
-        </label>
-        <div className="marketplace-npm__row">
-          <input
-            id="marketplace-npm-input"
-            className="input marketplace-npm__input"
-            value={npmName}
-            placeholder={t('npm package name, e.g. pi-web-access')}
-            aria-label={t('npm package name, e.g. pi-web-access')}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            onChange={(event) => {
-              setNpmName(event.target.value)
-              if (npmError) setNpmError('')
-            }}
-          />
-          <button
-            type="submit"
-            className="btn btn--sm btn--primary marketplace-npm__button"
-            disabled={
-              npmInstalling || installingId !== null || !npmName.trim() || !canInstallNpm
-            }
-            title={canInstallNpm ? undefined : t('The marketplace is not available in this build.')}
-          >
-            {npmInstalling ? <Loader2 size={13} className="spin" /> : <Download size={13} />}
-            {npmInstalling ? t('Installing…') : t('Download and install')}
-          </button>
-        </div>
-        {npmError ? (
-          <p className="marketplace-npm__error" role="alert">
-            <AlertTriangle size={12} />
-            <span>{npmError}</span>
-          </p>
-        ) : null}
-      </form>
-
       {error && !(status === 'error' && snapshot.entries.length === 0) ? (
         <div className="marketplace-banner" role="alert">
           <AlertTriangle size={14} />
@@ -885,7 +859,7 @@ export function Marketplace() {
               language={language}
               installed={installedIds.has(entry.id.toLowerCase())}
               installing={installingId === entry.id}
-              installBusy={installingId !== null || npmInstalling}
+              installBusy={installingId !== null}
               canInstall={canInstall}
               installError={installErrors[entry.id]}
               onInstall={requestInstall}
@@ -918,24 +892,12 @@ export function Marketplace() {
         />
       ) : null}
 
-      {pendingNpm ? (
-        <ConfirmDialog
-          title={t('Install {name}?').replace('{name}', pendingNpm)}
-          body={t(
-            'Third-party plugins and skills run with full system permissions. Only install sources you trust.'
-          )}
-          confirmLabel="Install"
-          onConfirm={() => {
-            const packageName = pendingNpm
-            setPendingNpm(null)
-            void installNpm(packageName)
-          }}
-          onCancel={() => setPendingNpm(null)}
-        />
-      ) : null}
-
       {createOpen ? (
-        <CreateResourceDialog onClose={() => setCreateOpen(false)} onCreated={finishCreate} />
+        <CreateResourceDialog
+          initialMode={createMode}
+          onClose={() => setCreateOpen(false)}
+          onCreated={finishCreate}
+        />
       ) : null}
     </div>
   )

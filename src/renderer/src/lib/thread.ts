@@ -793,6 +793,11 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       if (isFinishedTool(existing)) return items
       const isError = event.isError
       const result = extractToolResult(event.result)
+      const durationMs = event.durationMs ?? (
+        existing?.startedAt !== undefined
+          ? Math.max(0, Date.now() - existing.startedAt)
+          : existing?.durationMs
+      )
       return patchTool(
         items,
         toolCallId,
@@ -802,7 +807,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
           result: result ?? existing?.result,
           details: toolDetails(event.result) ?? existing?.details,
           exitCode: exitCodeOf(event.result) ?? existing?.exitCode,
-          durationMs: event.durationMs ?? existing?.durationMs,
+          durationMs,
           finishedAt: Date.now(),
           progress: undefined
         },
@@ -813,7 +818,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
           isError,
           result,
           details: toolDetails(event.result),
-          durationMs: event.durationMs,
+          durationMs,
           finishedAt: Date.now(),
           runId: event.runId,
           turnId: event.turnId,

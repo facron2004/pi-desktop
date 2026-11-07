@@ -46,9 +46,14 @@ export const RunStatusRow = memo(function RunStatusRow({
       <span className="run-status__icon" aria-hidden="true">
         <StatusIcon phase={run.phase} transport={transport} retrying={Boolean(retry)} />
       </span>
-      <span className="run-status__label" title={waiting ? retry.errorMessage : undefined}>
-        {t(waiting && isRateLimitError(retry.errorMessage) ? 'Rate limit reached' : label)}
-      </span>
+      {/* While a tool is in flight its own label is the sentence: "Running a
+          tool" followed by "Running a command" said the same thing twice and
+          left the command squeezed into the leftover width. */}
+      {!waiting && activity ? null : (
+        <span className="run-status__label" title={waiting ? retry.errorMessage : undefined}>
+          {t(waiting && isRateLimitError(retry.errorMessage) ? 'Rate limit reached' : label)}
+        </span>
+      )}
       {waiting ? (
         <>
           <RetryProgress retry={retry} />
@@ -62,7 +67,9 @@ export const RunStatusRow = memo(function RunStatusRow({
         <span className="run-status__activity">
           <span className="run-status__activity-label">{t(activity.label)}</span>
           {activity.detail ? (
-            <span className="run-status__activity-detail">{activity.detail}</span>
+            <span className="run-status__activity-detail" title={activity.detail}>
+              {activity.detail}
+            </span>
           ) : null}
         </span>
       ) : null}

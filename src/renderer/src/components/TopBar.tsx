@@ -242,7 +242,10 @@ export function ModelPicker() {
     // Another surface (the keyboard cycle) may have picked a model since the
     // last open; recency is cheap to re-read and belongs to the picker's view.
     setRecency(readModelRecency())
-  }, [showModels, activeIndex])
+    // `activeIndex` is read at open only. Expanding the list changes it, and
+    // re-running on that change would fold "Other models" straight back up.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showModels])
 
   useEffect(() => {
     if (!showModels) return

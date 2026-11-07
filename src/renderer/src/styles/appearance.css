@@ -398,6 +398,9 @@
     align-items: center;
     justify-content: flex-start;
     line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* The UA icon is a filled triangle. Two hairline borders, turned, are the
@@ -449,8 +452,12 @@
     color: var(--text);
     font-size: var(--text-sm);
     line-height: 1.35;
-    white-space: normal;
-    overflow-wrap: anywhere;
+    /* A model name is one long token. Wrapping it into two rows grew the list
+       and hid the other models; the row keeps a single line and an ellipsis,
+       with the full name still on the control's title. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     cursor: pointer;
   }
 
@@ -523,13 +530,143 @@
   letter-spacing: 0.02em;
 }
 
-.appearance-swatch-native {
+/* ---- Color picker popover ----------------------------------------- */
+.popover.color-picker__popover {
+  /* The settings dialog is a modal layer at --z-modal; a picker opened from
+     inside it has to paint above the dialog, like the other settings menus. */
+  z-index: var(--z-overlay);
+  padding: var(--sp-3);
+}
+
+.color-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.color-picker__sv {
+  position: relative;
+  width: 100%;
+  height: 150px;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.color-picker__sv::before,
+.color-picker__sv::after {
+  content: '';
   position: absolute;
   inset: 0;
-  opacity: 0;
+  pointer-events: none;
+}
+
+.color-picker__sv::before {
+  background: linear-gradient(to right, #fff, rgba(255, 255, 255, 0));
+}
+
+.color-picker__sv::after {
+  background: linear-gradient(to top, #000, rgba(0, 0, 0, 0));
+}
+
+.color-picker__sv:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.color-picker__handle {
+  position: absolute;
+  z-index: 2;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.color-picker__hue {
+  -webkit-appearance: none;
+  appearance: none;
   width: 100%;
-  height: 100%;
+  height: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
   cursor: pointer;
+}
+
+.color-picker__hue::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: var(--color-picker-thumb, #fff);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+.color-picker__swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.color-picker__swatch {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-default);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.color-picker__swatch:hover {
+  transform: scale(1.12);
+}
+
+.color-picker__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.color-picker__preview {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--border-default);
+}
+
+.color-picker__hex {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.color-picker__hex:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.color-picker__close {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
 }
 
 /* Footer Links */
@@ -722,6 +859,123 @@
   transform: rotate(180deg);
 }
 
+/* A settings picker: the app's own listbox, not a native select. The closed
+   control is one line with an ellipsis, and the open list groups provider
+   models under their own headings. */
+.settings-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 120px;
+  max-width: 220px;
+  height: 25px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: var(--text-2xs);
+  text-align: left;
+  transition: border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+
+.settings-picker:hover,
+.settings-picker[aria-expanded='true'] {
+  border-color: var(--border);
+  background: var(--bg-hover);
+}
+
+.settings-picker__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-picker__chevron {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.settings-picker__chevron[data-open='true'] {
+  transform: rotate(180deg);
+}
+
+.settings-picker__menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-picker__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-picker__group-label {
+  max-width: 100%;
+  padding: 4px 8px 2px;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  line-height: var(--leading-assist);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-picker__option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: var(--text-xs);
+  text-align: left;
+}
+
+.settings-picker__option:hover,
+.settings-picker__option:focus-visible {
+  background: var(--bg-hover);
+}
+
+.settings-picker__option[aria-selected='true'] {
+  background: var(--bg-active);
+}
+
+.settings-picker__option:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.settings-picker__option-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-picker__check {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.popover.settings-picker__popover {
+  z-index: var(--z-overlay);
+}
+
 .popover.settings-icon-select__popover {
   z-index: var(--z-overlay);
 }
@@ -748,6 +1002,9 @@
 .settings-icon-select__option > span {
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-icon-select__option[aria-selected='true'] {
@@ -860,7 +1117,7 @@
 
 /* ---- Usage stats overview & breakdowns ---- */
 .usage-heatmap {
-  --usage-cell-size: 12px;
+  --usage-cell-size: 10px;
   --usage-cell-gap: 4px;
   display: flex;
   flex-direction: column;
@@ -896,11 +1153,13 @@
 
 .usage-heatmap__weekdays {
   display: grid;
-  grid-template-rows: 14px repeat(7, var(--usage-cell-size));
+  grid-template-rows: 14px repeat(7, minmax(0, 1fr));
+  align-items: center;
   gap: var(--usage-cell-gap);
+  height: 100%;
   color: var(--text-faint);
   font-size: 9px;
-  line-height: var(--usage-cell-size);
+  line-height: 1;
   text-align: right;
 }
 
@@ -914,7 +1173,7 @@
 .usage-heatmap__months,
 .usage-heatmap__cells {
   display: grid;
-  grid-template-columns: repeat(var(--usage-week-count), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--usage-week-count), minmax(0, var(--usage-cell-size)));
   column-gap: var(--usage-cell-gap);
   width: 100%;
   min-width: 0;
@@ -929,13 +1188,15 @@
 }
 
 .usage-heatmap__cells {
-  grid-template-rows: repeat(7, var(--usage-cell-size));
+  grid-template-rows: repeat(7, auto);
   row-gap: var(--usage-cell-gap);
 }
 
+/* A day is a square. The column width comes from the grid, so the cell takes
+   its height from that width instead of being stretched into a rectangle. */
 .usage-heatmap__cell {
   width: 100%;
-  height: var(--usage-cell-size);
+  aspect-ratio: 1;
   border-radius: 3px;
   background: var(--surface-sunken);
 }
@@ -1125,48 +1386,67 @@
   font-weight: 600;
 }
 
-/* Model distribution: a quiet vertical bar plot on the left, the readable
-   model facts on the right. */
+/* Model distribution: a column per model over the full width, with the token
+   count printed above each bar. The count and the bar share one glance, which
+   is the comparison the section is for. */
 .usage-model-chart {
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-  gap: var(--sp-6);
+  display: flex;
   min-width: 0;
+  flex-direction: column;
 }
 
 .usage-model-chart__plot {
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: var(--sp-2);
   height: 208px;
   min-height: 208px;
-  padding: var(--sp-3) var(--sp-3) 0;
+  /* The strip above the tallest bar carries its value label. */
+  padding: calc(var(--sp-5) + var(--sp-1)) var(--sp-3) 0;
   border-bottom: 1px solid var(--border-soft);
   box-sizing: border-box;
 }
 
-/* The label is a row of its own. With the column as a flex stack a 100% bar
-   overflowed above the plot, so the tallest model never lined up with its
-   neighbours. */
 .usage-model-chart__column {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  justify-items: center;
-  height: 100%;
+  display: flex;
   min-width: 0;
   flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
   gap: var(--sp-2);
 }
 
+.usage-model-chart__bar-area {
+  display: flex;
+  min-height: 0;
+  width: 100%;
+  flex: 1 1 auto;
+  align-items: flex-end;
+  justify-content: center;
+}
+
 .usage-model-chart__bar {
-  grid-row: 1;
-  width: min(100%, 28px);
+  position: relative;
+  width: min(100%, 30px);
   min-height: 4px;
-  align-self: end;
-  justify-self: center;
   border-radius: 4px 4px 0 0;
   background: var(--series-color, var(--accent));
   transition: height var(--dur-base) var(--ease);
+}
+
+/* The number sits on top of the bar it measures. Out of the flow, so bars of
+   different heights still line up on the baseline. */
+.usage-model-chart__value {
+  position: absolute;
+  bottom: calc(100% + var(--sp-1));
+  left: 50%;
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: var(--leading-assist);
+  white-space: nowrap;
+  transform: translateX(-50%);
 }
 
 .usage-model-chart__xlabel {
@@ -1180,57 +1460,71 @@
   white-space: nowrap;
 }
 
-.usage-model-chart__info {
+/* The hovered column answers with the app's own bubble, never the native
+   title tooltip. It hangs above the bar's top and stays clamped to the window. */
+.usage-model-tooltip {
+  position: fixed;
+  z-index: var(--z-overlay);
   display: flex;
-  min-width: 0;
+  width: max-content;
+  min-width: 196px;
+  max-width: 280px;
   flex-direction: column;
-  gap: var(--sp-3);
-  /* A drawer: the list stops at the plot's own height and the rest of the
-     models are one scroll down, instead of stretching the page. */
-  max-height: 208px;
-  padding-right: var(--sp-2);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-}
-
-.usage-model-chart__info-row {
-  display: flex;
-  min-width: 0;
-  align-items: flex-start;
   gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  pointer-events: none;
+  transform: translate(-50%, -100%);
 }
 
-.usage-model-chart__dot {
+.usage-model-tooltip__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.usage-model-tooltip__swatch {
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
-  flex: 0 0 auto;
-  margin-top: 4px;
-  border-radius: 2px;
+  border-radius: var(--r-xs);
   background: var(--series-color, var(--accent));
 }
 
-.usage-model-chart__info-main {
-  display: flex;
+.usage-model-tooltip__name {
   min-width: 0;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.usage-model-chart__name {
-  overflow: hidden;
-  color: var(--text);
-  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
   font-size: var(--text-small);
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: var(--leading-small);
 }
 
-.usage-model-chart__stats {
+.usage-model-tooltip__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+}
+
+.usage-model-tooltip__row > span {
   color: var(--text-muted);
-  font-size: var(--text-2xs);
+}
+
+.usage-model-tooltip__row > strong {
+  color: var(--text);
   font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.usage-model-chart__column:hover .usage-model-chart__bar {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--series-color, var(--accent)) 30%, transparent);
 }
 
 [data-series='0'] {
@@ -1255,17 +1549,6 @@
 
 [data-series='5'] {
   --series-color: var(--project-icon-red);
-}
-
-@media (max-width: 680px) {
-  .usage-model-chart {
-    grid-template-columns: 1fr;
-  }
-
-  .usage-model-chart__plot {
-    height: 160px;
-    min-height: 160px;
-  }
 }
 
 /* Recent days table */

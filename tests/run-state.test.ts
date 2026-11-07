@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { AppSettings, ModelInfo, PiEvent, PiState, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
+import { readSessionTiming } from '../src/renderer/src/lib/session-timing'
 
 /* ------------------------------------------------------------------ *
  * A stand-in for the preload bridge.
@@ -19,6 +20,7 @@ import type { AppSettings, ModelInfo, PiEvent, PiState, RuntimeStartOptions, Run
  * about, so they are the smallest stand-ins that let the real code path run.
  */
 const style = new Map<string, string>()
+const localValues = new Map<string, string>()
 ;(globalThis as unknown as { document: unknown }).document = {
   documentElement: {
     dataset: {} as Record<string, string>,
@@ -75,6 +77,11 @@ const bridge = {
 ;(globalThis as unknown as { window: unknown }).window = {
   pi: bridge,
   location: { search: '' },
+  localStorage: {
+    getItem: (key: string) => localValues.get(key) ?? null,
+    setItem: (key: string, value: string) => localValues.set(key, value),
+    removeItem: (key: string) => localValues.delete(key)
+  },
   matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
   addEventListener: () => {},
   removeEventListener: () => {},
@@ -306,6 +313,45 @@ test('P02 — text deltas are the only thing that makes the run "generating"', (
 
   emit({ type: 'tool_execution_start', toolCallId: 'c1', toolName: 'read' })
   assert.equal(phase(), 'tool_running', 'a tool outranks generating')
+})
+
+test('completed events persist model time and prompt TTFT for the conversation', () => {
+  startRun()
+  const sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+  const now = Date.now
+  try {
+    Date.now = () => 1_000
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    Date.now = () => 1_250
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } })
+    Date.now = () => 1_800
+    emit({ type: 'message_end', message: { role: 'assistant', content: [] } })
+    emit({ type: 'agent_settled', aborted: false })
+  } finally {
+    Date.now = now
+  }
+
+  const timing = readSessionTiming(sessionKey)
+  assert.deepEqual(Object.values(timing.modelDurationsMs), [800])
+  assert.deepEqual(Object.values(timing.ttftDurationsMs), [250])
+})
+
+test('tool events persist a measured duration when Pi omits it', () => {
+  startRun()
+  const sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+  const now = Date.now
+  try {
+    Date.now = () => 2_000
+    emit({ type: 'agent_start' })
+    emit({ type: 'tool_execution_start', toolCallId: 'timed-call', toolName: 'read' })
+    Date.now = () => 2_375
+    emit({ type: 'tool_execution_end', toolCallId: 'timed-call', toolName: 'read', isError: false })
+  } finally {
+    Date.now = now
+  }
+
+  assert.equal(readSessionTiming(sessionKey).toolDurationsMs['timed-call'], 375)
 })
 
 test('P03 — an extension dialog is the one real "waiting for the user" state', () => {

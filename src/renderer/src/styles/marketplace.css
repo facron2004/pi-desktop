@@ -33,6 +33,75 @@
   gap: var(--sp-2);
 }
 
+/* The create control is a menu: the trigger stays a normal primary button,
+   and the three doors (local, npm, clone) are one line each. */
+.marketplace-create-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+}
+
+.marketplace-create-menu__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px;
+  border-radius: var(--r-sm);
+  text-align: left;
+}
+
+.marketplace-create-menu__item:hover,
+.marketplace-create-menu__item:focus-visible {
+  background: var(--bg-hover);
+}
+
+.marketplace-create-menu__icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+  background: var(--bg-deep);
+  color: var(--text-muted);
+}
+
+.marketplace-create-menu__text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.marketplace-create-menu__title {
+  color: var(--text);
+  font-size: var(--text-small);
+  font-weight: 600;
+}
+
+.marketplace-create-menu__desc {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-assist);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marketplace-create-menu__caret {
+  margin-left: 2px;
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.marketplace-create-menu__caret[data-open='true'] {
+  transform: rotate(180deg);
+}
+
+.popover.marketplace-create-menu__popover {
+  z-index: var(--z-overlay);
+}
+
 .marketplace-head {
   display: flex;
   align-items: flex-start;
@@ -221,61 +290,6 @@
 .marketplace-mine[data-active='true'] .marketplace-mine__count {
   background: var(--accent-soft);
   color: var(--accent);
-}
-
-/* ---- npm install bar ---------------------------------------------- */
-
-.marketplace-npm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--surface-raised);
-}
-
-.marketplace-npm__label {
-  color: var(--text-secondary);
-  font-size: var(--text-assist);
-  font-weight: var(--weight-medium);
-  line-height: var(--leading-assist);
-}
-
-.marketplace-npm__row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-}
-
-.input.marketplace-npm__input {
-  flex: 1 1 18rem;
-  height: var(--ctl-sm);
-  padding: 0 var(--sp-3);
-  font-family: var(--font-mono);
-  font-size: var(--text-assist);
-  line-height: var(--leading-assist);
-}
-
-.marketplace-npm__button {
-  flex: 0 0 auto;
-}
-
-.marketplace-npm__error {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-1);
-  margin: 0;
-  color: var(--status-danger);
-  font-size: var(--text-assist);
-  line-height: var(--leading-assist);
-  overflow-wrap: anywhere;
-}
-
-.marketplace-npm__error svg {
-  flex: 0 0 auto;
-  margin-top: 1px;
 }
 
 /* ---- notices ------------------------------------------------------ */
@@ -943,17 +957,6 @@
     width: 100%;
   }
 
-  .marketplace-npm__row {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .input.marketplace-npm__input,
-  .marketplace-npm__button {
-    flex: 1 1 auto;
-    width: 100%;
-  }
-
   .marketplace-top {
     align-items: stretch;
     flex-direction: column;
@@ -966,6 +969,15 @@
   .marketplace-top__actions .btn {
     flex: 1 1 0;
     justify-content: center;
+  }
+
+  .marketplace-top__actions .popover-wrap {
+    display: flex;
+    flex: 1 1 0;
+  }
+
+  .marketplace-top__actions .popover-wrap .btn {
+    width: 100%;
   }
 
   .marketplace-manage__top {

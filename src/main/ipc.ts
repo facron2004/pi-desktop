@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Notification, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { exec } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
@@ -42,6 +42,7 @@ import { resolvePiLaunch } from './pi/locate'
 import { getModelThinkingLevels } from './pi/model-catalog'
 import { readTraceHint } from './pi/trace'
 import type { SessionSupervisor } from './pi/supervisor'
+import { showDesktopNotification } from './desktop-notification'
 import { readMcpConfig, removeMcpServer, setMcpServerEnabled } from './mcp'
 import {
   createResource,
@@ -1320,8 +1321,7 @@ export function bridgeRuntime(context: IpcContext): void {
       window &&
       !window.isDestroyed() &&
       !window.isFocused() &&
-      settings.get().desktopNotifications !== false &&
-      Notification.isSupported()
+      settings.get().desktopNotifications !== false
     ) {
       let body: string | null = null
       if (event.type === 'agent_settled') {
@@ -1333,21 +1333,7 @@ export function bridgeRuntime(context: IpcContext): void {
         body = String(event.title ?? event.message ?? 'Pi needs your input.')
       }
       if (body) {
-        try {
-          const notification = new Notification({
-            title: 'Pi Desktop',
-            body,
-            silent: false
-          })
-          notification.on('click', () => {
-            if (window.isDestroyed()) return
-            if (window.isMinimized()) window.restore()
-            window.focus()
-          })
-          notification.show()
-        } catch {
-          /* notification subsystem may be unavailable on some setups */
-        }
+        showDesktopNotification(window, 'Pi Desktop', body, settings.get().theme)
       }
     }
   })

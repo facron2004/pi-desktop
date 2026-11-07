@@ -6,7 +6,6 @@ import {
   useState
 } from 'react'
 import {
-  ArrowLeft,
   Download,
   Ellipsis,
   GitBranch,
@@ -28,7 +27,7 @@ import { InspectorPanel } from './components/InspectorPanel'
 import { BrowserView } from './components/BrowserView'
 import { ImageViewer } from './components/ImageViewer'
 import { TaskPanel } from './components/TaskPanel'
-import { SubagentPanel } from './components/SubagentPanel'
+import { SubagentPanel, type SubagentSelection } from './components/SubagentPanel'
 import { ToolPanel, type ToolPanelView } from './components/ToolPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
@@ -42,6 +41,7 @@ import { ScheduledTasksDialog } from './components/ScheduledTasksDialog'
 import { Marketplace } from './components/Marketplace'
 import { EditProjectDialog } from './components/EditProjectDialog'
 import { Popover } from './components/Popover'
+import { keysFor, matchesShortcut, type ShortcutId } from './lib/shortcuts'
 import { openingLabel, useT } from './lib/i18n'
 
 /** Matches the closing animation in global.css; the panel stays mounted that long. */
@@ -123,6 +123,7 @@ export default function App() {
   const inspectorTab: 'changes' | 'files' =
     panelView === 'files' ? 'files' : 'changes'
   const [inspectorFile, setInspectorFile] = useState<{ path: string; line?: number } | null>(null)
+  const [subagentSelection, setSubagentSelection] = useState<SubagentSelection | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
   const exportedRef = useRef(false)
@@ -414,71 +415,70 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const mod = event.ctrlKey || event.metaKey
-      const launcherToggle =
-        launcherOpen && mod && event.shiftKey && event.key.toLowerCase() === 'p'
+      const matches = (id: ShortcutId) =>
+        matchesShortcut(event, keysFor(id, settings.shortcutBindings))
+      const launcherToggle = launcherOpen && matches('command-palette')
       if (document.querySelector('[aria-modal="true"]') && !launcherToggle) return
       // The palette has the keyboard while it is open — only the chord that
       // closes it again stays alive.
       if (launcherOpen && !launcherToggle) return
-      if (mod && event.key.toLowerCase() === 'n') {
+      if (matches('new-chat')) {
         event.preventDefault()
         void newChat()
         return
       }
-      if (mod && event.key.toLowerCase() === 'b') {
+      if (matches('toggle-sidebar')) {
         event.preventDefault()
         toggleSidebar()
         return
       }
-      if (mod && event.key.toLowerCase() === 'k') {
+      if (matches('focus-composer')) {
         event.preventDefault()
         window.dispatchEvent(new CustomEvent('pi:focus-composer'))
         return
       }
       // `Ctrl+,` is the conventional chord for preferences across editors.
-      if (mod && (event.key === ',' || event.code === 'Comma')) {
+      if (matches('open-settings')) {
         event.preventDefault()
         openSettings()
         return
       }
       // `Ctrl+\`` is the terminal, in every editor that has one: the side
       // panel opens on it, or closes when it is already showing.
-      if (mod && !event.shiftKey && (event.key === '`' || event.code === 'Backquote')) {
+      if (matches('toggle-terminal')) {
         event.preventDefault()
         toggleTerminal()
         return
       }
-      if (mod && event.key === '/') {
+      if (matches('shortcut-list')) {
         event.preventDefault()
         setShortcutsOpen((value) => !value)
         return
       }
       // `Ctrl+Shift+P` opens the launcher, where everything the app can do
       // is one search away.
-      if (mod && event.shiftKey && event.key.toLowerCase() === 'p') {
+      if (matches('command-palette')) {
         event.preventDefault()
         setLauncherOpen((value) => !value)
         return
       }
       // `Ctrl+Shift+T` shows the branches of the conversation.
-      if (mod && event.shiftKey && event.key.toLowerCase() === 't') {
+      if (matches('session-tree')) {
         event.preventDefault()
         setSessionTreeOpen((value) => !value)
         return
       }
       // `Ctrl+P` and `Ctrl+T` walk through the models and the reasoning
       // levels, the way they do in Pi's own terminal.
-      if (mod && !event.shiftKey && !event.altKey) {
-        if (event.key.toLowerCase() === 'p') {
-          event.preventDefault()
-          void cycleModel(1)
-          return
-        }
-        if (event.key.toLowerCase() === 't') {
-          event.preventDefault()
-          void cycleThinkingLevel(1)
-          return
-        }
+      if (matches('next-model')) {
+        event.preventDefault()
+        void cycleModel(1)
+        return
+      }
+      if (matches('next-thinking')) {
+        event.preventDefault()
+        void cycleThinkingLevel(1)
+        return
       }
       // `Ctrl+1` … `Ctrl+9` jump to the n-th project of the sidebar.
       if (mod && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
@@ -555,6 +555,7 @@ export default function App() {
     settings.workspaces,
     settings.hiddenProjects,
     settings.projectOrder,
+    settings.shortcutBindings,
     sessions,
     workspace?.path,
     switchProject,
@@ -611,8 +612,12 @@ export default function App() {
 
       <Sidebar
         onOpenSettings={() => openSettings()}
-        onOpenPlugins={() => setDeskPage('marketplace')}
-        onOpenScheduledTasks={() => setDeskPage('scheduled')}
+        onOpenPlugins={() =>
+          setDeskPage(deskPage === 'marketplace' ? null : 'marketplace')
+        }
+        onOpenScheduledTasks={() =>
+          setDeskPage(deskPage === 'scheduled' ? null : 'scheduled')
+        }
         focusSearchSignal={sidebarSearchSignal}
         width={sidebarWidth}
         open={sidebarOpen}
@@ -626,16 +631,7 @@ export default function App() {
       <main className="main">
         <div className="titlebar drag-region">
           <div className="titlebar__identity">
-            {deskPage ? (
-              <button
-                type="button"
-                className="titlebar__back no-drag"
-                onClick={() => setDeskPage(null)}
-              >
-                <ArrowLeft size={16} strokeWidth={1.7} />
-                <span>{t('Back')}</span>
-              </button>
-            ) : !showThread ? null : renaming ? (
+            {deskPage ? null : !showThread ? null : renaming ? (
               <input
                 className="titlebar__rename no-drag"
                 value={draft}
@@ -848,7 +844,11 @@ export default function App() {
               aria-label={t('Task status')}
             >
               <div className="task-rail__body">
-                <TaskPanel />
+                <TaskPanel onOpenTask={(taskId) => {
+                  setSubagentSelection({ sessionKey: activeSessionFile ?? draftId ?? '', taskId })
+                  setPanelView('subagents')
+                  setChangesOpen(true)
+                }} />
               </div>
             </aside>
           ) : null}
@@ -891,7 +891,7 @@ export default function App() {
             ) : panelView === 'images' ? (
               <ImageViewer />
             ) : panelView === 'subagents' ? (
-              <SubagentPanel />
+              <SubagentPanel selected={subagentSelection} onSelectTask={setSubagentSelection} />
             ) : panelView === 'files' || panelView === 'changes' ? (
               <InspectorPanel
                 embedded

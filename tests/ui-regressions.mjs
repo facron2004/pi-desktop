@@ -462,8 +462,12 @@ async function checkRenderer(markerFile) {
     node.getAttribute('aria-label') === 'Show tools panel' || node.getAttribute('aria-label') === 'Hide tools panel')
   if (!document.querySelector('.tool-panel')) panelToggle()?.click()
   await until(() => document.querySelector('.tool-panel'), 'Workspace panel did not open')
-  while (document.querySelector('.tool-panel__tab-close')) {
-    document.querySelector('.tool-panel__tab-close').click()
+  while (true) {
+    const pageTab = [...document.querySelectorAll('.tool-panel__tab-shell')].find(
+      (tab) => !tab.querySelector('.tool-panel__tab-label')?.textContent?.includes('New tab')
+    )
+    if (!pageTab) break
+    pageTab.querySelector('.tool-panel__tab-close').click()
     await pause(30)
   }
   await until(() => document.querySelector('.tool-start'), 'The panel start page did not render')
@@ -504,8 +508,8 @@ async function checkRenderer(markerFile) {
     `The corner controls are not on one line: ${JSON.stringify(cornerLines)}`
   )
   check(![...document.querySelectorAll('.tool-panel__tab')].some((node) => node.textContent?.trim() === 'Tools'), 'The old permanent Tools tab is still there')
-  await until(() => [...document.querySelectorAll('.tree__item')].find((node) => node.textContent?.includes('note.txt')), 'Workspace file did not appear in the tree')
-  ;[...document.querySelectorAll('.tree__item')].find((node) => node.textContent?.includes('note.txt')).click()
+  const workspaceFile = await until(() => [...document.querySelectorAll('.tree__item')].find((node) => node.textContent?.includes('note.txt')), 'Workspace file did not appear in the tree')
+  workspaceFile.click()
   await until(() => document.querySelector('.file-workspace .viewer'), 'The file preview did not open beside the tree')
   check(document.querySelector('.file-workspace__tree'), 'Opening a file removed the file tree')
   document.querySelector('.tool-panel__action').click()
@@ -624,6 +628,46 @@ async function checkRenderer(markerFile) {
   }
   passed.push('a conversation mark hangs in the indent without moving the title')
 
+  store.setState((state) => ({
+    activeSessionFile: undefined, draftId: 'draft:task-rail', items: railItems,
+    threads: { ...state.threads, 'draft:task-rail': { ...baseThread, items: railItems } }
+  }))
+  if (document.querySelector('.tool-panel')) {
+    document.querySelector('.shell__panel-toggle button').click()
+    await until(() => !document.querySelector('.tool-panel'), 'The workspace panel did not close')
+  }
+  const backgroundTask = await until(
+    () => document.querySelector('.task-panel__task button'),
+    'The background task row has no clickable control'
+  )
+  backgroundTask.click()
+  await until(() => document.querySelector('.subagent-conversation__identity')?.textContent === 'Run the gate', 'The background task did not open its child conversation')
+  check(document.querySelector('.subagent-conversation [role="status"]'), 'The running task did not show its waiting state')
+  check(store.getState().draftId === 'draft:task-rail', 'Opening a background task switched the parent conversation')
+  const completedRailItems = railItems.map((item) => item.id !== 'rail-sub' ? item : {
+    ...item, status: 'ok', details: { mode: 'parallel', results: [{
+      task: 'Run the gate', status: 'completed', output: 'Gate verified live',
+      messages: [
+        { role: 'user', content: 'Run the gate', timestamp: 9 },
+        { role: 'assistant', content: [{ type: 'text', text: 'Gate verified live' }], timestamp: 10 }
+      ]
+    }] }
+  })
+  store.setState((state) => ({
+    items: completedRailItems,
+    threads: { ...state.threads, 'draft:task-rail': { ...state.threads['draft:task-rail'], items: completedRailItems } }
+  }))
+  await until(() => document.querySelector('.subagent-conversation__assistant')?.textContent.includes('Gate verified live'), 'The open background task did not receive its latest output')
+  check(document.querySelector('.subagent-conversation__meta [data-status="completed"]'), 'The open task kept its old running state')
+  document.querySelector('.subagent-conversation__back').click()
+  await until(() => document.querySelector('.subagent-tree'), 'Back did not return to the subagent catalog')
+  backgroundTask.click()
+  await until(() => document.querySelector('.subagent-conversation__assistant')?.textContent.includes('Gate verified live'), 'The same background task could not be reopened')
+  check([...document.querySelectorAll('.tool-panel__tab')].filter((tab) => tab.textContent.includes('Subagents')).length === 1, 'Opening a task duplicated the Subagents page')
+  document.querySelector('.subagent-conversation__back').click()
+  await until(() => document.querySelector('.subagent-tree'), 'Back did not restore the catalog after reopening')
+  passed.push('background task rows open their live child conversation and can be reopened')
+
   return passed
 }
 
@@ -651,7 +695,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 13 : 12)
+  assert.equal(passed.length, process.platform === 'win32' ? 14 : 13)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

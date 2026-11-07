@@ -20,7 +20,7 @@ import {
   X
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import { formatPlatformShortcut } from '../lib/shortcuts'
+import { formatPlatformShortcut, keysFor } from '../lib/shortcuts'
 import { useT } from '../lib/i18n'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -208,9 +208,10 @@ export function ToolPanel({
     setTabs(remaining)
     setMenu(null)
     if (remaining.length === 0) {
-      setActive(null)
+      const blankTab: ToolTab = { id: `new-tab-${++newTabSequence.current}`, view: null }
+      setTabs([blankTab])
+      setActive(blankTab.id)
       onViewChange('start')
-      onClose()
       return
     }
     if (active !== next.id) return
@@ -241,11 +242,11 @@ export function ToolPanel({
   }
 
   const closeAll = () => {
-    setTabs([])
-    setActive(null)
+    const blankTab: ToolTab = { id: `new-tab-${++newTabSequence.current}`, view: null }
+    setTabs([blankTab])
+    setActive(blankTab.id)
     setMenu(null)
     onViewChange('start')
-    onClose()
   }
 
   const reorder = (source: ToolTab, target: ToolTab) => {
@@ -532,6 +533,10 @@ export function ToolPanel({
 function ToolStart({ onOpen }: { onOpen: (view: Exclude<ToolPanelView, 'start'>) => void }) {
   const t = useT()
   const platform = useAppStore((state) => state.info?.platform)
+  const shortcutBindings = useAppStore((state) => state.settings.shortcutBindings)
+  // The terminal card wears the chord the user actually recorded.
+  const shortcutOf = (entry: (typeof TABS)[number]) =>
+    entry.view === 'terminal' ? keysFor('toggle-terminal', shortcutBindings).join('+') : entry.shortcut
   return (
     <div className="tool-start">
       <div className="tool-start__panel">
@@ -539,6 +544,7 @@ function ToolStart({ onOpen }: { onOpen: (view: Exclude<ToolPanelView, 'start'>)
         <div className="tool-start__list">
           {TABS.map((entry) => {
             const Icon = entry.icon
+            const shortcut = shortcutOf(entry)
             return (
               <button
                 key={entry.view}
@@ -552,9 +558,9 @@ function ToolStart({ onOpen }: { onOpen: (view: Exclude<ToolPanelView, 'start'>)
                   <Icon size={18} strokeWidth={1.6} />
                 </span>
                 <span className="tool-menu__card-label">{t(entry.label)}</span>
-                {entry.shortcut ? (
+                {shortcut ? (
                   <span className="tool-menu__shortcut">
-                    {formatPlatformShortcut(entry.shortcut, platform)}
+                    {formatPlatformShortcut(shortcut, platform)}
                   </span>
                 ) : null}
               </button>

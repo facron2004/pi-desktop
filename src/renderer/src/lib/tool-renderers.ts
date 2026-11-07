@@ -109,8 +109,11 @@ export function summarizeTool(tool: ToolItem): ToolSummary {
       detail = oneLine(str(args.path))
       break
     case 'command':
+      // A command carries its arguments and paths in one string, so the 72
+      // characters that suit a file path cut what is running off mid-argument.
+      // The run-status line wraps this detail; tool cards still ellipsize it.
       label = tool.toolName === 'powershell' ? 'PowerShell' : 'Run'
-      detail = oneLine(str(args.command))
+      detail = oneLine(str(args.command), 240)
       break
     case 'search':
       label = tool.toolName === 'grep' ? 'Grep' : tool.toolName === 'find' ? 'Find' : 'List'

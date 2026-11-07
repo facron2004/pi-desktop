@@ -11,7 +11,7 @@ import { resolveThinkingLevel } from '../lib/thinking'
  * - Centered level title in bold accent color
  * - Clickable model switch subtitle
  * - Stepped capsule slider when the model offers more than one effort
- * - At the highest step a meteor crosses the fill
+ * - At the highest step streams of light cross the fill
  * - A single effort has nothing to slide: one tick, no track
  */
 
@@ -324,8 +324,6 @@ export function EffortSlider({
             <div className="effort-card__fill" style={{ width: fillWidth }} />
             {atPeak ? (
               <span className="effort-card__meteors" aria-hidden="true">
-                <i />
-                <i />
                 <i />
                 <i />
                 <i />

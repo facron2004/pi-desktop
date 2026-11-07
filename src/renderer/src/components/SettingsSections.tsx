@@ -19,6 +19,7 @@ import type {
   AuthStatus,
   DailyUsageStat,
   ModelInfo,
+  ModelUsageStat,
   PermissionMode,
   VersionCheckResult
 } from '@shared/types'
@@ -34,6 +35,7 @@ import { useIsDark } from '../lib/theme'
 import { DEFAULT_THINKING_LEVELS } from '../lib/thinking'
 import { useAppStore } from '../store/useAppStore'
 import { ConfirmDialog } from './ConfirmDialog'
+import { ColorField } from './ColorPicker'
 import { Popover } from './Popover'
 import { ShortcutsList } from './ShortcutsList'
 import { Switch } from './Switch'
@@ -97,6 +99,103 @@ function SettingsIconSelect({
               <span>{option.label}</span>
               {option.value === value ? <Check size={13} /> : null}
             </button>
+          ))}
+        </div>
+      )}
+    </Popover>
+  )
+}
+
+interface SettingsSelectOption {
+  value: string
+  label: string
+  /** A provider header; consecutive options with the same group share one. */
+  group?: string
+  disabled?: boolean
+}
+
+/**
+ * The settings dropdown. It is a popover list rather than a native select:
+ * the closed control keeps its label on one line with an ellipsis, and the
+ * open list can group provider models under their own headings.
+ */
+function SettingsSelect({
+  label,
+  value,
+  options,
+  onChange,
+  className,
+  menuWidth = 240,
+  placeholder
+}: {
+  label: string
+  value: string
+  options: SettingsSelectOption[]
+  onChange: (value: string) => void
+  className?: string
+  menuWidth?: number
+  placeholder?: string
+}) {
+  const current = options.find((option) => option.value === value)
+  const groups: { name: string; options: SettingsSelectOption[] }[] = []
+  for (const option of options) {
+    const name = option.group ?? ''
+    const last = groups[groups.length - 1]
+    if (last && last.name === name) last.options.push(option)
+    else groups.push({ name, options: [option] })
+  }
+  return (
+    <Popover
+      align="right"
+      width={menuWidth}
+      className="settings-picker__popover"
+      renderTrigger={({ open, toggle }) => (
+        <button
+          type="button"
+          className={`settings-picker${className ? ` ${className}` : ''}`}
+          aria-label={label}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          title={current?.label ?? placeholder}
+          onClick={toggle}
+        >
+          <span className="settings-picker__label">
+            {current?.label ?? placeholder ?? ''}
+          </span>
+          <ChevronDown size={13} className="settings-picker__chevron" data-open={open} />
+        </button>
+      )}
+    >
+      {(close) => (
+        <div className="settings-picker__menu" role="listbox" aria-label={label}>
+          {groups.map((group) => (
+            <div className="settings-picker__group" key={group.name || '\u0000'}>
+              {group.name ? (
+                <div className="settings-picker__group-label" title={group.name}>
+                  {group.name}
+                </div>
+              ) : null}
+              {group.options.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="option"
+                  aria-selected={option.value === value}
+                  disabled={option.disabled}
+                  className="settings-picker__option"
+                  title={option.label}
+                  onClick={() => {
+                    onChange(option.value)
+                    close()
+                  }}
+                >
+                  <span className="settings-picker__option-label">{option.label}</span>
+                  {option.value === value ? (
+                    <Check size={13} className="settings-picker__check" />
+                  ) : null}
+                </button>
+              ))}
+            </div>
           ))}
         </div>
       )}
@@ -958,18 +1057,13 @@ export function AppearanceSettings() {
                 ))}
               </select>
             </div>
-            <div className="appearance-swatch-pill" title={t('Accent color')}>
-              <span className="appearance-swatch-dot" style={{ backgroundColor: effectiveAccent }} />
-              <span className="appearance-swatch-hex">{effectiveAccent.toUpperCase()}</span>
-              <input
-                type="color"
-                className="appearance-swatch-native"
-                value={effectiveAccent}
-                onChange={(e) => {
-                  void updateSettings({ accentColor: e.target.value, themePreset: 'custom' })
-                }}
-              />
-            </div>
+            <ColorField
+              label={t('Accent color')}
+              value={effectiveAccent}
+              onChange={(hex) => {
+                void updateSettings({ accentColor: hex, themePreset: 'custom' })
+              }}
+            />
           </div>
         </div>
 
@@ -977,18 +1071,13 @@ export function AppearanceSettings() {
         <div className="appearance-row">
           <div className="appearance-row__label">{t('Background')}</div>
           <div className="appearance-row__right">
-            <div className="appearance-swatch-pill" title={t('Background')}>
-              <span className="appearance-swatch-dot" style={{ backgroundColor: effectiveBg }} />
-              <span className="appearance-swatch-hex">{effectiveBg.toUpperCase()}</span>
-              <input
-                type="color"
-                className="appearance-swatch-native"
-                value={effectiveBg}
-                onChange={(e) => {
-                  void updateSettings({ customBg: e.target.value, themePreset: 'custom' })
-                }}
-              />
-            </div>
+            <ColorField
+              label={t('Background')}
+              value={effectiveBg}
+              onChange={(hex) => {
+                void updateSettings({ customBg: hex, themePreset: 'custom' })
+              }}
+            />
           </div>
         </div>
 
@@ -996,18 +1085,13 @@ export function AppearanceSettings() {
         <div className="appearance-row">
           <div className="appearance-row__label">{t('Foreground')}</div>
           <div className="appearance-row__right">
-            <div className="appearance-swatch-pill" title={t('Foreground')}>
-              <span className="appearance-swatch-dot" style={{ backgroundColor: effectiveFg }} />
-              <span className="appearance-swatch-hex">{effectiveFg.toUpperCase()}</span>
-              <input
-                type="color"
-                className="appearance-swatch-native"
-                value={effectiveFg}
-                onChange={(e) => {
-                  void updateSettings({ customFg: e.target.value, themePreset: 'custom' })
-                }}
-              />
-            </div>
+            <ColorField
+              label={t('Foreground')}
+              value={effectiveFg}
+              onChange={(hex) => {
+                void updateSettings({ customFg: hex, themePreset: 'custom' })
+              }}
+            />
           </div>
         </div>
 
@@ -1279,10 +1363,12 @@ function UsageHint({ text }: { text: string }) {
 }
 
 /**
- * Half a year is what fits the settings column without a sideways scroll: at
- * ~25px per day the grid fills the row and still shows a season of activity.
+ * Ten months of days at 10px squares fill the settings column: the cell is
+ * capped at 10px and the grid takes whatever width those columns need. The
+ * cells never stretch, so a wider window shows more days instead of bigger
+ * blocks.
  */
-const HEATMAP_DAYS = 180
+const HEATMAP_DAYS = 300
 
 export function UsageSettings() {
   const settings = useAppStore((state) => state.settings)
@@ -1297,6 +1383,15 @@ export function UsageSettings() {
   const [hoveredDay, setHoveredDay] = useState<{
     day: DailyUsageStat
     dateLabel: string
+    x: number
+    y: number
+  } | null>(null)
+  // The bar chart's own bubble, anchored above the hovered bar. The native
+  // title tooltip is exactly the system chrome this page must not show.
+  const [hoveredModel, setHoveredModel] = useState<{
+    stat: ModelUsageStat
+    share: number
+    series: number
     x: number
     y: number
   } | null>(null)
@@ -1442,8 +1537,9 @@ export function UsageSettings() {
     { key: 'cache-hit', label: t('Cache hit'), value: formatUsageTokens(activeCacheRead) }
   ]
 
-  // The plot scales against its own tallest model, the list against everything.
+  // The bars scale against their own tallest model; the share is in the tooltip.
   const modelPeak = Math.max(1, ...(usageStats?.byModel ?? []).map((model) => model.totalTokens))
+  // The share is the share of every token ever billed.
   const modelTotal = usageStats?.allTime.tokens.totalTokens || 1
 
   return (
@@ -1472,7 +1568,7 @@ export function UsageSettings() {
           style={{ '--usage-week-count': heatmap.weekCount } as CSSProperties}
         >
           <div className="usage-heatmap__summary">
-            <span>{t('Past 180 days')}</span>
+            <span>{t('Past 10 months')}</span>
             <span>
               {heatmap.activeDays} {t('Active days')} · {formatTokens(heatmap.rangeTokens)} {t('Total tokens')}
             </span>
@@ -1543,20 +1639,14 @@ export function UsageSettings() {
       <SettingsGroup
         title={t('Token usage overview')}
         action={
-          <select
-            className="settings-select usage-period-select"
-            aria-label={t('Period')}
+          <SettingsSelect
+            label={t('Period')}
             value={selectedPeriod}
-            onChange={(event) =>
-              setSelectedPeriod(event.target.value as typeof selectedPeriod)
-            }
-          >
-            {periods.map(({ key, title }) => (
-              <option key={key} value={key}>
-                {title}
-              </option>
-            ))}
-          </select>
+            options={periods.map(({ key, title }) => ({ value: key, label: title }))}
+            onChange={(value) => setSelectedPeriod(value as typeof selectedPeriod)}
+            menuWidth={180}
+            className="usage-period-select"
+          />
         }
       >
         <div className="usage-overview">
@@ -1576,40 +1666,61 @@ export function UsageSettings() {
         </div>
       </SettingsGroup>
 
-      {/* Model Distribution: the plot on the left, a drawer of facts on the
-          right. The list is capped so eleven models do not stretch the page. */}
+      {/* Model distribution: a column per model, each with its token count
+          printed above the bar so the height and the number can be read
+          together. Share, turns and cost ride along on the column's tooltip. */}
       {usageStats && usageStats.byModel.length > 0 && (
         <SettingsGroup title={t('Model distribution')}>
           <div className="usage-model-chart">
             <div className="usage-model-chart__plot">
-              {usageStats.byModel.map((m, index) => (
-                <div key={m.model} className="usage-model-chart__column" title={m.model}>
+              {usageStats.byModel.map((m, index) => {
+                const share = Math.min(100, (m.totalTokens / modelTotal) * 100)
+                return (
                   <div
-                    className="usage-model-chart__bar"
-                    data-series={index % 6}
-                    style={{ height: `${Math.max(4, Math.round((m.totalTokens / modelPeak) * 100))}%` }}
-                  />
-                  <span className="usage-model-chart__xlabel">
-                    {m.model.split('/').pop() ?? m.model}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <div className="usage-model-chart__info">
-              {usageStats.byModel.map((m, index) => (
-                <div key={m.model} className="usage-model-chart__info-row">
-                  <span className="usage-model-chart__dot" data-series={index % 6} aria-hidden="true" />
-                  <div className="usage-model-chart__info-main">
-                    <span className="usage-model-chart__name">{m.model}</span>
-                    <span className="usage-model-chart__stats">
-                      {formatUsageTokens(m.totalTokens)} ·{' '}
-                      {Math.min(100, (m.totalTokens / modelTotal) * 100).toFixed(1)}% · {m.messageCount}{' '}
-                      {t('turns')}
-                      {m.cost > 0 ? ` · ${formatCost(m.cost)}` : ''}
+                    key={m.model}
+                    className="usage-model-chart__column"
+                    onMouseEnter={(event) => {
+                      const bar = event.currentTarget.querySelector<HTMLElement>(
+                        '.usage-model-chart__bar'
+                      )
+                      const anchor = (bar ?? event.currentTarget).getBoundingClientRect()
+                      setHoveredModel({
+                        stat: m,
+                        share,
+                        series: index % 6,
+                        x: Math.min(
+                          Math.max(anchor.left + anchor.width / 2, 150),
+                          window.innerWidth - 150
+                        ),
+                        // The bubble hangs above the bar; the floor keeps a tall
+                        // bar from pushing it past the top of the window.
+                        y: Math.max(124, anchor.top - 10)
+                      })
+                    }}
+                    onMouseLeave={() => setHoveredModel(null)}
+                  >
+                    <div className="usage-model-chart__bar-area">
+                      <div
+                        className="usage-model-chart__bar"
+                        data-series={index % 6}
+                        style={{
+                          height: `${Math.max(
+                            4,
+                            Math.round((m.totalTokens / modelPeak) * 100)
+                          )}%`
+                        }}
+                      >
+                        <span className="usage-model-chart__value">
+                          {formatUsageTokens(m.totalTokens)}
+                        </span>
+                      </div>
+                    </div>
+                    <span className="usage-model-chart__xlabel">
+                      {m.model.split('/').pop() ?? m.model}
                     </span>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         </SettingsGroup>
@@ -1681,6 +1792,44 @@ export function UsageSettings() {
                 <span>{t('Cache hit rate')}</span>
                 <strong>{cacheHitRate(hoveredDay.day.cacheRead, hoveredDay.day.input).toFixed(1)}%</strong>
               </div>
+            </div>,
+            document.body
+          )
+        : null}
+
+      {hoveredModel
+        ? createPortal(
+            <div
+              className="usage-model-tooltip"
+              role="tooltip"
+              style={{ left: hoveredModel.x, top: hoveredModel.y }}
+            >
+              <div className="usage-model-tooltip__head">
+                <span
+                  className="usage-model-tooltip__swatch"
+                  data-series={hoveredModel.series}
+                  aria-hidden="true"
+                />
+                <span className="usage-model-tooltip__name">{hoveredModel.stat.model}</span>
+              </div>
+              <div className="usage-model-tooltip__row">
+                <span>{t('Total tokens')}</span>
+                <strong>{formatUsageTokens(hoveredModel.stat.totalTokens)}</strong>
+              </div>
+              <div className="usage-model-tooltip__row">
+                <span>{t('Share')}</span>
+                <strong>{hoveredModel.share.toFixed(1)}%</strong>
+              </div>
+              <div className="usage-model-tooltip__row">
+                <span>{t('Turns')}</span>
+                <strong>{hoveredModel.stat.messageCount}</strong>
+              </div>
+              {hoveredModel.stat.cost > 0 ? (
+                <div className="usage-model-tooltip__row">
+                  <span>{t('Cost')}</span>
+                  <strong>{formatCost(hoveredModel.stat.cost)}</strong>
+                </div>
+              ) : null}
             </div>,
             document.body
           )
@@ -1757,16 +1906,19 @@ function ProjectSafetySettings() {
 
 /** The shortcut table as a settings page. `Ctrl+/` opens the same list in a
  *  modal; both render `ShortcutsList`, so they can never show two different
- *  tables. */
+ *  tables. Only the settings page lets a chord be rebound. */
 export function ShortcutsSettings() {
   const t = useT()
   return (
     <div className="settings-page">
       <PageIntro
         title={t('Keyboard shortcuts')}
-        description={t('All shortcuts in one place. Ctrl+/ opens this list from anywhere.')}
+        description={t('All app shortcuts in one place. Click a key combination to change it.')}
       />
-      <ShortcutsList />
+      <p className="shortcuts-hint">
+        {t('Backspace resets a shortcut to its default, Esc cancels the recording.')}
+      </p>
+      <ShortcutsList editable />
     </div>
   )
 }
@@ -2029,31 +2181,36 @@ function ModelSelect({
   // A saved pair the catalog no longer offers still has to appear in the
   // control. Dropping it would paint the first row and claim that was the choice.
   const listed = groups.some(([, list]) => list.some((model) => modelSpec(model) === value))
+  const options: SettingsSelectOption[] = []
+  if (emptyLabel) options.push({ value: '', label: emptyLabel })
+  for (const [provider, list] of groups) {
+    for (const model of list) {
+      options.push({ value: modelSpec(model), label: model.name || model.id, group: provider })
+    }
+  }
+  if (value && !listed) options.push({ value, label: value })
+  // Nothing to list is worth saying out loud; a bare default looks like a choice.
+  if (groups.length === 0) {
+    return (
+      <SettingsSelect
+        label={label}
+        value=""
+        options={[{ value: '', label: t('No models yet.'), disabled: true }]}
+        onChange={() => undefined}
+        menuWidth={300}
+        className={className}
+      />
+    )
+  }
   return (
-    <select
-      className={`input settings-select settings-select--model${className ? ` ${className}` : ''}`}
-      aria-label={label}
+    <SettingsSelect
+      label={label}
       value={value}
-      onChange={(event) => onChange(event.target.value)}
-    >
-      {emptyLabel ? <option value="">{emptyLabel}</option> : null}
-      {groups.map(([provider, list]) => (
-        <optgroup key={provider} label={provider}>
-          {list.map((model) => (
-            <option key={modelSpec(model)} value={modelSpec(model)}>
-              {model.name || model.id}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-      {value && !listed ? <option value={value}>{value}</option> : null}
-      {/* Nothing to list is worth saying out loud; a bare default looks like a choice. */}
-      {groups.length === 0 ? (
-        <option value="" disabled>
-          {t('No models yet.')}
-        </option>
-      ) : null}
-    </select>
+      options={options}
+      onChange={onChange}
+      menuWidth={300}
+      className={className}
+    />
   )
 }
 
@@ -2081,21 +2238,19 @@ function LevelSelect({
   const match = value
     ? levels.find((level) => level.toLowerCase() === value.toLowerCase())
     : undefined
+  const options: SettingsSelectOption[] = [{ value: '', label: emptyLabel }]
+  for (const level of levels) {
+    options.push({ value: level, label: levelLabel(level) })
+  }
+  if (value && !match) options.push({ value, label: levelLabel(value) })
   return (
-    <select
-      className="input settings-select"
-      aria-label={label}
+    <SettingsSelect
+      label={label}
       value={match ?? value}
-      onChange={(event) => onChange(event.target.value)}
-    >
-      <option value="">{emptyLabel}</option>
-      {levels.map((level) => (
-        <option key={level} value={level}>
-          {levelLabel(level)}
-        </option>
-      ))}
-      {value && !match ? <option value={value}>{levelLabel(value)}</option> : null}
-    </select>
+      options={options}
+      onChange={onChange}
+      menuWidth={200}
+    />
   )
 }
 

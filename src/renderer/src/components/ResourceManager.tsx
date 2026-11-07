@@ -26,7 +26,7 @@ const RESOURCE_NAME_RE = /^[a-z0-9][a-z0-9-]{1,63}$/
 const RESOURCE_NAME_MAX = 64
 const RESOURCE_DESCRIPTION_MAX = 1024
 
-type CreateMode = 'github' | 'npm' | 'custom'
+export type CreateMode = 'github' | 'npm' | 'custom'
 type ManageFilter = 'plugin' | 'skill' | 'mcp' | 'subagent'
 type PendingInstall = { mode: 'github' | 'npm'; value: string }
 type RemoveTarget =
@@ -35,6 +35,8 @@ type RemoveTarget =
 
 interface CreateResourceDialogProps {
   onClose: () => void
+  /** The option the create menu picked, so the dialog opens on that tab. */
+  initialMode?: CreateMode
   /** `path` is set only for a locally created resource. */
   onCreated: (path?: string) => void
 }
@@ -79,12 +81,12 @@ function kindLabel(kind: ManagedPackage['kind'], t: (text: string) => string): s
   return t('Package')
 }
 
-export function CreateResourceDialog({ onClose, onCreated }: CreateResourceDialogProps) {
+export function CreateResourceDialog({ onClose, onCreated, initialMode = 'github' }: CreateResourceDialogProps) {
   const t = useT()
   const dialogRef = useRef<HTMLFormElement>(null)
   useDialogFocus(dialogRef, onClose)
 
-  const [mode, setMode] = useState<CreateMode>('github')
+  const [mode, setMode] = useState<CreateMode>(initialMode)
   const [githubRepository, setGithubRepository] = useState('')
   const [npmPackage, setNpmPackage] = useState('')
   const [kind, setKind] = useState<'plugin' | 'skill'>('plugin')

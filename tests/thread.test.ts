@@ -317,6 +317,31 @@ test('a tool result arriving without a preceding execution event still has one n
   assert.equal(tools(items)[0].durationMs, 12)
 })
 
+test('a tool without Pi duration uses the locally observed start and end times', () => {
+  const now = Date.now
+  let items: ThreadItem[] = []
+  try {
+    Date.now = () => 1_000
+    items = applyEvent([], {
+      type: 'tool_execution_start',
+      toolCallId: 'call_timed',
+      toolName: 'read',
+      args: {}
+    })
+    Date.now = () => 1_375
+    items = applyEvent(items, {
+      type: 'tool_execution_end',
+      toolCallId: 'call_timed',
+      toolName: 'read',
+      result: { content: [{ type: 'text', text: 'done' }] },
+      isError: false
+    })
+  } finally {
+    Date.now = now
+  }
+  assert.equal(tools(items)[0].durationMs, 375)
+})
+
 test('tool_execution_start after toolcall_end does not lose the arguments', () => {
   let items: ThreadItem[] = applyEvents([], [assistantStart()])
   items = applyEvents(items, [

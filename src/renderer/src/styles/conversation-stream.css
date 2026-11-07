@@ -59,22 +59,24 @@
   gap: var(--sp-2);
   flex: 1 1 auto;
   min-width: 0;
-  font-size: var(--text-2xs);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
   color: var(--text-secondary);
 }
 
 .run-status__activity-label {
   flex: 0 0 auto;
+  font-weight: var(--weight-medium);
   color: var(--text-secondary);
 }
 
 .run-status__activity-detail {
   min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
   text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
-  color: var(--text-tertiary);
+  color: var(--text-muted);
 }
 
 .run-status__elapsed {
@@ -241,13 +243,26 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-  font-size: var(--text-md);
-  line-height: var(--leading-reading);
+  font-size: var(--text-chat);
+  line-height: var(--leading-chat);
   overflow-wrap: anywhere;
 }
 
 .assistant__text .md > *:last-child {
   margin-bottom: 0;
+}
+
+.assistant__text .md p {
+  margin-bottom: 0.8em;
+}
+
+.assistant__text .md ul,
+.assistant__text .md ol {
+  margin-bottom: 0.85em;
+}
+
+.assistant__text .md li {
+  margin: 0.25em 0;
 }
 
 /* Keep the assistant's Markdown hierarchy distinct instead of promoting h2
@@ -354,7 +369,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: var(--leading-small);
-  color: var(--text-tertiary);
+  color: var(--text-muted);
 }
 
 .process[data-status='error'] .process__label,

@@ -1,26 +1,30 @@
-/* The compact usage reading centred under the composer: the context ring plus
-   one clickable summary that opens the detail popover. One line, centred —
-   it must not read as a second input row. */
+/* The compact usage reading centred under the composer: turn/step counts and
+   generation speed, token usage and cache hit rate, then the context ring. */
 
 .usage-bar {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* One line at any normal width. The wrap is the fallback for a window too
+     narrow to hold the four readings: wrapping a reading is better than
+     clipping the last one, and it only happens below the composer's own
+     minimum width. */
   flex-wrap: wrap;
-  gap: var(--sp-2) var(--sp-3);
+  gap: var(--sp-2);
   padding: var(--sp-1) 0 0;
   color: var(--text-muted);
   font-size: var(--text-assist);
   line-height: var(--leading-assist);
+  /* Digits that do not change width keep the reading from twitching while a
+     run streams. */
   font-variant-numeric: tabular-nums;
 }
 
-/* The summary is one button, so the whole reading is one click target and
-   the focus ring lands on the group rather than on each number. */
-.usage-bar__summary {
+/* Both readings are buttons, so the whole group is one click target and the
+   focus ring lands on the group rather than on each number. */
+.usage-bar__control {
   display: inline-flex;
   align-items: baseline;
-  gap: var(--sp-2) var(--sp-4);
   min-width: 0;
   padding: 2px var(--sp-2);
   border-radius: var(--r-sm);
@@ -30,8 +34,16 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
-.usage-bar__summary:hover,
-.usage-bar__summary[data-active='true'] {
+.usage-bar__summary {
+  gap: var(--sp-4);
+}
+
+.usage-bar__generation {
+  gap: var(--sp-2);
+}
+
+.usage-bar__control:hover,
+.usage-bar__control[data-active='true'] {
   background: var(--bg-hover);
   color: var(--text-secondary);
 }
@@ -48,34 +60,29 @@
 }
 
 .usage-bar__item strong,
-.usage-bar__summary strong {
+.usage-bar__control strong {
   color: var(--text-secondary);
   font-weight: var(--weight-medium);
 }
 
-/* The ring sits with the same baseline the summary reads on. */
-.usage-bar .context-ring {
-  width: 20px;
-  height: 20px;
-}
+/* The ring is not sized here on purpose. It now draws the arc *and* the window
+   percentage, and that control's own box belongs to `.context-ring` (task-2's
+   stylesheet) — a width pin in this sheet is exactly what would clip the label
+   once it appears. The bar only keeps it on the line. */
 
-/* ---- detail popover ---------------------------------------------------- */
+/* ---- popovers ---------------------------------------------------------- */
 
+/* Usage details stay capped and scroll rather than growing past the window. */
 .usage-popover {
   max-height: min(460px, calc(100vh - 160px));
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .usage-panel {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
-}
-
-.usage-panel__section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
 }
 
 .usage-panel__rows {
@@ -92,16 +99,12 @@
   color: var(--text-muted);
   font-size: var(--text-assist);
   line-height: var(--leading-assist);
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.usage-panel__row:last-child {
-  border-bottom: none;
 }
 
 .usage-panel__row--strong {
   color: var(--text-primary);
   font-weight: var(--weight-medium);
+  border-bottom: 1px solid var(--border-soft);
 }
 
 .usage-panel__row strong {
@@ -109,23 +112,15 @@
   font-weight: var(--weight-medium);
 }
 
-.usage-panel__headline {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-3);
+.usage-panel__title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
 }
 
-.usage-panel__headline strong {
-  color: var(--text-primary);
-  font-size: var(--text-body);
-  font-weight: var(--weight-medium);
-}
-
-.usage-panel__hint {
-  margin: 0;
+.usage-panel__title svg {
+  flex: 0 0 auto;
   color: var(--text-faint);
-  font-size: var(--text-assist);
-  line-height: var(--leading-assist);
 }
 
 .usage-panel__none {

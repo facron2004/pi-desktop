@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  Archive,
   Bot,
   Brain,
   Cpu,
@@ -25,6 +26,7 @@ import {
   UsageSettings
 } from './SettingsSections'
 import { MemorySettings } from './MemorySettings'
+import { ArchivedSessionsSettings } from './ArchivedSessionsSettings'
 import { ModelsSettings } from './models/ModelsSettings'
 import { RemoteAccessSettings } from './RemoteAccessSettings'
 
@@ -38,6 +40,7 @@ export type SettingsPage =
   | 'personalization'
   | 'remote'
   | 'memory'
+  | 'archived'
   | 'about'
 
 const PAGES = [
@@ -50,6 +53,7 @@ const PAGES = [
   { id: 'personalization', label: 'Personalization', Icon: UserRound },
   { id: 'remote', label: 'Remote access', Icon: Smartphone },
   { id: 'memory', label: 'Memory', Icon: Brain },
+  { id: 'archived', label: 'Archived conversations', Icon: Archive },
   { id: 'about', label: 'About', Icon: Info }
 ] as const
 
@@ -163,6 +167,7 @@ export function SettingsDialog({
             ) : null}
             {page === 'remote' ? <RemoteAccessSettings /> : null}
             {page === 'memory' ? <MemorySettings /> : null}
+            {page === 'archived' ? <ArchivedSessionsSettings /> : null}
             {page === 'about' ? <AboutSettings /> : null}
           </main>
         </div>

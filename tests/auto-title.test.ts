@@ -86,6 +86,7 @@ function harness(
   options: {
     autoTitle?: boolean
     model?: string
+    piPath?: string
     messages?: AgentMessage[] | null
     name?: string
     reply?: string
@@ -108,6 +109,7 @@ function harness(
     ({
       autoTitle: options.autoTitle !== false,
       model: options.model,
+      piPath: options.piPath,
       workspaces: [],
       theme: 'dark',
       language: 'en',
@@ -160,6 +162,7 @@ function harness(
 
 test('sanitizeTitle strips quotes, bullets, labels and trailing punctuation and collapses whitespace', () => {
   assert.equal(sanitizeTitle('  "Fix the stale   lockfile."  '), 'Fix the stale lockfile')
+  assert.equal(sanitizeTitle('Fix the stale lockfile.'), 'Fix the stale lockfile')
   assert.equal(sanitizeTitle('Title: Fix the lockfile'), 'Fix the lockfile')
   assert.equal(sanitizeTitle('**Fix the lockfile**'), 'Fix the lockfile')
   assert.equal(sanitizeTitle('- Fix the lockfile'), 'Fix the lockfile')
@@ -262,6 +265,23 @@ test('firstExchange describes a tool-only answer and refuses anything but one qu
   assert.equal(firstExchange([]), null)
 })
 
+test('firstExchange can title an image-only prompt from the answer', () => {
+  const exchange = firstExchange([
+    {
+      role: 'user',
+      content: [{ type: 'image', data: 'encoded-image', mimeType: 'image/png' }],
+      timestamp: NOW
+    },
+    { role: 'assistant', content: 'A red car parked beside a lake.', timestamp: NOW + 1 }
+  ])
+  assert.deepEqual(exchange, {
+    question: '[image-only prompt]',
+    answer: 'A red car parked beside a lake.',
+    askedAt: NOW
+  })
+  assert.match(buildTitlePrompt(exchange!), /same language as the answer/)
+})
+
 test('buildTitlePrompt asks for a short title in the conversation language and clips the exchange', () => {
   // A long line of ordinary prose, not a key-shaped run of characters: the
   // prompt redacts secrets before it clips, and both must be visible here.
@@ -337,6 +357,13 @@ test('the model follows the settings default, and an explicit setting wins', asy
   assert.equal(h.runs[0]!.model, 'anthropic/claude-sonnet-4-5')
 })
 
+test('the title run uses the configured Pi executable', async (t) => {
+  const h = harness(t, { piPath: 'C:\\Tools\\pi.cmd' })
+  h.host.settle(SESSION)
+  await h.drain()
+  assert.equal(h.runs[0]!.customPiPath, 'C:\\Tools\\pi.cmd')
+})
+
 test('aborted runs, named sessions and resumed chats are skipped', async (t) => {
   const aborted = harness(t)
   aborted.host.settle(SESSION, { type: 'agent_settled', aborted: true })
@@ -380,6 +407,47 @@ test('a draft owner waits for its file, then gets named', async (t) => {
   assert.equal(h.runs.length, 1)
 })
 
+test('a new draft still gets its first title after a quick follow-up', async (t) => {
+  let messages = chat()
+  const h = harness(t, {
+    deps: {
+      settleDelayMs: 25,
+      readMessages: async () => messages
+    }
+  })
+  h.host.start('draft:abc')
+  h.host.emit('rekey', { from: 'draft:abc', to: SESSION })
+  h.host.settle(SESSION)
+
+  h.host.start(SESSION)
+  messages = [
+    ...chat(),
+    { role: 'user', content: 'And how do I verify the fix?', timestamp: NOW + 2 } as AgentMessage,
+    { role: 'assistant', content: 'Run the build again.', timestamp: NOW + 3 } as AgentMessage
+  ]
+  h.host.settle(SESSION)
+  await delay(100)
+
+  assert.equal(h.runs.length, 1)
+  assert.match(h.runs[0]!.prompt, /Why does the build fail/)
+  assert.doesNotMatch(h.runs[0]!.prompt, /And how do I verify/)
+  assert.equal(h.renamed.length, 1)
+})
+
+test('a transcript read race retries once after the session file catches up', async (t) => {
+  let reads = 0
+  const h = harness(t, {
+    deps: {
+      readMessages: async () => (++reads === 1 ? [] : chat())
+    }
+  })
+  h.host.settle(SESSION)
+  await delay(350)
+  assert.equal(reads, 2)
+  assert.equal(h.renamed.length, 1)
+  assert.deepEqual(h.logs, [])
+})
+
 test('a new turn cancels the pending title and the next settle re-arms it', async (t) => {
   const h = harness(t, { deps: { settleDelayMs: 25 } })
   h.host.settle(SESSION)
@@ -406,29 +474,42 @@ test('a conversation whose process is still running is left alone until it settl
 })
 
 /* ------------------------------------------------------------------ *
- * Failure is silent
+ * Failure is contained
  * ------------------------------------------------------------------ */
 
-test('a failed run leaves the preview title and logs exactly one line', async (t) => {
+test('a failed run uses the redacted prompt fallback and logs exactly one line', async (t) => {
   const timeout = harness(t, { code: null, stderr: 'Command timed out after 20000ms' })
   timeout.host.settle(SESSION)
   await timeout.drain()
-  assert.deepEqual(timeout.renamed, [])
+  assert.equal(timeout.renamed.length, 1)
+  assert.equal(timeout.renamed[0]!.name, 'Why does the build fail after I install the lockfile')
   assert.equal(timeout.logs.length, 1)
-  assert.match(timeout.logs[0]!, /auto-title skipped alpha\.jsonl: Command timed out/)
+  assert.match(timeout.logs[0]!, /auto-title used prompt fallback for alpha\.jsonl: Command timed out/)
 
   const junk = harness(t, { reply: 'I cannot help with that.\n\nNothing to title here.' })
   junk.host.settle(SESSION)
   await junk.drain()
-  assert.deepEqual(junk.renamed, [])
+  assert.equal(junk.renamed.length, 1)
   assert.equal(junk.logs.length, 1)
-  assert.match(junk.logs[0]!, /did not return a usable title/)
+  assert.match(junk.logs[0]!, /used prompt fallback/)
 
   const empty = harness(t, { reply: '', code: 1, stderr: 'provider is not configured' })
   empty.host.settle(SESSION)
   await empty.drain()
-  assert.deepEqual(empty.renamed, [])
+  assert.equal(empty.renamed.length, 1)
   assert.equal(empty.logs.length, 1)
+  assert.match(empty.logs[0]!, /provider is not configured/)
+
+  const secret = 'sk-abcdefghijklmnopqrstuvwxyz0123456789'
+  const redacted = harness(t, {
+    messages: chat(`Please inspect ${secret}`),
+    code: null,
+    stderr: 'offline'
+  })
+  redacted.host.settle(SESSION)
+  await redacted.drain()
+  assert.equal(redacted.renamed.length, 1)
+  assert.doesNotMatch(redacted.renamed[0]!.name, /sk-abcdefghijklmnopqrstuvwxyz/)
 })
 
 test('a service with no rename door never writes the session file, and says so once', async (t) => {
@@ -463,7 +544,7 @@ test('a service with no rename door never writes the session file, and says so o
   assert.match(logs[0]!, /did not take the new name/)
 })
 
-test('a rejected rename logs one line, and a thrown runner never escapes', async (t) => {
+test('a rejected rename logs one line, and a thrown runner uses the fallback', async (t) => {
   const refused = harness(t, { renameFails: true })
   refused.host.settle(SESSION)
   await refused.drain()
@@ -480,6 +561,7 @@ test('a rejected rename logs one line, and a thrown runner never escapes', async
   thrown.host.settle(SESSION)
   await thrown.drain()
   assert.equal(thrown.logs.length, 1)
+  assert.equal(thrown.renamed.length, 1)
   assert.match(thrown.logs[0]!, /spawn blew up/)
 
   // One line per conversation, no retry storm on the next settle.
@@ -498,7 +580,7 @@ test('a read failure is one line, and the queue survives it', async (t) => {
     }
   })
   broken.host.settle(SESSION)
-  await broken.drain()
+  await delay(350)
   assert.equal(broken.logs.length, 1)
   assert.match(broken.logs[0]!, /EACCES/)
 

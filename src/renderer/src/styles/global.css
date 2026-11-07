@@ -671,6 +671,38 @@ transition: background var(--dur-fast) var(--ease);
   overflow-wrap: anywhere;
 }
 
+/* A folded project hides the running mark of its conversations, so the name
+   pulses while work inside it is still going. Hovering stops the pulse: the
+   title has to stay readable while the reader is aiming at the row. */
+.project[data-running='true'] .project__name {
+  animation: project-running-pulse 1.5s ease-in-out infinite;
+}
+
+.project[data-running='true'] .project__row:hover .project__name,
+.project[data-running='true'] .project__row:focus-within .project__name {
+  animation: none;
+}
+
+@keyframes project-running-pulse {
+  0%,
+  100% {
+    color: var(--text-primary);
+    opacity: 1;
+  }
+
+  50% {
+    color: var(--accent);
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project[data-running='true'] .project__name {
+    animation: none;
+    color: var(--accent);
+  }
+}
+
 /* A project row is a folder that opens and closes its list. The caret says so
    — the row never changes what Pi is running, so it must not look like a
    button that switches projects. */
@@ -1012,7 +1044,9 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   height: var(--ctl-md);
   padding: 0 var(--sp-3);
   border-radius: var(--r-md);
-  color: var(--sidebar-muted);
+  /* The desk entries and Settings read at the same weight as New chat and
+     the project rows; the muted tone stays for section titles, not actions. */
+  color: var(--sidebar-text);
   font-size: var(--text-body);
   font-weight: var(--weight-ui);
   line-height: var(--leading-body);
@@ -1024,23 +1058,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .sidebar__foot-btn[data-active='true'] {
   background: var(--sidebar-hover);
   color: var(--sidebar-text);
-}
-
-.titlebar__back {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  height: var(--ctl-sm);
-  padding: 0 var(--sp-2);
-  border-radius: var(--r-sm);
-  color: var(--text-secondary);
-  font-size: var(--text-body);
-  font-weight: var(--weight-medium);
-}
-
-.titlebar__back:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
 }
 
 .desk-page {
@@ -1400,18 +1417,27 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
  * One colour, and the arc carries the whole reading: the stroke grows with the
  * context window and nothing else changes. A colour shift would ask the reader
  * to learn a scale; the length of the arc says "how much" on its own.
+ *
+ * The percentage sits beside the arc on the same baseline, so the button is
+ * sized by its content: a fixed width would clip the label, and the label is
+ * the reading the user asked to see without opening the panel.
  */
 .context-ring {
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
   flex: 0 0 auto;
-  width: 28px;
+  width: auto;
+  min-width: 28px;
   height: 28px;
-  padding: 0;
-  border-radius: 50%;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-full);
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-muted);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
   transition:
     background var(--dur-fast) var(--ease),
@@ -1433,6 +1459,14 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   height: 20px;
 }
 
+/* The arc follows the box it is given, so a denser context (the one-line usage
+   bar) can scale the mark without the 20px viewBox overflowing it. */
+.context-ring__svg > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .context-ring__track,
 .context-ring__value {
   fill: none;
@@ -1452,10 +1486,30 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   transition: stroke-dashoffset var(--dur-base) var(--ease);
 }
 
+/* The percentage, on the arc's own baseline. Tabular digits so a live run does
+   not twitch the bar's width, and the muted colour keeps it a caption to the
+   arc rather than a second reading. */
+.context-ring__label {
+  color: var(--text-muted);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.context-ring:hover .context-ring__label,
+.context-ring[data-active='true'] .context-ring__label {
+  color: var(--text);
+}
+
 /* Nothing to draw yet: the track alone, faintly, so the button still reads
    as a control that has no numbers to show. */
 .context-ring[data-empty='true'] .context-ring__track {
   stroke: var(--border);
+}
+
+.context-ring[data-empty='true'] .context-ring__label {
+  color: var(--text-faint);
 }
 
 
@@ -1474,31 +1528,69 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   font-weight: 500;
 }
 
+/* The heading and the refresh control share one row: the refresh is an
+   `.icon-btn`, so it keeps its own hit area and never moves the label. The
+   spacing the label used to carry moves to the row, so the button sits on the
+   heading's own line instead of the headline's. */
+.ctx__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.ctx__head > .popover__label {
+  padding: 0;
+  font-weight: 500;
+  min-width: 0;
+}
+
+.ctx__refresh {
+  flex: 0 0 auto;
+}
+
 .ctx__headline {
   display: flex;
   align-items: baseline;
-  gap: var(--sp-2);
+  justify-content: space-between;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: var(--sp-3);
   font-size: var(--text-xs);
+  line-height: var(--leading-body);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx__title {
+  min-width: 0;
   color: var(--text-muted);
-  flex-wrap: wrap;
-  row-gap: var(--sp-hair);
+  white-space: nowrap;
 }
 
-.ctx__big {
-  font-size: var(--text-xl);
-  font-weight: 600;
-  letter-spacing: -0.01em;
+.ctx__percent {
   color: var(--text);
+  font-weight: 600;
 }
 
-.ctx__muted {
+.ctx__total {
+  margin-left: auto;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.ctx__refresh {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
   color: var(--text-faint);
 }
 
 .ctx__bar {
   display: block;
   height: 5px;
-  margin: var(--sp-3) 0 0;
+  margin: var(--sp-2) 0 var(--sp-3);
   border-radius: var(--r-xs);
   background: var(--bg-active);
   overflow: hidden;
@@ -1509,11 +1601,45 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   height: 100%;
   border-radius: var(--r-xs);
   background: var(--accent);
-transition: width var(--dur-base) var(--ease), background var(--dur-base) var(--ease);
+  transition: width var(--dur-base) var(--ease);
 }
 
-.ctx__fill[data-level='high'] {
-  background: var(--red);
+.ctx__breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.ctx__breakdown-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-body);
+}
+
+.ctx__swatch {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  background: #aeb4bd;
+}
+
+.ctx__swatch[data-kind='tools'] {
+  background: #a78bfa;
+}
+
+.ctx__swatch[data-kind='messages'] {
+  background: #4c9aff;
+}
+
+.ctx__breakdown-value {
+  margin-left: auto;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 .ctx__section {
@@ -1556,6 +1682,14 @@ transition: width var(--dur-base) var(--ease), background var(--dur-base) var(--
 
 .ctx__details {
   border-top: 1px solid var(--border-subtle);
+}
+
+.ctx__more {
+  margin-top: var(--sp-3);
+}
+
+.ctx__more-body {
+  padding-bottom: var(--sp-2);
 }
 
 .ctx__fold {
@@ -4134,6 +4268,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 /* Same gutter as the composer, so the jump controls stay centred on its box. */
 .main__stage:has(.task-rail) .scroll-jumps {
+  left: var(--sp-2);
   right: var(--sp-4);
 }
 
@@ -5873,6 +6008,13 @@ transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast)
   margin-top: var(--sp-1);
 }
 
+.shortcuts-hint {
+  margin: 0 0 var(--sp-3);
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-assist);
+}
+
 .shortcut-group__title {
   font-size: var(--text-2xs);
   font-weight: 600;
@@ -5904,15 +6046,76 @@ transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast)
   flex: 0 0 auto;
 }
 
+.shortcut__control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+}
+
+.shortcut__keys--editable {
+  padding: var(--sp-1) var(--sp-2);
+  margin: calc(-1 * var(--sp-1)) calc(-1 * var(--sp-2));
+  border-radius: var(--r-sm);
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.shortcut__keys--editable:hover {
+  background: var(--bg-hover);
+}
+
+.shortcut__keys--editable[data-recording='true'] {
+  background: var(--accent-soft);
+}
+
+.shortcut__recording {
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-assist);
+  white-space: nowrap;
+}
+
+.shortcut__recording[data-error] {
+  color: var(--red);
+}
+
+.shortcut__reset {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
 .shortcut__key {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
 }
 
-.shortcut__key-separator {
+.shortcut__key-separator,
+.shortcut__plus {
   color: var(--text-faint);
   font-size: var(--text-2xs);
+  line-height: 1;
+}
+
+/* A keycap is interface text, not code: the browser's own `kbd` is a serifed
+   monospace that reads like a terminal manual. One recipe here, so the
+   palette, the launcher and the shortcuts table draw the same key. */
+kbd {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-bottom-color: var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--leading-assist);
+  white-space: nowrap;
 }
 
 .confirm {

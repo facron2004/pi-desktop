@@ -32,7 +32,9 @@ export const CommandOutput = memo(function CommandOutput({ item }: { item: BashI
             <SquareTerminal size={12} strokeWidth={2.2} />
           </span>
           <span className="tool__name">{item.excludeFromContext ? '!!bash' : 'bash'}</span>
-          <span className="tool__summary">{item.command || t('running…')}</span>
+          <span className="tool__summary" title={item.command || undefined}>
+            {item.command || t('running…')}
+          </span>
           {item.excludeFromContext ? (
             <span className="tool__status" title={t('Excluded from model context')}>
               {t('no context')}

@@ -40,6 +40,12 @@ import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
 import { beginStream } from '../lib/stream-events'
 import { recordModelUse } from '../lib/model-recency'
 import { migrateViewState } from '../lib/view-state'
+import {
+  migrateSessionTiming,
+  recordModelDuration,
+  recordToolDuration,
+  recordTtftDuration
+} from '../lib/session-timing'
 
 export type QueueKind = 'steer' | 'followUp'
 
@@ -106,6 +112,8 @@ export interface RunState {
   /** First / last text delta, minted by the client: Pi reports no timing. */
   firstTokenAt?: number
   lastTokenAt?: number
+  /** Client clock for the current provider response, ended at assistant completion. */
+  modelTurnStartedAt?: number
   /** Wall-clock duration of the finished run, once it settled. */
   durationMs?: number
   /** True once the run finished on purpose (completed or aborted). */
@@ -336,6 +344,10 @@ export interface AppStore {
   duplicateSession: () => Promise<void>
   exportSession: () => Promise<void>
   deleteSession: (file: string) => Promise<void>
+  /** Hide a conversation from the sidebar. Its file stays on disk, and Settings lists it. */
+  archiveSession: (file: string) => Promise<void>
+  /** Bring an archived conversation back to the sidebar. */
+  restoreSession: (file: string) => Promise<void>
   newChat: () => Promise<void>
   ensureRuntime: (sessionKey?: string, sourceAction?: string) => Promise<string>
   send: (text: string, images: { data: string; mimeType: string }[], kind?: QueueKind) => Promise<void>
@@ -363,6 +375,13 @@ export interface AppStore {
   /** How follow-up messages are delivered: one at a time or all at once. */
   setFollowUpMode: (mode: 'all' | 'one-at-a-time') => Promise<void>
   refreshState: (sessionKey?: string) => Promise<void>
+  /**
+   * Ask Pi for `get_session_stats` right now.
+   *
+   * Returns `undefined` when no process is running for that conversation —
+   * this never starts one — so the caller can fall back to the transcript.
+   */
+  readSessionStats: (sessionKey?: string) => Promise<SessionStats | undefined>
   refreshInfo: () => Promise<void>
   /** Remember the conversation that is open in the current project. */
   rememberSession: (file: string) => Promise<void>
@@ -387,6 +406,14 @@ export interface AppStore {
   forkFrom: (entryId: string) => Promise<void>
   /** Read the branch and the working tree of the open project. */
   refreshGit: () => Promise<void>
+  /**
+   * Ask for a git read at most once per `delayMs`.
+   *
+   * The working tree changes while Pi edits, so the review list has to follow
+   * a run rather than wait for it to settle. A burst of edits collapses into
+   * one trailing read.
+   */
+  scheduleGitRefresh: (delayMs?: number) => void
   /**
    * Commit the staged files, or — with `includeUnstaged` — stage everything
    * first and commit the whole working tree. Also refreshes the git state.
@@ -456,6 +483,10 @@ let workspaceEpoch = 0
  * is in flight must not throw the fresh list away.
  */
 let projectEpoch = 0
+
+/** How long a burst of file edits waits before one git read of the tree. */
+const GIT_REFRESH_DEBOUNCE_MS = 700
+let gitRefreshTimer: number | null = null
 
 /** A project switch: the view and the project both move. */
 function beginProjectChange(): number {
@@ -1150,6 +1181,49 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
+  async archiveSession(file) {
+    if (!file || file.startsWith('draft:')) return
+    const archived = get().settings.archivedSessions ?? []
+    if (archived.includes(file)) return
+    const pinned = get().settings.pinnedSessions ?? []
+    try {
+      const settings = await window.pi.settings.patch({
+        archivedSessions: [...archived, file],
+        ...(pinned.includes(file)
+          ? { pinnedSessions: pinned.filter((entry) => entry !== file) }
+          : {})
+      })
+      set({ settings })
+      // The row is gone from the sidebar, so its process must not keep changing
+      // the folder where nobody can see it.
+      if (typeof window.pi.runtime.stop === 'function') {
+        try {
+          await window.pi.runtime.stop(file)
+        } catch {
+          /* a cold conversation has no process */
+        }
+      }
+      if (get().activeSessionFile === file) await get().newChat()
+      get().showToast('Conversation archived')
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
+  async restoreSession(file) {
+    const archived = get().settings.archivedSessions ?? []
+    if (!file || !archived.includes(file)) return
+    try {
+      const settings = await window.pi.settings.patch({
+        archivedSessions: archived.filter((entry) => entry !== file)
+      })
+      set({ settings })
+      get().showToast('Conversation restored to the sidebar')
+    } catch (error) {
+      set({ error: messageOf(error) })
+    }
+  },
+
   async newChat() {
     beginViewChange()
     drainPending()
@@ -1654,6 +1728,38 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
+  /**
+   * Read Pi's `get_session_stats` for one conversation, on demand.
+   *
+   * The context panel used to read only the `stats` that `refreshState` left
+   * behind, so a conversation that had never been through a refresh — a
+   * reopened one, or one whose first read raced the process boot — showed an
+   * empty panel with no way to ask again. This asks, and never starts a
+   * process just to answer: a cold conversation keeps its transcript reading.
+   */
+  async readSessionStats(sessionKey = viewKeyOf(get())): Promise<SessionStats | undefined> {
+    const key = threadKey(sessionKey)
+    if (!key) return undefined
+    if (typeof window.pi.runtime.has === 'function' && !(await window.pi.runtime.has(key))) {
+      return undefined
+    }
+    try {
+      const stats = await tracedRpc<SessionStats>(
+        key,
+        'get_session_stats',
+        undefined,
+        20_000,
+        'read-stats'
+      )
+      if (stats) bindSet(set, get, key)({ stats })
+      return stats
+    } catch {
+      // A process that stopped between the check and the read is not an error
+      // the reader has to see; the panel falls back to the transcript.
+      return undefined
+    }
+  },
+
   async refreshState(sessionKey = viewKeyOf(get())) {
     if (!sessionKey) return
     const key = threadKey(sessionKey)
@@ -2109,6 +2215,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // A folder that is not a repository is a normal state, not an error.
       set({ git: undefined })
     }
+  },
+
+  scheduleGitRefresh(delayMs = GIT_REFRESH_DEBOUNCE_MS) {
+    // A run that touches a dozen files would otherwise ask git for the whole
+    // working tree a dozen times. One trailing read is enough: the list on
+    // screen has to catch up *during* the run, not once per edit.
+    if (gitRefreshTimer !== null) return
+    gitRefreshTimer = window.setTimeout(() => {
+      gitRefreshTimer = null
+      void get().refreshGit()
+    }, delayMs)
   },
 
   async commitChanges(message, includeUnstaged = false) {
@@ -2587,6 +2704,7 @@ function rekeyThread(
   // written it to disk yet; carry it across the draft→file rename.
   migrateScrollMemory(from, to)
   migrateViewState(from, to)
+  migrateSessionTiming(from, to)
   for (const [alias, key] of threadAliases) {
     if (key === from) {
       migrateScrollMemory(alias, to)
@@ -2765,6 +2883,42 @@ function scheduleFlush(): void {
 }
 
 /**
+ * The tools whose completion can change the working tree.
+ *
+ * `edit` and `write` are Pi's own file writers; `bash` can move anything, so
+ * it counts too — a `git checkout` or a generator run through the shell shows
+ * up in the review list exactly like an edit does. A read or a search cannot,
+ * and asking git after each of those would be a process per keystroke.
+ */
+function touchesWorkingTree(toolName: unknown): boolean {
+  if (typeof toolName !== 'string') return false
+  return toolName === 'edit' || toolName === 'write' || toolName === 'bash'
+}
+
+/**
+ * Whether a git read is worth doing for the event that just arrived.
+ *
+ * `refreshGit` always reads the *active* project, so a run in a background
+ * conversation must not trigger it when that conversation lives in another
+ * folder — the list would be read for the wrong tree and look like it changed.
+ * A run in another conversation of the same folder is fine: the tree is the
+ * same tree.
+ */
+function gitBelongsToView(
+  get: GetState,
+  realGet: GetState | undefined,
+  owner: string | undefined
+): boolean {
+  if (!realGet || !owner) return true
+  const view = viewKeyOf(realGet())
+  if (view === owner) return true
+  const runningCwd = get().status?.cwd
+  const activeCwd = realGet().workspace?.path
+  if (!runningCwd || !activeCwd) return false
+  return samePath(runningCwd, activeCwd)
+}
+
+/**
  * The phase to show once a lower-priority event stops being the reason.
  *
  * A tool ending, a retry finishing or a prompt being handed over must not
@@ -2775,6 +2929,15 @@ function phaseFor(state: AppStore, next: RunPhase): RunPhase {
   if (state.run.phase === 'aborting') return 'aborting'
   if (state.uiRequest) return 'waiting_approval'
   return next
+}
+
+function finishModelTiming(set: SetState, get: GetState, owner?: string): void {
+  const run = get().run
+  if (run.modelTurnStartedAt === undefined) return
+  const timingKey = owner ? threadKey(owner) : viewKeyOf(get())
+  const turnId = run.turnId ?? run.runId
+  recordModelDuration(timingKey, turnId, Math.max(0, Date.now() - run.modelTurnStartedAt))
+  set((state) => ({ run: { ...state.run, modelTurnStartedAt: undefined } }))
 }
 
 function handleEvent(
@@ -2808,8 +2971,9 @@ function handleEvent(
       }))
       break
     }
-    case 'turn_start':
+    case 'turn_start': {
       beginStream(runContextOf(get).sessionKey)
+      const modelTurnStartedAt = Date.now()
       set((state) => ({
         isStreaming: true,
         retry: undefined,
@@ -2818,12 +2982,14 @@ function handleEvent(
               ...state.run,
               turnId: nextId('turn'),
               turns: state.run.turns + 1,
+              modelTurnStartedAt,
               phase: phaseFor(state, 'working'),
               settled: false
             }
           : { ...state.run, phase: 'working', settled: false }
       }))
       break
+    }
     case 'agent_end':
       // `agent_end` is not the end of the work: Pi may retry, compact or
       // continue on its own. The run stays open until it settles.
@@ -2837,6 +3003,21 @@ function handleEvent(
       drainPending()
       const state = get()
       const startedAt = state.run.startedAt
+      const timingKey = owner ? threadKey(owner) : viewKeyOf(state)
+      if (startedAt !== undefined && state.run.firstTokenAt !== undefined) {
+        recordTtftDuration(
+          timingKey,
+          state.run.runId,
+          Math.max(0, state.run.firstTokenAt - startedAt)
+        )
+      }
+      if (state.run.modelTurnStartedAt !== undefined) {
+        recordModelDuration(
+          timingKey,
+          state.run.turnId ?? state.run.runId,
+          Math.max(0, Date.now() - state.run.modelTurnStartedAt)
+        )
+      }
       // `agent_settled` carries only `aborted`; a failure is visible on the
       // last assistant message instead. Do not print a success summary over
       // an error notice.
@@ -2863,6 +3044,7 @@ function handleEvent(
         run: {
           ...state.run,
           phase: 'idle',
+          modelTurnStartedAt: undefined,
           settled: true,
           outcome: aborted ? 'aborted' : failed ? 'failed' : 'completed',
           durationMs: startedAt ? Date.now() - startedAt : undefined
@@ -2981,7 +3163,30 @@ function handleEvent(
     case 'compaction_end':
     case 'extension_error':
     case 'client_notice': {
-      scheduleItems(set, get, event)
+      if (event.type === 'tool_execution_end') {
+        // Apply a queued start first so its local timestamp can fill in when
+        // Pi omitted the duration on the completion event.
+        drainPending()
+        const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : undefined
+        const existing = toolCallId
+          ? get().items.find((item) => item.kind === 'tool' && item.toolCallId === toolCallId)
+          : undefined
+        const terminal = existing?.kind === 'tool' &&
+          (existing.status === 'ok' || existing.status === 'error' || existing.status === 'aborted')
+        if (!terminal && toolCallId) {
+          const supplied = typeof event.durationMs === 'number' ? event.durationMs : undefined
+          const observed = supplied ?? (existing?.kind === 'tool' && existing.startedAt !== undefined
+            ? Math.max(0, Date.now() - existing.startedAt)
+            : undefined)
+          if (observed !== undefined) {
+            recordToolDuration(owner ? threadKey(owner) : viewKeyOf(get()), toolCallId, observed)
+          }
+        }
+      }
+      // Capture the reducer's tool `startedAt` at event arrival; if the start
+      // waited for a paint frame, a fast tool could finish before that clock
+      // was recorded.
+      scheduleItems(set, get, event, event.type === 'tool_execution_start')
       // The run phase is exported from what the transcript actually holds:
       // a tool that started means one is running, and the run only goes back
       // to "the model is answering" when none is left.
@@ -3000,10 +3205,23 @@ function handleEvent(
             settled: false
           }
         }))
+        // A file edit or a new file has landed on disk, so the review list is
+        // already out of date while the run is still going. Waiting for
+        // `agent_settled` made the panel show the previous batch of files for
+        // the rest of the run. `refreshGit` reads the *active* project, so a
+        // run in another conversation of the same project is worth reading too
+        // — only a run in a different project is not.
+        if (touchesWorkingTree(event.toolName) && gitBelongsToView(get, realGet, owner)) {
+          get().scheduleGitRefresh()
+        }
       }
       if (event.type === 'message_end') {
         // The last message_end bounds the generation window used for TPS.
         set((state) => ({ run: { ...state.run, lastTokenAt: Date.now() } }))
+        const message = event.message as { role?: unknown } | undefined
+        if (message?.role === 'assistant' || (message?.role === undefined && get().run.modelTurnStartedAt !== undefined)) {
+          finishModelTiming(set, get, owner)
+        }
       }
       // Assistant text arriving is the only evidence that the model is
       // actually producing words right now, as opposed to still being
@@ -3018,6 +3236,7 @@ function handleEvent(
           // instead of a top-level `message_end`; both bound TPS.
           set((state) => ({ run: { ...state.run, lastTokenAt: Date.now() } }))
         }
+        if (kind === 'done') finishModelTiming(set, get, owner)
         const first = get().run.firstTokenAt === undefined
         if (delta && (first || get().run.phase !== phaseFor(get(), 'generating'))) {
           const now = Date.now()

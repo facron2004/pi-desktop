@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
+  Archive,
   ArrowDown,
   ArrowUp,
   Clock,
@@ -89,6 +90,17 @@ export function Sidebar({
     )
   )
   const settings = useAppStore((state) => state.settings)
+  // A folded project hides the running mark of its conversations. Track the
+  // files that are streaming so the project name can carry that state.
+  const runningFiles = useAppStore(
+    useShallow((state) =>
+      Object.keys(state.threads).filter((file) => Boolean(state.threads[file]?.isStreaming))
+    )
+  )
+  const archivedFiles = useMemo(
+    () => new Set(settings.archivedSessions ?? []),
+    [settings.archivedSessions]
+  )
   const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const pendingProject = useAppStore((state) => state.pendingProject)
   const selectSession = useAppStore((state) => state.selectSession)
@@ -99,6 +111,7 @@ export function Sidebar({
   const removeWorkspace = useAppStore((state) => state.removeWorkspace)
   const renameSessionFile = useAppStore((state) => state.renameSessionFile)
   const deleteSession = useAppStore((state) => state.deleteSession)
+  const archiveSession = useAppStore((state) => state.archiveSession)
   const togglePin = useAppStore((state) => state.togglePin)
   const openSearchHit = useAppStore((state) => state.openSearchHit)
   const updateSettings = useAppStore((state) => state.updateSettings)
@@ -223,7 +236,8 @@ export function Sidebar({
   // The input filters titles and projects at once; full text is a different,
   // slower question, so it is asked separately and debounced.
   const contentSearch = useSessionSearch(trimmedQuery, sessions.length > 0)
-  const contentHits = contentSearch.hits
+  // Archived conversations are hidden from every list, including full-text hits.
+  const contentHits = contentSearch.hits.filter((hit) => !archivedFiles.has(hit.file))
   const showContentSearch =
     sessions.length > 0 &&
     trimmedQuery.length >= MIN_SESSION_SEARCH_LENGTH &&
@@ -279,8 +293,8 @@ export function Sidebar({
     [sessions]
   )
   const listed = useMemo(
-    () => [...liveRows, ...diskRows],
-    [liveRows, diskRows]
+    () => [...liveRows, ...diskRows].filter((session) => !archivedFiles.has(session.file)),
+    [liveRows, diskRows, archivedFiles]
   )
 
   const projects = useMemo(() => {
@@ -340,6 +354,11 @@ export function Sidebar({
   const pinned = useMemo(
     () => new Set(settings.pinnedSessions ?? []),
     [settings.pinnedSessions]
+  )
+
+  const runningKeys = useMemo(
+    () => new Set(runningFiles.map((file) => normalisePathKey(file))),
+    [runningFiles]
   )
 
   // Pinned conversations have their own group; every other conversation lives
@@ -643,6 +662,7 @@ export function Sidebar({
         onCommitRename={commitRename}
         onCancelRename={() => setRenaming(null)}
         onDelete={() => setPendingDelete(session)}
+        onArchive={() => void archiveSession(session.file)}
         onStop={() => {
           if (session.file === activeSessionFile) void stop()
           else void stopSession(session.file)
@@ -867,6 +887,9 @@ export function Sidebar({
                     )
                 const iconTone = projectIconColor(project.iconColor)
                 const emoji = projectIconEmoji(project.icon)
+                const runningCollapsed =
+                  !expanded &&
+                  projectSessions.some((session) => runningKeys.has(normalisePathKey(session.file)))
                 return (
                   <div
                     className="project"
@@ -875,6 +898,7 @@ export function Sidebar({
                     data-active={active}
                     data-dragging={draggingPath != null && samePath(draggingPath, project.path)}
                     data-expanded={expanded}
+                    data-running={runningCollapsed ? 'true' : undefined}
                     data-pending={
                       pendingProject?.path != null
                         ? samePath(pendingProject.path, project.path)
@@ -1480,6 +1504,7 @@ interface SessionRowProps {
   onCommitRename: (file: string) => void
   onCancelRename: () => void
   onDelete: () => void
+  onArchive: () => void
   onStop: () => void
   onTogglePin: () => void
 }
@@ -1499,6 +1524,7 @@ const SessionRow = memo(function SessionRow({
   onCommitRename,
   onCancelRename,
   onDelete,
+  onArchive,
   onStop,
   onTogglePin
 }: SessionRowProps) {
@@ -1648,6 +1674,20 @@ const SessionRow = memo(function SessionRow({
                 {session.onDisk ? (
                   <button
                     type="button"
+                    className="popover__item"
+                    role="menuitem"
+                    onClick={() => {
+                      close()
+                      onArchive()
+                    }}
+                  >
+                    <Archive size={12} />
+                    {t('Archive conversation')}
+                  </button>
+                ) : null}
+                {session.onDisk ? (
+                  <button
+                    type="button"
                     className="popover__item popover__item--danger"
                     role="menuitem"
                     onClick={() => {
@@ -1681,6 +1721,7 @@ const SessionRowItem = memo(function SessionRowItem({
   onCommitRename,
   onCancelRename,
   onDelete,
+  onArchive,
   onStop,
   onTogglePin
 }: Omit<SessionRowProps, 'running' | 'indicator'>) {
@@ -1715,6 +1756,7 @@ const SessionRowItem = memo(function SessionRowItem({
       onCommitRename={onCommitRename}
       onCancelRename={onCancelRename}
       onDelete={onDelete}
+      onArchive={onArchive}
       onStop={onStop}
       onTogglePin={onTogglePin}
     />

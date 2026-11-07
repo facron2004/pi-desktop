@@ -192,6 +192,9 @@ const zhCN: Record<string, string> = {
   Theme: '主题',
   Tone: '色调',
   'Accent color': '强调色',
+  'Hex color': '十六进制颜色',
+  Hue: '色相',
+  'Saturation and brightness': '饱和度与亮度',
   Background: '背景',
   Foreground: '前景',
   Font: '字体',
@@ -359,6 +362,7 @@ const zhCN: Record<string, string> = {
   'Saved immediately. Restart Pi Desktop to apply this to the Pi runtime. MCP configuration uses this setting the next time it is read.':
     '设置立即保存。重启 Pi Desktop 后应用到 Pi 运行时；MCP 配置在下次读取时使用此设置。',
   'Waiting for Pi statistics': '等待 Pi 返回统计数据',
+  'Statistics are read from the live Pi process.': '统计数据来自运行中的 Pi 进程。',
   'Toggle sidebar': '显示或隐藏侧边栏',
   'Rename this conversation': '重命名此对话',
   'Keyboard shortcuts': '键盘快捷键',
@@ -486,6 +490,13 @@ const zhCN: Record<string, string> = {
   Pinned: '已固定',
   'No conversation matches': '没有匹配的对话',
   'Delete conversation': '删除对话',
+  'Archive conversation': '归档对话',
+  'Archived conversations': '已归档对话',
+  Archived: '已归档',
+  'Archived conversations leave the sidebar and stay on disk. Restore one to bring it back.':
+    '归档后的对话会从侧边栏隐藏，文件仍保留在磁盘上。恢复后即可重新显示。',
+  'No archived conversations.': '暂无已归档的对话。',
+  Restore: '恢复',
   'Stop this conversation': '停止这个对话',
   'Unpin conversation': '取消固定对话',
   'Pin conversation to the top': '将对话固定到顶部',
@@ -512,6 +523,14 @@ const zhCN: Record<string, string> = {
   Compact: '压缩上下文',
   'Summarise the conversation to free up the context window': '总结对话以释放上下文窗口',
   'Context window': '上下文窗口',
+  'Token usage': 'Token 用量',
+  'Uncached input': '未缓存输入',
+  'Context breakdown': '上下文构成',
+  'System prompt': '系统提示词',
+  'Tool definitions': '工具定义',
+  'Conversation messages': '对话消息',
+  'Pi does not expose token counts for each category yet.': 'Pi 当前未提供各部分的 Token 明细。',
+  'More details and controls': '更多详情和控制',
   'Total tokens': 'Token 总量',
   'Usage details': '用量明细',
   'Run settings': '运行设置',
@@ -548,6 +567,29 @@ const zhCN: Record<string, string> = {
   'Context used': '上下文用量',
   'Output tokens per second': '每秒输出 Token',
   'Time to first token': '首个 Token 到达耗时',
+  'Session statistics': '会话统计',
+  'Model time': '模型用时',
+  'Tool execution time': '工具调用用时',
+  'Average TTFT': '首 token 平均（TTFT）',
+  'Output speed (TPS)': '输出速度（TPS）',
+  'Not measured yet': '尚未统计',
+  'tool calls timed': '个工具调用已计时',
+  'Measured by this app; earlier history may be unavailable':
+    '由本应用测量；启用统计前的历史数据可能不可用',
+  'Average of recorded runs; earlier history may be unavailable':
+    '按已记录的运行计算平均值；启用统计前的历史数据可能不可用',
+  steps: '步',
+  'Generation speed and first-token delay': '生成速度与首字延迟',
+  'Time to the first token of the newest answer, measured from the prompt.':
+    '最新一轮回答从发出提示到收到首个 Token 的耗时。',
+  'Speed of the newest answer, from its first token to its last.':
+    '最新一轮回答从首个 Token 到最后一个 Token 的输出速度。',
+  'From the live session': '来自运行中的会话',
+  'Estimated from the transcript': '根据对话记录估算',
+  'Pi has not reported statistics for this conversation yet.':
+    'Pi 还没有返回这个对话的统计数据。',
+  'Refresh the reading': '重新读取',
+  'Reading Pi statistics…': '正在读取 Pi 统计数据…',
   Period: '时间范围',
   Messages: '消息',
   Prompts: '提示',
@@ -971,6 +1013,8 @@ const zhCN: Record<string, string> = {
   'minutes-short': '分',
   'Pi did not report an export file': 'Pi 未返回导出文件',
   'Conversation deleted': '对话已删除',
+  'Conversation archived': '对话已归档',
+  'Conversation restored to the sidebar': '对话已恢复到侧边栏',
   'Type the new name after /name': '请在 /name 后输入新名称',
   'Pi did not report any models': 'Pi 未返回可用模型',
   'This model has no reasoning levels': '此模型没有推理强度选项',
@@ -1389,6 +1433,7 @@ const zhCN: Record<string, string> = {
   Finished: '已完成',
   turn: '轮',
   turns: '轮',
+  Share: '占比',
   'The run may still be going': '运行可能仍在继续',
   'Waiting for your answer': '等待你的回答',
   Queued: '已排队',
@@ -1404,7 +1449,7 @@ const zhCN: Record<string, string> = {
   'Global token consumption statistics and conversation activity across time horizons.':
     '查看当天、每周、每月及全部周期的 Token 消耗与对话数统计。',
   'Usage heatmap': '用量热力图',
-  'Past 180 days': '过去 180 天',
+  'Past 10 months': '过去 10 个月',
   'Active days': '活跃天数',
   'Usage intensity': '用量强度',
   Less: '少',
@@ -1570,6 +1615,8 @@ const zhCN: Record<string, string> = {
   'Could not open the npm page': '无法打开 npm 页面',
   Manage: '管理',
   'Create plugin or skill': '创建插件或技能',
+  'Create a plugin or skill in this project.': '在当前项目中新建插件或技能。',
+  'Clone a repository and install it.': '克隆仓库并安装。',
   'GitHub repository': 'GitHub 仓库',
   'npm package': 'npm 包',
   'Create your own': '自己创建',
@@ -1601,7 +1648,16 @@ const zhCN: Record<string, string> = {
   'This removes it from the Pi configuration. This cannot be undone.':
     '这会从 Pi 配置中移除该项，且无法撤销。',
   Remove: '移除',
-  'The MCP configuration is not available in this build.': '当前版本无法读取 MCP 配置。'
+  'The MCP configuration is not available in this build.': '当前版本无法读取 MCP 配置。',
+  'All app shortcuts in one place. Click a key combination to change it.':
+    '所有应用快捷键都在这里；点击键位组合即可修改。',
+  'Backspace resets a shortcut to its default, Esc cancels the recording.':
+    '按 Backspace 恢复默认快捷键，按 Esc 取消录制。',
+  'Press a shortcut…': '请按下快捷键…',
+  'Include Ctrl or Alt': '快捷键必须包含 Ctrl 或 Alt',
+  'Already used by': '已被占用：',
+  'Change shortcut': '修改快捷键',
+  'Reset to default': '恢复默认'
 }
 
 export function translate(text: string, language: AppLanguage): string {

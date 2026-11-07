@@ -80,6 +80,46 @@ test('TTFT is the prompt-to-first-token delay', () => {
   assert.equal(sessionMetrics([], undefined, { startedAt: 1_000 }).ttftMs, null)
 })
 
+test('model time and average TTFT use locally recorded session samples', () => {
+  const metrics = sessionMetrics(
+    [],
+    stats({ userMessages: 2 }),
+    { settled: true },
+    {
+      modelDurationsMs: { turn1: 1_200, turn2: 2_800 },
+      ttftDurationsMs: { run1: 600, run2: 1_000 },
+      toolDurationsMs: {}
+    }
+  )
+  assert.equal(metrics.modelTimeMs, 4_000)
+  assert.equal(metrics.averageTtftMs, 800)
+})
+
+test('tool time uses persisted client timings when Pi did not save a duration', () => {
+  const tool: ThreadItem = {
+    id: 'tool-1',
+    kind: 'tool',
+    toolCallId: 'call-1',
+    toolName: 'read',
+    args: {},
+    status: 'ok',
+    timestamp: 1,
+    order: 1
+  }
+  const metrics = sessionMetrics(
+    [tool],
+    stats({ toolCalls: 2 }),
+    {},
+    {
+      modelDurationsMs: {},
+      ttftDurationsMs: {},
+      toolDurationsMs: { 'call-1': 450 }
+    }
+  )
+  assert.equal(metrics.toolTimeMs, 450)
+  assert.equal(metrics.timedToolCalls, 1)
+})
+
 test('TPS is the newest turn\'s output over the generation window', () => {
   const items: ThreadItem[] = [
     user('u1'),

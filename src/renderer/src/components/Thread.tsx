@@ -14,6 +14,7 @@ import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
 import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition } from '../lib/scroll-memory'
 import { readHistoryExpanded, writeHistoryExpanded } from '../lib/view-state'
+import { keysFor, matchesShortcut } from '../lib/shortcuts'
 import { SearchContext } from '../lib/search-context'
 import { NoticeMessage, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
@@ -128,6 +129,7 @@ export function Thread() {
   const forking = useAppStore((state) => state.forking)
   const error = useAppStore((state) => state.error)
   const dismissError = useAppStore((state) => state.dismissError)
+  const shortcutBindings = useAppStore((state) => state.settings.shortcutBindings)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   const previousItemsRef = useRef(items)
@@ -342,7 +344,7 @@ export function Thread() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.querySelector('[aria-modal="true"]')) return
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      if (matchesShortcut(event, keysFor('search-conversation', shortcutBindings))) {
         event.preventDefault()
         setSearchOpen(true)
         requestAnimationFrame(() => searchInputRef.current?.focus())
@@ -355,7 +357,7 @@ export function Thread() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [searchOpen, closeSearch])
+  }, [searchOpen, closeSearch, shortcutBindings])
 
   useEffect(() => {
     const jumpHitIndex = jumpHitIndexRef.current
@@ -469,19 +471,19 @@ export function Thread() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.querySelector('[aria-modal="true"]')) return
-      if (!event.altKey) return
-      if (event.key === 'ArrowUp') {
+      if (matchesShortcut(event, keysFor('previous-turn', shortcutBindings))) {
         event.preventDefault()
         jumpTurn(-1)
+        return
       }
-      if (event.key === 'ArrowDown') {
+      if (matchesShortcut(event, keysFor('next-turn', shortcutBindings))) {
         event.preventDefault()
         jumpTurn(1)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [jumpTurn])
+  }, [jumpTurn, shortcutBindings])
 
   const scrollToBottom = () => {
     const node = scrollRef.current
