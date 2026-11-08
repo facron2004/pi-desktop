@@ -1,17 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { exec } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import {
-  closeSync,
-  mkdirSync,
-  openSync,
-  readSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-  type Dirent
-} from 'node:fs'
+import { mkdirSync, writeFileSync, type Dirent } from 'node:fs'
+import { open, readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import type {
   AppInfo,
@@ -39,6 +30,7 @@ import type {
 } from '@shared/types'
 import { checkAuth, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
+import { discoverSkillCommands } from './pi/command-catalog'
 import { getModelThinkingLevels } from './pi/model-catalog'
 import { readTraceHint } from './pi/trace'
 import type { SessionSupervisor } from './pi/supervisor'
@@ -124,29 +116,29 @@ function runtimeInstructions(context: IpcContext, cwd: string): string | undefin
 
 export const MAX_FILE_BYTES = 512 * 1024
 
-export function readBoundedFile(
+export async function readBoundedFile(
   target: string,
   maxBytes = MAX_FILE_BYTES
-): { content: string; truncated: boolean; size: number } | null {
+): Promise<{ content: string; truncated: boolean; size: number } | null> {
   try {
-    const stats = statSync(target)
+    const stats = await stat(target)
     if (!stats.isFile()) return null
     const truncated = stats.size > maxBytes
     const bytesToRead = truncated ? maxBytes : stats.size
     let content = ''
     if (bytesToRead > 0) {
-      const fd = openSync(target, 'r')
+      const handle = await open(target, 'r')
       try {
         const buffer = Buffer.alloc(bytesToRead)
         let totalRead = 0
         while (totalRead < bytesToRead) {
-          const bytesRead = readSync(fd, buffer, totalRead, bytesToRead - totalRead, totalRead)
+          const { bytesRead } = await handle.read(buffer, totalRead, bytesToRead - totalRead, totalRead)
           if (bytesRead === 0) break
           totalRead += bytesRead
         }
         content = buffer.subarray(0, totalRead).toString('utf8')
       } finally {
-        closeSync(fd)
+        await handle.close()
       }
     }
     return { content, truncated, size: stats.size }
@@ -161,6 +153,9 @@ const MAX_TEXT_HITS_PER_FILE = 3
 /** Characters of a line shown around a text match. */
 const TEXT_PREVIEW_MAX = 64
 const TEXT_PREVIEW_LEAD = 12
+/** The newest full-text search per window; a later query supersedes it. */
+let sessionSearchSequence = 0
+const latestSessionSearches = new WeakMap<object, number>()
 /** Directories that are never worth walking when searching a project. */
 const SEARCH_SKIP_DIRS = new Set([
   'node_modules',
@@ -330,16 +325,16 @@ function pastedImageExtension(mimeType: string): string | null {
  * the viewer can paint. Anything that is not an image inside the project, or
  * that is too large to hand to a `<img>`, is `null` rather than an error.
  */
-function readImageDataUrl(context: IpcContext, file: string): string | null {
+async function readImageDataUrl(context: IpcContext, file: string): Promise<string | null> {
   const root = workspaceRoot(context)
   const target = path.resolve(root, file)
   if (!isInside(root, target)) return null
   const type = IMAGE_MIME[path.extname(target).toLowerCase()]
   if (!type) return null
   try {
-    const stats = statSync(target)
+    const stats = await stat(target)
     if (!stats.isFile() || stats.size > 24 * 1024 * 1024) return null
-    return `data:${type};base64,${readFileSync(target).toString('base64')}`
+    return `data:${type};base64,${(await readFile(target)).toString('base64')}`
   } catch {
     return null
   }
@@ -358,17 +353,17 @@ function workspaceName(dir: string): string {
  * A NUL byte means the file is binary, and a preview of its bytes is not
  * something the reader could use, so it is not a result.
  */
-function searchFileText(file: string, needle: string, remaining: number): TextSearchHit[] {
+async function searchFileText(file: string, needle: string, remaining: number): Promise<TextSearchHit[]> {
   const perFile = Math.min(remaining, MAX_TEXT_HITS_PER_FILE)
   if (perFile <= 0) return []
 
   let buffer: Buffer
   try {
-    const stats = statSync(file)
+    const stats = await stat(file)
     // A file past the read cap is skipped rather than half-read: a hit in the
     // part that was never read would be a result the user cannot find.
     if (!stats.isFile() || stats.size === 0 || stats.size > MAX_FILE_BYTES) return []
-    buffer = readFileSync(file)
+    buffer = await readFile(file)
   } catch {
     return []
   }
@@ -478,10 +473,10 @@ export function registerIpc(context: IpcContext): void {
   )
   ipcMain.handle('terminal:kill', (_event, id: string) => terminals.kill(id))
 
-  ipcMain.handle('app:info', async (): Promise<AppInfo> => {
+  ipcMain.handle('app:info', async (_event, options?: { includePiVersion?: boolean }): Promise<AppInfo> => {
     const current = settings.get()
     const launch = resolvePiLaunch(current.piPath)
-    const version = await piVersion(current.piPath)
+    const version = options?.includePiVersion === false ? undefined : await piVersion(current.piPath)
     return {
       // `npm_package_version` only exists when npm launched the app; a
       // packaged build reads the version it was built with instead.
@@ -552,12 +547,12 @@ export function registerIpc(context: IpcContext): void {
         continue
       }
       try {
-        const stats = statSync(file)
+        const stats = await stat(file)
         if (!stats.isFile() || stats.size > 24 * 1024 * 1024) {
           picked.push({ kind: 'path', path: file })
           continue
         }
-        picked.push({ kind: 'image', data: readFileSync(file).toString('base64'), mimeType })
+        picked.push({ kind: 'image', data: (await readFile(file)).toString('base64'), mimeType })
       } catch {
         picked.push({ kind: 'path', path: file })
       }
@@ -784,9 +779,17 @@ export function registerIpc(context: IpcContext): void {
     return await supervisor.rename(file, name)
   })
 
-  ipcMain.handle('sessions:search', async (_event, query: string, limit?: number) =>
-    (await searchSessions(query, limit)).map(withoutProjectFolder)
-  )
+  // The sidebar debounces its own input, but a search that already entered
+  // the main process keeps reading until it finishes. A newer request marks
+  // the earlier one as superseded so the old scan stops at its next file.
+  ipcMain.handle('sessions:search', async (event, query: string, limit?: number) => {
+    const token = (sessionSearchSequence += 1)
+    latestSessionSearches.set(event.sender, token)
+    const hits = await searchSessions(query, limit, {
+      shouldStop: () => latestSessionSearches.get(event.sender) !== token
+    })
+    return hits.map(withoutProjectFolder)
+  })
 
   ipcMain.handle('sessions:usageStats', async (_event, customDir?: string) => {
     const userDir = customDir?.trim() || settings.get().externalChatFolder?.trim()
@@ -867,46 +870,47 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('git:pull', () => gitWrite(context, root => pullBranch(root)))
 
-  ipcMain.handle('fs:list', (_event, dir: string): FileEntry[] => {
+  ipcMain.handle('fs:list', async (_event, dir: string): Promise<FileEntry[]> => {
     const root = workspaceRoot(context)
     // A relative path is taken from the project root, not from wherever the
     // app happens to be started.
     const target = path.resolve(root, dir)
     if (!isInside(root, target)) return []
     try {
-      return readdirSync(target, { withFileTypes: true })
-        .filter((entry) => !(entry.isDirectory() && TREE_SKIP_DIRS.has(entry.name)))
-        .map((entry) => {
-          const full = path.join(target, entry.name)
-          let size: number | undefined
-          if (entry.isFile()) {
-            try {
-              size = statSync(full).size
-            } catch {
-              size = undefined
-            }
+      const entries = await readdir(target, { withFileTypes: true })
+      const listed: FileEntry[] = []
+      for (const entry of entries) {
+        if (entry.isDirectory() && TREE_SKIP_DIRS.has(entry.name)) continue
+        const full = path.join(target, entry.name)
+        let size: number | undefined
+        if (entry.isFile()) {
+          try {
+            size = (await stat(full)).size
+          } catch {
+            size = undefined
           }
-          return {
-            name: entry.name,
-            path: full,
-            kind: entry.isDirectory() ? ('directory' as const) : ('file' as const),
-            size
-          }
+        }
+        listed.push({
+          name: entry.name,
+          path: full,
+          kind: entry.isDirectory() ? ('directory' as const) : ('file' as const),
+          size
         })
-        .sort((a, b) => {
-          if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1
-          return a.name.localeCompare(b.name)
-        })
+      }
+      return listed.sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
     } catch {
       return []
     }
   })
 
-  ipcMain.handle('fs:read', (_event, file: string): FileContent | null => {
+  ipcMain.handle('fs:read', async (_event, file: string): Promise<FileContent | null> => {
     const root = workspaceRoot(context)
     const target = path.resolve(root, file)
     if (!isInside(root, target)) return null
-    const result = readBoundedFile(target)
+    const result = await readBoundedFile(target)
     if (!result) return null
     const ext = path.extname(target).slice(1).toLowerCase()
     return {
@@ -918,7 +922,7 @@ export function registerIpc(context: IpcContext): void {
     }
   })
 
-  ipcMain.handle('fs:search', (_event, query: string, limit?: number): FileEntry[] => {
+  ipcMain.handle('fs:search', async (_event, query: string, limit?: number): Promise<FileEntry[]> => {
     const root = workspaceRoot(context)
     // The separators are normalised, so "src/renderer" finds the folder on
     // Windows as well.
@@ -930,11 +934,13 @@ export function registerIpc(context: IpcContext): void {
     const results: FileEntry[] = []
     const base = path.resolve(root)
 
-    const walk = (dir: string, depth: number): void => {
+    // The walk awaits the disk, so the event loop keeps serving Pi events and
+    // other IPC while a large project is being walked.
+    const walk = async (dir: string, depth: number): Promise<void> => {
       if (results.length >= ceiling || depth > MAX_SEARCH_DEPTH) return
       let entries: Dirent[]
       try {
-        entries = readdirSync(dir, { withFileTypes: true })
+        entries = await readdir(dir, { withFileTypes: true })
       } catch {
         return
       }
@@ -943,7 +949,7 @@ export function registerIpc(context: IpcContext): void {
         const full = path.join(dir, entry.name)
         if (entry.isDirectory()) {
           if (SEARCH_SKIP_DIRS.has(entry.name)) continue
-          walk(full, depth + 1)
+          await walk(full, depth + 1)
           continue
         }
         if (!entry.isFile()) continue
@@ -953,7 +959,7 @@ export function registerIpc(context: IpcContext): void {
         if (!relative.replace(/\\/g, '/').toLowerCase().includes(needle)) continue
         let size: number | undefined
         try {
-          size = statSync(full).size
+          size = (await stat(full)).size
         } catch {
           size = undefined
         }
@@ -961,7 +967,7 @@ export function registerIpc(context: IpcContext): void {
       }
     }
 
-    walk(base, 0)
+    await walk(base, 0)
     // The walk follows the disk, which has no order of its own.
     results.sort((a, b) => a.path.localeCompare(b.path))
     return results
@@ -969,7 +975,7 @@ export function registerIpc(context: IpcContext): void {
 
   // Search what is inside the files, not only their names. The walk is the
   // same one the file search uses, so both see the same project.
-  ipcMain.handle('fs:searchText', (_event, query: string, limit?: number): TextSearchHit[] => {
+  ipcMain.handle('fs:searchText', async (_event, query: string, limit?: number): Promise<TextSearchHit[]> => {
     const root = workspaceRoot(context)
     const needle = query.trim().toLowerCase()
     if (!root || !needle) return []
@@ -977,11 +983,11 @@ export function registerIpc(context: IpcContext): void {
     const base = path.resolve(root)
     const hits: TextSearchHit[] = []
 
-    const walk = (dir: string, depth: number): void => {
+    const walk = async (dir: string, depth: number): Promise<void> => {
       if (hits.length >= ceiling || depth > MAX_SEARCH_DEPTH) return
       let entries: Dirent[]
       try {
-        entries = readdirSync(dir, { withFileTypes: true })
+        entries = await readdir(dir, { withFileTypes: true })
       } catch {
         return
       }
@@ -990,16 +996,16 @@ export function registerIpc(context: IpcContext): void {
         const full = path.join(dir, entry.name)
         if (entry.isDirectory()) {
           if (SEARCH_SKIP_DIRS.has(entry.name)) continue
-          walk(full, depth + 1)
+          await walk(full, depth + 1)
           continue
         }
         if (!entry.isFile()) continue
-        const found = searchFileText(full, needle, ceiling - hits.length)
+        const found = await searchFileText(full, needle, ceiling - hits.length)
         if (found.length) hits.push(...found)
       }
     }
 
-    walk(base, 0)
+    await walk(base, 0)
     hits.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
     return hits.slice(0, ceiling)
   })
@@ -1132,6 +1138,15 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('runtime:has', (_event, sessionKey: string) => {
     return typeof sessionKey === 'string' && supervisor.has(sessionKey)
+  })
+
+  ipcMain.handle('runtime:skill-commands', () => {
+    const current = settings.get()
+    return discoverSkillCommands(
+      workspaceRoot(context) || projectlessRoot(),
+      current.piPath,
+      current.trustProject
+    )
   })
 
   ipcMain.handle('runtime:stop', async (_event, sessionKey?: string) => {
@@ -1333,7 +1348,7 @@ export function bridgeRuntime(context: IpcContext): void {
         body = String(event.title ?? event.message ?? 'Pi needs your input.')
       }
       if (body) {
-        showDesktopNotification(window, 'Pi Desktop', body, settings.get().theme)
+        showDesktopNotification(window, 'Pi Desktop', body)
       }
     }
   })

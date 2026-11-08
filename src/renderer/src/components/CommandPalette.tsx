@@ -8,6 +8,7 @@ interface CommandPaletteProps {
   commands: PiCommand[]
   query: string
   activeIndex: number
+  loading?: boolean
   onActiveChange: (index: number) => void
   onSelect: (command: PiCommand) => void
 }
@@ -16,6 +17,7 @@ export function CommandPalette({
   commands,
   query,
   activeIndex,
+  loading = false,
   onActiveChange,
   onSelect
 }: CommandPaletteProps) {
@@ -28,7 +30,7 @@ export function CommandPalette({
   }, [activeIndex])
 
   return (
-    <div className="palette" ref={listRef} role="listbox" aria-label={t('Commands')}>
+    <div className="palette" ref={listRef} role="listbox" aria-label={t('Commands')} aria-busy={loading}>
       <div className="palette__head">
         <CommandIcon size={12} />
         <span>
@@ -40,14 +42,20 @@ export function CommandPalette({
             t('Commands')
           )}
         </span>
-        <span className="palette__count">{commands.length}</span>
+        <span className="palette__count">{loading ? '…' : commands.length}</span>
       </div>
 
       {commands.length === 0 ? (
         <div className="palette__empty">
-          {t('No command matches')} <code>/{query}</code>.
-          <br />
-          {t('Try')} <code>/help</code> {t('or')} <code>/model</code>.
+          {loading ? (
+            t('Loading skills…')
+          ) : (
+            <>
+              {t('No command matches')} <code>/{query}</code>.
+              <br />
+              {t('Try')} <code>/help</code> {t('or')} <code>/model</code>.
+            </>
+          )}
         </div>
       ) : (
         <div className="palette__list">

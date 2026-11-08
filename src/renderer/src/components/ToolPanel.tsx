@@ -212,6 +212,7 @@ export function ToolPanel({
       setTabs([blankTab])
       setActive(blankTab.id)
       onViewChange('start')
+      onClose()
       return
     }
     if (active !== next.id) return
@@ -247,6 +248,7 @@ export function ToolPanel({
     setActive(blankTab.id)
     setMenu(null)
     onViewChange('start')
+    onClose()
   }
 
   const reorder = (source: ToolTab, target: ToolTab) => {

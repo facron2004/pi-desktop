@@ -234,11 +234,38 @@ const markdownComponents: Components = {
   },
   img({ src, alt, title }) {
     if (!src) return null
-    return <ImageButton src={src} alt={alt} title={title} />
+    return <MarkdownImage src={src} alt={alt} title={title} />
   }
 }
 
 const StreamingContext = createContext<boolean>(false)
+
+/**
+ * Resolves an image src the page cannot load by itself — a project-relative
+ * path in a document read from disk — into a data URL.
+ */
+const ImageResolverContext = createContext<((src: string) => Promise<string | null>) | null>(null)
+
+function MarkdownImage({ src, alt, title }: { src: string; alt?: string; title?: string }) {
+  const resolve = useContext(ImageResolverContext)
+  const [resolved, setResolved] = useState<string | null>(null)
+  useEffect(() => {
+    setResolved(null)
+    if (!resolve) return
+    let cancelled = false
+    resolve(src)
+      .then((url) => {
+        if (!cancelled && url) setResolved(url)
+      })
+      .catch(() => {
+        /* the raw src is shown instead; it may still work */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [src, resolve])
+  return <ImageButton src={resolved ?? src} alt={alt} title={title} />
+}
 
 const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
   const isStreaming = useContext(StreamingContext)
@@ -375,19 +402,65 @@ export interface MarkdownProps {
    * document; each segment must then render bare.
    */
   bare?: boolean
+  /**
+   * Turns an image src the page cannot load by itself — a path relative to the
+   * document on disk — into a data URL. Without it, the src is used as written.
+   */
+  resolveImage?: (src: string) => Promise<string | null>
+  /**
+   * Drop raw-HTML tags instead of showing them as text — the reading mode for
+   * a document whose HTML is layout, not content.
+   */
+  stripHtml?: boolean
 }
 
 const REMARK_PLUGINS = [remarkGfm]
 
+/** A Markdown tree node, as far as this module needs to see it. */
+interface MarkdownNode {
+  type?: string
+  children?: MarkdownNode[]
+}
+
+/**
+ * Remove raw-HTML nodes from the tree before it is rendered.
+ *
+ * react-markdown renders an `html` node as its literal text, which is right
+ * for a conversation (the model that *talks about* a tag is quoting it) and
+ * wrong for a document read from disk: a README's `<div align="center">` is
+ * layout, not words. The file viewer opts in; the tags drop out and the
+ * Markdown around them keeps reading as a document.
+ */
+function remarkStripHtml(): (tree: MarkdownNode) => void {
+  const strip = (node: MarkdownNode): void => {
+    if (!Array.isArray(node.children)) return
+    node.children = node.children.filter((child) => {
+      if (child.type === 'html') return false
+      strip(child)
+      return true
+    })
+  }
+  return strip
+}
+
+const REMARK_PLUGINS_STRIPPED = [remarkStripHtml, remarkGfm]
+
 export const Markdown = memo(function Markdown({
   children,
   streaming = false,
-  bare = false
+  bare = false,
+  resolveImage,
+  stripHtml = false
 }: MarkdownProps) {
   const body = (
-    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents}>
-      {children}
-    </ReactMarkdown>
+    <ImageResolverContext.Provider value={resolveImage ?? null}>
+      <ReactMarkdown
+        remarkPlugins={stripHtml ? REMARK_PLUGINS_STRIPPED : REMARK_PLUGINS}
+        components={markdownComponents}
+      >
+        {children}
+      </ReactMarkdown>
+    </ImageResolverContext.Provider>
   )
   return (
     <ErrorBoundary inline scope="Markdown">

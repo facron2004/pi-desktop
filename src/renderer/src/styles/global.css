@@ -671,35 +671,37 @@ transition: background var(--dur-fast) var(--ease);
   overflow-wrap: anywhere;
 }
 
-/* A folded project hides the running mark of its conversations, so the name
-   pulses while work inside it is still going. Hovering stops the pulse: the
-   title has to stay readable while the reader is aiming at the row. */
+/* Pulse the project name itself while a folded project has active work. */
 .project[data-running='true'] .project__name {
-  animation: project-running-pulse 1.5s ease-in-out infinite;
+  --project-running-pulse-color: #fff;
+  color: var(--project-running-pulse-color);
+  animation: project-running-pulse 2s ease-in-out infinite;
 }
 
-.project[data-running='true'] .project__row:hover .project__name,
-.project[data-running='true'] .project__row:focus-within .project__name {
-  animation: none;
+:root[data-theme='light'] .project[data-running='true'] .project__name {
+  --project-running-pulse-color: var(--text-primary);
 }
 
 @keyframes project-running-pulse {
   0%,
+  70%,
   100% {
-    color: var(--text-primary);
     opacity: 1;
   }
 
-  50% {
-    color: var(--accent);
-    opacity: 0.55;
+  80% {
+    opacity: 0.35;
+  }
+
+  90% {
+    opacity: 1;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .project[data-running='true'] .project__name {
     animation: none;
-    color: var(--accent);
+    color: var(--project-running-pulse-color);
   }
 }
 

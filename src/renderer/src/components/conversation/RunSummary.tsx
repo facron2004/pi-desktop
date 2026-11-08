@@ -1,16 +1,16 @@
-import { memo } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { ChevronDown, CircleAlert, X } from 'lucide-react'
 import type { RunState } from '../../store/useAppStore'
 import { useAppStore } from '../../store/useAppStore'
 import { useT } from '../../lib/i18n'
 import type { AppLanguage } from '@shared/types'
 
-/** A duration in the run summary's compact form, e.g. "42s", "3m 12s" or "3分12秒". */
+/** A duration in the run summary's compact form, e.g. "42s", "3m 12s" or "3分钟 12秒". */
 export function formatElapsed(ms: number, language: AppLanguage = 'en'): string {
   const seconds = Math.max(1, Math.round(ms / 1000))
   if (language === 'zh-CN') {
     if (seconds < 60) return `${seconds}秒`
-    return `${Math.floor(seconds / 60)}分${seconds % 60}秒`
+    return `${Math.floor(seconds / 60)}分钟 ${seconds % 60}秒`
   }
   if (seconds < 60) return `${seconds}s`
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
@@ -25,11 +25,11 @@ export interface RunSummaryProps {
 }
 
 /**
- * The one-line record of how a turn ended.
+ * The elapsed-time line at the top of an assistant reply, live until the run settles.
  *
- * It sits at the top of the assistant block, like the reference harness: the
- * reader sees "completed in …" before the answer, and the chevron folds the
- * tool/thinking process without hiding the answer itself.
+ * It sits at the top of the assistant block so the reader sees the elapsed
+ * time before the answer. The chevron folds tool/thinking process without
+ * hiding the answer itself.
  */
 export const RunSummary = memo(function RunSummary({
   run,
@@ -39,27 +39,39 @@ export const RunSummary = memo(function RunSummary({
 }: RunSummaryProps) {
   const t = useT()
   const language = useAppStore((state) => state.settings.language ?? 'en')
-  if (!run.settled) return null
+  const isRunning = !run.settled && run.startedAt !== undefined
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    setNow(Date.now())
+    if (!isRunning) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [isRunning, run.startedAt])
+  if (!run.settled && !isRunning) return null
   const aborted = run.outcome === 'aborted'
   const failed = run.outcome === 'failed'
-  const canFold = foldable && !aborted && !failed
+  const canFold = run.settled && foldable && !aborted && !failed
+  const elapsedMs = isRunning ? Math.max(0, now - (run.startedAt ?? now)) : run.durationMs
   const duration =
-    run.durationMs !== undefined && !aborted && !failed
-      ? formatElapsed(run.durationMs, language)
+    elapsedMs !== undefined && !aborted && !failed
+      ? formatElapsed(elapsedMs, language)
       : undefined
   const label = failed
     ? t('Failed')
     : aborted
       ? t('Stopped by you')
-      : duration !== undefined
-        ? t('Completed in')
-        : t('Finished')
+      : isRunning
+        ? t('Working')
+        : duration !== undefined
+          ? t('Worked for')
+          : t('Finished')
 
   return (
     <button
       type="button"
       className="run-outcome"
       data-outcome={run.outcome}
+      data-running={isRunning || undefined}
       data-foldable={canFold || undefined}
       data-open={canFold ? open || undefined : undefined}
       disabled={!canFold}

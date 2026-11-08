@@ -108,7 +108,12 @@ What that buys, and what it costs:
 - `agent_end` is not the end of the work: Pi may retry, compact or continue
   on its own. The run only settles on `agent_settled` (with `aborted`
   saying whether the user stopped it), and `markAborted` is what turns
-  everything still moving into `aborted` at that moment.
+  everything still moving into `aborted` at that moment. A process that dies
+  mid-run never writes that record, so `SessionSupervisor` mints one with
+  `crashed` on an unexpected exit and the store settles it as `failed`;
+  otherwise the run stays open for the rest of the app's life. A stop on an
+  already idle run is skipped for the same reason: Pi answers `abort` but
+  publishes no settle.
 - The run state lives in the store (`run`, `transport`), not in the thread:
   `runId` / `turnId` are minted by the client because Pi's protocol has
   neither, and `transport` is deliberately separate from the run phase —
@@ -207,11 +212,12 @@ thread in `threads`, keyed by the JSONL path, or by `draft:…` until Pi writes 
 file. Events are stamped with the runtime that owns them, so a background run
 keeps updating after the view has moved on.
 
-Pi starts when a message is sent, not when a row is opened. `SessionSupervisor`
-holds one process per hot conversation, and the same JSONL never has two
-writers. A second prompt in the same working directory waits; it does not abort
-the one already running. Switching projects is also only a view change. Closing
-or removing a workspace is what stops that folder's processes.
+Opening a conversation does not start Pi. Focusing the composer starts a cold
+runtime in the background, but the prompt is sent only when the user submits it.
+`SessionSupervisor` holds one process per hot conversation, and the same JSONL
+never has two writers. A second prompt in the same working directory waits; it
+does not abort the one already running. Switching projects is also only a view
+change. Closing or removing a workspace is what stops that folder's processes.
 
 The sidebar running mark reads `threads[file].isStreaming`. `stop()` aborts the
 conversation on screen, not whichever one happens to be running in the
@@ -499,8 +505,8 @@ panel's own level (`--z-drawer`), never above it: the shell's corner toggle and
 the panel's own menus must stay clickable, or the maximized state covers the
 only ways out of it. `Escape` leaves the maximized state, and never steals the
 key from an open dialog, menu or lightbox. There is no permanent
-"Tools" tab: closing every page falls back to a centered "start from here" card
-list (`ToolPanel`).
+"Tools" tab: closing the last page closes the panel. Reopening it starts from a
+centered "start from here" card list (`ToolPanel`).
 
 Files, File changes, Subagents, Terminal, Browser and Images are pages, not a
 fixed function tab bar. Selecting a card on the new-tab page turns that tab

@@ -13,9 +13,10 @@ import { describeTool } from '../lib/tools'
 import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
 import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition } from '../lib/scroll-memory'
-import { readHistoryExpanded, writeHistoryExpanded } from '../lib/view-state'
+import { readSessionTiming } from '../lib/session-timing'
+import { readHistoryExpanded, readProcessOpen, writeHistoryExpanded, writeProcessOpen } from '../lib/view-state'
 import { keysFor, matchesShortcut } from '../lib/shortcuts'
-import { SearchContext } from '../lib/search-context'
+import { SearchContext, useSearchQuery } from '../lib/search-context'
 import { NoticeMessage, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
 import { ProcessTrail } from './ProcessTrail'
@@ -109,13 +110,14 @@ export function Thread() {
   const retry = useAppStore((state) => state.retry)
   const stop = useAppStore((state) => state.stop)
   /**
-   * Whether a run is open, as opposed to whether Pi has started streaming.
+   * Whether runtime work is open, as opposed to whether Pi has started streaming.
    *
    * A prompt handed to a settled runtime is `queued` before any event
    * arrives, so `isStreaming` alone would hide the row for exactly the moment
-   * the reader most wants to know what happened to their message.
+   * the reader most wants to know what happened to their message. Manual
+   * compaction is also work even though it does not stream an assistant reply.
    */
-  const runOpen = isStreaming || (run.phase !== 'idle' && !run.settled)
+  const runOpen = isStreaming || Boolean(run.compaction) || (run.phase !== 'idle' && !run.settled)
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const historyLoading = useAppStore(
@@ -137,6 +139,10 @@ export function Thread() {
   // its first file: draft ids are unique, and a draft becomes a file path
   // when the runtime rekeys it.
   const sessionKey = scrollKeyOf(activeSessionFile ?? draftId)
+  const runDurationsMs = useMemo(
+    () => readSessionTiming(sessionKey).runDurationsMs,
+    [sessionKey, items.length, run.durationMs]
+  )
   const previousScrollKeyRef = useRef(sessionKey)
   /** A conversation switch that still has to place the viewport. */
   const pendingRestoreRef = useRef<string | null>(sessionKey)
@@ -180,6 +186,11 @@ export function Thread() {
   )
   const sessionTurnIdsRef = useRef<string[]>([])
   sessionTurnIdsRef.current = sessionTurns.map((turn) => turn.id)
+  const liveRunSummaryAtTop = Boolean(
+    !run.settled &&
+      run.startedAt !== undefined &&
+      sessionTurns.length > 0
+  )
   const lastSessionTurnId = sessionTurns[sessionTurns.length - 1]?.id ?? null
   const activeTurnId = atBottom ? lastSessionTurnId : scrolledTurnId
   const syncActiveTurn = useCallback((container: HTMLDivElement) => {
@@ -335,8 +346,12 @@ export function Thread() {
     if (!node || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => {
       if (stickRef.current) node.scrollTop = node.scrollHeight
+      setAtBottom(node.scrollHeight - node.scrollTop - node.clientHeight <= EDGE_RANGE)
+      setAtTop(node.scrollTop <= EDGE_RANGE)
     })
     observer.observe(node)
+    const content = node.querySelector('.thread__inner')
+    if (content) observer.observe(content)
     return () => observer.disconnect()
   }, [])
 
@@ -767,9 +782,10 @@ export function Thread() {
             const userId = turn.user?.id
             const isLastTurn = turnIndex === turns.length - 1
             return (
-              <ErrorBoundary key={turn.id} scope="turn">
+              <ErrorBoundary key={`${sessionKey}:${turn.id}`} scope="turn">
                 <ThreadTurnView
                   turn={turn}
+                  threadKey={sessionKey}
                   models={models}
                   t={t}
                   onCopy={copy}
@@ -778,6 +794,9 @@ export function Thread() {
                   onFork={forkFrom}
                   forking={Boolean(userId && forkByUserId.has(userId) && forking)}
                   run={run}
+                  runDurationMs={
+                    turn.user ? runDurationsMs[String(turn.user.timestamp)] : undefined
+                  }
                   isLastTurn={isLastTurn}
                 />
               </ErrorBoundary>
@@ -792,6 +811,7 @@ export function Thread() {
             retry={retry}
             onStopRetry={stop}
             activity={activity}
+            showElapsed={!liveRunSummaryAtTop}
           />
         ) : null}
 
@@ -818,6 +838,7 @@ export function Thread() {
 
 interface ThreadTurnViewProps {
   turn: Turn
+  threadKey: string
   models: ModelInfo[]
   t: (text: string) => string
   onCopy: (id: string, text: string) => void
@@ -826,6 +847,7 @@ interface ThreadTurnViewProps {
   onFork: (entryId: string) => void
   forking: boolean
   run: RunState
+  runDurationMs?: number
   /** The turn that is last in the conversation, where a run summary belongs. */
   isLastTurn: boolean
 }
@@ -854,18 +876,21 @@ function equalThreadTurnViewProps(
 
   return (
     sameTurnContent(previous.turn, next.turn) &&
+    previous.threadKey === next.threadKey &&
     previous.models === next.models &&
     previous.t === next.t &&
     previous.onCopy === next.onCopy &&
     previous.userCopied === next.userCopied &&
     previous.forkEntryId === next.forkEntryId &&
     previous.onFork === next.onFork &&
-    previous.forking === next.forking
+    previous.forking === next.forking &&
+    previous.runDurationMs === next.runDurationMs
   )
 }
 
 const ThreadTurnView = memo(function ThreadTurnView({
   turn,
+  threadKey,
   models,
   t,
   onCopy,
@@ -874,6 +899,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
   onFork,
   forking,
   run,
+  runDurationMs,
   isLastTurn
 }: ThreadTurnViewProps) {
   const toolMap = new Map(turn.tools.map((tool) => [tool.toolCallId, tool]))
@@ -888,13 +914,49 @@ const ThreadTurnView = memo(function ThreadTurnView({
   // own, at the position it was created in.
   const orphanTools = turn.tools.filter((tool) => !referenced.has(tool.toolCallId))
   const lastAssistant = turn.assistants.at(-1)
-  const outcome = isLastTurn && run.settled && run.outcome ? run : undefined
+  const liveOutcome = Boolean(
+    isLastTurn &&
+      !run.settled &&
+      run.startedAt !== undefined
+  )
+  const recordedOutcome = lastAssistant?.stopReason === 'stop'
+    ? 'completed'
+    : lastAssistant?.stopReason === 'error'
+      ? 'failed'
+      : lastAssistant?.stopReason === 'aborted'
+        ? 'aborted'
+        : undefined
+  const outcome: RunState | undefined =
+    liveOutcome
+      ? run
+      : isLastTurn && run.settled && run.outcome
+        ? run
+        : runDurationMs !== undefined || recordedOutcome
+          ? {
+              ...run,
+              phase: 'idle',
+              settled: true,
+              outcome: recordedOutcome ?? 'completed',
+              durationMs: runDurationMs
+            }
+          : undefined
   const replySettled = lastAssistant && !lastAssistant.streaming && (!isLastTurn || run.settled)
   // The tail stays open only while this turn is the one still being written.
   // A finished turn, including every earlier stretch of a long run, folds.
   const liveTail = isLastTurn && !run.settled
   const autoFoldProcess = useAppStore((state) => state.settings.autoFoldProcess !== false)
-  const [processOpen, setProcessOpen] = useState(!autoFoldProcess)
+  const processId = `turn-${turn.id}`
+  const [manualProcessOpen, setManualProcessOpen] = useState(() => readProcessOpen(threadKey, processId))
+  const query = useSearchQuery().trim().toLowerCase()
+  const searchMatch = Boolean(query) && searchableChunks([turn]).some((chunk) =>
+    chunk.text.toLowerCase().includes(query)
+  )
+  const processOpen = searchMatch || (manualProcessOpen ?? !autoFoldProcess)
+  const toggleProcess = () => {
+    const next = !processOpen
+    setManualProcessOpen(next)
+    writeProcessOpen(threadKey, processId, next)
+  }
   const hasProcess = useMemo(
     () =>
       turn.tools.length > 0 ||
@@ -932,7 +994,11 @@ const ThreadTurnView = memo(function ThreadTurnView({
         />
       ) : null}
 
-      {turn.assistants.length > 0 || turn.tools.length > 0 || turn.notices.length > 0 || turn.bash.length > 0 ? (
+      {turn.assistants.length > 0 ||
+      turn.tools.length > 0 ||
+      turn.notices.length > 0 ||
+      turn.bash.length > 0 ||
+      liveOutcome ? (
         <div className="assistant">
           <div className="assistant__body">
             {outcome ? (
@@ -940,7 +1006,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
                 run={outcome}
                 foldable={hasProcess}
                 open={processOpen}
-                onToggle={() => setProcessOpen((value) => !value)}
+                onToggle={toggleProcess}
               />
             ) : null}
             <AssistantMessage
@@ -948,6 +1014,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
               toolMap={toolMap}
               liveTail={liveTail}
               processOpen={processVisible}
+              processExpanded={Boolean(outcome?.settled && processOpen)}
             />
 
             {turn.bash.map((item) => (
@@ -960,6 +1027,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
                 tools={orphanTools}
                 thoughts={0}
                 searchText=""
+                defaultOpen={Boolean(outcome?.settled && processOpen)}
                 live={liveTail && orphanTools.some((tool) => tool.status === 'running')}
               >
                 {orphanTools.map((tool) => (
@@ -969,9 +1037,9 @@ const ThreadTurnView = memo(function ThreadTurnView({
             ) : null}
 
             {processVisible
-              ? turn.notices.map((notice) => (
-                  <NoticeMessage key={notice.id} item={notice} />
-                ))
+              ? turn.notices
+                  .filter((notice) => notice.status !== 'compacting')
+                  .map((notice) => <NoticeMessage key={notice.id} item={notice} />)
               : null}
             {turnChanges.length > 0 && !liveTail ? (
               <FileChangeSummary

@@ -37,3 +37,14 @@ export function scopeStatus(payload: unknown, viewKey: string): RuntimeStatusEve
 export function hydrationStale(versionAtStart: number, versionNow: number, streaming: boolean): boolean {
   return streaming || versionNow !== versionAtStart
 }
+
+/** A transcript with disk messages but no cached items still needs hydration. */
+export function needsSessionHydration(
+  messageCount: number,
+  cachedVersion: number | undefined,
+  cachedItemCount: number,
+  streaming: boolean
+): boolean {
+  return messageCount > 0 && !streaming &&
+    (cachedVersion === undefined || cachedVersion === 0 || cachedItemCount === 0)
+}

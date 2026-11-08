@@ -210,6 +210,16 @@ export interface SessionStats {
   }
 }
 
+/** Approximate token breakdown from the current request or saved session. */
+export interface ContextBreakdown {
+  systemPrompt: number | null
+  toolDefinitions: number | null
+  conversationMessages: number | null
+  source: 'request' | 'session'
+}
+
+export const CONTEXT_BREAKDOWN_STATUS_KEY = 'pi-desktop-context-breakdown'
+
 /* ------------------------------------------------------------------ *
  * Extension UI sub-protocol
  * ------------------------------------------------------------------ */
@@ -920,7 +930,7 @@ export interface PiDesktopBridge {
     remove(id: string): Promise<{ settings: AppSettings }>
   }
   app: {
-    info(): Promise<AppInfo>
+    info(options?: { includePiVersion?: boolean }): Promise<AppInfo>
     /** Let the main process show the window after the initial UI is ready. */
     startupReady(): void
     /**
@@ -1014,6 +1024,8 @@ export interface PiDesktopBridge {
     start(options: RuntimeStartOptions): Promise<{ ok: boolean; error?: string }>
     /** Start Pi for one conversation if it is not already running. */
     ensure(options: RuntimeEnsureOptions): Promise<{ ok: boolean; error?: string }>
+    /** Discover Skills for a cold composer without starting its conversation runtime. */
+    listSkillCommands(): Promise<PiCommand[]>
     /** True when that conversation has a live process. */
     has(sessionKey: string): Promise<boolean>
     stop(sessionKey?: string): Promise<void>

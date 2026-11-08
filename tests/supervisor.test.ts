@@ -333,6 +333,43 @@ test('stopping an active process publishes its final cancellation after exit', a
   assert.deepEqual(events, [{ ownerId: 'A', event: { type: 'agent_settled', aborted: true, runtimeStopped: true } }])
 })
 
+test('a process that dies during a run settles it instead of leaving it open', async () => {
+  const a = new FakeRuntime()
+  const supervisor = supervisorOf([a])
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+  await supervisor.request('A', 'prompt')
+  const events: { ownerId: string; event: PiEvent }[] = []
+  supervisor.on('event', (payload) => events.push(payload))
+
+  a.running = false
+  a.status = { phase: 'error', cwd: 'C:/a', error: 'the process died' }
+  a.emit('status', a.status)
+  assert.deepEqual(events, [
+    { ownerId: 'A', event: { type: 'agent_settled', aborted: false, crashed: true } }
+  ])
+
+  // The exit usually reports "error" and then "stopped"; one death is one
+  // settle.
+  a.emit('status', { phase: 'stopped', cwd: 'C:/a' })
+  assert.equal(events.length, 1)
+})
+
+test('a run that already settled normally is not reported as crashed', async () => {
+  const a = new FakeRuntime()
+  const supervisor = supervisorOf([a])
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+  await supervisor.request('A', 'prompt')
+  a.emit('event', { type: 'agent_start' })
+  a.emit('event', { type: 'agent_settled' })
+
+  const events: { ownerId: string; event: PiEvent }[] = []
+  supervisor.on('event', (payload) => events.push(payload))
+  a.running = false
+  a.status = { phase: 'stopped', cwd: 'C:/a' }
+  a.emit('status', a.status)
+  assert.deepEqual(events, [])
+})
+
 test('a non-holder settling cannot dispatch another writer into a busy directory', async () => {
   const a = new FakeRuntime()
   const b = new FakeRuntime()

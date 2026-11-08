@@ -5,7 +5,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { MAX_FILE_BYTES, readBoundedFile } from '../src/main/ipc'
 
-test('readBoundedFile reads entire small file without truncation', () => {
+test('readBoundedFile reads entire small file without truncation', async () => {
   const temp = realpathSync(os.tmpdir())
   const dir = mkdtempSync(path.join(temp, 'pi-desktop-fs-test-'))
   try {
@@ -13,7 +13,7 @@ test('readBoundedFile reads entire small file without truncation', () => {
     const sampleText = 'This is a small file content for testing.\nLine 2.\n'
     writeFileSync(file, sampleText, 'utf8')
 
-    const result = readBoundedFile(file)
+    const result = await readBoundedFile(file)
     assert.ok(result)
     assert.equal(result.truncated, false)
     assert.equal(result.size, Buffer.byteLength(sampleText, 'utf8'))
@@ -27,7 +27,7 @@ test('readBoundedFile reads entire small file without truncation', () => {
   }
 })
 
-test('readBoundedFile on large file (> 512KB) reads only MAX_FILE_BYTES without loading full file', () => {
+test('readBoundedFile on large file (> 512KB) reads only MAX_FILE_BYTES without loading full file', async () => {
   const temp = realpathSync(os.tmpdir())
   const dir = mkdtempSync(path.join(temp, 'pi-desktop-fs-test-'))
   try {
@@ -40,7 +40,7 @@ test('readBoundedFile on large file (> 512KB) reads only MAX_FILE_BYTES without 
     largeBuffer.write('PAST_LIMIT_MARKER', MAX_FILE_BYTES + 100, 'utf8')
     writeFileSync(file, largeBuffer)
 
-    const result = readBoundedFile(file)
+    const result = await readBoundedFile(file)
     assert.ok(result)
     assert.equal(result.truncated, true)
     assert.equal(result.size, oneMb)
@@ -59,14 +59,14 @@ test('readBoundedFile on large file (> 512KB) reads only MAX_FILE_BYTES without 
   }
 })
 
-test('readBoundedFile on 0-byte file returns empty content with truncated: false', () => {
+test('readBoundedFile on 0-byte file returns empty content with truncated: false', async () => {
   const temp = realpathSync(os.tmpdir())
   const dir = mkdtempSync(path.join(temp, 'pi-desktop-fs-test-'))
   try {
     const file = path.join(dir, 'empty.txt')
     writeFileSync(file, '')
 
-    const result = readBoundedFile(file)
+    const result = await readBoundedFile(file)
     assert.ok(result)
     assert.equal(result.truncated, false)
     assert.equal(result.size, 0)
@@ -80,13 +80,13 @@ test('readBoundedFile on 0-byte file returns empty content with truncated: false
   }
 })
 
-test('readBoundedFile returns null on missing file or directory', () => {
+test('readBoundedFile returns null on missing file or directory', async () => {
   const temp = realpathSync(os.tmpdir())
   const dir = mkdtempSync(path.join(temp, 'pi-desktop-fs-test-'))
   try {
-    assert.equal(readBoundedFile(path.join(dir, 'nonexistent.txt')), null)
+    assert.equal(await readBoundedFile(path.join(dir, 'nonexistent.txt')), null)
     // Testing on a directory should return null
-    assert.equal(readBoundedFile(dir), null)
+    assert.equal(await readBoundedFile(dir), null)
   } finally {
     try {
       rmSync(dir, { recursive: true, force: true })

@@ -21,6 +21,7 @@ import { ensurePatientRetrySettings, rememberDefaultModel, rememberDefaultThinki
 import { taskModesExtension } from './task-modes'
 import { subagentExtension } from './subagent'
 import { computerUseExtension } from './computer-use'
+import { contextBreakdownExtension } from './context-breakdown'
 import { providerControlsExtension } from './provider-controls'
 import {
   allowlistedEnv,
@@ -131,11 +132,12 @@ export class PiRuntime extends EventEmitter {
     const providerFile = path.join(userData, `pi-desktop-providers-${scratchId}.mjs`)
     const subagentFile = path.join(userData, `pi-desktop-subagent-${scratchId}.mjs`)
     const computerFile = path.join(userData, `pi-desktop-computer-${scratchId}.mjs`)
+    const contextBreakdownFile = path.join(userData, `pi-desktop-context-breakdown-${scratchId}.mjs`)
     const permissionTitle = `pi-desktop-permissions-${scratchId}`
     const files: string[] = []
     try {
       mkdirSync(userData, { recursive: true })
-      files.push(permissionFile, modeFile, providerFile, subagentFile, computerFile)
+      files.push(permissionFile, modeFile, providerFile, subagentFile, computerFile, contextBreakdownFile)
       writeFileSync(permissionFile, permissionExtension(permissionTitle), 'utf8')
       // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
       // is the one moment "a brand-new conversation starts in Plan Mode" is true.
@@ -145,6 +147,7 @@ export class PiRuntime extends EventEmitter {
       writeFileSync(providerFile, providerControlsExtension(), 'utf8')
       writeFileSync(subagentFile, subagentExtension(this.options.getSubagentModel?.() ?? {}), 'utf8')
       writeFileSync(computerFile, computerUseExtension(), 'utf8')
+      writeFileSync(contextBreakdownFile, contextBreakdownExtension(), 'utf8')
       if (options.customInstructions?.trim()) {
         files.push(customInstructionsFile)
         writeFileSync(customInstructionsFile, options.customInstructions.trim(), 'utf8')
@@ -167,7 +170,8 @@ export class PiRuntime extends EventEmitter {
         modeFile,
         providerFile,
         subagentFile,
-        computerFile
+        computerFile,
+        contextBreakdownFile
       )
     ]
 

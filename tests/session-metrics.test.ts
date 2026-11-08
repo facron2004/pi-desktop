@@ -87,12 +87,46 @@ test('model time and average TTFT use locally recorded session samples', () => {
     { settled: true },
     {
       modelDurationsMs: { turn1: 1_200, turn2: 2_800 },
+      legacyModelDurationsMs: {},
       ttftDurationsMs: { run1: 600, run2: 1_000 },
-      toolDurationsMs: {}
+      toolDurationsMs: {},
+      runDurationsMs: {},
+      generationWindowMs: {}
     }
   )
   assert.equal(metrics.modelTimeMs, 4_000)
   assert.equal(metrics.averageTtftMs, 800)
+})
+
+test('legacy model time remains visible after upgrading timing storage', () => {
+  const metrics = sessionMetrics(
+    [],
+    undefined,
+    { settled: true },
+    {
+      modelDurationsMs: {},
+      legacyModelDurationsMs: { oldTurn: 1_200 },
+      ttftDurationsMs: {},
+      toolDurationsMs: {},
+      runDurationsMs: {},
+      generationWindowMs: {}
+    }
+  )
+  assert.equal(metrics.modelTimeMs, 1_200)
+})
+
+test('live model time uses a monotonic clock', () => {
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => 1_800 }
+  })
+  try {
+    const metrics = sessionMetrics([], undefined, { modelTurnStartedAt: 1_000, settled: false })
+    assert.equal(metrics.modelTimeMs, 800)
+  } finally {
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
+  }
 })
 
 test('tool time uses persisted client timings when Pi did not save a duration', () => {
@@ -112,8 +146,11 @@ test('tool time uses persisted client timings when Pi did not save a duration', 
     {},
     {
       modelDurationsMs: {},
+      legacyModelDurationsMs: {},
       ttftDurationsMs: {},
-      toolDurationsMs: { 'call-1': 450 }
+      toolDurationsMs: { 'call-1': 450 },
+      runDurationsMs: {},
+      generationWindowMs: {}
     }
   )
   assert.equal(metrics.toolTimeMs, 450)
@@ -133,4 +170,20 @@ test('TPS is the newest turn\'s output over the generation window', () => {
   })
   assert.equal(metrics.tps, 60)
   assert.equal(sessionMetrics(items, undefined, { firstTokenAt: 10_000 }).tps, null)
+})
+
+test('TPS is restored from the saved generation window after reopening a session', () => {
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 2_000 },
+    assistant('a1', 120)
+  ]
+  const metrics = sessionMetrics(items, undefined, {}, {
+    modelDurationsMs: {},
+    legacyModelDurationsMs: {},
+    ttftDurationsMs: {},
+    toolDurationsMs: {},
+    runDurationsMs: {},
+    generationWindowMs: { '2000': 2_000 }
+  })
+  assert.equal(metrics.tps, 60)
 })

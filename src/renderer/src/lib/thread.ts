@@ -1,5 +1,5 @@
 import type { AgentMessage, ContentBlock, ForkTarget, PiEvent, Usage } from '@shared/types'
-import { normalizePiEvent, type StreamContext, type StreamEvent } from './stream-events'
+import { normalizePiEvent, type StreamContext, type StreamEvent, type StreamEventStatus } from './stream-events'
 
 export type { StreamContext } from './stream-events'
 
@@ -124,6 +124,7 @@ export interface NoticeItem {
   source?: 'retry'
   threadId?: string
   sequence?: number
+  status?: StreamEventStatus
 }
 
 export type ThreadItem = UserItem | AssistantItem | ToolItem | BashItem | NoticeItem
@@ -489,6 +490,7 @@ function noticeFor(
     timestamp: Date.now(),
     order: nextOrder(),
     ...identityOf(event),
+    ...(event.status ? { status: event.status } : {}),
     ...(source ? { source } : {})
   }
 }

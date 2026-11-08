@@ -1,4 +1,4 @@
-import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from './thread'
+import type { AssistantBlock, AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from './thread'
 
 /**
  * A user message and everything it produced.
@@ -15,6 +15,35 @@ export interface Turn {
   tools: ToolItem[]
   notices: NoticeItem[]
   bash: Extract<ThreadItem, { kind: 'bash' }>[]
+}
+
+/** The spoken reply after the last tool call; earlier text is progress commentary. */
+export function replyStartOf(turn: Turn): AssistantBlock | undefined {
+  const referenced = new Set<string>()
+  for (const assistant of turn.assistants) {
+    for (const block of assistant.blocks) {
+      if (block.type === 'toolCall') referenced.add(block.id)
+    }
+  }
+  // A resumed call may have no assistant block. Its first-appearance order
+  // still keeps text before that call out of the final reply.
+  const lastOrphanOrder = turn.tools.reduce(
+    (order, tool) => (referenced.has(tool.toolCallId) ? order : Math.max(order, tool.order)),
+    -Infinity
+  )
+  let start: AssistantBlock | undefined
+  for (const assistant of turn.assistants) {
+    if (assistant.order <= lastOrphanOrder) continue
+    for (const block of assistant.blocks) {
+      if (block.type === 'toolCall') start = undefined
+      else if (!start && (block.type === 'image' || (block.type === 'text' && block.text.trim()))) {
+        start = block
+      }
+    }
+  }
+  // No reply after the tools means there is only progress so far. Callers
+  // must keep that partial text visible, including after a stop or failure.
+  return start
 }
 
 interface TurnBuild {

@@ -27,7 +27,8 @@ export const RunStatusRow = memo(function RunStatusRow({
   transport,
   retry,
   onStopRetry,
-  activity
+  activity,
+  showElapsed = true
 }: {
   run: RunState
   transport: 'connected' | 'disconnected'
@@ -35,21 +36,45 @@ export const RunStatusRow = memo(function RunStatusRow({
   onStopRetry?: () => void
   /** The tool call in flight, when there is one. */
   activity?: ToolActivity
+  /** Keep the timer here only when no live reply summary shows it above. */
+  showElapsed?: boolean
 }) {
   const t = useT()
-  const label = statusLabel(run, transport, Boolean(retry), Boolean(activity))
+  const compacting =
+    transport === 'connected' &&
+    !retry &&
+    run.phase !== 'aborting' &&
+    run.phase !== 'waiting_approval' &&
+    run.phase !== 'retrying'
+      ? run.compaction
+      : undefined
+  const label = compacting
+    ? `Compacting context (${compacting.reason})…`
+    : statusLabel(run, transport, Boolean(retry), Boolean(activity))
   const waiting = retry && label === 'Retrying'
-  const running = run.phase !== 'idle' || transport === 'disconnected'
+  const running = Boolean(compacting) || run.phase !== 'idle' || transport === 'disconnected'
+  const elapsedSince = compacting?.startedAt ?? run.startedAt
 
   return (
-    <div className="run-status" data-phase={run.phase} data-transport={transport} role="status">
+    <div
+      className="run-status"
+      data-phase={run.phase}
+      data-transport={transport}
+      data-compacting={Boolean(compacting) || undefined}
+      role="status"
+    >
       <span className="run-status__icon" aria-hidden="true">
-        <StatusIcon phase={run.phase} transport={transport} retrying={Boolean(retry)} />
+        <StatusIcon
+          phase={run.phase}
+          transport={transport}
+          retrying={Boolean(retry)}
+          compacting={Boolean(compacting)}
+        />
       </span>
       {/* While a tool is in flight its own label is the sentence: "Running a
           tool" followed by "Running a command" said the same thing twice and
           left the command squeezed into the leftover width. */}
-      {!waiting && activity ? null : (
+      {!waiting && activity && !compacting ? null : (
         <span className="run-status__label" title={waiting ? retry.errorMessage : undefined}>
           {t(waiting && isRateLimitError(retry.errorMessage) ? 'Rate limit reached' : label)}
         </span>
@@ -63,7 +88,7 @@ export const RunStatusRow = memo(function RunStatusRow({
             </button>
           ) : null}
         </>
-      ) : activity ? (
+      ) : compacting ? null : activity ? (
         <span className="run-status__activity">
           <span className="run-status__activity-label">{t(activity.label)}</span>
           {activity.detail ? (
@@ -73,7 +98,7 @@ export const RunStatusRow = memo(function RunStatusRow({
           ) : null}
         </span>
       ) : null}
-      {running && run.startedAt !== undefined ? <Elapsed since={run.startedAt} /> : null}
+      {showElapsed && running && elapsedSince !== undefined ? <Elapsed since={elapsedSince} /> : null}
     </div>
   )
 })
@@ -81,16 +106,18 @@ export const RunStatusRow = memo(function RunStatusRow({
 function StatusIcon({
   phase,
   transport,
-  retrying
+  retrying,
+  compacting
 }: {
   phase: RunState['phase']
   transport: 'connected' | 'disconnected'
   retrying: boolean
+  compacting: boolean
 }) {
   if (transport === 'disconnected') return <AlertTriangle size={13} />
   if (phase === 'aborting') return <X size={13} />
   if (phase === 'waiting_approval') return <Hand size={13} />
-  if (retrying || phase === 'retrying') return <Loader size={13} className="spin" />
+  if (compacting || retrying || phase === 'retrying') return <Loader size={13} className="spin" />
   if (phase === 'queued') return <Clock size={13} />
   if (phase === 'tool_running') return <CircleDot size={13} className="pulse" />
   if (phase === 'idle') return <Check size={13} />

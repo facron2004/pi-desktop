@@ -3,8 +3,10 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  Code,
   Copy,
   ExternalLink,
+  Eye,
   File as FileIcon,
   Link2,
   MessageSquarePlus,
@@ -18,6 +20,7 @@ import { formatBytes } from '../lib/format'
 import { basename, relativePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { CodeSnippet } from './CodeSnippet'
+import { Markdown } from './Markdown'
 import { useT } from '../lib/i18n'
 import '../styles/file-viewer.css'
 
@@ -148,6 +151,10 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
   const [content, setContent] = useState<FileContent | null>(null)
   const [copied, setCopied] = useState<'file' | 'path' | null>(null)
   const [error, setError] = useState(false)
+  // A Markdown file reads as a document by default; the source view is a
+  // deliberate switch. A line to reveal (a text-search hit) needs the source,
+  // because only the numbered lines can be jumped to.
+  const [sourceMode, setSourceMode] = useState(() => Boolean(line))
   const [findOpen, setFindOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [count, setCount] = useState(0)
@@ -196,6 +203,13 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
       cancelled = true
     }
   }, [file])
+
+  // A new file (or a new line to reveal in the same one) picks its own view:
+  // a Markdown document without a target line reads as a document, and a
+  // search hit goes back to the numbered source it points into.
+  useEffect(() => {
+    setSourceMode(Boolean(line))
+  }, [file, line])
 
   // A new file is a new reading context: find, jump and any highlight belong
   // to the old one and must not point into the new code.
@@ -334,6 +348,31 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     paintSelectedLines(selectedRange)
   }, [selectedRange, paintSelectedLines])
 
+  /**
+   * A Markdown file references its pictures the way the document writes them:
+   * relative to its own folder. The renderer cannot read the disk, so the
+   * bytes come back from the main process as a data URL. Anything the page can
+   * load on its own (http, data) is left as written.
+   */
+  const resolveImage = useCallback(
+    async (src: string): Promise<string | null> => {
+      if (!content || !root || /^(https?:|data:|file:|#)/i.test(src)) return null
+      let candidate = src
+      try {
+        candidate = decodeURIComponent(src)
+      } catch {
+        /* a malformed escape stays as written */
+      }
+      if (!/^([a-zA-Z]:[\\/]|[\\/])/.test(candidate)) {
+        const cut = Math.max(content.path.lastIndexOf('/'), content.path.lastIndexOf('\\'))
+        if (cut <= 0) return null
+        candidate = `${content.path.slice(0, cut)}/${candidate}`
+      }
+      return window.pi.fs.readImageDataUrl(candidate)
+    },
+    [content, root]
+  )
+
   // The code is highlighted asynchronously, so the lines the find bar points
   // at are replaced once more after the first render.
   const handleReady = useCallback(() => {
@@ -428,6 +467,9 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f') {
       event.preventDefault()
       event.stopPropagation()
+      // Finding walks the numbered source, so a document reader is switched
+      // over first; the find bar then searches the lines that just rendered.
+      if (isMarkdown && !sourceMode) setSourceMode(true)
       openFind()
       return
     }
@@ -449,6 +491,10 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     )
   }
 
+  const isMarkdown = content.language === 'markdown'
+  // The source-only tools (find, line jump, wrap, line selection) need the
+  // numbered code; a rendered document has none of them.
+  const codeTools = !isMarkdown || sourceMode
   const lineCount = content.content ? content.content.split('\n').length : 0
 
   return (
@@ -470,42 +516,58 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
           {content.size ? ` · ${formatBytes(content.size)}` : ''}
         </span>
         <div className="viewer__actions">
-          <button
-            className="ghost-btn"
-            data-active={findOpen ? 'true' : 'false'}
-            onClick={openFind}
-            title={t('Search the file')}
-            aria-label={t('Search the file')}
-            aria-expanded={findOpen}
-          >
-            <Search size={14} />
-          </button>
-          <input
-            className="fv-jump"
-            value={jump}
-            placeholder={t('Line #')}
-            aria-label={t('Go to line')}
-            title={t('Go to line')}
-            inputMode="numeric"
-            spellCheck={false}
-            onChange={(event) => setJump(event.target.value.replace(/[^\d]/g, ''))}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                applyJump()
-              }
-            }}
-          />
-          <button
-            className="ghost-btn"
-            data-active={wrap ? 'true' : 'false'}
-            onClick={() => setWrap((value) => !value)}
-            title={t('Wrap long lines')}
-            aria-label={t('Wrap long lines')}
-            aria-pressed={wrap}
-          >
-            <WrapText size={14} />
-          </button>
+          {isMarkdown ? (
+            <button
+              className="ghost-btn"
+              data-active={!sourceMode ? 'true' : 'false'}
+              onClick={() => setSourceMode((value) => !value)}
+              title={sourceMode ? t('Preview rendered output') : t('Show source code')}
+              aria-label={sourceMode ? t('Preview rendered output') : t('Show source code')}
+              aria-pressed={!sourceMode}
+            >
+              {sourceMode ? <Eye size={14} /> : <Code size={14} />}
+            </button>
+          ) : null}
+          {codeTools ? (
+            <>
+              <button
+                className="ghost-btn"
+                data-active={findOpen ? 'true' : 'false'}
+                onClick={openFind}
+                title={t('Search the file')}
+                aria-label={t('Search the file')}
+                aria-expanded={findOpen}
+              >
+                <Search size={14} />
+              </button>
+              <input
+                className="fv-jump"
+                value={jump}
+                placeholder={t('Line #')}
+                aria-label={t('Go to line')}
+                title={t('Go to line')}
+                inputMode="numeric"
+                spellCheck={false}
+                onChange={(event) => setJump(event.target.value.replace(/[^\d]/g, ''))}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    applyJump()
+                  }
+                }}
+              />
+              <button
+                className="ghost-btn"
+                data-active={wrap ? 'true' : 'false'}
+                onClick={() => setWrap((value) => !value)}
+                title={t('Wrap long lines')}
+                aria-label={t('Wrap long lines')}
+                aria-pressed={wrap}
+              >
+                <WrapText size={14} />
+              </button>
+            </>
+          ) : null}
           <button
             className="ghost-btn"
             onClick={() => void copy('file')}
@@ -522,7 +584,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
           >
             {copied === 'path' ? <Check size={14} /> : <Link2 size={14} />}
           </button>
-          {selectedRange ? (
+          {codeTools && selectedRange ? (
             <button
               className="ghost-btn fv-range-btn"
               data-active="true"
@@ -575,7 +637,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
         </div>
       </div>
 
-      {findOpen ? (
+      {codeTools && findOpen ? (
         <div className="fv-find">
           <Search size={12} className="fv-find__icon" />
           <input
@@ -634,15 +696,23 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
         </div>
       ) : null}
 
-      <div className="viewer__code-wrap" onClick={handleCodeClick}>
-        <CodeSnippet
-          code={content.content}
-          language={content.language}
-          className="viewer__code"
-          onHost={handleHost}
-          onReady={handleReady}
-        />
-      </div>
+      {isMarkdown && !sourceMode ? (
+        <div className="viewer__md" tabIndex={0}>
+          <Markdown resolveImage={resolveImage} stripHtml>
+            {content.content}
+          </Markdown>
+        </div>
+      ) : (
+        <div className="viewer__code-wrap" onClick={handleCodeClick}>
+          <CodeSnippet
+            code={content.content}
+            language={content.language}
+            className="viewer__code"
+            onHost={handleHost}
+            onReady={handleReady}
+          />
+        </div>
+      )}
     </div>
   )
 }

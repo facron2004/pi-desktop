@@ -1,6 +1,6 @@
 import type { SessionStats } from '@shared/types'
 import type { ThreadItem } from './thread'
-import type { SessionTimingRecord } from './session-timing'
+import { monotonicNow, type SessionTimingRecord } from './session-timing'
 
 /**
  * The numbers shown under the composer after a run.
@@ -64,6 +64,7 @@ export function sessionMetrics(
   let total = 0
   let lastTurnOutput = 0
   let lastUserIndex = -1
+  let lastUserTimestamp: number | undefined
   let transcriptTurnCount = 0
   let toolItemCount = 0
   let knownToolTimeMs = 0
@@ -73,6 +74,7 @@ export function sessionMetrics(
     const item = items[index]
     if (item.kind === 'user') {
       lastUserIndex = index
+      lastUserTimestamp = item.timestamp
       transcriptTurnCount += 1
     } else if (item.kind === 'tool') {
       toolItemCount += 1
@@ -134,18 +136,28 @@ export function sessionMetrics(
     ? round((ttftSamples.reduce((sum, value) => sum + value, 0) + (includeLiveTtft ? ttftMs! : 0)) /
       (ttftSamples.length + (includeLiveTtft ? 1 : 0)))
     : ttftMs
-  const modelSamples = Object.values(timing?.modelDurationsMs ?? {})
+  // Keep showing timings already recorded by older versions. New samples use
+  // the monotonic clock, while hiding legacy values made existing sessions
+  // suddenly lose their model-time totals after an upgrade.
+  const modelSamples = [
+    ...Object.values(timing?.modelDurationsMs ?? {}),
+    ...Object.values(timing?.legacyModelDurationsMs ?? {})
+  ]
     .filter((value) => Number.isFinite(value) && value >= 0)
   const liveModelTime = run.modelTurnStartedAt !== undefined
-    ? Math.max(0, Date.now() - run.modelTurnStartedAt)
+    ? Math.max(0, monotonicNow() - run.modelTurnStartedAt)
     : 0
   const modelTimeMs = modelSamples.length || liveModelTime > 0
     ? modelSamples.reduce((sum, value) => sum + value, 0) + liveModelTime
     : null
-  const windowMs =
+  const liveWindowMs =
     run.lastTokenAt !== undefined && run.firstTokenAt !== undefined
       ? run.lastTokenAt - run.firstTokenAt
       : 0
+  const restoredWindowMs = lastUserTimestamp === undefined
+    ? undefined
+    : timing?.generationWindowMs[String(lastUserTimestamp)]
+  const windowMs = liveWindowMs > 0 ? liveWindowMs : restoredWindowMs ?? 0
   const tps =
     windowMs > 0 && lastTurnOutput > 0 ? round(lastTurnOutput / (windowMs / 1000)) : null
 

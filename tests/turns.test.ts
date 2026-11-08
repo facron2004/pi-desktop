@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTurns } from '../src/renderer/src/lib/turns'
+import { buildTurns, replyStartOf } from '../src/renderer/src/lib/turns'
 import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../src/renderer/src/lib/thread'
 
 function user(id: string): UserItem {
@@ -34,6 +34,69 @@ function tool(id: string): ToolItem {
 function notice(id: string): NoticeItem {
   return { id, kind: 'notice', level: 'info', text: id, timestamp: 4, order: 4 }
 }
+
+test('replyStartOf separates progress before tool calls from the final reply', () => {
+  const progress: AssistantItem = {
+    ...assistant('progress'),
+    blocks: [
+      { type: 'text', text: 'I will inspect the file.' },
+      { type: 'toolCall', id: 'read', name: 'read', argsText: '{}' }
+    ]
+  }
+  const reply = { ...assistant('reply'), order: 4 }
+  const [turn] = buildTurns([user('u'), progress, tool('read'), reply])
+  assert.equal(replyStartOf(turn), reply.blocks[0])
+})
+
+test('replyStartOf keeps all text in a reply without tool calls', () => {
+  const reply = assistant('reply')
+  const [turn] = buildTurns([user('u'), reply, { ...assistant('continuation'), order: 3 }])
+  assert.equal(replyStartOf(turn), reply.blocks[0])
+})
+
+test('replyStartOf respects text and tools interleaved in one assistant message', () => {
+  const reply: AssistantItem = {
+    ...assistant('reply'),
+    blocks: [
+      { type: 'text', text: 'Progress' },
+      { type: 'toolCall', id: 'read', name: 'read', argsText: '{}' },
+      { type: 'thinking', text: 'private reasoning' },
+      { type: 'text', text: '   ' },
+      { type: 'text', text: 'Final answer' },
+      { type: 'text', text: 'More of the final answer' }
+    ]
+  }
+  const [turn] = buildTurns([user('u'), reply, tool('read')])
+  assert.equal(replyStartOf(turn), reply.blocks[4])
+})
+
+test('replyStartOf preserves progress when no answer follows the final call', () => {
+  const progress: AssistantItem = {
+    ...assistant('progress'),
+    blocks: [
+      { type: 'text', text: 'Partial result before a stop' },
+      { type: 'toolCall', id: 'read', name: 'read', argsText: '{}' }
+    ]
+  }
+  const [turn] = buildTurns([user('u'), progress, { ...tool('read'), status: 'aborted' }])
+  assert.equal(replyStartOf(turn), undefined)
+})
+
+test('replyStartOf keeps an image-only final answer outside the process', () => {
+  const reply: AssistantItem = {
+    ...assistant('image'), order: 4,
+    blocks: [{ type: 'image', data: 'image', mimeType: 'image/png' }]
+  }
+  const [turn] = buildTurns([user('u'), assistant('progress'), tool('orphan'), reply])
+  assert.equal(replyStartOf(turn), reply.blocks[0])
+})
+
+test('replyStartOf accounts for resumed tools without their original call block', () => {
+  const reply = { ...assistant('reply'), order: 4 }
+  const [turn] = buildTurns([user('u'), assistant('progress'), tool('orphan'), reply])
+  assert.equal(replyStartOf(turn), reply.blocks[0])
+  assert.equal(replyStartOf(buildTurns([user('u'), assistant('progress'), tool('orphan')])[0]), undefined)
+})
 
 test('buildTurns attaches everything after a user message to that turn', () => {
   const items: ThreadItem[] = [user('u1'), assistant('a1'), tool('t1'), notice('n1'), user('u2')]

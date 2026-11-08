@@ -29,6 +29,7 @@ import type {
   MemoryGenerateOptions,
   MemoryState,
   PickedFile,
+  PiCommand,
   PiDesktopBridge,
   RpcTraceHint,
   RuntimeEnsureOptions,
@@ -72,7 +73,8 @@ const bridge: PiDesktopBridge = {
     remove: (id: string) => ipcRenderer.invoke('providers:remove', id)
   },
   app: {
-    info: (): Promise<AppInfo> => ipcRenderer.invoke('app:info'),
+    info: (options?: { includePiVersion?: boolean }): Promise<AppInfo> =>
+      ipcRenderer.invoke('app:info', options),
     startupReady: (): void => ipcRenderer.send('app:startup-ready'),
     setTheme: (
       theme: 'dark' | 'light',
@@ -155,6 +157,7 @@ const bridge: PiDesktopBridge = {
   runtime: {
     start: (options: RuntimeStartOptions) => ipcRenderer.invoke('runtime:start', options),
     ensure: (options: RuntimeEnsureOptions) => ipcRenderer.invoke('runtime:ensure', options),
+    listSkillCommands: (): Promise<PiCommand[]> => ipcRenderer.invoke('runtime:skill-commands'),
     has: (sessionKey: string): Promise<boolean> => ipcRenderer.invoke('runtime:has', sessionKey),
     stop: (sessionKey?: string): Promise<void> => ipcRenderer.invoke('runtime:stop', sessionKey),
     stopCwd: (cwd: string): Promise<void> => ipcRenderer.invoke('runtime:stopCwd', cwd),

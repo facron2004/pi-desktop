@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { AppSettings, ModelInfo, PiEvent, PiState, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
+import type { AgentMessage, AppSettings, ModelInfo, PiEvent, PiState, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
 import { readSessionTiming } from '../src/renderer/src/lib/session-timing'
 
 /* ------------------------------------------------------------------ *
@@ -112,6 +112,53 @@ function startRun(): void {
 }
 
 const phase = () => useAppStore.getState().run.phase
+
+test('a selected disk conversation retries hydration when its cache has no items', async () => {
+  const previous = useAppStore.getState()
+  const sessions = bridge.sessions as unknown as {
+    hydrate?: (file: string) => Promise<AgentMessage[]>
+  }
+  const originalHydrate = sessions.hydrate
+  const file = 'C:/tmp/retry-empty-history.jsonl'
+  const session = {
+    id: 'retry-empty-history',
+    file,
+    cwd: '',
+    preview: 'Existing prompt',
+    updatedAt: 1,
+    messageCount: 2
+  }
+  let hydrateCalls = 0
+
+  try {
+    await previous.newChat()
+    const state = useAppStore.getState()
+    const draftKey = state.draftId!
+    const cached = { ...state.threads[draftKey], items: [], version: 1 }
+    useAppStore.setState({
+      threads: { ...state.threads, [file]: cached },
+      activeSessionFile: file,
+      draftId: undefined,
+      hydratingSessionFile: undefined,
+      items: [],
+      isStreaming: false,
+      run: { phase: 'idle', turns: 0, settled: true }
+    })
+    sessions.hydrate = async () => {
+      hydrateCalls += 1
+      return [{ role: 'user', content: 'Existing prompt', timestamp: 1 } as AgentMessage]
+    }
+
+    await useAppStore.getState().selectSession(session)
+
+    assert.equal(hydrateCalls, 1)
+    assert.equal(useAppStore.getState().items[0]?.kind, 'user')
+  } finally {
+    if (originalHydrate) sessions.hydrate = originalHydrate
+    else delete sessions.hydrate
+    useAppStore.setState(previous)
+  }
+})
 
 test('model cycling includes a newly saved provider while Pi still reports its old list', async () => {
   const previous = useAppStore.getState()
@@ -319,22 +366,127 @@ test('completed events persist model time and prompt TTFT for the conversation',
   startRun()
   const sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
   const now = Date.now
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let monotonic = 100
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
   try {
     Date.now = () => 1_000
     emit({ type: 'agent_start' })
     emit({ type: 'turn_start' })
+    monotonic = 350
     Date.now = () => 1_250
     emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } })
+    monotonic = 900
     Date.now = () => 1_800
     emit({ type: 'message_end', message: { role: 'assistant', content: [] } })
     emit({ type: 'agent_settled', aborted: false })
   } finally {
     Date.now = now
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
   }
 
   const timing = readSessionTiming(sessionKey)
   assert.deepEqual(Object.values(timing.modelDurationsMs), [800])
   assert.deepEqual(Object.values(timing.ttftDurationsMs), [250])
+})
+
+test('a prompt event before agent_start keeps its identity and elapsed metrics', () => {
+  startRun()
+  const sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+  const now = Date.now
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let monotonic = 100
+  let turnId: string | undefined
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
+  try {
+    Date.now = () => 1_000
+    emit({ type: 'message_start', message: { role: 'user', content: 'Prompt', timestamp: 900 } })
+    const runId = useAppStore.getState().run.runId
+    const user = useAppStore.getState().items.find((item) => item.kind === 'user')
+    assert.ok(runId)
+    assert.equal(user?.kind === 'user' ? user.runId : undefined, runId)
+
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    turnId = useAppStore.getState().run.turnId
+    emit({ type: 'message_start', message: { role: 'assistant', content: [] } })
+    monotonic = 350
+    Date.now = () => 1_250
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } })
+    monotonic = 900
+    Date.now = () => 1_800
+    emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: 'Hi',
+        usage: { input: 10, output: 120, cacheRead: 0, cacheWrite: 0, totalTokens: 130 }
+      }
+    })
+    emit({ type: 'agent_settled', aborted: false })
+  } finally {
+    Date.now = now
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
+  }
+
+  const timing = readSessionTiming(sessionKey)
+  assert.equal(timing.runDurationsMs['900'], 800)
+  assert.equal(timing.generationWindowMs['900'], 550)
+  assert.equal(timing.modelDurationsMs[turnId!], 800)
+})
+
+test('an incomplete model response is not counted when the run settles', () => {
+  startRun()
+  const sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let monotonic = 100
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
+  try {
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    const turnId = useAppStore.getState().run.turnId!
+    monotonic += 19_882_000
+    emit({ type: 'agent_settled', aborted: true })
+
+    assert.equal(readSessionTiming(sessionKey).modelDurationsMs[turnId], undefined)
+    assert.equal(useAppStore.getState().run.modelTurnStartedAt, undefined)
+  } finally {
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
+  }
+})
+
+test('a provider retry freezes model time during its backoff', () => {
+  startRun()
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let monotonic = 100
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
+  try {
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    monotonic += 5_000
+    emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 60_000 })
+    assert.equal(useAppStore.getState().run.modelTurnStartedAt, undefined)
+
+    monotonic += 60_000
+    emit({ type: 'auto_retry_end' })
+    emit({ type: 'turn_start' })
+    assert.equal(useAppStore.getState().run.modelTurnStartedAt, monotonic)
+    emit({ type: 'agent_settled', aborted: true })
+  } finally {
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
+  }
 })
 
 test('tool events persist a measured duration when Pi omits it', () => {
@@ -405,6 +557,40 @@ test('P04a — an error answer settles as failed, not completed', () => {
   })
   emit({ type: 'agent_settled', aborted: false })
   assert.equal(useAppStore.getState().run.outcome, 'failed')
+  assert.equal(useAppStore.getState().run.settled, true)
+})
+
+test('P04b — a process that died mid-run settles the run as failed', () => {
+  startRun()
+  emit({ type: 'agent_start' })
+  emit({
+    type: 'tool_execution_start',
+    toolCallId: 'crashed-tool',
+    toolName: 'bash',
+    args: { command: 'sleep 10' }
+  })
+  emit({ type: 'agent_settled', aborted: false, crashed: true })
+
+  const state = useAppStore.getState()
+  assert.equal(state.run.phase, 'idle')
+  assert.equal(state.run.settled, true)
+  assert.equal(state.run.outcome, 'failed')
+  assert.equal(state.isStreaming, false)
+  const tool = state.items.find((item) => item.kind === 'tool' && item.toolCallId === 'crashed-tool')
+  assert.equal(tool?.kind === 'tool' ? tool.status : undefined, 'aborted')
+  assert.ok(
+    state.items.some((item) => item.kind === 'notice' && item.level === 'error'),
+    'the transcript says why the run ended'
+  )
+})
+
+test('P04c — stopping an already settled run leaves the phase idle', async () => {
+  startRun()
+  emit({ type: 'agent_start' })
+  emit({ type: 'agent_settled', aborted: false })
+  assert.equal(phase(), 'idle')
+  await useAppStore.getState().stop()
+  assert.equal(phase(), 'idle', 'an idle Pi emits no settle, so stop must not wait for one')
   assert.equal(useAppStore.getState().run.settled, true)
 })
 

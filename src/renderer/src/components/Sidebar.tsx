@@ -36,6 +36,7 @@ import { PiLogo } from './PiLogo'
 import { ProjectIconPicker } from './ProjectIconPicker'
 import { projectIconColor, projectIconEmoji } from '../lib/project-icons'
 import { sessionIndicator, isDotIndicator, type SessionIndicator } from '../lib/session-indicator'
+import { needsSessionHydration } from '../lib/session-scope'
 import { useT } from '../lib/i18n'
 import {
   MIN_SESSION_SEARCH_LENGTH,
@@ -90,12 +91,23 @@ export function Sidebar({
     )
   )
   const settings = useAppStore((state) => state.settings)
-  // A folded project hides the running mark of its conversations. Track the
-  // files that are streaming so the project name can carry that state.
-  const runningFiles = useAppStore(
-    useShallow((state) =>
-      Object.keys(state.threads).filter((file) => Boolean(state.threads[file]?.isStreaming))
-    )
+  // A folded project hides the running mark of its conversations. Track each
+  // running thread by its own working directory so drafts, pinned and archived
+  // conversations still mark their project.
+  const runningProjectPaths = useAppStore(
+    useShallow((state) => {
+      const sessionCwds = new Map(
+        state.sessions.map((session) => [normalisePathKey(session.file), session.cwd])
+      )
+      return Object.entries(state.threads).flatMap(([file, thread]) => {
+        if (!thread.isStreaming) return []
+        const cwd =
+          thread.status.cwd ||
+          sessionCwds.get(normalisePathKey(file)) ||
+          (file === state.draftId ? state.workspace?.path : undefined)
+        return cwd ? [normalisePathKey(cwd)] : []
+      })
+    })
   )
   const archivedFiles = useMemo(
     () => new Set(settings.archivedSessions ?? []),
@@ -356,9 +368,9 @@ export function Sidebar({
     [settings.pinnedSessions]
   )
 
-  const runningKeys = useMemo(
-    () => new Set(runningFiles.map((file) => normalisePathKey(file))),
-    [runningFiles]
+  const runningProjectKeys = useMemo(
+    () => new Set(runningProjectPaths),
+    [runningProjectPaths]
   )
 
   // Pinned conversations have their own group; every other conversation lives
@@ -650,7 +662,19 @@ export function Sidebar({
           if (renaming === file) return
           // The row on screen is the same conversation whether it is a draft
           // or a file, so a draft row must not re-open on every click.
-          if (file === (activeSessionFile ?? draftId)) return
+          if (file === (activeSessionFile ?? draftId)) {
+            const state = useAppStore.getState()
+            const cached = state.threads[file]
+            const canRetryHistory = session.onDisk === true &&
+              state.hydratingSessionFile !== file &&
+              needsSessionHydration(
+                session.messageCount,
+                cached?.version,
+                cached?.items.length ?? 0,
+                cached?.isStreaming ?? false
+              )
+            if (!canRetryHistory) return
+          }
           // Opening a conversation only changes the view. The one that is
           // running keeps its process.
           void selectSession(session)
@@ -888,8 +912,7 @@ export function Sidebar({
                 const iconTone = projectIconColor(project.iconColor)
                 const emoji = projectIconEmoji(project.icon)
                 const runningCollapsed =
-                  !expanded &&
-                  projectSessions.some((session) => runningKeys.has(normalisePathKey(session.file)))
+                  !expanded && runningProjectKeys.has(normalisePathKey(project.path))
                 return (
                   <div
                     className="project"

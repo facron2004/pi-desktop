@@ -50,6 +50,23 @@
   overflow: hidden;
 }
 
+/* A Markdown file reads as a document: its own scroll, the reading font, and a
+   measure the panel width cannot stretch past. */
+.viewer__md {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-5) var(--sp-5) var(--sp-8);
+  outline: none;
+}
+
+.viewer__md .md {
+  /* The panel wears the UI font; the document reads with the reading face. */
+  font-family: var(--font-reading);
+  max-width: 76ch;
+  margin: 0 auto;
+}
+
 .viewer__code:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;

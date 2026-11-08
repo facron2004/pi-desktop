@@ -47,6 +47,10 @@
   color: var(--status-warning);
 }
 
+.run-status[data-compacting]:not([data-transport='disconnected']) .run-status__icon {
+  color: var(--text-secondary);
+}
+
 .run-status__label {
   flex: 0 0 auto;
   font-weight: 500;
@@ -135,8 +139,7 @@
   color: var(--status-danger);
 }
 
-/* The one-line record of how a turn ended. It sits above the answer, like a
-   quiet chapter heading: the reader sees the result before the content. */
+/* The elapsed-time summary sits above the answer during and after a run. */
 .run-outcome {
   display: flex;
   align-items: center;
@@ -151,8 +154,8 @@
   background: none;
   color: var(--text-muted);
   font: inherit;
-  font-size: var(--text-body);
-  line-height: var(--leading-body);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
   text-align: left;
   white-space: nowrap;
 }
@@ -186,6 +189,7 @@
 }
 
 .run-outcome__meta {
+  margin-left: var(--sp-2);
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   color: inherit;
@@ -245,11 +249,20 @@
   background: transparent;
   font-size: var(--text-chat);
   line-height: var(--leading-chat);
+  color: var(--text-pure);
   overflow-wrap: anywhere;
 }
 
-.assistant__text .md > *:last-child {
-  margin-bottom: 0;
+.assistant__text > .md {
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+
+.assistant__text[data-commentary='true'] {
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--text-secondary);
 }
 
 .assistant__text .md p {
@@ -263,6 +276,12 @@
 
 .assistant__text .md li {
   margin: 0.25em 0;
+}
+
+/* Apply this after paragraph/list spacing so the last block adds no phantom
+   gap before a tool row, regardless of whether Markdown has been chunked. */
+.assistant__text .md > *:last-child {
+  margin-bottom: 0;
 }
 
 /* Keep the assistant's Markdown hierarchy distinct instead of promoting h2
@@ -559,11 +578,14 @@
 }
 
 .assistant__body > .assistant__text + .process,
-.assistant__body > .assistant__text + .process--live,
+.assistant__body > .assistant__text + .process--live {
+  margin-top: var(--sp-1);
+}
+
 .assistant__body > .process + .assistant__text,
 .assistant__body > .process--live + .assistant__text,
 .assistant__body > .assistant__text + .assistant__text {
-  margin-top: var(--sp-1);
+  margin-top: var(--sp-3);
 }
 
 /* Usage stays opt-in behind the caret, so this row is one small control wide. */

@@ -297,6 +297,72 @@ async function checkRenderer(markerFile) {
   await until(() => document.querySelector('.file-change__preview-text')?.textContent === 'line 0', 'Returning to the file did not reset paging')
   passed.push('file previews page by 200 lines and reset between files')
 
+  // A turn folds its progress prose and tools together, keeping only the
+  // final reply on the reading column. The same fold survives a view switch.
+  const beforeStream = store.getState()
+  await store.getState().newChat()
+  const streamItems = [
+    { id: 'stream-user', kind: 'user', text: 'Inspect the stream', images: [], timestamp: 1, order: 1 },
+    { id: 'stream-progress', kind: 'assistant', streaming: false, timestamp: 2, order: 2, blocks: [
+      { type: 'text', text: 'STREAM_PROGRESS checking the renderer' },
+      { type: 'toolCall', id: 'stream-read', name: 'read', argsText: '{}', args: { path: 'note.txt' } }
+    ] },
+    { id: 'stream-tool', kind: 'tool', toolCallId: 'stream-read', toolName: 'read',
+      args: { path: 'note.txt' }, status: 'ok', result: 'STREAM_TOOL_RESULT', timestamp: 3, order: 3 },
+    { id: 'stream-reply', kind: 'assistant', streaming: false, stopReason: 'stop', timestamp: 4, order: 4,
+      blocks: [{ type: 'text', text: 'STREAM_FINAL the renderer is ready' }] }
+  ]
+  const streamRun = { phase: 'idle', turns: 2, settled: true, outcome: 'completed', durationMs: 9000 }
+  const showStream = (draftId, items = streamItems, run = streamRun) => store.setState((state) => ({
+    draftId, activeSessionFile: undefined, items, run, isStreaming: !run.settled,
+    error: undefined, retry: undefined, transport: 'connected',
+    settings: { ...state.settings, autoFoldProcess: true },
+    threads: { ...state.threads, [draftId]: { ...baseThread, items, run, isStreaming: !run.settled } }
+  }))
+  showStream('draft:stream-a')
+  await until(() => document.querySelector('.run-outcome[data-foldable="true"]'), 'The stream has no process fold')
+  const streamBody = () => document.querySelector('.assistant__body')
+  check(!streamBody().textContent.includes('STREAM_PROGRESS'), 'Folded process leaked progress into the reply')
+  check(streamBody().textContent.includes('STREAM_FINAL'), 'Folded process hid the final reply')
+  document.querySelector('.run-outcome').click()
+  await until(() => streamBody().textContent.includes('STREAM_PROGRESS'), 'Process expansion did not reveal progress')
+  check(document.querySelector('.tool-link'), 'Expanding the process required a second fold to reach the tool row')
+  document.querySelector('.tool-link__toggle').click()
+  await until(() => streamBody().textContent.includes('STREAM_TOOL_RESULT'), 'The tool result did not expand')
+  showStream('draft:stream-b')
+  await until(() => !streamBody().textContent.includes('STREAM_PROGRESS'), 'A different conversation inherited the fold')
+  showStream('draft:stream-a')
+  await until(() => streamBody().textContent.includes('STREAM_TOOL_RESULT'), 'The process/tool fold was forgotten on return')
+  document.querySelector('.run-outcome').click()
+  await until(() => !streamBody().textContent.includes('STREAM_PROGRESS'), 'The process did not fold again')
+
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))
+  const streamSearch = await until(() => document.querySelector('.thread-search input'), 'Conversation search did not open')
+  const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+  setInput.call(streamSearch, 'STREAM_PROGRESS')
+  streamSearch.dispatchEvent(new Event('input', { bubbles: true }))
+  await until(() => streamBody().textContent.includes('STREAM_PROGRESS'), 'A search hit stayed hidden in the process')
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await until(() => !streamBody().textContent.includes('STREAM_PROGRESS'), 'Closing search lost the manual fold')
+
+  showStream('draft:stream-live', streamItems.slice(0, 3), {
+    phase: 'working', turns: 1, settled: false, startedAt: Date.now() - 2000
+  })
+  await until(() => document.querySelector('.run-outcome[data-running="true"]'), 'Live elapsed summary did not render')
+  check(document.querySelector('.run-outcome').textContent.includes('Working'), 'Live elapsed summary claimed the run was finished')
+  check(streamBody().textContent.includes('STREAM_PROGRESS'), 'The live partial progress disappeared')
+  showStream('draft:stream-stopped', streamItems.slice(0, 3), {
+    phase: 'idle', turns: 1, settled: true, outcome: 'aborted'
+  })
+  await until(() => document.querySelector('.run-outcome[data-outcome="aborted"]'), 'Stopped summary did not render')
+  check(streamBody().textContent.includes('STREAM_PROGRESS'), 'Stopping lost the partial progress')
+
+  showStream('draft:stream-replay', streamItems, { phase: 'idle', turns: 0, settled: true })
+  await until(() => document.querySelector('.run-outcome[data-foldable="true"]'), 'Replayed turn lost its process fold without saved timing')
+  check(!streamBody().textContent.includes('STREAM_PROGRESS') && streamBody().textContent.includes('STREAM_FINAL'), 'Replayed turn does not match the completed stream')
+  store.setState(beforeStream)
+  passed.push('stream process folds commentary and tools, preserves view state, and reveals search hits')
+
   // The task rail beside the conversation: the environment of the folder, the
   // tasks running in the background, the plan and the files the run produced.
   await store.getState().newChat()
@@ -469,6 +535,12 @@ async function checkRenderer(markerFile) {
     if (!pageTab) break
     pageTab.querySelector('.tool-panel__tab-close').click()
     await pause(30)
+  }
+  // Closing the last page closes the panel. Wait out its exit before using
+  // the fresh start page; the closing instance is still in the DOM briefly.
+  if (!document.querySelector('.tool-panel') || document.querySelector('.tool-panel--closing')) {
+    await until(() => !document.querySelector('.tool-panel'), 'The last page did not close the panel')
+    panelToggle()?.click()
   }
   await until(() => document.querySelector('.tool-start'), 'The panel start page did not render')
   check(document.querySelectorAll('.tool-start .tool-menu__card').length === 6, 'The start page does not list every page')
@@ -695,7 +767,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 14 : 13)
+  assert.equal(passed.length, process.platform === 'win32' ? 15 : 14)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

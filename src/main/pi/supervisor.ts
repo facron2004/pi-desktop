@@ -375,9 +375,21 @@ export class SessionSupervisor extends EventEmitter {
     runtime.on('status', (status: RuntimeStatus) => {
       const ownerId = this.ownerOf(runtime)
       if (!ownerId) return
+      const activity = this.activity.get(runtime)!
       if (status.phase === 'error' || ((status.phase === 'stopped') && !runtime.isRunning)) {
-        this.activity.get(runtime)!.running = false
+        // A process that dies mid-run never writes `agent_settled`, and the
+        // run would stay open for the rest of the app's life. A deliberate
+        // stop sets `stopping` and publishes its own settle after the exit,
+        // so only the unexplained death is reported here.
+        const crashed = activity.running && !activity.stopping && !runtime.isRunning
+        activity.running = false
         this.approvals.delete(ownerId)
+        if (crashed) {
+          this.emit('event', {
+            ownerId,
+            event: { type: 'agent_settled', aborted: false, crashed: true }
+          })
+        }
         this.release(ownerId)
       }
       this.emit('status', { ownerId, status })

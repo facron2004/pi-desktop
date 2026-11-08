@@ -27,6 +27,7 @@ export function ProcessTrail({
   thoughts,
   searchText,
   live,
+  defaultOpen = false,
   children
 }: {
   tools: ToolItem[]
@@ -34,6 +35,7 @@ export function ProcessTrail({
   /** Thinking text, so an in-thread search can open the fold it lives in. */
   searchText: string
   live: boolean
+  defaultOpen?: boolean
   children: ReactNode
 }) {
   const t = useT()
@@ -83,7 +85,9 @@ export function ProcessTrail({
    * so peeking at the calls while the agent works cannot decide how the
    * trace folds once it has settled.
    */
-  const open = searchMatch || (summarizing ? (batchOpen ?? false) : (manualOpen ?? !autoFold))
+  const open =
+    searchMatch ||
+    (summarizing ? (batchOpen ?? false) : (manualOpen ?? (defaultOpen || !autoFold)))
   const toggleOpen = () => {
     const next = !open
     if (summarizing) {

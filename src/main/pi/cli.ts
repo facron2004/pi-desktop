@@ -1,5 +1,7 @@
+import { app } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import type { AuthStatus } from '@shared/types'
 import { resolvePiLaunch } from './locate'
 
@@ -10,6 +12,49 @@ export interface CliResult {
 }
 
 const CLI_TIMEOUT_MS = 10_000
+const WINDOWS_CHILD_PROCESS_PRELOAD = `
+const childProcess = require('node:child_process')
+const { syncBuiltinESMExports } = require('node:module')
+
+for (const method of ['spawn', 'spawnSync']) {
+  const original = childProcess[method]
+  childProcess[method] = function (...args) {
+    const optionsIndex = Array.isArray(args[1]) ? 2 : 1
+    const options = args[optionsIndex]
+    if (options && typeof options === 'object') {
+      args[optionsIndex] = { ...options, windowsHide: true }
+    } else {
+      args.splice(optionsIndex, 0, { windowsHide: true })
+    }
+    return Reflect.apply(original, this, args)
+  }
+}
+syncBuiltinESMExports()
+`
+
+/**
+ * Pi's package manager starts npm and git as child processes of the CLI. The
+ * outer process is hidden by `windowsHide`, but Pi does not set that option on
+ * its own children during installation, so preload a hook for that CLI run.
+ */
+function hideNestedWindows(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (process.platform !== 'win32') return env
+
+  // Keep the preload outside app.asar so child Node processes can load it.
+  const preloadPath = path.join(app.getPath('userData'), 'windows-hide-child-processes.cjs')
+  mkdirSync(path.dirname(preloadPath), { recursive: true })
+  if (
+    !existsSync(preloadPath) ||
+    readFileSync(preloadPath, 'utf8') !== WINDOWS_CHILD_PROCESS_PRELOAD
+  ) {
+    writeFileSync(preloadPath, WINDOWS_CHILD_PROCESS_PRELOAD, 'utf8')
+  }
+  const preloadOption = `--require="${preloadPath.replace(/\\/g, '/')}"`
+  return {
+    ...env,
+    NODE_OPTIONS: [env.NODE_OPTIONS?.trim(), preloadOption].filter(Boolean).join(' ')
+  }
+}
 
 /** Run the Pi CLI once and capture its output. */
 export function runPiCli(
@@ -32,7 +77,7 @@ export function runPiCli(
   return new Promise((resolve) => {
     const child = spawn(launch.command, [...launch.prefixArgs, ...args], {
       cwd,
-      env: launch.env,
+      env: args[0] === 'install' ? hideNestedWindows(launch.env) : launch.env,
       stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       windowsHide: true
     })

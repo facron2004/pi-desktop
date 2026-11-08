@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -13,8 +13,10 @@ import {
   listSessions,
   parseSession,
   readJsonlLines,
-  readSessionMessages
+  readSessionMessages,
+  searchSessions
 } from '../src/main/sessions'
+import { canonicalSessionFile } from '../src/main/pi/session-file'
 
 test('sessionMetaCache: cache hit returns identical metadata without redundant disk reads', async () => {
   clearSessionCache()
@@ -426,5 +428,131 @@ test('sessionMetaCache: manual invalidation and clearSessionCache', async () => 
   } finally {
     clearSessionCache()
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('canonicalSessionFile: resolves one path once and reuses the answer', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-canonical-'))
+  const file = path.join(dir, 'session.jsonl')
+  writeFileSync(file, '', 'utf8')
+  const originalNative = realpathSync.native
+  let calls = 0
+  // The module imports the same `realpathSync` object, so counting its
+  // `native` method measures exactly the resolutions the cache does not avoid.
+  realpathSync.native = ((value: string | Buffer | URL) => {
+    calls += 1
+    return originalNative(value)
+  }) as typeof realpathSync.native
+  try {
+    assert.equal(canonicalSessionFile(file), canonicalSessionFile(file))
+    // The other separator spelling is the same file on every platform here.
+    assert.equal(canonicalSessionFile(file.replace(/\\/g, '/')), canonicalSessionFile(file))
+    assert.equal(calls, 1)
+  } finally {
+    realpathSync.native = originalNative
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('searchSessions: a superseded query stops before reading the next file', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-search-superseded-'))
+  const folder = path.join(root, '--C--proj--')
+  mkdirSync(folder)
+  const newest = path.join(folder, 'new.jsonl')
+  const older = path.join(folder, 'old.jsonl')
+  const message = (id: string, text: string): string =>
+    JSON.stringify({
+      type: 'message',
+      id,
+      parentId: null,
+      message: { role: 'user', content: text, timestamp: 100 }
+    })
+  const filler = 'x'.repeat(40_000)
+  writeFileSync(
+    newest,
+    [
+      JSON.stringify({ type: 'session', id: 'new', cwd: 'C:/proj' }),
+      message('new-1', `nothing here ${filler}`)
+    ].join('\n') + '\n',
+    'utf8'
+  )
+  writeFileSync(
+    older,
+    [
+      JSON.stringify({ type: 'session', id: 'old', cwd: 'C:/proj' }),
+      message('old-1', `the needle is here ${filler}`)
+    ].join('\n') + '\n',
+    'utf8'
+  )
+  utimesSync(older, new Date(2020, 0, 1), new Date(2020, 0, 1))
+
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  try {
+    let checks = 0
+    const stopped = await searchSessions('needle', 10, {
+      // The first check lets the newest file be read; the second one is the
+      // newer query arriving before the older file is opened.
+      shouldStop: () => {
+        checks += 1
+        return checks > 1
+      }
+    })
+    assert.deepEqual(stopped, [], 'the superseded scan must not read further files')
+    assert.equal(checks, 2)
+  } finally {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('searchSessions: a spent byte budget stops the scan before the oldest files', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-search-budget-'))
+  const folder = path.join(root, '--C--proj--')
+  mkdirSync(folder)
+  const newest = path.join(folder, 'new.jsonl')
+  const older = path.join(folder, 'old.jsonl')
+  const message = (id: string, text: string): string =>
+    JSON.stringify({
+      type: 'message',
+      id,
+      parentId: null,
+      message: { role: 'user', content: text, timestamp: 100 }
+    })
+  // Each file is larger than the budget used below, and only the older one
+  // carries the query, so the stopped scan has to return no hits.
+  const filler = 'x'.repeat(40_000)
+  writeFileSync(
+    newest,
+    [
+      JSON.stringify({ type: 'session', id: 'new', cwd: 'C:/proj' }),
+      message('new-1', `nothing here ${filler}`)
+    ].join('\n') + '\n',
+    'utf8'
+  )
+  writeFileSync(
+    older,
+    [
+      JSON.stringify({ type: 'session', id: 'old', cwd: 'C:/proj' }),
+      message('old-1', `the needle is here ${filler}`)
+    ].join('\n') + '\n',
+    'utf8'
+  )
+  utimesSync(older, new Date(2020, 0, 1), new Date(2020, 0, 1))
+
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  try {
+    const stopped = await searchSessions('needle', 10, { budgetBytes: 20_000 })
+    assert.deepEqual(stopped, [], 'the older file must not be read past the budget')
+
+    const scanned = await searchSessions('needle', 10, { budgetBytes: 200_000 })
+    assert.equal(scanned.length, 1)
+    assert.equal(scanned[0]?.sessionId, 'old')
+  } finally {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    rmSync(root, { recursive: true, force: true })
   }
 })

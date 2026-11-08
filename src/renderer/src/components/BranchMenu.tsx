@@ -1,11 +1,9 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { Check, FileDiff, GitFork, Loader2, Plus, Search, X } from 'lucide-react'
-import type { GitBranches, GitWorktree } from '@shared/types'
+import { Check, FileDiff, Loader2, Plus, Search, X } from 'lucide-react'
+import type { GitBranches } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
-import { basename } from '../lib/path'
 import { useT } from '../lib/i18n'
 import { Popover } from './Popover'
-import { ConfirmDialog } from './ConfirmDialog'
 import { BranchMark } from './BranchMark'
 import '../styles/branch-menu.css'
 
@@ -28,7 +26,6 @@ export function BranchMenu({
 }) {
   const gitChipRef = useRef<HTMLButtonElement>(null)
   const git = useAppStore((state) => state.git)
-  const workspace = useAppStore((state) => state.workspace)
   const refreshGit = useAppStore((state) => state.refreshGit)
   const switchProject = useAppStore((state) => state.switchProject)
   const showToast = useAppStore((state) => state.showToast)
@@ -41,11 +38,7 @@ export function BranchMenu({
   const [searchQuery, setSearchQuery] = useState('')
   const [showNew, setShowNew] = useState(false)
   const [newBranch, setNewBranch] = useState('')
-  const [showWorktree, setShowWorktree] = useState(false)
-  const [worktreeBranch, setWorktreeBranch] = useState('')
-  const [worktreeToRemove, setWorktreeToRemove] = useState<GitWorktree | undefined>()
-
-  const restoreFocus = () => requestAnimationFrame(() => gitChipRef.current?.focus())
+  const [useWorktree, setUseWorktree] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -67,17 +60,6 @@ export function BranchMenu({
     return data.branches.filter((b) => b.name.toLowerCase().includes(q))
   }, [data?.branches, searchQuery])
 
-  const filteredWorktrees = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase()
-    if (!data?.worktrees) return []
-    if (!q) return data.worktrees
-    return data.worktrees.filter(
-      (w) =>
-        basename(w.path).toLowerCase().includes(q) ||
-        (w.branch && w.branch.toLowerCase().includes(q))
-    )
-  }, [data?.worktrees, searchQuery])
-
   if (!git?.isRepo) return null
 
   const chooseBranch = async (name: string, close: () => void) => {
@@ -88,6 +70,15 @@ export function BranchMenu({
     }
     setBusy(name)
     try {
+      const existingWorktree = data?.worktrees.find(
+        (worktree) => worktree.branch === name && !worktree.current
+      )
+      if (existingWorktree) {
+        await switchProject(existingWorktree.path, { allowWhileRunning: true })
+        close()
+        return
+      }
+
       const result = await window.pi.git.switchBranch(name)
       if (!result.ok) {
         showToast(result.error ?? t('Could not switch branch'), 'error')
@@ -107,6 +98,21 @@ export function BranchMenu({
     if (!name || busy) return
     setBusy('create')
     try {
+      if (useWorktree) {
+        const result = await window.pi.git.addWorktree('', name, true)
+        if (!result.ok || !result.path) {
+          showToast(result.error ?? t('Could not add the worktree'), 'error')
+          return
+        }
+        setNewBranch('')
+        setShowNew(false)
+        setUseWorktree(false)
+        showToast(`${t('Worktree created at')} ${result.path}`)
+        await switchProject(result.path, { allowWhileRunning: true })
+        close()
+        return
+      }
+
       const result = await window.pi.git.createBranch(name, true)
       if (!result.ok) {
         showToast(result.error ?? t('Could not create the branch'), 'error')
@@ -116,64 +122,8 @@ export function BranchMenu({
       await load()
       setNewBranch('')
       setShowNew(false)
+      setUseWorktree(false)
       showToast(`${t('Created and switched to')} ${name}`)
-      close()
-    } finally {
-      setBusy(undefined)
-    }
-  }
-
-  const openWorktree = async (target: string, close: () => void) => {
-    if (busy) return
-    if (workspace && target === workspace.path) {
-      close()
-      return
-    }
-    setBusy(target)
-    try {
-      await switchProject(target, { allowWhileRunning: true })
-      close()
-    } finally {
-      setBusy(undefined)
-    }
-  }
-
-  const removeWorktree = async () => {
-    const target = worktreeToRemove
-    if (!target || busy) return
-    setBusy('remove-worktree')
-    try {
-      const result = await window.pi.git.removeWorktree(target.path)
-      if (!result.ok) {
-        showToast(result.error ?? t('Could not remove the worktree'), 'error')
-        void load()
-        return
-      }
-      setWorktreeToRemove(undefined)
-      restoreFocus()
-      showToast(`${t('Worktree removed')}: ${basename(target.path)}`)
-      await Promise.allSettled([refreshGit(), load()])
-    } catch {
-      showToast(t('Could not remove the worktree'), 'error')
-    } finally {
-      setBusy(undefined)
-    }
-  }
-
-  const createWorktree = async (close: () => void) => {
-    const name = worktreeBranch.trim()
-    if (!name || busy) return
-    setBusy('worktree')
-    try {
-      const result = await window.pi.git.addWorktree('', name, true)
-      if (!result.ok || !result.path) {
-        showToast(result.error ?? t('Could not add the worktree'), 'error')
-        return
-      }
-      setWorktreeBranch('')
-      setShowWorktree(false)
-      showToast(`${t('Worktree created at')} ${result.path}`)
-      await switchProject(result.path, { allowWhileRunning: true })
       close()
     } finally {
       setBusy(undefined)
@@ -199,8 +149,7 @@ export function BranchMenu({
               setSearchQuery('')
               setShowNew(false)
               setNewBranch('')
-              setShowWorktree(false)
-              setWorktreeBranch('')
+              setUseWorktree(false)
               void load()
             }
             toggle(event)
@@ -249,7 +198,7 @@ export function BranchMenu({
 
           {loadError ? (
             <p className="branch-menu__note" role="status">
-              {t('Could not load branches and worktrees.')}
+              {t('Could not load branches.')}
             </p>
           ) : null}
 
@@ -304,34 +253,6 @@ export function BranchMenu({
             ) : null}
           </div>
 
-          {/* Worktrees if present */}
-          {filteredWorktrees.length > 1 ? (
-            <>
-              <div className="branch-menu__divider" />
-              <div className="branch-menu__section-title">{t('Worktrees')}</div>
-              <div className="branch-menu__list">
-                {filteredWorktrees.map((worktree) => {
-                  const name = basename(worktree.path)
-                  const branch = worktree.branch ?? t('detached')
-                  return (
-                    <button
-                      key={worktree.path}
-                      className="branch-menu__row"
-                      data-current={worktree.current || undefined}
-                      disabled={Boolean(busy)}
-                      onClick={() => void openWorktree(worktree.path, close)}
-                    >
-                      <GitFork size={12} className="branch-menu__icon" />
-                      <span className="branch-menu__name">{name}</span>
-                      <span className="branch-menu__meta">{branch}</span>
-                      {worktree.current ? <Check size={12} className="branch-menu__check" /> : null}
-                    </button>
-                  )
-                })}
-              </div>
-            </>
-          ) : null}
-
           <div className="branch-menu__divider" />
 
           {/* Bottom Actions: Create and checkout new branch at bottom */}
@@ -358,6 +279,7 @@ export function BranchMenu({
                         event.stopPropagation()
                         setShowNew(false)
                         setNewBranch('')
+                        setUseWorktree(false)
                       }
                     }}
                   />
@@ -365,7 +287,7 @@ export function BranchMenu({
                     type="submit"
                     className="branch-menu__create-btn branch-menu__create-btn--submit"
                     disabled={!newBranch.trim() || Boolean(busy)}
-                    title={t('Create and checkout branch')}
+                    title={useWorktree ? t('Create branch in new worktree') : t('Create and checkout branch')}
                   >
                     {busy === 'create' ? <Loader2 size={11} className="spin" /> : <Check size={12} />}
                   </button>
@@ -375,58 +297,22 @@ export function BranchMenu({
                     onClick={() => {
                       setShowNew(false)
                       setNewBranch('')
+                      setUseWorktree(false)
                     }}
                     title={t('Cancel')}
                   >
                     <X size={12} />
                   </button>
                 </div>
-              </form>
-            ) : showWorktree ? (
-              <form
-                className="branch-menu__create-form"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  void createWorktree(close)
-                }}
-              >
-                <div className="branch-menu__create-row">
+                <label className="branch-menu__worktree-toggle">
                   <input
-                    type="text"
-                    className="branch-menu__create-input"
-                    autoFocus
-                    placeholder={t('Branch for the worktree')}
-                    value={worktreeBranch}
-                    spellCheck={false}
-                    onChange={(event) => setWorktreeBranch(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Escape') {
-                        event.stopPropagation()
-                        setShowWorktree(false)
-                        setWorktreeBranch('')
-                      }
-                    }}
+                    type="checkbox"
+                    checked={useWorktree}
+                    onChange={(event) => setUseWorktree(event.target.checked)}
+                    disabled={Boolean(busy)}
                   />
-                  <button
-                    type="submit"
-                    className="branch-menu__create-btn branch-menu__create-btn--submit"
-                    disabled={!worktreeBranch.trim() || Boolean(busy)}
-                    title={t('Use a worktree')}
-                  >
-                    {busy === 'worktree' ? <Loader2 size={11} className="spin" /> : <Check size={12} />}
-                  </button>
-                  <button
-                    type="button"
-                    className="branch-menu__create-btn branch-menu__create-btn--cancel"
-                    onClick={() => {
-                      setShowWorktree(false)
-                      setWorktreeBranch('')
-                    }}
-                    title={t('Cancel')}
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
+                  <span>{t('Use a new worktree')}</span>
+                </label>
               </form>
             ) : (
               <div className="branch-menu__footer-actions">
@@ -434,23 +320,12 @@ export function BranchMenu({
                   className="branch-menu__action-btn branch-menu__action-btn--primary"
                   type="button"
                   onClick={() => {
-                    setShowWorktree(false)
+                    setUseWorktree(false)
                     setShowNew(true)
                   }}
                 >
                   <Plus size={13} strokeWidth={1.8} />
                   <span>{t('Create and checkout branch')}</span>
-                </button>
-                <button
-                  className="branch-menu__action-btn branch-menu__action-btn--primary"
-                  type="button"
-                  onClick={() => {
-                    setShowNew(false)
-                    setShowWorktree(true)
-                  }}
-                >
-                  <GitFork size={13} strokeWidth={1.8} />
-                  <span>{t('Use a worktree')}</span>
                 </button>
               </div>
             )}
@@ -464,22 +339,6 @@ export function BranchMenu({
           ) : null}
         </div>
       )}
-    </Popover>,
-    worktreeToRemove ? (
-      <ConfirmDialog
-        key="remove-worktree"
-        title={`${t('Remove worktree')}: ${basename(worktreeToRemove.path)}`}
-        body={t('The worktree folder will be removed from disk. Its branch will remain.')}
-        confirmLabel={busy === 'remove-worktree' ? 'Working…' : 'Remove worktree'}
-        tone="danger"
-        onCancel={() => {
-          if (!busy) {
-            setWorktreeToRemove(undefined)
-            restoreFocus()
-          }
-        }}
-        onConfirm={() => void removeWorktree()}
-      />
-    ) : null
+    </Popover>
   ]
 }

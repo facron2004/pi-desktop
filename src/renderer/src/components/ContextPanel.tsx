@@ -26,8 +26,16 @@ function formatContextTokens(value: number | null): string {
   return String(value)
 }
 
+function formatBreakdownTokens(value: number | null | undefined): string {
+  if (value == null) return '—'
+  if (value >= 1_000_000) return `~${Number((value / 1_000_000).toFixed(1))}M`
+  if (value >= 1_000) return `~${Number((value / 1_000).toFixed(1))}K`
+  return `~${value}`
+}
+
 export function ContextPanel({ close }: { close: () => void }) {
   const stats = useAppStore((state) => state.stats)
+  const contextBreakdown = useAppStore((state) => state.contextBreakdown)
   const items = useAppStore((state) => state.items)
   const piState = useAppStore((state) => state.piState)
   const models = useAppStore((state) => state.models)
@@ -133,22 +141,26 @@ export function ContextPanel({ close }: { close: () => void }) {
           className="ctx__breakdown"
           role="group"
           aria-label={t('Context breakdown')}
-          title={t('Pi does not expose token counts for each category yet.')}
+          title={t(contextBreakdown?.source === 'request'
+            ? 'Estimated from the provider request; category values are approximate.'
+            : 'Estimated from the saved session; category values are approximate.')}
         >
           <div className="ctx__breakdown-row">
             <span className="ctx__swatch" data-kind="system" aria-hidden="true" />
             <span>{t('System prompt')}</span>
-            <span className="ctx__breakdown-value">—</span>
+            <span className="ctx__breakdown-value">{formatBreakdownTokens(contextBreakdown?.systemPrompt)}</span>
           </div>
           <div className="ctx__breakdown-row">
             <span className="ctx__swatch" data-kind="tools" aria-hidden="true" />
             <span>{t('Tool definitions')}</span>
-            <span className="ctx__breakdown-value">—</span>
+            <span className="ctx__breakdown-value">{formatBreakdownTokens(contextBreakdown?.toolDefinitions)}</span>
           </div>
           <div className="ctx__breakdown-row">
             <span className="ctx__swatch" data-kind="messages" aria-hidden="true" />
             <span>{t('Conversation messages')}</span>
-            <span className="ctx__breakdown-value">—</span>
+            <span className="ctx__breakdown-value">
+              {formatBreakdownTokens(contextBreakdown?.conversationMessages)}
+            </span>
           </div>
         </div>
         {reading ? (

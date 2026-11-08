@@ -65,10 +65,12 @@ export function Composer() {
   const aborting = useAppStore((state) => state.run.phase === 'aborting')
   const queue = useAppStore((state) => state.queue)
   const status = useAppStore((state) => state.status)
+  const prewarmRuntime = useAppStore((state) => state.prewarmRuntime)
   const workspace = useAppStore((state) => state.workspace)
   const agentMode = useAppStore((state) => state.agentMode)
   const setAgentMode = useAppStore((state) => state.setAgentMode)
   const commands = useAppStore((state) => state.commands)
+  const refreshSkillCommands = useAppStore((state) => state.refreshSkillCommands)
   const runAppCommand = useAppStore((state) => state.runAppCommand)
   const composerText = useAppStore((state) => state.composerText)
   const clearComposerText = useAppStore((state) => state.clearComposerText)
@@ -89,6 +91,7 @@ export function Composer() {
   const kind: QueueKind = defaultFollowUpMode === 'queue' ? 'followUp' : 'steer'
 
   const [slash, setSlash] = useState<SlashMatch | null>(null)
+  const [loadingSkillCommands, setLoadingSkillCommands] = useState(false)
   const [mention, setMention] = useState<MentionMatch | null>(null)
   const [mentionFiles, setMentionFiles] = useState<FileEntry[]>([])
   const [mentionIndex, setMentionIndex] = useState(0)
@@ -108,8 +111,8 @@ export function Composer() {
   // clipboard signature, so the same picture pasted twice says it once.
   const pastedRefs = useRef<Map<string, string>>(new Map())
 
-  const ready = status.phase === 'ready'
-  const inputPrompt = ready
+  const canCompose = status.phase === 'ready' || (status.phase === 'starting' && !isStreaming)
+  const inputPrompt = canCompose
     ? agentMode === 'plan'
       ? t('Describe the task to plan…')
       : workspace
@@ -202,6 +205,23 @@ export function Composer() {
     () => commands.filter((command) => command.source === 'extension'),
     [commands]
   )
+
+  const slashOpen = slash !== null
+  useEffect(() => {
+    if (!slashOpen || skillCommands.length > 0) {
+      setLoadingSkillCommands(false)
+      return
+    }
+    let active = true
+    setLoadingSkillCommands(true)
+    void refreshSkillCommands().finally(() => {
+      if (active) setLoadingSkillCommands(false)
+    })
+    return () => {
+      active = false
+    }
+  }, [slashOpen, skillCommands.length, workspace?.path, refreshSkillCommands])
+
   useEffect(() => {
     const node = textareaRef.current
     if (!node) return
@@ -585,6 +605,7 @@ export function Composer() {
             commands={matching}
             query={slash.query}
             activeIndex={paletteIndex}
+            loading={loadingSkillCommands}
             onActiveChange={setPaletteIndex}
             onSelect={insertCommand}
           />
@@ -672,9 +693,10 @@ export function Composer() {
             className="composer__input"
             rows={1}
             value={text}
-            disabled={!ready}
+            disabled={!canCompose}
             aria-label={inputPrompt}
             placeholder={inputPrompt}
+            onFocus={() => prewarmRuntime()}
             onChange={(event) => {
               const value = event.target.value
               const cursor = event.target.selectionStart ?? value.length
@@ -717,9 +739,9 @@ export function Composer() {
             }}
           />
 
-          <div className="composer__bar" data-streaming={isStreaming} data-ready={ready}>
+          <div className="composer__bar" data-streaming={isStreaming} data-ready={canCompose}>
             <AddMenu
-              ready={ready}
+              ready={canCompose}
               busy={isStreaming}
               mode={agentMode}
               skillCommands={skillCommands}
@@ -734,7 +756,7 @@ export function Composer() {
                 className="composer__mode"
                 title={t('Exit task mode')}
                 aria-label={t('Exit task mode')}
-                disabled={isStreaming || !ready}
+                disabled={isStreaming || !canCompose}
                 onClick={() => void setAgentMode('default')}
               >
                 {agentMode === 'goal' ? (
@@ -781,7 +803,7 @@ export function Composer() {
                 type="button"
                 className="btn btn--primary composer__send"
                 onClick={submit}
-                disabled={!ready || (!text.trim() && !images.length)}
+                disabled={!canCompose || (!text.trim() && !images.length)}
                 aria-label={t('Send message')}
                 title={t('Send message')}
               >

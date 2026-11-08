@@ -19,6 +19,14 @@ import { canonicalSessionFile } from './pi/session-file'
 const MAX_SESSION_BYTES = 24 * 1024 * 1024
 const MAX_SEARCH_FILES = 240
 const MAX_SEARCH_FILE_BYTES = 8 * 1024 * 1024
+/**
+ * Bytes one full-text search may read across all files.
+ *
+ * The newest files are read first and the walk stops once it has enough hits,
+ * so the expensive query is the one that matches nothing: without a ceiling it
+ * reads the whole history on every keystroke. The budget bounds that work.
+ */
+const MAX_SEARCH_TOTAL_BYTES = 64 * 1024 * 1024
 const LF = 0x0a
 const CR = 0x0d
 const CHUNK_SIZE = 64 * 1024
@@ -717,13 +725,18 @@ export async function listSessions(cwd?: string): Promise<SessionMeta[]> {
  * The sidebar can only filter the conversations it has loaded; this walks the
  * session folder so a run can be found by something that was said in it, long
  * after it scrolled out of the list. The newest files are read first, and the
- * search stops once it has enough hits.
+ * search stops once it has enough hits or has spent its byte budget.
  */
-export async function searchSessions(query: string, limit = 30): Promise<SessionSearchHit[]> {
+export async function searchSessions(
+  query: string,
+  limit = 30,
+  options: { budgetBytes?: number; shouldStop?: () => boolean } = {}
+): Promise<SessionSearchHit[]> {
   const needle = query.trim()
   if (needle.length < 2) return []
   const needleLower = needle.toLowerCase()
   const ceiling = Math.min(Math.max(limit, 1), 100)
+  const budget = Math.max(0, options.budgetBytes ?? MAX_SEARCH_TOTAL_BYTES)
   const root = resolveSessionRoot()
   try {
     const rootStat = await stat(root)
@@ -732,7 +745,7 @@ export async function searchSessions(query: string, limit = 30): Promise<Session
     return []
   }
 
-  const candidates: { file: string; mtime: number }[] = []
+  const candidates: { file: string; mtime: number; size: number }[] = []
   let workspaceDirs: string[]
   try {
     const entries = await readdir(root, { withFileTypes: true })
@@ -754,7 +767,7 @@ export async function searchSessions(query: string, limit = 30): Promise<Session
       const file = path.join(folder, name)
       try {
         const s = await stat(file)
-        candidates.push({ file, mtime: s.mtimeMs })
+        candidates.push({ file, mtime: s.mtimeMs, size: s.size })
       } catch {
         /* a file that vanished is not a search result */
       }
@@ -763,14 +776,25 @@ export async function searchSessions(query: string, limit = 30): Promise<Session
   candidates.sort((a, b) => b.mtime - a.mtime)
 
   const hits: SessionSearchHit[] = []
+  let bytesRead = 0
   for (const candidate of candidates.slice(0, MAX_SEARCH_FILES)) {
+    // A newer query supersedes this one: stop at the next file boundary so a
+    // burst of keystrokes does not leave several scans running at once.
+    if (options.shouldStop?.()) break
     if (hits.length >= ceiling) break
+    const remaining = budget - bytesRead
+    if (remaining <= 0) break
+    // The cap is charged before the read: a file that does not fit the budget
+    // is either cut off or skipped, never read past it.
+    const readLimit = Math.min(candidate.size, MAX_SEARCH_FILE_BYTES, remaining)
+    bytesRead += readLimit
     const fileHits = await searchSessionFile(
       candidate.file,
       candidate.mtime,
       needleLower,
       needle.length,
-      ceiling - hits.length
+      ceiling - hits.length,
+      readLimit
     )
     hits.push(...fileHits)
   }
@@ -783,7 +807,8 @@ async function searchSessionFile(
   mtime: number,
   needleLower: string,
   needleLength: number,
-  remaining: number
+  remaining: number,
+  maxBytes: number = MAX_SEARCH_FILE_BYTES
 ): Promise<SessionSearchHit[]> {
   let sessionId = path.basename(file, '.jsonl')
   let cwd = ''
@@ -797,7 +822,7 @@ async function searchSessionFile(
   const seenSnippets = new Set<string>()
   let messageIndex = 0
 
-  for await (const raw of readJsonlLines(file, MAX_SEARCH_FILE_BYTES)) {
+  for await (const raw of readJsonlLines(file, maxBytes)) {
     const line = raw.trim()
     if (!line) continue
     let record: Record<string, unknown>

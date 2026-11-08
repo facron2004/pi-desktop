@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Check,
@@ -1930,6 +1930,13 @@ export function AboutSettings() {
   const refreshInfo = useAppStore((state) => state.refreshInfo)
   const showToast = useAppStore((state) => state.showToast)
   const t = useT()
+  const infoRequested = useRef(false)
+
+  useEffect(() => {
+    if (infoRequested.current || info?.pi.version) return
+    infoRequested.current = true
+    void refreshInfo()
+  }, [info?.pi.version, refreshInfo])
 
   const [checking, setChecking] = useState(false)
   const [upgradingCli, setUpgradingCli] = useState(false)

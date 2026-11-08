@@ -322,6 +322,25 @@
   gap: 3px;
 }
 
+.branch-menu__worktree-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 2px 5px;
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+  user-select: none;
+}
+
+.branch-menu__worktree-toggle input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .branch-menu__create-input {
   flex: 1 1 auto;
   min-width: 0;

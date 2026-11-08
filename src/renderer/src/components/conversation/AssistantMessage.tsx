@@ -1,6 +1,6 @@
 import { isValidElement, type ReactNode } from 'react'
 import type { ToolItem } from '../../lib/thread'
-import type { Turn } from '../../lib/turns'
+import { replyStartOf, type Turn } from '../../lib/turns'
 import { AssistantImage, ThinkingBlock } from '../MessageItem'
 import { ProcessTrail } from '../ProcessTrail'
 import { ToolCard } from '../ToolCard'
@@ -19,7 +19,9 @@ type TurnSegment = { kind: 'node'; node: ReactNode } | { kind: 'process'; buffer
 /**
  * The agent's body of one turn.
  *
- * Spoken text keeps the column. Thinking and tool calls between two stretches
+ * Spoken text keeps the column. Text before the final call is commentary and
+ * folds with the process once a reply arrives; a partial reply stays visible.
+ * Thinking and tool calls between two stretches
  * of text are one process: open and indented while it is the live tail,
  * collapsed to a single indented line once that stretch has finished — or, when
  * `toolCallSummary` is on, one line while it is still working too. That choice
@@ -31,7 +33,8 @@ export function AssistantMessage({
   turn,
   toolMap,
   liveTail,
-  processOpen = true
+  processOpen = true,
+  processExpanded = false
 }: {
   turn: Turn
   toolMap: Map<string, ToolItem>
@@ -39,8 +42,12 @@ export function AssistantMessage({
   liveTail: boolean
   /** Whether the turn's tool/thinking process is visible. */
   processOpen?: boolean
+  /** Opening the turn's process also reveals its tool rows in one click. */
+  processExpanded?: boolean
 }) {
   const segments: TurnSegment[] = []
+  const replyStart = replyStartOf(turn)
+  let beforeReply = Boolean(replyStart) || turn.tools.length > 0
   let group: ToolItem[] = []
   let trace: ProcessBuffer | null = null
 
@@ -91,9 +98,11 @@ export function AssistantMessage({
     )
 
     assistant.blocks.forEach((block, index) => {
+      if (block === replyStart) beforeReply = false
       if (block.type === 'text') {
         if (!block.text.trim()) return
         flushProcess()
+        if (beforeReply && replyStart && !processOpen) return
         segments.push({
           kind: 'node',
           node: (
@@ -101,6 +110,7 @@ export function AssistantMessage({
               key={`${assistant.id}-${index}`}
               text={block.text}
               streaming={assistant.streaming && index === lastTextIndex}
+              commentary={beforeReply}
             />
           )
         })
@@ -127,6 +137,7 @@ export function AssistantMessage({
       }
       if (block.type === 'image') {
         flushProcess()
+        if (beforeReply && replyStart && !processOpen) return
         segments.push({
           kind: 'node',
           node: (
@@ -157,6 +168,7 @@ export function AssistantMessage({
             tools={buffer.tools}
             thoughts={buffer.thoughts}
             searchText={buffer.searchText}
+            defaultOpen={processExpanded}
             live={
               liveTail &&
               (index === segments.length - 1 ||

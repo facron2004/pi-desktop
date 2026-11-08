@@ -1,9 +1,11 @@
 import { create } from 'zustand'
+import { CONTEXT_BREAKDOWN_STATUS_KEY } from '@shared/types'
 import type {
   AgentMessage,
   AgentMode,
   AppInfo,
   AppSettings,
+  ContextBreakdown,
   ExtensionUiRequest,
   ExtensionUiResponse,
   ForkTarget,
@@ -35,14 +37,19 @@ import {
 import { basename, normalisePathKey, resolveAgainst, samePath } from '../lib/path'
 import { collectProjects, type Project } from '../lib/projects'
 import { APP_COMMANDS } from '../lib/app-commands'
-import { hydrationStale, scopeEvent, scopeStatus } from '../lib/session-scope'
+import { hydrationStale, needsSessionHydration, scopeEvent, scopeStatus } from '../lib/session-scope'
 import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
 import { beginStream } from '../lib/stream-events'
+import { estimateContextBreakdown, parseRequestContextBreakdown } from '../lib/context-reading'
 import { recordModelUse } from '../lib/model-recency'
 import { migrateViewState } from '../lib/view-state'
 import {
+  forgetSessionTiming,
   migrateSessionTiming,
+  monotonicNow,
+  recordGenerationWindow,
   recordModelDuration,
+  recordRunDuration,
   recordToolDuration,
   recordTtftDuration
 } from '../lib/session-timing'
@@ -101,6 +108,8 @@ export type RunPhase =
 
 export interface RunState {
   phase: RunPhase
+  /** Active context compaction, which can run outside an assistant turn. */
+  compaction?: { reason: string; startedAt: number }
   /** Client-minted id of the run, set on `agent_start`. */
   runId?: string
   /** Client-minted id of the current turn, set on `turn_start`. */
@@ -112,7 +121,7 @@ export interface RunState {
   /** First / last text delta, minted by the client: Pi reports no timing. */
   firstTokenAt?: number
   lastTokenAt?: number
-  /** Client clock for the current provider response, ended at assistant completion. */
+  /** Monotonic client clock for the current provider response. */
   modelTurnStartedAt?: number
   /** Wall-clock duration of the finished run, once it settled. */
   durationMs?: number
@@ -146,6 +155,7 @@ export interface SessionThread {
   retry?: RetryState
   piState?: PiState
   stats?: SessionStats
+  contextBreakdown?: ContextBreakdown
   error?: string
   status: RuntimeStatus
   forkTargets: ForkTarget[]
@@ -175,6 +185,7 @@ const THREAD_KEYS = [
   'retry',
   'piState',
   'stats',
+  'contextBreakdown',
   'error',
   'status',
   'forkTargets',
@@ -244,6 +255,7 @@ export interface AppStore {
   thinkingLevels: string[]
   commands: PiCommand[]
   stats?: SessionStats
+  contextBreakdown?: ContextBreakdown
   items: ThreadItem[]
   /** Transcript and run of every conversation, keyed by file path or draft id. */
   threads: Record<string, SessionThread>
@@ -350,6 +362,7 @@ export interface AppStore {
   restoreSession: (file: string) => Promise<void>
   newChat: () => Promise<void>
   ensureRuntime: (sessionKey?: string, sourceAction?: string) => Promise<string>
+  prewarmRuntime: (sessionKey?: string) => void
   send: (text: string, images: { data: string; mimeType: string }[], kind?: QueueKind) => Promise<void>
   /** Execute a shell command inline in the thread via Pi's `bash` RPC. */
   runInlineBash: (command: string, excludeFromContext?: boolean) => Promise<void>
@@ -387,6 +400,7 @@ export interface AppStore {
   rememberSession: (file: string) => Promise<void>
   reloadMessages: (sessionKey?: string) => Promise<void>
   refreshCommands: (sessionKey?: string) => Promise<void>
+  refreshSkillCommands: (sessionKey?: string) => Promise<void>
   /** Run one of the commands the app itself provides. */
   runAppCommand: (name: string) => Promise<void>
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>
@@ -503,6 +517,8 @@ const threadAliases = new Map<string, string>()
 const modelRestoreAttempts = new Set<string>()
 /** Conversations whose live process has already been told to retry rate limits. */
 const retryArmed = new Set<string>()
+/** Composer-focused sessions whose startup is only speculative until Send. */
+const prewarmOnlyRuntimes = new Set<string>()
 /**
  * A model chosen while the conversation was cold.
  *
@@ -592,6 +608,15 @@ function threadKey(key: string): string {
   return threadAliases.get(key) ?? key
 }
 
+function stopPrewarmOnlyRuntime(sessionKey: string | undefined): void {
+  if (!sessionKey) return
+  const key = threadKey(sessionKey)
+  const wasPrewarmOnly = prewarmOnlyRuntimes.delete(sessionKey)
+  const wasResolvedPrewarmOnly = prewarmOnlyRuntimes.delete(key)
+  if (!wasPrewarmOnly && !wasResolvedPrewarmOnly) return
+  void window.pi.runtime.stop(key).catch(() => {})
+}
+
 /** The name a project is shown with, for a folder the user has not opened yet. */
 function projectNameOf(state: AppStore, path: string | null): string {
   if (path === null) return 'Work without a project'
@@ -628,6 +653,8 @@ function tracedRpc<T>(
     uiSessionId
   )
 }
+
+const skillCommandRequests = new Map<string, Promise<void>>()
 
 export const useAppStore = create<AppStore>((set, get) => ({
   settings: DEFAULT_SETTINGS,
@@ -752,9 +779,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         startupTheme === 'light' || startupTheme === 'dark' ? startupTheme : undefined
       )
 
-      // Pi version probing can take several seconds on a cold start. It is for
-      // the About page, so it must not hold the saved appearance or workspace.
-      void window.pi.app.info().then((info) => {
+      // The About page needs a Pi process for its version only; keep that load
+      // out of the first conversation's cold start.
+      void window.pi.app.info({ includePiVersion: false }).then((info) => {
         set({ info })
         applyAppearance(get().settings, info.forcedTheme)
       }).catch((error: unknown) => {
@@ -771,6 +798,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         handleEvent(bindSet(set, get, scoped.ownerId), bindGet(get, scoped.ownerId), scoped.event, get, scoped.ownerId)
       })
       const offRekey = window.pi.runtime.onRekey?.((change) => {
+        if (prewarmOnlyRuntimes.delete(change.from)) prewarmOnlyRuntimes.add(change.to)
         rekeyThread(set, get, change.from, change.to, change.replace)
       })
       const offStatus = window.pi.runtime.onStatus((incoming) => {
@@ -781,6 +809,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
         // An intentionally retired idle worker leaves a cold, usable conversation.
         const cold = status.phase === 'stopped' && !status.error && ownGet().run.settled
         const nextStatus = { ...status, cwd: status.cwd ?? ownGet().status.cwd }
+        if (
+          (status.phase === 'error' || status.phase === 'stopped') &&
+          prewarmOnlyRuntimes.has(owner) &&
+          ownGet().run.settled
+        ) {
+          // A speculative start must not strand the composer in an error state.
+          // The real send retries startup and reports its own failure.
+          applyRuntimeStatus(bindSet(set, get, owner), { phase: 'ready', cwd: nextStatus.cwd })
+          return
+        }
         applyRuntimeStatus(bindSet(set, get, owner), cold ? { ...nextStatus, phase: 'ready' } : nextStatus)
         if (status.phase === 'ready') {
           void get().refreshState(owner)
@@ -905,6 +943,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async openWorkspace(workspace, sessionFile, sourceAction = 'project-open') {
     void sourceAction
+    stopPrewarmOnlyRuntime(viewKeyOf(get()))
     const epoch = beginProjectChange()
     drainPending()
     pendingProjectPath = undefined
@@ -929,7 +968,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       pendingJump: undefined,
       pendingProject: undefined,
       ...projectThread(thread),
-      // Cold is ready to type. The process starts when a message is sent.
+      // Cold is ready to type. Focusing the composer starts Pi in the background.
       status: thread.version > 0 ? thread.status : { phase: 'ready', cwd: workspace?.path },
       transport: 'connected'
     })
@@ -982,6 +1021,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async selectSession(session, sourceAction = 'sidebar-select') {
     void sourceAction
+    const currentKey = viewKeyOf(get())
+    if (currentKey !== session.file) stopPrewarmOnlyRuntime(currentKey)
     const workspace = get().workspace
     const changesProject = session.cwd
       ? !workspace || !samePath(session.cwd, workspace.path)
@@ -998,7 +1039,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     // conversation, not a file, so the view follows its own key and nothing
     // here may read that key as a session file.
     const live = session.file.startsWith('draft:')
-    const shouldHydrate = !live && (!cached || cached.version === 0) && !thread.isStreaming
+    const shouldHydrate = !live && needsSessionHydration(
+      session.messageCount,
+      cached?.version,
+      thread.items.length,
+      thread.isStreaming
+    )
     touchSessionLru(session.file)
     set({
       threads: { ...get().threads, [session.file]: thread },
@@ -1063,6 +1109,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const next: SessionThread = {
         ...current,
         items: itemsFromMessages(messages ?? []),
+        contextBreakdown: current.contextBreakdown?.source === 'request'
+          ? current.contextBreakdown
+          : estimateContextBreakdown(messages ?? [], current.stats?.contextUsage?.tokens),
         version: current.version + 1
       }
       touchSessionLru(file)
@@ -1174,6 +1223,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         set({ error: `Could not delete ${session?.name ?? 'the conversation'}` })
         return
       }
+      forgetSessionTiming(file)
       await get().refreshSessions()
       get().showToast('Conversation deleted')
     } catch (error) {
@@ -1225,6 +1275,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async newChat() {
+    stopPrewarmOnlyRuntime(viewKeyOf(get()))
     beginViewChange()
     drainPending()
     const draftId = mintDraft()
@@ -1244,6 +1295,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async ensureRuntime(sessionKey = viewKeyOf(get()), sourceAction = 'ensure') {
     const key = threadKey(sessionKey)
     if (!key) throw new Error('Missing conversation id')
+    if (sourceAction !== 'composer-focus') prewarmOnlyRuntimes.delete(key)
     if (typeof window.pi.runtime.ensure !== 'function') return key
     const state = get()
     const thread = state.threads[key]
@@ -1273,6 +1325,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       )
     }
     return threadKey(key)
+  },
+
+  prewarmRuntime(sessionKey = viewKeyOf(get())) {
+    const key = threadKey(sessionKey)
+    if (!key || typeof window.pi.runtime.ensure !== 'function') return
+    prewarmOnlyRuntimes.add(key)
+    void get().ensureRuntime(key, 'composer-focus').catch(() => {
+      // Keep the cold composer usable; an actual send retries and reports errors.
+    })
   },
 
   async send(text, images, kind = 'steer') {
@@ -1457,6 +1518,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const key = threadKey(sessionKey.trim())
     if (!key) return
     const ownGet = bindGet(get, key)
+    // Nothing is open, so no settle will follow. Pi answers `abort` while idle
+    // but never publishes `agent_settled` for it, and the row would stay on
+    // "Stopping…" with every later prompt blocked. A stop on a finished run is
+    // already the state the user asked for.
+    if (ownGet().run.phase === 'idle' && ownGet().run.settled) return
     const launching = ownGet().status.phase === 'starting'
     const update = bindSet(set, get, key)
     update((state) => ({ run: { ...state.run, phase: 'aborting' } }))
@@ -1680,7 +1746,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await get().reloadMessages(threadKey(owner))
       get().showToast('The conversation was summarised')
     } catch (error) {
-      bindSet(set, get, owner)({ error: messageOf(error) })
+      bindSet(set, get, owner)((state) => ({
+        error: messageOf(error),
+        run: { ...state.run, compaction: undefined }
+      }))
     }
   },
 
@@ -1744,14 +1813,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return undefined
     }
     try {
-      const stats = await tracedRpc<SessionStats>(
-        key,
-        'get_session_stats',
-        undefined,
-        20_000,
-        'read-stats'
-      )
-      if (stats) bindSet(set, get, key)({ stats })
+      const [stats, context] = await Promise.all([
+        tracedRpc<SessionStats>(key, 'get_session_stats', undefined, 20_000, 'read-stats')
+          .catch(() => undefined),
+        tracedRpc<{ messages?: AgentMessage[] }>(
+          key,
+          'get_messages',
+          undefined,
+          20_000,
+          'read-context-breakdown'
+        ).catch(() => undefined)
+      ])
+      const patch: Partial<AppStore> = {}
+      if (stats) patch.stats = stats
+      if (context?.messages) {
+        const existing = bindGet(get, key)().contextBreakdown
+        if (existing?.source !== 'request') {
+          patch.contextBreakdown = estimateContextBreakdown(
+            context.messages,
+            stats?.contextUsage?.tokens
+          )
+        }
+      }
+      if (Object.keys(patch).length) bindSet(set, get, key)(patch)
       return stats
     } catch {
       // A process that stopped between the check and the read is not an error
@@ -1874,7 +1958,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
         'reload-messages'
       )
       if (ownGet().isStreaming) return
-      bindSet(set, get, sessionKey)({ items: itemsFromMessages(data?.messages ?? []) })
+      bindSet(set, get, sessionKey)({
+        items: itemsFromMessages(data?.messages ?? []),
+        contextBreakdown: ownGet().contextBreakdown?.source === 'request'
+          ? ownGet().contextBreakdown
+          : estimateContextBreakdown(data?.messages ?? [], ownGet().stats?.contextUsage?.tokens)
+      })
       await get().refreshForkTargets(threadKey(sessionKey))
     } catch (error) {
       bindSet(set, get, sessionKey)({ error: messageOf(error) })
@@ -1908,6 +1997,35 @@ export const useAppStore = create<AppStore>((set, get) => ({
       })
     } catch {
       update({ commands: APP_COMMANDS })
+    }
+  },
+
+  async refreshSkillCommands(sessionKey = viewKeyOf(get())) {
+    if (!sessionKey) return
+    const key = threadKey(sessionKey)
+    const current = bindGet(get, key)().commands
+    if (current.some((command) => command.source === 'skill')) return
+    const pending = skillCommandRequests.get(key)
+    if (pending) {
+      await pending.catch(() => undefined)
+      return
+    }
+
+    const request = (async () => {
+      const skills = await window.pi.runtime.listSkillCommands()
+      const latest = bindGet(get, key)().commands
+      const names = new Set(latest.map((command) => command.name))
+      bindSet(set, get, key)({
+        commands: [...latest, ...skills.filter((command) => !names.has(command.name))]
+      })
+    })()
+    skillCommandRequests.set(key, request)
+    try {
+      await request
+    } catch {
+      // Skill discovery is optional until the first Pi conversation starts.
+    } finally {
+      if (skillCommandRequests.get(key) === request) skillCommandRequests.delete(key)
     }
   },
 
@@ -2647,6 +2765,7 @@ function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEY
     retry: thread.retry,
     piState: thread.piState,
     stats: thread.stats,
+    contextBreakdown: thread.contextBreakdown,
     error: thread.error,
     status: thread.status,
     forkTargets: thread.forkTargets,
@@ -2936,7 +3055,7 @@ function finishModelTiming(set: SetState, get: GetState, owner?: string): void {
   if (run.modelTurnStartedAt === undefined) return
   const timingKey = owner ? threadKey(owner) : viewKeyOf(get())
   const turnId = run.turnId ?? run.runId
-  recordModelDuration(timingKey, turnId, Math.max(0, Date.now() - run.modelTurnStartedAt))
+  recordModelDuration(timingKey, turnId, Math.max(0, monotonicNow() - run.modelTurnStartedAt))
   set((state) => ({ run: { ...state.run, modelTurnStartedAt: undefined } }))
 }
 
@@ -2955,6 +3074,10 @@ function handleEvent(
       const startedAt = Date.now()
       set((state) => ({
         isStreaming: true,
+        // `stats` is only a snapshot from the last Pi read. Let the live
+        // transcript drive the usage line until the settled refresh gets a
+        // new snapshot; otherwise the old totals mask newer session events.
+        stats: undefined,
         retry: undefined,
         // A new run supersedes whatever the last one left behind: the row is
         // working again, so there is nothing left to notice.
@@ -2973,7 +3096,7 @@ function handleEvent(
     }
     case 'turn_start': {
       beginStream(runContextOf(get).sessionKey)
-      const modelTurnStartedAt = Date.now()
+      const modelTurnStartedAt = monotonicNow()
       set((state) => ({
         isStreaming: true,
         retry: undefined,
@@ -2998,11 +3121,15 @@ function handleEvent(
     case 'agent_settled': {
       // The one authoritative "the runtime is done" signal.
       const aborted = Boolean(event.aborted)
+      // The supervisor mints this when the process died before it could write
+      // its own settle. The user did not stop that run, so it failed.
+      const crashed = Boolean(event.crashed)
       // Anything still waiting for a frame is applied first: the final
       // state has to be the state the events actually produced.
       drainPending()
       const state = get()
       const startedAt = state.run.startedAt
+      const durationMs = startedAt === undefined ? undefined : Math.max(0, Date.now() - startedAt)
       const timingKey = owner ? threadKey(owner) : viewKeyOf(state)
       if (startedAt !== undefined && state.run.firstTokenAt !== undefined) {
         recordTtftDuration(
@@ -3011,20 +3138,34 @@ function handleEvent(
           Math.max(0, state.run.firstTokenAt - startedAt)
         )
       }
-      if (state.run.modelTurnStartedAt !== undefined) {
-        recordModelDuration(
-          timingKey,
-          state.run.turnId ?? state.run.runId,
-          Math.max(0, Date.now() - state.run.modelTurnStartedAt)
-        )
-      }
-      // `agent_settled` carries only `aborted`; a failure is visible on the
-      // last assistant message instead. Do not print a success summary over
+      // Model durations are recorded only when the assistant message ends.
+      // Settling without that event means the response was interrupted or
+      // incomplete, so its wait time must not become a model-time sample.
+      // Pi's own `agent_settled` carries only `aborted`; a failure is visible on
+      // the last assistant message instead. Do not print a success summary over
       // an error notice.
       const lastAssistant = [...state.items]
         .reverse()
         .find((item) => item.kind === 'assistant')
-      const failed = !aborted && lastAssistant?.kind === 'assistant' && lastAssistant.stopReason === 'error'
+      const failed =
+        crashed ||
+        (!aborted && lastAssistant?.kind === 'assistant' && lastAssistant.stopReason === 'error')
+      const recentUsers = [...state.items].reverse().filter((item) => item.kind === 'user')
+      const runUser = recentUsers.find(
+        (item) => item.kind === 'user' && item.runId === state.run.runId
+      ) ?? recentUsers[0]
+      if (!aborted && !failed && runUser?.kind === 'user') {
+        if (durationMs !== undefined) {
+          recordRunDuration(timingKey, runUser.timestamp, durationMs)
+        }
+        if (state.run.firstTokenAt !== undefined && state.run.lastTokenAt !== undefined) {
+          recordGenerationWindow(
+            timingKey,
+            runUser.timestamp,
+            Math.max(0, state.run.lastTokenAt - state.run.firstTokenAt)
+          )
+        }
+      }
       // A mark means "there is something in this conversation the reader has
       // not looked at": a failure outranks an answer, and an answer that
       // finished while the reader was elsewhere is unread. A conversation the
@@ -3040,14 +3181,15 @@ function handleEvent(
             : 'unread'
       set({
         isStreaming: false,
-        items: aborted ? markAborted(state.items) : state.items,
+        items: aborted || crashed ? markAborted(state.items) : state.items,
         run: {
           ...state.run,
           phase: 'idle',
+          compaction: undefined,
           modelTurnStartedAt: undefined,
           settled: true,
           outcome: aborted ? 'aborted' : failed ? 'failed' : 'completed',
-          durationMs: startedAt ? Date.now() - startedAt : undefined
+          durationMs
         },
         retry: undefined,
         notice,
@@ -3056,8 +3198,19 @@ function handleEvent(
         // client is not told, so the dialog is closed when the agent moves on.
         uiRequest: state.uiRequest ? undefined : state.uiRequest
       })
+      // A crashed run has no live process to read state from, and the reason
+      // it stopped is the only thing the reader can still act on.
+      if (crashed) {
+        set((current) => ({
+          items: applyEvent(current.items, {
+            type: 'client_notice',
+            level: 'error',
+            text: 'Pi stopped before the run finished'
+          })
+        }))
+      }
       const key = viewKeyOf(get())
-      if (!event.runtimeStopped) void get().refreshState(key)
+      if (!event.runtimeStopped && !crashed) void get().refreshState(key)
       void get().refreshSessions()
       // The agent just edited files, so the branch chip and the review panel
       // should hear about the new working tree.
@@ -3065,7 +3218,7 @@ function handleEvent(
       // The prompt of this turn is a new branch point. Refreshing here as
       // well as on `message_start` covers the case where Pi had not recorded
       // the message yet when the event arrived.
-      if (!event.runtimeStopped) void get().refreshForkTargets(key)
+      if (!event.runtimeStopped && !crashed) void get().refreshForkTargets(key)
       // A project the user asked for while the agent was working is opened
       // now that nothing is running in the current one.
       const view = realGet ? viewKeyOf(realGet()) : owner
@@ -3106,7 +3259,15 @@ function handleEvent(
       const delayMs = Math.max(0, Number(event.delayMs ?? 0))
       set((state) => ({
         isStreaming: true,
-        run: { ...state.run, phase: phaseFor(state, 'retrying'), settled: false },
+        // A provider retry is no longer an active model response. If the
+        // failed attempt omitted its completion event, freeze rather than
+        // counting the retry backoff as model time.
+        run: {
+          ...state.run,
+          phase: phaseFor(state, 'retrying'),
+          modelTurnStartedAt: undefined,
+          settled: false
+        },
         retry: {
           attempt: Number(event.attempt ?? 1),
           maxAttempts: Number(event.maxAttempts ?? 0),
@@ -3126,11 +3287,13 @@ function handleEvent(
       break
     case 'message_start': {
       const role = (event as { message?: { role?: string } }).message?.role
-      scheduleItems(set, get, event)
       if (role === 'user') {
         set((state) => ({
+          // A prompt can start before `agent_start`; invalidate the same
+          // cached snapshot here so transcript usage stays current.
+          stats: undefined,
           run:
-            state.run.phase === 'idle' || state.run.settled
+            !state.run.runId || state.run.phase === 'idle' || state.run.settled
               ? // A prompt that started a run before the client saw `agent_start`
                 // still needs one, or the items would belong to no run.
                 {
@@ -3142,6 +3305,9 @@ function handleEvent(
                 }
               : state.run
         }))
+      }
+      scheduleItems(set, get, event)
+      if (role === 'user') {
         // A new prompt is a new place the branch can be forked from.
         void get().refreshForkTargets(viewKeyOf(get()))
       }
@@ -3163,6 +3329,19 @@ function handleEvent(
     case 'compaction_end':
     case 'extension_error':
     case 'client_notice': {
+      if (event.type === 'compaction_start') {
+        set((state) => ({
+          run: {
+            ...state.run,
+            compaction: {
+              reason: String(event.reason ?? 'manual'),
+              startedAt: Date.now()
+            }
+          }
+        }))
+      } else if (event.type === 'compaction_end') {
+        set((state) => ({ run: { ...state.run, compaction: undefined } }))
+      }
       if (event.type === 'tool_execution_end') {
         // Apply a queued start first so its local timestamp can fill in when
         // Pi omitted the duration on the completion event.
@@ -3299,6 +3478,17 @@ function handleExtensionUi(
     case 'setStatus': {
       const key = request.statusKey
       if (!key) break
+      if (key === CONTEXT_BREAKDOWN_STATUS_KEY) {
+        const contextBreakdown = parseRequestContextBreakdown(request.statusText)
+        if (contextBreakdown) {
+          if (taggedRequest.sessionKey) {
+            bindSet(set, get, taggedRequest.sessionKey)({ contextBreakdown })
+          } else {
+            set({ contextBreakdown })
+          }
+        }
+        break
+      }
       if (key === 'pi-desktop-mode') {
         const mode = request.statusText
         if (mode === 'default' || mode === 'goal' || mode === 'plan' || mode === 'subagent') set({ agentMode: mode })
