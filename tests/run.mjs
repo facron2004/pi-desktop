@@ -85,6 +85,7 @@ const suites = [
   'scheduled-tasks.test.ts',
   'session-tree.test.ts',
   'renderer-utils.test.ts',
+  'i18n.test.ts',
   'marketplace.test.ts',
   'memory.test.ts',
   'auto-title.test.ts',

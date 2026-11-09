@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import QRCode from 'qrcode'
 import { Copy, RefreshCw, ShieldOff, Smartphone, Wifi } from 'lucide-react'
 import type { RemoteAccessStatus } from '@shared/types'
-import { useT } from '../lib/i18n'
+import { REMOTE_ACCESS_WARNING, useT } from '../lib/i18n'
 import { Switch } from './Switch'
 import '../styles/remote-access-settings.css'
 
@@ -125,7 +125,7 @@ export function RemoteAccessSettings() {
 
       <div className="remote-access-warning">
         <Wifi size={16} />
-        <p>{t('Use only on a trusted Wi-Fi network. Local network traffic is not encrypted. Mobile messages use the same agent permissions as Pi Desktop.')}</p>
+        <p>{t(REMOTE_ACCESS_WARNING)}</p>
       </div>
 
       {status?.enabled ? (

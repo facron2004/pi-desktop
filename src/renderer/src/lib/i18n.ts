@@ -3,6 +3,9 @@ import type { AppLanguage } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { basename } from './path'
 
+export const REMOTE_ACCESS_WARNING =
+  'Use only on a trusted Wi-Fi network. Local network traffic is not encrypted. Mobile messages use the same agent permissions as Pi Desktop; approval requests still need desktop confirmation.'
+
 const zhCN: Record<string, string> = {
   'Loading conversation history…': '正在加载对话记录…',
   Providers: '提供商',
@@ -99,7 +102,7 @@ const zhCN: Record<string, string> = {
   Connection: '连接',
   'Enable remote access': '开启远程访问',
   'The mobile page can browse registered projects and send messages to existing conversations.': '手机端可以浏览已登记的项目，并向已有对话发送消息。',
-  'Use only on a trusted Wi-Fi network. Local network traffic is not encrypted. Mobile messages use the same agent permissions as Pi Desktop; approval requests still need desktop confirmation.': '请仅在可信 Wi-Fi 网络中使用。本地网络传输未加密；手机消息沿用 Pi Desktop 的智能体权限，需要批准时仍须在桌面端确认。',
+  [REMOTE_ACCESS_WARNING]: '请仅在可信 Wi-Fi 网络中使用。本地网络传输未加密；手机消息沿用 Pi Desktop 的智能体权限，需要批准时仍须在桌面端确认。',
   'Pair a phone': '配对手机',
   'Code expires in 3 minutes': '配对码将在 3 分钟后过期',
   'Scan with your phone camera': '用手机相机扫描',
