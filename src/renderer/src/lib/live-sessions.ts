@@ -1,6 +1,7 @@
 import type { SessionMeta } from '@shared/types'
 import type { SessionThread } from '../store/useAppStore'
 import { normalisePathKey } from './path'
+import { changedThreadItemsFrom, type ThreadItem } from './thread'
 
 /**
  * A conversation the reader can see in the sidebar, whether or not Pi has
@@ -23,13 +24,58 @@ export function conversationPreview(thread: SessionThread): string {
   return ''
 }
 
-/** When the conversation last did something, for ordering. */
-function activityOf(thread: SessionThread): number {
-  let latest = 0
-  for (const item of thread.items) {
-    if (typeof item.timestamp === 'number' && item.timestamp > latest) latest = item.timestamp
+interface LiveThreadSummary {
+  items: ThreadItem[]
+  preview: string
+  latestTimestamp: number
+  messageCount: number
+}
+
+interface LiveRowCacheEntry {
+  row: ConversationRow
+  summary: LiveThreadSummary
+}
+
+/** Summaries belong to a transcript snapshot; append-only changes update them from the tail. */
+function summarizeThread(items: ThreadItem[], previous?: LiveThreadSummary): LiveThreadSummary {
+  if (previous?.items === items) return previous
+
+  if (
+    previous &&
+    items.length >= previous.items.length &&
+    changedThreadItemsFrom(items, previous.items) !== undefined
+  ) {
+    // Reducer replacements preserve kind and timestamp; only the appended tail changes these totals.
+    let { preview, latestTimestamp, messageCount } = previous
+    for (let index = previous.items.length; index < items.length; index += 1) {
+      const item = items[index]
+      if (!item) continue
+      if (typeof item.timestamp === 'number' && item.timestamp > latestTimestamp) {
+        latestTimestamp = item.timestamp
+      }
+      if (item.kind === 'user' || item.kind === 'assistant') messageCount += 1
+      if (!preview && item.kind === 'user' && item.text.trim()) {
+        preview = item.text.trim().replace(/\s+/g, ' ').slice(0, 120)
+      }
+    }
+    return { items, preview, latestTimestamp, messageCount }
   }
-  return latest || thread.run.startedAt || 0
+
+  let preview = ''
+  let latestTimestamp = 0
+  let messageCount = 0
+  for (const item of items) {
+    if (typeof item.timestamp === 'number' && item.timestamp > latestTimestamp) {
+      latestTimestamp = item.timestamp
+    }
+    if (item.kind === 'user' || item.kind === 'assistant') {
+      messageCount += 1
+      if (!preview && item.kind === 'user' && item.text.trim()) {
+        preview = item.text.trim().replace(/\s+/g, ' ').slice(0, 120)
+      }
+    }
+  }
+  return { items, preview, latestTimestamp, messageCount }
 }
 
 /**
@@ -65,7 +111,20 @@ function hasWork(thread: SessionThread): boolean {
  * from `draft:…` (or an unflushed path) to the disk row is a rename of the same
  * row, not a duplicate.
  */
-const liveRowCache = new Map<string, ConversationRow>()
+const liveRowCache = new Map<string, LiveRowCacheEntry>()
+const sessionPathCache = new WeakMap<readonly SessionMeta[], Map<string, SessionMeta>>()
+
+function sessionsByPath(sessions: readonly SessionMeta[]): Map<string, SessionMeta> {
+  const cached = sessionPathCache.get(sessions)
+  if (cached) return cached
+  const byPath = new Map<string, SessionMeta>()
+  for (const session of sessions) {
+    const key = normalisePathKey(session.file)
+    if (!byPath.has(key)) byPath.set(key, session)
+  }
+  sessionPathCache.set(sessions, byPath)
+  return byPath
+}
 
 /**
  * Live conversations currently in memory that disk does not cover yet.
@@ -77,7 +136,7 @@ export function liveConversationRows(
   threads: Readonly<Record<string, SessionThread>>,
   workspacePath: string | undefined
 ): ConversationRow[] {
-  const onDisk = new Set(sessions.map((session) => normalisePathKey(session.file)))
+  const onDisk = sessionsByPath(sessions)
   const live: ConversationRow[] = []
   const activeKeys = new Set<string>()
 
@@ -89,24 +148,25 @@ export function liveConversationRows(
     const id = thread.piState?.sessionId ?? key
     const cwd = thread.status.cwd ?? (draft ? workspacePath ?? '' : '')
     const name = thread.piState?.sessionName
-    const preview = conversationPreview(thread)
-    const updatedAt = activityOf(thread)
-    const messageCount = thread.items.filter((item) => item.kind === 'user' || item.kind === 'assistant').length
+    const cached = liveRowCache.get(key)
+    const summary = summarizeThread(thread.items, cached?.summary)
+    const preview = summary.preview
+    const updatedAt = summary.latestTimestamp || thread.run.startedAt || 0
+    const messageCount = summary.messageCount
     const model = thread.piState?.model ? `${thread.piState.model.provider}/${thread.piState.model.id}` : undefined
 
-    const cached = liveRowCache.get(key)
     if (
-      cached &&
-      cached.id === id &&
-      cached.file === key &&
-      cached.cwd === cwd &&
-      cached.name === name &&
-      cached.preview === preview &&
-      cached.updatedAt === updatedAt &&
-      cached.messageCount === messageCount &&
-      cached.model === model
+      cached?.row.id === id &&
+      cached.row.file === key &&
+      cached.row.cwd === cwd &&
+      cached.row.name === name &&
+      cached.row.preview === preview &&
+      cached.row.updatedAt === updatedAt &&
+      cached.row.messageCount === messageCount &&
+      cached.row.model === model
     ) {
-      live.push(cached)
+      liveRowCache.set(key, { row: cached.row, summary })
+      live.push(cached.row)
     } else {
       const nextRow: ConversationRow = {
         id,
@@ -119,7 +179,7 @@ export function liveConversationRows(
         model,
         onDisk: false
       }
-      liveRowCache.set(key, nextRow)
+      liveRowCache.set(key, { row: nextRow, summary })
       live.push(nextRow)
     }
   }
@@ -141,6 +201,26 @@ export function conversationRows(
   return [...live, ...disk]
 }
 
+/** Project paths with active conversations, using the cached session path index. */
+export function streamingProjectPaths(
+  sessions: readonly SessionMeta[],
+  threads: Readonly<Record<string, SessionThread>>,
+  draftId: string | undefined,
+  workspacePath: string | undefined
+): string[] {
+  const byPath = sessionsByPath(sessions)
+  const paths: string[] = []
+  for (const [file, thread] of Object.entries(threads)) {
+    if (!thread.isStreaming) continue
+    const cwd =
+      thread.status.cwd ||
+      byPath.get(normalisePathKey(file))?.cwd ||
+      (file === draftId ? workspacePath : undefined)
+    if (cwd) paths.push(normalisePathKey(cwd))
+  }
+  return paths
+}
+
 /**
  * The name the title bar shows for the conversation on screen.
  *
@@ -158,8 +238,13 @@ export function activeConversationTitle(
 ): string {
   if (!activeKey) return ''
   const key = normalisePathKey(activeKey)
-  const disk = sessions.find((session) => normalisePathKey(session.file) === key)
+  const disk = sessionsByPath(sessions).get(key)
   if (disk) return disk.name || disk.preview || ''
+  const activeThread = threads[activeKey]
+  if (activeThread) {
+    if (!hasWork(activeThread)) return ''
+    return activeThread.piState?.sessionName || conversationPreview(activeThread) || ''
+  }
   for (const [threadKey, thread] of Object.entries(threads)) {
     if (normalisePathKey(threadKey) !== key) continue
     if (!hasWork(thread)) return ''

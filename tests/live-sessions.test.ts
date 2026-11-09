@@ -1,7 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { SessionMeta } from '@shared/types'
-import { activeConversationTitle, conversationRows, updateThreadSessionName } from '../src/renderer/src/lib/live-sessions'
+import {
+  activeConversationTitle,
+  conversationRows,
+  streamingProjectPaths,
+  updateThreadSessionName
+} from '../src/renderer/src/lib/live-sessions'
+import { applyEventBatch, type ThreadItem } from '../src/renderer/src/lib/thread'
 import type { SessionThread } from '../src/renderer/src/store/useAppStore'
 
 /** The shape the store keeps for one conversation, with the fields under test. */
@@ -58,6 +64,57 @@ test('a conversation with a prompt in flight is listed before Pi writes its file
   assert.equal(rows[0].cwd, 'E:/work/demo')
 })
 
+test('a live row updates its cached transcript summary from appended items', () => {
+  const key = 'draft:summary-cache'
+  const baseItems: ThreadItem[] = [
+    { id: 'u1', kind: 'user', text: 'first prompt', images: [], timestamp: 10, order: 1 }
+  ]
+  const first = conversationRows([], { [key]: thread({ items: baseItems, isStreaming: true }) }, 'E:/work/demo')[0]
+  const context = { sessionKey: key, runId: 'summary-run', turnId: 'summary-turn' }
+  const withAssistant = applyEventBatch(baseItems, [
+    {
+      event: { type: 'message_start', message: { role: 'assistant', content: [], timestamp: 20 } },
+      context
+    }
+  ])
+  const second = conversationRows([], { [key]: thread({ items: withAssistant, isStreaming: true }) }, 'E:/work/demo')[0]
+  const withText = applyEventBatch(withAssistant, [
+    {
+      event: {
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_start', contentIndex: 0 }
+      },
+      context
+    }
+  ])
+  const third = conversationRows([], { [key]: thread({ items: withText, isStreaming: true }) }, 'E:/work/demo')[0]
+  const withTerminal = applyEventBatch(withText, [
+    {
+      event: { type: 'bash_execution_update', id: 'summary-terminal', delta: 'line' },
+      context
+    }
+  ])
+  const fourth = conversationRows([], { [key]: thread({ items: withTerminal, isStreaming: true }) }, 'E:/work/demo')[0]
+  const restarted = [
+    { id: 'u2', kind: 'user', text: 'replacement history', images: [], timestamp: 5, order: 1 }
+  ] satisfies ThreadItem[]
+  const rehydrated = conversationRows([], { [key]: thread({ items: restarted, isStreaming: true }) }, 'E:/work/demo')[0]
+
+  assert.equal(first.messageCount, 1)
+  assert.equal(first.updatedAt, 10)
+  assert.equal(second.messageCount, 2)
+  assert.equal(second.updatedAt, 20)
+  assert.equal(second.preview, 'first prompt')
+  assert.equal(third, second)
+  assert.equal(third.messageCount, 2)
+  assert.equal(third.updatedAt, 20)
+  assert.equal(fourth.messageCount, 2)
+  assert.ok(fourth.updatedAt > third.updatedAt)
+  assert.equal(rehydrated.messageCount, 1)
+  assert.equal(rehydrated.updatedAt, 5)
+  assert.equal(rehydrated.preview, 'replacement history')
+})
+
 test('a prompt that has not reached Pi yet is still listed', () => {
   // `send` sets the run to queued before any event arrives, so a thread with
   // no items at all is still work the reader must be able to find.
@@ -92,6 +149,18 @@ test('a conversation already on disk is listed once, from the disk row', () => {
   assert.equal(rows.length, 1)
   assert.equal(rows[0].onDisk, true)
   assert.equal(rows[0].file, 'E:/work/demo/a.jsonl')
+})
+
+test('streaming project paths use the session cwd index and draft workspace', () => {
+  const sessions = [onDisk('E:/work/demo/a.jsonl', 'E:/work/session-project')]
+  const threads = {
+    'E:/work/demo/a.jsonl': thread({ isStreaming: true }),
+    'draft:active': thread({ isStreaming: true })
+  }
+
+  const paths = streamingProjectPaths(sessions, threads, 'draft:active', 'E:/work/draft-project')
+
+  assert.deepEqual(paths, ['e:/work/session-project', 'e:/work/draft-project'])
 })
 
 test('two conversations created in quick succession are both listed', () => {
@@ -170,6 +239,44 @@ test('the title bar reads the same live row as the sidebar, not the project name
     'draft:coffee'
   )
   assert.equal(title, prompt)
+})
+
+test('an active draft title resolves directly without enumerating other threads', () => {
+  const prompt = 'fix the active draft'
+  const threads = new Proxy(
+    {
+      'draft:active-title': thread({
+        items: [{ id: 'u1', kind: 'user', text: prompt, images: [], timestamp: 5, order: 1 }],
+        run: { phase: 'working', turns: 1, settled: false },
+        isStreaming: true
+      })
+    },
+    {
+      ownKeys: () => {
+        throw new Error('active draft lookup should not enumerate all threads')
+      }
+    }
+  )
+
+  assert.equal(activeConversationTitle([], threads, 'draft:active-title'), prompt)
+})
+
+test('active session title reuses the normalized path index for stable sessions', () => {
+  const sessions = [
+    { ...onDisk('E:/work/demo/a.jsonl'), name: 'Active session' }
+  ]
+  const iterator = sessions[Symbol.iterator].bind(sessions)
+  let iterations = 0
+  Object.defineProperty(sessions, Symbol.iterator, {
+    value: function* () {
+      iterations += 1
+      yield* iterator()
+    }
+  })
+
+  assert.equal(activeConversationTitle(sessions, {}, 'E:/work/demo/a.jsonl'), 'Active session')
+  assert.equal(activeConversationTitle(sessions, {}, 'E:/work/demo/a.jsonl'), 'Active session')
+  assert.equal(iterations, 1)
 })
 
 test('Pi owns the name of a live conversation', () => {

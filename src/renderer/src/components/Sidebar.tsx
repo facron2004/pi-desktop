@@ -28,7 +28,7 @@ import type { ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from 
 import { formatRelativeTime } from '../lib/format'
 import { normalisePathKey, samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
-import { liveConversationRows, type ConversationRow } from '../lib/live-sessions'
+import { liveConversationRows, streamingProjectPaths, type ConversationRow } from '../lib/live-sessions'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Popover } from './Popover'
@@ -95,19 +95,9 @@ export function Sidebar({
   // running thread by its own working directory so drafts, pinned and archived
   // conversations still mark their project.
   const runningProjectPaths = useAppStore(
-    useShallow((state) => {
-      const sessionCwds = new Map(
-        state.sessions.map((session) => [normalisePathKey(session.file), session.cwd])
-      )
-      return Object.entries(state.threads).flatMap(([file, thread]) => {
-        if (!thread.isStreaming) return []
-        const cwd =
-          thread.status.cwd ||
-          sessionCwds.get(normalisePathKey(file)) ||
-          (file === state.draftId ? state.workspace?.path : undefined)
-        return cwd ? [normalisePathKey(cwd)] : []
-      })
-    })
+    useShallow((state) =>
+      streamingProjectPaths(state.sessions, state.threads, state.draftId, state.workspace?.path)
+    )
   )
   const archivedFiles = useMemo(
     () => new Set(settings.archivedSessions ?? []),
