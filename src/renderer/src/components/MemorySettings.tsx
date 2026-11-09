@@ -216,7 +216,7 @@ export function MemorySettings() {
           </span>
           <div className="memory-learning-card__heading">
             <h4>{t('Learning')}</h4>
-            <p>{t('Learning runs in the background with the current model and never modifies the conversation.')}</p>
+            <p>{t('Learning sends conversation text to the selected model provider to extract memories. Stored memories stay in this app’s data folder; extraction does not modify the conversation.')}</p>
           </div>
         </div>
 
@@ -252,16 +252,16 @@ export function MemorySettings() {
           <div className="memory-learning-card__row">
             <div className="memory-learning-card__copy">
               <span className="memory-learning-card__title">
-                {t('Skip chats that used MCP, web search or computer use')}
+                {t('Skip external or unverified tool context')}
               </span>
               <span className="memory-learning-card__hint">
-                {t('These chats can carry outside context, so they are not used for learning by default.')}
+                {t('Chats with outside data or legacy tools whose source is unknown are not used for learning by default.')}
               </span>
             </div>
             <Switch
               checked={settings.memorySkipExternalContext !== false}
               onChange={(value) => void updateSettings({ memorySkipExternalContext: value })}
-              label={t('Skip chats that used MCP, web search or computer use')}
+              label={t('Skip external or unverified tool context')}
             />
           </div>
         </div>

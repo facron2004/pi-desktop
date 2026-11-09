@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { readFile, stat } from 'node:fs/promises'
+import { constants, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { lstat, open, readlink, realpath, stat, type FileHandle } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -34,6 +34,9 @@ const MAX_DIFF_BYTES = 512 * 1024
 const MAX_DIFF_FILE_BYTES = 2 * 1024 * 1024
 /** How much of a patch is sent to the renderer. */
 const MAX_PATCH_BYTES = 1024 * 1024
+const WORKTREE_READ_FLAGS = constants.O_RDONLY |
+  (constants.O_NOFOLLOW ?? 0) |
+  (constants.O_NONBLOCK ?? 0)
 
 interface GitOutput {
   code: number
@@ -292,6 +295,68 @@ function insideWorkTree(root: string, relative: string): string | null {
   return target
 }
 
+function pathContains(parent: string, child: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(child))
+  return relative === '' ||
+    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+}
+
+interface WorktreeFileRead {
+  buffer: Buffer | null
+  size: number
+}
+
+/** Read a regular worktree file by handle, rejecting hard links, or read a symlink's text. */
+async function readWorktreeFile(
+  root: string,
+  relative: string,
+  maxBytes: number
+): Promise<WorktreeFileRead | null> {
+  const target = insideWorkTree(root, relative)
+  if (!target) return null
+
+  let handle: FileHandle | undefined
+  try {
+    const [realRoot, info] = await Promise.all([realpath(root), lstat(target)])
+    if (info.isSymbolicLink()) {
+      const buffer = Buffer.from(await readlink(target), 'utf8')
+      return { buffer: buffer.length <= maxBytes ? buffer : null, size: buffer.length }
+    }
+    if (!info.isFile()) return null
+    if (info.nlink > 1) return null
+
+    const realTarget = await realpath(target)
+    const relation = path.relative(realRoot, realTarget)
+    if (relation === '..' || relation.startsWith(`..${path.sep}`) || path.isAbsolute(relation)) return null
+
+    handle = await open(realTarget, WORKTREE_READ_FLAGS)
+    const opened = await handle.stat({ bigint: true })
+    if (!opened.isFile() || opened.nlink > 1n) return null
+    const [currentRoot, currentTarget] = await Promise.all([realpath(root), realpath(target)])
+    if (currentRoot !== realRoot || currentTarget !== realTarget) return null
+    const named = await stat(currentTarget, { bigint: true })
+    if (opened.dev !== named.dev || opened.ino !== named.ino || named.nlink > 1n) return null
+
+    const size = opened.size > BigInt(Number.MAX_SAFE_INTEGER)
+      ? Number.MAX_SAFE_INTEGER
+      : Number(opened.size)
+    if (opened.size > BigInt(maxBytes)) return { buffer: null, size }
+
+    const buffer = Buffer.alloc(size)
+    let totalRead = 0
+    while (totalRead < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, totalRead, buffer.length - totalRead, totalRead)
+      if (bytesRead === 0) return null
+      totalRead += bytesRead
+    }
+    return { buffer, size }
+  } catch {
+    return null
+  } finally {
+    if (handle) await handle.close().catch(() => {})
+  }
+}
+
 function looksBinary(buffer: Buffer): boolean {
   return buffer.subarray(0, 8000).includes(0)
 }
@@ -355,12 +420,12 @@ export async function readFileDiff(root: string, filePath: string): Promise<GitF
   // The new side comes from disk; a deleted file has none.
   let newText = ''
   let newTruncated = false
-  try {
-    const stats = await stat(target)
-    if (stats.size > MAX_DIFF_FILE_BYTES) {
+  const working = await readWorktreeFile(root, filePath, MAX_DIFF_FILE_BYTES)
+  if (working) {
+    if (working.size > MAX_DIFF_FILE_BYTES) {
       binary = true
-    } else {
-      const buffer = await readFile(target)
+    } else if (working.buffer) {
+      const buffer = working.buffer
       if (looksBinary(buffer)) {
         binary = true
       } else {
@@ -369,8 +434,6 @@ export async function readFileDiff(root: string, filePath: string): Promise<GitF
         newTruncated = capped.truncated
       }
     }
-  } catch {
-    /* a deleted or unreadable file only has the old side */
   }
 
   if (binary) {
@@ -423,16 +486,15 @@ export async function readPatch(root: string, filePath?: string): Promise<GitPat
     (file) => file.untracked && (!filePath || file.path === filePath)
   )
   for (const file of untracked) {
-    const target = insideWorkTree(root, file.path)
-    if (!target) continue
     const clean = file.path.replace(/\\/g, '/')
-    try {
-      const stats = await stat(target)
-      if (stats.size > MAX_PATCH_BYTES) {
-        text += `diff --git a/${clean} b/${clean}\nnew file mode 100644\nBinary files /dev/null and b/${clean} differ\n`
-        continue
-      }
-      const buffer = await readFile(target)
+    const working = await readWorktreeFile(root, file.path, MAX_PATCH_BYTES)
+    if (!working) continue
+    if (working.size > MAX_PATCH_BYTES) {
+      text += `diff --git a/${clean} b/${clean}\nnew file mode 100644\nBinary files /dev/null and b/${clean} differ\n`
+      continue
+    }
+    if (working.buffer) {
+      const buffer = working.buffer
       if (looksBinary(buffer)) {
         text += `diff --git a/${clean} b/${clean}\nnew file mode 100644\nBinary files /dev/null and b/${clean} differ\n`
         continue
@@ -440,8 +502,6 @@ export async function readPatch(root: string, filePath?: string): Promise<GitPat
       const capped = capText(buffer.toString('utf8'))
       text += untrackedPatch(file.path, capped.text, capped.truncated)
       truncated = truncated || capped.truncated
-    } catch {
-      /* a file that vanished has nothing to add */
     }
   }
 
@@ -599,21 +659,13 @@ async function commitSides(
   } else {
     // Commit → working tree: the commit is the old side, the disk the new one.
     oldRaw = await showSide(`${hash}:${oldPath}`)
-    const target = insideWorkTree(root, filePath)
-    if (target) {
-      try {
-        const stats = await stat(target)
-        if (stats.size > MAX_DIFF_FILE_BYTES) {
-          newRaw = '\u0000'
-          oldRaw = `${oldRaw}\u0000`
-        } else {
-          const buffer = await readFile(target)
-          newRaw = buffer.toString('utf8')
-          if (looksBinary(buffer)) oldRaw = `${oldRaw}\u0000`
-        }
-      } catch {
-        /* the file is gone from the working tree: the diff is a deletion */
-      }
+    const working = await readWorktreeFile(root, filePath, MAX_DIFF_FILE_BYTES)
+    if (working?.size && working.size > MAX_DIFF_FILE_BYTES) {
+      newRaw = '\u0000'
+      oldRaw = `${oldRaw}\u0000`
+    } else if (working?.buffer) {
+      newRaw = working.buffer.toString('utf8')
+      if (looksBinary(working.buffer)) oldRaw = `${oldRaw}\u0000`
     }
   }
 
@@ -789,15 +841,22 @@ export async function readBranches(root: string): Promise<GitBranches> {
 }
 
 /** Remove a registered worktree, refusing the one the app is looking at. */
-export async function removeWorktree(root: string, target: string): Promise<GitCommitResult> {
+export async function removeWorktree(
+  root: string,
+  target: string,
+  withRemoveLock?: (
+    resolvedTarget: string,
+    remove: () => Promise<GitCommitResult>
+  ) => Promise<GitCommitResult>
+): Promise<GitCommitResult> {
   if (!root) return { ok: false, error: 'No project is open.' }
   if (!target) return { ok: false, error: 'No worktree was given.' }
-  const resolved = path.resolve(target)
+  const resolved = path.resolve(root, target)
   const topLevel = await git(root, ['rev-parse', '--show-toplevel'])
   const currentRoot = path.resolve(topLevel.stdout.trim() || root)
 
-  if (path.relative(currentRoot, resolved) === '') {
-    return { ok: false, error: 'The worktree that is open cannot be removed.' }
+  if (pathContains(resolved, currentRoot)) {
+    return { ok: false, error: 'The worktree containing the open project cannot be removed.' }
   }
 
   const list = await git(root, ['worktree', 'list', '--porcelain'])
@@ -809,15 +868,18 @@ export async function removeWorktree(root: string, target: string): Promise<GitC
     return { ok: false, error: 'That folder is not a worktree of this repository.' }
   }
 
-  const result = await git(root, ['worktree', 'remove', resolved], COMMIT_TIMEOUT_MS)
-  if (result.code !== 0) {
-    const detail = cleanError(result.stderr) || cleanError(result.stdout)
-    return {
-      ok: false,
-      error: detail || 'Could not remove the worktree. It may still have uncommitted changes.'
+  const remove = async (): Promise<GitCommitResult> => {
+    const result = await git(root, ['worktree', 'remove', resolved], COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) {
+      const detail = cleanError(result.stderr) || cleanError(result.stdout)
+      return {
+        ok: false,
+        error: detail || 'Could not remove the worktree. It may still have uncommitted changes.'
+      }
     }
+    return { ok: true }
   }
-  return { ok: true }
+  return withRemoveLock ? withRemoveLock(resolved, remove) : remove()
 }
 
 /** Check out a local branch. */
@@ -1017,14 +1079,15 @@ async function countUntracked(root: string, files: GitFileStatus[]): Promise<voi
   await Promise.all(
     pending.map(async (file) => {
       try {
-        const absolute = path.join(root, file.path)
-        const stats = await stat(absolute)
-        if (stats.size > MAX_UNTRACKED_BYTES) {
+        const working = await readWorktreeFile(root, file.path, MAX_UNTRACKED_BYTES)
+        if (!working) return
+        if (working.size > MAX_UNTRACKED_BYTES) {
           file.added = 1
           file.removed = 0
           return
         }
-        const content = await readFile(absolute, { encoding: 'utf8', flag: 'r' })
+        if (!working.buffer) return
+        const content = working.buffer.toString('utf8')
         const lines = content.split('\n')
         file.added = Math.max(0, lines.length - (content.endsWith('\n') ? 1 : 0))
         file.removed = 0

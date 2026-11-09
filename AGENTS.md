@@ -31,6 +31,14 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
    agent until the client replies with an `extension_ui_response` carrying Pi's own
    request id — mint a new id and Pi waits forever. The answer goes out through
    `runtime:respondUi`; never through `runtime:request`.
+8. **Treat session paths from the renderer as untrusted.** Before hydrating,
+   resuming, renaming or removing a session, resolve it inside
+   `resolveSessionRoot()` and reject traversal, symlink escapes, non-JSONL
+   paths and non-files. Hydration and cold renames consume the same verified
+   `FileHandle` they opened with.
+9. **Read workspace files through the verified handle.** `fs:read`, text search
+   and image previews use `openWorkspaceFile()` and consume its same
+   `FileHandle`; never reopen a path after checking it resolves inside the workspace.
 
 ## Layout
 
@@ -80,7 +88,9 @@ The raw wire shape is handled by `lib/stream-events.ts`: it normalizes every
 Pi record into a typed `StreamEvent` carrying `threadId`, `runId`, `turnId`,
 `sequence`, `messageId`, `toolCallId` and `status`. `applyEvent` is only the
 compatibility door; the projection switch is `applyStreamEvent`. Do not add a
-second event switch inside a component.
+second event switch inside a component. Tool-call message identities are
+released when `agent_settled` closes a run; the per-session sequence stays
+monotonic across later runs.
 
 What that buys, and what it costs:
 
@@ -212,12 +222,19 @@ thread in `threads`, keyed by the JSONL path, or by `draft:…` until Pi writes 
 file. Events are stamped with the runtime that owns them, so a background run
 keeps updating after the view has moved on.
 
-Opening a conversation does not start Pi. Focusing the composer starts a cold
-runtime in the background, but the prompt is sent only when the user submits it.
-`SessionSupervisor` holds one process per hot conversation, and the same JSONL
-never has two writers. A second prompt in the same working directory waits; it
-does not abort the one already running. Switching projects is also only a view
-change. Closing or removing a workspace is what stops that folder's processes.
+Opening a conversation does not start Pi. A conversation that stays on screen
+for a moment prewarms its own process in the background (`schedulePrewarm`),
+and focusing the composer starts a cold runtime; the prompt itself is still sent
+only when the user submits it. A prewarmed process carries the speculative mark,
+so moving the view on stops it again. Drafts are never prewarmed: Pi writes a
+session file as soon as it starts, so a chat that was never written would leave
+an empty conversation on disk. `SessionSupervisor` holds one process per hot
+conversation, and the same JSONL never has two writers. A second prompt in the
+same working directory waits; it does not abort the one already running.
+The working-directory gate is shared across app processes. Parent and nested
+folders overlap; sibling folders remain independent.
+Switching projects is also only a view change. Closing or removing a workspace
+is what stops that folder's processes.
 
 The sidebar running mark reads `threads[file].isStreaming`. `stop()` aborts the
 conversation on screen, not whichever one happens to be running in the
@@ -269,7 +286,7 @@ covers a folder discovered from a session becoming registered.
 「插件与技能 / Plugins & skills」and「定时任务 / Scheduled tasks」are desk
 pages, not dialogs. Their sidebar entries toggle `deskPage`, and `App` renders
 only `<div className="desk-page">` inside `main__body`: the composer, GoalBar,
-PlanStrip, status strip, widgets and task rail all belong to the conversation
+widgets and task rail all belong to the conversation
 branch and must not sit underneath the page. There is no Back control in the
 titlebar; selecting a conversation, starting a new chat, or clicking the same
 sidebar entry again clears `deskPage` and restores the conversation unchanged.
@@ -323,10 +340,19 @@ measures tool start-to-end as a fallback. Model time sums client-observed
 `turn_start` to assistant-message completion intervals. Average TTFT is one
 prompt/run's `agent_start` to first text token, averaged across recorded runs.
 These timing samples live in localStorage per conversation and migrate when a
-draft gets its session file; timing Pi never recorded cannot be reconstructed
-for earlier turns. The tokens and the hit rate open `UsagePanel` — total Token,
-cache hit rate, uncached input, cache read and output. Two questions, two cards;
-a reading printed in both would be two things to keep in sync.
+draft gets its session file. A reopened transcript with no client samples is
+approximated from Pi's message timestamps and each assistant message's
+`durationMs` (prompt-to-first-assistant for TTFT, summed answer windows for
+model time and TPS). Version 1 model-time samples used the wall clock and are
+dropped; version 2 changed model time to a monotonic clock. TTFT, run,
+generation and fallback tool samples before version 4 also used the wall clock,
+so they are dropped during migration because the record cannot distinguish a
+Pi-reported tool duration from a client fallback. Sleeping the machine or
+syncing the time could turn one answer into hours, and a wrong total is worse
+than a missing one. The tokens and the hit rate open `UsagePanel` — total Token,
+cache hit rate, uncached input, cache read, cache write and output. Two
+questions, two cards; a reading printed in both would be two things to keep in
+sync.
 
 The ring is `ContextRing`: the arc plus its percentage, one colour, following
 the `showContextUsage` setting. It opens `ContextPanel`, which asks Pi for
@@ -340,11 +366,16 @@ say whether the reading is Pi's or an estimate. Pi's own `contextWindow` must
 outrank the saved model, or a stale window renders an impossible percentage.
 
 Token totals and the hit rate come from `get_session_stats`, with the visible
-transcript as a fallback. Pi reports no generation timing, so `run` mints
-`firstTokenAt` on the first text delta and `lastTokenAt` on `message_end` (or
-`message_update:done`); `session-timing.ts` stores per-conversation model time,
-TTFT and fallback tool durations, while `session-metrics.ts` derives the
-displayed totals and newest-turn TPS.
+transcript as a fallback; the hit rate counts cache reads against every prompt
+token — fresh input, cache reads and cache writes. Pi reports no generation
+timing, so `run` mints `firstTokenAt` on the first text delta (TTFT is the
+first readable word) and starts each answer's generation window at its first
+block of any kind — text, thinking or a tool call — summing the window into
+`generationMs` when the block ends (`text_end`, `thinking_end`,
+`toolcall_end`, `message_update:done` or `message_end`). A tool gap between
+answers is not model time. `session-timing.ts` stores per-conversation model
+time, TTFT, generation windows and fallback tool durations, while
+`session-metrics.ts` derives the displayed totals and newest-turn TPS.
 
 ## The session bar
 
@@ -359,6 +390,20 @@ mode is a Settings preference, not a composer control.
 The title bar does not repeat any of it: it keeps the conversation's name and
 the app's actions. A project or branch chip in two places is two things to keep
 in sync, and the one in the header had no room to say what it was.
+
+**The title bar must wear the same row the sidebar highlights.** The sidebar
+lists disk sessions *plus* live threads (`lib/live-sessions.ts`), because a chat
+Pi has not flushed to the session folder yet still has a first prompt. The
+title bar used to read only `sessions`, so a running conversation showed the
+project name while its row showed the prompt. `activeConversationTitle()`
+resolves the active key against both sources, and `App.tsx` uses it for the
+title, the rename draft and the rename comparison. A rename made in the main
+process (auto-title, a hot or a cold session) never re-reads the index by
+itself: `SessionSupervisor.rename` emits `rename`, `bridgeRuntime` forwards
+`sessions:changed`, and the store paints the name on the row and calls
+`refreshSessions()`. `session_info_changed` refreshes too, for a
+`set_session_name` that bypassed `supervisor.rename`. Do not drop either half —
+`tests/title-sync.test.ts` and `tests/live-sessions.test.ts` guard the wiring.
 
 The context window is a ring (`ContextRing`), not a gauge icon and not a bar.
 The arc length is the whole reading — the percentage of the window in use — and
@@ -456,6 +501,35 @@ created. `projectlessRoot()` now creates it, and `runPiCli` falls back to
 deleted between listing it and running a command, so never assume a path from
 `workspaceRoot()` still exists.
 
+### Long session files
+
+A session larger than the 24 MB read window is not dropped. `sessions.ts` reads
+its transcript from the tail — the newest 24 MB — and builds metadata from a 2 MB
+head plus a 1 MB tail. `getSessionMeta` must never answer `null` just because a
+file is long, or the sidebar hides a conversation the user can still resume.
+`readJsonlLines` starting mid-file skips the partial line, and a cold rename
+appends its `session_info` to the tail leaf.
+
+Full-text search does not skip a long session: above the 8 MB direct-scan window
+it uses a per-session index in `<userData>/session-search-index/`, holding only
+the user/assistant text with a lower-case copy for matching. The first query
+builds it from the newest 64 MB; later queries scan the snapshot, and an append
+is picked up from the last complete JSONL record. An unterminated tail is
+retried on the next query, so a write racing the index build is not lost.
+Entries whose source records move before the newest 64 MB window are evicted
+when that append is indexed, so a live session's index stays bounded.
+Each sidecar is at most 64 MiB; a larger one is discarded and rebuilt, and a
+snapshot larger than that is used for the current search but not persisted.
+Each query budgets 128 MB across source reads, sidecar reads and indexed-text
+scans; when the remaining budget cannot cover the index work, it falls back to
+the bounded direct scan, and a cached scan stops at the remaining work limit.
+A missing, truncated or far-behind snapshot is rebuilt; the in-memory cache holds
+at most eight snapshots and an estimated 64 MiB total, and removing a session
+removes its index. On-disk sidecars are capped at 512 files and 512 MiB; startup
+and writes evict the oldest indexes when either limit is exceeded.
+`configureSessionSearchIndex` is the only door to the folder — the main process
+points it at `userData`, tests pass `null` to keep the old direct scan.
+
 ### Settings and shortcuts
 
 The settings dialog has no Plugins page: plugins, skills and MCP servers are
@@ -515,6 +589,9 @@ into the chosen page; opening a view elsewhere adds or focuses its page tab.
 a 220px project tree (Files) or changed-file list (File changes) sits on its
 right, as MCode's file panel and review panel do. `SubagentPanel` is the Subagents page and owns the right-panel
 instance of `SubagentTree`; the left sidebar does not contain subagent status.
+The Images page lists at most 1,000 pictures after scanning at most 100,000
+directory entries; a newer image-list request in the same window supersedes
+the previous walk.
 The docked panel defaults to 520px and can be dragged between 360 and 760px;
 MCode's 640px default does not fit beside Pi's 280px task rail at the same
 window width. The comparison with the reference app is in
@@ -538,8 +615,11 @@ Every part of it is a projection, not state:
   opens that task's `SubagentConversation` on the Subagents page. The shell
   keeps only its session key and task id; the detail reads the current thread,
   so status and output keep updating while it is open;
-- progress is the checklist of the newest assistant message that carries one
-  (`lib/plan.ts`) — the same source the plan strip reads;
+- progress is the newest todo list the agent sent with `desktop_todo`
+  (`lib/plan.ts`), or the checklist of the newest assistant message that
+  carries one (ignoring a list shorter than two entries) when the agent never
+  used the tool. The rail is the only place it is shown — there is no strip
+  above the composer;
 - deliverables are the files the run wrote (`lib/changes.ts`), listed flat by
   `lib/task-panel.ts`.
 
@@ -680,6 +760,15 @@ empty path means a sibling folder. The branch chip in the session bar is
 `BranchMenu`; a worktree row switches the app to that folder (the store registers
 it as a workspace).
 
+The branch menu keeps a **visible worktree button** of its own, beside
+"Create and checkout branch". It opens an inline form that adds a worktree on a
+new branch and switches the app to it; a "Worktrees" section lists the other
+checkouts, and each non-current row can be removed after a confirmation. Do
+**not** fold this action into the branch-creation form as a checkbox: it was
+removed twice that way (v0.3.0 and the "refine the branch menu" commit), and a
+hidden toggle leaves no obvious way to ask for an isolated checkout.
+`tests/branch-menu-worktree.test.ts` guards the button.
+
 ## MCP
 
 `src/main/mcp.ts` reads `~/.pi/agent/mcp.json` and `<workspace>/.pi/mcp.json` and
@@ -712,21 +801,10 @@ network.
 - Live updates come from `SessionSupervisor` events. The mobile renderer reuses
   `lib/stream-events.ts` and `lib/thread.ts`; do not add a second protocol reducer.
 - Keep host checks, same-origin checks, one-use pairing, device revocation and
-  path redaction in the main process. Never put a bearer token in a URL.
+  path redaction in the main process. A depth cap must omit nested content,
+  never pass raw values through. Never put a bearer token in a URL.
 - `npm run dev` watches the separate mobile bundle alongside Electron;
   `npm run build` includes it in the packaged output.
-
-## The plan strip
-
-`PlanStrip` is a projection, not a feature of the protocol: `extractPlan` reads
-markdown checklists out of the newest assistant message and returns `null` for
-anything shorter than two entries. Collapse/dismiss are view preferences keyed
-by the source message id, so a new plan starts collapsed. A transition to complete
-collapses it once; a manual reopen is remembered, including after a restart.
-The completion marker is a local view preference, not execution state. Do not add
-store state for it — the thread is the source of truth. Its actions only hand the checklist
-back: copy as `- [x]` markdown, insert the whole plan or a single step through
-`insertIntoComposer`; the strip itself is never changed by them.
 
 ## Memory
 
@@ -734,7 +812,10 @@ back: copy as `- [x]` markdown, insert the whole plan or a single step through
 file-backed store under `<userData>/memories/`, and the appended system-prompt
 block. `MemoryService` only listens to `agent_settled`, waits for an idle
 delay, skips aborted, draft, running and external-context sessions, and
-serializes model calls. `memories.json` is canonical; `memory_summary.md` and
+serializes model calls. The Pi extension persists external-context checks on
+the active branch; an oversized session without a complete check is skipped
+until Pi opens and classifies it, unless that filter is disabled.
+`memories.json` is canonical; `memory_summary.md` and
 `rollout_summaries/` are projections. Never inject the raw entries file — the
 prompt gets a project-scoped, 10,000-byte summary plus the decision-boundary
 header in `MemoryService.promptFor`. Extraction runs in a throwaway
@@ -757,10 +838,17 @@ plan tool asks for approval through Pi's dialog protocol; approving restores the
 previous tool loadout. Its `tool_call` is exempt from the generic permission
 gate because that dialog is already the approval. The `subagent` tool is in the
 normal, Goal and Subagent loadouts (and blocked in Plan Mode); Subagent Mode adds
-the delegation-first instruction. `src/main/pi/subagent.ts` generates the
-per-process extension that spawns a separate `pi --mode json` process per task
-(StringDecoder JSONL, never readline) and returns its final text and usage to the
-parent.
+the delegation-first instruction. `desktop_todo` is in the normal, Goal,
+Subagent and Plugin loadouts (not Plan Mode): it records the agent's checklist
+in the session and its `tool_call` is exempt from the permission gate because it
+is bookkeeping for the progress rail. Plugin Mode keeps the normal working
+loadout and adds an instruction to author a Pi extension — global
+`~/.pi/agent/extensions/` or project `.pi/extensions/`, a load check with a
+throwaway `pi -e`, and a report of the path. `src/main/pi/subagent.ts` generates the
+per-process extension that spawns a separate `pi --mode rpc` process per task,
+loads the child's permission extension, and routes its approval requests through
+the parent conversation's live permission dialog. It reads Pi's JSONL with
+`StringDecoder` (never `readline`) and returns the child's final text and usage.
 
 Computer Use is a General setting (`computerUse`), not a task mode.
 `src/main/pi/computer-use.ts` registers the `computer` tool (screenshot, list

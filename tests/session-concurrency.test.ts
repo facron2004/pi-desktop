@@ -19,6 +19,18 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
 const bridge = {
   app: { info: async () => ({}), setTheme: async () => {} },
   settings: { get: async () => ({ workspaces: [] }), patch: async (patch: object) => ({ workspaces: [], ...patch }) },
+  workspaces: {
+    remove: async (id?: string, hiddenPath?: string) => {
+      const settings = useAppStore.getState().settings
+      return {
+        ...settings,
+        workspaces: settings.workspaces.filter((workspace) => workspace.id !== id),
+        hiddenProjects: hiddenPath
+          ? [...new Set([...(settings.hiddenProjects ?? []), hiddenPath])]
+          : settings.hiddenProjects
+      }
+    }
+  },
   sessions: { list: async () => [], hydrate: async () => [] },
   git: { status: async () => ({ isRepo: false }) },
   runtime: {

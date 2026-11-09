@@ -59,6 +59,9 @@ const suites = [
   'rpc-args.test.ts',
   'session-fixture.test.ts',
   'supervisor.test.ts',
+  'runtime-ensure.test.ts',
+  'navigation-policy.test.ts',
+  'webview-policy.test.ts',
   'session-concurrency.test.ts',
   'rpc-client.test.ts',
   'extension-dialog-protocol.test.ts',
@@ -74,14 +77,19 @@ const suites = [
   'live-sessions.test.ts',
   'git-branches.test.ts',
   'mcp.test.ts',
+  'remote-access.test.ts',
   'fs-read.test.ts',
+  'search-cancel.test.ts',
   'workspace-panel.test.ts',
   'task-panel.test.ts',
+  'scheduled-tasks.test.ts',
   'session-tree.test.ts',
   'renderer-utils.test.ts',
   'marketplace.test.ts',
   'memory.test.ts',
-  'auto-title.test.ts'
+  'auto-title.test.ts',
+  'branch-menu-worktree.test.ts',
+  'title-sync.test.ts'
 ]
 const debug = process.argv[2] === '--debug'
 

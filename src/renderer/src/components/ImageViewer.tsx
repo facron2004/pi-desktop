@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ExternalLink, FolderSearch, ImageOff } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { basename, relativePath } from '../lib/path'
@@ -15,8 +15,6 @@ import { useT } from '../lib/i18n'
  * the project.
  */
 
-const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp|svg|ico|avif)$/i
-
 interface ProjectImage {
   path: string
   name: string
@@ -27,17 +25,19 @@ export function ImageViewer() {
   const t = useT()
   const workspace = useAppStore((state) => state.workspace)
   const [images, setImages] = useState<ProjectImage[] | undefined>(undefined)
+  const [scanTruncated, setScanTruncated] = useState(false)
   const [active, setActive] = useState<string | null>(null)
-  const [source, setSource] = useState<string | null>(null)
+  const [source, setSource] = useState<{ path: string; data: string } | null>(null)
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null)
   const [error, setError] = useState(false)
   const [limit, setLimit] = useState(60)
 
-  // `fs:search` already walks the project the way the file list does, so the
-  // pictures are found without a second walker; the query is the extension.
+  // The main process finds every picture in one walk; asking once per
+  // extension made the page walk the whole project nine times.
   useEffect(() => {
     let cancelled = false
     setImages(undefined)
+    setScanTruncated(false)
     setActive(null)
     setSource(null)
     setNatural(null)
@@ -46,29 +46,26 @@ export function ImageViewer() {
       setImages([])
       return
     }
-    const queries = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp', 'avif']
-    void Promise.all(queries.map((query) => window.pi.fs.search(query, 200).catch(() => [])))
-      .then((lists) => {
+    void window.pi.fs
+      .listImages()
+      .then((result) => {
         if (cancelled) return
-        const seen = new Map<string, ProjectImage>()
-        for (const entry of lists.flat()) {
-          if (entry.kind !== 'file') continue
-          if (!IMAGE_EXTENSIONS.test(entry.path)) continue
-          // `fs:search` matches the path, so a folder named "images" brings
-          // every file in it; the extension filter above is the real test.
-          if (seen.has(entry.path)) continue
-          seen.set(entry.path, {
+        const list = result.entries
+          .filter((entry) => entry.kind === 'file')
+          .map((entry) => ({
             path: entry.path,
-            name: basename(entry.path),
+            name: basename(entry.path) || entry.name,
             size: entry.size
-          })
-        }
-        const list = [...seen.values()].sort((a, b) => a.path.localeCompare(b.path))
+          }))
         setImages(list)
+        setScanTruncated(result.truncated)
         setActive((current) => current ?? list[0]?.path ?? null)
       })
       .catch(() => {
-        if (!cancelled) setImages([])
+        if (!cancelled) {
+          setImages([])
+          setScanTruncated(false)
+        }
       })
     return () => {
       cancelled = true
@@ -76,6 +73,7 @@ export function ImageViewer() {
   }, [workspace?.path])
 
   const visible = useMemo(() => (images ?? []).slice(0, limit), [images, limit])
+  const activeSource = source?.path === active ? source.data : null
 
   useEffect(() => {
     let cancelled = false
@@ -87,7 +85,7 @@ export function ImageViewer() {
       .readImageDataUrl(active)
       .then((data) => {
         if (cancelled) return
-        setSource(data)
+        setSource(data ? { path: active, data } : null)
         setError(!data)
       })
       .catch(() => {
@@ -103,9 +101,9 @@ export function ImageViewer() {
   return (
     <div className="image-viewer">
       <div className="image-viewer__stage">
-        {source ? (
+        {activeSource ? (
           <img
-            src={source}
+            src={activeSource}
             alt={activeInfo?.name ?? ''}
             onLoad={(event) =>
               setNatural({
@@ -127,7 +125,7 @@ export function ImageViewer() {
         ) : images.length === 0 ? (
           <div className="image-viewer__empty">
             <FolderSearch size={20} />
-            <span>{t('This project has no pictures')}</span>
+            <span>{t(scanTruncated ? 'Picture list may be incomplete' : 'This project has no pictures')}</span>
           </div>
         ) : (
           <div className="image-viewer__empty">
@@ -163,6 +161,10 @@ export function ImageViewer() {
         </div>
       ) : null}
 
+      {scanTruncated && images && images.length > 0 ? (
+        <div className="image-viewer__limit-note">{t('Picture list may be incomplete')}</div>
+      ) : null}
+
       {images && images.length > 0 ? (
         <div className="image-viewer__strip" role="listbox" aria-label={t('Pictures in this project')}>
           {visible.map((image) => (
@@ -176,7 +178,11 @@ export function ImageViewer() {
               title={relativePath(workspace?.path ?? '', image.path)}
               onClick={() => setActive(image.path)}
             >
-              <Thumb path={image.path} />
+              <Thumb
+                path={image.path}
+                active={image.path === active}
+                activeData={image.path === active ? activeSource : null}
+              />
               <span className="image-viewer__thumb-name">{image.name}</span>
             </button>
           ))}
@@ -198,17 +204,48 @@ export function ImageViewer() {
 /**
  * One picture, loaded on demand.
  *
- * The strip can hold a hundred paths; reading them all at once would put every
- * byte of the project's artwork in memory. The `IntersectionObserver` would be
- * overkill for a strip that scrolls together, so each thumb loads when it
- * first renders and keeps its data URL afterwards.
+ * The page renders many paths at once, but only a few thumbnails are in view.
+ * Load those on demand, use a smaller IPC byte limit than the main image, and
+ * release their data URLs when they leave the strip's viewport.
  */
-function Thumb({ path }: { path: string }) {
+const MAX_THUMBNAIL_BYTES = 1024 * 1024
+
+function Thumb({
+  path,
+  active,
+  activeData
+}: {
+  path: string
+  active: boolean
+  activeData: string | null
+}) {
+  const target = useRef<HTMLSpanElement>(null)
+  const [visible, setVisible] = useState(false)
   const [data, setData] = useState<string | null>(null)
+
   useEffect(() => {
+    const node = target.current
+    if (!node) return
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true)
+      return
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => setVisible(Boolean(entry?.isIntersecting)),
+      { rootMargin: '0px 96px' }
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    if (active || activeData || !visible) {
+      setData(null)
+      return
+    }
     let cancelled = false
     void window.pi.fs
-      .readImageDataUrl(path)
+      .readImageDataUrl(path, MAX_THUMBNAIL_BYTES)
       .then((value) => {
         if (!cancelled) setData(value)
       })
@@ -216,6 +253,12 @@ function Thumb({ path }: { path: string }) {
     return () => {
       cancelled = true
     }
-  }, [path])
-  return data ? <img src={data} alt="" loading="lazy" /> : <span className="image-viewer__thumb-blank" />
+  }, [path, visible, active, activeData])
+
+  const preview = visible ? (active ? activeData : data) : null
+  return (
+    <span className="image-viewer__thumb-media" ref={target}>
+      {preview ? <img src={preview} alt="" decoding="async" /> : <span className="image-viewer__thumb-blank" />}
+    </span>
+  )
 }

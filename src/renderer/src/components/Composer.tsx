@@ -5,9 +5,11 @@ import {
   ListChecks,
   Target,
   Square,
+  Wrench,
   X
 } from 'lucide-react'
 import { useAppStore, type QueueKind } from '../store/useAppStore'
+import { MAX_IMAGE_DATA_BYTES } from '@shared/types'
 import type { FileEntry, PiCommand } from '@shared/types'
 import { filterCommands } from '../lib/commands'
 import { relativePath } from '../lib/path'
@@ -15,6 +17,7 @@ import { openingLabel, useT } from '../lib/i18n'
 import { CommandPalette } from './CommandPalette'
 import { FileMention } from './FileMention'
 import { ModelPicker } from './TopBar'
+import { ImageButton } from './Lightbox'
 import { ProjectSelector } from './ProjectSelector'
 import { BranchMenu } from './BranchMenu'
 import { PermissionPicker } from './PermissionPicker'
@@ -485,12 +488,14 @@ export function Composer() {
 
   /** The base64 body of a file, read the way `addFiles` has always read a picture. */
   const readBase64 = (file: File): Promise<string> =>
-    new Promise((resolve) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(String(reader.result ?? '').split(',')[1] ?? '')
-      reader.onerror = () => resolve('')
-      reader.readAsDataURL(file)
-    })
+    file.size > MAX_IMAGE_DATA_BYTES
+      ? Promise.resolve('')
+      : new Promise((resolve) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(String(reader.result ?? '').split(',')[1] ?? '')
+          reader.onerror = () => resolve('')
+          reader.readAsDataURL(file)
+        })
 
   /**
    * Add a batch with `pasteMentions` on: a picture is written next to the
@@ -507,6 +512,11 @@ export function Composer() {
     const references: string[] = []
     for (const file of items) {
       if (!file.type.startsWith('image/')) {
+        const filePath = window.pi.fs.pathForFile(file)
+        if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+        continue
+      }
+      if (file.size > MAX_IMAGE_DATA_BYTES) {
         const filePath = window.pi.fs.pathForFile(file)
         if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
         continue
@@ -547,6 +557,11 @@ export function Composer() {
     const references: string[] = []
     for (const file of items) {
       if (file.type.startsWith('image/')) {
+        if (file.size > MAX_IMAGE_DATA_BYTES) {
+          const filePath = window.pi.fs.pathForFile(file)
+          if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+          continue
+        }
         const reader = new FileReader()
         reader.onload = () => {
           const result = String(reader.result ?? '')
@@ -665,22 +680,22 @@ export function Composer() {
 
           {images.length > 0 ? (
             <div className="composer__queue">
-              <div className="composer__queue-item">
+              <div className="composer__attachments">
                 {images.map((image, index) => (
-                  <span key={index} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <img
+                  <span className="composer__attachment" key={index}>
+                    <ImageButton
                       src={`data:${image.mimeType};base64,${image.data}`}
-                      alt=""
-                      style={{ width: 34, height: 34, borderRadius: 6, objectFit: 'cover' }}
+                      alt="attachment"
+                      inline={{ data: image.data, mimeType: image.mimeType }}
                     />
                     <button
-                      className="icon-btn"
-                      style={{ width: 20, height: 20 }}
+                      type="button"
+                      className="composer__attachment-remove"
                       onClick={() => setImages((current) => current.filter((_, i) => i !== index))}
                       aria-label={`${t('Remove image')} ${index + 1}`}
                       title={`${t('Remove image')} ${index + 1}`}
                     >
-                      <X size={12} />
+                      <X size={10} />
                     </button>
                   </span>
                 ))}
@@ -763,8 +778,10 @@ export function Composer() {
                   <Target size={13} />
                 ) : agentMode === 'plan' ? (
                   <ListChecks size={13} />
-                ) : (
+                ) : agentMode === 'subagent' ? (
                   <Bot size={13} />
+                ) : (
+                  <Wrench size={13} />
                 )}
                 <span>
                   {t(
@@ -772,7 +789,9 @@ export function Composer() {
                       ? 'Goal Mode'
                       : agentMode === 'plan'
                         ? 'Plan Mode'
-                        : 'Subagent Mode'
+                        : agentMode === 'subagent'
+                          ? 'Subagent Mode'
+                          : 'Plugin Mode'
                   )}
                 </span>
                 <X size={11} />

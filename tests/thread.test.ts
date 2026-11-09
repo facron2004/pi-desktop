@@ -7,8 +7,11 @@ import {
   itemsFromMessages,
   lastAssistantText,
   markAborted,
-  type ThreadItem
+  type AssistantItem,
+  type ThreadItem,
+  type ToolItem
 } from '../src/renderer/src/lib/thread'
+import { extractPlan } from '../src/renderer/src/lib/plan'
 
 /* ------------------------------------------------------------------ *
  * helpers
@@ -105,6 +108,21 @@ test('text deltas accumulate and text_end replaces them with the authority', () 
   items = applyEvents(items, [assistantEnd([{ type: 'text', text: 'Hello world!' }])])
   assert.equal(texts(items), 'Hello world!')
   assert.equal(lastAssistantText(items), 'Hello world!')
+})
+
+test('message_end keeps Pi’s generation duration and replay carries it', () => {
+  let items = applyEvents([], [assistantStart()])
+  items = applyEvents(items, [assistantEnd([{ type: 'text', text: 'done' }], { durationMs: 4321 })])
+  const live = items.find((item) => item.kind === 'assistant')
+  assert.ok(live && live.kind === 'assistant')
+  assert.equal(live.durationMs, 4321)
+
+  const replay = itemsFromMessages([
+    { role: 'assistant', content: [{ type: 'text', text: 'done' }], timestamp: 10, durationMs: 900 }
+  ])
+  const replayed = replay.find((item) => item.kind === 'assistant')
+  assert.ok(replayed && replayed.kind === 'assistant')
+  assert.equal(replayed.durationMs, 900)
 })
 
 test('message_end makes the message authoritative and stops the stream', () => {
@@ -606,4 +624,77 @@ test('a cancelled retry is a stopped attempt, and retry results use stream notic
     assert.equal(item.level, level)
     assert.equal(item.text, text)
   }
+})
+
+test('the plan projection reuses stable answers and still follows the live one', () => {
+  const planned: AssistantItem = {
+    id: 'a1',
+    kind: 'assistant',
+    blocks: [{ type: 'text', text: '- [x] first\n- [ ] second' }],
+    streaming: false,
+    timestamp: 1,
+    order: 1
+  }
+  const first = extractPlan([planned])
+  assert.equal(first?.total, 2)
+  assert.equal(first?.done, 1)
+
+  // A streamed delta produces a new item list but this answer is untouched;
+  // its checklist must not be parsed again.
+  const live: AssistantItem = {
+    id: 'a2',
+    kind: 'assistant',
+    blocks: [{ type: 'text', text: 'still writing' }],
+    streaming: true,
+    timestamp: 2,
+    order: 2
+  }
+  assert.equal(extractPlan([planned, live])?.sourceId, 'a1')
+
+  // The answer being written is the newest item; its plan still appears as
+  // its text grows into one.
+  const grown: AssistantItem = { ...live, blocks: [{ type: 'text', text: '- [x] one\n- [ ] two' }] }
+  const third = extractPlan([planned, grown])
+  assert.equal(third?.sourceId, 'a2')
+  assert.equal(third?.total, 2)
+})
+
+test('the plan projection follows the newest todo tool list', () => {
+  const todo = (
+    id: string,
+    items: { text: string; status: string }[],
+    status: ToolItem['status'] = 'ok'
+  ): ToolItem => ({
+    id,
+    kind: 'tool',
+    toolCallId: id,
+    toolName: 'desktop_todo',
+    args: { items },
+    status,
+    timestamp: Number(id.slice(1)),
+    order: Number(id.slice(1))
+  })
+
+  const first = extractPlan([
+    todo('t1', [
+      { text: 'Read the reducer', status: 'completed' },
+      { text: 'Cache the projection', status: 'in_progress' },
+      { text: 'Run the tests', status: 'pending' }
+    ])
+  ])
+  assert.equal(first?.sourceId, 't1')
+  assert.equal(first?.done, 1)
+  assert.equal(first?.total, 3)
+  assert.equal(first?.entries[1]?.active, true)
+  assert.equal(first?.entries[1]?.done, false)
+
+  // The newest successful call is the current plan; failed and never-run
+  // proposals are ignored.
+  const older = todo('t2', [{ text: 'old step', status: 'pending' }])
+  const newer = todo('t3', [{ text: 'new step', status: 'completed' }])
+  const failed = todo('t4', [{ text: 'broken step', status: 'pending' }], 'error')
+  const proposed = todo('t5', [{ text: 'not run', status: 'completed' }], 'proposed')
+  const plan = extractPlan([older, newer, failed, proposed])
+  assert.equal(plan?.sourceId, 't3')
+  assert.equal(plan?.entries[0]?.text, 'new step')
 })

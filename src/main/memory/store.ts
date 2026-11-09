@@ -10,6 +10,7 @@ import {
 } from 'node:fs'
 import path from 'node:path'
 import type { MemoryEntry, MemoryKind, MemoryScope, MemoryState } from '@shared/types'
+import { properLockfile } from '../proper-lockfile'
 import { redactSecrets } from './redact'
 
 export const MAX_ENTRIES = 300
@@ -37,6 +38,7 @@ interface MemoryFile {
 export interface MemorySessionRecord {
   mtimeMs: number
   size: number
+  identity?: string
   at: number
   /** Why this session was not learned from, when it was deliberately skipped. */
   skipped?: string
@@ -45,8 +47,15 @@ export interface MemorySessionRecord {
   lastError?: string
 }
 
+export interface MemorySessionRevision {
+  mtimeMs: number
+  size: number
+  identity?: string
+}
+
 interface MemoryLedgerFile {
   version: 1
+  generation?: number
   sessions: Record<string, MemorySessionRecord>
 }
 
@@ -75,16 +84,34 @@ function readJson<T>(file: string, fallback: T): T {
 
 function writeJsonAtomic(file: string, value: unknown): void {
   mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.tmp`
-  writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8')
-  renameSync(tmp, file)
+  const tmp = `${file}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8')
+    renameSync(tmp, file)
+  } catch (error) {
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      /* a failed write may not have created the temporary file */
+    }
+    throw error
+  }
 }
 
 function writeTextAtomic(file: string, value: string): void {
   mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.tmp`
-  writeFileSync(tmp, value, 'utf8')
-  renameSync(tmp, file)
+  const tmp = `${file}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(tmp, value, 'utf8')
+    renameSync(tmp, file)
+  } catch (error) {
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      /* a failed write may not have created the temporary file */
+    }
+    throw error
+  }
 }
 
 /** Windows sometimes reports the same folder with a `\\?\` extended prefix. */
@@ -304,7 +331,7 @@ export class MemoryStore {
       }))
   }
 
-  writeEntries(entries: MemoryEntry[]): void {
+  private writeEntries(entries: MemoryEntry[]): void {
     this.ensure()
     const next = enforceCaps(entries)
     writeJsonAtomic(this.entriesFile, {
@@ -315,7 +342,11 @@ export class MemoryStore {
     writeTextAtomic(this.summaryFile, renderMemorySummary(next))
   }
 
-  merge(candidates: MemoryCandidate[]): MergeResult {
+  async merge(candidates: MemoryCandidate[]): Promise<MergeResult> {
+    return this.withLock(() => this.mergeUnlocked(candidates))
+  }
+
+  private mergeUnlocked(candidates: MemoryCandidate[]): MergeResult {
     const entries = this.readEntries()
     const now = Date.now()
     let added = 0
@@ -352,17 +383,24 @@ export class MemoryStore {
     return { added, total: this.readEntries().length }
   }
 
-  remove(id: string): void {
-    this.writeEntries(this.readEntries().filter((entry) => entry.id !== id))
+  async remove(id: string): Promise<void> {
+    await this.withLock(() => {
+      const ledger = this.readLedger()
+      ledger.generation = (ledger.generation ?? 0) + 1
+      this.writeLedger(ledger)
+      this.writeEntries(this.readEntries().filter((entry) => entry.id !== id))
+    })
   }
 
-  clear(): void {
-    this.ensure()
-    writeJsonAtomic(this.entriesFile, { version: 1, updatedAt: Date.now(), entries: [] } satisfies MemoryFile)
-    writeTextAtomic(this.summaryFile, '')
-    writeJsonAtomic(this.ledgerFile, { version: 1, sessions: {} } satisfies MemoryLedgerFile)
-    rmSync(this.rolloutDir, { recursive: true, force: true })
-    mkdirSync(this.rolloutDir, { recursive: true })
+  async clear(): Promise<void> {
+    await this.withLock(() => {
+      const generation = this.readLedger().generation ?? 0
+      this.writeLedger({ version: 1, generation: generation + 1, sessions: {} })
+      writeJsonAtomic(this.entriesFile, { version: 1, updatedAt: Date.now(), entries: [] } satisfies MemoryFile)
+      writeTextAtomic(this.summaryFile, '')
+      rmSync(this.rolloutDir, { recursive: true, force: true })
+      mkdirSync(this.rolloutDir, { recursive: true })
+    })
   }
 
   summaryFor(cwd?: string): string {
@@ -377,8 +415,15 @@ export class MemoryStore {
     const file = readJson<MemoryLedgerFile>(this.ledgerFile, { version: 1, sessions: {} })
     return {
       version: 1,
+      generation: Number.isSafeInteger(file?.generation) && (file.generation ?? 0) >= 0
+        ? file.generation
+        : 0,
       sessions: file && typeof file.sessions === 'object' && file.sessions ? file.sessions : {}
     }
+  }
+
+  generation(): number {
+    return this.readLedger().generation ?? 0
   }
 
   private writeLedger(ledger: MemoryLedgerFile): void {
@@ -386,29 +431,41 @@ export class MemoryStore {
   }
 
   /** True when this exact file revision has already been considered. */
-  wasProcessed(file: string, stats?: { mtimeMs: number; size: number }): boolean {
+  wasProcessed(file: string, stats?: MemorySessionRevision): boolean {
     const record = this.readLedger().sessions[file]
     if (!record) return false
     const current = stats ?? statSafe(file)
     if (!current) return false
-    return record.mtimeMs === current.mtimeMs && record.size === current.size
+    return record.mtimeMs === current.mtimeMs &&
+      record.size === current.size &&
+      record.identity === current.identity
   }
 
-  markProcessed(file: string, skipped?: string, lastError?: string): void {
-    const stats = statSafe(file)
-    if (!stats) return
-    const ledger = this.readLedger()
-    const previous = ledger.sessions[file]
-    const attempts = skipped === 'error' ? (previous?.attempts ?? 0) + 1 : 0
-    ledger.sessions[file] = {
-      mtimeMs: stats.mtimeMs,
-      size: stats.size,
-      at: Date.now(),
-      ...(skipped ? { skipped } : {}),
-      ...(attempts ? { attempts } : {}),
-      ...(lastError && skipped === 'error' ? { lastError } : {})
-    }
-    this.writeLedger(ledger)
+  markProcessed(
+    file: string,
+    skipped?: string,
+    lastError?: string,
+    stats: MemorySessionRevision | undefined = statSafe(file),
+    expectedGeneration?: number
+  ): Promise<boolean> {
+    if (!stats) return Promise.resolve(false)
+    return this.withLock(() => {
+      const ledger = this.readLedger()
+      if (expectedGeneration !== undefined && ledger.generation !== expectedGeneration) return false
+      const previous = ledger.sessions[file]
+      const attempts = skipped === 'error' ? (previous?.attempts ?? 0) + 1 : 0
+      ledger.sessions[file] = {
+        mtimeMs: stats.mtimeMs,
+        size: stats.size,
+        ...(stats.identity ? { identity: stats.identity } : {}),
+        at: Date.now(),
+        ...(skipped ? { skipped } : {}),
+        ...(attempts ? { attempts } : {}),
+        ...(lastError && skipped === 'error' ? { lastError } : {})
+      }
+      this.writeLedger(ledger)
+      return true
+    })
   }
 
   sessionRecord(file: string): MemorySessionRecord | undefined {
@@ -416,6 +473,13 @@ export class MemoryStore {
   }
 
   writeRolloutSummary(
+    sessionFile: string,
+    payload: { cwd?: string; candidates: MemoryCandidate[]; raw?: string }
+  ): Promise<void> {
+    return this.withLock(() => this.writeRolloutSummaryUnlocked(sessionFile, payload))
+  }
+
+  private writeRolloutSummaryUnlocked(
     sessionFile: string,
     payload: { cwd?: string; candidates: MemoryCandidate[]; raw?: string }
   ): void {
@@ -448,6 +512,32 @@ export class MemoryStore {
     writeTextAtomic(file, lines.join('\n'))
   }
 
+  async commitExtraction(
+    sessionFile: string,
+    payload: { cwd?: string; candidates: MemoryCandidate[]; raw?: string },
+    expectedGeneration: number,
+    shouldCommit?: () => boolean
+  ): Promise<MergeResult | null> {
+    return this.withLock(() => {
+      if (this.generation() !== expectedGeneration || (shouldCommit && !shouldCommit())) return null
+      this.writeRolloutSummaryUnlocked(sessionFile, payload)
+      return this.mergeUnlocked(payload.candidates)
+    })
+  }
+
+  private async withLock<T>(action: () => T | Promise<T>): Promise<T> {
+    this.ensure()
+    const release = await properLockfile.lock(this.entriesFile, {
+      realpath: false,
+      retries: { retries: 20, minTimeout: 10, maxTimeout: 100 }
+    })
+    try {
+      return await action()
+    } finally {
+      await release()
+    }
+  }
+
   state(pending: number, generating: boolean, lastError?: string): MemoryState {
     const entries = this.readEntries()
     const updatedAt = latestUpdatedAt(entries)
@@ -463,10 +553,12 @@ export class MemoryStore {
   }
 }
 
-function statSafe(file: string): { mtimeMs: number; size: number } | undefined {
+function statSafe(file: string): MemorySessionRevision | undefined {
   try {
     const stat = statSync(file)
-    return stat.isFile() ? { mtimeMs: stat.mtimeMs, size: stat.size } : undefined
+    return stat.isFile()
+      ? { mtimeMs: stat.mtimeMs, size: stat.size, identity: `${stat.dev}:${stat.ino}` }
+      : undefined
   } catch {
     return undefined
   }

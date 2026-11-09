@@ -80,6 +80,18 @@
   font-size: var(--text-xs);
 }
 
+.modal__approval-cwd {
+  display: grid;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+  color: var(--text-secondary);
+}
+
+.modal__approval-cwd code {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+}
+
 .modal__approval pre {
   margin: var(--sp-2) 0 0;
   max-height: 240px;

@@ -39,12 +39,18 @@ export function ContextRing() {
   const modelWindow = reportedWindow ? undefined : fallbackModel
 
   const liveModel = piState?.model
+  // With the reading switched off, the component still mounts on every
+  // streamed delta. Scanning the transcript for an arc that is not drawn is
+  // wasted work, so the memo answers with nothing instead.
   const reading = useMemo(
-    () => contextReading({ stats, items, model: liveModel, fallbackModel: modelWindow }),
-    [stats, items, liveModel, modelWindow]
+    () =>
+      showContextUsage
+        ? contextReading({ stats, items, model: liveModel, fallbackModel: modelWindow })
+        : null,
+    [showContextUsage, stats, items, liveModel, modelWindow]
   )
 
-  if (!showContextUsage) return null
+  if (!showContextUsage || !reading) return null
 
   const percent = reading.percent
   // The arc and the label both need the percentage; without one there is

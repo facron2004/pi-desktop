@@ -3,6 +3,7 @@ import { ChevronDown, CircleAlert, X } from 'lucide-react'
 import type { RunState } from '../../store/useAppStore'
 import { useAppStore } from '../../store/useAppStore'
 import { useT } from '../../lib/i18n'
+import { monotonicNow } from '../../lib/session-timing'
 import type { AppLanguage } from '@shared/types'
 
 /** A duration in the run summary's compact form, e.g. "42s", "3m 12s" or "3分钟 12秒". */
@@ -39,19 +40,22 @@ export const RunSummary = memo(function RunSummary({
 }: RunSummaryProps) {
   const t = useT()
   const language = useAppStore((state) => state.settings.language ?? 'en')
-  const isRunning = !run.settled && run.startedAt !== undefined
-  const [now, setNow] = useState(() => Date.now())
+  const isRunning = !run.settled && (run.startedMonotonicAt !== undefined || run.startedAt !== undefined)
+  const readNow = run.startedMonotonicAt !== undefined ? monotonicNow : Date.now
+  const [now, setNow] = useState(() => readNow())
   useEffect(() => {
-    setNow(Date.now())
+    setNow(readNow())
     if (!isRunning) return
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    const timer = window.setInterval(() => setNow(readNow()), 1000)
     return () => window.clearInterval(timer)
-  }, [isRunning, run.startedAt])
+  }, [isRunning, readNow, run.startedAt, run.startedMonotonicAt])
   if (!run.settled && !isRunning) return null
   const aborted = run.outcome === 'aborted'
   const failed = run.outcome === 'failed'
   const canFold = run.settled && foldable && !aborted && !failed
-  const elapsedMs = isRunning ? Math.max(0, now - (run.startedAt ?? now)) : run.durationMs
+  const elapsedMs = isRunning
+    ? Math.max(0, now - (run.startedMonotonicAt ?? run.startedAt ?? now))
+    : run.durationMs
   const duration =
     elapsedMs !== undefined && !aborted && !failed
       ? formatElapsed(elapsedMs, language)

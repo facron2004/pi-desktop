@@ -34,12 +34,14 @@ import {
   nextOrder,
   type ThreadItem
 } from '../lib/thread'
-import { basename, normalisePathKey, resolveAgainst, samePath } from '../lib/path'
+import { basename, resolveAgainst, samePath } from '../lib/path'
+import { updateThreadSessionName } from '../lib/live-sessions'
+import { stripAnsi } from '../lib/ansi'
 import { collectProjects, type Project } from '../lib/projects'
 import { APP_COMMANDS } from '../lib/app-commands'
 import { hydrationStale, needsSessionHydration, scopeEvent, scopeStatus } from '../lib/session-scope'
 import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
-import { beginStream } from '../lib/stream-events'
+import { beginStream, finishStream, rekeyStreamState } from '../lib/stream-events'
 import { estimateContextBreakdown, parseRequestContextBreakdown } from '../lib/context-reading'
 import { recordModelUse } from '../lib/model-recency'
 import { migrateViewState } from '../lib/view-state'
@@ -109,7 +111,7 @@ export type RunPhase =
 export interface RunState {
   phase: RunPhase
   /** Active context compaction, which can run outside an assistant turn. */
-  compaction?: { reason: string; startedAt: number }
+  compaction?: { reason: string; startedAt: number; startedMonotonicAt: number }
   /** Client-minted id of the run, set on `agent_start`. */
   runId?: string
   /** Client-minted id of the current turn, set on `turn_start`. */
@@ -118,9 +120,26 @@ export interface RunState {
   turns: number
   /** When the run started, for the elapsed counter. */
   startedAt?: number
+  /** Monotonic start time for duration calculations. */
+  startedMonotonicAt?: number
+  /** Pi's `agent_start`, used as the start of the TTFT sample. */
+  ttftStartedAt?: number
+  ttftStartedMonotonicAt?: number
   /** First / last text delta, minted by the client: Pi reports no timing. */
   firstTokenAt?: number
+  /** Monotonic first-text time, paired with ttftStartedMonotonicAt for TTFT. */
+  firstTokenMonotonicAt?: number
   lastTokenAt?: number
+  /** Monotonic start of the answer's current generation window. */
+  messageGenerationStartedAt?: number
+  /**
+   * Summed generation windows of the answers completed in this run.
+   *
+   * A tool-heavy run streams in several answers separated by tool execution;
+   * one window across the whole run would count the tool time as model time
+   * and make TPS look far slower than the model actually was.
+   */
+  generationMs?: number
   /** Monotonic client clock for the current provider response. */
   modelTurnStartedAt?: number
   /** Wall-clock duration of the finished run, once it settled. */
@@ -519,6 +538,10 @@ const modelRestoreAttempts = new Set<string>()
 const retryArmed = new Set<string>()
 /** Composer-focused sessions whose startup is only speculative until Send. */
 const prewarmOnlyRuntimes = new Set<string>()
+/** How long a conversation has to stay on screen before Pi is started for it. */
+const PREWARM_DELAY_MS = 1000
+let scheduledPrewarmTimer: ReturnType<typeof setTimeout> | null = null
+let scheduledPrewarmKey: string | null = null
 /**
  * A model chosen while the conversation was cold.
  *
@@ -615,6 +638,48 @@ function stopPrewarmOnlyRuntime(sessionKey: string | undefined): void {
   const wasResolvedPrewarmOnly = prewarmOnlyRuntimes.delete(key)
   if (!wasPrewarmOnly && !wasResolvedPrewarmOnly) return
   void window.pi.runtime.stop(key).catch(() => {})
+}
+
+function cancelScheduledPrewarm(): void {
+  if (scheduledPrewarmTimer !== null) globalThis.clearTimeout(scheduledPrewarmTimer)
+  scheduledPrewarmTimer = null
+  scheduledPrewarmKey = null
+}
+
+/**
+ * Start Pi for the conversation that is already on screen, once it has stayed
+ * there long enough to be the one the reader is about to type into.
+ *
+ * Opening a conversation used to wait for the first prompt, so a cold session
+ * paid Pi's whole start-up before the model could be asked anything. The
+ * process is speculative: it carries the prewarm mark, so moving the view on
+ * stops it again unless a run has taken it over.
+ *
+ * Drafts are left out on purpose. Pi writes a session file as soon as it
+ * starts, so prewarming a chat that was never written would leave an empty
+ * conversation on disk.
+ */
+function schedulePrewarm(sessionKey: string | undefined, messageCount: number): void {
+  cancelScheduledPrewarm()
+  if (!sessionKey || sessionKey.startsWith('draft:')) return
+  // An empty session file is nothing to warm: Pi would reopen it only to sit
+  // on a blank conversation, and a pending one would show up in the list.
+  if (messageCount <= 0) return
+  scheduledPrewarmKey = sessionKey
+  scheduledPrewarmTimer = globalThis.setTimeout(() => {
+    scheduledPrewarmTimer = null
+    const key = scheduledPrewarmKey
+    scheduledPrewarmKey = null
+    if (!key) return
+    const state = useAppStore.getState()
+    if (viewKeyOf(state) !== key) return
+    if (state.threads[key]?.isStreaming) return
+    state.prewarmRuntime(key)
+  }, PREWARM_DELAY_MS)
+  // Node's timer object has unref; a browser's numeric handle does not. Tests
+  // run the store in Node, and a pending speculative start must not hold that
+  // process open after the last assertion.
+  ;(scheduledPrewarmTimer as unknown as { unref?: () => void }).unref?.()
 }
 
 /** The name a project is shown with, for a folder the user has not opened yet. */
@@ -809,6 +874,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         // An intentionally retired idle worker leaves a cold, usable conversation.
         const cold = status.phase === 'stopped' && !status.error && ownGet().run.settled
         const nextStatus = { ...status, cwd: status.cwd ?? ownGet().status.cwd }
+        // A process started only because the conversation stayed on screen has
+        // nothing to announce. Its "starting" phase would flash a spinner over
+        // a transcript nobody has asked Pi to work on; "ready" lands silently
+        // below, and a failure already falls back to ready.
+        if (status.phase === 'starting' && prewarmOnlyRuntimes.has(owner)) return
         if (
           (status.phase === 'error' || status.phase === 'stopped') &&
           prewarmOnlyRuntimes.has(owner) &&
@@ -834,10 +904,27 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
       })
 
+      const offSessionsChanged = window.pi.sessions.onChanged?.(({ file, name }) => {
+        // A rename happens in the main process (auto-title, a hot or a cold
+        // session) and never re-reads the session index by itself. Paint the
+        // new name on the row at once, then re-read so a cold `session_info`
+        // append reaches every row and the sidebar and title bar agree.
+        set((state) => ({
+          sessions: state.sessions.map((entry) => (entry.file === file ? { ...entry, name } : entry)),
+          threads: updateThreadSessionName(state.threads, file, name),
+          piState:
+            state.activeSessionFile === file && state.piState
+              ? { ...state.piState, sessionName: name }
+              : state.piState
+        }))
+        void get().refreshSessions()
+      })
+
       unsubscribeRuntime = () => {
         offEvent()
         offRekey?.()
         offStatus()
+        offSessionsChanged?.()
       }
 
       const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
@@ -944,6 +1031,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async openWorkspace(workspace, sessionFile, sourceAction = 'project-open') {
     void sourceAction
     stopPrewarmOnlyRuntime(viewKeyOf(get()))
+    cancelScheduledPrewarm()
     const epoch = beginProjectChange()
     drainPending()
     pendingProjectPath = undefined
@@ -981,25 +1069,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async removeWorkspace(target) {
     const current = get().workspace
-    const settings = get().settings
     const path = target.path
     if (!path) return
     // Removing a project that is not the active one must not move the user
     // somewhere else; only the project that goes away needs a replacement.
     const wasActive = Boolean(current && samePath(current.path, path))
-    const workspaces = settings.workspaces.filter((item) => !samePath(item.path, path))
-    const hidden = new Set((settings.hiddenProjects ?? []).map((item) => normalisePathKey(item)))
-    hidden.add(normalisePathKey(path))
-    const next = await window.pi.settings.patch({
-      workspaces,
-      hiddenProjects: [...hidden],
-      ...(wasActive ? { activeWorkspaceId: workspaces[0]?.id ?? null } : {})
-    })
+    const next = await window.pi.workspaces.remove(target.id, path)
     set({ settings: next })
     applyAppearance(next, get().info?.forcedTheme)
     if (typeof window.pi.runtime.stopCwd === 'function') await window.pi.runtime.stopCwd(path)
     if (!wasActive) return
-    const replacement = workspaces[0]
+    const replacement = next.workspaces[0]
     if (replacement) {
       await get().openWorkspace(replacement, undefined, 'project-remove')
     } else {
@@ -1022,6 +1102,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async selectSession(session, sourceAction = 'sidebar-select') {
     void sourceAction
     const currentKey = viewKeyOf(get())
+    cancelScheduledPrewarm()
     if (currentKey !== session.file) stopPrewarmOnlyRuntime(currentKey)
     const workspace = get().workspace
     const changesProject = session.cwd
@@ -1055,6 +1136,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       error: undefined,
       ...projectThread(thread)
     })
+    schedulePrewarm(session.file, session.messageCount)
     try {
       if (!session.cwd && (workspace || get().settings.activeWorkspaceId !== null)) {
         const settings = await window.pi.settings.patch({ activeWorkspaceId: null })
@@ -1135,8 +1217,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return
     }
     try {
-      await tracedRpc(get().draftId, 'set_session_name', { name: trimmed }, undefined, 'session-rename')
+      const draftId = get().draftId
+      await tracedRpc(draftId, 'set_session_name', { name: trimmed }, undefined, 'session-rename')
       set((state) => ({
+        threads: draftId ? updateThreadSessionName(state.threads, draftId, trimmed) : state.threads,
         piState: state.piState ? { ...state.piState, sessionName: trimmed } : state.piState
       }))
     } catch (error) {
@@ -1165,6 +1249,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       set((state) => ({
         sessions: state.sessions.map((entry) => (entry.file === file ? { ...entry, name: trimmed } : entry)),
+        threads: updateThreadSessionName(state.threads, file, trimmed),
         piState:
           state.activeSessionFile === file && state.piState
             ? { ...state.piState, sessionName: trimmed }
@@ -1276,6 +1361,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async newChat() {
     stopPrewarmOnlyRuntime(viewKeyOf(get()))
+    cancelScheduledPrewarm()
     beginViewChange()
     drainPending()
     const draftId = mintDraft()
@@ -1295,7 +1381,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async ensureRuntime(sessionKey = viewKeyOf(get()), sourceAction = 'ensure') {
     const key = threadKey(sessionKey)
     if (!key) throw new Error('Missing conversation id')
-    if (sourceAction !== 'composer-focus') prewarmOnlyRuntimes.delete(key)
+    if (sourceAction !== 'composer-focus') {
+      prewarmOnlyRuntimes.delete(key)
+      if (scheduledPrewarmKey === key) cancelScheduledPrewarm()
+    }
     if (typeof window.pi.runtime.ensure !== 'function') return key
     const state = get()
     const thread = state.threads[key]
@@ -1330,6 +1419,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   prewarmRuntime(sessionKey = viewKeyOf(get())) {
     const key = threadKey(sessionKey)
     if (!key || typeof window.pi.runtime.ensure !== 'function') return
+    // A run already owns the process; marking it speculative would let a view
+    // change stop work that is still going.
+    if (get().threads[key]?.isStreaming) return
     prewarmOnlyRuntimes.add(key)
     void get().ensureRuntime(key, 'composer-focus').catch(() => {
       // Keep the cold composer usable; an actual send retries and reports errors.
@@ -1426,10 +1518,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
         // A run is opening. `agent_start` confirms it; until then this is the
         // truth, and it keeps the row from reading "Queued" for a run that is
         // already on its way.
+        const startedAt = Date.now()
+        const startedMonotonicAt = monotonicNow()
         update((state) => ({
           run:
             state.run.phase === 'queued'
-              ? { ...state.run, phase: 'working', startedAt: state.run.startedAt ?? Date.now() }
+              ? {
+                  ...state.run,
+                  phase: 'working',
+                  startedAt: state.run.startedAt ?? startedAt,
+                  startedMonotonicAt: state.run.startedMonotonicAt ?? startedMonotonicAt
+                }
               : state.run
         }))
       } else if (result?.disposition !== 'queued') {
@@ -1813,22 +1912,30 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return undefined
     }
     try {
+      // A live request breakdown is the newest reading there is; fetching the
+      // whole transcript only to recompute an estimate would copy a large
+      // payload over the wire for a row it would not replace.
+      const existing = bindGet(get, key)().contextBreakdown
+      const needsMessages = existing?.source !== 'request'
       const [stats, context] = await Promise.all([
         tracedRpc<SessionStats>(key, 'get_session_stats', undefined, 20_000, 'read-stats')
           .catch(() => undefined),
-        tracedRpc<{ messages?: AgentMessage[] }>(
-          key,
-          'get_messages',
-          undefined,
-          20_000,
-          'read-context-breakdown'
-        ).catch(() => undefined)
+        needsMessages
+          ? tracedRpc<{ messages?: AgentMessage[] }>(
+              key,
+              'get_messages',
+              undefined,
+              20_000,
+              'read-context-breakdown'
+            ).catch(() => undefined)
+          : Promise.resolve(undefined)
       ])
       const patch: Partial<AppStore> = {}
       if (stats) patch.stats = stats
       if (context?.messages) {
-        const existing = bindGet(get, key)().contextBreakdown
-        if (existing?.source !== 'request') {
+        // A request can publish its breakdown while `get_messages` is in flight.
+        const latest = bindGet(get, key)().contextBreakdown
+        if (latest?.source !== 'request') {
           patch.contextBreakdown = estimateContextBreakdown(
             context.messages,
             stats?.contextUsage?.tokens
@@ -2096,6 +2203,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         break
       case 'subagent':
         await get().setAgentMode(get().agentMode === 'subagent' ? 'default' : 'subagent')
+        break
+      case 'plugin':
+        await get().setAgentMode(get().agentMode === 'plugin' ? 'default' : 'plugin')
         break
       default:
         break
@@ -2819,6 +2929,8 @@ function rekeyThread(
   drainPending()
   from = threadKey(from)
   if (from === to) return
+  rekeyStreamState(from, to)
+  migrateToolStarts(from, to)
   // The reader's place belongs to the conversation, not to whether Pi has
   // written it to disk yet; carry it across the draft→file rename.
   migrateScrollMemory(from, to)
@@ -2976,7 +3088,35 @@ const pending = new Map<string, {
   set: SetState
   events: { event: PiEvent; context: ReturnType<typeof runContextOf> }[]
 }>()
+/** Monotonic tool starts live at the event boundary, keeping the thread reducer deterministic. */
+const toolStarts = new Map<string, Map<string, number>>()
 let flushHandle: number | null = null
+
+function rememberToolStart(sessionKey: string, toolCallId: string): void {
+  const starts = toolStarts.get(sessionKey) ?? new Map<string, number>()
+  if (!starts.has(toolCallId)) starts.set(toolCallId, monotonicNow())
+  toolStarts.set(sessionKey, starts)
+}
+
+function migrateToolStarts(from: string, to: string): void {
+  const source = toolStarts.get(from)
+  if (!source) return
+  const target = toolStarts.get(to) ?? new Map<string, number>()
+  for (const [toolCallId, startedAt] of source) {
+    if (!target.has(toolCallId)) target.set(toolCallId, startedAt)
+  }
+  toolStarts.set(to, target)
+  toolStarts.delete(from)
+}
+
+function takeToolStart(sessionKey: string, toolCallId: string): number | undefined {
+  const starts = toolStarts.get(sessionKey)
+  if (!starts) return undefined
+  const startedAt = starts.get(toolCallId)
+  starts.delete(toolCallId)
+  if (starts.size === 0) toolStarts.delete(sessionKey)
+  return startedAt
+}
 
 /** Apply every queued reducer now, in the order the events arrived. */
 function drainPending(): void {
@@ -3059,6 +3199,29 @@ function finishModelTiming(set: SetState, get: GetState, owner?: string): void {
   set((state) => ({ run: { ...state.run, modelTurnStartedAt: undefined } }))
 }
 
+/**
+ * End the generation window of the answer that just finished.
+ *
+ * `text_end`, `done` and `message_end` can all close one answer; only the
+ * first of them has a start to charge, so the later ones add nothing.
+ */
+function closeGenerationWindow(set: SetState): void {
+  const at = monotonicNow()
+  set((state) => {
+    const started = state.run.messageGenerationStartedAt
+    return {
+      run: {
+        ...state.run,
+        lastTokenAt: Date.now(),
+        messageGenerationStartedAt: undefined,
+        ...(started === undefined
+          ? {}
+          : { generationMs: (state.run.generationMs ?? 0) + Math.max(0, at - started) })
+      }
+    }
+  })
+}
+
 function handleEvent(
   set: SetState,
   get: GetState,
@@ -3072,6 +3235,7 @@ function handleEvent(
       // One run per prompt. A follow-up prompt that arrives while a run is
       // active does not open a second one: Pi folds it into the current run.
       const startedAt = Date.now()
+      const startedMonotonicAt = monotonicNow()
       set((state) => ({
         isStreaming: true,
         // `stats` is only a snapshot from the last Pi read. Let the live
@@ -3088,9 +3252,21 @@ function handleEvent(
               runId: nextId('run'),
               turns: 0,
               startedAt,
+              startedMonotonicAt,
+              ttftStartedAt: startedAt,
+              ttftStartedMonotonicAt: startedMonotonicAt,
+              generationMs: 0,
               settled: false
             }
-          : { ...state.run, phase: phaseFor(state, 'working'), settled: false }
+          : {
+              ...state.run,
+              startedAt: state.run.startedAt ?? startedAt,
+              startedMonotonicAt: state.run.startedMonotonicAt ?? startedMonotonicAt,
+              ttftStartedAt: state.run.ttftStartedAt ?? startedAt,
+              ttftStartedMonotonicAt: state.run.ttftStartedMonotonicAt ?? startedMonotonicAt,
+              phase: phaseFor(state, 'working'),
+              settled: false
+            }
       }))
       break
     }
@@ -3127,15 +3303,20 @@ function handleEvent(
       // Anything still waiting for a frame is applied first: the final
       // state has to be the state the events actually produced.
       drainPending()
+      finishStream(runContextOf(get).sessionKey)
       const state = get()
-      const startedAt = state.run.startedAt
-      const durationMs = startedAt === undefined ? undefined : Math.max(0, Date.now() - startedAt)
+      const ttftStartedMonotonicAt = state.run.ttftStartedMonotonicAt
+      const durationMs =
+        state.run.startedMonotonicAt === undefined
+          ? undefined
+          : Math.max(0, monotonicNow() - state.run.startedMonotonicAt)
       const timingKey = owner ? threadKey(owner) : viewKeyOf(state)
-      if (startedAt !== undefined && state.run.firstTokenAt !== undefined) {
+      toolStarts.delete(timingKey)
+      if (ttftStartedMonotonicAt !== undefined && state.run.firstTokenMonotonicAt !== undefined) {
         recordTtftDuration(
           timingKey,
           state.run.runId,
-          Math.max(0, state.run.firstTokenAt - startedAt)
+          Math.max(0, state.run.firstTokenMonotonicAt - ttftStartedMonotonicAt)
         )
       }
       // Model durations are recorded only when the assistant message ends.
@@ -3158,12 +3339,11 @@ function handleEvent(
         if (durationMs !== undefined) {
           recordRunDuration(timingKey, runUser.timestamp, durationMs)
         }
-        if (state.run.firstTokenAt !== undefined && state.run.lastTokenAt !== undefined) {
-          recordGenerationWindow(
-            timingKey,
-            runUser.timestamp,
-            Math.max(0, state.run.lastTokenAt - state.run.firstTokenAt)
-          )
+        // The summed windows of the answers in this turn. A tool gap between
+        // them is not generation time and must not slow the restored TPS.
+        const generatedMs = state.run.generationMs ?? 0
+        if (generatedMs > 0) {
+          recordGenerationWindow(timingKey, runUser.timestamp, generatedMs)
         }
       }
       // A mark means "there is something in this conversation the reader has
@@ -3186,6 +3366,7 @@ function handleEvent(
           ...state.run,
           phase: 'idle',
           compaction: undefined,
+          messageGenerationStartedAt: undefined,
           modelTurnStartedAt: undefined,
           settled: true,
           outcome: aborted ? 'aborted' : failed ? 'failed' : 'completed',
@@ -3235,6 +3416,10 @@ function handleEvent(
       set((state) => ({
         piState: state.piState ? { ...state.piState, sessionName: name } : state.piState
       }))
+      // Pi can publish a name from a `set_session_name` that did not go
+      // through `supervisor.rename` (a scheduled task, `/name` in a draft).
+      // The JSONL carries the new `session_info`, so re-read the rows too.
+      void get().refreshSessions()
       break
     }
     case 'thinking_level_changed': {
@@ -3287,7 +3472,14 @@ function handleEvent(
       break
     case 'message_start': {
       const role = (event as { message?: { role?: string } }).message?.role
+      if (role === 'assistant') {
+        // A fresh answer starts its own generation window; a start left open
+        // by an interrupted one must not swallow the new answer's time.
+        set((state) => ({ run: { ...state.run, messageGenerationStartedAt: undefined } }))
+      }
       if (role === 'user') {
+        const startedAt = Date.now()
+        const startedMonotonicAt = monotonicNow()
         set((state) => ({
           // A prompt can start before `agent_start`; invalidate the same
           // cached snapshot here so transcript usage stays current.
@@ -3300,10 +3492,19 @@ function handleEvent(
                   phase: 'working',
                   runId: nextId('run'),
                   turns: 0,
-                  startedAt: Date.now(),
+                  startedAt,
+                  startedMonotonicAt,
+                  generationMs: 0,
                   settled: false
                 }
-              : state.run
+              : {
+                  // A steer arrives between assistant turns in the same run.
+                  // The usage line measures the newest prompt, so earlier
+                  // answers in this run must not remain in its TPS window.
+                  ...state.run,
+                  generationMs: 0,
+                  messageGenerationStartedAt: undefined
+                }
         }))
       }
       scheduleItems(set, get, event)
@@ -3330,18 +3531,22 @@ function handleEvent(
     case 'extension_error':
     case 'client_notice': {
       if (event.type === 'compaction_start') {
+        const startedAt = Date.now()
+        const startedMonotonicAt = monotonicNow()
         set((state) => ({
           run: {
             ...state.run,
             compaction: {
               reason: String(event.reason ?? 'manual'),
-              startedAt: Date.now()
+              startedAt,
+              startedMonotonicAt
             }
           }
         }))
       } else if (event.type === 'compaction_end') {
         set((state) => ({ run: { ...state.run, compaction: undefined } }))
       }
+      let eventForItems = event
       if (event.type === 'tool_execution_end') {
         // Apply a queued start first so its local timestamp can fill in when
         // Pi omitted the duration on the completion event.
@@ -3352,20 +3557,35 @@ function handleEvent(
           : undefined
         const terminal = existing?.kind === 'tool' &&
           (existing.status === 'ok' || existing.status === 'error' || existing.status === 'aborted')
+        const timingKey = owner ? threadKey(owner) : viewKeyOf(get())
+        const startedMonotonicAt = toolCallId ? takeToolStart(timingKey, toolCallId) : undefined
         if (!terminal && toolCallId) {
           const supplied = typeof event.durationMs === 'number' ? event.durationMs : undefined
-          const observed = supplied ?? (existing?.kind === 'tool' && existing.startedAt !== undefined
-            ? Math.max(0, Date.now() - existing.startedAt)
-            : undefined)
+          const observed = supplied ?? (startedMonotonicAt !== undefined
+            ? Math.max(0, monotonicNow() - startedMonotonicAt)
+            : existing?.kind === 'tool' && existing.startedAt !== undefined
+              ? Math.max(0, Date.now() - existing.startedAt)
+              : undefined)
           if (observed !== undefined) {
-            recordToolDuration(owner ? threadKey(owner) : viewKeyOf(get()), toolCallId, observed)
+            recordToolDuration(timingKey, toolCallId, observed)
+            if (supplied === undefined) eventForItems = { ...event, durationMs: observed }
           }
+        }
+      } else if (event.type === 'tool_execution_start') {
+        const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : undefined
+        const existing = toolCallId
+          ? get().items.find((item) => item.kind === 'tool' && item.toolCallId === toolCallId)
+          : undefined
+        const terminal = existing?.kind === 'tool' &&
+          (existing.status === 'ok' || existing.status === 'error' || existing.status === 'aborted')
+        if (!terminal && toolCallId) {
+          rememberToolStart(owner ? threadKey(owner) : viewKeyOf(get()), toolCallId)
         }
       }
       // Capture the reducer's tool `startedAt` at event arrival; if the start
       // waited for a paint frame, a fast tool could finish before that clock
       // was recorded.
-      scheduleItems(set, get, event, event.type === 'tool_execution_start')
+      scheduleItems(set, get, eventForItems, event.type === 'tool_execution_start')
       // The run phase is exported from what the transcript actually holds:
       // a tool that started means one is running, and the run only goes back
       // to "the model is answering" when none is left.
@@ -3395,10 +3615,11 @@ function handleEvent(
         }
       }
       if (event.type === 'message_end') {
-        // The last message_end bounds the generation window used for TPS.
-        set((state) => ({ run: { ...state.run, lastTokenAt: Date.now() } }))
         const message = event.message as { role?: unknown } | undefined
         if (message?.role === 'assistant' || (message?.role === undefined && get().run.modelTurnStartedAt !== undefined)) {
+          // The answer's own window, not the whole run's: tool execution in
+          // between is not model generation time.
+          closeGenerationWindow(set)
           finishModelTiming(set, get, owner)
         }
       }
@@ -3406,25 +3627,53 @@ function handleEvent(
       // actually producing words right now, as opposed to still being
       // waited on. A tool call or a thinking delta does not count.
       if (event.type === 'message_update') {
-        const payload = event.assistantMessageEvent as { type?: string } | undefined
+        const payload = event.assistantMessageEvent as { type?: string; delta?: unknown } | undefined
         const kind = payload?.type
-        const delta = kind === 'text_delta' || kind === 'text_start'
-        const finished = kind === 'done' || kind === 'text_end'
+        const textBlockStarted = kind === 'text_start'
+        const textDelta = kind === 'text_delta' &&
+          typeof payload?.delta === 'string' &&
+          payload.delta.length > 0
+        // Output tokens also come from thinking and tool-call blocks, so the
+        // answer's generation window starts at its first block of any kind.
+        // TTFT stays text-only: it is "the first readable word".
+        const generatingDelta =
+          textBlockStarted ||
+          textDelta ||
+          kind === 'thinking_start' ||
+          kind === 'thinking_delta' ||
+          kind === 'toolcall_start' ||
+          kind === 'toolcall_delta'
+        const finished =
+          kind === 'done' ||
+          kind === 'text_end' ||
+          kind === 'thinking_end' ||
+          kind === 'toolcall_end'
         if (finished) {
           // Some providers close a message through `message_update:done`
           // instead of a top-level `message_end`; both bound TPS.
-          set((state) => ({ run: { ...state.run, lastTokenAt: Date.now() } }))
+          closeGenerationWindow(set)
         }
         if (kind === 'done') finishModelTiming(set, get, owner)
-        const first = get().run.firstTokenAt === undefined
-        if (delta && (first || get().run.phase !== phaseFor(get(), 'generating'))) {
+        const needsTextStart = textDelta && get().run.firstTokenAt === undefined
+        const needsWindowStart = generatingDelta && get().run.messageGenerationStartedAt === undefined
+        const needsPhase = textDelta && get().run.phase !== phaseFor(get(), 'generating')
+        if (needsTextStart || needsWindowStart || needsPhase) {
           const now = Date.now()
+          const monotonic = monotonicNow()
           set((state) => ({
             run: {
               ...state.run,
-              phase: phaseFor(state, 'generating'),
+              ...(textDelta ? { phase: phaseFor(state, 'generating') } : {}),
               settled: false,
-              ...(state.run.firstTokenAt === undefined ? { firstTokenAt: now } : {})
+              ...(textDelta && state.run.firstTokenAt === undefined ? { firstTokenAt: now } : {}),
+              ...(textDelta && state.run.firstTokenMonotonicAt === undefined
+                ? { firstTokenMonotonicAt: monotonic }
+                : {}),
+              // The start of this answer's generation window. It stays until
+              // the block ends, so TPS never counts a tool gap.
+              ...(state.run.messageGenerationStartedAt === undefined
+                ? { messageGenerationStartedAt: monotonic }
+                : {})
             }
           }))
         }
@@ -3472,7 +3721,13 @@ function handleExtensionUi(
       break
     }
     case 'notify': {
-      get().showToast(request.message ?? '', request.notifyType ?? 'info')
+      // Extension "info" is terminal chatter — startup banners such as
+      // "Ponytail loaded: full" arrive on every cold start. Only a warning or
+      // an error is worth interrupting what the user is writing.
+      const level = request.notifyType ?? 'info'
+      if (level === 'warning' || level === 'error') {
+        get().showToast(stripAnsi(request.message ?? ''), level)
+      }
       break
     }
     case 'setStatus': {
@@ -3491,12 +3746,15 @@ function handleExtensionUi(
       }
       if (key === 'pi-desktop-mode') {
         const mode = request.statusText
-        if (mode === 'default' || mode === 'goal' || mode === 'plan' || mode === 'subagent') set({ agentMode: mode })
+        if (mode === 'default' || mode === 'goal' || mode === 'plan' || mode === 'subagent' || mode === 'plugin') set({ agentMode: mode })
         break
       }
+      const text = request.statusText
+        ? stripAnsi(request.statusText).replace(/\s+/g, ' ').trim()
+        : ''
       set((state) => ({
-        uiStatuses: request.statusText
-          ? [...state.uiStatuses.filter((entry) => entry.key !== key), { key, text: request.statusText! }]
+        uiStatuses: text
+          ? [...state.uiStatuses.filter((entry) => entry.key !== key), { key, text }]
           : state.uiStatuses.filter((entry) => entry.key !== key)
       }))
       break
@@ -3510,7 +3768,7 @@ function handleExtensionUi(
               ...state.uiWidgets.filter((entry) => entry.key !== key),
               {
                 key,
-                lines: request.widgetLines!,
+                lines: request.widgetLines!.map((line) => stripAnsi(line)),
                 placement: request.widgetPlacement ?? 'aboveEditor'
               }
             ]
@@ -3519,7 +3777,7 @@ function handleExtensionUi(
       break
     }
     case 'setTitle': {
-      set({ uiTitle: request.title })
+      set({ uiTitle: request.title ? stripAnsi(request.title) : request.title })
       break
     }
     case 'set_editor_text': {

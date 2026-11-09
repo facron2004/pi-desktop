@@ -18,6 +18,12 @@ export type {
   MarketplaceSnapshot
 } from './marketplace'
 
+/** Maximum image payload shared by file picking, drops, paste and image writes. */
+export const MAX_IMAGE_DATA_BYTES = 24 * 1024 * 1024
+
+/** Maximum prompt length accepted by the remote phone companion. */
+export const MAX_REMOTE_MESSAGE_CHARS = 100_000
+
 /* ------------------------------------------------------------------ *
  * Pi RPC protocol
  * ------------------------------------------------------------------ */
@@ -324,6 +330,12 @@ export interface SessionMeta {
   model?: string
 }
 
+/** A conversation renamed in the main process, pushed so the UI can re-read it. */
+export interface SessionNameChange {
+  file: string
+  name: string
+}
+
 export type ScheduledTaskSchedule =
   | { kind: 'once'; at: number }
   | { kind: 'daily'; time: string }
@@ -620,10 +632,11 @@ export type PermissionMode = 'ask' | 'auto' | 'full'
 /**
  * A conversation's task mode. Plan explores without writing and submits its
  * plan for approval; Goal keeps working until the goal is done or blocked;
- * Subagent makes the model delegate self-contained work to isolated children.
+ * Subagent makes the model delegate self-contained work to isolated children;
+ * Plugin makes it build or modify a Pi extension.
  * Computer Use is not a mode: it is the `computerUse` setting.
  */
-export type AgentMode = 'default' | 'goal' | 'plan' | 'subagent'
+export type AgentMode = 'default' | 'goal' | 'plan' | 'subagent' | 'plugin'
 
 export type SubagentTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'aborted'
 
@@ -646,6 +659,10 @@ export interface SubagentTaskProgress {
 export interface ToolApproval {
   toolName: string
   input: Record<string, unknown>
+  /** Pi's source classification; only built-in tools may use automatic approval. */
+  toolSource?: string
+  /** Child working directory when approval is relayed from a subagent. */
+  cwd?: string
 }
 
 export interface AppSettings {
@@ -994,7 +1011,7 @@ export interface PiDesktopBridge {
   }
   workspaces: {
     pick(): Promise<Workspace | null>
-    remove(id: string): Promise<AppSettings>
+    remove(id?: string, hiddenPath?: string): Promise<AppSettings>
     /** Register a project by path and make it the active one. */
     add(path: string): Promise<{ workspace: Workspace; settings: AppSettings }>
   }
@@ -1010,6 +1027,8 @@ export interface PiDesktopBridge {
     search(query: string, limit?: number): Promise<SessionSearchHit[]>
     /** Aggregate token consumption and conversation records across all sessions. */
     usageStats(customDir?: string): Promise<AggregatedUsageStats>
+    /** A conversation was renamed in the main process (auto-title, hot or cold). */
+    onChanged(handler: (change: SessionNameChange) => void): () => void
   }
   terminal: {
     /** Start a real PTY shell for the open workspace. */
@@ -1134,6 +1153,8 @@ export interface PiDesktopBridge {
     search(query: string, limit?: number): Promise<FileEntry[]>
     /** Find text inside the files of the open workspace. */
     searchText(query: string, limit?: number): Promise<TextSearchHit[]>
+    /** Pictures found in one bounded walk of the open workspace. */
+    listImages(): Promise<ImageListResult>
     /** Show a file in the file manager of the operating system. */
     reveal(file: string): Promise<void>
     /**
@@ -1152,7 +1173,7 @@ export interface PiDesktopBridge {
     /** Resolve the filesystem path of a dropped File object. */
     pathForFile(file: File): string
     /** A picture of the open project as a data URL, for the image viewer. */
-    readImageDataUrl(file: string): Promise<string | null>
+    readImageDataUrl(file: string, maxBytes?: number): Promise<string | null>
   }
 }
 
@@ -1161,6 +1182,12 @@ export interface FileEntry {
   path: string
   kind: 'file' | 'directory'
   size?: number
+}
+
+export interface ImageListResult {
+  entries: FileEntry[]
+  /** True when result, depth or scan limits may have omitted more pictures. */
+  truncated: boolean
 }
 
 export interface FileContent {

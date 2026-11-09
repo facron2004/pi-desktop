@@ -1888,14 +1888,14 @@ function ProjectSafetySettings() {
             {t('Trust project-local extensions and settings')}
           </span>
           <span className="settings-item-row__desc">
-            {t('Allow project-local .pi/extensions, .pi/skills and .pi/settings.json to load in all workspaces. Turn this off for untrusted code.')}
+            {t('Project-local extensions can execute code. Enable this only for projects you trust.')}
           </span>
           <span className="settings-item-row__desc">
             {t('Saved immediately. Restart Pi Desktop to apply this to the Pi runtime. MCP configuration uses this setting the next time it is read.')}
           </span>
         </div>
         <Switch
-          checked={settings.trustProject !== false}
+          checked={settings.trustProject === true}
           onChange={(value) => void updateSettings({ trustProject: value })}
           label={t('Trust project-local extensions and settings')}
         />

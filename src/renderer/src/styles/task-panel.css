@@ -304,11 +304,14 @@
   box-sizing: border-box;
   border: 1.25px solid var(--border-strong);
   border-radius: 50%;
-  color: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-assist);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
-/* A finished step is a filled disc with the check cut out of it; the step
-   itself stays readable but is struck through. */
+/* A finished step is a filled disc carrying its own number; the step
+   itself stays readable but is struck through and dimmed. */
 .task-panel__check[data-done] .task-panel__check-mark {
   background: var(--text-tertiary);
   border-color: var(--text-tertiary);
@@ -327,6 +330,17 @@
   color: var(--text-tertiary);
   text-decoration: line-through;
   text-decoration-color: color-mix(in srgb, var(--text-tertiary) 55%, transparent);
+}
+
+/* The step being worked on now keeps full contrast and a filled ring; it is
+   not a finished step, so it carries no check and no strike-through. */
+.task-panel__check[data-active] .task-panel__check-mark {
+  border-color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+}
+
+.task-panel__check[data-active] .task-panel__check-text {
+  color: var(--text-primary);
 }
 
 /* ---- deliverables ---------------------------------------------------- */

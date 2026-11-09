@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { createHash } from 'node:crypto'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
@@ -12,7 +12,7 @@ import { SessionSupervisor } from './pi/supervisor'
 import { RemoteAccessService } from './remote-access'
 import { applyTaskbarIcon, windowIconImage } from './app-icon'
 import { scheduleCapture, scheduleWindowClose } from './screenshot'
-import { SettingsStore } from './settings'
+import { secureUserDataDirectory, SettingsStore } from './settings'
 import { TerminalManager } from './terminal'
 import {
   claimTrayInstance,
@@ -23,6 +23,8 @@ import {
   trayWantedAtStartup
 } from './tray'
 import { initialBounds, wasMaximized, watchWindowState } from './window-state'
+import { isTrustedRendererNavigation, resolveRendererEntry } from './navigation-policy'
+import { denyWebviewPopups, hardenWebviewPreferences, isAllowedWebviewUrl } from './webview-policy'
 
 const isMac = process.platform === 'darwin'
 
@@ -48,6 +50,12 @@ for (const stream of [process.stdout, process.stderr]) {
 if (process.env.PI_DESKTOP_USER_DATA) {
   app.setPath('userData', path.resolve(process.env.PI_DESKTOP_USER_DATA))
 }
+if (!secureUserDataDirectory(app.getPath('userData'))) {
+  const message = 'Pi Desktop could not restrict access to its private app data directory and will exit to protect saved data.'
+  console.error(`[pi-desktop] ${message}`)
+  dialog.showErrorBox('Pi Desktop could not start', message)
+  process.exit(1)
+}
 
 // A second launch while the app is only in the tray would open another window
 // the user cannot find. The lock is taken only when that mode is already on,
@@ -64,6 +72,23 @@ let autoTitleService: AutoTitleService | null = null
 let remoteAccess: RemoteAccessService | null = null
 let remoteInitialization: Promise<void> | null = null
 let scheduledTaskService: ScheduledTaskService | null = null
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-attach-webview', (event, webPreferences, params) => {
+    hardenWebviewPreferences(webPreferences)
+    if (!isAllowedWebviewUrl(params.src)) event.preventDefault()
+  })
+
+  if (contents.getType() !== 'webview') return
+  // A browser page is untrusted. Keep window.open from creating a separate
+  // BrowserWindow that would not inherit this guest's navigation guards.
+  denyWebviewPopups(contents)
+  const guardNavigation = (event: { preventDefault(): void }, navigationUrl: string) => {
+    if (!isAllowedWebviewUrl(navigationUrl)) event.preventDefault()
+  }
+  contents.on('will-navigate', guardNavigation)
+  contents.on('will-redirect', guardNavigation)
+})
 
 function startupTheme(): 'light' | 'dark' {
   const forcedTheme = process.env.PI_DESKTOP_THEME
@@ -90,6 +115,13 @@ function createWindow(): BrowserWindow {
   const theme = startupTheme()
   const dark = theme === 'dark'
   const icon = windowIconImage()
+  const rendererEntryFile = path.join(__dirname, '../renderer/index.html')
+  const rendererEntry = resolveRendererEntry(
+    app.isPackaged,
+    process.env.ELECTRON_RENDERER_URL,
+    rendererEntryFile
+  )
+  const trustedRendererUrl = rendererEntry.trustedUrl
   const window = new BrowserWindow({
     width: bounds.width,
     height: bounds.height,
@@ -121,7 +153,7 @@ function createWindow(): BrowserWindow {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       // The inspector's browser tab is a <webview>: an isolated, sandboxed view
       // of the page the reader typed, with no preload and no node access.
       webviewTag: true,
@@ -236,13 +268,18 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
-  const devServerUrl = process.env.ELECTRON_RENDERER_URL
-  if (devServerUrl) {
-    const url = new URL(devServerUrl)
+  const guardNavigation = (event: { preventDefault(): void }, navigationUrl: string) => {
+    if (!isTrustedRendererNavigation(navigationUrl, trustedRendererUrl)) event.preventDefault()
+  }
+  window.webContents.on('will-navigate', guardNavigation)
+  window.webContents.on('will-redirect', guardNavigation)
+
+  if (rendererEntry.developmentUrl) {
+    const url = new URL(rendererEntry.developmentUrl)
     url.searchParams.set('piDesktopTheme', theme)
     window.loadURL(url.toString())
   } else {
-    window.loadFile(path.join(__dirname, '../renderer/index.html'), {
+    window.loadFile(rendererEntryFile, {
       query: { piDesktopTheme: theme }
     })
   }
@@ -298,25 +335,7 @@ process.on('unhandledRejection', (reason: unknown) => {
 })
 
 function handleTerminationSignal(): void {
-  try {
-    terminalManager?.disposeAll()
-  } catch {
-    /* ignore */
-  }
-  disposeRemoteAccess()
-  if (supervisor) {
-    void supervisor
-      .stop()
-      .catch(() => {})
-      .finally(() => {
-        process.exit(0)
-      })
-    setTimeout(() => {
-      process.exit(0)
-    }, 2000).unref()
-  } else {
-    process.exit(0)
-  }
+  app.quit()
 }
 
 process.on('SIGINT', handleTerminationSignal)
@@ -382,7 +401,10 @@ async function start(): Promise<void> {
       return { model: spec || undefined, thinking: thinking || undefined }
     }
   }
-  supervisor = new SessionSupervisor(() => new PiRuntime(runtimeOptions))
+  supervisor = new SessionSupervisor(
+    () => new PiRuntime(runtimeOptions),
+    path.join(app.getPath('userData'), 'cwd-gate')
+  )
   const memoryStore = new MemoryStore(path.join(app.getPath('userData'), 'memories'))
   memoryService = new MemoryService(memoryStore, () => settingsStore.get())
   memoryService.attach(supervisor)
@@ -472,7 +494,7 @@ app.on('before-quit', () => {
   disposeRemoteAccess()
   memoryService?.dispose()
   autoTitleService?.dispose()
-  scheduledTaskService?.dispose()
+  scheduledTaskService?.stopScheduling()
 })
 
 app.on('window-all-closed', () => {
@@ -488,13 +510,15 @@ app.on('before-quit', (event) => {
   if (shuttingDown) return
   shuttingDown = true
 
-  // Force shutdown completion after 5 seconds if supervisor.stop() hangs
+  // Leave time for active Pi runs and subagents to process cancellation before
+  // the process-tree kill fallback.
   const watchdog = setTimeout(() => {
-    console.error('[pi-desktop] shutdown watchdog timed out after 5s; forcing exit')
+    console.error('[pi-desktop] shutdown watchdog timed out after 20s; forcing exit')
     shutdownComplete = true
+    scheduledTaskService?.dispose()
     app.quit()
     setTimeout(() => process.exit(0), 1000).unref()
-  }, 5000)
+  }, 20_000)
   watchdog.unref()
 
   void supervisor.stop().catch((error: unknown) => {
@@ -502,6 +526,7 @@ app.on('before-quit', (event) => {
   }).finally(() => {
     clearTimeout(watchdog)
     shutdownComplete = true
+    scheduledTaskService?.dispose()
     app.quit()
   })
 })

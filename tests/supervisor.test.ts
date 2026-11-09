@@ -1,11 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { ExtensionUiResponse, PiEvent, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
 import { SessionSupervisor, type ManagedSessionRuntime } from '../src/main/pi/supervisor'
+import { InterprocessCwdGate } from '../src/main/pi/cwd-gate'
+import { properLockfile } from '../src/main/proper-lockfile'
 
 interface RecordedCommand {
   command: string
@@ -22,6 +26,7 @@ class FakeRuntime extends EventEmitter implements ManagedSessionRuntime {
   /** Reported by get_state so a draft can bind to the file Pi created. */
   boundFile?: string
   failStart = false
+  settleOnAbort = false
 
   get isRunning(): boolean {
     return this.running
@@ -50,6 +55,9 @@ class FakeRuntime extends EventEmitter implements ManagedSessionRuntime {
       return { sessionFile: this.boundFile ?? this.status.sessionFile, sessionId: 'pi' } as T
     }
     if (command === 'prompt') return { disposition: 'started' } as T
+    if (command === 'abort' && this.settleOnAbort) {
+      this.emit('event', { type: 'agent_settled', aborted: true } as PiEvent)
+    }
     return { ok: true } as T
   }
 
@@ -64,13 +72,13 @@ class FakeRuntime extends EventEmitter implements ManagedSessionRuntime {
   }
 }
 
-function supervisorOf(runtimes: FakeRuntime[]): SessionSupervisor {
+function supervisorOf(runtimes: FakeRuntime[], cwdLockDirectory?: string): SessionSupervisor {
   const pending = [...runtimes]
   return new SessionSupervisor(() => {
     const next = pending.shift()
     if (!next) throw new Error('unexpected runtime')
     return next
-  })
+  }, cwdLockDirectory)
 }
 
 function forbidden(runtime: FakeRuntime): string[] {
@@ -119,6 +127,7 @@ test('two ensures of one session start a single runtime', async () => {
   const supervisor = supervisorOf([a])
   const first = supervisor.ensure({ sessionKey: 'A.jsonl', cwd: 'C:/a', sessionFile: 'A.jsonl' })
   const second = supervisor.ensure({ sessionKey: 'A.jsonl', cwd: 'C:/a', sessionFile: 'A.jsonl' })
+  await Promise.resolve()
   assert.equal(entered, 1)
   release()
   assert.deepEqual(await first, { ok: true })
@@ -188,6 +197,8 @@ test('renaming B does not switch or abort A', async () => {
   const a = new FakeRuntime()
   const b = new FakeRuntime()
   const supervisor = supervisorOf([a, b])
+  const renamed: unknown[] = []
+  supervisor.on('rename', change => renamed.push(change))
   await supervisor.ensure({ sessionKey: 'A.jsonl', cwd: 'C:/a', sessionFile: 'A.jsonl' })
   await supervisor.ensure({ sessionKey: 'B.jsonl', cwd: 'C:/b', sessionFile: 'B.jsonl' })
   assert.equal(await supervisor.rename('B.jsonl', 'Later name'), true)
@@ -195,6 +206,9 @@ test('renaming B does not switch or abort A', async () => {
   assert.deepEqual(a.commands, [])
   assert.equal(b.commands.at(-1)?.command, 'set_session_name')
   assert.equal(b.commands.at(-1)?.payload.name, 'Later name')
+  // A hot rename publishes its name on the runtime stream; the session list
+  // still needs one signal so the sidebar and title bar re-read it.
+  assert.deepEqual(renamed, [{ file: 'B.jsonl', name: 'Later name' }])
   assert.equal(a.stops, 0)
   assert.equal(b.stops, 0)
 })
@@ -208,8 +222,13 @@ test('a cold rename appends the sample and does not touch the hot runtime', asyn
     copyFileSync(fixture, cold)
     const a = new FakeRuntime()
     const supervisor = supervisorOf([a])
+    const renamed: unknown[] = []
+    supervisor.on('rename', change => renamed.push(change))
     await supervisor.ensure({ sessionKey: 'A.jsonl', cwd: 'C:/a', sessionFile: 'A.jsonl' })
     assert.equal(await supervisor.rename(cold, 'From the list'), true)
+    // A cold rename only appends to the JSONL, so without this push the UI
+    // would never learn the new name.
+    assert.deepEqual(renamed, [{ file: cold, name: 'From the list' }])
     const last = readFileSync(cold, 'utf8').trim().split('\n').at(-1)
     const entry = JSON.parse(last ?? '{}') as { type?: string; name?: string; parentId?: string }
     assert.equal(entry.type, 'session_info')
@@ -287,6 +306,70 @@ test('a failed start releases the session file so the next start can own it', as
   assert.equal(supervisor.has('A.jsonl'), true)
 })
 
+test('separate supervisors cannot open or mutate the same session file at once', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-lock-'))
+  const sessionFile = path.join(dir, 'session.jsonl')
+  writeFileSync(sessionFile, '{"type":"session"}\n')
+  const firstRuntime = new FakeRuntime()
+  const secondRuntime = new FakeRuntime()
+  const first = supervisorOf([firstRuntime])
+  const second = supervisorOf([secondRuntime])
+  let draft: SessionSupervisor | undefined
+  let competing: SessionSupervisor | undefined
+  try {
+    assert.deepEqual(await first.ensure({ sessionKey: sessionFile, sessionFile, cwd: dir }), { ok: true })
+
+    const blocked = await second.ensure({ sessionKey: sessionFile, sessionFile, cwd: dir })
+    assert.equal(blocked.ok, false)
+    assert.match(blocked.error ?? '', /already open/)
+    assert.equal(secondRuntime.starts, 0)
+
+    const lockfilePath = createRequire(path.join(process.cwd(), 'package.json')).resolve('proper-lockfile')
+    const competingProcess = spawnSync(process.execPath, ['-e', `
+      const lockfile = require(${JSON.stringify(lockfilePath)})
+      try {
+        const release = lockfile.lockSync(${JSON.stringify(sessionFile)}, { realpath: false, retries: 0 })
+        release()
+        process.exit(2)
+      } catch (error) {
+        if (error.code === 'ELOCKED') process.exit(0)
+        throw error
+      }
+    `], { encoding: 'utf8' })
+    assert.equal(competingProcess.status, 0, competingProcess.stderr)
+
+    let mutated = false
+    await assert.rejects(
+      second.withSessionFileMutation(sessionFile, async () => { mutated = true }),
+      /already open/
+    )
+    assert.equal(mutated, false)
+
+    await first.stop(sessionFile)
+    assert.deepEqual(await second.ensure({ sessionKey: sessionFile, sessionFile, cwd: dir }), { ok: true })
+    assert.equal(secondRuntime.starts, 1)
+
+    await second.stop(sessionFile)
+    const futureFile = path.join(dir, 'future-session.jsonl')
+    const draftRuntime = new FakeRuntime()
+    draftRuntime.boundFile = futureFile
+    draft = supervisorOf([draftRuntime])
+    const competingRuntime = new FakeRuntime()
+    competing = supervisorOf([competingRuntime])
+    assert.deepEqual(await draft.ensure({ sessionKey: 'draft:future', cwd: dir }), { ok: true })
+    const blockedDraft = await competing.ensure({ sessionKey: futureFile, sessionFile: futureFile, cwd: dir })
+    assert.equal(blockedDraft.ok, false)
+    assert.equal(competingRuntime.starts, 0)
+    await draft.stop(futureFile)
+  } finally {
+    await first.stop()
+    await second.stop()
+    await draft?.stop()
+    await competing?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('directory queue uses the same identity as the write lock', async () => {
   const a = new FakeRuntime()
   const b = new FakeRuntime()
@@ -310,8 +393,14 @@ test('stopping a writer releases the directory only after the process exits', as
   await supervisor.request('A', 'prompt')
   const waiting = supervisor.request('B', 'prompt')
   let finishStop!: () => void
-  a.stop = () => new Promise<void>((resolve) => { finishStop = resolve })
+  let stopStarted!: () => void
+  const stopInvoked = new Promise<void>((resolve) => { stopStarted = resolve })
+  a.stop = () => new Promise<void>((resolve) => {
+    finishStop = resolve
+    stopStarted()
+  })
   const stopped = supervisor.stop('A')
+  await stopInvoked
   assert.equal(b.commands.length, 0, 'the old writer still owns its files')
   a.running = false
   finishStop()
@@ -330,7 +419,32 @@ test('stopping an active process publishes its final cancellation after exit', a
   supervisor.on('event', (payload) => events.push(payload))
   await supervisor.stop('A')
   assert.equal(a.isRunning, false)
+  assert.deepEqual(a.commands.slice(-2).map((entry) => entry.command), ['clear_queue', 'abort'])
   assert.deepEqual(events, [{ ownerId: 'A', event: { type: 'agent_settled', aborted: true, runtimeStopped: true } }])
+})
+
+test('stopping a run uses Pi settlement without publishing a duplicate', async () => {
+  const a = new FakeRuntime()
+  a.settleOnAbort = true
+  const supervisor = supervisorOf([a])
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+  await supervisor.request('A', 'prompt')
+  const events: { ownerId: string; event: PiEvent }[] = []
+  supervisor.on('event', (payload) => events.push(payload))
+
+  await supervisor.stop('A')
+
+  assert.deepEqual(events, [{ ownerId: 'A', event: { type: 'agent_settled', aborted: true } }])
+})
+
+test('stopping an idle process does not send abort commands', async () => {
+  const a = new FakeRuntime()
+  const supervisor = supervisorOf([a])
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+
+  await supervisor.stop('A')
+
+  assert.deepEqual(a.commands, [])
 })
 
 test('a process that dies during a run settles it instead of leaving it open', async () => {
@@ -352,6 +466,81 @@ test('a process that dies during a run settles it instead of leaving it open', a
   // settle.
   a.emit('status', { phase: 'stopped', cwd: 'C:/a' })
   assert.equal(events.length, 1)
+})
+
+test('a process that dies before the first prompt response still settles the run', async () => {
+  const a = new FakeRuntime()
+  const supervisor = supervisorOf([a])
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+  let rejectPrompt!: (error: Error) => void
+  a.request = async <T>(command: string): Promise<T> => {
+    if (command === 'prompt') return await new Promise<T>((_resolve, reject) => { rejectPrompt = reject })
+    return { ok: true } as T
+  }
+  const events: { ownerId: string; event: PiEvent }[] = []
+  supervisor.on('event', (payload) => events.push(payload))
+  const prompt = supervisor.request('A', 'prompt')
+  await Promise.resolve()
+
+  a.running = false
+  a.status = { phase: 'error', cwd: 'C:/a', error: 'the process died' }
+  a.emit('status', a.status)
+  rejectPrompt(new Error('pi exited'))
+  await assert.rejects(prompt, /pi exited/)
+
+  assert.deepEqual(events, [
+    { ownerId: 'A', event: { type: 'agent_settled', aborted: false, crashed: true } }
+  ])
+})
+
+test('an RPC error does not release a live writer or its directory gate', async () => {
+  const a = new FakeRuntime()
+  const b = new FakeRuntime()
+  const supervisor = supervisorOf([a, b])
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/same' })
+  await supervisor.ensure({ sessionKey: 'B', cwd: 'C:/same' })
+  await supervisor.request('A', 'prompt')
+
+  const waiting = supervisor.request('B', 'prompt')
+  a.status = { phase: 'error', cwd: 'C:/same', error: 'pipe failed' }
+  a.emit('status', a.status)
+
+  assert.equal(a.isRunning, true)
+  assert.equal(supervisor.sessionInfo('A')?.running, true)
+  assert.equal(b.commands.some(({ command }) => command === 'prompt'), false)
+  await assert.rejects(
+    supervisor.withCwdLock('C:/same', async () => {}),
+    /conversation is working/
+  )
+
+  a.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+  await waiting
+  assert.equal(b.commands.filter(({ command }) => command === 'prompt').length, 1)
+})
+
+test('a failed prompt response keeps its directory reserved until Pi settles', async () => {
+  const a = new FakeRuntime()
+  const b = new FakeRuntime()
+  const supervisor = supervisorOf([a, b])
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/same' })
+  await supervisor.ensure({ sessionKey: 'B', cwd: 'C:/same' })
+  a.request = async (command) => {
+    if (command === 'prompt') throw new Error('Timed out waiting for prompt response')
+    return { ok: true }
+  }
+
+  await assert.rejects(supervisor.request('A', 'prompt'), /Timed out/)
+  assert.equal(supervisor.sessionInfo('A')?.running, true)
+  await assert.rejects(
+    supervisor.withCwdLock('C:/same', async () => {}),
+    /conversation is working/
+  )
+  const waiting = supervisor.request('B', 'prompt')
+  assert.equal(b.commands.some(({ command }) => command === 'prompt'), false)
+
+  a.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+  await waiting
+  assert.equal(b.commands.filter(({ command }) => command === 'prompt').length, 1)
 })
 
 test('a run that already settled normally is not reported as crashed', async () => {
@@ -503,6 +692,17 @@ test('closing a workspace cancels all its waiters without starting their command
   assert.equal(c.isRunning, true)
 })
 
+test('closing a workspace stops sessions running in its nested folders', async () => {
+  const nested = new FakeRuntime()
+  const sibling = new FakeRuntime()
+  const supervisor = supervisorOf([nested, sibling])
+  await supervisor.ensure({ sessionKey: 'nested', cwd: 'C:/tree/packages/app' })
+  await supervisor.ensure({ sessionKey: 'sibling', cwd: 'C:/elsewhere' })
+  await supervisor.stopCwd('C:/tree')
+  assert.equal(nested.isRunning, false)
+  assert.equal(sibling.isRunning, true)
+})
+
 test('a start completing after a stop cannot resurrect its runtime', async () => {
   const a = new FakeRuntime()
   let finish!: () => void
@@ -521,6 +721,85 @@ test('a start completing after a stop cannot resurrect its runtime', async () =>
   assert.equal(supervisor.has('A'), false)
 })
 
+test('shutdown waits for a session lock request and prevents its runtime from starting', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-start-stop-'))
+  const sessionFile = path.join(root, 'session.jsonl')
+  writeFileSync(sessionFile, '{}\n')
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime])
+  const originalLock = properLockfile.lock
+  let signalLockRequest!: () => void
+  let releaseLockRequest!: () => void
+  const lockRequested = new Promise<void>((resolve) => { signalLockRequest = resolve })
+  const lockGate = new Promise<void>((resolve) => { releaseLockRequest = resolve })
+  properLockfile.lock = async () => {
+    signalLockRequest()
+    await lockGate
+    return async () => {}
+  }
+
+  try {
+    const starting = supervisor.ensure({
+      sessionKey: sessionFile,
+      sessionFile,
+      cwd: root
+    })
+    await lockRequested
+
+    let stopResolved = false
+    const stopping = supervisor.stop().then(() => { stopResolved = true })
+    await Promise.resolve()
+    assert.equal(stopResolved, false)
+
+    releaseLockRequest()
+    assert.equal((await starting).ok, false)
+    await stopping
+    assert.equal(runtime.starts, 0)
+    assert.equal(supervisor.has(sessionFile), false)
+  } finally {
+    releaseLockRequest()
+    properLockfile.lock = originalLock
+    await supervisor.stop()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('closing a workspace cancels a runtime that is still waiting for its session-file lock', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-workspace-stop-'))
+  const sessionFile = path.join(root, 'session.jsonl')
+  writeFileSync(sessionFile, '{}\n')
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime])
+  const originalLock = properLockfile.lock
+  let signalLockRequest!: () => void
+  let releaseLockRequest!: () => void
+  const lockRequested = new Promise<void>((resolve) => { signalLockRequest = resolve })
+  const lockGate = new Promise<void>((resolve) => { releaseLockRequest = resolve })
+  properLockfile.lock = async () => {
+    signalLockRequest()
+    await lockGate
+    return async () => {}
+  }
+
+  try {
+    const starting = supervisor.ensure({ sessionKey: sessionFile, sessionFile, cwd: root })
+    await lockRequested
+
+    const closing = supervisor.stopCwd(root)
+    releaseLockRequest()
+    await closing
+
+    assert.equal((await starting).ok, false)
+    assert.equal(runtime.starts, 0)
+    assert.equal(supervisor.has(sessionFile), false)
+  } finally {
+    releaseLockRequest()
+    properLockfile.lock = originalLock
+    await supervisor.stop()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('Git writes cannot change a directory owned by a background run', async () => {
   const a = new FakeRuntime()
   const supervisor = supervisorOf([a])
@@ -532,6 +811,51 @@ test('Git writes cannot change a directory owned by a background run', async () 
   a.emit('event', { type: 'agent_settled' })
   await supervisor.withCwdLock('C:/same', async () => { writes += 1 })
   assert.equal(writes, 1)
+})
+
+test('separate supervisors serialize writes to overlapping workspaces', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-cwd-'))
+  const lockDirectory = path.join(root, 'cwd-gate')
+  const firstRuntime = new FakeRuntime()
+  const secondRuntime = new FakeRuntime()
+  const first = supervisorOf([firstRuntime], lockDirectory)
+  const second = supervisorOf([secondRuntime], lockDirectory)
+  t.after(async () => {
+    await Promise.all([first.stop(), second.stop()])
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  await first.ensure({ sessionKey: 'first', cwd: 'C:/shared' })
+  await second.ensure({ sessionKey: 'second', cwd: 'C:/shared' })
+  await first.request('first', 'prompt')
+  const queued = second.request('second', 'prompt')
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  assert.equal(secondRuntime.commands.some(({ command }) => command === 'prompt'), false)
+
+  firstRuntime.emit('event', { type: 'agent_settled' } as PiEvent)
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      queued,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('queued prompt did not resume')), 5000)
+      })
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+  assert.equal(secondRuntime.commands.filter(({ command }) => command === 'prompt').length, 1)
+
+  await second.stop('second')
+  assert.equal(secondRuntime.isRunning, false)
+  const probe = new InterprocessCwdGate(lockDirectory)
+  let acquired = false
+  for (let attempt = 0; attempt < 20 && !acquired; attempt += 1) {
+    acquired = await probe.acquire('C:/shared')
+    if (!acquired) await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  assert.equal(acquired, true, 'stopping a writer releases its cross-process lease')
+  await probe.release('C:/shared')
 })
 
 test('a prompt waits for an in-flight desktop write and starts after it finishes', async () => {
@@ -546,6 +870,40 @@ test('a prompt waits for an in-flight desktop write and starts after it finishes
   await writing
   await prompt
   assert.equal(a.commands[0]?.command, 'prompt')
+})
+
+test('a nested prompt waits for a desktop write in its parent directory', async () => {
+  const a = new FakeRuntime()
+  const supervisor = supervisorOf([a])
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/same/nested' })
+  let finish!: () => void
+  const writing = supervisor.withCwdLock('C:/same', () => new Promise<void>(resolve => { finish = resolve }))
+  const prompt = supervisor.request('A', 'prompt')
+  assert.equal(a.commands.length, 0)
+  finish()
+  await writing
+  await prompt
+  assert.equal(a.commands[0]?.command, 'prompt')
+})
+
+test('a queued prompt is rejected when its dispatch preflight no longer passes', async () => {
+  const a = new FakeRuntime()
+  const b = new FakeRuntime()
+  const supervisor = supervisorOf([a, b])
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/same' })
+  await supervisor.ensure({ sessionKey: 'B', cwd: 'C:/same' })
+  await supervisor.request('A', 'prompt')
+
+  let authorized = true
+  const queued = supervisor.request('B', 'prompt', {}, 30_000, undefined, () => {
+    if (!authorized) throw new Error('remote device was revoked')
+  })
+  authorized = false
+  a.emit('event', { type: 'agent_settled' })
+
+  await assert.rejects(queued, /remote device was revoked/)
+  assert.equal(b.commands.some((command) => command.command === 'prompt'), false)
+  await supervisor.withCwdLock('C:/same', async () => 'released')
 })
 
 test('an early settlement is not undone by a late prompt acknowledgement', async () => {

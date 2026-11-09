@@ -42,7 +42,6 @@ test('timing samples are deduplicated and migrate from a draft to its session fi
 
     assert.deepEqual(readSessionTiming('draft:1'), {
       modelDurationsMs: {},
-      legacyModelDurationsMs: {},
       ttftDurationsMs: {},
       toolDurationsMs: {},
       runDurationsMs: {},
@@ -50,7 +49,6 @@ test('timing samples are deduplicated and migrate from a draft to its session fi
     })
     assert.deepEqual(readSessionTiming('C:/sessions/session.jsonl'), {
       modelDurationsMs: { 'turn-1': 1_200 },
-      legacyModelDurationsMs: {},
       ttftDurationsMs: { 'run-1': 650 },
       toolDurationsMs: { 'call-1': 300 },
       runDurationsMs: {},
@@ -61,7 +59,7 @@ test('timing samples are deduplicated and migrate from a draft to its session fi
   }
 })
 
-test('legacy wall-clock model samples are retained for existing session statistics', () => {
+test('pre-v4 timing records drop duration samples measured against the wall clock', () => {
   const restore = installStorage()
   const sessionKey = 'C:/sessions/legacy.jsonl'
   const storageKey = `pi-desktop:session-timing:v1:${encodeURIComponent(sessionKey)}`
@@ -73,20 +71,68 @@ test('legacy wall-clock model samples are retained for existing session statisti
       toolDurationsMs: { oldCall: 300 }
     }))
 
+    // Version 1 measured model time against the wall clock. Every field in
+    // this record was also wall-clock measured before v4.
     assert.deepEqual(readSessionTiming(sessionKey), {
       modelDurationsMs: {},
+      ttftDurationsMs: {},
+      toolDurationsMs: {},
+      runDurationsMs: {},
+      generationWindowMs: {}
+    })
+
+    // Version 3 kept monotonic model timing, but other duration fields still
+    // used Date.now and are discarded during the v4 migration.
+    forgetSessionTiming(sessionKey)
+    store.setItem(storageKey, JSON.stringify({
+      modelTimingVersion: 3,
+      modelDurationsMs: { keptTurn: 1_200 },
       legacyModelDurationsMs: { oldTurn: 19_882_000 },
       ttftDurationsMs: { oldRun: 1_200 },
       toolDurationsMs: { oldCall: 300 },
+      runDurationsMs: { '1': 800 },
+      generationWindowMs: { '1': 600 }
+    }))
+    assert.deepEqual(readSessionTiming(sessionKey), {
+      modelDurationsMs: { keptTurn: 1_200 },
+      ttftDurationsMs: {},
+      toolDurationsMs: {},
       runDurationsMs: {},
       generationWindowMs: {}
     })
 
     recordModelDuration(sessionKey, 'newTurn', 800)
     const saved = JSON.parse(store.getItem(storageKey)!) as Record<string, unknown>
-    assert.equal(saved.modelTimingVersion, 2)
-    assert.deepEqual(saved.legacyModelDurationsMs, { oldTurn: 19_882_000 })
-    assert.deepEqual(readSessionTiming(sessionKey).modelDurationsMs, { newTurn: 800 })
+    assert.equal(saved.modelTimingVersion, 4)
+    assert.equal(saved.legacyModelDurationsMs, undefined)
+    assert.deepEqual(readSessionTiming(sessionKey).modelDurationsMs, {
+      keptTurn: 1_200,
+      newTurn: 800
+    })
+  } finally {
+    restore()
+  }
+})
+
+test('timing reads are served from memory while the transcript streams', () => {
+  const restore = installStorage()
+  const sessionKey = 'C:/sessions/streaming.jsonl'
+  try {
+    const store = (globalThis as unknown as { window: { localStorage: Storage } }).window.localStorage
+    let reads = 0
+    const originalGet = store.getItem.bind(store)
+    store.getItem = (key: string) => {
+      reads += 1
+      return originalGet(key)
+    }
+    recordRunDuration(sessionKey, 1_700_000_000_000, 1_200)
+    assert.equal(reads, 1, 'the first sample reads the stored record once')
+
+    assert.deepEqual(readSessionTiming(sessionKey).runDurationsMs, {
+      '1700000000000': 1_200
+    })
+    readSessionTiming(sessionKey)
+    assert.equal(reads, 1, 'later reads come from memory, not localStorage')
   } finally {
     restore()
   }
@@ -105,7 +151,6 @@ test('forgetting a deleted conversation drops its timing record', () => {
     assert.equal(store.getItem(storageKey), null)
     assert.deepEqual(readSessionTiming(sessionKey), {
       modelDurationsMs: {},
-      legacyModelDurationsMs: {},
       ttftDurationsMs: {},
       toolDurationsMs: {},
       runDurationsMs: {},

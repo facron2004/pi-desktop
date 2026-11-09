@@ -239,6 +239,10 @@ describe('bundled marketplace snapshot', () => {
 
   it('marks only known first-party packages as official', () => {
     const official = entries.filter((item) => item.official).map((item) => item.id).sort()
-    assert.deepEqual(official, ['badlogic/pi-skills', 'earendil-works/pi-review-loop'])
+    assert.deepEqual(official, [
+      'HiThink-Tech/Financial-API',
+      'badlogic/pi-skills',
+      'earendil-works/pi-review-loop'
+    ])
   })
 })

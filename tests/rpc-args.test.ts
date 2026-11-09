@@ -52,3 +52,8 @@ test('a new conversation is launched without a session file', () => {
   assert.equal(args[0], '--mode')
   assert.equal(args[1], 'rpc')
 })
+
+test('an omitted project trust decision defaults to no project approval', () => {
+  const args = buildRpcArgs({ cwd: 'C:/unreviewed-project' })
+  assert.equal(args.at(-1), '--no-approve')
+})

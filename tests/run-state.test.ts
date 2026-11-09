@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { AgentMessage, AppSettings, ModelInfo, PiEvent, PiState, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
-import { readSessionTiming } from '../src/renderer/src/lib/session-timing'
+import type { AgentMessage, AppSettings, ModelInfo, PiEvent, PiState, RuntimeRekey, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
+import { forgetSessionTiming, readSessionTiming } from '../src/renderer/src/lib/session-timing'
 
 /* ------------------------------------------------------------------ *
  * A stand-in for the preload bridge.
@@ -42,6 +42,7 @@ type Handler = (event: PiEvent) => void
 
 let emit: Handler = () => {}
 let emitStatus: (status: RuntimeStatus) => void = () => {}
+let emitRekey: (change: RuntimeRekey) => void = () => {}
 
 const ok = <T,>(value: T) => Promise.resolve(value)
 
@@ -63,6 +64,10 @@ const bridge = {
     },
     onStatus: (handler: (status: RuntimeStatus) => void) => {
       emitStatus = handler
+      return () => {}
+    },
+    onRekey: (handler: (change: RuntimeRekey) => void) => {
+      emitRekey = handler
       return () => {}
     },
     request: (command: string) => ok(command === 'prompt' ? promptResult : {}),
@@ -377,10 +382,10 @@ test('completed events persist model time and prompt TTFT for the conversation',
     emit({ type: 'agent_start' })
     emit({ type: 'turn_start' })
     monotonic = 350
-    Date.now = () => 1_250
+    Date.now = () => 125_000
     emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } })
     monotonic = 900
-    Date.now = () => 1_800
+    Date.now = () => 180_000
     emit({ type: 'message_end', message: { role: 'assistant', content: [] } })
     emit({ type: 'agent_settled', aborted: false })
   } finally {
@@ -417,10 +422,10 @@ test('a prompt event before agent_start keeps its identity and elapsed metrics',
     turnId = useAppStore.getState().run.turnId
     emit({ type: 'message_start', message: { role: 'assistant', content: [] } })
     monotonic = 350
-    Date.now = () => 1_250
+    Date.now = () => 125_000
     emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } })
     monotonic = 900
-    Date.now = () => 1_800
+    Date.now = () => 180_000
     emit({
       type: 'message_end',
       message: {
@@ -493,17 +498,50 @@ test('tool events persist a measured duration when Pi omits it', () => {
   startRun()
   const sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
   const now = Date.now
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let monotonic = 1_000
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
   try {
     Date.now = () => 2_000
     emit({ type: 'agent_start' })
     emit({ type: 'tool_execution_start', toolCallId: 'timed-call', toolName: 'read' })
-    Date.now = () => 2_375
+    monotonic = 1_375
+    Date.now = () => 999_999
     emit({ type: 'tool_execution_end', toolCallId: 'timed-call', toolName: 'read', isError: false })
   } finally {
     Date.now = now
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
   }
 
   assert.equal(readSessionTiming(sessionKey).toolDurationsMs['timed-call'], 375)
+  const tool = useAppStore.getState().items.find((item) => item.kind === 'tool' && item.toolCallId === 'timed-call')
+  assert.equal(tool?.kind === 'tool' ? tool.durationMs : undefined, 375)
+})
+
+test('a tool timing sample follows its conversation when Pi rekeys a draft', () => {
+  startRun()
+  const from = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+  assert.ok(from)
+  const to = 'C:/tmp/rekeyed-tool.jsonl'
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let monotonic = 1_000
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
+  try {
+    emit({ type: 'agent_start' })
+    emit({ type: 'tool_execution_start', toolCallId: 'rekeyed-call', toolName: 'read' })
+    emitRekey({ from, to })
+    monotonic = 1_375
+    emit({ type: 'tool_execution_end', toolCallId: 'rekeyed-call', toolName: 'read', isError: false })
+    assert.equal(readSessionTiming(to).toolDurationsMs['rekeyed-call'], 375)
+  } finally {
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
+  }
 })
 
 test('P03 — an extension dialog is the one real "waiting for the user" state', () => {
@@ -594,6 +632,167 @@ test('P04c — stopping an already settled run leaves the phase idle', async () 
   assert.equal(useAppStore.getState().run.settled, true)
 })
 
+test('P04d — generation time is summed per answer, not across a tool gap', () => {
+  const originalNow = Date.now
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let now = 1_000
+  let monotonic = 10_000
+  Date.now = () => now
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
+  try {
+    startRun()
+    const sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+    emit({ type: 'agent_start' })
+
+    emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: now } })
+    now = 1_050
+    monotonic = 10_050
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
+    assert.equal(useAppStore.getState().run.firstTokenMonotonicAt, undefined)
+    assert.equal(phase(), 'working', 'a text block start has not produced readable text yet')
+    now = 1_100
+    monotonic = 10_100
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'first' } })
+    assert.equal(useAppStore.getState().run.firstTokenMonotonicAt, 10_100)
+    now = 1_400
+    monotonic = 10_400
+    emit({ type: 'message_end', message: { role: 'assistant', content: [], timestamp: now } })
+
+    // A tool runs for ten seconds between the two answers.
+    now = 11_400
+    monotonic = 10_400
+    emit({ type: 'tool_execution_start', toolCallId: 'gap-tool', toolName: 'bash', args: {} })
+    now = 111_400
+    monotonic = 20_400
+    emit({ type: 'tool_execution_end', toolCallId: 'gap-tool', isError: false })
+    now = 11_500
+    monotonic = 20_500
+    emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: now } })
+    now = 11_600
+    monotonic = 20_600
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'second' } })
+    now = 11_900
+    monotonic = 20_900
+    emit({ type: 'message_end', message: { role: 'assistant', content: [], timestamp: now } })
+
+    // 350ms in the first answer and 300ms in the second. The old first-to-last
+    // span would have counted the tool call and produced 10.8s.
+    assert.equal(useAppStore.getState().run.generationMs, 650)
+    const tool = useAppStore.getState().items.find((item) => item.kind === 'tool' && item.toolCallId === 'gap-tool')
+    assert.equal(tool?.kind === 'tool' ? tool.durationMs : undefined, 10_000)
+    assert.equal(readSessionTiming(sessionKey).toolDurationsMs['gap-tool'], 10_000)
+  } finally {
+    Date.now = originalNow
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
+  }
+})
+
+test('TTFT excludes time spent queued before Pi reports agent_start', () => {
+  const originalNow = Date.now
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let now = 1_000
+  let monotonic = 10_000
+  Date.now = () => now
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
+  startRun()
+  const sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+  forgetSessionTiming(sessionKey)
+  const queuedRun = {
+    phase: 'queued' as const,
+    runId: 'queued-ttft-run',
+    turns: 0,
+    startedAt: now,
+    startedMonotonicAt: monotonic,
+    settled: false
+  }
+  useAppStore.setState((state) => ({
+    isStreaming: true,
+    run: queuedRun,
+    threads: {
+      ...state.threads,
+      [sessionKey]: { ...state.threads[sessionKey], run: queuedRun }
+    }
+  }))
+
+  try {
+    now = 2_000
+    monotonic = 11_000
+    emit({ type: 'agent_start' })
+    now = 2_300
+    monotonic = 11_300
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'first' } })
+    now = 2_500
+    monotonic = 11_500
+    emit({ type: 'agent_settled', aborted: false })
+
+    assert.equal(readSessionTiming(sessionKey).ttftDurationsMs['queued-ttft-run'], 300)
+  } finally {
+    forgetSessionTiming(sessionKey)
+    Date.now = originalNow
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
+    startRun()
+  }
+})
+
+test('P04e — a steer starts a fresh TPS window inside the same run', async () => {
+  const previous = useAppStore.getState()
+  const originalNow = Date.now
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let now = 1_000
+  let monotonic = 10_000
+  let sessionKey: string | undefined
+  Date.now = () => now
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
+  try {
+    await useAppStore.getState().newChat()
+    startRun()
+    sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+
+    emit({ type: 'message_start', message: { role: 'user', content: 'First prompt', timestamp: 1_000 } })
+    const runId = useAppStore.getState().run.runId
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    emit({ type: 'message_start', message: { role: 'assistant', content: [] } })
+    monotonic = 10_100
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'first answer' } })
+    monotonic = 10_400
+    emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'first answer' }] } })
+    assert.equal(useAppStore.getState().run.generationMs, 300)
+
+    now = 2_000
+    emit({ type: 'message_start', message: { role: 'user', content: 'Steer prompt', timestamp: 2_000 } })
+    assert.equal(useAppStore.getState().run.runId, runId, 'the steer remains in the same run')
+    assert.equal(useAppStore.getState().run.generationMs, 0)
+
+    emit({ type: 'turn_start' })
+    emit({ type: 'message_start', message: { role: 'assistant', content: [] } })
+    monotonic = 10_500
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'steered answer' } })
+    monotonic = 10_800
+    emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'steered answer' }] } })
+    assert.equal(useAppStore.getState().run.generationMs, 300)
+
+    emit({ type: 'agent_settled', aborted: false })
+    const timings = readSessionTiming(sessionKey)
+    assert.equal(timings.generationWindowMs['2000'], 300)
+    assert.equal(timings.generationWindowMs['1000'], undefined)
+  } finally {
+    if (sessionKey) forgetSessionTiming(sessionKey)
+    Date.now = originalNow
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
+    useAppStore.setState(previous)
+  }
+})
+
 test('P05 — a retry is reported as retrying, not as a finished run', () => {
   startRun()
   emit({ type: 'agent_start' })
@@ -670,6 +869,54 @@ test('P06 — a search hit switches the view and does not stop the running conve
     assert.equal(switches, 1)
   } finally {
     useAppStore.setState(previous)
+  }
+})
+
+test('an explicit runtime start cancels the pending speculative prewarm', async () => {
+  const previous = useAppStore.getState()
+  const runtimeBridge = bridge.runtime as typeof bridge.runtime & {
+    ensure: (options: unknown) => Promise<{ ok: boolean }>
+    stop: (key?: string) => Promise<void>
+  }
+  const dynamicRuntime = bridge.runtime as unknown as Record<string, unknown>
+  const originalEnsure = dynamicRuntime.ensure
+  const originalStop = dynamicRuntime.stop
+  const file = 'C:/tmp/prewarm-explicit-start.jsonl'
+  let ensures = 0
+  let stops = 0
+
+  runtimeBridge.ensure = async () => {
+    ensures += 1
+    return { ok: true }
+  }
+  runtimeBridge.stop = async () => {
+    stops += 1
+  }
+  useAppStore.setState({
+    workspace: undefined,
+    settings: { ...previous.settings, workspaces: [], activeWorkspaceId: null },
+    activeSessionFile: undefined,
+    draftId: undefined,
+    threads: {}
+  })
+
+  try {
+    await useAppStore.getState().selectSession({
+      id: 'prewarm-explicit-start', file, cwd: '', preview: 'Existing chat', updatedAt: 1, messageCount: 1
+    })
+    await useAppStore.getState().ensureRuntime(file, 'explicit-action')
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    assert.equal(ensures, 1, 'the timer must not start the same runtime a second time')
+
+    await useAppStore.getState().newChat()
+    assert.equal(stops, 0, 'leaving the chat must not stop its explicitly started runtime')
+  } finally {
+    await useAppStore.getState().newChat()
+    useAppStore.setState(previous)
+    if (originalEnsure === undefined) delete dynamicRuntime.ensure
+    else dynamicRuntime.ensure = originalEnsure
+    if (originalStop === undefined) delete dynamicRuntime.stop
+    else dynamicRuntime.stop = originalStop
   }
 })
 
@@ -832,6 +1079,84 @@ test('opening another workspace does not stop or blank a running conversation', 
     assert.equal(next.threads['C:/old/a.jsonl']?.isStreaming, true)
     assert.equal(next.threads['C:/old/a.jsonl']?.items[0]?.id, 'keep')
     assert.notEqual(next.activeSessionFile, 'C:/old/a.jsonl')
+  } finally {
+    useAppStore.setState(previous)
+  }
+})
+
+test('context stats skip the transcript fetch when a request breakdown is known', async () => {
+  const previous = useAppStore.getState()
+  const originalRequest = bridge.runtime.request
+  const commands: string[] = []
+  bridge.runtime.request = (command: string) => {
+    commands.push(command)
+    return ok({})
+  }
+  const sessionKey = 'C:/sessions/context.jsonl'
+  const requestBreakdown = {
+    systemPrompt: 10,
+    toolDefinitions: 20,
+    conversationMessages: 30,
+    source: 'request' as const
+  }
+  try {
+    useAppStore.setState({ contextBreakdown: requestBreakdown, stats: undefined })
+    await useAppStore.getState().readSessionStats(sessionKey)
+    assert.ok(commands.includes('get_session_stats'), 'the live statistics are still read')
+    assert.equal(commands.includes('get_messages'), false, 'the transcript is not copied again')
+
+    commands.length = 0
+    useAppStore.setState({
+      contextBreakdown: { ...requestBreakdown, source: 'session' },
+      stats: undefined
+    })
+    await useAppStore.getState().readSessionStats(sessionKey)
+    assert.ok(commands.includes('get_messages'), 'an estimate can still be refreshed')
+  } finally {
+    bridge.runtime.request = originalRequest
+    useAppStore.setState(previous)
+  }
+})
+
+test('extension status and widget text lose their terminal colour codes', async () => {
+  const previous = useAppStore.getState()
+  try {
+    await useAppStore.getState().newChat()
+    emit({
+      type: 'extension_ui_request',
+      method: 'setStatus',
+      statusKey: 'mcp',
+      statusText: '\u001b[38;2;167;152;215mMCP: 3 servers enabled\u001b[39m'
+    })
+    const status = useAppStore.getState().uiStatuses.find((entry) => entry.key === 'mcp')
+    assert.equal(status?.text, 'MCP: 3 servers enabled')
+
+    emit({
+      type: 'extension_ui_request',
+      method: 'setWidget',
+      widgetKey: 'ponytail',
+      widgetLines: ['\u001b[31mponytail: FULL\u001b[39m'],
+      widgetPlacement: 'aboveEditor'
+    })
+    const widget = useAppStore.getState().uiWidgets.find((entry) => entry.key === 'ponytail')
+    assert.deepEqual(widget?.lines, ['ponytail: FULL'])
+  } finally {
+    useAppStore.setState(previous)
+  }
+})
+
+test('an informational extension notification does not interrupt the composer', async () => {
+  const previous = useAppStore.getState()
+  try {
+    await useAppStore.getState().newChat()
+    useAppStore.setState({ toast: undefined })
+    emit({
+      type: 'extension_ui_request',
+      method: 'notify',
+      notifyType: 'info',
+      message: 'Ponytail loaded: full'
+    })
+    assert.equal(useAppStore.getState().toast, undefined)
   } finally {
     useAppStore.setState(previous)
   }

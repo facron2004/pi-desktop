@@ -59,6 +59,17 @@ test('a live get_session_stats reading wins over the visible transcript', () => 
   assert.equal(metrics.cacheHitPercent, 70)
 })
 
+test('cache writes belong to the prompt base of the hit rate', () => {
+  const metrics = sessionMetrics(
+    [],
+    stats({ tokens: { input: 100, output: 50, cacheRead: 700, cacheWrite: 200, total: 1_050 } }),
+    {}
+  )
+  // 700 read / (100 input + 700 read + 200 write)
+  assert.equal(metrics.cacheHitPercent, 70)
+  assert.equal(metrics.cacheWriteTokens, 200)
+})
+
 test('the context reading is a projection of get_session_stats', () => {
   const metrics = sessionMetrics(
     [],
@@ -74,10 +85,17 @@ test('the context reading is a projection of get_session_stats', () => {
   assert.equal(cold.cacheHitPercent, null)
 })
 
-test('TTFT is the prompt-to-first-token delay', () => {
-  const metrics = sessionMetrics([], undefined, { startedAt: 1_000, firstTokenAt: 1_820 })
-  assert.equal(metrics.ttftMs, 820)
-  assert.equal(sessionMetrics([], undefined, { startedAt: 1_000 }).ttftMs, null)
+test('TTFT is measured from agent_start to the first text delta', () => {
+  const metrics = sessionMetrics([], undefined, {
+    startedAt: 1_000,
+    startedMonotonicAt: 100,
+    ttftStartedAt: 1_200,
+    ttftStartedMonotonicAt: 200,
+    firstTokenAt: 1_820,
+    firstTokenMonotonicAt: 350
+  })
+  assert.equal(metrics.ttftMs, 150, 'monotonic TTFT starts at agent_start, after earlier queue time')
+  assert.equal(sessionMetrics([], undefined, { startedAt: 1_000, firstTokenAt: 1_820 }).ttftMs, null)
 })
 
 test('model time and average TTFT use locally recorded session samples', () => {
@@ -87,7 +105,6 @@ test('model time and average TTFT use locally recorded session samples', () => {
     { settled: true },
     {
       modelDurationsMs: { turn1: 1_200, turn2: 2_800 },
-      legacyModelDurationsMs: {},
       ttftDurationsMs: { run1: 600, run2: 1_000 },
       toolDurationsMs: {},
       runDurationsMs: {},
@@ -98,21 +115,14 @@ test('model time and average TTFT use locally recorded session samples', () => {
   assert.equal(metrics.averageTtftMs, 800)
 })
 
-test('legacy model time remains visible after upgrading timing storage', () => {
-  const metrics = sessionMetrics(
-    [],
-    undefined,
-    { settled: true },
-    {
-      modelDurationsMs: {},
-      legacyModelDurationsMs: { oldTurn: 1_200 },
-      ttftDurationsMs: {},
-      toolDurationsMs: {},
-      runDurationsMs: {},
-      generationWindowMs: {}
-    }
-  )
-  assert.equal(metrics.modelTimeMs, 1_200)
+test('a settled run keeps its measured TTFT when local storage did not record it', () => {
+  const metrics = sessionMetrics([], undefined, {
+    runId: 'run-current',
+    ttftStartedMonotonicAt: 100,
+    firstTokenMonotonicAt: 350,
+    settled: true
+  })
+  assert.equal(metrics.averageTtftMs, 250)
 })
 
 test('live model time uses a monotonic clock', () => {
@@ -146,7 +156,6 @@ test('tool time uses persisted client timings when Pi did not save a duration', 
     {},
     {
       modelDurationsMs: {},
-      legacyModelDurationsMs: {},
       ttftDurationsMs: {},
       toolDurationsMs: { 'call-1': 450 },
       runDurationsMs: {},
@@ -172,6 +181,40 @@ test('TPS is the newest turn\'s output over the generation window', () => {
   assert.equal(sessionMetrics(items, undefined, { firstTokenAt: 10_000 }).tps, null)
 })
 
+test('TPS sums each answer\'s window, so a tool gap is not model time', () => {
+  const items: ThreadItem[] = [
+    user('u1'),
+    assistant('a1', 500),
+    assistant('a2', 700)
+  ]
+  // Two answers generated for 1s each, with a 10s tool call between them.
+  const metrics = sessionMetrics(items, undefined, {
+    generationMs: 2_000,
+    firstTokenAt: 10_000,
+    lastTokenAt: 21_000
+  })
+  assert.equal(metrics.tps, 600)
+})
+
+test('live TPS includes the active answer window', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let monotonic = 1_500
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
+  try {
+    const metrics = sessionMetrics(
+      [user('u1'), assistant('a1', 60), assistant('a2', 60)],
+      undefined,
+      { generationMs: 1_000, messageGenerationStartedAt: 1_000 }
+    )
+    assert.equal(metrics.tps, 80, 'two 60-token answers over 1.5 seconds produce 80 TPS')
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor)
+  }
+})
+
 test('TPS is restored from the saved generation window after reopening a session', () => {
   const items: ThreadItem[] = [
     { ...user('u1'), timestamp: 2_000 },
@@ -179,11 +222,33 @@ test('TPS is restored from the saved generation window after reopening a session
   ]
   const metrics = sessionMetrics(items, undefined, {}, {
     modelDurationsMs: {},
-    legacyModelDurationsMs: {},
     ttftDurationsMs: {},
     toolDurationsMs: {},
     runDurationsMs: {},
     generationWindowMs: { '2000': 2_000 }
   })
   assert.equal(metrics.tps, 60)
+})
+
+test('reopened conversations do not infer TTFT from message timestamps', () => {
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 1_000 },
+    { ...assistant('a1', 100), timestamp: 1_500, durationMs: 2_000 },
+    { ...assistant('a2', 300), timestamp: 5_000, durationMs: 3_000 }
+  ]
+  const metrics = sessionMetrics(items, undefined, {})
+  assert.equal(metrics.averageTtftMs, null, 'assistant timestamps are recorded before provider generation starts')
+  assert.equal(metrics.ttftMs, null)
+  assert.equal(metrics.tps, 80, '400 output tokens over two 2s/3s answer windows')
+  assert.equal(metrics.modelTimeMs, 5_000, 'sum of both assistant generation durations')
+})
+
+test('reopened conversations leave TPS unmeasured when assistant durations are missing', () => {
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 1_000 },
+    { ...assistant('a1', 100), timestamp: 1_500 },
+    { ...assistant('a2', 300), timestamp: 20_000 }
+  ]
+  const metrics = sessionMetrics(items, undefined, {})
+  assert.equal(metrics.tps, null, 'message timestamps span tool time and cannot prove generation speed')
 })

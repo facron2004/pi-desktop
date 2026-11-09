@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
-import {
-  Check,
-  ChevronRight,
-  FileDiff,
-  GitBranch,
-  GitCommitHorizontal
-} from 'lucide-react'
+import { ChevronRight, FileDiff, GitBranch, GitCommitHorizontal } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { CommitDialog } from './CommitDialog'
 import { CommitHistoryDialog } from './CommitHistoryDialog'
@@ -302,9 +296,10 @@ export function TaskPanel({ onOpenTask }: { onOpenTask: (taskId: string) => void
                   key={`${index}-${entry.text}`}
                   className="task-panel__check"
                   data-done={entry.done || undefined}
+                  data-active={entry.active || undefined}
                 >
                   <span className="task-panel__check-mark" aria-hidden="true">
-                    {entry.done ? <Check size={11} strokeWidth={2} /> : null}
+                    {index + 1}
                   </span>
                   <span className="task-panel__check-text">{entry.text}</span>
                 </li>

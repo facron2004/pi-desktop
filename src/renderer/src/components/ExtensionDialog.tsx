@@ -131,6 +131,18 @@ export function ExtensionDialog() {
         {request.approval ? (
           <div className="modal__approval">
             <strong>{request.approval.toolName}</strong>
+            {request.approval.toolSource !== 'builtin' ? (
+              <div className="modal__approval-cwd">
+                <span>{t('Tool source')}</span>
+                <code>{request.approval.toolSource || t('Unverified')}</code>
+              </div>
+            ) : null}
+            {request.approval.cwd ? (
+              <div className="modal__approval-cwd">
+                <span>{t('Working directory')}</span>
+                <code>{request.approval.cwd}</code>
+              </div>
+            ) : null}
             <pre>{JSON.stringify(request.approval.input, null, 2)}</pre>
           </div>
         ) : null}

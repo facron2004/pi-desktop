@@ -9,7 +9,7 @@ import type { RuntimeStartOptions } from '@shared/types'
  */
 export function buildRpcArgs(
   options: RuntimeStartOptions,
-  trustProject = true,
+  trustProject = false,
   customInstructionsFile?: string,
   permissionFile?: string,
   modeFile?: string,

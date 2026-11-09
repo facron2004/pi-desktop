@@ -1,8 +1,6 @@
 /** Client-observed timing samples kept outside Pi's session transcript. */
 export interface SessionTimingRecord {
   modelDurationsMs: Record<string, number>
-  /** Samples from versions that used a wall clock instead of a monotonic clock. */
-  legacyModelDurationsMs: Record<string, number>
   ttftDurationsMs: Record<string, number>
   toolDurationsMs: Record<string, number>
   /** Keyed by the user's message timestamp, which survives transcript hydration. */
@@ -12,7 +10,27 @@ export interface SessionTimingRecord {
 }
 
 const STORAGE_PREFIX = 'pi-desktop:session-timing:v1:'
-const MODEL_TIMING_VERSION = 2
+const MODEL_TIMING_VERSION = 4
+
+/**
+ * Parsed records, kept in memory for the conversations the reader moves
+ * between.
+ *
+ * The usage line reads this record while the transcript streams, so a
+ * `localStorage.getItem` and `JSON.parse` on every animation frame would be
+ * repeated work for a value that only changes when a sample is recorded. The
+ * bound keeps a long-lived window from holding every conversation at once.
+ */
+const MEMORY_LIMIT = 40
+const memoryRecords = new Map<string, SessionTimingRecord>()
+
+function rememberRecord(sessionKey: string, record: SessionTimingRecord): void {
+  if (memoryRecords.size >= MEMORY_LIMIT && !memoryRecords.has(sessionKey)) {
+    const oldest = memoryRecords.keys().next().value
+    if (oldest !== undefined) memoryRecords.delete(oldest)
+  }
+  memoryRecords.set(sessionKey, record)
+}
 
 /** Use an elapsed-time clock for durations; wall-clock changes must not affect them. */
 export function monotonicNow(): number {
@@ -45,16 +63,18 @@ function durationsOf(value: unknown): Record<string, number> {
 
 function recordOf(value: unknown): SessionTimingRecord {
   const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-  const currentModelTiming = raw.modelTimingVersion === MODEL_TIMING_VERSION
+  // Version 1 measured model time against the wall clock. Version 2 switched
+  // model timing to a monotonic clock, but TTFT, run, generation and fallback
+  // tool durations still used Date.now until version 4. Their source cannot
+  // be distinguished from Pi-reported tool durations, so all pre-v4 samples
+  // in those fields are dropped rather than carried forward.
+  const version = typeof raw.modelTimingVersion === 'number' ? raw.modelTimingVersion : 1
   return {
-    modelDurationsMs: currentModelTiming ? durationsOf(raw.modelDurationsMs) : {},
-    legacyModelDurationsMs: currentModelTiming
-      ? durationsOf(raw.legacyModelDurationsMs)
-      : durationsOf(raw.modelDurationsMs),
-    ttftDurationsMs: durationsOf(raw.ttftDurationsMs),
-    toolDurationsMs: durationsOf(raw.toolDurationsMs),
-    runDurationsMs: durationsOf(raw.runDurationsMs),
-    generationWindowMs: durationsOf(raw.generationWindowMs)
+    modelDurationsMs: version >= 2 ? durationsOf(raw.modelDurationsMs) : {},
+    ttftDurationsMs: version >= 4 ? durationsOf(raw.ttftDurationsMs) : {},
+    toolDurationsMs: version >= 4 ? durationsOf(raw.toolDurationsMs) : {},
+    runDurationsMs: version >= 4 ? durationsOf(raw.runDurationsMs) : {},
+    generationWindowMs: version >= 4 ? durationsOf(raw.generationWindowMs) : {}
   }
 }
 
@@ -64,12 +84,19 @@ function writeRecord(store: Storage, key: string, record: SessionTimingRecord): 
 
 export function readSessionTiming(sessionKey: string | undefined): SessionTimingRecord {
   if (!sessionKey) return recordOf(undefined)
+  const cached = memoryRecords.get(sessionKey)
+  if (cached) return cached
+  const store = storage()
+  if (!store) return recordOf(undefined)
+  let record: SessionTimingRecord
   try {
-    const raw = storage()?.getItem(storageKey(sessionKey))
-    return recordOf(raw ? JSON.parse(raw) : undefined)
+    const raw = store.getItem(storageKey(sessionKey))
+    record = recordOf(raw ? JSON.parse(raw) : undefined)
   } catch {
-    return recordOf(undefined)
+    record = recordOf(undefined)
   }
+  rememberRecord(sessionKey, record)
+  return record
 }
 
 function recordDuration(
@@ -144,6 +171,7 @@ export function recordGenerationWindow(
 /** Drop the samples of a conversation the user deleted. */
 export function forgetSessionTiming(sessionKey: string | undefined): void {
   if (!sessionKey) return
+  memoryRecords.delete(sessionKey)
   const store = storage()
   if (!store) return
   try {
@@ -164,7 +192,6 @@ export function migrateSessionTiming(from: string, to: string): void {
     const target = readSessionTiming(to)
     const merged: SessionTimingRecord = {
       modelDurationsMs: { ...source.modelDurationsMs, ...target.modelDurationsMs },
-      legacyModelDurationsMs: { ...source.legacyModelDurationsMs, ...target.legacyModelDurationsMs },
       ttftDurationsMs: { ...source.ttftDurationsMs, ...target.ttftDurationsMs },
       toolDurationsMs: { ...source.toolDurationsMs, ...target.toolDurationsMs },
       runDurationsMs: { ...source.runDurationsMs, ...target.runDurationsMs },
@@ -172,15 +199,18 @@ export function migrateSessionTiming(from: string, to: string): void {
     }
     if (
       Object.keys(merged.modelDurationsMs).length ||
-      Object.keys(merged.legacyModelDurationsMs).length ||
       Object.keys(merged.ttftDurationsMs).length ||
       Object.keys(merged.toolDurationsMs).length ||
       Object.keys(merged.runDurationsMs).length ||
       Object.keys(merged.generationWindowMs).length
     ) {
       writeRecord(store, targetKey, merged)
+      rememberRecord(to, merged)
+    } else {
+      memoryRecords.delete(to)
     }
     store.removeItem(sourceKey)
+    memoryRecords.delete(from)
   } catch {
     // Migration is best effort; it does not affect the Pi session itself.
   }

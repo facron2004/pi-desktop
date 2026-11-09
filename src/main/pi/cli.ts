@@ -1,7 +1,8 @@
 import { app } from 'electron'
-import { spawn } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import type { AuthStatus } from '@shared/types'
 import { resolvePiLaunch } from './locate'
 
@@ -12,6 +13,8 @@ export interface CliResult {
 }
 
 const CLI_TIMEOUT_MS = 10_000
+const MAX_CLI_OUTPUT_CHARS = 1024 * 1024
+const CLI_OUTPUT_TRUNCATION_NOTICE = `\n[Pi CLI output truncated at ${MAX_CLI_OUTPUT_CHARS} characters]`
 const WINDOWS_CHILD_PROCESS_PRELOAD = `
 const childProcess = require('node:child_process')
 const { syncBuiltinESMExports } = require('node:module')
@@ -31,6 +34,49 @@ for (const method of ['spawn', 'spawnSync']) {
 }
 syncBuiltinESMExports()
 `
+
+interface CapturedOutput {
+  text: string
+  truncated: boolean
+}
+
+function appendCliOutput(capture: CapturedOutput, text: string): void {
+  if (capture.truncated) return
+  const remaining = MAX_CLI_OUTPUT_CHARS - capture.text.length
+  if (text.length > remaining) {
+    capture.text += text.slice(0, remaining)
+    capture.truncated = true
+  } else {
+    capture.text += text
+  }
+}
+
+function cliOutput(capture: CapturedOutput): string {
+  return capture.truncated ? `${capture.text}${CLI_OUTPUT_TRUNCATION_NOTICE}` : capture.text
+}
+
+function killProcessTree(child: ChildProcess, done: () => void): void {
+  const killChild = () => {
+    try { child.kill('SIGKILL') } catch { /* the process may already have exited */ }
+  }
+  if (process.platform === 'win32' && child.pid) {
+    execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+      windowsHide: true,
+      timeout: 10_000
+    }, () => {
+      if (child.exitCode === null && child.signalCode === null) killChild()
+      done()
+    })
+    return
+  }
+  try {
+    if (child.pid) process.kill(-child.pid, 'SIGKILL')
+    else killChild()
+  } catch {
+    killChild()
+  }
+  done()
+}
 
 /**
  * Pi's package manager starts npm and git as child processes of the CLI. The
@@ -59,8 +105,11 @@ function hideNestedWindows(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 /** Run the Pi CLI once and capture its output. */
 export function runPiCli(
   args: string[],
-  options: { cwd?: string; customPiPath?: string; timeoutMs?: number; input?: string } = {}
+  options: { cwd?: string; customPiPath?: string; timeoutMs?: number; input?: string; signal?: AbortSignal } = {}
 ): Promise<CliResult> {
+  if (options.signal?.aborted) {
+    return Promise.resolve({ code: null, stdout: '', stderr: 'Command cancelled' })
+  }
   const launch = resolvePiLaunch(options.customPiPath)
   if (launch.source === 'none') {
     return Promise.resolve({
@@ -79,6 +128,7 @@ export function runPiCli(
       cwd,
       env: args[0] === 'install' ? hideNestedWindows(launch.env) : launch.env,
       stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
       windowsHide: true
     })
     if (options.input !== undefined) {
@@ -87,43 +137,69 @@ export function runPiCli(
       })
       child.stdin?.end(options.input, 'utf8')
     }
-    let stdout = ''
-    let stderr = ''
+    const stdout: CapturedOutput = { text: '', truncated: false }
+    const stderr: CapturedOutput = { text: '', truncated: false }
+    const stdoutDecoder = new StringDecoder('utf8')
+    const stderrDecoder = new StringDecoder('utf8')
     let settled = false
+    let outputFinalized = false
+    const finishOutput = () => {
+      if (outputFinalized) return
+      outputFinalized = true
+      appendCliOutput(stdout, stdoutDecoder.end())
+      appendCliOutput(stderr, stderrDecoder.end())
+    }
+    const result = (code: number | null, stderrFallback = ''): CliResult => ({
+      code,
+      stdout: cliOutput(stdout),
+      stderr: cliOutput(stderr) || stderrFallback
+    })
 
-    const timeout = setTimeout(() => {
+    let timeout: NodeJS.Timeout
+    let onAbort: (() => void) | undefined
+    const cleanup = () => {
+      clearTimeout(timeout)
+      if (onAbort) options.signal?.removeEventListener('abort', onAbort)
+    }
+    const terminate = (reason: string) => {
       if (settled) return
       settled = true
-      try {
-        child.kill()
-      } catch {
-        /* ignore */
-      }
-      resolve({
-        code: null,
-        stdout,
-        stderr: stderr || `Command timed out after ${options.timeoutMs ?? CLI_TIMEOUT_MS}ms`
+      cleanup()
+      killProcessTree(child, () => {
+        finishOutput()
+        resolve(result(null, reason))
       })
-    }, options.timeoutMs ?? CLI_TIMEOUT_MS)
+    }
+    timeout = setTimeout(
+      () => terminate(`Command timed out after ${options.timeoutMs ?? CLI_TIMEOUT_MS}ms`),
+      options.timeoutMs ?? CLI_TIMEOUT_MS
+    )
 
     child.stdout?.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf8')
+      appendCliOutput(stdout, stdoutDecoder.write(chunk))
     })
     child.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8')
+      appendCliOutput(stderr, stderrDecoder.write(chunk))
     })
     child.on('error', (error) => {
       if (settled) return
       settled = true
-      clearTimeout(timeout)
-      resolve({ code: null, stdout, stderr: stderr || error.message })
+      cleanup()
+      finishOutput()
+      resolve(result(null, error.message))
     })
     child.on('close', (code) => {
       if (settled) return
       settled = true
-      clearTimeout(timeout)
-      resolve({ code, stdout, stderr })
+      cleanup()
+      finishOutput()
+      resolve(result(code))
     })
+    if (options.signal) {
+      onAbort = () => terminate('Command cancelled')
+      options.signal.addEventListener('abort', onAbort, { once: true })
+      if (options.signal.aborted) onAbort()
+    }
   })
 }
 

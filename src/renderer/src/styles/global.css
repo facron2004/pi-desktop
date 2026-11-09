@@ -3381,6 +3381,71 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   text-overflow: ellipsis;
 }
 
+/* Attached pictures carry their remove control on the picture's own top-right
+   corner; a button beside the thumbnail reads as a second chip. */
+.composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.composer__attachment {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+}
+
+.composer__attachment .lightbox-trigger {
+  display: block;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-sm);
+}
+
+.composer__attachment .lightbox-trigger img {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+}
+
+.composer__attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  /* The control appears with the thumbnail under the pointer, so resting
+     attachments read as pictures rather than as buttons. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.composer__attachment:hover .composer__attachment-remove,
+.composer__attachment:focus-within .composer__attachment-remove,
+.composer__attachment-remove:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.composer__attachment-remove:hover,
+.composer__attachment-remove:focus-visible {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
 .composer__input {
   width: 100%;
   min-width: 0;

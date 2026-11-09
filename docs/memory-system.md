@@ -65,7 +65,9 @@ A memory entry has one of four kinds — `preference`, `environment`,
    runs, drafts and chats outside the external-context policy, then arms a
    per-session idle timer (20 seconds by default).
 2. When the timer fires, the session file is stat'ed. If `state.json` already
-   records the same `(mtime, size)`, the conversation is not read again.
+   records the same `(mtime, size, filesystem identity)`, the conversation is
+   not read again. Identity distinguishes a replacement file with unchanged
+   size and timestamp.
 3. All extractions are serialized. Each one reads the active branch, builds a
    compact transcript (user/assistant text plus tool names, no tool output),
    and runs a throwaway Pi process with `--print --no-session --no-tools
@@ -94,6 +96,14 @@ initial memory without a manual step.
   entry is stored.
 - Chats that used external context are skipped by default, so an MCP account,
   a browser page or a delegated subagent task cannot leak into a future prompt.
-- Memory is local to the app's user-data folder and is never uploaded.
+- The Pi extension persists a versioned classification after checking the
+  active branch. An oversized session without a current check is skipped.
+  Legacy local tool calls whose source was never recorded remain unverified
+  even after reopening, because the current tool registration cannot prove
+  which implementation ran then; they stay skipped unless filtering is off.
+- Memory files stay in the app's user-data folder. Conversation text is sent to
+  the selected model provider during extraction; existing stored memories are
+  not included in that extraction request. During normal conversations, the
+  relevant memory summary is included in the model prompt.
 - Clearing memories also clears the learning ledger, so earlier conversations
   can be learned again on purpose.

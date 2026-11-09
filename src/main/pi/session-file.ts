@@ -26,6 +26,18 @@ export function canonicalSessionFile(file: string): string {
   const cached = canonicalCache.get(cacheKey)
   if (cached) return cached
 
+  const canonical = canonicalPath(absolute)
+  if (canonicalCache.size >= CANONICAL_CACHE_LIMIT) {
+    const oldest = canonicalCache.keys().next().value
+    if (oldest !== undefined) canonicalCache.delete(oldest)
+  }
+  canonicalCache.set(cacheKey, canonical)
+  return canonical
+}
+
+/** Resolve a live filesystem path without caching a possibly stale symlink identity. */
+export function canonicalPath(file: string): string {
+  const absolute = path.resolve(file)
   let resolved = absolute
   try {
     resolved = realpathSync.native(resolved)
@@ -33,12 +45,14 @@ export function canonicalSessionFile(file: string): string {
     // A draft's file may not exist yet, but its directory can be a junction.
     try { resolved = path.join(realpathSync.native(path.dirname(resolved)), path.basename(resolved)) } catch { /* use the resolved path */ }
   }
-  const normalized = resolved.replace(/\\/g, '/').replace(/\/$/, '')
-  const canonical = process.platform === 'win32' ? normalized.toLowerCase() : normalized
-  if (canonicalCache.size >= CANONICAL_CACHE_LIMIT) {
-    const oldest = canonicalCache.keys().next().value
-    if (oldest !== undefined) canonicalCache.delete(oldest)
-  }
-  canonicalCache.set(cacheKey, canonical)
-  return canonical
+  const slashNormalized = resolved.replace(/\\/g, '/')
+  const normalizedRoot = path.parse(resolved).root.replace(/\\/g, '/')
+  // Preserve filesystem roots. Trimming the separator turns `/` into an empty
+  // key and `C:/` into drive-relative `C:`, so the root no longer overlaps its
+  // child directories in CwdGate.
+  const isRoot = process.platform === 'win32'
+    ? slashNormalized.toLowerCase() === normalizedRoot.toLowerCase()
+    : slashNormalized === normalizedRoot
+  const normalized = isRoot ? slashNormalized : slashNormalized.replace(/\/$/, '')
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
 }

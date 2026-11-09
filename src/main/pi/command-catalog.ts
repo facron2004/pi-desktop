@@ -10,7 +10,7 @@ import { resolvePiLaunch } from './locate'
 export async function discoverSkillCommands(
   cwd: string,
   customPiPath?: string,
-  trustProject = true
+  trustProject = false
 ): Promise<PiCommand[]> {
   const launch = resolvePiLaunch(customPiPath)
   if (launch.source === 'none') return []

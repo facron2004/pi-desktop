@@ -43,6 +43,12 @@ export const ipcMain = {
 };
 export const shell = { showItemInFolder: () => {}, trashItem: async () => {} };
 export const Notification = class { show() {} };
+export const nativeTheme = { shouldUseDarkColors: false };
+export const nativeImage = {
+  createFromPath: () => ({ isEmpty: () => true, resize: () => ({}) }),
+  createFromBuffer: () => ({ isEmpty: () => true, resize: () => ({}) })
+};
+export const screen = { getDisplayMatching: () => ({ id: 1, workArea: { x: 0, y: 0, width: 1280, height: 720 } }) };
 `
 )
 

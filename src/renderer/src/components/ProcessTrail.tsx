@@ -57,10 +57,11 @@ export function ProcessTrail({
   const [batchOpen, setBatchOpen] = useState<boolean | undefined>(() =>
     readToolOpen(threadKey, groupId)
   )
-  // A live stretch is a batch only from the second call up — one call is one
-  // legible row, the way ToolGroup keeps a lone item a row — and a stretch of
-  // pure thinking is never a batch, so the switch cannot hide a thought row.
-  const summarizing = live && gatherCalls && tools.length > 1
+  // A live stretch with `toolCallSummary` on is one line as soon as it holds
+  // a call, including a lone running command: the point of the setting is to
+  // keep commands out of the flowing output. A stretch of pure thinking is
+  // never a batch, so the switch cannot hide a thought row.
+  const summarizing = live && gatherCalls && tools.length > 0
   const summary = [
     tools.length > 0 ? thought : '',
     activity.summary,

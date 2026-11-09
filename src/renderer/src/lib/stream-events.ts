@@ -298,6 +298,17 @@ export function resetStreamState(threadId?: string): void {
   else threadStates.delete(threadId)
 }
 
+/** Preserve event identity and ordering when a draft becomes a session file. */
+export function rekeyStreamState(from: string, to: string): void {
+  if (from === to) return
+  const state = threadStates.get(from)
+  if (!state) return
+  const target = threadStates.get(to)
+  if (target) state.sequence = Math.max(state.sequence, target.sequence)
+  threadStates.set(to, state)
+  threadStates.delete(from)
+}
+
 /* ------------------------------------------------------------------ *
  * Normalization
  * ------------------------------------------------------------------ */
@@ -377,6 +388,14 @@ function resetMessageState(state: ThreadStreamState): void {
  */
 export function beginStream(threadId?: string): void {
   resetMessageState(stateFor(threadId ?? ''))
+}
+
+/** Release per-call identity mappings after the run's authoritative settle. */
+export function finishStream(threadId?: string): void {
+  const state = threadStates.get(threadId ?? '')
+  if (!state) return
+  resetMessageState(state)
+  state.messageByToolCall.clear()
 }
 
 /**

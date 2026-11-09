@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import type { PiEvent } from '@shared/types'
 import {
   normalizePiEvent,
+  finishStream,
+  rekeyStreamState,
   resetStreamState,
   type StreamContext,
   type StreamEvent
@@ -94,6 +96,25 @@ test('a message keeps one message id from start through its updates to the end',
   assert.equal(end.messageId, start.messageId)
   assert.equal(end.sequence, 3)
   assert.equal(end.source.type, 'message_end')
+})
+
+test('stream identity and sequence continue when a draft is rekeyed to its session file', () => {
+  resetStreamState()
+  const draft = contextOf('draft:message')
+  const start = normalizeOne(
+    { type: 'message_start', message: { role: 'assistant', content: [], timestamp: 1 } },
+    draft
+  )
+  const delta = normalizeOne(update({ type: 'text_delta', contentIndex: 0, delta: 'hello' }), draft)
+  assert.equal(delta.sequence, start.sequence + 1)
+
+  const file = contextOf('C:/sessions/chat.jsonl')
+  rekeyStreamState(draft.sessionKey, file.sessionKey)
+  const end = normalizeOne(update({ type: 'text_end', contentIndex: 0, content: 'hello' }), file)
+
+  assert.equal(end.sequence, delta.sequence + 1)
+  assert.equal(end.messageId, start.messageId)
+  resetStreamState()
 })
 
 test('a duplicated message start reuses its identity and creates one item', () => {
@@ -327,6 +348,28 @@ test('sequence is monotonic per thread and independent between threads', () => {
   // Sequence is per thread, not per run: a new run id keeps the same clock.
   const laterRun = normalizeOne({ type: 'agent_start' }, { ...a, runId: 'run-2' })
   assert.equal(laterRun.sequence, nextOnA.sequence + 1)
+})
+
+test('finishing a stream clears tool identity mappings but preserves sequence', () => {
+  resetStreamState()
+  const context = contextOf('thread-finished')
+  const message = normalizeOne(
+    { type: 'message_start', message: { role: 'assistant', content: [], timestamp: 1 } },
+    context
+  )
+  normalizeOne(update({ type: 'toolcall_start', contentIndex: 0, id: 'call-1', toolName: 'read' }), context)
+  const settled = normalizeOne({ type: 'agent_settled' }, context)
+  finishStream(context.sessionKey)
+
+  const lateExecution = normalizeOne({ type: 'tool_execution_start', toolCallId: 'call-1' }, context)
+  const nextMessage = normalizeOne(
+    { type: 'message_start', message: { role: 'assistant', content: [], timestamp: 2 } },
+    context
+  )
+
+  assert.equal(lateExecution.messageId, undefined, 'settled calls no longer retain message identity')
+  assert.ok(nextMessage.sequence > settled.sequence, 'the per-thread sequence remains monotonic')
+  assert.notEqual(nextMessage.messageId, message.messageId)
 })
 
 /* ------------------------------------------------------------------ *

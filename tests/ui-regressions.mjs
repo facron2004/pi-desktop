@@ -139,7 +139,9 @@ async function checkRenderer(markerFile) {
     for (const mode of ['subagent', 'plan', 'goal', 'default']) {
       await store.getState().setAgentMode(mode)
       const state = store.getState()
-      check(!state.error, `Pi rejected ${mode}: ${state.error}`)
+      const sessionKey = state.activeSessionFile ?? state.draftId
+      const runtimeIsLive = sessionKey ? await window.pi.runtime.has(sessionKey) : false
+      check(!state.error, `Pi rejected ${mode}: ${state.error} (session=${sessionKey}, runtimeLive=${runtimeIsLive})`)
       check(state.status.phase === 'ready' && state.agentMode === mode && modes.at(-1) === mode, `Pi did not confirm ${mode}`)
     }
     passed.push('task modes round-trip through the bundled Pi CLI')
@@ -211,6 +213,37 @@ async function checkRenderer(markerFile) {
   await until(() => calls.length === 1, 'Goal was not saved')
   check(calls[0].owner === 'ui-goal-B' && calls[0].command === '/desktop-goal edit Goal B', 'Goal saved to the wrong conversation')
   passed.push('goal drafts stay in their conversation')
+
+  await store.getState().newChat()
+  localStorage.removeItem('pi-desktop.plan-strip')
+  store.setState({
+    activeSessionFile: undefined,
+    draftId: 'draft:ui-status-plan',
+    items: [{
+      id: 'ui-plan', kind: 'assistant', streaming: false, timestamp: 1, order: 1,
+      blocks: [{ type: 'text', text: '- [ ] Inspect the extension status\n- [ ] Restore the conversation controls' }]
+    }],
+    uiStatuses: [{ key: 'fixture-extension', text: 'Extension ready' }],
+    uiWidgets: []
+  })
+  // The plan lives in the task rail; extension statuses belong to their own
+  // surfaces, not to a permanent strip above the composer.
+  await until(
+    () => document.querySelector('.task-panel__check')?.textContent.includes('Inspect the extension status'),
+    'Plan progress did not render in the task rail'
+  )
+  check(!document.querySelector('.status-strip, .plan-strip'), 'A status or plan strip returned above the composer')
+  document.querySelector('.sidebar__plugin-entry button').click()
+  await until(() => document.querySelector('.desk-page'), 'Plugins desk page did not open')
+  check(!document.querySelector('.goal-bar, .widget, .task-rail'), 'Conversation controls remained underneath the desk page')
+  document.querySelector('.sidebar__plugin-entry button').click()
+  await until(() => !document.querySelector('.desk-page'), 'Plugins desk page did not close')
+  await until(
+    () => document.querySelector('.task-panel__check')?.textContent.includes('Inspect the extension status'),
+    'Plan progress did not return with the conversation'
+  )
+  check(!document.querySelector('.status-strip, .plan-strip'), 'A status or plan strip returned with the conversation')
+  passed.push('plan progress stays in the task rail and leaves desk pages clear')
 
   await store.getState().newChat()
   await openSubagentsPage()
@@ -313,10 +346,10 @@ async function checkRenderer(markerFile) {
       blocks: [{ type: 'text', text: 'STREAM_FINAL the renderer is ready' }] }
   ]
   const streamRun = { phase: 'idle', turns: 2, settled: true, outcome: 'completed', durationMs: 9000 }
-  const showStream = (draftId, items = streamItems, run = streamRun) => store.setState((state) => ({
+  const showStream = (draftId, items = streamItems, run = streamRun, extra = {}) => store.setState((state) => ({
     draftId, activeSessionFile: undefined, items, run, isStreaming: !run.settled,
     error: undefined, retry: undefined, transport: 'connected',
-    settings: { ...state.settings, autoFoldProcess: true },
+    settings: { ...state.settings, autoFoldProcess: true, ...extra },
     threads: { ...state.threads, [draftId]: { ...baseThread, items, run, isStreaming: !run.settled } }
   }))
   showStream('draft:stream-a')
@@ -357,9 +390,38 @@ async function checkRenderer(markerFile) {
   await until(() => document.querySelector('.run-outcome[data-outcome="aborted"]'), 'Stopped summary did not render')
   check(streamBody().textContent.includes('STREAM_PROGRESS'), 'Stopping lost the partial progress')
 
+  // A command is an argument, not the newest output: the live footer says what
+  // kind of work is running but never prints the shell line itself.
+  showStream('draft:stream-command', [
+    { id: 'cmd-user', kind: 'user', text: 'Run the check', images: [], timestamp: 1, order: 1 },
+    { id: 'cmd-tool', kind: 'tool', toolCallId: 'cmd-tool', toolName: 'bash',
+      args: { command: 'cd /e/Program/Coffee && grep -ril pressure' }, status: 'running', timestamp: 2, order: 2 }
+  ], { phase: 'tool_running', turns: 1, settled: false, startedAt: Date.now() - 3000 })
+  const commandStatus = await until(
+    () => document.querySelector('.run-status__activity'),
+    'A live command status did not render'
+  )
+  check(commandStatus.textContent.includes('Running a command'), 'The live status lost its tool label')
+  check(!document.querySelector('.run-status__activity-detail'), 'The shell command leaked into the live status')
+
   showStream('draft:stream-replay', streamItems, { phase: 'idle', turns: 0, settled: true })
   await until(() => document.querySelector('.run-outcome[data-foldable="true"]'), 'Replayed turn lost its process fold without saved timing')
+  check(Boolean(document.querySelector('.run-outcome__meta')), 'Replayed turn lost its worked-for duration')
   check(!streamBody().textContent.includes('STREAM_PROGRESS') && streamBody().textContent.includes('STREAM_FINAL'), 'Replayed turn does not match the completed stream')
+
+  // `toolCallSummary` gathers a live stretch into one line even when it holds a
+  // single call: a running command stays out of the flowing output until the
+  // reader opens the fold.
+  showStream('draft:stream-summary', streamItems.slice(0, 3), {
+    phase: 'working', turns: 1, settled: false, startedAt: Date.now() - 2000
+  }, { toolCallSummary: true })
+  const liveSummary = await until(
+    () => document.querySelector('.process[data-live] .process__head'),
+    'A live tool summary did not render'
+  )
+  check(!streamBody().querySelector('.tool-link'), 'A live tool row leaked below its summary')
+  liveSummary.click()
+  await until(() => streamBody().querySelector('.tool-link'), 'Opening the live summary did not reveal the tool row')
   store.setState(beforeStream)
   passed.push('stream process folds commentary and tools, preserves view state, and reveals search hits')
 
@@ -767,7 +829,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 15 : 14)
+  assert.equal(passed.length, process.platform === 'win32' ? 16 : 15)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

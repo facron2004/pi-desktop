@@ -128,6 +128,7 @@ export class PiRuntime extends EventEmitter {
     const userData = app.getPath('userData')
     const customInstructionsFile = path.join(userData, `pi-desktop-instructions-${scratchId}.md`)
     const permissionFile = path.join(userData, `pi-desktop-permissions-${scratchId}.mjs`)
+    const subagentPermissionFile = path.join(userData, `pi-desktop-subagent-permissions-${scratchId}.mjs`)
     const modeFile = path.join(userData, `pi-desktop-task-modes-${scratchId}.mjs`)
     const providerFile = path.join(userData, `pi-desktop-providers-${scratchId}.mjs`)
     const subagentFile = path.join(userData, `pi-desktop-subagent-${scratchId}.mjs`)
@@ -137,15 +138,29 @@ export class PiRuntime extends EventEmitter {
     const files: string[] = []
     try {
       mkdirSync(userData, { recursive: true })
-      files.push(permissionFile, modeFile, providerFile, subagentFile, computerFile, contextBreakdownFile)
+      files.push(permissionFile, subagentPermissionFile, modeFile, providerFile, subagentFile, computerFile, contextBreakdownFile)
       writeFileSync(permissionFile, permissionExtension(permissionTitle), 'utf8')
+      writeFileSync(subagentPermissionFile, permissionExtension(permissionTitle, false), 'utf8')
       // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
       // is the one moment "a brand-new conversation starts in Plan Mode" is true.
       const defaultMode =
         !sessionFile && this.options.getDefaultPlanMode?.() === true ? 'plan' : 'default'
-      writeFileSync(modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode), 'utf8')
+      writeFileSync(
+        modeFile,
+        taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile),
+        'utf8'
+      )
       writeFileSync(providerFile, providerControlsExtension(), 'utf8')
-      writeFileSync(subagentFile, subagentExtension(this.options.getSubagentModel?.() ?? {}), 'utf8')
+      writeFileSync(
+        subagentFile,
+        subagentExtension(
+          this.options.getSubagentModel?.() ?? {},
+          subagentPermissionFile,
+          permissionTitle,
+          this.options.trustProject === true
+        ),
+        'utf8'
+      )
       writeFileSync(computerFile, computerUseExtension(), 'utf8')
       writeFileSync(contextBreakdownFile, contextBreakdownExtension(), 'utf8')
       if (options.customInstructions?.trim()) {
@@ -378,7 +393,7 @@ export class PiRuntime extends EventEmitter {
       this.outbound(hint?.sourceAction ?? command, hint, command)
     )
     if (command === 'get_state') this.observe(result)
-    if (this.tracing && shouldProbeState(command) && hint?.sourceAction !== 'state-probe') {
+    if (this.tracing && shouldProbeState(command) && hint?.sourceAction !== 'state-probe' && hint?.sourceAction !== 'shutdown-abort') {
       await this.probeAfter(command)
     }
     return result

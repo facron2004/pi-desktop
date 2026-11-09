@@ -1,8 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { MAX_IMAGE_DATA_BYTES } from '@shared/types'
 import { exec } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, writeFileSync, type Dirent } from 'node:fs'
-import { open, readdir, readFile, stat } from 'node:fs/promises'
+import { constants, mkdirSync, writeFileSync, type Dirent } from 'node:fs'
+import { lstat, open, opendir, readdir, realpath, stat, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type {
   AppInfo,
@@ -11,6 +12,7 @@ import type {
   FileContent,
   FileEntry,
   GitCommitResult,
+  ImageListResult,
   MemoryGenerateOptions,
   MemoryState,
   PickedFile,
@@ -77,14 +79,19 @@ import {
 } from './git'
 import { SettingsStore } from './settings'
 import {
+  configureSessionSearchIndex,
+  forgetSessionSearchIndex,
   getAggregatedUsage,
   invalidateSessionCache,
   listSessions,
+  openSessionFile,
   readSessionMessages,
   resolveSessionRoot,
+  resolveSessionFilePath,
   searchSessions
 } from './sessions'
 import { querySystemFonts } from './fonts'
+import { launchEditor } from './editor-launch'
 import { registerProviderIpc } from './providers/ipc'
 import { TerminalManager } from './terminal'
 import type { ScheduledTaskService } from './scheduled-tasks'
@@ -114,32 +121,55 @@ function runtimeInstructions(context: IpcContext, cwd: string): string | undefin
   return combined || undefined
 }
 
+async function validateRuntimeSessionFile(
+  file: unknown
+): Promise<{ ok: true; sessionFile?: string } | { ok: false }> {
+  if (file === undefined) return { ok: true }
+  const sessionFile = await resolveSessionFilePath(file)
+  return sessionFile ? { ok: true, sessionFile } : { ok: false }
+}
+
 export const MAX_FILE_BYTES = 512 * 1024
+const READ_FILE_FLAGS = constants.O_NONBLOCK === undefined
+  ? 'r'
+  : constants.O_RDONLY | constants.O_NONBLOCK
 
 export async function readBoundedFile(
   target: string,
   maxBytes = MAX_FILE_BYTES
 ): Promise<{ content: string; truncated: boolean; size: number } | null> {
+  let handle: FileHandle | undefined
   try {
-    const stats = await stat(target)
+    const beforeOpen = await stat(target)
+    if (!beforeOpen.isFile()) return null
+    handle = await open(target, READ_FILE_FLAGS)
+    return await readBoundedHandle(handle, maxBytes)
+  } catch {
+    return null
+  } finally {
+    if (handle) await handle.close().catch(() => {})
+  }
+}
+
+async function readBoundedHandle(
+  handle: FileHandle,
+  maxBytes: number
+): Promise<{ content: string; truncated: boolean; size: number } | null> {
+  try {
+    const stats = await handle.stat()
     if (!stats.isFile()) return null
     const truncated = stats.size > maxBytes
     const bytesToRead = truncated ? maxBytes : stats.size
     let content = ''
     if (bytesToRead > 0) {
-      const handle = await open(target, 'r')
-      try {
-        const buffer = Buffer.alloc(bytesToRead)
-        let totalRead = 0
-        while (totalRead < bytesToRead) {
-          const { bytesRead } = await handle.read(buffer, totalRead, bytesToRead - totalRead, totalRead)
-          if (bytesRead === 0) break
-          totalRead += bytesRead
-        }
-        content = buffer.subarray(0, totalRead).toString('utf8')
-      } finally {
-        await handle.close()
+      const buffer = Buffer.alloc(bytesToRead)
+      let totalRead = 0
+      while (totalRead < bytesToRead) {
+        const { bytesRead } = await handle.read(buffer, totalRead, bytesToRead - totalRead, totalRead)
+        if (bytesRead === 0) break
+        totalRead += bytesRead
       }
+      content = buffer.subarray(0, totalRead).toString('utf8')
     }
     return { content, truncated, size: stats.size }
   } catch {
@@ -156,6 +186,15 @@ const TEXT_PREVIEW_LEAD = 12
 /** The newest full-text search per window; a later query supersedes it. */
 let sessionSearchSequence = 0
 const latestSessionSearches = new WeakMap<object, number>()
+/** The newest project path search per window; a later query supersedes it. */
+let fileSearchSequence = 0
+const latestFileSearches = new WeakMap<object, number>()
+/** The newest project text search per window; a later query supersedes it. */
+let textSearchSequence = 0
+const latestTextSearches = new WeakMap<object, number>()
+/** The newest image-list walk per window; a workspace change supersedes it. */
+let imageListSequence = 0
+const latestImageLists = new WeakMap<object, number>()
 /** Directories that are never worth walking when searching a project. */
 const SEARCH_SKIP_DIRS = new Set([
   'node_modules',
@@ -285,6 +324,65 @@ function isInside(root: string, target: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
+function isPathWithin(root: string, target: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(target))
+  return relative === '' ||
+    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+}
+
+/** Resolve both workspace and target while rejecting lexical and symlink escapes. */
+async function resolveWorkspaceLocation(
+  root: string,
+  file: string
+): Promise<{ root: string; target: string } | null> {
+  if (!root || typeof file !== 'string') return null
+  const lexicalRoot = path.resolve(root)
+  const lexicalTarget = path.resolve(lexicalRoot, file)
+  if (!isInside(lexicalRoot, lexicalTarget)) return null
+  try {
+    const [realRoot, realTarget] = await Promise.all([realpath(lexicalRoot), realpath(lexicalTarget)])
+    return isInside(realRoot, realTarget) ? { root: realRoot, target: realTarget } : null
+  } catch {
+    return null
+  }
+}
+
+/** Resolve a workspace path and reject links whose real target escapes it. */
+export async function resolveWorkspacePath(root: string, file: string): Promise<string | null> {
+  return (await resolveWorkspaceLocation(root, file))?.target ?? null
+}
+
+/** Open a contained workspace file, rejecting hard links whose other names cannot be confined. */
+export async function openWorkspaceFile(
+  root: string,
+  file: string
+): Promise<{ target: string; handle: FileHandle } | null> {
+  const location = await resolveWorkspaceLocation(root, file)
+  if (!location) return null
+
+  let handle: FileHandle | undefined
+  try {
+    const beforeOpen = await stat(location.target)
+    if (!beforeOpen.isFile() || beforeOpen.nlink > 1) return null
+    handle = await open(location.target, READ_FILE_FLAGS)
+    const opened = await handle.stat({ bigint: true })
+    if (!opened.isFile() || opened.nlink > 1n) return null
+
+    const current = await resolveWorkspaceLocation(root, file)
+    if (!current || current.root !== location.root || current.target !== location.target) return null
+    const named = await stat(current.target, { bigint: true })
+    if (opened.dev !== named.dev || opened.ino !== named.ino || named.nlink > 1n) return null
+
+    const result = { target: location.target, handle }
+    handle = undefined
+    return result
+  } catch {
+    return null
+  } finally {
+    if (handle) await handle.close().catch(() => {})
+  }
+}
+
 /** The picture types the inspector's viewer can draw, by file extension. */
 const IMAGE_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -296,6 +394,47 @@ const IMAGE_MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.avif': 'image/avif'
+}
+const MAX_IMAGE_BASE64_CHARS = Math.ceil(MAX_IMAGE_DATA_BYTES / 3) * 4
+
+/** Decode only a bounded image payload; the string may be a data URL or raw base64. */
+function decodeImageData(data: unknown): Buffer | null {
+  if (typeof data !== 'string' || data.length > MAX_IMAGE_BASE64_CHARS + 256) return null
+  const comma = data.indexOf(',')
+  const base64 = comma === -1 ? data : data.slice(comma + 1)
+  if (!base64 || base64.length > MAX_IMAGE_BASE64_CHARS) return null
+  const bytes = Buffer.from(base64, 'base64')
+  return bytes.length > 0 && bytes.length <= MAX_IMAGE_DATA_BYTES ? bytes : null
+}
+
+/** Read a bounded image through one file handle so growth after stat cannot exceed the limit. */
+async function readImageBytes(target: string, maxBytes: number): Promise<Buffer | null> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  try {
+    handle = await open(target, READ_FILE_FLAGS)
+    return await readImageBytesFromHandle(handle, maxBytes)
+  } catch {
+    return null
+  } finally {
+    if (handle) await handle.close().catch(() => {})
+  }
+}
+
+async function readImageBytesFromHandle(handle: FileHandle, maxBytes: number): Promise<Buffer | null> {
+  try {
+    const stats = await handle.stat()
+    if (!stats.isFile() || stats.size > maxBytes) return null
+    const buffer = Buffer.alloc(stats.size)
+    let totalRead = 0
+    while (totalRead < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, totalRead, buffer.length - totalRead, totalRead)
+      if (bytesRead === 0) return null
+      totalRead += bytesRead
+    }
+    return buffer
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -325,24 +464,115 @@ function pastedImageExtension(mimeType: string): string | null {
  * the viewer can paint. Anything that is not an image inside the project, or
  * that is too large to hand to a `<img>`, is `null` rather than an error.
  */
-async function readImageDataUrl(context: IpcContext, file: string): Promise<string | null> {
+export async function readImageDataUrl(
+  context: IpcContext,
+  file: string,
+  maxBytes = MAX_IMAGE_DATA_BYTES
+): Promise<string | null> {
   const root = workspaceRoot(context)
-  const target = path.resolve(root, file)
-  if (!isInside(root, target)) return null
-  const type = IMAGE_MIME[path.extname(target).toLowerCase()]
-  if (!type) return null
+  const opened = await openWorkspaceFile(root, file)
+  if (!opened) return null
   try {
-    const stats = await stat(target)
-    if (!stats.isFile() || stats.size > 24 * 1024 * 1024) return null
-    return `data:${type};base64,${(await readFile(target)).toString('base64')}`
-  } catch {
-    return null
+    const type = IMAGE_MIME[path.extname(opened.target).toLowerCase()]
+    if (!type) return null
+    const requestedLimit = Number.isFinite(maxBytes)
+      ? Math.max(0, Math.floor(maxBytes))
+      : MAX_IMAGE_DATA_BYTES
+    const byteLimit = Math.min(requestedLimit, MAX_IMAGE_DATA_BYTES)
+    const bytes = await readImageBytesFromHandle(opened.handle, byteLimit)
+    return bytes ? `data:${type};base64,${bytes.toString('base64')}` : null
+  } finally {
+    await opened.handle.close().catch(() => {})
   }
 }
 
 function workspaceName(dir: string): string {
   const base = path.basename(dir)
   return base || dir
+}
+
+function workspacePathKey(value: string): string {
+  const resolved = path.resolve(value).replace(/[/\\]+$/, '')
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+/** Enough pictures for the viewer's paging, without walking a huge media tree. */
+const MAX_IMAGE_RESULTS = 1000
+/** Bound image listing even when the project contains few or no pictures. */
+const MAX_IMAGE_SCAN_ENTRIES = 100_000
+/** The picture types the viewer can list, taken from the types it can draw. */
+const IMAGE_EXTENSIONS = new Set(Object.keys(IMAGE_MIME).map((extension) => extension.slice(1)))
+
+/**
+ * Every picture of one project, in a single walk.
+ *
+ * The image page used to ask `fs:search` once per extension, which walked the
+ * whole project nine times for the same answer. The skip list and the depth
+ * cap are the ones the file search uses, so both see the same project.
+ */
+export async function listProjectImages(
+  root: string,
+  limit = MAX_IMAGE_RESULTS,
+  shouldStop: () => boolean = () => false
+): Promise<ImageListResult> {
+  if (!root) return { entries: [], truncated: false }
+  const base = path.resolve(root)
+  const results: FileEntry[] = []
+  let scannedEntries = 0
+  let truncated = false
+
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (shouldStop()) return
+    if (results.length >= limit || scannedEntries >= MAX_IMAGE_SCAN_ENTRIES || depth > MAX_SEARCH_DEPTH) {
+      truncated = true
+      return
+    }
+    let directory
+    try {
+      directory = await opendir(dir)
+    } catch {
+      return
+    }
+    try {
+      for await (const entry of directory) {
+        if (shouldStop()) return
+        if (results.length >= limit || scannedEntries >= MAX_IMAGE_SCAN_ENTRIES) {
+          truncated = true
+          return
+        }
+        scannedEntries += 1
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (SEARCH_SKIP_DIRS.has(entry.name)) continue
+          if (depth >= MAX_SEARCH_DEPTH) {
+            truncated = true
+            continue
+          }
+          await walk(full, depth + 1)
+          continue
+        }
+        if (!entry.isFile()) continue
+        const extension = path.extname(entry.name).slice(1).toLowerCase()
+        if (!IMAGE_EXTENSIONS.has(extension)) continue
+        let size: number | undefined
+        try {
+          const info = await lstat(full)
+          if (info.isFile()) size = info.size
+        } catch {
+          size = undefined
+        }
+        if (shouldStop()) return
+        results.push({ name: entry.name, path: full, kind: 'file', size })
+        if (results.length >= limit) truncated = true
+      }
+    } catch {
+      /* a directory may disappear or become unreadable during the walk */
+    }
+  }
+
+  await walk(base, 0)
+  results.sort((a, b) => a.path.localeCompare(b.path))
+  return { entries: results, truncated }
 }
 
 /**
@@ -353,24 +583,35 @@ function workspaceName(dir: string): string {
  * A NUL byte means the file is binary, and a preview of its bytes is not
  * something the reader could use, so it is not a result.
  */
-async function searchFileText(file: string, needle: string, remaining: number): Promise<TextSearchHit[]> {
+async function searchFileText(
+  root: string,
+  file: string,
+  needle: string,
+  remaining: number
+): Promise<TextSearchHit[]> {
   const perFile = Math.min(remaining, MAX_TEXT_HITS_PER_FILE)
   if (perFile <= 0) return []
 
-  let buffer: Buffer
+  const opened = await openWorkspaceFile(root, file)
+  if (!opened) return []
+  let content: string
   try {
-    const stats = await stat(file)
+    const stats = await opened.handle.stat()
+    if (!stats.isFile() || stats.size === 0 || stats.size > MAX_FILE_BYTES) return []
+    const result = await readBoundedHandle(opened.handle, MAX_FILE_BYTES)
     // A file past the read cap is skipped rather than half-read: a hit in the
     // part that was never read would be a result the user cannot find.
-    if (!stats.isFile() || stats.size === 0 || stats.size > MAX_FILE_BYTES) return []
-    buffer = await readFile(file)
+    if (!result || result.size === 0 || result.truncated) return []
+    content = result.content
   } catch {
     return []
+  } finally {
+    await opened.handle.close().catch(() => {})
   }
-  if (buffer.includes(0)) return []
+  if (content.includes('\0')) return []
 
   const hits: TextSearchHit[] = []
-  const lines = buffer.toString('utf8').split('\n')
+  const lines = content.split('\n')
   for (let index = 0; index < lines.length; index += 1) {
     if (hits.length >= perFile) break
     // Windows line endings keep the \r; leaving it in would end the preview
@@ -452,6 +693,9 @@ function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
 
 export function registerIpc(context: IpcContext): void {
   const { supervisor, settings, getWindow, terminals } = context
+  // Large sessions are searched through an index kept beside the app's data,
+  // never inside the user's project folder.
+  configureSessionSearchIndex(path.join(app.getPath('userData'), 'session-search-index'))
   registerProviderIpc(context)
   ipcMain.handle('model-catalog:thinking-levels', (_event, provider: unknown, modelId: unknown) =>
     getModelThinkingLevels(typeof provider === 'string' ? provider : '', typeof modelId === 'string' ? modelId : '')
@@ -547,12 +791,9 @@ export function registerIpc(context: IpcContext): void {
         continue
       }
       try {
-        const stats = await stat(file)
-        if (!stats.isFile() || stats.size > 24 * 1024 * 1024) {
-          picked.push({ kind: 'path', path: file })
-          continue
-        }
-        picked.push({ kind: 'image', data: (await readFile(file)).toString('base64'), mimeType })
+        const bytes = await readImageBytes(file, MAX_IMAGE_DATA_BYTES)
+        if (!bytes) picked.push({ kind: 'path', path: file })
+        else picked.push({ kind: 'image', data: bytes.toString('base64'), mimeType })
       } catch {
         picked.push({ kind: 'path', path: file })
       }
@@ -658,6 +899,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('settings:patch', (_event, patch: Partial<AppSettings>): AppSettings => {
     const next = settings.patch(patch)
+    if (patch.memoryGeneration === false) context.memory.cancelAutomaticGeneration()
     // The extension reads the switch when its process starts. A conversation
     // that is already running has to be told, or the toggle would wait for
     // the next launch.
@@ -691,8 +933,8 @@ export function registerIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('memory:get', (): Promise<MemoryState> => context.memory.state())
-  ipcMain.handle('memory:remove', (_event, id: string): MemoryState => context.memory.remove(id))
-  ipcMain.handle('memory:clear', (): MemoryState => context.memory.clear())
+  ipcMain.handle('memory:remove', (_event, id: string): Promise<MemoryState> => context.memory.remove(id))
+  ipcMain.handle('memory:clear', (): Promise<MemoryState> => context.memory.clear())
   ipcMain.handle(
     'memory:generate',
     (_event, options?: MemoryGenerateOptions) => context.memory.generate(options ?? {})
@@ -732,15 +974,18 @@ export function registerIpc(context: IpcContext): void {
         name: workspaceName(dir),
         lastOpenedAt: Date.now()
       }
-      settings.addWorkspace(workspace)
-      return workspace
+      const next = settings.addWorkspace(workspace)
+      return next.workspaces.find((item) => workspacePathKey(item.path) === workspacePathKey(dir)) ?? workspace
     } catch {
       return null
     }
   })
 
-  ipcMain.handle('workspaces:remove', (_event, id: string): AppSettings => {
-    return settings.removeWorkspace(id)
+  ipcMain.handle('workspaces:remove', (_event, id: unknown, hiddenPath?: unknown): AppSettings => {
+    return settings.removeWorkspace(
+      typeof id === 'string' ? id : undefined,
+      typeof hiddenPath === 'string' ? hiddenPath : undefined
+    )
   })
 
   // Register a project that the user picked from a conversation. The path is
@@ -751,8 +996,9 @@ export function registerIpc(context: IpcContext): void {
     (_event, rawPath: string): { workspace: Workspace; settings: AppSettings } => {
       const dir = path.resolve(rawPath)
       const current = settings.get()
+      const key = workspacePathKey(dir)
       const existing = current.workspaces.find(
-        (item) => path.resolve(item.path).toLowerCase() === dir.toLowerCase()
+        (item) => workspacePathKey(item.path) === key
       )
       if (existing) return { workspace: existing, settings: current }
       const workspace: Workspace = {
@@ -761,7 +1007,9 @@ export function registerIpc(context: IpcContext): void {
         name: workspaceName(dir),
         lastOpenedAt: Date.now()
       }
-      return { workspace, settings: settings.addWorkspace(workspace) }
+      const next = settings.addWorkspace(workspace)
+      const saved = next.workspaces.find((item) => workspacePathKey(item.path) === key) ?? workspace
+      return { workspace: saved, settings: next }
     }
   )
 
@@ -770,13 +1018,24 @@ export function registerIpc(context: IpcContext): void {
   )
 
   ipcMain.handle('sessions:hydrate', async (_event, file: string) => {
-    if (typeof file !== 'string' || !file) return []
-    return await readSessionMessages(file)
+    const opened = await openSessionFile(file)
+    if (!opened) return []
+    try {
+      return await readSessionMessages(opened.target, opened.handle)
+    } finally {
+      await opened.handle.close().catch(() => {})
+    }
   })
 
   ipcMain.handle('sessions:rename', async (_event, file: string, name: string) => {
-    if (typeof file !== 'string' || typeof name !== 'string') return false
-    return await supervisor.rename(file, name)
+    if (typeof name !== 'string') return false
+    const opened = await openSessionFile(file, undefined, true)
+    if (!opened) return false
+    try {
+      return await supervisor.rename(opened.target, name, opened.handle)
+    } finally {
+      await opened.handle.close().catch(() => {})
+    }
   })
 
   // The sidebar debounces its own input, but a search that already entered
@@ -858,9 +1117,29 @@ export function registerIpc(context: IpcContext): void {
       gitWrite(context, root => addWorktree(root, worktreePath, branch, create !== false))
   )
 
-  ipcMain.handle('git:removeWorktree', (_event, worktreePath: string) =>
-    gitWrite(context, root => supervisor.withCwdLock(path.resolve(root, worktreePath), () => removeWorktree(root, worktreePath)))
-  )
+  ipcMain.handle('git:removeWorktree', async (_event, worktreePath: string) => {
+    const root = workspaceRoot(context)
+    try {
+      return await removeWorktree(
+        root,
+        worktreePath,
+        async (resolved, remove) => {
+          // A parent lock covers a nested worktree. Stop its current process
+          // first so it cannot block that parent lock from being acquired.
+          if (isPathWithin(root, resolved)) {
+            await supervisor.stopCwd(resolved)
+            return supervisor.withCwdLock(root, remove)
+          }
+          return supervisor.withCwdLock(root, async () => {
+            await supervisor.stopCwd(resolved)
+            return supervisor.withCwdLock(resolved, remove)
+          })
+        }
+      )
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
 
   ipcMain.handle('git:revertFile', (_event, file: string) =>
     gitWrite(context, root => revertFile(root, file))
@@ -874,10 +1153,13 @@ export function registerIpc(context: IpcContext): void {
     const root = workspaceRoot(context)
     // A relative path is taken from the project root, not from wherever the
     // app happens to be started.
-    const target = path.resolve(root, dir)
-    if (!isInside(root, target)) return []
+    const location = await resolveWorkspaceLocation(root, dir)
+    if (!location) return []
+    const { target } = location
     try {
       const entries = await readdir(target, { withFileTypes: true })
+      const current = await resolveWorkspaceLocation(root, dir)
+      if (!current || current.root !== location.root || current.target !== target) return []
       const listed: FileEntry[] = []
       for (const entry of entries) {
         if (entry.isDirectory() && TREE_SKIP_DIRS.has(entry.name)) continue
@@ -885,7 +1167,8 @@ export function registerIpc(context: IpcContext): void {
         let size: number | undefined
         if (entry.isFile()) {
           try {
-            size = (await stat(full)).size
+            const info = await lstat(full)
+            if (info.isFile()) size = info.size
           } catch {
             size = undefined
           }
@@ -908,21 +1191,29 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('fs:read', async (_event, file: string): Promise<FileContent | null> => {
     const root = workspaceRoot(context)
-    const target = path.resolve(root, file)
-    if (!isInside(root, target)) return null
-    const result = await readBoundedFile(target)
-    if (!result) return null
-    const ext = path.extname(target).slice(1).toLowerCase()
-    return {
-      path: target,
-      content: result.content,
-      truncated: result.truncated,
-      size: result.size,
-      language: LANGUAGE_BY_EXT[ext] ?? 'text'
+    const opened = await openWorkspaceFile(root, file)
+    if (!opened) return null
+    try {
+      const result = await readBoundedHandle(opened.handle, MAX_FILE_BYTES)
+      if (!result) return null
+      const ext = path.extname(opened.target).slice(1).toLowerCase()
+      return {
+        path: opened.target,
+        content: result.content,
+        truncated: result.truncated,
+        size: result.size,
+        language: LANGUAGE_BY_EXT[ext] ?? 'text'
+      }
+    } finally {
+      await opened.handle.close().catch(() => {})
     }
   })
 
-  ipcMain.handle('fs:search', async (_event, query: string, limit?: number): Promise<FileEntry[]> => {
+  ipcMain.handle('fs:search', async (event, query: string, limit?: number): Promise<FileEntry[]> => {
+    // Requests supersede older walks even when no workspace is available.
+    const token = (fileSearchSequence += 1)
+    latestFileSearches.set(event.sender, token)
+    const superseded = () => latestFileSearches.get(event.sender) !== token
     const root = workspaceRoot(context)
     // The separators are normalised, so "src/renderer" finds the folder on
     // Windows as well.
@@ -933,11 +1224,13 @@ export function registerIpc(context: IpcContext): void {
     const ceiling = Math.min(Math.max(limit ?? MAX_SEARCH_RESULTS, 1), MAX_SEARCH_RESULTS)
     const results: FileEntry[] = []
     const base = path.resolve(root)
+    // The composer debounces its own input, but a walk that already started
+    // keeps reading. A newer query stops the older one at its next entry.
 
     // The walk awaits the disk, so the event loop keeps serving Pi events and
     // other IPC while a large project is being walked.
     const walk = async (dir: string, depth: number): Promise<void> => {
-      if (results.length >= ceiling || depth > MAX_SEARCH_DEPTH) return
+      if (results.length >= ceiling || depth > MAX_SEARCH_DEPTH || superseded()) return
       let entries: Dirent[]
       try {
         entries = await readdir(dir, { withFileTypes: true })
@@ -945,7 +1238,7 @@ export function registerIpc(context: IpcContext): void {
         return
       }
       for (const entry of entries) {
-        if (results.length >= ceiling) return
+        if (results.length >= ceiling || superseded()) return
         const full = path.join(dir, entry.name)
         if (entry.isDirectory()) {
           if (SEARCH_SKIP_DIRS.has(entry.name)) continue
@@ -975,16 +1268,23 @@ export function registerIpc(context: IpcContext): void {
 
   // Search what is inside the files, not only their names. The walk is the
   // same one the file search uses, so both see the same project.
-  ipcMain.handle('fs:searchText', async (_event, query: string, limit?: number): Promise<TextSearchHit[]> => {
+  ipcMain.handle('fs:searchText', async (event, query: string, limit?: number): Promise<TextSearchHit[]> => {
+    // Clearing the query or leaving the workspace must invalidate any walk
+    // that was already reading files.
+    const token = (textSearchSequence += 1)
+    latestTextSearches.set(event.sender, token)
+    const superseded = () => latestTextSearches.get(event.sender) !== token
     const root = workspaceRoot(context)
     const needle = query.trim().toLowerCase()
     if (!root || !needle) return []
     const ceiling = Math.min(Math.max(limit ?? MAX_SEARCH_RESULTS, 1), MAX_SEARCH_RESULTS)
     const base = path.resolve(root)
     const hits: TextSearchHit[] = []
+    // Typing another character should not leave the previous query reading the
+    // project; the sidebar's versioning only ignores the answer, not the work.
 
     const walk = async (dir: string, depth: number): Promise<void> => {
-      if (hits.length >= ceiling || depth > MAX_SEARCH_DEPTH) return
+      if (hits.length >= ceiling || depth > MAX_SEARCH_DEPTH || superseded()) return
       let entries: Dirent[]
       try {
         entries = await readdir(dir, { withFileTypes: true })
@@ -992,7 +1292,7 @@ export function registerIpc(context: IpcContext): void {
         return
       }
       for (const entry of entries) {
-        if (hits.length >= ceiling) return
+        if (hits.length >= ceiling || superseded()) return
         const full = path.join(dir, entry.name)
         if (entry.isDirectory()) {
           if (SEARCH_SKIP_DIRS.has(entry.name)) continue
@@ -1000,7 +1300,7 @@ export function registerIpc(context: IpcContext): void {
           continue
         }
         if (!entry.isFile()) continue
-        const found = await searchFileText(full, needle, ceiling - hits.length)
+        const found = await searchFileText(root, full, needle, ceiling - hits.length)
         if (found.length) hits.push(...found)
       }
     }
@@ -1010,12 +1310,26 @@ export function registerIpc(context: IpcContext): void {
     return hits.slice(0, ceiling)
   })
 
+  ipcMain.handle('fs:listImages', async (event): Promise<ImageListResult> => {
+    const token = (imageListSequence += 1)
+    latestImageLists.set(event.sender, token)
+    const shouldStop = () =>
+      event.sender.isDestroyed() || latestImageLists.get(event.sender) !== token
+    const root = workspaceRoot(context)
+    return await listProjectImages(root, MAX_IMAGE_RESULTS, shouldStop)
+  })
+
   ipcMain.handle('sessions:remove', async (_event, file: string): Promise<boolean> => {
+    const target = await resolveSessionFilePath(file)
+    if (!target) return false
     try {
       // Recoverable: hand the file to the OS trash instead of unlinking it.
-      await shell.trashItem(file)
-      invalidateSessionCache(file)
-      return true
+      return await supervisor.withSessionFileMutation(target, async () => {
+        await shell.trashItem(target)
+        invalidateSessionCache(target)
+        forgetSessionSearchIndex(target)
+        return true
+      })
     } catch (error) {
       console.error('[pi-desktop] could not trash the session file:', error)
       return false
@@ -1040,11 +1354,9 @@ export function registerIpc(context: IpcContext): void {
     'fs:savePastedImage',
     (_event, data: string, mimeType: string): { path: string; root: string } | null => {
       const root = workspaceRoot(context)
-      const extension = pastedImageExtension(mimeType)
-      if (!root || !extension) return null
-      const base64 = data.includes(',') ? data.split(',')[1] : data
-      const buffer = Buffer.from(base64 || '', 'base64')
-      if (!buffer.length) return null
+      const extension = typeof mimeType === 'string' ? pastedImageExtension(mimeType) : null
+      const buffer = decodeImageData(data)
+      if (!root || !extension || !buffer) return null
       try {
         // A projectless chat has the folder made for it when Pi starts, but the
         // setting can name a workspace that was deleted since.
@@ -1079,6 +1391,9 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle(
     'fs:saveImage',
     async (_event, data: string, mimeType: string): Promise<string | null> => {
+      if (typeof mimeType !== 'string' || !mimeType.toLowerCase().startsWith('image/')) return null
+      const buffer = decodeImageData(data)
+      if (!buffer) return null
       const extension = mimeType.includes('png')
         ? 'png'
         : mimeType.includes('webp')
@@ -1103,8 +1418,7 @@ export function registerIpc(context: IpcContext): void {
       }
       if (result.canceled || !result.filePath) return null
       try {
-        const base64Data = data.includes(',') ? data.split(',')[1] : data
-        writeFileSync(result.filePath, Buffer.from(base64Data, 'base64'))
+        writeFileSync(result.filePath, buffer)
         return result.filePath
       } catch (error) {
         console.error('[pi-desktop] could not save the picture:', error)
@@ -1114,11 +1428,15 @@ export function registerIpc(context: IpcContext): void {
   )
 
   ipcMain.handle('runtime:start', async (_event, options: RuntimeStartOptions) => {
+    if (!options || typeof options !== 'object') return { ok: false, error: 'Invalid runtime options.' }
+    const validated = await validateRuntimeSessionFile(options.sessionFile)
+    if (!validated.ok) return { ok: false, error: "Conversation file is not in Pi's session store." }
     const cwd = options.cwd || projectlessRoot()
     if (!options.cwd) mkdirSync(cwd, { recursive: true })
-    const sessionKey = options.sessionFile || `draft:${randomUUID()}`
+    const sessionKey = validated.sessionFile || `draft:${randomUUID()}`
     return supervisor.ensure({
       ...options,
+      sessionFile: validated.sessionFile,
       sessionKey,
       cwd,
       customInstructions: runtimeInstructions(context, cwd)
@@ -1126,11 +1444,24 @@ export function registerIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('runtime:ensure', async (_event, options: RuntimeEnsureOptions) => {
+    if (!options || typeof options !== 'object') return { ok: false, error: 'Invalid runtime options.' }
+    const validated = await validateRuntimeSessionFile(options.sessionFile)
+    // Pi can report a newly assigned session path before it has flushed the
+    // JSONL. A hot runtime already owns that key, so reuse it without treating
+    // the not-yet-written path as a request to open a session file.
+    const runtimeIsLive =
+      typeof options.sessionKey === 'string' &&
+      typeof supervisor.has === 'function' &&
+      supervisor.has(options.sessionKey)
+    if (!validated.ok && !runtimeIsLive) {
+      return { ok: false, error: "Conversation file is not in Pi's session store." }
+    }
     const cwd = options.cwd || projectlessRoot()
     if (!options.cwd) mkdirSync(cwd, { recursive: true })
     if (!options.sessionKey) return { ok: false, error: 'Missing conversation id' }
     return supervisor.ensure({
       ...options,
+      sessionFile: validated.ok ? validated.sessionFile : undefined,
       cwd,
       customInstructions: runtimeInstructions(context, cwd)
     })
@@ -1258,33 +1589,12 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('shell:openPath', async (_event, target: string) => {
     const opener = settings.get().defaultFileOpener
-    if (opener === 'vscode') {
-      try {
-        const { spawn } = await import('node:child_process')
-        spawn('code', [target], { shell: true, detached: true })
-        return ''
-      } catch {
-        /* fallback to system default */
-      }
-    } else if (opener === 'cursor') {
-      try {
-        const { spawn } = await import('node:child_process')
-        spawn('cursor', [target], { shell: true, detached: true })
-        return ''
-      } catch {
-        /* fallback to system default */
-      }
-    } else if (opener === 'windsurf') {
-      try {
-        const { spawn } = await import('node:child_process')
-        spawn('windsurf', [target], { shell: true, detached: true })
-        return ''
-      } catch {
-        /* fallback to system default */
-      }
-    }
-    const error = await shell.openPath(target)
-    return error
+    if (typeof target !== 'string' || !target) return 'Invalid path.'
+    if (
+      (opener === 'vscode' || opener === 'cursor' || opener === 'windsurf') &&
+      (await launchEditor(opener, target))
+    ) return ''
+    return await shell.openPath(target)
   })
 
   ipcMain.handle('shell:openInExplorer', async (_event, target: string) => {
@@ -1301,7 +1611,7 @@ export function registerIpc(context: IpcContext): void {
   // draws the project's images, and it may not touch the disk itself.
   ipcMain.handle(
     'fs:readImageDataUrl',
-    (_event, file: string) => readImageDataUrl(context, file)
+    (_event, file: string, maxBytes?: number) => readImageDataUrl(context, file, maxBytes)
   )
 }
 
@@ -1336,7 +1646,7 @@ export function bridgeRuntime(context: IpcContext): void {
       window &&
       !window.isDestroyed() &&
       !window.isFocused() &&
-      settings.get().desktopNotifications !== false
+      settings.getCached().desktopNotifications !== false
     ) {
       let body: string | null = null
       if (event.type === 'agent_settled') {
@@ -1357,6 +1667,11 @@ export function bridgeRuntime(context: IpcContext): void {
   })
   supervisor.on('rekey', (payload: RuntimeRekey) => {
     sendToWindow(getWindow(), 'runtime:rekey', payload)
+  })
+  supervisor.on('rename', (payload: { file: string; name: string }) => {
+    // Renames happen in the main process (auto-title, cold sessions) and never
+    // reach the session index by themselves; the renderer has to re-read it.
+    sendToWindow(getWindow(), 'sessions:changed', payload)
   })
   supervisor.on('stderr', (payload: { ownerId: string; line: string }) => {
     sendToWindow(getWindow(), 'runtime:stderr', payload.line)

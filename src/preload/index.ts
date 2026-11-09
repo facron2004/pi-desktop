@@ -25,6 +25,7 @@ import type {
   GitPatch,
   GitStatus,
   GitWorktreeResult,
+  ImageListResult,
   McpConfig,
   MemoryGenerateOptions,
   MemoryState,
@@ -41,6 +42,7 @@ import type {
   ScheduledTask,
   ScheduledTaskInput,
   SessionMeta,
+  SessionNameChange,
   TerminalCreateOptions,
   TerminalDataPayload,
   TerminalExitPayload,
@@ -128,7 +130,8 @@ const bridge: PiDesktopBridge = {
   },
   workspaces: {
     pick: (): Promise<Workspace | null> => ipcRenderer.invoke('workspaces:pick'),
-    remove: (id: string): Promise<AppSettings> => ipcRenderer.invoke('workspaces:remove', id),
+    remove: (id?: string, hiddenPath?: string): Promise<AppSettings> =>
+      ipcRenderer.invoke('workspaces:remove', id, hiddenPath),
     add: (path: string): Promise<{ workspace: Workspace; settings: AppSettings }> =>
       ipcRenderer.invoke('workspaces:add', path)
   },
@@ -141,7 +144,9 @@ const bridge: PiDesktopBridge = {
     search: (query: string, limit?: number): Promise<SessionSearchHit[]> =>
       ipcRenderer.invoke('sessions:search', query, limit),
     usageStats: (customDir?: string): Promise<AggregatedUsageStats> =>
-      ipcRenderer.invoke('sessions:usageStats', customDir)
+      ipcRenderer.invoke('sessions:usageStats', customDir),
+    onChanged: (handler: (change: SessionNameChange) => void) =>
+      subscribe<SessionNameChange>('sessions:changed', handler)
   },
   terminal: {
     create: (options: TerminalCreateOptions) => ipcRenderer.invoke('terminal:create', options),
@@ -257,6 +262,7 @@ const bridge: PiDesktopBridge = {
       ipcRenderer.invoke('fs:search', query, limit),
     searchText: (query: string, limit?: number): Promise<TextSearchHit[]> =>
       ipcRenderer.invoke('fs:searchText', query, limit),
+    listImages: (): Promise<ImageListResult> => ipcRenderer.invoke('fs:listImages'),
     reveal: (file: string): Promise<void> => ipcRenderer.invoke('fs:reveal', file),
     savePastedImage: (
       data: string,
@@ -272,8 +278,8 @@ const bridge: PiDesktopBridge = {
         return ''
       }
     },
-    readImageDataUrl: (file: string): Promise<string | null> =>
-      ipcRenderer.invoke('fs:readImageDataUrl', file)
+    readImageDataUrl: (file: string, maxBytes?: number): Promise<string | null> =>
+      ipcRenderer.invoke('fs:readImageDataUrl', file, maxBytes)
   }
 }
 

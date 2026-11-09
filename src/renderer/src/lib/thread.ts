@@ -57,6 +57,13 @@ export interface AssistantItem {
   model?: string
   stopReason?: string
   error?: string
+  /**
+   * Time Pi spent generating this answer, when it reported one.
+   *
+   * The message timestamp marks the start of the answer, so a replayed turn
+   * can still tell when its last answer finished: timestamp + durationMs.
+   */
+  durationMs?: number
   streaming: boolean
   timestamp: number
   order: number
@@ -329,6 +336,7 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
       }
       case 'assistant': {
         const blocks = blocksFromContent(message.content)
+        const rawDuration = (message as unknown as { durationMs?: unknown }).durationMs
         items.push({
           id: nextId('assistant'),
           kind: 'assistant',
@@ -337,6 +345,7 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
           model: message.model,
           stopReason: message.stopReason,
           error: message.errorMessage,
+          durationMs: typeof rawDuration === 'number' ? rawDuration : undefined,
           streaming: false,
           timestamp: message.timestamp ?? Date.now(),
           order: nextOrder()
@@ -366,6 +375,7 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
         const toolCallId = message.toolCallId ?? ''
         const call = calls.get(toolCallId)
         const result = textOf(message.content)
+        const resultTimestamp = message.timestamp ?? Date.now()
         // The duration travels on the message when Pi recorded it, so a
         // replayed card shows the same timing a live one did.
         const raw = message as unknown as { durationMs?: unknown }
@@ -382,7 +392,8 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
               result,
               details: message.details,
               isError: message.isError,
-              durationMs: duration ?? existing.durationMs
+              durationMs: duration ?? existing.durationMs,
+              finishedAt: resultTimestamp
             }
             break
           }
@@ -399,7 +410,8 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
           details: message.details,
           isError: message.isError,
           durationMs: duration,
-          timestamp: message.timestamp ?? Date.now(),
+          finishedAt: resultTimestamp,
+          timestamp: resultTimestamp,
           order: nextOrder()
         })
         break
@@ -727,6 +739,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       if (message.role === 'assistant') {
         const assistant = lastStreamingAssistant(items)
         if (!assistant) return items
+        const rawDuration = (message as unknown as { durationMs?: unknown }).durationMs
         const next: AssistantItem = {
           ...assistant,
           // The message is the authority for the content of the blocks. The
@@ -738,6 +751,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
           model: message.model,
           stopReason: message.stopReason,
           error: message.errorMessage,
+          durationMs: typeof rawDuration === 'number' ? rawDuration : assistant.durationMs,
           streaming: false
         }
         return replaceItem(items, assistant.id, next)

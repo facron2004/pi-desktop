@@ -313,6 +313,7 @@
 .branch-menu__create-form {
   display: flex;
   flex-direction: column;
+  gap: 3px;
   padding: 1px 0;
 }
 
@@ -322,23 +323,63 @@
   gap: 3px;
 }
 
-.branch-menu__worktree-toggle {
+/* A worktree row is a switch target with its own remove control; the remove
+   button stays out of the way until the row is hovered or focused. */
+.branch-menu__worktree {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 22px;
-  padding: 2px 5px;
-  color: var(--text-muted);
-  font-size: var(--text-2xs);
-  cursor: pointer;
-  user-select: none;
+  gap: var(--sp-hair);
+  min-width: 0;
 }
 
-.branch-menu__worktree-toggle input {
-  width: 12px;
-  height: 12px;
-  margin: 0;
-  accent-color: var(--accent);
+.branch-menu__worktree .branch-menu__row {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.branch-menu__worktree-remove {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: var(--ctl-sm);
+  border: none;
+  background: transparent;
+  border-radius: var(--r-xs);
+  color: var(--text-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.branch-menu__worktree:hover .branch-menu__worktree-remove,
+.branch-menu__worktree:focus-within .branch-menu__worktree-remove,
+.branch-menu__worktree-remove[data-dirty='true'] {
+  opacity: 1;
+}
+
+.branch-menu__worktree-remove:hover:not([aria-disabled='true']) {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.branch-menu__worktree-remove[aria-disabled='true'] {
+  color: var(--text-faint);
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+@media (hover: none), (pointer: coarse), (any-pointer: coarse) {
+  .branch-menu__worktree-remove {
+    opacity: 1;
+    width: 30px;
+    height: 30px;
+  }
+}
+
+/* The dirty count on a worktree row is a reading, not a button. */
+.branch-menu__list .branch-menu__changes-badge:not([role]) {
+  cursor: default;
 }
 
 .branch-menu__create-input {

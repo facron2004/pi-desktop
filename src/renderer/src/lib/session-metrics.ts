@@ -13,8 +13,21 @@ import { monotonicNow, type SessionTimingRecord } from './session-timing'
  */
 export interface RunTiming {
   startedAt?: number
+  startedMonotonicAt?: number
+  ttftStartedAt?: number
+  ttftStartedMonotonicAt?: number
   firstTokenAt?: number
+  firstTokenMonotonicAt?: number
   lastTokenAt?: number
+  /**
+   * Summed generation windows of the answers completed in this run.
+   *
+   * A run that calls tools writes several answers; the wall clock between
+   * them is tool time, not model time.
+   */
+  generationMs?: number
+  /** Monotonic start of the answer currently being generated. */
+  messageGenerationStartedAt?: number
   modelTurnStartedAt?: number
   runId?: string
   turnId?: string
@@ -27,14 +40,15 @@ export interface SessionMetrics {
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
+  cacheWriteTokens: number
   turnCount: number
   stepCount: number
   /** Sum of tool durations available in the transcript or local timing record. */
   toolTimeMs: number | null
   timedToolCalls: number
-  /** Average across completed runs observed by this app. */
+  /** Average of recorded samples and the current measured run, or null. */
   averageTtftMs: number | null
-  /** Sum of completed model response timings observed by this app. */
+  /** Sum of completed model response timings observed by this app, or the transcript. */
   modelTimeMs: number | null
   /** Cache reads as a share of all prompt tokens, or null when unknown. */
   cacheHitPercent: number | null
@@ -43,7 +57,7 @@ export interface SessionMetrics {
   contextPercent: number | null
   /** Output tokens per second of the most recent generation window. */
   tps: number | null
-  /** Milliseconds from the prompt to the first text delta. */
+  /** Milliseconds from Pi's `agent_start` to the first text delta. */
   ttftMs: number | null
 }
 
@@ -61,6 +75,7 @@ export function sessionMetrics(
   let input = 0
   let output = 0
   let cacheRead = 0
+  let cacheWrite = 0
   let total = 0
   let lastTurnOutput = 0
   let lastUserIndex = -1
@@ -69,6 +84,8 @@ export function sessionMetrics(
   let toolItemCount = 0
   let knownToolTimeMs = 0
   let timedToolCalls = 0
+  let lastTurnGenerationMs = 0
+  let transcriptModelMs = 0
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
@@ -88,10 +105,20 @@ export function sessionMetrics(
   }
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
-    if (item.kind !== 'assistant' || !item.usage) continue
+    if (item.kind !== 'assistant') continue
+    if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
+      transcriptModelMs += item.durationMs
+    }
+    if (index > lastUserIndex) {
+      if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
+        lastTurnGenerationMs += item.durationMs
+      }
+    }
+    if (!item.usage) continue
     input += item.usage.input
     output += item.usage.output
     cacheRead += item.usage.cacheRead
+    cacheWrite += item.usage.cacheWrite
     total += item.usage.totalTokens
     // Only the newest turn's output belongs to the generation window that the
     // run's timing fields describe.
@@ -106,10 +133,11 @@ export function sessionMetrics(
   const inputTokens = hasStatsTokens ? statsTokens!.input : input
   const outputTokens = hasStatsTokens ? statsTokens!.output : output
   const cacheReadTokens = hasStatsTokens ? statsTokens!.cacheRead : cacheRead
-  const hitRead = cacheReadTokens
-  const hitInput = inputTokens
-  const hitBase = hitRead + hitInput
-  const cacheHitPercent = hitBase > 0 ? round((hitRead / hitBase) * 100) : null
+  const cacheWriteTokens = hasStatsTokens ? statsTokens!.cacheWrite : cacheWrite
+  // Every prompt token is either fresh input, a cache read or a cache write;
+  // leaving writes out of the base inflated the rate on a growing context.
+  const hitBase = cacheReadTokens + inputTokens + cacheWriteTokens
+  const cacheHitPercent = hitBase > 0 ? round((cacheReadTokens / hitBase) * 100) : null
 
   const turnCount = stats?.userMessages ?? transcriptTurnCount
   const stepCount = stats?.toolCalls ?? toolItemCount
@@ -124,40 +152,60 @@ export function sessionMetrics(
   const contextWindow = context?.contextWindow ?? null
   const contextPercent = context?.percent ?? null
 
-  const ttftMs =
-    run.firstTokenAt !== undefined && run.startedAt !== undefined
-      ? Math.max(0, run.firstTokenAt - run.startedAt)
+  const ttftMs = run.firstTokenMonotonicAt !== undefined && run.ttftStartedMonotonicAt !== undefined
+    ? Math.max(0, run.firstTokenMonotonicAt - run.ttftStartedMonotonicAt)
+    : run.firstTokenAt !== undefined && run.ttftStartedAt !== undefined
+      ? Math.max(0, run.firstTokenAt - run.ttftStartedAt)
       : null
   const ttftSamples = Object.values(timing?.ttftDurationsMs ?? {})
     .filter((value) => Number.isFinite(value) && value >= 0)
   const currentRunRecorded = Boolean(run.runId && timing?.ttftDurationsMs[run.runId] !== undefined)
-  const includeLiveTtft = run.settled === false && !currentRunRecorded && ttftMs !== null
-  const averageTtftMs = ttftSamples.length || includeLiveTtft
-    ? round((ttftSamples.reduce((sum, value) => sum + value, 0) + (includeLiveTtft ? ttftMs! : 0)) /
-      (ttftSamples.length + (includeLiveTtft ? 1 : 0)))
-    : ttftMs
-  // Keep showing timings already recorded by older versions. New samples use
-  // the monotonic clock, while hiding legacy values made existing sessions
-  // suddenly lose their model-time totals after an upgrade.
-  const modelSamples = [
-    ...Object.values(timing?.modelDurationsMs ?? {}),
-    ...Object.values(timing?.legacyModelDurationsMs ?? {})
-  ]
+  const includeCurrentRunTtft = !currentRunRecorded && ttftMs !== null
+  const averageTtftMs = ttftSamples.length || includeCurrentRunTtft
+    ? round((ttftSamples.reduce((sum, value) => sum + value, 0) + (includeCurrentRunTtft ? ttftMs! : 0)) /
+      (ttftSamples.length + (includeCurrentRunTtft ? 1 : 0)))
+    : null
+  // Only monotonic samples are summed. Version-1 records measured this against
+  // the wall clock, which jumps on sleep and time sync; one answer could read
+  // as hours, so `session-timing.ts` drops those samples when a record is read.
+  const modelSamples = Object.values(timing?.modelDurationsMs ?? {})
     .filter((value) => Number.isFinite(value) && value >= 0)
   const liveModelTime = run.modelTurnStartedAt !== undefined
     ? Math.max(0, monotonicNow() - run.modelTurnStartedAt)
     : 0
   const modelTimeMs = modelSamples.length || liveModelTime > 0
     ? modelSamples.reduce((sum, value) => sum + value, 0) + liveModelTime
-    : null
-  const liveWindowMs =
+    : transcriptModelMs > 0
+      ? transcriptModelMs
+      : null
+  // The generation time of the answers completed in this run. A run's single
+  // first-to-last span would include tool execution between answers, which is
+  // not model output and made TPS look far slower on tool-heavy turns.
+  const measuredWindowMs = typeof run.generationMs === 'number' && run.generationMs > 0
+    ? run.generationMs
+    : 0
+  const liveWindowMs = run.messageGenerationStartedAt !== undefined
+    ? Math.max(0, monotonicNow() - run.messageGenerationStartedAt)
+    : 0
+  // Older runs, and tests, still report a single span; keep it as a fallback.
+  const legacyWindowMs =
     run.lastTokenAt !== undefined && run.firstTokenAt !== undefined
       ? run.lastTokenAt - run.firstTokenAt
       : 0
   const restoredWindowMs = lastUserTimestamp === undefined
     ? undefined
     : timing?.generationWindowMs[String(lastUserTimestamp)]
-  const windowMs = liveWindowMs > 0 ? liveWindowMs : restoredWindowMs ?? 0
+  // A transcript-only conversation has no client samples. Each assistant
+  // message carries the duration Pi spent generating it, so summing those is
+  // the same per-answer window the live path records — tool gaps excluded.
+  const transcriptWindowMs = lastTurnGenerationMs
+  const windowMs = measuredWindowMs + liveWindowMs > 0
+    ? measuredWindowMs + liveWindowMs
+    : legacyWindowMs > 0
+      ? legacyWindowMs
+      : restoredWindowMs !== undefined && restoredWindowMs > 0
+        ? restoredWindowMs
+        : transcriptWindowMs
   const tps =
     windowMs > 0 && lastTurnOutput > 0 ? round(lastTurnOutput / (windowMs / 1000)) : null
 
@@ -166,6 +214,7 @@ export function sessionMetrics(
     inputTokens,
     outputTokens,
     cacheReadTokens,
+    cacheWriteTokens,
     turnCount,
     stepCount,
     toolTimeMs,

@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState
 } from 'react'
@@ -33,7 +32,6 @@ import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
 import { Launcher, useLauncherActions } from './components/Launcher'
 import { TerminalPanel, type TerminalRunRequest } from './components/TerminalPanel'
-import { PlanStrip } from './components/PlanStrip'
 import { GoalBar } from './components/GoalBar'
 import { SessionTreeDialog } from './components/SessionTreeDialog'
 import { McpDialog } from './components/McpDialog'
@@ -42,6 +40,7 @@ import { Marketplace } from './components/Marketplace'
 import { EditProjectDialog } from './components/EditProjectDialog'
 import { Popover } from './components/Popover'
 import { keysFor, matchesShortcut, type ShortcutId } from './lib/shortcuts'
+import { activeConversationTitle } from './lib/live-sessions'
 import { openingLabel, useT } from './lib/i18n'
 
 /** Matches the closing animation in global.css; the panel stays mounted that long. */
@@ -67,7 +66,6 @@ export default function App() {
   const renameSession = useAppStore((state) => state.renameSession)
   const exportSession = useAppStore((state) => state.exportSession)
   const workspace = useAppStore((state) => state.workspace)
-  const uiStatuses = useAppStore((state) => state.uiStatuses)
   const uiWidgets = useAppStore((state) => state.uiWidgets)
   const uiTitle = useAppStore((state) => state.uiTitle)
   const settings = useAppStore((state) => state.settings)
@@ -265,32 +263,30 @@ export default function App() {
     openMarketplace: () => setDeskPage('marketplace')
   })
 
-  const activeSession = useMemo(
-    () => sessions.find((session) => session.file === activeSessionFile),
-    [sessions, activeSessionFile]
+  // The sidebar lists disk sessions plus live threads, so a chat Pi has not
+  // flushed yet still has a name there. The title bar must resolve the same
+  // row, or it falls back to the project name while the sidebar shows the
+  // conversation's first prompt.
+  const conversationTitle = useAppStore((state) =>
+    activeConversationTitle(state.sessions, state.threads, state.activeSessionFile ?? state.draftId)
   )
-  const title =
-    sessionName ||
-    activeSession?.name ||
-    activeSession?.preview ||
-    workspace?.name ||
-    'Pi Desktop'
+  const title = sessionName || conversationTitle || workspace?.name || 'Pi Desktop'
 
   const canRename = Boolean(hasItems || activeSessionFile || sessionName)
 
   const startRename = useCallback(() => {
-    setDraft(sessionName || activeSession?.name || activeSession?.preview || '')
+    setDraft(sessionName || conversationTitle || '')
     setRenaming(true)
-  }, [sessionName, activeSession])
+  }, [sessionName, conversationTitle])
 
   const handleSaveRename = useCallback(() => {
     setRenaming(false)
     const trimmed = draft.trim()
-    const currentName = sessionName || activeSession?.name || activeSession?.preview || ''
+    const currentName = sessionName || conversationTitle || ''
     if (trimmed && trimmed !== currentName) {
       void renameSession(trimmed)
     }
-  }, [draft, sessionName, activeSession, renameSession])
+  }, [draft, sessionName, conversationTitle, renameSession])
 
   useEffect(() => {
     let active = true
@@ -796,19 +792,6 @@ export default function App() {
                 </div>
               ) : null}
 
-              {uiStatuses.some((entry) => entry.key !== 'pi-desktop-goal') ? (
-                <div className="status-strip">
-                  {uiStatuses
-                    .filter((entry) => entry.key !== 'pi-desktop-goal')
-                    .map((entry) => (
-                      <span className="status-strip__item" key={entry.key}>
-                        <span className="status-strip__dot" />
-                        {entry.text}
-                      </span>
-                    ))}
-                </div>
-              ) : null}
-
               {widgetsAbove.map((widget) => (
                 <div className="widget" key={widget.key}>
                   {widget.lines.map((line, index) => (
@@ -821,7 +804,6 @@ export default function App() {
               ))}
 
               <GoalBar key={activeSessionFile ?? draftId ?? 'draft'} />
-              <PlanStrip />
 
               {hasItems ? <Composer /> : null}
 

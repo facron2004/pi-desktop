@@ -16,7 +16,7 @@ export interface ConversationRow extends SessionMeta {
 }
 
 /** The first prompt of a conversation, for the row's preview. */
-function previewOf(thread: SessionThread): string {
+export function conversationPreview(thread: SessionThread): string {
   for (const item of thread.items) {
     if (item.kind === 'user' && item.text.trim()) return item.text.trim().replace(/\s+/g, ' ').slice(0, 120)
   }
@@ -89,7 +89,7 @@ export function liveConversationRows(
     const id = thread.piState?.sessionId ?? key
     const cwd = thread.status.cwd ?? (draft ? workspacePath ?? '' : '')
     const name = thread.piState?.sessionName
-    const preview = previewOf(thread)
+    const preview = conversationPreview(thread)
     const updatedAt = activityOf(thread)
     const messageCount = thread.items.filter((item) => item.kind === 'user' || item.kind === 'assistant').length
     const model = thread.piState?.model ? `${thread.piState.model.provider}/${thread.piState.model.id}` : undefined
@@ -139,4 +139,51 @@ export function conversationRows(
   const live = liveConversationRows(sessions, threads, workspacePath)
   const disk = sessions.map((session) => ({ ...session, onDisk: true }))
   return [...live, ...disk]
+}
+
+/**
+ * The name the title bar shows for the conversation on screen.
+ *
+ * The sidebar draws a row from disk sessions plus live threads, so a chat Pi
+ * has not flushed to the session folder yet still has a name there. The title
+ * bar used to read only `sessions`, which made it fall back to the project name
+ * for exactly that window — the two places then disagreed. Resolve the active
+ * row the same way the sidebar does, including Pi's own name on a live thread
+ * (a hot `set_session_name` can precede the disk list).
+ */
+export function activeConversationTitle(
+  sessions: readonly SessionMeta[],
+  threads: Readonly<Record<string, SessionThread>>,
+  activeKey: string | undefined
+): string {
+  if (!activeKey) return ''
+  const key = normalisePathKey(activeKey)
+  const disk = sessions.find((session) => normalisePathKey(session.file) === key)
+  if (disk) return disk.name || disk.preview || ''
+  for (const [threadKey, thread] of Object.entries(threads)) {
+    if (normalisePathKey(threadKey) !== key) continue
+    if (!hasWork(thread)) return ''
+    return thread.piState?.sessionName || conversationPreview(thread) || ''
+  }
+  return ''
+}
+
+/** Update a cached conversation's Pi name even when that conversation is in the background. */
+export function updateThreadSessionName(
+  threads: Record<string, SessionThread>,
+  file: string,
+  name: string
+): Record<string, SessionThread> {
+  const key = normalisePathKey(file)
+  let next: Record<string, SessionThread> | undefined
+  for (const [threadKey, thread] of Object.entries(threads)) {
+    if (normalisePathKey(threadKey) !== key || !thread.piState || thread.piState.sessionName === name) continue
+    next ??= { ...threads }
+    next[threadKey] = {
+      ...thread,
+      piState: { ...thread.piState, sessionName: name },
+      version: thread.version + 1
+    }
+  }
+  return next ?? threads
 }

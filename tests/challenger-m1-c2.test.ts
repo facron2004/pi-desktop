@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { sanitizeUrl } from '../src/main/mcp'
 import { readCommitDetail, readCommitFileDiff } from '../src/main/git'
-import { registerIpc } from '../src/main/ipc'
-import { dialog, ipcMain } from 'electron'
+import { MAX_FILE_BYTES, registerIpc } from '../src/main/ipc'
+import { editorLaunchSpec, spawnEditor, windowsEditorLaunchSpec } from '../src/main/editor-launch'
+import { MAX_IMAGE_DATA_BYTES } from '../src/shared/types'
+import { dialog, ipcMain, shell } from 'electron'
 
 // ---------------------------------------------------------------------------
 // 1. Adversarial Tests on MCP `sanitizeUrl`
@@ -253,5 +255,288 @@ test('fs:saveImage correctly decodes data URLs and raw base64, verifying magic b
     } catch {
       /* ignore */
     }
+  }
+})
+
+test('Windows editor wrapper paths remain separate arguments without shell expansion', () => {
+  if (process.platform !== 'win32') return
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'editor-launch-test-'))
+  try {
+    const binDir = path.join(tempDir, 'bin')
+    const resourcesDir = path.join(tempDir, 'resources', 'app', 'out')
+    mkdirSync(binDir, { recursive: true })
+    mkdirSync(resourcesDir, { recursive: true })
+    const wrapper = path.join(binDir, 'code.cmd')
+    const executable = path.join(tempDir, 'Code.exe')
+    const cli = path.join(resourcesDir, 'cli.js')
+    const target = 'C:\\workspace\\report & calc.exe; $(bad).html'
+    writeFileSync(executable, '')
+    writeFileSync(cli, '')
+    writeFileSync(wrapper, '"%~dp0..\\Code.exe" "%~dp0..\\resources\\app\\out\\cli.js" %*\r\n')
+
+    const spec = windowsEditorLaunchSpec(wrapper, target)
+    assert.ok(spec)
+    assert.equal(spec.executable, executable)
+    assert.deepEqual(spec.args, [cli, target])
+    assert.equal(spec.env?.ELECTRON_RUN_AS_NODE, '1')
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('the VS Code setting resolves the standard code launcher', () => {
+  const target = 'C:\\workspace\\report.html'
+  if (process.platform !== 'win32') {
+    assert.equal(editorLaunchSpec('vscode', target)?.executable, 'code')
+    return
+  }
+
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'vscode-setting-launch-test-'))
+  const originalPath = process.env.PATH
+  try {
+    const binDir = path.join(tempDir, 'bin')
+    const resourcesDir = path.join(tempDir, 'resources', 'app', 'out')
+    mkdirSync(binDir, { recursive: true })
+    mkdirSync(resourcesDir, { recursive: true })
+    const wrapper = path.join(binDir, 'code.cmd')
+    const executable = path.join(tempDir, 'Code.exe')
+    const cli = path.join(resourcesDir, 'cli.js')
+    writeFileSync(executable, '')
+    writeFileSync(cli, '')
+    writeFileSync(wrapper, '"%~dp0..\\Code.exe" "%~dp0..\\resources\\app\\out\\cli.js" %*\r\n')
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`
+
+    const spec = editorLaunchSpec('vscode', target)
+    assert.ok(spec)
+    assert.equal(spec.executable, executable)
+    assert.deepEqual(spec.args, [cli, target])
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH
+    else process.env.PATH = originalPath
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('installed Windows editor wrappers resolve to their real executable and CLI script', () => {
+  if (process.platform !== 'win32') return
+  for (const opener of ['code', 'cursor', 'windsurf']) {
+    try {
+      execFileSync('where.exe', [opener], { stdio: 'ignore', windowsHide: true })
+    } catch {
+      continue
+    }
+    const target = 'C:\\workspace\\report & notes.html'
+    const spec = editorLaunchSpec(opener, target)
+    assert.ok(spec, `${opener} is installed but its launcher could not be resolved`)
+    assert.equal(spec.args.at(-1), target)
+    assert.ok(existsSync(spec.executable))
+    if (spec.env?.ELECTRON_RUN_AS_NODE === '1') {
+      assert.ok(spec.args[0] && existsSync(spec.args[0]), `${opener} CLI script must exist`)
+    }
+  }
+})
+
+test('editor launch passes shell metacharacters as one literal path argument', async () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'editor-launch-args-test-'))
+  const capture = path.join(tempDir, 'args.json')
+  const injected = path.join(tempDir, 'injected.txt')
+  const script = path.join(tempDir, 'capture.cjs')
+  const target = `report & echo injected > "${injected}" ; $(echo injected)`
+  try {
+    writeFileSync(
+      script,
+      "require('node:fs').writeFileSync(process.env.PI_DESKTOP_CAPTURE_ARGS, JSON.stringify(process.argv.slice(2)))\n"
+    )
+    assert.equal(
+      await spawnEditor({
+        executable: process.execPath,
+        args: [script, target],
+        env: { ...process.env, PI_DESKTOP_CAPTURE_ARGS: capture }
+      }),
+      true
+    )
+    const deadline = Date.now() + 2_000
+    while (!existsSync(capture) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.deepEqual(JSON.parse(readFileSync(capture, 'utf8')), [target])
+    assert.equal(existsSync(injected), false)
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('image save IPC rejects payloads above the shared size limit before decoding or writing', async () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'save-image-limit-test-'))
+  const originalShowSaveDialog = dialog.showSaveDialog
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: tempDir }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    const oversizedBase64 = 'A'.repeat(Math.ceil(MAX_IMAGE_DATA_BYTES / 3) * 4 + 4)
+    let dialogCalls = 0
+    dialog.showSaveDialog = async () => {
+      dialogCalls += 1
+      return { canceled: true, filePath: undefined }
+    }
+
+    assert.equal(await anyIpc._invoke('fs:saveImage', {}, oversizedBase64, 'image/png'), null)
+    assert.equal(await anyIpc._invoke('fs:savePastedImage', {}, oversizedBase64, 'image/png'), null)
+    assert.equal(dialogCalls, 0, 'oversized exports must be rejected before opening the save dialog')
+    assert.deepEqual(readdirSync(tempDir), [], 'oversized pasted images must not be written')
+  } finally {
+    dialog.showSaveDialog = originalShowSaveDialog
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('a newer project search and a cleared text search cancel previous walks', async () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'search-cancellation-'))
+  try {
+    writeFileSync(path.join(tempDir, 'match-file.txt'), 'needle text', 'utf8')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: tempDir }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    const event = { sender: {} }
+    const oldPathSearch = anyIpc._invoke('fs:search', event, 'match-file')
+    assert.deepEqual(await anyIpc._invoke('fs:search', event, 'no-match'), [])
+    assert.deepEqual(await oldPathSearch, [])
+    assert.equal((await anyIpc._invoke('fs:search', event, 'match-file')).length, 1)
+
+    const oldTextSearch = anyIpc._invoke('fs:searchText', event, 'needle')
+    assert.deepEqual(await anyIpc._invoke('fs:searchText', event, ''), [])
+    assert.deepEqual(await oldTextSearch, [])
+    assert.equal((await anyIpc._invoke('fs:searchText', event, 'needle')).length, 1)
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('workspace text search keeps its byte cap and returns normal file matches', async () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'text-search-bounded-read-'))
+  const normalFile = path.join(tempDir, 'normal.txt')
+  const oversizedFile = path.join(tempDir, 'oversized.txt')
+  try {
+    writeFileSync(normalFile, 'needle in a readable file\n', 'utf8')
+    writeFileSync(oversizedFile, 'needle must be skipped\n', 'utf8')
+    truncateSync(oversizedFile, MAX_FILE_BYTES + 1)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: tempDir }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    const hits = await anyIpc._invoke('fs:searchText', { sender: {} }, 'needle')
+    assert.deepEqual(hits.map((hit: { path: string }) => hit.path), [normalFile])
+    assert.match(hits[0].preview, /needle/)
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('session IPC handlers reject files outside the Pi session root', async () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'session-ipc-path-'))
+  const root = path.join(parent, 'sessions')
+  const workspace = path.join(root, 'workspace')
+  const sessionFile = path.join(workspace, 'valid.jsonl')
+  const outsideFile = path.join(parent, 'private.jsonl')
+  mkdirSync(workspace, { recursive: true })
+  const sessionText = [
+    JSON.stringify({ type: 'session', version: 3, id: 'valid', cwd: 'C:/project' }),
+    JSON.stringify({
+      type: 'message', id: 'm1', parentId: null,
+      message: { role: 'user', content: 'visible session content', timestamp: 1 }
+    })
+  ].join('\n') + '\n'
+  writeFileSync(sessionFile, sessionText, 'utf8')
+  writeFileSync(outsideFile, sessionText.replace('visible session content', 'private file content'), 'utf8')
+
+  const originalSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR
+  const originalTrashItem = shell.trashItem
+  let renamedPath: string | undefined
+  let trashedPath: string | undefined
+  const ensuredOptions: Record<string, unknown>[] = []
+  try {
+    process.env.PI_CODING_AGENT_SESSION_DIR = root
+    shell.trashItem = async (file: string) => { trashedPath = file }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {
+        rename: async (file: string) => { renamedPath = file; return true },
+        ensure: async (options: Record<string, unknown>) => { ensuredOptions.push(options); return { ok: true } }
+      } as any,
+      settings: { get: () => ({}) } as any,
+      memory: { promptFor: () => '' } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    assert.deepEqual(await anyIpc._invoke('sessions:hydrate', {}, outsideFile), [])
+    assert.equal((await anyIpc._invoke('sessions:hydrate', {}, sessionFile))[0]?.content, 'visible session content')
+    assert.equal(await anyIpc._invoke('sessions:rename', {}, outsideFile, 'private'), false)
+    assert.equal(renamedPath, undefined)
+    assert.equal(await anyIpc._invoke('sessions:rename', {}, sessionFile, 'renamed'), true)
+    assert.equal(renamedPath, sessionFile)
+    assert.equal(await anyIpc._invoke('sessions:remove', {}, outsideFile), false)
+    assert.equal(trashedPath, undefined)
+    assert.equal(await anyIpc._invoke('sessions:remove', {}, sessionFile), true)
+    assert.equal(trashedPath, sessionFile)
+
+    assert.equal(
+      (await anyIpc._invoke('runtime:ensure', {}, {
+        sessionKey: outsideFile,
+        cwd: 'C:/project',
+        sessionFile: outsideFile
+      })).ok,
+      false
+    )
+    assert.equal(
+      (await anyIpc._invoke('runtime:start', {}, { cwd: 'C:/project', sessionFile: outsideFile })).ok,
+      false
+    )
+    assert.equal(ensuredOptions.length, 0, 'an outside session file must never reach Pi')
+
+    assert.equal(
+      (await anyIpc._invoke('runtime:ensure', {}, {
+        sessionKey: sessionFile,
+        cwd: 'C:/project',
+        sessionFile
+      })).ok,
+      true
+    )
+    assert.equal(ensuredOptions.at(-1)?.sessionFile, sessionFile)
+  } finally {
+    if (originalSessionDir === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = originalSessionDir
+    shell.trashItem = originalTrashItem
+    rmSync(parent, { recursive: true, force: true })
   }
 })

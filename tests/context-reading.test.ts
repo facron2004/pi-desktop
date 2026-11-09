@@ -74,6 +74,16 @@ test('a conversation with no statistics falls back to the transcript', () => {
   assert.equal(reading.cost, null)
 })
 
+test('an answer that reported no usage cannot erase the newest real reading', () => {
+  const items: ThreadItem[] = [
+    assistant('a1', 900, 100, 3_000),
+    assistant('a2', 0, 0, 0)
+  ]
+  const reading = contextReading({ items, model: MODEL })
+  assert.equal(reading.tokens, 4_000)
+  assert.equal(reading.source, 'transcript')
+})
+
 test('the window comes from the model when Pi omits contextUsage', () => {
   const reading = contextReading({ stats: stats(), items: [], model: MODEL })
   assert.equal(reading.contextWindow, 200_000)

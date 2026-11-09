@@ -33,6 +33,11 @@ export const APP_COMMANDS: PiCommand[] = [
     source: 'app'
   },
   {
+    name: 'plugin',
+    description: 'Switch to Plugin Mode — build or modify a Pi extension',
+    source: 'app'
+  },
+  {
     name: 'export',
     description: 'Export this conversation as HTML',
     source: 'app'

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { SessionMeta } from '@shared/types'
-import { conversationRows } from '../src/renderer/src/lib/live-sessions'
+import { activeConversationTitle, conversationRows, updateThreadSessionName } from '../src/renderer/src/lib/live-sessions'
 import type { SessionThread } from '../src/renderer/src/store/useAppStore'
 
 /** The shape the store keeps for one conversation, with the fields under test. */
@@ -151,4 +151,82 @@ test('a queued follow-up counts as work even with an empty transcript', () => {
     'E:/work/demo'
   )
   assert.equal(rows.length, 1)
+})
+
+test('the title bar reads the same live row as the sidebar, not the project name', () => {
+  // A long run has not flushed its JSONL yet: `sessions` is empty, but the
+  // sidebar shows the first prompt. Reading only the disk list used to make
+  // the title bar fall back to the project name for exactly this window.
+  const prompt = '继续优化咖啡机控制的后端，压力在 9bar 附近来回横跳'
+  const title = activeConversationTitle(
+    [],
+    {
+      'draft:coffee': thread({
+        items: [{ id: 'u1', kind: 'user', text: prompt, images: [], timestamp: 5, order: 1 }],
+        run: { phase: 'working', turns: 1, settled: false },
+        isStreaming: true
+      })
+    },
+    'draft:coffee'
+  )
+  assert.equal(title, prompt)
+})
+
+test('Pi owns the name of a live conversation', () => {
+  // A hot `set_session_name` reaches the thread before the JSONL is re-read,
+  // so the live name wins over the first prompt in both places.
+  const title = activeConversationTitle(
+    [],
+    {
+      'draft:coffee': thread({
+        items: [{ id: 'u1', kind: 'user', text: 'a long first prompt', images: [], timestamp: 5, order: 1 }],
+        piState: { isStreaming: true, isCompacting: false, sessionName: '压力稳定性修复' },
+        run: { phase: 'working', turns: 1, settled: false },
+        isStreaming: true
+      })
+    },
+    'draft:coffee'
+  )
+  assert.equal(title, '压力稳定性修复')
+})
+
+test('a conversation on disk wears the disk row name, like the sidebar', () => {
+  const title = activeConversationTitle(
+    [{ ...onDisk('E:/work/demo/a.jsonl'), name: 'Renamed on disk' }],
+    {
+      'E:/work/demo/a.jsonl': thread({
+        piState: { isStreaming: false, isCompacting: false, sessionName: 'Stale live name' }
+      })
+    },
+    'E:/work/demo/a.jsonl'
+  )
+  assert.equal(title, 'Renamed on disk')
+})
+
+test('renaming a background conversation updates its cached Pi name', () => {
+  const stale = thread({
+    piState: { isStreaming: false, isCompacting: false, sessionName: 'Old title' }
+  })
+  const other = thread({ piState: { isStreaming: false, isCompacting: false, sessionName: 'Other title' } })
+  const threads = {
+    'E:/work/demo/a.jsonl': stale,
+    'E:/work/demo/b.jsonl': other
+  }
+
+  const next = updateThreadSessionName(threads, 'e:\\work\\demo\\a.jsonl', 'New title')
+
+  assert.equal(next['E:/work/demo/a.jsonl'].piState?.sessionName, 'New title')
+  assert.equal(next['E:/work/demo/a.jsonl'].version, stale.version + 1)
+  assert.equal(next['E:/work/demo/b.jsonl'], other)
+})
+
+test('a disk row with no name still shows its preview', () => {
+  const title = activeConversationTitle([onDisk('E:/work/demo/a.jsonl')], {}, 'E:/work/demo/a.jsonl')
+  assert.equal(title, 'E:/work/demo/a.jsonl')
+})
+
+test('a blank chat has no conversation title', () => {
+  // The welcome screen may then fall back to the project name.
+  assert.equal(activeConversationTitle([], { 'draft:blank': thread() }, 'draft:blank'), '')
+  assert.equal(activeConversationTitle([], {}, undefined), '')
 })

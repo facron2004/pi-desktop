@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
 import * as pty from 'node-pty'
 import type { TerminalCreateOptions, TerminalSessionInfo } from '@shared/types'
 import { resolveShellSpec } from './shell'
+import { assertTerminalWorkingDirectory } from './terminal-path'
 
 const MAX_COLS = 500
 const MAX_ROWS = 300
@@ -32,7 +32,7 @@ export class TerminalManager {
 
   create(options: TerminalCreateOptions): TerminalSessionInfo {
     const cwd = options.cwd?.trim() || process.cwd()
-    if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true })
+    assertTerminalWorkingDirectory(cwd)
     const shell = resolveShellSpec(options.shell)
     const env: Record<string, string> = {}
     for (const [key, value] of Object.entries(process.env)) {

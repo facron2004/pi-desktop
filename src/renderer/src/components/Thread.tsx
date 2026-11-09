@@ -154,6 +154,8 @@ export function Thread() {
   const [atTop, setAtTop] = useState(true)
   const [scrollDirection, setScrollDirection] = useState<'up' | 'down' | null>(null)
   const previousScrollTopRef = useRef<number | null>(null)
+  /** One active-turn measurement per frame, not one per scroll event. */
+  const activeSyncFrameRef = useRef(0)
   const [scrolledTurnId, setScrolledTurnId] = useState<string | null>(null)
   const [expandedHistorySession, setExpandedHistorySession] = useState<string | null>(() =>
     readHistoryExpanded(sessionKey) ? sessionKey : null
@@ -321,6 +323,13 @@ export function Thread() {
     const node = scrollRef.current
     if (!node) return
     previousScrollTopRef.current = node.scrollTop
+    const scheduleActiveSync = () => {
+      if (activeSyncFrameRef.current !== 0) return
+      activeSyncFrameRef.current = requestAnimationFrame(() => {
+        activeSyncFrameRef.current = 0
+        syncActiveTurn(node)
+      })
+    }
     const onScroll = () => {
       const distance = node.scrollHeight - node.scrollTop - node.clientHeight
       const previousScrollTop = previousScrollTopRef.current
@@ -332,10 +341,20 @@ export function Thread() {
       setAtBottom(distance <= EDGE_RANGE)
       setAtTop(node.scrollTop <= EDGE_RANGE)
       rememberScrollMemory(sessionKey, node, FOLLOW_RANGE)
-      syncActiveTurn(node)
+      // At the live edge the active turn is the last one by definition; the
+      // follow itself fires scroll events on every streamed delta, and
+      // measuring every mounted turn there would be layout work no reader
+      // sees. Off the edge, one measurement per frame is enough.
+      if (distance > EDGE_RANGE) scheduleActiveSync()
     }
     node.addEventListener('scroll', onScroll, { passive: true })
-    return () => node.removeEventListener('scroll', onScroll)
+    return () => {
+      node.removeEventListener('scroll', onScroll)
+      if (activeSyncFrameRef.current !== 0) {
+        cancelAnimationFrame(activeSyncFrameRef.current)
+        activeSyncFrameRef.current = 0
+      }
+    }
   }, [sessionKey, syncActiveTurn])
 
   // The composer is a sibling, so growing it reduces the transcript's
@@ -856,6 +875,30 @@ function sameReferences<T>(left: T[], right: T[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index])
 }
 
+/**
+ * The elapsed time of a finished turn that has no live client sample.
+ *
+ * A conversation reopened from disk has no run state, and older client timing
+ * records were dropped when they moved to a monotonic clock. Pi still records
+ * a timestamp on every message and the generation duration on each answer, so
+ * the end of the final answer can be reconstructed from the transcript: the
+ * summary then says "Worked for 32m 3s" instead of only "Finished".
+ */
+function turnElapsedMs(turn: Turn): number | undefined {
+  const start = turn.user?.timestamp
+  if (start === undefined) return undefined
+  let end = start
+  for (const assistant of turn.assistants) {
+    const finished = assistant.timestamp + (assistant.durationMs ?? 0)
+    if (finished > end) end = finished
+  }
+  for (const tool of turn.tools) {
+    const finished = tool.finishedAt ?? tool.timestamp
+    if (finished > end) end = finished
+  }
+  return end > start ? end - start : undefined
+}
+
 function sameTurnContent(left: Turn, right: Turn): boolean {
   return (
     left.id === right.id &&
@@ -926,18 +969,22 @@ const ThreadTurnView = memo(function ThreadTurnView({
       : lastAssistant?.stopReason === 'aborted'
         ? 'aborted'
         : undefined
+  // A live run carries its own monotonic duration. Once it has settled — or
+  // when the turn comes from a reopened session — fall back to the duration
+  // the transcript itself can prove.
+  const settledDurationMs = runDurationMs ?? turnElapsedMs(turn)
   const outcome: RunState | undefined =
     liveOutcome
       ? run
       : isLastTurn && run.settled && run.outcome
-        ? run
-        : runDurationMs !== undefined || recordedOutcome
+        ? { ...run, durationMs: run.durationMs ?? settledDurationMs }
+        : settledDurationMs !== undefined || recordedOutcome
           ? {
               ...run,
               phase: 'idle',
               settled: true,
               outcome: recordedOutcome ?? 'completed',
-              durationMs: runDurationMs
+              durationMs: settledDurationMs
             }
           : undefined
   const replySettled = lastAssistant && !lastAssistant.streaming && (!isLastTurn || run.settled)

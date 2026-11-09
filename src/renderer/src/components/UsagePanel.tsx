@@ -51,6 +51,10 @@ export function UsagePanel({ metrics }: { metrics: SessionMetrics }) {
           <span>{formatExactTokens(metrics.cacheReadTokens)}</span>
         </div>
         <div className="usage-panel__row">
+          <span>{t('Cache write')}</span>
+          <span>{formatExactTokens(metrics.cacheWriteTokens)}</span>
+        </div>
+        <div className="usage-panel__row">
           <span>{t('Output')}</span>
           <span>{formatExactTokens(metrics.outputTokens)}</span>
         </div>

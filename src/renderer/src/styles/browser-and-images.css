@@ -146,6 +146,13 @@
   font-size: var(--text-2xs);
 }
 
+.image-viewer__limit-note {
+  flex: 0 0 auto;
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+}
+
 .image-viewer__name {
   min-width: 0;
   overflow: hidden;
@@ -199,7 +206,13 @@
   color: var(--text);
 }
 
-.image-viewer__thumb img {
+.image-viewer__thumb-media {
+  display: block;
+  width: 56px;
+  height: 56px;
+}
+
+.image-viewer__thumb-media img {
   width: 56px;
   height: 56px;
   object-fit: cover;
@@ -208,6 +221,7 @@
 }
 
 .image-viewer__thumb-blank {
+  display: block;
   width: 56px;
   height: 56px;
   border-radius: var(--r-xs);

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { StringDecoder } from 'node:string_decoder'
 import type { ExtensionUiResponse, PiEvent, RpcResponse } from '@shared/types'
@@ -38,6 +38,34 @@ interface Pending {
 const LF = 0x0a
 const CR = 0x0d
 const MAX_STDERR_LINES = 200
+// Fixed-size pages keep heavily fragmented stdout from creating an unbounded slice list.
+const RPC_RECORD_BUFFER_PAGE_BYTES = 64 * 1024
+/** A valid image message can exceed 32 MiB after base64 encoding. */
+export const MAX_RPC_RECORD_BYTES = 64 * 1024 * 1024
+
+function killProcessTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (process.platform === 'win32' && child.pid) {
+    return new Promise((resolve) => {
+      execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        timeout: 10_000
+      }, () => {
+        if (child.exitCode === null && child.signalCode === null) {
+          try { child.kill('SIGKILL') } catch { /* the process may already have exited */ }
+        }
+        resolve()
+      })
+    })
+  }
+
+  try {
+    if (child.pid) process.kill(-child.pid, 'SIGKILL')
+    else child.kill('SIGKILL')
+  } catch {
+    try { child.kill('SIGKILL') } catch { /* the process may already have exited */ }
+  }
+  return Promise.resolve()
+}
 
 /**
  * JSONL client for Pi's RPC mode.
@@ -52,7 +80,11 @@ const MAX_STDERR_LINES = 200
 export class PiRpcClient extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | null = null
   private readonly decoder = new StringDecoder('utf8')
-  private buffer: Buffer = Buffer.alloc(0)
+  private bufferedChunks: Buffer[] = []
+  private bufferedBytes = 0
+  private bufferedPage: Buffer | null = null
+  private bufferedPageBytes = 0
+  private discardingOversizedRecord = false
   private pending = new Map<string, Pending>()
   private sequence = 0
   private traceSequence = 0
@@ -84,6 +116,7 @@ export class PiRpcClient extends EventEmitter {
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
       windowsHide: true
     })
     this.closed = false
@@ -142,12 +175,14 @@ export class PiRpcClient extends EventEmitter {
       return
     }
     const exited = new Promise<void>((resolve) => {
+      let forcedKill: Promise<void> | undefined
       const timer = setTimeout(() => {
-        try { child.kill('SIGKILL') } catch { /* exit still owns completion */ }
+        forcedKill = killProcessTree(child)
       }, 3000)
       child.once('exit', () => {
         clearTimeout(timer)
-        resolve()
+        if (forcedKill) void forcedKill.then(resolve, resolve)
+        else resolve()
       })
     })
     try {
@@ -249,15 +284,75 @@ export class PiRpcClient extends EventEmitter {
   }
 
   private consume(chunk: Buffer): void {
-    this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk])
-    let index = this.buffer.indexOf(LF)
+    let start = 0
+    if (this.discardingOversizedRecord) {
+      const newline = chunk.indexOf(LF)
+      if (newline === -1) return
+      this.discardingOversizedRecord = false
+      start = newline + 1
+    }
+    let index = chunk.indexOf(LF, start)
     while (index !== -1) {
-      let line = this.buffer.subarray(0, index)
-      this.buffer = this.buffer.subarray(index + 1)
+      const segment = chunk.subarray(start, index)
+      if (this.bufferedBytes + segment.length > MAX_RPC_RECORD_BYTES) {
+        this.rejectOversizedRecord(false)
+        start = index + 1
+        index = chunk.indexOf(LF, start)
+        continue
+      }
+      let line: Buffer
+      if (this.bufferedBytes === 0) {
+        line = segment
+      } else {
+        this.appendBuffered(segment)
+        const chunks = this.bufferedChunks.slice()
+        if (this.bufferedPageBytes > 0 && this.bufferedPage) {
+          chunks.push(this.bufferedPage.subarray(0, this.bufferedPageBytes))
+        }
+        line = Buffer.concat(chunks, this.bufferedBytes)
+        this.bufferedChunks = []
+        this.bufferedBytes = 0
+        this.bufferedPageBytes = 0
+      }
       if (line.length > 0 && line[line.length - 1] === CR) line = line.subarray(0, line.length - 1)
       this.handleLine(line.toString('utf8'))
-      index = this.buffer.indexOf(LF)
+      start = index + 1
+      index = chunk.indexOf(LF, start)
     }
+    if (start < chunk.length) {
+      const tail = chunk.subarray(start)
+      if (this.bufferedBytes + tail.length > MAX_RPC_RECORD_BYTES) {
+        this.rejectOversizedRecord(true)
+      } else {
+        this.appendBuffered(tail)
+      }
+    }
+  }
+
+  private appendBuffered(segment: Buffer): void {
+    let offset = 0
+    while (offset < segment.length) {
+      if (!this.bufferedPage || this.bufferedPageBytes === RPC_RECORD_BUFFER_PAGE_BYTES) {
+        if (this.bufferedPage) this.bufferedChunks.push(this.bufferedPage)
+        this.bufferedPage = Buffer.allocUnsafe(RPC_RECORD_BUFFER_PAGE_BYTES)
+        this.bufferedPageBytes = 0
+      }
+      const length = Math.min(RPC_RECORD_BUFFER_PAGE_BYTES - this.bufferedPageBytes, segment.length - offset)
+      segment.copy(this.bufferedPage, this.bufferedPageBytes, offset, offset + length)
+      this.bufferedPageBytes += length
+      this.bufferedBytes += length
+      offset += length
+    }
+  }
+
+  private rejectOversizedRecord(discardUntilLf: boolean): void {
+    this.bufferedChunks = []
+    this.bufferedBytes = 0
+    this.bufferedPageBytes = 0
+    this.discardingOversizedRecord = discardUntilLf
+    this.emit('protocol-error', {
+      line: `Pi RPC record exceeded the ${MAX_RPC_RECORD_BYTES}-byte limit`
+    })
   }
 
   private handleLine(line: string): void {

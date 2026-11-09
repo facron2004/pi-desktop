@@ -28,7 +28,8 @@ import {
   Store,
   Sun,
   Target,
-  Type
+  Type,
+  Wrench
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { selectableModels } from '@shared/provider-models'
@@ -274,6 +275,13 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Mode',
       icon: Bot,
       run: () => setAgentMode(agentMode === 'subagent' ? 'default' : 'subagent')
+    },
+    {
+      id: 'mode-plugin',
+      title: agentMode === 'plugin' ? 'Leave Plugin Mode' : 'Use Plugin Mode',
+      group: 'Mode',
+      icon: Wrench,
+      run: () => setAgentMode(agentMode === 'plugin' ? 'default' : 'plugin')
     },
     {
       id: 'open-project',

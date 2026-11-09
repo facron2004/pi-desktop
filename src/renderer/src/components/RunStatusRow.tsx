@@ -13,6 +13,7 @@ import type { RetryState, RunState } from '../store/useAppStore'
 import type { ToolActivity } from '../lib/activity'
 import { useT } from '../lib/i18n'
 import { isRateLimitError } from '../lib/provider-error'
+import { monotonicNow } from '../lib/session-timing'
 
 /**
  * The line that says what the agent is doing.
@@ -53,7 +54,9 @@ export const RunStatusRow = memo(function RunStatusRow({
     : statusLabel(run, transport, Boolean(retry), Boolean(activity))
   const waiting = retry && label === 'Retrying'
   const running = Boolean(compacting) || run.phase !== 'idle' || transport === 'disconnected'
-  const elapsedSince = compacting?.startedAt ?? run.startedAt
+  const elapsedSince = compacting?.startedMonotonicAt ?? run.startedMonotonicAt
+  const elapsedSinceWall = compacting?.startedAt ?? run.startedAt
+  const elapsedStart = elapsedSince ?? elapsedSinceWall
 
   return (
     <div
@@ -91,14 +94,19 @@ export const RunStatusRow = memo(function RunStatusRow({
       ) : compacting ? null : activity ? (
         <span className="run-status__activity">
           <span className="run-status__activity-label">{t(activity.label)}</span>
-          {activity.detail ? (
+          {/* A shell line stays behind the tool row's caret: printing
+              `cd … && grep …` here put the command under the answer as if it
+              were the newest output. The label already says what is running. */}
+          {activity.detail && activity.tone !== 'command' ? (
             <span className="run-status__activity-detail" title={activity.detail}>
               {activity.detail}
             </span>
           ) : null}
         </span>
       ) : null}
-      {showElapsed && running && elapsedSince !== undefined ? <Elapsed since={elapsedSince} /> : null}
+      {showElapsed && running && elapsedStart !== undefined ? (
+        <Elapsed since={elapsedStart} monotonic={elapsedSince !== undefined} />
+      ) : null}
     </div>
   )
 })
@@ -177,12 +185,14 @@ function RetryProgress({ retry }: { retry: RetryState }) {
 }
 
 /** A counter that ticks once a second while a run is open. */
-function Elapsed({ since }: { since: number }) {
-  const [now, setNow] = useState(() => Date.now())
+function Elapsed({ since, monotonic }: { since: number; monotonic: boolean }) {
+  const readNow = monotonic ? monotonicNow : Date.now
+  const [now, setNow] = useState(() => readNow())
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    setNow(readNow())
+    const timer = window.setInterval(() => setNow(readNow()), 1000)
     return () => window.clearInterval(timer)
-  }, [])
+  }, [readNow])
   const seconds = Math.max(0, Math.round((now - since) / 1000))
   if (seconds < 60) return <span className="run-status__elapsed">{seconds}s</span>
   return (

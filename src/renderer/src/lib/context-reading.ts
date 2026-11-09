@@ -210,8 +210,9 @@ export function contextReading(input: {
     cacheWrite += usage.cacheWrite
     total += usage.totalTokens
     // The newest message is the closest thing the transcript knows to "what
-    // the last request actually put in the window".
-    newestContext = usage.totalTokens
+    // the last request actually put in the window". A message that reported
+    // zero usage (a failed or cut-off answer) cannot erase a real reading.
+    if (usage.totalTokens > 0) newestContext = usage.totalTokens
   }
 
   const statsTokens = stats?.tokens

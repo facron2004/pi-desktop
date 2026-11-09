@@ -42,7 +42,9 @@ export function TextSearch({
     // go as soon as the text changes; the debounce decides when to ask.
     setHits([])
     setStatus('searching')
+    let requestStarted = false
     const timer = window.setTimeout(() => {
+      requestStarted = true
       window.pi.fs
         .searchText(trimmed, HIT_LIMIT)
         .then((found) => {
@@ -59,6 +61,9 @@ export function TextSearch({
     return () => {
       window.clearTimeout(timer)
       version.current += 1
+      // An empty query advances the main-process search token without walking
+      // the project, so a cleared or closed search stops its old disk walk.
+      if (requestStarted) void window.pi.fs.searchText('', HIT_LIMIT).catch(() => undefined)
     }
   }, [trimmed, root])
 
