@@ -144,19 +144,40 @@ interface ThreadItemsChange {
 interface ThreadItemIndexes {
   byId: Map<string, number>
   byToolCallId: Map<string, number>
+  byMessageId: Map<string, number>
+}
+
+interface MutableThreadItemsDraft {
+  base: ThreadItem[]
+  firstChangedIndex: number
+  changed: boolean
 }
 
 const threadItemsChanges = new WeakMap<ThreadItem[], ThreadItemsChange>()
 const threadItemIndexes = new WeakMap<ThreadItem[], ThreadItemIndexes>()
+const mutableThreadItemsDrafts = new WeakMap<ThreadItem[], MutableThreadItemsDraft>()
 
 function indexesFor(items: ThreadItem[]): ThreadItemIndexes {
   const cached = threadItemIndexes.get(items)
   if (cached) return cached
-  const indexes: ThreadItemIndexes = { byId: new Map(), byToolCallId: new Map() }
+  const draft = mutableThreadItemsDrafts.get(items)
+  if (draft) {
+    const indexes = indexesFor(draft.base)
+    threadItemIndexes.set(items, indexes)
+    return indexes
+  }
+  const indexes: ThreadItemIndexes = {
+    byId: new Map(),
+    byToolCallId: new Map(),
+    byMessageId: new Map()
+  }
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
     indexes.byId.set(item.id, index)
     if (item.kind === 'tool') indexes.byToolCallId.set(item.toolCallId, index)
+    if ((item.kind === 'user' || item.kind === 'assistant') && item.messageId) {
+      indexes.byMessageId.set(item.messageId, index)
+    }
   }
   threadItemIndexes.set(items, indexes)
   return indexes
@@ -173,6 +194,25 @@ function indexOfTool(items: ThreadItem[], toolCallId: string): number {
   return index !== undefined && item?.kind === 'tool' && item.toolCallId === toolCallId ? index : -1
 }
 
+function hasMessageId(items: ThreadItem[], messageId: string): boolean {
+  const index = indexesFor(items).byMessageId.get(messageId)
+  const item = index === undefined ? undefined : items[index]
+  return (item?.kind === 'user' || item?.kind === 'assistant') && item.messageId === messageId
+}
+
+function changeDraftItem(items: ThreadItem[], index: number, item: ThreadItem): ThreadItem[] {
+  const draft = mutableThreadItemsDrafts.get(items)
+  if (!draft) {
+    const copy = items.slice()
+    copy[index] = item
+    return markThreadItemsChanged(items, copy, index)
+  }
+  items[index] = item
+  draft.firstChangedIndex = Math.min(draft.firstChangedIndex, index)
+  draft.changed = true
+  return items
+}
+
 function markThreadItemsChanged(
   base: ThreadItem[],
   next: ThreadItem[],
@@ -180,15 +220,14 @@ function markThreadItemsChanged(
 ): ThreadItem[] {
   threadItemsChanges.set(next, { base, firstChangedIndex: changedIndex })
   const indexes = indexesFor(base)
-  for (let index = changedIndex; index < next.length; index += 1) {
-    const previous = base[index]
+  // Replacements and aborts keep ids stable. Only appends extend either index.
+  for (let index = base.length; index < next.length; index += 1) {
     const item = next[index]
-    if (previous && previous.id !== item?.id) indexes.byId.delete(previous.id)
     if (item) indexes.byId.set(item.id, index)
-    if (previous?.kind === 'tool' && (item?.kind !== 'tool' || previous.toolCallId !== item.toolCallId)) {
-      indexes.byToolCallId.delete(previous.toolCallId)
-    }
     if (item?.kind === 'tool') indexes.byToolCallId.set(item.toolCallId, index)
+    if ((item?.kind === 'user' || item?.kind === 'assistant') && item.messageId) {
+      indexes.byMessageId.set(item.messageId, index)
+    }
   }
   threadItemIndexes.set(next, indexes)
   return next
@@ -211,6 +250,20 @@ export function changedThreadItemsFrom(
 }
 
 function appendThreadItem(items: ThreadItem[], item: ThreadItem): ThreadItem[] {
+  const draft = mutableThreadItemsDrafts.get(items)
+  if (draft) {
+    const index = items.length
+    items.push(item)
+    const indexes = indexesFor(items)
+    indexes.byId.set(item.id, index)
+    if (item.kind === 'tool') indexes.byToolCallId.set(item.toolCallId, index)
+    if ((item.kind === 'user' || item.kind === 'assistant') && item.messageId) {
+      indexes.byMessageId.set(item.messageId, index)
+    }
+    draft.firstChangedIndex = Math.min(draft.firstChangedIndex, index)
+    draft.changed = true
+    return items
+  }
   return markThreadItemsChanged(items, [...items, item], items.length)
 }
 
@@ -300,9 +353,7 @@ function lastStreamingAssistant(items: ThreadItem[]): AssistantItem | undefined 
 function replaceItem(items: ThreadItem[], id: string, next: ThreadItem): ThreadItem[] {
   const index = indexOfItem(items, id)
   if (index < 0) return items
-  const copy = items.slice()
-  copy[index] = next
-  return markThreadItemsChanged(items, copy, index)
+  return changeDraftItem(items, index, next)
 }
 
 /**
@@ -336,9 +387,7 @@ function patchTool(
     }
     return appendThreadItem(items, node)
   }
-  const copy = items.slice()
-  copy[index] = { ...(copy[index] as ToolItem), ...patch }
-  return markThreadItemsChanged(items, copy, index)
+  return changeDraftItem(items, index, { ...(items[index] as ToolItem), ...patch })
 }
 
 function findTool(items: ThreadItem[], toolCallId: string): ToolItem | undefined {
@@ -605,14 +654,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       if (!message) return items
       // Pi replays session records on resume; a repeated `message_start`
       // for the same adapter-minted id must not create a second bubble.
-      if (
-        event.messageId &&
-        items.some(
-          (item) =>
-            (item.kind === 'user' || item.kind === 'assistant') &&
-            item.messageId === event.messageId
-        )
-      ) {
+      if (event.messageId && hasMessageId(items, event.messageId)) {
         return items
       }
       if (message.role === 'user') {
@@ -924,9 +966,9 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       const targetId = event.commandId
       let existing: BashItem | undefined
       if (targetId) {
-        existing = items.find((item) => item.kind === 'bash' && item.id === targetId) as
-          | BashItem
-          | undefined
+        const index = indexOfItem(items, targetId)
+        const item = index < 0 ? undefined : items[index]
+        if (item?.kind === 'bash') existing = item
       }
       if (!existing) {
         for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -964,15 +1006,44 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
   }
 }
 
+/** Apply one normalized batch of Pi events, cloning the item array at most once. */
+export function applyEventBatch(
+  items: ThreadItem[],
+  events: { event: PiEvent; context?: StreamContext }[]
+): ThreadItem[] {
+  if (events.length === 0) return items
+  let next = items.slice()
+  const draft: MutableThreadItemsDraft = {
+    base: items,
+    firstChangedIndex: items.length,
+    changed: false
+  }
+  mutableThreadItemsDrafts.set(next, draft)
+  for (const { event, context } of events) {
+    const updated = applyEvent(next, event, context)
+    if (updated === next) continue
+    const changedIndex = changedThreadItemsFrom(updated, next)
+    draft.firstChangedIndex = Math.min(draft.firstChangedIndex, changedIndex ?? 0)
+    draft.changed = true
+    mutableThreadItemsDrafts.delete(next)
+    next = updated
+    threadItemIndexes.delete(next)
+    indexesFor(next)
+    mutableThreadItemsDrafts.set(next, draft)
+  }
+  mutableThreadItemsDrafts.delete(next)
+  if (!draft.changed) return items
+  threadItemsChanges.set(next, { base: items, firstChangedIndex: draft.firstChangedIndex })
+  return next
+}
+
 /** Apply a batch of events in order, in one pass. */
 export function applyEvents(
   items: ThreadItem[],
   events: PiEvent[],
   context?: StreamContext
 ): ThreadItem[] {
-  let next = items
-  for (const event of events) next = applyEvent(next, event, context)
-  return next
+  return applyEventBatch(items, events.map((event) => ({ event, context })))
 }
 
 /**

@@ -26,6 +26,7 @@ import type { ProviderProfile, SaveProviderInput } from '@shared/providers'
 import { modelsFromProfiles, resolveSavedModel, selectableModels } from '@shared/provider-models'
 import type { SessionNotice } from '../lib/session-indicator'
 import {
+  applyEventBatch,
   applyEvent,
   itemsFromMessages,
   lastAssistantText,
@@ -3129,7 +3130,7 @@ function drainPending(): void {
   pending.clear()
   for (const batch of batches) {
     batch.set((state) => ({
-      items: batch.events.reduce((items, { event, context }) => applyEvent(items, event, context), state.items)
+      items: applyEventBatch(state.items, batch.events)
     }))
   }
 }

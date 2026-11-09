@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import type { PiEvent } from '@shared/types'
 import {
   applyEvent,
+  applyEventBatch,
   applyEvents,
   itemsFromMessages,
   lastAssistantText,
@@ -58,6 +59,83 @@ function assistantEnd(content: unknown, extra: Record<string, unknown> = {}): Pi
 function tools(items: ThreadItem[]): Extract<ThreadItem, { kind: 'tool' }>[] {
   return items.filter((item): item is Extract<ThreadItem, { kind: 'tool' }> => item.kind === 'tool')
 }
+
+test('terminal output deltas append to the matching command node', () => {
+  const history: ThreadItem[] = []
+  for (let index = 0; index < 64; index += 1) {
+    history.push({
+      id: `user-${index}`,
+      kind: 'user',
+      text: `prompt ${index}`,
+      images: [],
+      timestamp: index,
+      order: index
+    })
+  }
+
+  const first = applyEvent(history, {
+    type: 'bash_execution_update',
+    id: 'terminal-1',
+    delta: 'first'
+  } as PiEvent)
+  const next = applyEvent(first, {
+    type: 'bash_execution_update',
+    id: 'terminal-1',
+    delta: ' second'
+  } as PiEvent)
+  const output = next.filter((item): item is Extract<ThreadItem, { kind: 'bash' }> => item.kind === 'bash')
+
+  assert.equal(output.length, 1)
+  assert.equal(output[0].output, 'first second')
+  assert.equal(next[0], history[0])
+})
+
+test('batched events keep the prior transcript untouched while combining deltas', () => {
+  const base = applyEvents([], [assistantStart()])
+  const next = applyEvents(base, [
+    update({ type: 'text_start', contentIndex: 0 }),
+    update({ type: 'text_delta', contentIndex: 0, delta: 'one ' }),
+    update({ type: 'text_delta', contentIndex: 0, delta: 'two' })
+  ])
+
+  assert.notEqual(next, base)
+  assert.equal(texts(base), '')
+  assert.equal(texts(next), 'one two')
+  const originalAssistant = base.find((item): item is AssistantItem => item.kind === 'assistant')
+  assert.equal(originalAssistant?.blocks.length, 0)
+})
+
+test('event batches preserve each event context and dedupe repeated message starts', () => {
+  const sessionKey = 'batch-context-regression'
+  const items = applyEventBatch([], [
+    {
+      event: userEvent('hello'),
+      context: { sessionKey, runId: 'user-run', turnId: 'user-turn' }
+    },
+    {
+      event: assistantStart(),
+      context: { sessionKey, runId: 'assistant-run', turnId: 'assistant-turn' }
+    },
+    {
+      event: userEvent('hello'),
+      context: { sessionKey: 'batch-dedupe-regression', runId: 'dedupe-run' }
+    },
+    {
+      event: userEvent('hello'),
+      context: { sessionKey: 'batch-dedupe-regression', runId: 'dedupe-run' }
+    }
+  ])
+  const userItems = items.filter((item): item is Extract<ThreadItem, { kind: 'user' }> => item.kind === 'user')
+  const assistant = items.find((item): item is AssistantItem => item.kind === 'assistant')
+
+  assert.equal(userItems.length, 2)
+  assert.equal(userItems[0].threadId, sessionKey)
+  assert.equal(userItems[0].runId, 'user-run')
+  assert.equal(userItems[0].turnId, 'user-turn')
+  assert.equal(assistant?.threadId, sessionKey)
+  assert.equal(assistant?.runId, 'assistant-run')
+  assert.equal(assistant?.turnId, 'assistant-turn')
+})
 
 test('structured subagent progress survives live updates and session replay', () => {
   const args = { tasks: [{ task: 'Inspect' }, { task: 'Test' }] }
