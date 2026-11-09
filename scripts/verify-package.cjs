@@ -1,4 +1,4 @@
-// Verify the packaged asar carries the 0.10.1 build: version, the main bundle
+// Verify the packaged asar carries the 0.10.2 build: version, the main bundle
 // and the new marketplace / project-order code paths.
 const asar = require('@electron/asar')
 const archive = 'release/win-unpacked/resources/app.asar'
@@ -6,7 +6,7 @@ const raw = asar.listPackage(archive)
 const normalized = raw.map((entry) => entry.replace(/\\/g, '/'))
 const pkg = JSON.parse(asar.extractFile(archive, 'package.json').toString())
 console.log('packaged version:', pkg.version)
-if (pkg.version !== '0.10.1') throw new Error(`expected package version 0.10.1, got ${pkg.version}`)
+if (pkg.version !== '0.10.2') throw new Error(`expected package version 0.10.2, got ${pkg.version}`)
 // `listPackage` reports Windows separators; `extractFile` wants the same spelling
 // without its leading root separator, so use the normalized relative path.
 const mainEntry = normalized.find((entry) => entry === '/out/main/index.js')

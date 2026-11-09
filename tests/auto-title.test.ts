@@ -639,3 +639,46 @@ test('the injected clock decides the freshness window', async (t) => {
   await h.drain()
   assert.equal(h.renamed.length, 1)
 })
+
+test('per-session auto-title bookkeeping stays bounded', async (t) => {
+  const h = harness(t, { name: 'Already named' })
+  const internals = h.service as unknown as {
+    attempted: Set<string>
+    newDrafts: Set<string>
+    queue: Promise<unknown>
+  }
+
+  for (let start = 0; start < 2_100; start += 16) {
+    const end = Math.min(start + 16, 2_100)
+    for (let index = start; index < end; index += 1) h.host.settle(`${SESSION}-${index}`)
+    await delay(10)
+    await internals.queue
+  }
+
+  assert.equal(internals.attempted.size, 2_048)
+  assert.equal(internals.attempted.has(`${SESSION}-0`), false)
+  assert.equal(internals.attempted.has(`${SESSION}-2099`), true)
+
+  for (let index = 0; index < 200; index += 1) h.host.start(`draft:${index}`)
+  assert.equal(internals.newDrafts.size, 128)
+  assert.equal(internals.newDrafts.has('draft:0'), false)
+  assert.equal(internals.newDrafts.has('draft:199'), true)
+})
+
+test('exhausted transcript retries clear per-session draft state', async (t) => {
+  const h = harness(t, { messages: null })
+  const internals = h.service as unknown as {
+    attempted: Set<string>
+    newDrafts: Set<string>
+    readRetries: Map<string, number>
+  }
+
+  h.host.start('draft:retry')
+  h.host.settle('draft:retry')
+  h.host.emit('rekey', { from: 'draft:retry', to: SESSION })
+  await delay(350)
+
+  assert.equal(internals.attempted.has(SESSION), true)
+  assert.equal(internals.readRetries.size, 0)
+  assert.equal(internals.newDrafts.size, 0)
+})

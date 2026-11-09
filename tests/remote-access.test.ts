@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { Readable } from 'node:stream'
@@ -19,6 +19,7 @@ import {
   RemoteAccessService,
   safeRemoteValue
 } from '../src/main/remote-access'
+import { encodeWorkspaceDir } from '../src/main/sessions'
 import { MAX_REMOTE_MESSAGE_CHARS } from '../src/shared/types'
 
 function attachOpenTestStream(
@@ -405,6 +406,112 @@ test('an open event stream closes when its workspace is removed', async () => {
     assert.equal(stream.size, 0)
   } finally {
     await stream.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('remote session references are retained only while event streams are open', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-remote-session-refs-'))
+  const sessionRoot = path.join(userData, 'sessions')
+  const workspacePath = path.join(userData, 'workspace')
+  const priorSessionRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  process.env.PI_CODING_AGENT_SESSION_DIR = sessionRoot
+
+  try {
+    mkdirSync(workspacePath, { recursive: true })
+    const workspaceSessions = path.join(sessionRoot, encodeWorkspaceDir(workspacePath))
+    mkdirSync(workspaceSessions, { recursive: true })
+    const sessionIds = Array.from({ length: 32 }, (_, index) => `session-${index}`)
+    for (const [index, id] of sessionIds.entries()) {
+      writeFileSync(path.join(workspaceSessions, `${id}.jsonl`), JSON.stringify({
+        type: 'session',
+        version: 3,
+        id,
+        cwd: workspacePath,
+        timestamp: new Date(1_700_000_000_000 + index * 1000).toISOString()
+      }) + '\n')
+    }
+
+    const accessToken = 'a'.repeat(32)
+    const device = {
+      id: 'phone-1',
+      name: 'Phone',
+      pairedAt: 1,
+      tokenHash: createHash('sha256').update(accessToken).digest('hex')
+    }
+    writeFileSync(path.join(userData, 'remote-access.json'), JSON.stringify({ enabled: true, devices: [device] }))
+    const service = new RemoteAccessService({
+      userData,
+      uiDirectory: userData,
+      settings: { get: () => ({ workspaces: [{ id: 'workspace-1', path: workspacePath }] }) } as never,
+      supervisor: Object.assign(new EventEmitter(), { sessionInfo: () => undefined }) as never,
+      customInstructions: () => undefined
+    })
+    type SessionRef = { workspaceId: string; sessionId: string; cwd: string; file: string }
+    type EventStream = { fileKey: string; heartbeat: ReturnType<typeof setInterval> }
+    const internals = service as unknown as {
+      server: object | null
+      sessionRefs: Map<string, SessionRef>
+      streams: Set<EventStream>
+      handleRequest: (request: unknown, response: unknown) => Promise<void>
+      resolveSession: (workspaceId: string, sessionId: string) => Promise<SessionRef>
+      openEventStream: (deviceId: string, ref: SessionRef, response: unknown) => void
+      closeStream: (stream: EventStream) => void
+    }
+    internals.server = {}
+
+    let statusCode = 0
+    let body = ''
+    const response = {
+      headersSent: false,
+      setHeader: () => {},
+      writeHead: (status: number) => {
+        statusCode = status
+        response.headersSent = true
+      },
+      end: (value?: string) => { body = value ?? '' }
+    }
+    const request = {
+      method: 'GET',
+      url: '/api/workspaces/workspace-1/sessions',
+      headers: { host: '127.0.0.1', authorization: `Bearer ${accessToken}` },
+      socket: { remoteAddress: '127.0.0.1' }
+    }
+
+    try {
+      await internals.handleRequest(request, response)
+      assert.equal(statusCode, 200)
+      assert.equal(JSON.parse(body).sessions.length, sessionIds.length)
+      assert.equal(internals.sessionRefs.size, 0)
+
+      for (const id of sessionIds) await internals.resolveSession('workspace-1', id)
+      assert.equal(internals.sessionRefs.size, 0)
+
+      const ref = await internals.resolveSession('workspace-1', sessionIds[0])
+      let ended = 0
+      const makeStreamResponse = () => Object.assign(new EventEmitter(), {
+        writeHead: () => {},
+        write: () => true,
+        end: () => { ended += 1 }
+      })
+      internals.openEventStream(device.id, ref, makeStreamResponse())
+      internals.openEventStream(device.id, ref, makeStreamResponse())
+      assert.equal(internals.streams.size, 2)
+      assert.equal(internals.sessionRefs.size, 1)
+
+      const streams = [...internals.streams]
+      internals.closeStream(streams[0])
+      assert.equal(internals.sessionRefs.size, 1)
+      internals.closeStream(streams[1])
+      assert.equal(internals.sessionRefs.size, 0)
+      assert.equal(ended, 2)
+    } finally {
+      internals.server = null
+      await service.dispose()
+    }
+  } finally {
+    if (priorSessionRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = priorSessionRoot
     rmSync(userData, { recursive: true, force: true })
   }
 })

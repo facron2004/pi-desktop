@@ -262,6 +262,7 @@ export class RemoteAccessService {
   private error: string | undefined
   private pairing: { secret: string; expiresAt: number } | undefined
   private readonly pairAttempts = new Map<string, { count: number; resetsAt: number }>()
+  // Keep only references needed to authorize active streams, not every session a phone browses.
   private readonly sessionRefs = new Map<string, SessionRef>()
   private readonly streams = new Set<EventStream>()
   private stateSyncTimer: ReturnType<typeof setTimeout> | undefined
@@ -635,6 +636,9 @@ export class RemoteAccessService {
   private closeStream(stream: EventStream): void {
     if (!this.streams.delete(stream)) return
     clearInterval(stream.heartbeat)
+    if (![...this.streams].some((active) => active.fileKey === stream.fileKey)) {
+      this.sessionRefs.delete(stream.fileKey)
+    }
     stream.response.end()
   }
 
@@ -681,7 +685,6 @@ export class RemoteAccessService {
       const workspace = this.getWorkspace(workspaceId)
       const listed = await this.awaitWorkspaceAction(device.id, workspace, () => listSessions(workspace.path))
       const sessions = listed.map((session): RemoteSession => {
-        this.rememberSession(workspace.id, workspace.path, session.id, session.file)
         return {
           id: session.id,
           name: session.name,
@@ -952,18 +955,12 @@ export class RemoteAccessService {
     return workspace
   }
 
-  private rememberSession(workspaceId: string, cwd: string, sessionId: string, file: string): SessionRef {
-    const ref = { workspaceId, sessionId, cwd, file }
-    this.sessionRefs.set(pathKey(file), ref)
-    return ref
-  }
-
   private async resolveSession(workspaceId: string, sessionId: string): Promise<SessionRef> {
     if (!sessionId) throw new HttpError(400, 'Conversation id is required.')
     const workspace = this.getWorkspace(workspaceId)
     const session = (await listSessions(workspace.path)).find((item) => item.id === sessionId)
     if (!session) throw new HttpError(404, 'Conversation not found in this project.')
-    return this.rememberSession(workspace.id, workspace.path, session.id, session.file)
+    return { workspaceId: workspace.id, sessionId: session.id, cwd: workspace.path, file: session.file }
   }
 
   private isSessionRunning(file: string): boolean {
@@ -998,6 +995,7 @@ export class RemoteAccessService {
     }
     stream.heartbeat.unref?.()
     this.streams.add(stream)
+    this.sessionRefs.set(stream.fileKey, ref)
     response.on('close', () => this.closeStream(stream))
   }
 

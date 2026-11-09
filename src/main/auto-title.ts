@@ -33,6 +33,8 @@ const MAX_QUESTION_CHARS = 600
 const MAX_ANSWER_CHARS = 400
 /** Draft chats waiting for their file; more than this many at once is not a real app. */
 const MAX_WAITING_DRAFTS = 16
+const MAX_TRACKED_NEW_DRAFTS = 128
+const MAX_ATTEMPTED_SESSIONS = 2_048
 
 export interface TitleRunArgs {
   prompt: string
@@ -377,7 +379,7 @@ export class AutoTitleService {
     // A new turn means the transcript is not finished and the process owns the
     // file; the next settle re-arms this conversation.
     if (event.type === 'agent_start') {
-      if (ownerId.startsWith('draft:')) this.newDrafts.add(ownerId)
+      if (ownerId.startsWith('draft:')) this.rememberNewDraft(ownerId)
       this.clearTimer(ownerId)
       return
     }
@@ -388,7 +390,7 @@ export class AutoTitleService {
 
     if (ownerId.startsWith('draft:')) {
       // Pi has not written the JSONL yet. `rekey` picks the chat up at its file.
-      this.newDrafts.add(ownerId)
+      this.rememberNewDraft(ownerId)
       this.rememberDraft(ownerId)
       return
     }
@@ -403,15 +405,20 @@ export class AutoTitleService {
     if (typeof from !== 'string' || typeof to !== 'string' || !to || from === to) return
     const wasWaiting = this.waiting.has(from)
     const isNewDraft = from.startsWith('draft:') || this.newDrafts.has(from)
+    const retries = this.readRetries.get(from)
     this.clearTimer(from)
     this.waiting.delete(from)
     if (isNewDraft) {
       this.newDrafts.delete(from)
-      this.newDrafts.add(to)
+      this.rememberNewDraft(to)
+    }
+    if (retries !== undefined) {
+      this.readRetries.delete(from)
+      this.readRetries.set(to, retries)
     }
     if (this.attempted.has(from)) {
       this.attempted.delete(from)
-      this.attempted.add(to)
+      this.rememberAttempted(to)
     }
     if (!wasWaiting || this.getSettings().autoTitle !== true) return
     this.markWaiting(to)
@@ -425,8 +432,41 @@ export class AutoTitleService {
     while (this.waiting.size > MAX_WAITING_DRAFTS) {
       const oldest = this.waiting.values().next().value
       if (oldest === undefined || oldest === key) break
-      this.waiting.delete(oldest)
+      this.clearPending(oldest)
     }
+  }
+
+  private rememberNewDraft(key: string): void {
+    this.newDrafts.delete(key)
+    this.newDrafts.add(key)
+    while (this.newDrafts.size > MAX_TRACKED_NEW_DRAFTS) {
+      const oldest = this.newDrafts.values().next().value
+      if (oldest === undefined || oldest === key) break
+      this.clearPending(oldest)
+    }
+  }
+
+  private rememberAttempted(key: string): void {
+    this.attempted.delete(key)
+    this.attempted.add(key)
+    while (this.attempted.size > MAX_ATTEMPTED_SESSIONS) {
+      const oldest = this.attempted.values().next().value
+      if (oldest === undefined || oldest === key) break
+      this.attempted.delete(oldest)
+      this.clearPending(oldest)
+    }
+  }
+
+  private clearPending(key: string): void {
+    this.clearTimer(key)
+    this.waiting.delete(key)
+    this.newDrafts.delete(key)
+    this.readRetries.delete(key)
+  }
+
+  private finish(file: string): void {
+    this.clearPending(file)
+    this.rememberAttempted(file)
   }
 
   private rememberDraft(key: string): void {
@@ -435,7 +475,10 @@ export class AutoTitleService {
   }
 
   private schedule(file: string, delayMs = this.settleDelayMs): void {
-    if (this.attempted.has(file)) return
+    if (this.attempted.has(file)) {
+      this.clearPending(file)
+      return
+    }
     this.clearTimer(file)
     const timer = setTimeout(() => {
       this.timers.delete(file)
@@ -465,9 +508,13 @@ export class AutoTitleService {
   }
 
   private async run(file: string): Promise<void> {
-    if (this.disposed || this.attempted.has(file) || this.inFlight.has(file)) return
+    if (this.disposed || !this.waiting.has(file) || this.inFlight.has(file)) return
+    if (this.attempted.has(file)) {
+      this.clearPending(file)
+      return
+    }
     if (this.getSettings().autoTitle !== true) {
-      this.waiting.delete(file)
+      this.clearPending(file)
       return
     }
     if (this.host?.sessionInfo?.(file)?.running) {
@@ -487,19 +534,17 @@ export class AutoTitleService {
           this.schedule(file, READ_RETRY_DELAY_MS)
           return
         }
-        this.attempted.add(file)
+        this.finish(file)
         this.diagnostic(`skipped ${path.basename(file)}: ${result.detail}`)
         return
       }
       if (result.kind === 'skip') {
-        this.attempted.add(file)
+        this.finish(file)
         return
       }
 
-      this.readRetries.delete(file)
-      this.attempted.add(file)
+      this.finish(file)
       await this.applyTitle(file, result.exchange)
-      this.newDrafts.delete(file)
     } finally {
       this.inFlight.delete(file)
     }
