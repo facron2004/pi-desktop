@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { resolveSessionFilePath } from '../sessions'
 import type {
   ExtensionUiResponse,
   ExtensionUiRequest,
@@ -108,6 +109,19 @@ export class PiRuntime extends EventEmitter {
     if (previous) await this.dispose(previous)
     if (generation !== this.generation) return { ok: false }
 
+    // The IPC check can go stale while the supervisor acquires the writer lock.
+    let sessionFile: string | undefined
+    if (options.sessionFile !== undefined) {
+      const verified = await resolveSessionFilePath(options.sessionFile)
+      if (!verified || verified !== options.sessionFile) {
+        const error = 'Conversation file changed before Pi could reopen it.'
+        if (generation !== this.generation) return { ok: false }
+        this.setStatus({ phase: 'error', cwd: options.cwd, error })
+        return { ok: false, error }
+      }
+      sessionFile = verified
+    }
+
     const launch = resolvePiLaunch(this.options.customPiPath)
     if (launch.source === 'none') {
       const error =
@@ -116,10 +130,6 @@ export class PiRuntime extends EventEmitter {
       this.setStatus({ phase: 'error', cwd: options.cwd, error })
       return { ok: false, error }
     }
-
-    // A session that was deleted while the app was closed cannot be opened.
-    const sessionFile =
-      options.sessionFile && existsSync(options.sessionFile) ? options.sessionFile : undefined
 
     // A fresh path per process. Reusing one file makes the new launch wait
     // until the process that still has it open — the one we just retired —

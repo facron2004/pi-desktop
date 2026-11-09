@@ -129,6 +129,37 @@ async function validateRuntimeSessionFile(
   return sessionFile ? { ok: true, sessionFile } : { ok: false }
 }
 
+export async function removeSessionFile(
+  file: unknown,
+  supervisor: Pick<SessionSupervisor, 'withSessionFileMutation'>
+): Promise<boolean> {
+  const original = await openSessionFile(file)
+  if (!original) return false
+  try {
+    // The pathname is untrusted until the mutation lock is held; compare its
+    // current file identity to the handle that passed the first validation.
+    return await supervisor.withSessionFileMutation(original.target, async () => {
+      const current = await openSessionFile(file)
+      if (!current) return false
+      try {
+        const [before, after] = await Promise.all([
+          original.handle.stat({ bigint: true }),
+          current.handle.stat({ bigint: true })
+        ])
+        if (before.dev !== after.dev || before.ino !== after.ino) return false
+        await shell.trashItem(current.target)
+        invalidateSessionCache(current.target)
+        forgetSessionSearchIndex(current.target)
+        return true
+      } finally {
+        await current.handle.close().catch(() => {})
+      }
+    })
+  } finally {
+    await original.handle.close().catch(() => {})
+  }
+}
+
 export const MAX_FILE_BYTES = 512 * 1024
 const READ_FILE_FLAGS = constants.O_NONBLOCK === undefined
   ? 'r'
@@ -1320,16 +1351,8 @@ export function registerIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('sessions:remove', async (_event, file: string): Promise<boolean> => {
-    const target = await resolveSessionFilePath(file)
-    if (!target) return false
     try {
-      // Recoverable: hand the file to the OS trash instead of unlinking it.
-      return await supervisor.withSessionFileMutation(target, async () => {
-        await shell.trashItem(target)
-        invalidateSessionCache(target)
-        forgetSessionSearchIndex(target)
-        return true
-      })
+      return await removeSessionFile(file, supervisor)
     } catch (error) {
       console.error('[pi-desktop] could not trash the session file:', error)
       return false

@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "description": "Pi Desktop — a native GUI for the Pi coding agent",
   "main": "./out/main/index.js",
   "author": "Facron",
@@ -50,7 +50,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.2.0",
-    "electron": "44.5.0",
+    "electron": "44.10.2",
     "electron-builder": "^26.15.3",
     "electron-vite": "^6.0.0",
     "typescript": "^5.9.3",
