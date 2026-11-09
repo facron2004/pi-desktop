@@ -1,4 +1,5 @@
 import type { AssistantBlock, AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from './thread'
+import { changedThreadItemsFrom } from './thread'
 
 /**
  * A user message and everything it produced.
@@ -54,6 +55,20 @@ interface TurnBuild {
 }
 
 let lastBuild: TurnBuild | null = null
+const turnChanges = new WeakMap<Turn[], { base: Turn[]; firstChangedIndex: number }>()
+
+/** Earliest turn changed since `base`, when `buildTurns` recorded the lineage. */
+export function changedTurnsFrom(turns: Turn[], base: Turn[]): number | undefined {
+  let current = turns
+  let firstChangedIndex = Number.POSITIVE_INFINITY
+  while (current !== base) {
+    const change = turnChanges.get(current)
+    if (!change) return undefined
+    firstChangedIndex = Math.min(firstChangedIndex, change.firstChangedIndex)
+    current = change.base
+  }
+  return Number.isFinite(firstChangedIndex) ? firstChangedIndex : undefined
+}
 
 /**
  * Group a flat item list into turns from scratch.
@@ -106,9 +121,12 @@ export function buildTurns(items: ThreadItem[]): Turn[] {
   }
   if (cache.items === items) return cache.turns
 
-  const shared = Math.min(cache.items.length, items.length)
-  let firstDiff = 0
-  while (firstDiff < shared && cache.items[firstDiff] === items[firstDiff]) firstDiff += 1
+  let firstDiff = changedThreadItemsFrom(items, cache.items)
+  if (firstDiff === undefined) {
+    const shared = Math.min(cache.items.length, items.length)
+    firstDiff = 0
+    while (firstDiff < shared && cache.items[firstDiff] === items[firstDiff]) firstDiff += 1
+  }
 
   if (firstDiff === cache.items.length && firstDiff === items.length) {
     return cache.turns
@@ -129,11 +147,14 @@ export function buildTurns(items: ThreadItem[]): Turn[] {
     }
   } else {
     // An existing item was replaced: rebuild the turn that contains it.
-    let turnIndex = 0
-    for (let index = 0; index < cache.starts.length; index += 1) {
-      if (cache.starts[index] <= firstDiff) turnIndex = index
-      else break
+    let low = 0
+    let high = cache.starts.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      if (cache.starts[middle] <= firstDiff) low = middle + 1
+      else high = middle
     }
+    const turnIndex = Math.max(0, low - 1)
     reuseTurns = turnIndex
     rebuildFrom = cache.starts[turnIndex] ?? firstDiff
   }
@@ -149,5 +170,6 @@ export function buildTurns(items: ThreadItem[]): Turn[] {
       ...suffix.starts.map((index) => index + rebuildFrom)
     ]
   }
+  turnChanges.set(turns, { base: cache.turns, firstChangedIndex: reuseTurns })
   return turns
 }

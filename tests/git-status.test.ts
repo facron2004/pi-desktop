@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { readFileDiff, readStatus } from '../src/main/git'
+import { readFileDiff, readPatch, readStatus, revertFile, stageFile, unstageFile } from '../src/main/git'
 
 function fixture(): { root: string; git: (...args: string[]) => string; cleanup: () => void } {
   const temp = realpathSync(os.tmpdir())
@@ -68,6 +68,71 @@ test('working-tree counts include unstaged edits in a repository without a first
     writeFileSync(path.join(root, 'new.txt'), 'one\ntwo\nthree\n')
     const status = await readStatus(root)
     assert.deepEqual([status.files[0]?.added, status.files[0]?.removed], [3, 0])
+  } finally {
+    cleanup()
+  }
+})
+
+test('single-file staging treats pathspec syntax as a literal filename', async () => {
+  const { root, git, cleanup } = fixture()
+  try {
+    writeFileSync(path.join(root, 'one.txt'), 'one\n')
+    writeFileSync(path.join(root, 'two.txt'), 'two\n')
+    git('add', '-A')
+    git('commit', '-qm', 'baseline')
+    writeFileSync(path.join(root, 'one.txt'), 'one changed\n')
+    writeFileSync(path.join(root, 'two.txt'), 'two changed\n')
+
+    assert.equal((await readPatch(root, ':(glob)**')).text, '')
+
+    await stageFile(root, ':(glob)**')
+    let files = (await readStatus(root)).files
+    assert.equal(files.length, 2)
+    assert.ok(files.every((file) => !file.staged))
+
+    git('add', '-A')
+    await unstageFile(root, ':(glob)**')
+    files = (await readStatus(root)).files
+    assert.ok(files.every((file) => file.staged))
+  } finally {
+    cleanup()
+  }
+})
+
+test('file-scoped Git operations do not expand pathspec magic in a filename', {
+  skip: process.platform === 'win32'
+}, async () => {
+  const { root, git, cleanup } = fixture()
+  try {
+    const magicFile = ':(glob)**'
+    const otherFile = 'other.txt'
+    writeFileSync(path.join(root, magicFile), 'magic original\n')
+    writeFileSync(path.join(root, otherFile), 'other original\n')
+    git('add', '-A')
+    git('commit', '-qm', 'baseline')
+
+    writeFileSync(path.join(root, magicFile), 'magic changed\n')
+    writeFileSync(path.join(root, otherFile), 'other changed\n')
+
+    const fileDiff = await readFileDiff(root, magicFile)
+    assert.equal(fileDiff.oldText, 'magic original\n')
+    assert.equal(fileDiff.newText, 'magic changed\n')
+
+    const patch = await readPatch(root, magicFile)
+    assert.ok(patch.text.includes('magic changed'))
+    assert.ok(!patch.text.includes('other changed'))
+
+    assert.equal((await stageFile(root, magicFile)).ok, true)
+    let entries = new Map((await readStatus(root)).files.map((file) => [file.path, file]))
+    assert.equal(entries.get(magicFile)?.staged, true)
+    assert.equal(entries.get(otherFile)?.staged, false)
+
+    assert.equal((await unstageFile(root, magicFile)).ok, true)
+    assert.equal((await revertFile(root, magicFile)).ok, true)
+    assert.equal((await readFileDiff(root, magicFile)).newText, 'magic original\n')
+    entries = new Map((await readStatus(root)).files.map((file) => [file.path, file]))
+    assert.equal(entries.get(magicFile), undefined)
+    assert.equal(entries.get(otherFile)?.worktree, 'M')
   } finally {
     cleanup()
   }

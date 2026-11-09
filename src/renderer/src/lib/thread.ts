@@ -136,6 +136,84 @@ export interface NoticeItem {
 
 export type ThreadItem = UserItem | AssistantItem | ToolItem | BashItem | NoticeItem
 
+interface ThreadItemsChange {
+  base: ThreadItem[]
+  firstChangedIndex: number
+}
+
+interface ThreadItemIndexes {
+  byId: Map<string, number>
+  byToolCallId: Map<string, number>
+}
+
+const threadItemsChanges = new WeakMap<ThreadItem[], ThreadItemsChange>()
+const threadItemIndexes = new WeakMap<ThreadItem[], ThreadItemIndexes>()
+
+function indexesFor(items: ThreadItem[]): ThreadItemIndexes {
+  const cached = threadItemIndexes.get(items)
+  if (cached) return cached
+  const indexes: ThreadItemIndexes = { byId: new Map(), byToolCallId: new Map() }
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]
+    indexes.byId.set(item.id, index)
+    if (item.kind === 'tool') indexes.byToolCallId.set(item.toolCallId, index)
+  }
+  threadItemIndexes.set(items, indexes)
+  return indexes
+}
+
+function indexOfItem(items: ThreadItem[], id: string): number {
+  const index = indexesFor(items).byId.get(id)
+  return index !== undefined && items[index]?.id === id ? index : -1
+}
+
+function indexOfTool(items: ThreadItem[], toolCallId: string): number {
+  const index = indexesFor(items).byToolCallId.get(toolCallId)
+  const item = index === undefined ? undefined : items[index]
+  return index !== undefined && item?.kind === 'tool' && item.toolCallId === toolCallId ? index : -1
+}
+
+function markThreadItemsChanged(
+  base: ThreadItem[],
+  next: ThreadItem[],
+  changedIndex: number
+): ThreadItem[] {
+  threadItemsChanges.set(next, { base, firstChangedIndex: changedIndex })
+  const indexes = indexesFor(base)
+  for (let index = changedIndex; index < next.length; index += 1) {
+    const previous = base[index]
+    const item = next[index]
+    if (previous && previous.id !== item?.id) indexes.byId.delete(previous.id)
+    if (item) indexes.byId.set(item.id, index)
+    if (previous?.kind === 'tool' && (item?.kind !== 'tool' || previous.toolCallId !== item.toolCallId)) {
+      indexes.byToolCallId.delete(previous.toolCallId)
+    }
+    if (item?.kind === 'tool') indexes.byToolCallId.set(item.toolCallId, index)
+  }
+  threadItemIndexes.set(next, indexes)
+  return next
+}
+
+/** Earliest item changed since `base`, when the live reducer recorded it. */
+export function changedThreadItemsFrom(
+  items: ThreadItem[],
+  base: ThreadItem[]
+): number | undefined {
+  let current = items
+  let firstChangedIndex = Number.POSITIVE_INFINITY
+  while (current !== base) {
+    const change = threadItemsChanges.get(current)
+    if (!change) return undefined
+    firstChangedIndex = Math.min(firstChangedIndex, change.firstChangedIndex)
+    current = change.base
+  }
+  return Number.isFinite(firstChangedIndex) ? firstChangedIndex : undefined
+}
+
+function appendThreadItem(items: ThreadItem[], item: ThreadItem): ThreadItem[] {
+  return markThreadItemsChanged(items, [...items, item], items.length)
+}
+
 let counter = 0
 
 /**
@@ -220,7 +298,11 @@ function lastStreamingAssistant(items: ThreadItem[]): AssistantItem | undefined 
 }
 
 function replaceItem(items: ThreadItem[], id: string, next: ThreadItem): ThreadItem[] {
-  return items.map((item) => (item.id === id ? next : item))
+  const index = indexOfItem(items, id)
+  if (index < 0) return items
+  const copy = items.slice()
+  copy[index] = next
+  return markThreadItemsChanged(items, copy, index)
 }
 
 /**
@@ -238,7 +320,7 @@ function patchTool(
   patch: Partial<ToolItem>,
   create?: Partial<ToolItem>
 ): ThreadItem[] {
-  const index = items.findIndex((item) => item.kind === 'tool' && item.toolCallId === toolCallId)
+  const index = indexOfTool(items, toolCallId)
   if (index === -1) {
     if (!create) return items
     const node: ToolItem = {
@@ -252,17 +334,17 @@ function patchTool(
       order: nextOrder(),
       ...create
     }
-    return [...items, node]
+    return appendThreadItem(items, node)
   }
-  const copy = [...items]
+  const copy = items.slice()
   copy[index] = { ...(copy[index] as ToolItem), ...patch }
-  return copy
+  return markThreadItemsChanged(items, copy, index)
 }
 
 function findTool(items: ThreadItem[], toolCallId: string): ToolItem | undefined {
-  return items.find(
-    (item): item is ToolItem => item.kind === 'tool' && item.toolCallId === toolCallId
-  )
+  const index = indexOfTool(items, toolCallId)
+  const item = index < 0 ? undefined : items[index]
+  return item?.kind === 'tool' ? item : undefined
 }
 
 /**
@@ -534,38 +616,32 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
         return items
       }
       if (message.role === 'user') {
-        return [
-          ...items,
-          {
-            id: nextId('user'),
-            kind: 'user',
-            text: textOf(message.content),
-            images: imagesOf(message.content),
-            timestamp: message.timestamp ?? Date.now(),
-            order: nextOrder(),
-            messageId: event.messageId,
-            runId: event.runId,
-            turnId: event.turnId,
-            ...identityOf(event)
-          }
-        ]
+        return appendThreadItem(items, {
+          id: nextId('user'),
+          kind: 'user',
+          text: textOf(message.content),
+          images: imagesOf(message.content),
+          timestamp: message.timestamp ?? Date.now(),
+          order: nextOrder(),
+          messageId: event.messageId,
+          runId: event.runId,
+          turnId: event.turnId,
+          ...identityOf(event)
+        })
       }
       if (message.role === 'assistant') {
-        return [
-          ...items,
-          {
-            id: nextId('assistant'),
-            kind: 'assistant',
-            blocks: [],
-            streaming: true,
-            timestamp: message.timestamp ?? Date.now(),
-            order: nextOrder(),
-            messageId: event.messageId,
-            runId: event.runId,
-            turnId: event.turnId,
-            ...identityOf(event)
-          }
-        ]
+        return appendThreadItem(items, {
+          id: nextId('assistant'),
+          kind: 'assistant',
+          blocks: [],
+          streaming: true,
+          timestamp: message.timestamp ?? Date.now(),
+          order: nextOrder(),
+          messageId: event.messageId,
+          runId: event.runId,
+          turnId: event.turnId,
+          ...identityOf(event)
+        })
       }
       return items
     }
@@ -864,26 +940,23 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       if (existing) {
         return replaceItem(items, existing.id, { ...existing, output: existing.output + delta })
       }
-      return [
-        ...items,
-        {
-          id: targetId ?? nextId('bash'),
-          kind: 'bash',
-          command: '',
-          output: delta,
-          timestamp: Date.now(),
-          order: nextOrder(),
-          ...identityOf(event)
-        }
-      ]
+      return appendThreadItem(items, {
+        id: targetId ?? nextId('bash'),
+        kind: 'bash',
+        command: '',
+        output: delta,
+        timestamp: Date.now(),
+        order: nextOrder(),
+        ...identityOf(event)
+      })
     }
 
     case 'notice': {
-      return [...items, noticeFor(event, event.level, event.text, event.noticeSource)]
+      return appendThreadItem(items, noticeFor(event, event.level, event.text, event.noticeSource))
     }
 
     case 'error': {
-      return [...items, noticeFor(event, 'error', event.text)]
+      return appendThreadItem(items, noticeFor(event, 'error', event.text))
     }
 
     default:
@@ -910,17 +983,22 @@ export function applyEvents(
  * message that was still streaming keeps whatever text it had.
  */
 export function markAborted(items: ThreadItem[]): ThreadItem[] {
-  return items.map((item) => {
+  let firstChangedIndex = items.length
+  const next = items.map((item, index) => {
     if (item.kind === 'tool' && item.status === 'running') {
+      firstChangedIndex = Math.min(firstChangedIndex, index)
       return { ...item, status: 'aborted' as const, finishedAt: Date.now(), progress: undefined }
     }
     // A proposed call never started. "Not run" is the truth; turning it into
     // "stopped" would imply an execution that did not happen.
     if (item.kind === 'assistant' && item.streaming) {
+      firstChangedIndex = Math.min(firstChangedIndex, index)
       return { ...item, streaming: false }
     }
     return item
   })
+  if (firstChangedIndex === items.length) return items
+  return markThreadItemsChanged(items, next, firstChangedIndex)
 }
 
 function toolDetails(value: unknown): unknown {

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  clearViewState,
   migrateViewState,
   readFileOpen,
   readHistoryExpanded,
@@ -60,4 +61,29 @@ test('a draft migration carries every expansion map to the session file', () => 
   assert.equal(readFileOpen(file, 'src/a.ts'), true)
   assert.equal(readProcessOpen(file, 'process-1'), true)
   assert.equal(readHistoryExpanded(file), true)
+})
+
+test('deleting a conversation clears only its saved view preferences', () => {
+  const deleted = 'thread-deleted'
+  const retained = 'thread-retained'
+  for (const thread of [deleted, retained]) {
+    writeToolOpen(thread, 'tool-1', true)
+    writeToolFull(thread, 'tool-1', true)
+    writeFileOpen(thread, 'src/a.ts', true)
+    writeProcessOpen(thread, 'process-1', true)
+    writeHistoryExpanded(thread, true)
+  }
+
+  clearViewState(deleted)
+
+  assert.equal(readToolOpen(deleted, 'tool-1'), undefined)
+  assert.equal(readToolFull(deleted, 'tool-1'), false)
+  assert.equal(readFileOpen(deleted, 'src/a.ts'), false)
+  assert.equal(readProcessOpen(deleted, 'process-1'), undefined)
+  assert.equal(readHistoryExpanded(deleted), false)
+  assert.equal(readToolOpen(retained, 'tool-1'), true)
+  assert.equal(readToolFull(retained, 'tool-1'), true)
+  assert.equal(readFileOpen(retained, 'src/a.ts'), true)
+  assert.equal(readProcessOpen(retained, 'process-1'), true)
+  assert.equal(readHistoryExpanded(retained), true)
 })

@@ -44,7 +44,7 @@ import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
 import { beginStream, finishStream, rekeyStreamState } from '../lib/stream-events'
 import { estimateContextBreakdown, parseRequestContextBreakdown } from '../lib/context-reading'
 import { recordModelUse } from '../lib/model-recency'
-import { migrateViewState } from '../lib/view-state'
+import { clearViewState, migrateViewState } from '../lib/view-state'
 import {
   forgetSessionTiming,
   migrateSessionTiming,
@@ -1308,6 +1308,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         set({ error: `Could not delete ${session?.name ?? 'the conversation'}` })
         return
       }
+      clearViewState(file)
       forgetSessionTiming(file)
       await get().refreshSessions()
       get().showToast('Conversation deleted')

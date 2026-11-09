@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTurns, replyStartOf } from '../src/renderer/src/lib/turns'
-import type { AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from '../src/renderer/src/lib/thread'
+import type { PiEvent } from '@shared/types'
+import { buildTurns, changedTurnsFrom, replyStartOf } from '../src/renderer/src/lib/turns'
+import { applyEvent, changedThreadItemsFrom, type AssistantItem, type NoticeItem, type ThreadItem, type ToolItem, type UserItem } from '../src/renderer/src/lib/thread'
 
 function user(id: string): UserItem {
   return { id, kind: 'user', text: id, images: [], timestamp: 1, order: 1 }
@@ -33,6 +34,14 @@ function tool(id: string): ToolItem {
 
 function notice(id: string): NoticeItem {
   return { id, kind: 'notice', level: 'info', text: id, timestamp: 4, order: 4 }
+}
+
+function textDelta(delta: string): PiEvent {
+  return {
+    type: 'message_update',
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+    assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta }
+  }
 }
 
 test('replyStartOf separates progress before tool calls from the final reply', () => {
@@ -176,4 +185,22 @@ test('buildTurns rebuilds the containing turn when a middle item changes', () =>
   assert.equal(next.length, 2)
   assert.equal(next[0].assistants[0].blocks[0].text, 'edited')
   assert.equal(next[1].user?.id, 'u2')
+})
+
+test('buildTurns uses reducer change hints across multiple updates', () => {
+  const firstItems: ThreadItem[] = [
+    user('u1'),
+    assistant('a1'),
+    user('u2'),
+    assistant('a2', true)
+  ]
+  const first = buildTurns(firstItems)
+  const changedOnce = applyEvent(firstItems, textDelta('More'))
+  const changedTwice = applyEvent(changedOnce, textDelta(' text'))
+
+  assert.equal(changedThreadItemsFrom(changedTwice, firstItems), 3)
+  const next = buildTurns(changedTwice)
+  assert.equal(changedTurnsFrom(next, first), 1)
+  assert.equal(next[0], first[0])
+  assert.equal(next[1].assistants[0].blocks[0].text, 'a2More text')
 })

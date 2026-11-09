@@ -69,6 +69,7 @@ const SessionRailMarker = memo(function SessionRailMarker({
 })
 
 function sameTurns(left: SessionRailProps['turns'], right: SessionRailProps['turns']): boolean {
+  if (left === right) return true
   if (left.length !== right.length) return false
   for (let index = 0; index < left.length; index += 1) {
     if (left[index] !== right[index]) return false

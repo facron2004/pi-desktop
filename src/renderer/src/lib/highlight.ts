@@ -1,4 +1,5 @@
 import type { createBundledHighlighter } from 'shiki/core'
+import { HighlightCache, highlightCacheKey } from './highlight-cache'
 
 /**
  * Syntax highlighting for code blocks and the file viewer.
@@ -102,8 +103,7 @@ let highlighterPromise: Promise<Highlighter> | null = null
  * small: code can be large, and stale snippets are not worth keeping for the
  * life of the window.
  */
-const highlightCache = new Map<string, Promise<string>>()
-const HIGHLIGHT_CACHE_LIMIT = 80
+const highlightCache = new HighlightCache()
 
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
@@ -143,8 +143,8 @@ function resolveGrammar(name: string): Grammar | null {
 }
 
 export function highlightCode(code: string, language: string, isDark: boolean): Promise<string> {
-  const key = `${isDark ? 'dark' : 'light'}\u0000${language}\u0000${code}`
-  const cached = highlightCache.get(key)
+  const key = highlightCacheKey(code, language, isDark)
+  const cached = key === undefined ? undefined : highlightCache.get(key)
   if (cached) return cached
 
   const pending = (async () => {
@@ -167,11 +167,9 @@ export function highlightCode(code: string, language: string, isDark: boolean): 
     })
   })()
 
-  highlightCache.set(key, pending)
-  if (highlightCache.size > HIGHLIGHT_CACHE_LIMIT) {
-    const oldest = highlightCache.keys().next().value
-    if (oldest !== undefined) highlightCache.delete(oldest)
+  if (key !== undefined) {
+    highlightCache.set(key, code.length, pending)
+    pending.catch(() => highlightCache.deleteIfValue(key, pending))
   }
-  pending.catch(() => highlightCache.delete(key))
   return pending
 }

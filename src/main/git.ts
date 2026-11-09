@@ -74,6 +74,15 @@ async function git(root: string, args: string[], timeoutMs = STATUS_TIMEOUT_MS):
   }
 }
 
+/** Run a file-scoped command without interpreting a filename as Git pathspec magic. */
+function gitLiteralPathspecs(
+  root: string,
+  args: string[],
+  timeoutMs = STATUS_TIMEOUT_MS
+): Promise<GitOutput> {
+  return git(root, ['--literal-pathspecs', ...args], timeoutMs)
+}
+
 const NO_REPOSITORY: GitStatus = {
   isRepo: false,
   detached: false,
@@ -232,7 +241,7 @@ export async function commitWorkingTree(
 export async function stageFile(root: string, filePath: string): Promise<GitCommitResult> {
   if (!root) return { ok: false, error: 'No project is open.' }
   if (!filePath) return { ok: false, error: 'No file was given.' }
-  const result = await git(root, ['add', '-A', '--', filePath], COMMIT_TIMEOUT_MS)
+  const result = await gitLiteralPathspecs(root, ['add', '-A', '--', filePath], COMMIT_TIMEOUT_MS)
   if (result.code !== 0) {
     return { ok: false, error: cleanError(result.stderr) || 'git add failed.' }
   }
@@ -245,12 +254,12 @@ export async function unstageFile(root: string, filePath: string): Promise<GitCo
   if (!filePath) return { ok: false, error: 'No file was given.' }
   // `restore --staged` needs a HEAD; a repository without a commit has to
   // fall back to removing the entry from the index instead.
-  let result = await git(root, ['restore', '--staged', '--', filePath], COMMIT_TIMEOUT_MS)
+  let result = await gitLiteralPathspecs(root, ['restore', '--staged', '--', filePath], COMMIT_TIMEOUT_MS)
   if (result.code !== 0) {
-    result = await git(root, ['reset', '-q', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
+    result = await gitLiteralPathspecs(root, ['reset', '-q', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
   }
   if (result.code !== 0) {
-    result = await git(root, ['rm', '--cached', '-q', '--', filePath], COMMIT_TIMEOUT_MS)
+    result = await gitLiteralPathspecs(root, ['rm', '--cached', '-q', '--', filePath], COMMIT_TIMEOUT_MS)
   }
   if (result.code !== 0) {
     return { ok: false, error: cleanError(result.stderr) || 'git restore failed.' }
@@ -387,7 +396,7 @@ export async function readFileDiff(root: string, filePath: string): Promise<GitF
   const target = insideWorkTree(root, filePath)
   if (!target) return { ...blank, error: 'The file is outside the project.' }
 
-  const status = await git(root, ['status', '--porcelain=v1', '-z', '--', filePath])
+  const status = await gitLiteralPathspecs(root, ['status', '--porcelain=v1', '-z', '--', filePath])
   let entry = parsePorcelain(status.stdout)[0]
   // A pathspec can turn a staged rename into an addition. Resolve that
   // ambiguous status against the whole tree before reading the old side.
@@ -473,7 +482,9 @@ export async function readPatch(root: string, filePath?: string): Promise<GitPat
 
   const args = ['-c', 'core.quotepath=false', 'diff', 'HEAD', '--no-color', '--no-ext-diff']
   if (filePath) args.push('--', filePath)
-  const diff = await git(root, args, COMMIT_TIMEOUT_MS)
+  const diff = filePath
+    ? await gitLiteralPathspecs(root, args, COMMIT_TIMEOUT_MS)
+    : await git(root, args, COMMIT_TIMEOUT_MS)
   let text = diff.code === 0 ? diff.stdout : ''
   let truncated = false
   if (text.length > MAX_PATCH_BYTES) {
@@ -987,7 +998,7 @@ export async function revertFile(root: string, filePath: string): Promise<GitCom
   const head = await git(root, ['rev-parse', '--verify', 'HEAD'])
   if (head.code !== 0) return { ok: false, error: 'The repository has no commit to go back to.' }
 
-  const result = await git(root, ['checkout', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
+  const result = await gitLiteralPathspecs(root, ['checkout', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
   if (result.code !== 0) {
     return { ok: false, error: cleanError(result.stderr) || 'git checkout failed.' }
   }

@@ -73,6 +73,17 @@ export function writeHistoryExpanded(threadId: string, expanded: boolean): void 
   else historyExpanded.delete(threadId)
 }
 
+/** Drop view preferences for a conversation that no longer exists. */
+export function clearViewState(threadId: string): void {
+  const prefix = `${threadId}\u0000`
+  for (const map of [toolOpen, toolFull, fileOpen, processOpen]) {
+    for (const key of map.keys()) {
+      if (key.startsWith(prefix)) map.delete(key)
+    }
+  }
+  historyExpanded.delete(threadId)
+}
+
 /** Carry a draft's open rows over when Pi writes its session file. */
 export function migrateViewState(from: string, to: string): void {
   if (from === to) return

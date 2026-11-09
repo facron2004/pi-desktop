@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, List, Search,
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
 import type { Turn } from '../lib/turns'
-import { buildTurns } from '../lib/turns'
+import { buildTurns, changedTurnsFrom } from '../lib/turns'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
 import { formatClock, formatCost, formatTokens } from '../lib/format'
@@ -184,25 +184,21 @@ export function Thread() {
   turnsRef.current = turns
   const sessionTurns = useMemo(
     () => turns.filter((turn): turn is Turn & { user: UserItem } => Boolean(turn.user)),
-    [turns]
+    [sessionKey, turns.length, turns[0]?.id, turns.at(-1)?.id]
   )
-  const sessionTurnIdsRef = useRef<string[]>([])
-  sessionTurnIdsRef.current = sessionTurns.map((turn) => turn.id)
   const liveRunSummaryAtTop = Boolean(
     !run.settled &&
       run.startedAt !== undefined &&
       sessionTurns.length > 0
   )
-  const lastSessionTurnId = sessionTurns[sessionTurns.length - 1]?.id ?? null
+  const lastSessionTurnId = sessionTurns.at(-1)?.id ?? null
   const activeTurnId = atBottom ? lastSessionTurnId : scrolledTurnId
   const syncActiveTurn = useCallback((container: HTMLDivElement) => {
-    const sessionTurnIds = new Set(sessionTurnIdsRef.current)
-    const visibleTurns = Array.from(container.querySelectorAll<HTMLElement>('[data-turn]')).filter(
-      (element) => sessionTurnIds.has(element.dataset.turn ?? '')
-    )
-    let activeTurn = visibleTurns[0]
+    const visibleTurns = container.querySelectorAll<HTMLElement>('[data-turn][data-session-turn]')
+    let activeTurn: HTMLElement | undefined
     const threshold = container.getBoundingClientRect().top + 96
     for (const turn of visibleTurns) {
+      if (!activeTurn) activeTurn = turn
       if (turn.getBoundingClientRect().top <= threshold) activeTurn = turn
       else break
     }
@@ -218,13 +214,30 @@ export function Thread() {
     setExpandedHistorySession(readHistoryExpanded(sessionKey) ? sessionKey : null)
   }, [sessionKey])
   const hiddenTurnCount = Math.max(0, turns.length - VISIBLE_RECENT_TURNS)
-  const hiddenMessageCount = useMemo(
-    () =>
-      turns
-        .slice(0, hiddenTurnCount)
-        .reduce((count, turn) => count + Number(Boolean(turn.user)) + turn.assistants.length, 0),
-    [hiddenTurnCount, turns]
-  )
+  const hiddenMessageCountRef = useRef<{
+    sessionKey: string
+    hiddenTurnCount: number
+    turns: Turn[]
+    count: number
+  } | null>(null)
+  const hiddenMessageCountCache = hiddenMessageCountRef.current
+  let hiddenMessageCount: number
+  if (
+    hiddenMessageCountCache &&
+    hiddenMessageCountCache.sessionKey === sessionKey &&
+    hiddenMessageCountCache.hiddenTurnCount === hiddenTurnCount &&
+    (hiddenMessageCountCache.turns === turns ||
+      hiddenTurnCount === 0 ||
+      (changedTurnsFrom(turns, hiddenMessageCountCache.turns) ?? -1) >= hiddenTurnCount)
+  ) {
+    hiddenMessageCount = hiddenMessageCountCache.count
+    hiddenMessageCountCache.turns = turns
+  } else {
+    hiddenMessageCount = turns
+      .slice(0, hiddenTurnCount)
+      .reduce((count, turn) => count + Number(Boolean(turn.user)) + turn.assistants.length, 0)
+    hiddenMessageCountRef.current = { sessionKey, hiddenTurnCount, turns, count: hiddenMessageCount }
+  }
   const historyCollapsed = !historyExpanded && hiddenMessageCount >= MIN_HIDDEN_MESSAGES
   const firstVisibleTurn = historyCollapsed ? hiddenTurnCount : 0
   const visibleTurns = historyCollapsed ? turns.slice(firstVisibleTurn) : turns
@@ -234,7 +247,10 @@ export function Thread() {
     [hasSearchQuery, turns, workspace?.path]
   )
   const hits: SearchHit[] = useMemo(() => findMatches(chunks, query), [chunks, query])
-  const forkByUserId = useMemo(() => pairForkTargets(items, forkTargets), [items, forkTargets])
+  const forkByUserId = useMemo(
+    () => pairForkTargets(items, forkTargets),
+    [sessionKey, turns.length, forkTargets]
+  )
 
   useEffect(() => {
     if (hits.length === 0) setSearchResultsOpen(false)
@@ -1029,7 +1045,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
   )
 
   return (
-    <section className="turn" data-turn={turn.id}>
+    <section className="turn" data-turn={turn.id} data-session-turn={turn.user ? '' : undefined}>
       {turn.user ? (
         <UserMessage
           item={turn.user}
