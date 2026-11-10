@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process'
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   writeFileSync
@@ -43,6 +45,7 @@ const GITHUB_HEADERS: Record<string, string> = {
 
 /** Stars a repository needs before a refresh may add it to the marketplace. */
 const DEFAULT_MIN_STARS = 100
+export const MAX_MARKETPLACE_RESPONSE_BYTES = 2 * 1024 * 1024
 
 /** How long `pi install` or a skill collection clone may take. */
 const INSTALL_TIMEOUT_MS = 180000
@@ -721,18 +724,42 @@ export async function createResource(input: CreateResourceInput): Promise<Market
     return { ok: false, output: 'Description is required and must be at most 1024 characters.' }
   }
 
-  const directory =
-    kind === 'skill'
-      ? path.join(agentDirectory(), 'skills', name)
-      : path.join(agentDirectory(), 'extensions')
+  const agentDir = agentDirectory()
+  const resourceRoot = path.join(agentDir, kind === 'skill' ? 'skills' : 'extensions')
+  const directory = kind === 'skill' ? path.join(resourceRoot, name) : resourceRoot
   const target = kind === 'skill' ? path.join(directory, 'SKILL.md') : path.join(directory, `${name}.ts`)
-  if (existsSync(target) || (kind === 'skill' && existsSync(directory))) {
-    return { ok: false, output: `${kind === 'skill' ? 'Skill' : 'Plugin'} "${name}" already exists.` }
-  }
+  const alreadyExists = (): MarketplaceActionResult => ({
+    ok: false,
+    output: `${kind === 'skill' ? 'Skill' : 'Plugin'} "${name}" already exists.`
+  })
+
   try {
-    mkdirSync(path.dirname(target), { recursive: true })
-    writeFileSync(target, kind === 'skill' ? skillTemplate(name, description) : pluginTemplate(name, description), 'utf8')
+    mkdirSync(agentDir, { recursive: true })
+    try {
+      mkdirSync(resourceRoot)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+    const resourceRootStat = lstatSync(resourceRoot)
+    if (resourceRootStat.isSymbolicLink() || !resourceRootStat.isDirectory()) {
+      return { ok: false, output: 'The resource directory must be a real directory.' }
+    }
+
+    try {
+      lstatSync(kind === 'skill' ? directory : target)
+      return alreadyExists()
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+
+    if (kind === 'skill') mkdirSync(directory)
+    writeFileSync(
+      target,
+      kind === 'skill' ? skillTemplate(name, description) : pluginTemplate(name, description),
+      { encoding: 'utf8', flag: 'wx' }
+    )
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return alreadyExists()
     return { ok: false, output: error instanceof Error ? error.message : String(error) }
   }
   return {
@@ -885,10 +912,51 @@ function entryFromGitHubRepository(raw: unknown): MarketplaceEntry | null {
   }
 }
 
+class MarketplaceResponseTooLargeError extends Error {}
+
 async function readResponseBody(response: Response): Promise<string> {
-  if (typeof response.text === 'function') return response.text()
-  // Test doubles may only provide `json()`; keep the real path the primary one.
-  if (typeof response.json === 'function') return JSON.stringify(await response.json())
+  const tooLarge = async (): Promise<never> => {
+    await response.body?.cancel().catch(() => {})
+    throw new MarketplaceResponseTooLargeError()
+  }
+  const contentLength = response.headers?.get?.('content-length')
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > MAX_MARKETPLACE_RESPONSE_BYTES) {
+    return tooLarge()
+  }
+
+  const reader = response.body?.getReader()
+  if (reader) {
+    const chunks: Buffer[] = []
+    let bytes = 0
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (bytes + value.byteLength > MAX_MARKETPLACE_RESPONSE_BYTES) {
+          await reader.cancel().catch(() => {})
+          throw new MarketplaceResponseTooLargeError()
+        }
+        const chunk = Buffer.from(value)
+        chunks.push(chunk)
+        bytes += chunk.length
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    return Buffer.concat(chunks, bytes).toString('utf8')
+  }
+
+  // Test doubles may only provide `text()` or `json()`; bound those fallback results too.
+  if (typeof response.text === 'function') {
+    const text = await response.text()
+    if (Buffer.byteLength(text, 'utf8') > MAX_MARKETPLACE_RESPONSE_BYTES) return tooLarge()
+    return text
+  }
+  if (typeof response.json === 'function') {
+    const text = JSON.stringify(await response.json())
+    if (Buffer.byteLength(text, 'utf8') > MAX_MARKETPLACE_RESPONSE_BYTES) return tooLarge()
+    return text
+  }
   return ''
 }
 
@@ -912,7 +980,10 @@ async function searchGitHub(query: string): Promise<MarketplaceEntry[]> {
   let body: string
   try {
     body = await readResponseBody(response)
-  } catch {
+  } catch (error) {
+    if (error instanceof MarketplaceResponseTooLargeError) {
+      throw new Error(`GitHub returned a marketplace response larger than ${MAX_MARKETPLACE_RESPONSE_BYTES / 1024 / 1024} MB.`)
+    }
     throw new Error('GitHub closed the connection while the marketplace was refreshing. Try again.')
   }
   if (!response.ok) throw githubFailure(response, body)
@@ -977,6 +1048,48 @@ function agentDirectory(): string {
     : path.join(os.homedir(), '.pi', 'agent')
 }
 
+function isPathWithin(root: string, target: string): boolean {
+  const relative = path.relative(root, target)
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  )
+}
+
+/** Resolve a skills collection destination without following a repository
+ *  symlink placed inside Pi's skills directory. */
+export function resolveSkillInstallTarget(
+  skillsDirectory: string,
+  repo: string
+): { target: string; exists: boolean } | null {
+  if (!isRepoSegment(repo)) return null
+
+  const root = path.resolve(skillsDirectory)
+  const target = path.resolve(root, repo)
+  if (!isPathWithin(root, target)) return null
+
+  let realRoot: string
+  try {
+    realRoot = realpathSync(root)
+  } catch {
+    return null
+  }
+
+  try {
+    const targetStat = lstatSync(target)
+    if (targetStat.isSymbolicLink() || !targetStat.isDirectory()) return null
+    const realTarget = realpathSync(target)
+    if (!isPathWithin(realRoot, realTarget)) return null
+    return { target, exists: true }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { target, exists: false }
+    }
+    return null
+  }
+}
+
 function runGit(args: string[]): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     execFile(
@@ -1010,10 +1123,6 @@ async function installSkillCollection(source: string): Promise<MarketplaceInstal
     return { ok: false, output: 'Invalid skills install source.' }
   }
   const skillsDirectory = path.resolve(agentDirectory(), 'skills')
-  const target = path.resolve(skillsDirectory, repo)
-  if (!target.startsWith(`${skillsDirectory}${path.sep}`)) {
-    return { ok: false, output: 'Invalid skills install target.' }
-  }
   try {
     mkdirSync(skillsDirectory, { recursive: true })
   } catch (error) {
@@ -1021,14 +1130,17 @@ async function installSkillCollection(source: string): Promise<MarketplaceInstal
     return { ok: false, output: message }
   }
 
-  const result = existsSync(target)
-    ? await runGit(['-C', target, 'pull', '--ff-only'])
+  const destination = resolveSkillInstallTarget(skillsDirectory, repo)
+  if (!destination) return { ok: false, output: 'Invalid skills install target.' }
+
+  const result = destination.exists
+    ? await runGit(['-C', destination.target, 'pull', '--ff-only'])
     : await runGit([
         'clone',
         '--depth',
         '1',
         `https://github.com/${owner}/${repo}`,
-        target
+        destination.target
       ])
   return { ok: result.ok, output: result.output }
 }

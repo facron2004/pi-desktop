@@ -76,12 +76,15 @@ const suites = [
   'changes.test.ts',
   'thinking.test.ts',
   'terminal-shell.test.ts',
+  'terminal-startup.test.ts',
   'view-state.test.ts',
   'live-sessions.test.ts',
   'git-branches.test.ts',
   'mcp.test.ts',
   'remote-access.test.ts',
   'fs-read.test.ts',
+  'ipc-window.test.ts',
+  'screenshot-window.test.ts',
   'search-cancel.test.ts',
   'workspace-panel.test.ts',
   'task-panel.test.ts',
@@ -102,7 +105,7 @@ const out = mkdtempSync(path.join(tmpdir(), 'pi-desktop-tests-'))
 const mockElectron = path.join(out, 'mock-electron.mjs')
 writeFileSync(
   mockElectron,
-  `export const app = { getPath: () => "C:/tmp", getAppPath: () => process.cwd(), isPackaged: false, getVersion: () => "0.7.3", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {} };
+  `export const app = { getPath: () => "C:/tmp", getAppPath: () => process.cwd(), isPackaged: false, getVersion: () => "0.7.3", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {}, exit: () => {} };
 export const dialog = { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true, filePath: undefined }) };
 export const BrowserWindow = class { static getAllWindows() { return [] } isDestroyed() { return false } };
 export const ipcMain = { handle: () => {}, on: () => {} };

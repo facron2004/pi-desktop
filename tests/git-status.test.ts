@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { readFileDiff, readPatch, readStatus, revertFile, stageFile, unstageFile } from '../src/main/git'
+import { applyPatch, readCommitDetail, readCommitFileDiff, readFileDiff, readPatch, readStatus, revertFile, stageFile, unstageFile } from '../src/main/git'
 
 function fixture(): { root: string; git: (...args: string[]) => string; cleanup: () => void } {
   const temp = realpathSync(os.tmpdir())
@@ -73,6 +73,83 @@ test('working-tree counts include unstaged edits in a repository without a first
   }
 })
 
+test('commit rename diffs preserve paths containing tabs and newlines', async () => {
+  const { root, git, cleanup } = fixture()
+  try {
+    const oldPath = 'old\tname.txt'
+    const newPath = 'new\nname.txt'
+    const blob = execFileSync('git', ['-C', root, 'hash-object', '-w', '--stdin'], {
+      input: 'original content\n',
+      encoding: 'utf8'
+    }).trim()
+    const writeTree = (file: string) => execFileSync('git', ['-C', root, 'mktree', '-z'], {
+      input: Buffer.from(`100644 blob ${blob}\t${file}\0`, 'utf8'),
+      encoding: 'utf8'
+    }).trim()
+    const parentTree = writeTree(oldPath)
+    const parent = git('commit-tree', parentTree, '-m', 'baseline').trim()
+    const renamedTree = writeTree(newPath)
+    const commit = git('commit-tree', renamedTree, '-p', parent, '-m', 'rename').trim()
+
+    const detail = await readCommitDetail(root, commit)
+    assert.ok(detail)
+    assert.equal(detail.files[0]?.path, newPath)
+    assert.equal(detail.files[0]?.oldPath, oldPath)
+
+    const diff = await readCommitFileDiff(root, commit, newPath)
+    assert.ok(diff)
+    assert.equal(diff.oldText, 'original content\n')
+    assert.equal(diff.newText, 'original content\n')
+  } finally {
+    cleanup()
+  }
+})
+
+test('Git diff previews and patches stay within their UTF-8 byte budgets', async () => {
+  const { root, git, cleanup } = fixture()
+  try {
+    const file = 'unicode.txt'
+    writeFileSync(path.join(root, file), 'baseline\n')
+    git('add', file)
+    git('commit', '-qm', 'baseline')
+    writeFileSync(path.join(root, file), '界'.repeat(400_000))
+
+    const diff = await readFileDiff(root, file)
+    assert.equal(diff.truncated, true)
+    assert.ok(Buffer.byteLength(diff.newText, 'utf8') <= 512 * 1024)
+
+    const patch = await readPatch(root)
+    assert.equal(patch.truncated, true)
+    assert.ok(Buffer.byteLength(patch.text, 'utf8') <= 1024 * 1024)
+  } finally {
+    cleanup()
+  }
+})
+
+test('commit patches are byte capped and oversized multibyte patch input is rejected', async () => {
+  const { root, git, cleanup } = fixture()
+  try {
+    const file = 'unicode.txt'
+    writeFileSync(path.join(root, file), '界'.repeat(400_000))
+    git('add', file)
+    git('commit', '-qm', 'large Unicode file')
+
+    const detail = await readCommitDetail(root, git('rev-parse', 'HEAD').trim())
+    assert.ok(detail)
+    assert.equal(detail.truncated, true)
+    assert.ok(Buffer.byteLength(detail.patch, 'utf8') <= 1024 * 1024)
+
+    const oversized = `diff --git a/file b/file\n${'界'.repeat(400_000)}`
+    assert.ok(oversized.length < 1024 * 1024)
+    assert.ok(Buffer.byteLength(oversized, 'utf8') > 1024 * 1024)
+    const result = await applyPatch(root, oversized)
+    assert.equal(result.ok, false)
+    assert.match(result.error ?? '', /patch is too large/i)
+  } finally {
+    cleanup()
+  }
+})
+
 test('single-file staging treats pathspec syntax as a literal filename', async () => {
   const { root, git, cleanup } = fixture()
   try {
@@ -133,6 +210,25 @@ test('file-scoped Git operations do not expand pathspec magic in a filename', {
     entries = new Map((await readStatus(root)).files.map((file) => [file.path, file]))
     assert.equal(entries.get(magicFile), undefined)
     assert.equal(entries.get(otherFile)?.worktree, 'M')
+  } finally {
+    cleanup()
+  }
+})
+
+test('file-scoped Git operations accept filenames beginning with two dots', async () => {
+  const { root, git, cleanup } = fixture()
+  const file = '..notes.txt'
+  try {
+    writeFileSync(path.join(root, file), 'before\n')
+    git('add', '-A')
+    git('commit', '-qm', 'baseline')
+    writeFileSync(path.join(root, file), 'after\n')
+
+    const diff = await readFileDiff(root, file)
+    assert.equal(diff.oldText, 'before\n')
+    assert.equal(diff.newText, 'after\n')
+    assert.equal((await stageFile(root, file)).ok, true)
+    assert.equal((await unstageFile(root, file)).ok, true)
   } finally {
     cleanup()
   }

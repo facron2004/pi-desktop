@@ -7,6 +7,7 @@ import {
   MAX_FILE_BYTES,
   listProjectImages,
   openWorkspaceFile,
+  readBoundedHandle,
   readBoundedFile,
   readImageDataUrl,
   resolveWorkspacePath
@@ -104,6 +105,28 @@ test('readBoundedFile returns null on missing file or directory', async () => {
   }
 })
 
+test('readBoundedHandle marks an in-place file change during the read as truncated', async () => {
+  let changed = false
+  const handle = {
+    async stat() {
+      return {
+        size: 3n,
+        mtimeNs: changed ? 2n : 1n,
+        ctimeNs: changed ? 2n : 1n,
+        isFile: () => true
+      }
+    },
+    async read(buffer: Buffer, offset: number, length: number) {
+      const bytesRead = Buffer.from(changed ? 'new' : 'old').copy(buffer, offset, 0, length)
+      changed = true
+      return { bytesRead, buffer }
+    }
+  } as unknown as import('node:fs/promises').FileHandle
+
+  const result = await readBoundedHandle(handle, 16)
+  assert.deepEqual(result, { content: 'old', truncated: true, size: 3 })
+})
+
 test('openWorkspaceFile reads from the verified handle after the pathname is replaced', async () => {
   const temp = realpathSync(os.tmpdir())
   const workspace = mkdtempSync(path.join(temp, 'pi-desktop-stable-handle-'))
@@ -124,6 +147,31 @@ test('openWorkspaceFile reads from the verified handle after the pathname is rep
     }
   } finally {
     rmSync(workspace, { recursive: true, force: true })
+  }
+})
+
+test('workspace access allows names beginning with two dots but rejects parent traversal', async () => {
+  const temp = realpathSync(os.tmpdir())
+  const parent = mkdtempSync(path.join(temp, 'pi-desktop-dot-name-'))
+  const workspace = path.join(parent, 'workspace')
+  const file = path.join(workspace, '..notes.txt')
+  const outside = path.join(parent, 'private.txt')
+  mkdirSync(workspace)
+  try {
+    writeFileSync(file, 'inside workspace')
+    writeFileSync(outside, 'outside workspace')
+
+    assert.equal(await resolveWorkspacePath(workspace, '..notes.txt'), realpathSync(file))
+    const opened = await openWorkspaceFile(workspace, '..notes.txt')
+    assert.ok(opened)
+    try {
+      assert.equal(await opened.handle.readFile('utf8'), 'inside workspace')
+    } finally {
+      await opened.handle.close()
+    }
+    assert.equal(await resolveWorkspacePath(workspace, path.join('..', path.basename(outside))), null)
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
   }
 })
 
@@ -148,6 +196,20 @@ test('listProjectImages finds every picture in one walk and skips excluded folde
     )
     assert.equal(result.entries.every((entry) => entry.kind === 'file'), true)
     assert.equal(result.truncated, false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('listProjectImages reports an unreadable root as truncated', async () => {
+  const temp = realpathSync(os.tmpdir())
+  const dir = mkdtempSync(path.join(temp, 'pi-desktop-images-unreadable-'))
+  const rootFile = path.join(dir, 'not-a-directory')
+  writeFileSync(rootFile, 'workspace root is not a directory', 'utf8')
+  try {
+    const result = await listProjectImages(rootFile)
+    assert.deepEqual(result.entries, [])
+    assert.equal(result.truncated, true)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { AppSettings, Workspace } from '@shared/types'
 import { normalizeFontScale } from '@shared/font-scale'
@@ -31,6 +31,24 @@ function normalizeProjectOrder(paths: unknown): string[] {
     order.push(item)
   }
   return order
+}
+
+const MAX_EXTERNAL_CHAT_FOLDERS = 16
+
+function normalizeExternalChatFolderHistory(paths: unknown, activeFolder?: string): string[] {
+  if (!Array.isArray(paths)) return []
+  const activeKey = activeFolder?.trim() ? workspaceKey(activeFolder.trim()) : undefined
+  const seen = new Set<string>()
+  const folders: string[] = []
+  for (const item of paths) {
+    if (typeof item !== 'string' || !item.trim()) continue
+    const folder = item.trim()
+    const key = workspaceKey(folder)
+    if (key === activeKey || seen.has(key)) continue
+    seen.add(key)
+    folders.push(folder)
+  }
+  return folders.slice(-MAX_EXTERNAL_CHAT_FOLDERS)
 }
 
 /** One entry per folder. A later open of the same path replaces the earlier one.
@@ -240,7 +258,10 @@ function readSettingsFile(file: string): PersistedAppSettings | null {
   try {
     if (!existsSync(file)) return null
     const raw = readFileSync(file, 'utf8')
-    return JSON.parse(raw.replace(/^\uFEFF/, '')) as PersistedAppSettings
+    const parsed: unknown = JSON.parse(raw.replace(/^\uFEFF/, ''))
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as PersistedAppSettings
+      : null
   } catch {
     return null
   }
@@ -374,6 +395,10 @@ export class SettingsStore {
       customFg: normalizeThemeForeground(saved),
       workspaces: dedupeWorkspaces(Array.isArray(saved.workspaces) ? saved.workspaces : []),
       projectOrder: normalizeProjectOrder(saved.projectOrder),
+      externalChatFolderHistory: normalizeExternalChatFolderHistory(
+        saved.externalChatFolderHistory,
+        saved.externalChatFolder
+      ),
       pinnedSessions: Array.isArray(saved.pinnedSessions) ? saved.pinnedSessions : [],
       archivedSessions: Array.isArray(saved.archivedSessions) ? saved.archivedSessions : []
     }
@@ -386,7 +411,11 @@ export class SettingsStore {
 
   /** Read the in-process snapshot from hot paths that may run for every stream event. */
   getCached(): AppSettings {
-    return { ...this.data, workspaces: [...this.data.workspaces] }
+    return {
+      ...this.data,
+      workspaces: [...this.data.workspaces],
+      externalChatFolderHistory: [...(this.data.externalChatFolderHistory ?? [])]
+    }
   }
 
   /** Read the persisted registry so remote authorization sees other app processes' edits. */
@@ -401,7 +430,23 @@ export class SettingsStore {
   }
 
   patch(patch: Partial<AppSettings>): AppSettings {
-    this.update(() => patch)
+    this.update((current) => {
+      const { externalChatFolderHistory: _ignoredHistory, ...requested } = patch
+      if (!Object.prototype.hasOwnProperty.call(patch, 'externalChatFolder')) return requested
+
+      const nextFolder = requested.externalChatFolder?.trim()
+      const currentFolder = current.externalChatFolder?.trim()
+      const history = [...(current.externalChatFolderHistory ?? [])]
+      if (
+        currentFolder &&
+        (!nextFolder || workspaceKey(currentFolder) !== workspaceKey(nextFolder))
+      ) history.push(currentFolder)
+
+      return {
+        ...requested,
+        externalChatFolderHistory: normalizeExternalChatFolderHistory(history, nextFolder)
+      }
+    })
     // Pi reads its own startup model from the agent directory, not from this
     // file. A selection that never lands there is gone on the next launch.
     if ('model' in patch) {
@@ -494,6 +539,12 @@ export class SettingsStore {
       const next: AppSettings = {
         ...current,
         ...patch,
+        externalChatFolderHistory: patch.externalChatFolderHistory === undefined
+          ? current.externalChatFolderHistory
+          : normalizeExternalChatFolderHistory(
+              patch.externalChatFolderHistory,
+              patch.externalChatFolder ?? current.externalChatFolder
+            ),
         trustProject: 'trustProject' in patch ? patch.trustProject === true : current.trustProject,
         workspaces: patch.workspaces === undefined
           ? current.workspaces
@@ -549,6 +600,11 @@ export class SettingsStore {
     const tmp = `${this.file}.${randomUUID()}.tmp`
     try {
       mkdirSync(path.dirname(this.file), { recursive: true })
+      if (existsSync(this.file) && readSettingsFile(this.file) === null) {
+        const recoveryFile = `${this.file}.corrupt-${Date.now()}-${randomUUID()}`
+        copyFileSync(this.file, recoveryFile)
+        console.error(`[pi-desktop] invalid settings were preserved at ${recoveryFile}`)
+      }
       writeFileSync(tmp, JSON.stringify({ ...data, projectTrustReviewed }, null, 2), 'utf8')
       renameSync(tmp, this.file)
     } catch (error) {

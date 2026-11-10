@@ -26,16 +26,44 @@ interface ActiveRun {
   taskId: string
   sessionFile?: string
   releaseRunLock: () => void
+  releaseRunSlot: () => void
+}
+
+interface TaskRunOwner {
+  token: string
+  ownerPid: number
+  piPid?: number
+}
+
+interface RunSlotLease {
+  ownerFile: string
+  release: () => void
 }
 
 const TIMER_SLICE_MS = 60_000
 const CROSS_PROCESS_POLL_MS = 2_000
 const TASK_LOCK_STALE_MS = 60_000
 const TASK_LOCK_UPDATE_MS = 20_000
+const LIVE_PROCESS_LOCK_STALE_MS = Number.MAX_SAFE_INTEGER
+const MAX_CONCURRENT_SCHEDULED_RUNS = 4
+const MAX_SCHEDULED_TASKS = 100
+const MAX_SCHEDULED_TASK_PROMPT_CHARS = 100_000
 const SCHEDULED_TASK_STATUSES = new Set<ScheduledTaskStatus>(['running', 'completed', 'error', 'aborted'])
 
 function validScheduledTime(value: unknown): value is string {
   return typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)
+}
+
+function processLiveness(pid: number): 'alive' | 'dead' | 'unknown' {
+  try {
+    process.kill(pid, 0)
+    return 'alive'
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ESRCH') return 'dead'
+    if (code === 'EPERM') return 'alive'
+    return 'unknown'
+  }
 }
 
 function isStoredTask(value: unknown): value is ScheduledTask {
@@ -93,7 +121,11 @@ function nextOccurrence(schedule: ScheduledTaskSchedule, from: number): number |
 
 function validateInput(value: ScheduledTaskInput): ScheduledTaskInput {
   const title = String(value?.title ?? '').trim().slice(0, 120)
-  const prompt = String(value?.prompt ?? '').trim()
+  const rawPrompt = String(value?.prompt ?? '')
+  if (rawPrompt.length > MAX_SCHEDULED_TASK_PROMPT_CHARS) {
+    throw new Error(`Task prompts must be at most ${MAX_SCHEDULED_TASK_PROMPT_CHARS.toLocaleString()} characters.`)
+  }
+  const prompt = rawPrompt.trim()
   const workspaceId = String(value?.workspaceId ?? '').trim()
   const schedule = value?.schedule
   if (!title) throw new Error('Enter a task name.')
@@ -137,6 +169,7 @@ export class ScheduledTaskService extends EventEmitter {
   private readonly activeRuns = new Map<string, ActiveRun>()
   private disposed = false
   private schedulingStopped = false
+  private waitingForRunSlot = false
   private refreshTimer: ReturnType<typeof setTimeout> | undefined
   private pendingTasks: ScheduledTask[] | undefined
 
@@ -164,6 +197,9 @@ export class ScheduledTaskService extends EventEmitter {
     const normalized = validateInput(input)
     this.assertWorkspace(normalized.workspaceId)
     this.mutateTasks((tasks) => {
+      if (tasks.length >= MAX_SCHEDULED_TASKS) {
+        throw new Error(`You can create up to ${MAX_SCHEDULED_TASKS} scheduled tasks.`)
+      }
       const now = Date.now()
       const task: ScheduledTask = {
         ...normalized,
@@ -246,7 +282,10 @@ export class ScheduledTaskService extends EventEmitter {
     this.supervisor.off('rekey', this.onRuntimeRekey)
     this.supervisor.off('status', this.onRuntimeStatus)
     for (const [key, active] of this.activeRuns) {
-      if (!this.supervisor.sessionInfo(key)?.running) active.releaseRunLock()
+      if (!this.supervisor.sessionInfo(key)?.running) {
+        active.releaseRunLock()
+        active.releaseRunSlot()
+      }
     }
   }
 
@@ -380,6 +419,7 @@ export class ScheduledTaskService extends EventEmitter {
       this.refreshFromDisk()
       if (this.recoverInterruptedRuns()) this.emit('changed', this.cloneTasks(this.tasks))
       this.skipOverlappedOccurrences()
+      this.waitingForRunSlot = false
       this.scheduleNext()
       this.scheduleRefresh()
     }, CROSS_PROCESS_POLL_MS)
@@ -419,7 +459,82 @@ export class ScheduledTaskService extends EventEmitter {
     return path.join(path.dirname(this.file), `scheduled-task-${digest}.run`)
   }
 
+  private taskRunOwnerFile(id: string): string {
+    return this.runLockOwnerFile(this.taskRunLockFile(id))
+  }
+
+  private runSlotOwnerFile(slot: number): string {
+    return this.runLockOwnerFile(this.runSlotLockFile(slot))
+  }
+
+  private runLockOwnerFile(lockFile: string): string {
+    return `${lockFile}.owner.json`
+  }
+
+  private runLockOwnerState(lockFile: string, ownerFile: string): 'alive' | 'dead' | 'unknown' {
+    let owner: TaskRunOwner
+    try {
+      owner = JSON.parse(readFileSync(ownerFile, 'utf8')) as TaskRunOwner
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'dead'
+      try {
+        return properLockfile.checkSync(lockFile, {
+          realpath: false,
+          stale: LIVE_PROCESS_LOCK_STALE_MS
+        }) ? 'unknown' : 'dead'
+      } catch {
+        return 'unknown'
+      }
+    }
+    try {
+      if (!properLockfile.checkSync(lockFile, {
+        realpath: false,
+        stale: LIVE_PROCESS_LOCK_STALE_MS
+      })) return 'dead'
+    } catch {
+      return 'unknown'
+    }
+    if (!owner || typeof owner.token !== 'string') return 'unknown'
+    const pid = owner.piPid ?? owner.ownerPid
+    if (!Number.isSafeInteger(pid) || pid <= 0) return 'unknown'
+    return processLiveness(pid)
+  }
+
+  private writeRunLockOwner(file: string, owner: TaskRunOwner): void {
+    const temporary = `${file}.${randomUUID()}.tmp`
+    try {
+      writeFileSync(temporary, JSON.stringify(owner), { encoding: 'utf8', flag: 'wx' })
+      renameSync(temporary, file)
+    } catch (error) {
+      try { unlinkSync(temporary) } catch { /* the temporary file may not exist */ }
+      throw error
+    }
+  }
+
+  private removeRunLockOwner(file: string, token: string): void {
+    try {
+      const owner = JSON.parse(readFileSync(file, 'utf8')) as TaskRunOwner
+      if (owner.token === token) unlinkSync(file)
+    } catch {
+      /* A stale or unreadable owner record must not interrupt task settlement. */
+    }
+  }
+
+  private wrapRunLockRelease(releaseLock: () => void, ownerFile: string, token: string): () => void {
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      try {
+        releaseLock()
+      } finally {
+        this.removeRunLockOwner(ownerFile, token)
+      }
+    }
+  }
+
   private hasTaskRunLock(id: string): boolean {
+    if (this.runLockOwnerState(this.taskRunLockFile(id), this.taskRunOwnerFile(id)) === 'alive') return true
     try {
       return properLockfile.checkSync(this.taskRunLockFile(id), {
         realpath: false,
@@ -488,7 +603,11 @@ export class ScheduledTaskService extends EventEmitter {
   private scheduleNext(now = Date.now()): void {
     if (this.timer) clearTimeout(this.timer)
     this.timer = undefined
-    if (this.schedulingStopped) return
+    if (
+      this.schedulingStopped ||
+      this.waitingForRunSlot ||
+      this.activeTasks.size >= MAX_CONCURRENT_SCHEDULED_RUNS
+    ) return
     const due = this.tasks
       .filter((task) => task.enabled && task.nextRunAt !== undefined && !this.hasTaskRunLock(task.id))
       .reduce<number | undefined>((soonest, task) =>
@@ -503,6 +622,7 @@ export class ScheduledTaskService extends EventEmitter {
             void this.launch(task, false).catch((error) => {
               console.error('[pi-desktop] scheduled task failed:', error)
             })
+            if (this.waitingForRunSlot) break
           }
         }
       }
@@ -519,18 +639,29 @@ export class ScheduledTaskService extends EventEmitter {
       throw new Error('This task is already running.')
     }
     const sessionKey = `draft:${randomUUID()}`
+    const runOwner: TaskRunOwner = { token: randomUUID(), ownerPid: process.pid }
+    const taskRunLockFile = this.taskRunLockFile(task.id)
+    const taskRunOwnerFile = this.taskRunOwnerFile(task.id)
     let releaseRunLock: () => void
+    let releaseLockFile: (() => void) | undefined
     try {
-      releaseRunLock = properLockfile.lockSync(this.taskRunLockFile(task.id), {
+      const stale = this.runLockOwnerState(taskRunLockFile, taskRunOwnerFile) === 'alive'
+        ? LIVE_PROCESS_LOCK_STALE_MS
+        : TASK_LOCK_STALE_MS
+      releaseLockFile = properLockfile.lockSync(taskRunLockFile, {
         realpath: false,
         retries: 0,
-        stale: TASK_LOCK_STALE_MS,
+        stale,
         update: TASK_LOCK_UPDATE_MS,
         onCompromised: () => {
           void this.supervisor.stop(sessionKey).catch(() => {})
         }
       })
+      this.writeRunLockOwner(taskRunOwnerFile, runOwner)
+      releaseRunLock = this.wrapRunLockRelease(releaseLockFile, taskRunOwnerFile, runOwner.token)
     } catch (error) {
+      try { releaseLockFile?.() } catch { /* lock acquisition cleanup is best-effort */ }
+      this.removeRunLockOwner(taskRunOwnerFile, runOwner.token)
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? String((error as { code?: unknown }).code)
         : undefined
@@ -541,6 +672,22 @@ export class ScheduledTaskService extends EventEmitter {
       this.scheduleNext()
       return
     }
+
+    let runSlot: RunSlotLease | undefined
+    try {
+      runSlot = this.acquireRunSlot(sessionKey, runOwner)
+    } catch (error) {
+      releaseRunLock()
+      throw error
+    }
+    if (!runSlot) {
+      releaseRunLock()
+      if (manual) throw new Error('All scheduled task run slots are busy. Try again when one finishes.')
+      this.waitingForRunSlot = true
+      return
+    }
+    const releaseRunSlot = runSlot.release
+    this.waitingForRunSlot = false
 
     let currentTask: ScheduledTask | undefined
     const now = Date.now()
@@ -578,6 +725,7 @@ export class ScheduledTaskService extends EventEmitter {
       })
     } catch (error) {
       releaseRunLock()
+      releaseRunSlot()
       if (!(error instanceof Error && error.message === 'Scheduled task not found.')) {
         const message = error instanceof Error ? error.message : String(error)
         this.tasks = this.tasks.map((entry) => entry.id === task.id
@@ -591,13 +739,14 @@ export class ScheduledTaskService extends EventEmitter {
 
     if (!currentTask) {
       releaseRunLock()
+      releaseRunSlot()
       this.refreshFromDisk()
       this.scheduleNext()
       return
     }
 
     this.activeTasks.add(currentTask.id)
-    this.activeRuns.set(sessionKey, { taskId: currentTask.id, releaseRunLock })
+    this.activeRuns.set(sessionKey, { taskId: currentTask.id, releaseRunLock, releaseRunSlot })
     this.publish()
     const workspace = this.settings.get().workspaces.find((entry) => entry.id === currentTask!.workspaceId)
     if (!workspace) {
@@ -616,6 +765,18 @@ export class ScheduledTaskService extends EventEmitter {
         trace: { sourceAction: 'scheduled-task', uiSessionId: sessionKey }
       })
       if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start.')
+      const piPid = this.supervisor.sessionInfo(sessionKey)?.pid
+      if (piPid !== undefined) {
+        try {
+          const owner = { ...runOwner, piPid }
+          this.writeRunLockOwner(taskRunOwnerFile, owner)
+          this.writeRunLockOwner(runSlot.ownerFile, owner)
+        } catch (error) {
+          await this.supervisor.stop(sessionKey).catch(() => {})
+          this.finish(currentTask.id, 'error', 'Could not record the Pi process for this scheduled task.')
+          throw error
+        }
+      }
       try {
         await this.supervisor.request(sessionKey, 'set_session_name', { name: currentTask.title }, 30_000, {
           sourceAction: 'scheduled-task-title',
@@ -662,9 +823,11 @@ export class ScheduledTaskService extends EventEmitter {
     if (!this.activeTasks.has(taskId)) return
     this.activeTasks.delete(taskId)
     let releaseRunLock: (() => void) | undefined
+    let releaseRunSlot: (() => void) | undefined
     for (const [key, active] of this.activeRuns) {
       if (active.taskId === taskId) {
         releaseRunLock = active.releaseRunLock
+        releaseRunSlot = active.releaseRunSlot
         this.activeRuns.delete(key)
       }
     }
@@ -698,8 +861,49 @@ export class ScheduledTaskService extends EventEmitter {
       this.pendingTasks = this.cloneTasks(next)
     } finally {
       releaseRunLock?.()
+      releaseRunSlot?.()
+      this.waitingForRunSlot = false
     }
     this.emit('changed', this.cloneTasks(this.tasks))
     this.scheduleNext()
+  }
+
+  private runSlotLockFile(slot: number): string {
+    return path.join(path.dirname(this.file), `scheduled-task-run-slot-${slot}`)
+  }
+
+  private acquireRunSlot(sessionKey: string, owner: TaskRunOwner): RunSlotLease | undefined {
+    for (let slot = 0; slot < MAX_CONCURRENT_SCHEDULED_RUNS; slot++) {
+      const lockFile = this.runSlotLockFile(slot)
+      const ownerFile = this.runSlotOwnerFile(slot)
+      let releaseLock: (() => void) | undefined
+      try {
+        const stale = this.runLockOwnerState(lockFile, ownerFile) === 'alive'
+          ? LIVE_PROCESS_LOCK_STALE_MS
+          : TASK_LOCK_STALE_MS
+        releaseLock = properLockfile.lockSync(lockFile, {
+          realpath: false,
+          retries: 0,
+          stale,
+          update: TASK_LOCK_UPDATE_MS,
+          onCompromised: () => {
+            void this.supervisor.stop(sessionKey).catch(() => {})
+          }
+        })
+        this.writeRunLockOwner(ownerFile, owner)
+        return {
+          ownerFile,
+          release: this.wrapRunLockRelease(releaseLock, ownerFile, owner.token)
+        }
+      } catch (error) {
+        try { releaseLock?.() } catch { /* lock acquisition cleanup is best-effort */ }
+        this.removeRunLockOwner(ownerFile, owner.token)
+        const code = typeof error === 'object' && error !== null && 'code' in error
+          ? String((error as { code?: unknown }).code)
+          : undefined
+        if (code !== 'ELOCKED') throw error
+      }
+    }
+    return undefined
   }
 }

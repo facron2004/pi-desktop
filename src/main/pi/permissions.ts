@@ -1,4 +1,5 @@
 import { lstatSync, realpathSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import path from 'node:path'
 import type { ToolApproval } from '@shared/types'
 
@@ -14,7 +15,21 @@ function realPath(target: string): string {
   return path.join(realpathSync(target), ...missing)
 }
 
-export function canAutoApprove(approval: ToolApproval, cwd: string): boolean {
+function huggingFaceCredentialPaths(cwd: string, env: NodeJS.ProcessEnv): string[] {
+  const resolveConfigPath = (value: string) => {
+    const expanded = value.replace(/^~(?=$|[\\/])/, homedir())
+    return path.resolve(cwd, expanded)
+  }
+  const cacheHome = env.HF_HOME
+    ? resolveConfigPath(env.HF_HOME)
+    : path.join(env.XDG_CACHE_HOME ? resolveConfigPath(env.XDG_CACHE_HOME) : path.join(homedir(), '.cache'), 'huggingface')
+  return [
+    env.HF_TOKEN_PATH ? resolveConfigPath(env.HF_TOKEN_PATH) : path.join(cacheHome, 'token'),
+    path.join(cacheHome, 'stored_tokens')
+  ]
+}
+
+export function canAutoApprove(approval: ToolApproval, cwd: string, env: NodeJS.ProcessEnv = process.env): boolean {
   if (approval.toolSource !== 'builtin' || !['read', 'write', 'edit'].includes(approval.toolName)) return false
   const raw = approval.input.path
   if (typeof raw !== 'string' || !raw || /^[@~]|^file:/i.test(raw)) return false
@@ -32,6 +47,8 @@ export function canAutoApprove(approval: ToolApproval, cwd: string): boolean {
     const realTarget = realPath(target)
     const resolved = path.relative(root, realTarget)
     if (!inside(lexical) || !inside(resolved)) return false
+    const configuredHfCredentials = huggingFaceCredentialPaths(workingDirectory, env).map(realPath)
+    if (configuredHfCredentials.some((credential) => [target, realTarget].some((candidate) => inside(path.relative(credential, candidate))))) return false
     const absolute = path.relative(path.parse(root).root, realTarget)
     const file = statSync(target, { throwIfNoEntry: false })
     if (file?.isFile() && file.nlink > 1) return false
@@ -41,6 +58,11 @@ export function canAutoApprove(approval: ToolApproval, cwd: string): boolean {
       return parts.some((part) => protectedPath.test(part)) ||
         parts.some((part, index) =>
           part.toLowerCase() === '.config' && ['gcloud', 'gh'].includes(parts[index + 1]?.toLowerCase())
+        ) ||
+        parts.some((part, index) =>
+          part.toLowerCase() === '.cache' &&
+          parts[index + 1]?.toLowerCase() === 'huggingface' &&
+          ['token', 'stored_tokens'].includes(parts[index + 2]?.toLowerCase())
         )
     })
   } catch {

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
@@ -91,6 +91,31 @@ test('project trust defaults off and legacy trust is re-enabled only after an ex
     assert.equal(new SettingsStore(fileName).get().trustProject, true)
   } finally {
     rmSync(file, { force: true })
+  }
+})
+
+test('an invalid settings file is preserved before defaults are written', () => {
+  const fileName = `settings-invalid-recovery-${process.pid}.json`
+  const file = path.join('C:/tmp', fileName)
+  const original = '{"theme":'
+  try {
+    writeFileSync(file, original, 'utf8')
+    const store = new SettingsStore(fileName)
+    store.patch({ theme: 'light' })
+
+    const recoveryName = readdirSync(path.dirname(file)).find((name) =>
+      name.startsWith(`${path.basename(file)}.corrupt-`)
+    )
+    assert.ok(recoveryName, 'saving recovered settings should leave a named copy of the invalid file')
+    assert.equal(readFileSync(path.join(path.dirname(file), recoveryName), 'utf8'), original)
+    assert.equal(new SettingsStore(fileName).get().theme, 'light')
+  } finally {
+    rmSync(file, { force: true })
+    for (const name of readdirSync(path.dirname(file))) {
+      if (name.startsWith(`${path.basename(file)}.corrupt-`)) {
+        rmSync(path.join(path.dirname(file), name), { force: true })
+      }
+    }
   }
 })
 

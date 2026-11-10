@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, it } from 'node:test'
 import {
   filterMarketplaceEntries,
@@ -12,7 +15,11 @@ import {
   installSourceKind,
   mergeMarketplaceSnapshot,
   normaliseGitRepository,
-  normaliseInstalledSource
+  normaliseInstalledSource,
+  MAX_MARKETPLACE_RESPONSE_BYTES,
+  resolveSkillInstallTarget,
+  refreshMarketplace,
+  createResource
 } from '../src/main/marketplace'
 import { MARKETPLACE_SNAPSHOT } from '../src/shared/marketplace-data'
 
@@ -208,6 +215,119 @@ describe('installNpmPackage', () => {
     await assert.rejects(() => installNpmPackage('@scope/'))
     await assert.rejects(() => installNpmPackage('..'))
     await assert.rejects(() => installNpmPackage('Uppercase'))
+  })
+})
+
+describe('resolveSkillInstallTarget', () => {
+  it('allows a new repository and an existing directory inside the skills root', () => {
+    const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), 'marketplace-skills-'))
+    const skillsDirectory = path.join(temporaryDirectory, 'agent', 'skills')
+    const existingTarget = path.join(skillsDirectory, 'installed')
+    mkdirSync(existingTarget, { recursive: true })
+
+    try {
+      assert.deepEqual(resolveSkillInstallTarget(skillsDirectory, 'new-repo'), {
+        target: path.join(skillsDirectory, 'new-repo'),
+        exists: false
+      })
+      assert.deepEqual(resolveSkillInstallTarget(skillsDirectory, 'installed'), {
+        target: existingTarget,
+        exists: true
+      })
+      assert.equal(resolveSkillInstallTarget(skillsDirectory, '..'), null)
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a repository symlink that points outside the skills root', (context) => {
+    const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), 'marketplace-skills-link-'))
+    const skillsDirectory = path.join(temporaryDirectory, 'agent', 'skills')
+    const outsideDirectory = path.join(temporaryDirectory, 'outside')
+    const target = path.join(skillsDirectory, 'linked-repo')
+    mkdirSync(skillsDirectory, { recursive: true })
+    mkdirSync(outsideDirectory)
+
+    try {
+      try {
+        symlinkSync(outsideDirectory, target, process.platform === 'win32' ? 'junction' : 'dir')
+      } catch {
+        context.skip('directory symlinks are unavailable in this environment')
+        return
+      }
+      assert.equal(resolveSkillInstallTarget(skillsDirectory, 'linked-repo'), null)
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('createResource', () => {
+  it('creates resources normally and refuses writes through linked resource roots', async (context) => {
+    const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), 'marketplace-create-link-'))
+    const previousAgentDirectory = process.env.PI_CODING_AGENT_DIR
+    try {
+      const normalAgentDirectory = path.join(temporaryDirectory, 'normal-agent')
+      process.env.PI_CODING_AGENT_DIR = normalAgentDirectory
+      const plugin = await createResource({ kind: 'plugin', name: 'sample-plugin', description: 'Test plugin' })
+      const skill = await createResource({ kind: 'skill', name: 'sample-skill', description: 'Test skill' })
+      assert.equal(plugin.ok, true)
+      assert.equal(existsSync(plugin.path!), true)
+      assert.equal(skill.ok, true)
+      assert.equal(existsSync(skill.path!), true)
+
+      for (const kind of ['plugin', 'skill'] as const) {
+        const agentDirectory = path.join(temporaryDirectory, `${kind}-agent`)
+        const resourceDirectory = path.join(agentDirectory, kind === 'plugin' ? 'extensions' : 'skills')
+        const outsideDirectory = path.join(temporaryDirectory, `${kind}-outside`)
+        const name = 'escape-test'
+        const outsideTarget = kind === 'plugin'
+          ? path.join(outsideDirectory, `${name}.ts`)
+          : path.join(outsideDirectory, name, 'SKILL.md')
+        mkdirSync(agentDirectory, { recursive: true })
+        mkdirSync(outsideDirectory)
+
+        try {
+          symlinkSync(outsideDirectory, resourceDirectory, process.platform === 'win32' ? 'junction' : 'dir')
+        } catch {
+          context.skip('directory symlinks are unavailable in this environment')
+          return
+        }
+
+        process.env.PI_CODING_AGENT_DIR = agentDirectory
+        const result = await createResource({ kind, name, description: 'Test resource' })
+        assert.equal(result.ok, false)
+        assert.equal(existsSync(outsideTarget), false)
+      }
+    } finally {
+      if (previousAgentDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDirectory
+      rmSync(temporaryDirectory, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('marketplace response limits', () => {
+  it('cancels an oversized GitHub response while streaming', async () => {
+    const originalFetch = globalThis.fetch
+    let requests = 0
+    globalThis.fetch = (async () => {
+      requests += 1
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(MAX_MARKETPLACE_RESPONSE_BYTES + 1))
+          controller.close()
+        }
+      })
+      return new Response(body, { status: 200 })
+    }) as typeof fetch
+
+    try {
+      await assert.rejects(refreshMarketplace(), /larger than 2 MB/)
+      assert.equal(requests, 1)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })
 

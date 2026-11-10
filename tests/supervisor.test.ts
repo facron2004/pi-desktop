@@ -20,6 +20,7 @@ class FakeRuntime extends EventEmitter implements ManagedSessionRuntime {
   readonly commands: RecordedCommand[] = []
   starts = 0
   stops = 0
+  pid?: number
   approvals: { id: string; response: ExtensionUiResponse }[] = []
   running = false
   status: RuntimeStatus = { phase: 'stopped' }
@@ -137,6 +138,7 @@ test('two ensures of one session start a single runtime', async () => {
 
 test('an existing draft runtime stays bound to its original workspace', async () => {
   const runtime = new FakeRuntime()
+  runtime.pid = 4321
   const supervisor = supervisorOf([runtime])
   await supervisor.ensure({ sessionKey: 'draft:1', cwd: 'C:/a' })
 
@@ -146,6 +148,7 @@ test('an existing draft runtime stays bound to its original workspace', async ()
   })
   assert.equal(runtime.starts, 1)
   assert.equal(supervisor.sessionInfo('draft:1')?.cwd, 'C:/a')
+  assert.equal(supervisor.sessionInfo('draft:1')?.pid, 4321)
 })
 
 test('an in-flight draft runtime cannot be joined from another workspace', async () => {

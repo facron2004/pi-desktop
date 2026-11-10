@@ -3,7 +3,7 @@ import { MAX_IMAGE_DATA_BYTES } from '@shared/types'
 import { exec } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { constants, mkdirSync, writeFileSync, type Dirent } from 'node:fs'
-import { lstat, open, opendir, readdir, realpath, stat, type FileHandle } from 'node:fs/promises'
+import { lstat, open, opendir, realpath, stat, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type {
   AppInfo,
@@ -11,6 +11,9 @@ import type {
   ExtensionUiResponse,
   FileContent,
   FileEntry,
+  FileListResult,
+  FileSearchResult,
+  FileSearchScope,
   GitCommitResult,
   ImageListResult,
   MemoryGenerateOptions,
@@ -25,6 +28,7 @@ import type {
   ScheduledTaskInput,
   TerminalCreateOptions,
   TextSearchHit,
+  TextSearchResult,
   UpgradeResult,
   VersionCheckResult,
   VersionItemStatus,
@@ -90,6 +94,7 @@ import {
   pathsEqual,
   readSessionMessages,
   resolveSessionRoot,
+  resolveSessionRoots,
   resolveSessionFilePath,
   searchSessions
 } from './sessions'
@@ -127,15 +132,16 @@ function runtimeInstructions(context: IpcContext, cwd: string): string | undefin
 
 async function validateRuntimeSessionFile(
   file: unknown,
-  cwd: string
+  cwd: string,
+  sessionRoots: readonly string[] = resolveSessionRoots()
 ): Promise<
   | { ok: true; sessionFile?: string }
   | { ok: false; reason: 'unavailable' | 'metadata' | 'cwd' }
 > {
   if (file === undefined) return { ok: true }
-  const sessionFile = await resolveSessionFilePath(file)
+  const sessionFile = await resolveSessionFilePath(file, sessionRoots)
   if (!sessionFile) return { ok: false, reason: 'unavailable' }
-  const meta = await getSessionMeta(sessionFile, resolveSessionRoot())
+  const meta = await getSessionMeta(sessionFile, sessionRoots)
   if (!meta?.cwd) return { ok: false, reason: 'metadata' }
   if (!(await runtimeCwdsMatch(meta.cwd, cwd))) {
     return { ok: false, reason: 'cwd' }
@@ -172,15 +178,16 @@ async function resolveRuntimeStopCwd(context: IpcContext, cwd: unknown): Promise
 
 export async function removeSessionFile(
   file: unknown,
-  supervisor: Pick<SessionSupervisor, 'withSessionFileMutation'>
+  supervisor: Pick<SessionSupervisor, 'withSessionFileMutation'>,
+  sessionRoots: readonly string[] = resolveSessionRoots()
 ): Promise<boolean> {
-  const original = await openSessionFile(file)
+  const original = await openSessionFile(file, sessionRoots)
   if (!original) return false
   try {
     // The pathname is untrusted until the mutation lock is held; compare its
     // current file identity to the handle that passed the first validation.
     return await supervisor.withSessionFileMutation(original.target, async () => {
-      const current = await openSessionFile(file)
+      const current = await openSessionFile(file, sessionRoots)
       if (!current) return false
       try {
         const [before, after] = await Promise.all([
@@ -223,15 +230,17 @@ export async function readBoundedFile(
   }
 }
 
-async function readBoundedHandle(
+export async function readBoundedHandle(
   handle: FileHandle,
-  maxBytes: number
+  maxBytes: number,
+  onBytesRead?: (totalRead: number) => void
 ): Promise<{ content: string; truncated: boolean; size: number } | null> {
   try {
-    const stats = await handle.stat()
+    const stats = await handle.stat({ bigint: true })
     if (!stats.isFile()) return null
-    const truncated = stats.size > maxBytes
-    const bytesToRead = truncated ? maxBytes : stats.size
+    const byteLimit = BigInt(maxBytes)
+    const truncated = stats.size > byteLimit
+    const bytesToRead = Number(truncated ? byteLimit : stats.size)
     let content = ''
     if (bytesToRead > 0) {
       const buffer = Buffer.alloc(bytesToRead)
@@ -240,16 +249,33 @@ async function readBoundedHandle(
         const { bytesRead } = await handle.read(buffer, totalRead, bytesToRead - totalRead, totalRead)
         if (bytesRead === 0) break
         totalRead += bytesRead
+        onBytesRead?.(totalRead)
       }
       content = buffer.subarray(0, totalRead).toString('utf8')
     }
-    return { content, truncated, size: stats.size }
+    const after = await handle.stat({ bigint: true })
+    const changedDuringRead =
+      stats.size !== after.size || stats.mtimeNs !== after.mtimeNs || stats.ctimeNs !== after.ctimeNs
+    return {
+      content,
+      truncated: truncated || changedDuringRead,
+      size: Number(after.size)
+    }
   } catch {
     return null
   }
 }
 const MAX_SEARCH_RESULTS = 200
 const MAX_SEARCH_DEPTH = 12
+/** Bound one directory page so a single folder cannot render an unbounded tree. */
+const MAX_DIRECTORY_LIST_ENTRIES = 1_000
+/** Bound directory iteration even when most names are intentionally hidden. */
+const MAX_DIRECTORY_SCAN_ENTRIES = 10_000
+/** Bound whole-project name searches when a query has few or no matches. */
+const MAX_PROJECT_SEARCH_ENTRIES = 50_000
+/** Bound the file count and bytes read by a whole-project text search. */
+const MAX_TEXT_SEARCH_SCAN_ENTRIES = 10_000
+const MAX_TEXT_SEARCH_SCAN_BYTES = 64 * 1024 * 1024
 /** How many matches of one file a text search reports. */
 const MAX_TEXT_HITS_PER_FILE = 3
 /** Characters of a line shown around a text match. */
@@ -258,9 +284,9 @@ const TEXT_PREVIEW_LEAD = 12
 /** The newest full-text search per window; a later query supersedes it. */
 let sessionSearchSequence = 0
 const latestSessionSearches = new WeakMap<object, number>()
-/** The newest project path search per window; a later query supersedes it. */
+/** The newest project path search per window and UI surface; a later query supersedes it. */
 let fileSearchSequence = 0
-const latestFileSearches = new WeakMap<object, number>()
+const latestFileSearches = new WeakMap<object, Map<FileSearchScope | 'default', number>>()
 /** The newest project text search per window; a later query supersedes it. */
 let textSearchSequence = 0
 const latestTextSearches = new WeakMap<object, number>()
@@ -393,7 +419,11 @@ async function gitWrite<T extends GitCommitResult>(
 function isInside(root: string, target: string): boolean {
   if (!root) return false
   const relative = path.relative(path.resolve(root), path.resolve(target))
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  )
 }
 
 function isPathWithin(root: string, target: string): boolean {
@@ -652,6 +682,7 @@ export async function listProjectImages(
     try {
       directory = await opendir(dir)
     } catch {
+      truncated = true
       return
     }
     try {
@@ -687,7 +718,7 @@ export async function listProjectImages(
         if (results.length >= limit) truncated = true
       }
     } catch {
-      /* a directory may disappear or become unreadable during the walk */
+      truncated = true
     }
   }
 
@@ -708,65 +739,104 @@ async function searchFileText(
   root: string,
   file: string,
   needle: string,
-  remaining: number
-): Promise<TextSearchHit[]> {
-  const perFile = Math.min(remaining, MAX_TEXT_HITS_PER_FILE)
-  if (perFile <= 0) return []
+  remainingHits: number,
+  remainingBytes: number
+): Promise<{ hits: TextSearchHit[]; bytesRead: number; budgetExceeded: boolean; incomplete: boolean }> {
+  const perFile = Math.min(remainingHits, MAX_TEXT_HITS_PER_FILE)
+  if (perFile <= 0 || remainingBytes <= 0) {
+    return { hits: [], bytesRead: 0, budgetExceeded: remainingBytes <= 0, incomplete: false }
+  }
 
   const opened = await openWorkspaceFile(root, file)
-  if (!opened) return []
+  if (!opened) return { hits: [], bytesRead: 0, budgetExceeded: false, incomplete: true }
   let content: string
+  let bytesRead = 0
   try {
     const stats = await opened.handle.stat()
-    if (!stats.isFile() || stats.size === 0 || stats.size > MAX_FILE_BYTES) return []
-    const result = await readBoundedHandle(opened.handle, MAX_FILE_BYTES)
+    if (!stats.isFile() || stats.size === 0) {
+      return { hits: [], bytesRead: 0, budgetExceeded: false, incomplete: false }
+    }
+    if (stats.size > MAX_FILE_BYTES) {
+      return { hits: [], bytesRead: 0, budgetExceeded: false, incomplete: true }
+    }
+    if (stats.size > remainingBytes) {
+      return { hits: [], bytesRead: 0, budgetExceeded: true, incomplete: false }
+    }
+    const result = await readBoundedHandle(
+      opened.handle,
+      Math.min(MAX_FILE_BYTES, remainingBytes),
+      (totalRead) => {
+        bytesRead = totalRead
+      }
+    )
     // A file past the read cap is skipped rather than half-read: a hit in the
     // part that was never read would be a result the user cannot find.
-    if (!result || result.size === 0 || result.truncated) return []
+    if (result?.size && result.size > remainingBytes) {
+      return { hits: [], bytesRead, budgetExceeded: true, incomplete: false }
+    }
+    if (!result) {
+      return { hits: [], bytesRead, budgetExceeded: false, incomplete: true }
+    }
+    if (result.size === 0) {
+      return { hits: [], bytesRead, budgetExceeded: false, incomplete: false }
+    }
+    if (result.truncated) {
+      // The file may have changed during the read. Charge the actual bytes
+      // consumed before scanning on or reporting the incomplete result.
+      return { hits: [], bytesRead, budgetExceeded: false, incomplete: true }
+    }
     content = result.content
   } catch {
-    return []
+    return { hits: [], bytesRead: 0, budgetExceeded: false, incomplete: true }
   } finally {
     await opened.handle.close().catch(() => {})
   }
-  if (content.includes('\0')) return []
+  if (content.includes('\0')) return { hits: [], bytesRead, budgetExceeded: false, incomplete: false }
 
   const hits: TextSearchHit[] = []
-  const lines = content.split('\n')
-  for (let index = 0; index < lines.length; index += 1) {
+  let lineStart = 0
+  let lineNumber = 1
+  while (lineStart <= content.length) {
     if (hits.length >= perFile) break
+    const newline = content.indexOf('\n', lineStart)
+    const lineEnd = newline === -1 ? content.length : newline
     // Windows line endings keep the \r; leaving it in would end the preview
     // with a stray character.
-    const raw = lines[index].endsWith('\r') ? lines[index].slice(0, -1) : lines[index]
+    const line = content.slice(lineStart, lineEnd)
+    const raw = line.endsWith('\r') ? line.slice(0, -1) : line
     const at = raw.toLowerCase().indexOf(needle)
-    if (at === -1) continue
+    if (at !== -1) {
+      // The preview drops the indentation of the line, so the match offset moves
+      // with it. The offsets that go back to the renderer point into the preview.
+      const trimmed = raw.trim()
+      if (trimmed) {
+        const offset = at - (raw.length - raw.trimStart().length)
+        if (offset >= 0 && offset + needle.length <= trimmed.length) {
+          const from = offset > TEXT_PREVIEW_LEAD ? offset - TEXT_PREVIEW_LEAD : 0
+          let to = Math.min(trimmed.length, from + TEXT_PREVIEW_MAX)
+          // A match longer than the window keeps its length; the row then shortens
+          // the rest with an ellipsis of its own.
+          if (offset + needle.length > to) to = Math.min(trimmed.length, offset + needle.length)
+          const prefix = from > 0 ? '…' : ''
+          const suffix = to < trimmed.length ? '…' : ''
+          const body = trimmed.slice(from, to)
 
-    // The preview drops the indentation of the line, so the match offset moves
-    // with it. The offsets that go back to the renderer point into the preview.
-    const content = raw.trim()
-    if (!content) continue
-    const offset = at - (raw.length - raw.trimStart().length)
-    if (offset < 0 || offset + needle.length > content.length) continue
-
-    const from = offset > TEXT_PREVIEW_LEAD ? offset - TEXT_PREVIEW_LEAD : 0
-    let to = Math.min(content.length, from + TEXT_PREVIEW_MAX)
-    // A match longer than the window keeps its length; the row then shortens
-    // the rest with an ellipsis of its own.
-    if (offset + needle.length > to) to = Math.min(content.length, offset + needle.length)
-    const prefix = from > 0 ? '…' : ''
-    const suffix = to < content.length ? '…' : ''
-    const body = content.slice(from, to)
-
-    hits.push({
-      path: file,
-      line: index + 1,
-      column: at + 1,
-      preview: `${prefix}${body}${suffix}`,
-      matchStart: prefix.length + (offset - from),
-      matchLength: needle.length
-    })
+          hits.push({
+            path: file,
+            line: lineNumber,
+            column: at + 1,
+            preview: `${prefix}${body}${suffix}`,
+            matchStart: prefix.length + (offset - from),
+            matchLength: needle.length
+          })
+        }
+      }
+    }
+    if (newline === -1) break
+    lineStart = newline + 1
+    lineNumber += 1
   }
-  return hits
+  return { hits, bytesRead, budgetExceeded: false, incomplete: false }
 }
 
 function fetchLatestPiCliVersion(): Promise<string> {
@@ -825,6 +895,10 @@ export function registerIpc(context: IpcContext): void {
     terminals.resize(id, cols, rows)
   )
   ipcMain.handle('terminal:kill', (_event, id: string) => terminals.kill(id))
+  ipcMain.on('terminal:ack', (_event, id: unknown, sequence: unknown) => {
+    if (typeof id !== 'string' || typeof sequence !== 'number' || !Number.isSafeInteger(sequence)) return
+    terminals.acknowledgeOutput(id, sequence)
+  })
 
   ipcMain.handle('app:info', async (_event, options?: { includePiVersion?: boolean }): Promise<AppInfo> => {
     const current = settings.get()
@@ -1128,11 +1202,11 @@ export function registerIpc(context: IpcContext): void {
   )
 
   ipcMain.handle('sessions:list', async (_event, cwd?: string) =>
-    (await listSessions(cwd)).map(withoutProjectFolder)
+    (await listSessions(cwd, settings.get().externalChatFolder)).map(withoutProjectFolder)
   )
 
   ipcMain.handle('sessions:hydrate', async (_event, file: string) => {
-    const opened = await openSessionFile(file)
+    const opened = await openSessionFile(file, resolveSessionRoots(settings.get().externalChatFolder))
     if (!opened) return []
     try {
       return await readSessionMessages(opened.target, opened.handle)
@@ -1143,7 +1217,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('sessions:rename', async (_event, file: string, name: string) => {
     if (typeof name !== 'string') return false
-    const opened = await openSessionFile(file, undefined, true)
+    const opened = await openSessionFile(file, resolveSessionRoots(settings.get().externalChatFolder), true)
     if (!opened) return false
     try {
       return await supervisor.rename(opened.target, name, opened.handle)
@@ -1159,7 +1233,8 @@ export function registerIpc(context: IpcContext): void {
     const token = (sessionSearchSequence += 1)
     latestSessionSearches.set(event.sender, token)
     const hits = await searchSessions(query, limit, {
-      shouldStop: () => latestSessionSearches.get(event.sender) !== token
+      sessionRoots: resolveSessionRoots(settings.get().externalChatFolder),
+      shouldStop: () => event.sender.isDestroyed?.() === true || latestSessionSearches.get(event.sender) !== token
     })
     return hits.map(withoutProjectFolder)
   })
@@ -1263,44 +1338,60 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('git:pull', () => gitWrite(context, root => pullBranch(root)))
 
-  ipcMain.handle('fs:list', async (_event, dir: string): Promise<FileEntry[]> => {
+  ipcMain.handle('fs:list', async (_event, dir: string): Promise<FileListResult> => {
     const root = workspaceRoot(context)
     // A relative path is taken from the project root, not from wherever the
     // app happens to be started.
     const location = await resolveWorkspaceLocation(root, dir)
-    if (!location) return []
+    if (!location) return { entries: [], truncated: false }
     const { target } = location
+    const candidates: Dirent[] = []
+    let scannedEntries = 0
+    let truncated = false
     try {
-      const entries = await readdir(target, { withFileTypes: true })
-      const current = await resolveWorkspaceLocation(root, dir)
-      if (!current || current.root !== location.root || current.target !== target) return []
-      const listed: FileEntry[] = []
-      for (const entry of entries) {
-        if (entry.isDirectory() && TREE_SKIP_DIRS.has(entry.name)) continue
-        const full = path.join(target, entry.name)
-        let size: number | undefined
-        if (entry.isFile()) {
-          try {
-            const info = await lstat(full)
-            if (info.isFile()) size = info.size
-          } catch {
-            size = undefined
-          }
+      const directory = await opendir(target)
+      for await (const entry of directory) {
+        if (scannedEntries >= MAX_DIRECTORY_SCAN_ENTRIES) {
+          truncated = true
+          break
         }
-        listed.push({
-          name: entry.name,
-          path: full,
-          kind: entry.isDirectory() ? ('directory' as const) : ('file' as const),
-          size
-        })
+        scannedEntries += 1
+        if (entry.isDirectory() && TREE_SKIP_DIRS.has(entry.name)) continue
+        candidates.push(entry)
       }
-      return listed.sort((a, b) => {
-        if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1
-        return a.name.localeCompare(b.name)
-      })
     } catch {
-      return []
+      truncated = true
     }
+
+    const current = await resolveWorkspaceLocation(root, dir)
+    if (!current || current.root !== location.root || current.target !== target) {
+      return { entries: [], truncated: true }
+    }
+    candidates.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    if (candidates.length > MAX_DIRECTORY_LIST_ENTRIES) truncated = true
+    const listed: FileEntry[] = []
+    for (const entry of candidates.slice(0, MAX_DIRECTORY_LIST_ENTRIES)) {
+      const full = path.join(target, entry.name)
+      let size: number | undefined
+      if (entry.isFile()) {
+        try {
+          const info = await lstat(full)
+          if (info.isFile()) size = info.size
+        } catch {
+          size = undefined
+        }
+      }
+      listed.push({
+        name: entry.name,
+        path: full,
+        kind: entry.isDirectory() ? 'directory' : 'file',
+        size
+      })
+    }
+    return { entries: listed, truncated }
   })
 
   ipcMain.handle('fs:read', async (_event, file: string): Promise<FileContent | null> => {
@@ -1323,105 +1414,195 @@ export function registerIpc(context: IpcContext): void {
     }
   })
 
-  ipcMain.handle('fs:search', async (event, query: string, limit?: number): Promise<FileEntry[]> => {
-    // Requests supersede older walks even when no workspace is available.
+  ipcMain.handle('fs:search', async (
+    event,
+    query: string,
+    limit?: number,
+    scope?: FileSearchScope
+  ): Promise<FileSearchResult> => {
+    // A component only supersedes its own walks; the composer and file tree can
+    // search at the same time in the same renderer window.
+    const searchScope = scope === 'composer-mention' || scope === 'file-tree' ? scope : 'default'
     const token = (fileSearchSequence += 1)
-    latestFileSearches.set(event.sender, token)
-    const superseded = () => latestFileSearches.get(event.sender) !== token
+    let senderSearches = latestFileSearches.get(event.sender)
+    if (!senderSearches) {
+      senderSearches = new Map()
+      latestFileSearches.set(event.sender, senderSearches)
+    }
+    senderSearches.set(searchScope, token)
+    const superseded = () =>
+      event.sender.isDestroyed?.() === true || senderSearches.get(searchScope) !== token
     const root = workspaceRoot(context)
     // The separators are normalised, so "src/renderer" finds the folder on
     // Windows as well.
-    const needle = query.trim().toLowerCase().replace(/\\/g, '/')
+    const needle = typeof query === 'string' ? query.trim().toLowerCase().replace(/\\/g, '/') : ''
     // An empty query lists the files of the project, which is what the
     // composer shows when the user types "@" and has not narrowed it down.
-    if (!root) return []
-    const ceiling = Math.min(Math.max(limit ?? MAX_SEARCH_RESULTS, 1), MAX_SEARCH_RESULTS)
+    // A zero limit is a cheap cancellation record used when a search field is
+    // cleared or unmounted; setting the token above still supersedes its walk.
+    if (!root || limit === 0) return { entries: [], truncated: false }
+    const requestedLimit = Number.isFinite(limit) ? Math.trunc(limit as number) : MAX_SEARCH_RESULTS
+    const ceiling = Math.min(Math.max(requestedLimit, 1), MAX_SEARCH_RESULTS)
     const results: FileEntry[] = []
     const base = path.resolve(root)
+    let scannedEntries = 0
+    let truncated = false
+    let stopWalk = false
     // The composer debounces its own input, but a walk that already started
     // keeps reading. A newer query stops the older one at its next entry.
 
     // The walk awaits the disk, so the event loop keeps serving Pi events and
     // other IPC while a large project is being walked.
     const walk = async (dir: string, depth: number): Promise<void> => {
-      if (results.length >= ceiling || depth > MAX_SEARCH_DEPTH || superseded()) return
-      let entries: Dirent[]
-      try {
-        entries = await readdir(dir, { withFileTypes: true })
-      } catch {
+      if (results.length >= ceiling) {
+        truncated = true
+        stopWalk = true
         return
       }
-      for (const entry of entries) {
-        if (results.length >= ceiling || superseded()) return
-        const full = path.join(dir, entry.name)
-        if (entry.isDirectory()) {
-          if (SEARCH_SKIP_DIRS.has(entry.name)) continue
-          await walk(full, depth + 1)
-          continue
+      if (depth > MAX_SEARCH_DEPTH) {
+        truncated = true
+        return
+      }
+      if (superseded()) return
+      let directory
+      try {
+        directory = await opendir(dir)
+      } catch {
+        truncated = true
+        return
+      }
+      try {
+        for await (const entry of directory) {
+          if (superseded()) return
+          if (scannedEntries >= MAX_PROJECT_SEARCH_ENTRIES) {
+            truncated = true
+            stopWalk = true
+            return
+          }
+          scannedEntries += 1
+          const full = path.join(dir, entry.name)
+          if (entry.isDirectory()) {
+            if (SEARCH_SKIP_DIRS.has(entry.name)) continue
+            await walk(full, depth + 1)
+            if (stopWalk || superseded()) return
+            continue
+          }
+          if (!entry.isFile()) continue
+          // The path is searched, not only the name, so "renderer" finds the
+          // files of the renderer and "readme" finds the README in a folder.
+          const relative = path.relative(base, full)
+          if (!relative.replace(/\\/g, '/').toLowerCase().includes(needle)) continue
+          let size: number | undefined
+          try {
+            size = (await stat(full)).size
+          } catch {
+            size = undefined
+          }
+          results.push({ name: entry.name, path: full, kind: 'file', size })
+          if (results.length >= ceiling) {
+            truncated = true
+            stopWalk = true
+            return
+          }
         }
-        if (!entry.isFile()) continue
-        // The path is searched, not only the name, so "renderer" finds the
-        // files of the renderer and "readme" finds the README in a folder.
-        const relative = path.relative(base, full)
-        if (!relative.replace(/\\/g, '/').toLowerCase().includes(needle)) continue
-        let size: number | undefined
-        try {
-          size = (await stat(full)).size
-        } catch {
-          size = undefined
-        }
-        results.push({ name: entry.name, path: full, kind: 'file', size })
+      } catch {
+        truncated = true
       }
     }
 
     await walk(base, 0)
     // The walk follows the disk, which has no order of its own.
     results.sort((a, b) => a.path.localeCompare(b.path))
-    return results
+    return { entries: results, truncated }
   })
 
   // Search what is inside the files, not only their names. The walk is the
   // same one the file search uses, so both see the same project.
-  ipcMain.handle('fs:searchText', async (event, query: string, limit?: number): Promise<TextSearchHit[]> => {
+  ipcMain.handle('fs:searchText', async (event, query: string, limit?: number): Promise<TextSearchResult> => {
     // Clearing the query or leaving the workspace must invalidate any walk
     // that was already reading files.
     const token = (textSearchSequence += 1)
     latestTextSearches.set(event.sender, token)
-    const superseded = () => latestTextSearches.get(event.sender) !== token
+    const superseded = () =>
+      event.sender.isDestroyed?.() === true || latestTextSearches.get(event.sender) !== token
     const root = workspaceRoot(context)
-    const needle = query.trim().toLowerCase()
-    if (!root || !needle) return []
-    const ceiling = Math.min(Math.max(limit ?? MAX_SEARCH_RESULTS, 1), MAX_SEARCH_RESULTS)
+    const needle = typeof query === 'string' ? query.trim().toLowerCase() : ''
+    if (!root || !needle) return { hits: [], truncated: false }
+    const requestedLimit = Number.isFinite(limit) ? Math.trunc(limit as number) : MAX_SEARCH_RESULTS
+    const ceiling = Math.min(Math.max(requestedLimit, 1), MAX_SEARCH_RESULTS)
     const base = path.resolve(root)
     const hits: TextSearchHit[] = []
+    let scannedEntries = 0
+    let scannedBytes = 0
+    let truncated = false
+    let stopWalk = false
     // Typing another character should not leave the previous query reading the
     // project; the sidebar's versioning only ignores the answer, not the work.
 
     const walk = async (dir: string, depth: number): Promise<void> => {
-      if (hits.length >= ceiling || depth > MAX_SEARCH_DEPTH || superseded()) return
-      let entries: Dirent[]
-      try {
-        entries = await readdir(dir, { withFileTypes: true })
-      } catch {
+      if (hits.length >= ceiling) {
+        truncated = true
+        stopWalk = true
         return
       }
-      for (const entry of entries) {
-        if (hits.length >= ceiling || superseded()) return
-        const full = path.join(dir, entry.name)
-        if (entry.isDirectory()) {
-          if (SEARCH_SKIP_DIRS.has(entry.name)) continue
-          await walk(full, depth + 1)
-          continue
+      if (depth > MAX_SEARCH_DEPTH) {
+        truncated = true
+        return
+      }
+      if (superseded()) return
+      let directory
+      try {
+        directory = await opendir(dir)
+      } catch {
+        truncated = true
+        return
+      }
+      try {
+        for await (const entry of directory) {
+          if (superseded()) return
+          if (scannedEntries >= MAX_TEXT_SEARCH_SCAN_ENTRIES) {
+            truncated = true
+            stopWalk = true
+            return
+          }
+          scannedEntries += 1
+          const full = path.join(dir, entry.name)
+          if (entry.isDirectory()) {
+            if (SEARCH_SKIP_DIRS.has(entry.name)) continue
+            await walk(full, depth + 1)
+            if (stopWalk || superseded()) return
+            continue
+          }
+          if (!entry.isFile()) continue
+          const result = await searchFileText(
+            root,
+            full,
+            needle,
+            ceiling - hits.length,
+            MAX_TEXT_SEARCH_SCAN_BYTES - scannedBytes
+          )
+          if (result.budgetExceeded) {
+            truncated = true
+            stopWalk = true
+            return
+          }
+          if (result.incomplete) truncated = true
+          scannedBytes += result.bytesRead
+          if (result.hits.length) hits.push(...result.hits)
+          if (hits.length >= ceiling) {
+            truncated = true
+            stopWalk = true
+            return
+          }
         }
-        if (!entry.isFile()) continue
-        const found = await searchFileText(root, full, needle, ceiling - hits.length)
-        if (found.length) hits.push(...found)
+      } catch {
+        truncated = true
       }
     }
 
     await walk(base, 0)
     hits.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
-    return hits.slice(0, ceiling)
+    return { hits: hits.slice(0, ceiling), truncated }
   })
 
   ipcMain.handle('fs:listImages', async (event): Promise<ImageListResult> => {
@@ -1435,7 +1616,7 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('sessions:remove', async (_event, file: string): Promise<boolean> => {
     try {
-      return await removeSessionFile(file, supervisor)
+      return await removeSessionFile(file, supervisor, resolveSessionRoots(settings.get().externalChatFolder))
     } catch (error) {
       console.error('[pi-desktop] could not trash the session file:', error)
       return false
@@ -1464,14 +1645,7 @@ export function registerIpc(context: IpcContext): void {
       const extension = typeof mimeType === 'string' ? pastedImageExtension(mimeType) : null
       const buffer = decodeImageData(data)
       if (!root || !extension || !buffer) return null
-      try {
-        // A projectless chat has the folder made for it when Pi starts, but the
-        // setting can name a workspace that was deleted since.
-        mkdirSync(root, { recursive: true })
-      } catch (error) {
-        console.error('[pi-desktop] could not open the folder for the pasted picture:', error)
-        return null
-      }
+      // `workspaceRoot` creates projectless chats; a missing workspace must not be recreated.
       const stamp = Date.now()
       for (let attempt = 0; attempt < 10; attempt += 1) {
         const name = attempt
@@ -1484,7 +1658,10 @@ export function registerIpc(context: IpcContext): void {
           writeFileSync(target, buffer, { flag: 'wx' })
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue
-          console.error('[pi-desktop] could not save the pasted picture:', error)
+          const code = (error as NodeJS.ErrnoException).code
+          if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+            console.error('[pi-desktop] could not save the pasted picture:', error)
+          }
           return null
         }
         return { path: target, root }
@@ -1539,7 +1716,8 @@ export function registerIpc(context: IpcContext): void {
     const resolvedCwd = await resolveRuntimeCwd(context, options.cwd)
     if (!resolvedCwd) return { ok: false, error: 'Working folder is not an available workspace.' }
     const cwd = resolvedCwd.cwd
-    const validated = await validateRuntimeSessionFile(options.sessionFile, cwd)
+    const sessionRoots = resolveSessionRoots(context.settings.get().externalChatFolder)
+    const validated = await validateRuntimeSessionFile(options.sessionFile, cwd, sessionRoots)
     if (!validated.ok) {
       return { ok: false, error: runtimeSessionFileError(validated.reason) }
     }
@@ -1564,7 +1742,8 @@ export function registerIpc(context: IpcContext): void {
     if (typeof options.sessionKey !== 'string' || !options.sessionKey) {
       return { ok: false, error: 'Missing conversation id' }
     }
-    const validated = await validateRuntimeSessionFile(options.sessionFile, cwd)
+    const sessionRoots = resolveSessionRoots(context.settings.get().externalChatFolder)
+    const validated = await validateRuntimeSessionFile(options.sessionFile, cwd, sessionRoots)
     // Pi can report a newly assigned session path before it has flushed the
     // JSONL. A hot runtime already owns that key, so reuse it without treating
     // the not-yet-written path as a request to open a session file.

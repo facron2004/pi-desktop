@@ -51,3 +51,29 @@ test('runtime refuses a missing session file instead of silently starting a blan
     rmSync(parent, { recursive: true, force: true })
   }
 })
+
+test('runtime requests reserve their command and id fields for the RPC client', async () => {
+  const runtime = new PiRuntime()
+  const requests: { type: string; id?: string; [key: string]: unknown }[] = []
+  const client = {
+    running: true,
+    request: async <T>(request: { type: string; id?: string; [key: string]: unknown }): Promise<T> => {
+      requests.push(request)
+      return {} as T
+    }
+  }
+  ;(runtime as unknown as { client: typeof client }).client = client
+
+  await runtime.request('get_tree', {
+    type: 'extension_ui_response',
+    id: 'pi-owned-dialog-id',
+    sessionFile: 'session.jsonl'
+  })
+
+  assert.deepEqual(requests, [{ type: 'get_tree', sessionFile: 'session.jsonl' }])
+  await assert.rejects(
+    runtime.request('extension_ui_response', { id: 'pi-owned-dialog-id', confirmed: true }),
+    /runtime:respondUi/
+  )
+  assert.equal(requests.length, 1)
+})

@@ -12,7 +12,7 @@ import type {
   RemoteWorkspace
 } from '@shared/types'
 import { MAX_REMOTE_MESSAGE_CHARS } from '@shared/types'
-import { listSessions, openSessionFile, readSessionMessages } from './sessions'
+import { listSessions, openSessionFile, readSessionConversation } from './sessions'
 import type { SessionSupervisor } from './pi/supervisor'
 import type { SettingsStore } from './settings'
 import { properLockfile } from './proper-lockfile'
@@ -709,20 +709,33 @@ export class RemoteAccessService {
       const opened = await openSessionFile(ref.file)
       if (!opened) throw new HttpError(404, 'Conversation not found in this project.')
       let messages: AgentMessage[]
+      let historyTruncated = false
       try {
         this.requireActiveSession(device.id, ref)
-        messages = await this.awaitSessionAction(device.id, ref, () =>
-          readSessionMessages(opened.target, opened.handle)
+        const conversation = await this.awaitSessionAction(device.id, ref, () =>
+          readSessionConversation(opened.target, opened.handle)
         )
+        messages = conversation.messages
+        historyTruncated = conversation.historyTruncated
       } finally {
         await opened.handle.close().catch(() => {})
       }
       this.requireActiveSession(device.id, ref)
-      const safeMessages = safeRemoteValue(messages.slice(-MAX_REMOTE_MESSAGES)) as AgentMessage[]
+      const recentMessages = messages.slice(-MAX_REMOTE_MESSAGES)
+      const sanitizedNewestFirst = safeRemoteValue([...recentMessages].reverse()) as unknown[]
+      const safeMessages = sanitizedNewestFirst
+        .filter((message): message is AgentMessage =>
+          Boolean(message && typeof message === 'object' && !Array.isArray(message))
+        )
+        .reverse()
+      const truncated =
+        historyTruncated ||
+        messages.length > MAX_REMOTE_MESSAGES ||
+        safeMessages.length < recentMessages.length
       this.requireActiveSession(device.id, ref)
       this.sendJson(response, 200, {
         messages: safeMessages,
-        truncated: messages.length > MAX_REMOTE_MESSAGES,
+        truncated,
         isRunning: this.isSessionRunning(ref.file)
       })
       return

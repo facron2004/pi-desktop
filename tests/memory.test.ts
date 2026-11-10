@@ -1,6 +1,7 @@
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { performance } from 'node:perf_hooks'
 import {
   appendFileSync,
   mkdirSync,
@@ -330,20 +331,59 @@ test('merge enforces the per-project cap without limiting other projects', async
 test('redactSecrets removes provider keys, bearer tokens and assignments without touching prose', () => {
   const raw = [
     'OpenAI key sk-abcdefghijklmnopqrstuvwxyz0123456789',
+    'Hugging Face token hf_abcdefghijklmnopqrstuvwxyz1234567890',
+    'Google AI key AIzaSyD1234567890abcdefghijklmnopqrstuv',
+    'Google OAuth token ya29.a0AfH6SMB1234567890_abcdefghijklmnop',
+    'GitLab personal token glpat-abcdefghijklmnopqrstuvwx',
+    'GitLab runner token glrt-abcdefghijklmnopqrstuvwx',
+    `PyPI token pypi-${'a'.repeat(85)}`,
     'GitHub token ghp_abcdefghijklmnopqrstuvwx',
+    'GitHub OAuth token gho_abcdefghijklmnopqrstuvwx',
+    'GitHub App user token ghu_abcdefghijklmnopqrstuvwx',
+    'GitHub App installation token ghs_1234567890.eyJhbGciOiJub25lIn0.abcdefghijklmnopqrstuvwx',
+    'GitHub App refresh token ghr_abcdefghijklmnopqrstuvwx',
     'AWS key AKIAIOSFODNN7EXAMPLE',
     'Slack token xoxb-123456789012-abcdefghij',
+    'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    'Bare AWS value wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    'AWS_ACCESS_KEY_ID=ASIA1234567890EXAMPLE',
+    'STRIPE_SECRET_KEY=sk_live_1234567890abcdefghijkl',
+    '{"AWS_SESSION_TOKEN":"short-session-token-value"}',
+    '{"DATABASE_PASSWORD":"first\\"second-secret-value"}',
+    'Database: postgres://appuser:topSecret%2Fvalue@db.example.test:5432/app',
+    'Public docs: https://docs.example.test:8443/api',
     'Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345',
     'set password = "hunter2"',
     'api_key: supersecretvalue',
+    `Git object ${'a'.repeat(40)}`,
     'The build uses environment variables and the test suite stays green.'
   ].join('\n')
 
   const clean = redactSecrets(raw)
   assert.doesNotMatch(clean, /sk-abcdefghijklmnopqrstuvwxyz/)
+  assert.doesNotMatch(clean, /hf_abcdefghijklmnopqrstuvwxyz1234567890/)
+  assert.doesNotMatch(clean, /AIzaSyD1234567890abcdefghijklmnopqrstuv/)
+  assert.doesNotMatch(clean, /ya29\.a0AfH6SMB1234567890_abcdefghijklmnop/)
+  assert.doesNotMatch(clean, /glpat-abcdefghijklmnopqrstuvwx/)
+  assert.doesNotMatch(clean, /glrt-abcdefghijklmnopqrstuvwx/)
+  assert.doesNotMatch(clean, /pypi-a{85}/)
   assert.doesNotMatch(clean, /ghp_abcdefghijklmnopqrstuvwx/)
+  assert.doesNotMatch(clean, /gho_abcdefghijklmnopqrstuvwx/)
+  assert.doesNotMatch(clean, /ghu_abcdefghijklmnopqrstuvwx/)
+  assert.doesNotMatch(clean, /ghs_1234567890\.eyJhbGciOiJub25lIn0\.abcdefghijklmnopqrstuvwx/)
+  assert.doesNotMatch(clean, /ghr_abcdefghijklmnopqrstuvwx/)
   assert.doesNotMatch(clean, /AKIAIOSFODNN7EXAMPLE/)
   assert.doesNotMatch(clean, /xoxb-123456789012/)
+  assert.doesNotMatch(clean, /wJalrXUtnFEMI\/K7MDENG\/bPxRfiCYEXAMPLEKEY/)
+  assert.match(clean, /Git object a{40}/)
+  assert.doesNotMatch(clean, /ASIA1234567890EXAMPLE/)
+  assert.doesNotMatch(clean, /sk_live_1234567890abcdefghijkl/)
+  assert.doesNotMatch(clean, /short-session-token-value/)
+  assert.doesNotMatch(clean, /second-secret-value/)
+  assert.doesNotMatch(clean, /topSecret%2Fvalue/)
+  assert.match(clean, /AWS_SECRET_ACCESS_KEY=\[redacted\]/)
+  assert.match(clean, /postgres:\/\/appuser:\[redacted\]@db\.example\.test:5432\/app/)
+  assert.match(clean, /https:\/\/docs\.example\.test:8443\/api/)
   assert.doesNotMatch(clean, /Bearer\s+abcdefghijklmnopqrstuvwxyz/)
   assert.match(clean, /password = \[redacted\]/)
   assert.match(clean, /api_key: \[redacted\]/)
@@ -351,6 +391,13 @@ test('redactSecrets removes provider keys, bearer tokens and assignments without
 
   assert.equal(containsSecret(raw), true)
   assert.equal(containsSecret('The build uses environment variables and the test suite stays green.'), false)
+})
+
+test('redactSecrets handles long non-credential identifiers without quadratic scans', () => {
+  const input = 'a_'.repeat(50_000)
+  const startedAt = performance.now()
+  assert.equal(redactSecrets(input), input)
+  assert.ok(performance.now() - startedAt < 1_000)
 })
 
 /* ------------------------------------------------------------------ *

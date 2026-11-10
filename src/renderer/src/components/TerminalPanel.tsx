@@ -9,6 +9,8 @@ import {
 import { Copy, Eraser, Plus, RotateCcw, SquareTerminal, X } from 'lucide-react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import type { TerminalDataPayload } from '@shared/types'
+import { EarlyTerminalExits } from '../lib/terminal-startup'
 import { useAppStore } from '../store/useAppStore'
 import { useIsDark } from '../lib/theme'
 import { useT } from '../lib/i18n'
@@ -87,7 +89,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const termRef = useRef<XTerm | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const sessionRef = useRef<string | null>(null)
-  const pendingOutputRef = useRef('')
+  const pendingOutputRef = useRef(new Map<string, TerminalDataPayload[]>())
   const pendingRequestRef = useRef<string | null>(null)
   const handledRequestRef = useRef(0)
   const onLabelRef = useRef(onLabel)
@@ -129,7 +131,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     if (!container) return
     setExited(null)
     setError(null)
-    pendingOutputRef.current = ''
+    pendingOutputRef.current.clear()
     pendingRequestRef.current = null
 
     const term = new XTerm({
@@ -169,23 +171,30 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     })
     let resizeFrame = 0
     // Only the window between the mount and our own `create` resolving may
-    // buffer unknown-id output. Anything after that belongs to another
-    // session — typically a sibling tab — and would paint its banner here.
+    // buffer unknown-id output. Key it by session so a sibling terminal's
+    // banner cannot be painted here.
     let awaitingCreate = true
+    const pendingExits = new EarlyTerminalExits()
 
-    const offData = window.pi.terminal.onData(({ id, data }) => {
+    const offData = window.pi.terminal.onData((payload) => {
+      const { id, data, sequence } = payload
       if (id === sessionRef.current) {
-        term.write(data)
+        term.write(data, () => window.pi.terminal.acknowledgeOutput(id, sequence))
       } else if (awaitingCreate && sessionRef.current === null) {
         // The banner can arrive before `create` resolves; keep it for the
         // moment the id becomes known instead of dropping the first prompt.
-        pendingOutputRef.current += data
+        const pending = pendingOutputRef.current.get(id) ?? []
+        pending.push(payload)
+        pendingOutputRef.current.set(id, pending)
       }
     })
-    const offExit = window.pi.terminal.onExit(({ id, exitCode }) => {
-      if (id !== sessionRef.current) return
-      sessionRef.current = null
-      setExited(exitCode)
+    const offExit = window.pi.terminal.onExit((payload) => {
+      if (payload.id === sessionRef.current) {
+        sessionRef.current = null
+        setExited(payload.exitCode)
+      } else if (awaitingCreate && sessionRef.current === null) {
+        pendingExits.record(payload)
+      }
     })
     const offBinary = term.onBinary((data) => {
       const id = sessionRef.current
@@ -220,16 +229,21 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
           void window.pi.terminal.kill(info.id)
           return
         }
-        sessionRef.current = info.id
+        const earlyExit = pendingExits.takeFor(info.id)
+        sessionRef.current = earlyExit ? null : info.id
         onLabelRef.current(info.shell)
-        if (pendingOutputRef.current) {
-          term.write(pendingOutputRef.current)
-          pendingOutputRef.current = ''
+        if (earlyExit) setExited(earlyExit.exitCode)
+        const pendingOutput = pendingOutputRef.current.get(info.id) ?? []
+        pendingOutputRef.current.clear()
+        for (const payload of pendingOutput) {
+          term.write(payload.data, () =>
+            window.pi.terminal.acknowledgeOutput(payload.id, payload.sequence)
+          )
         }
         const pending = pendingRequestRef.current
         if (pending) {
           pendingRequestRef.current = null
-          void window.pi.terminal.write(info.id, `${pending}\r`)
+          if (!earlyExit) void window.pi.terminal.write(info.id, `${pending}\r`)
         }
         term.focus()
       })

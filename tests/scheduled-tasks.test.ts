@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -25,6 +26,26 @@ class FakeSupervisor extends EventEmitter {
 
   sessionInfo(): { cwd: string; externalContext: boolean; running: boolean } {
     return { cwd: '', externalContext: false, running: false }
+  }
+}
+
+class RecordingSupervisor extends FakeSupervisor {
+  ownerIds: string[] = []
+
+  async ensure(options: { sessionKey: string }): Promise<{ ok: boolean }> {
+    const result = await super.ensure(options)
+    this.ownerIds.push(options.sessionKey)
+    return result
+  }
+}
+
+class RecordingProcessOwnedSupervisor extends RecordingSupervisor {
+  constructor(private readonly processId: number) {
+    super()
+  }
+
+  sessionInfo(): { cwd: string; externalContext: boolean; running: boolean; pid: number } {
+    return { cwd: '', externalContext: false, running: true, pid: this.processId }
   }
 }
 
@@ -94,6 +115,49 @@ class RpcErrorWhileRunningSupervisor extends FakeSupervisor {
   sessionInfo(): { cwd: string; externalContext: boolean; running: boolean } {
     return { cwd: '', externalContext: false, running: this.running }
   }
+}
+
+class ProcessOwnedSupervisor extends FakeSupervisor {
+  constructor(private readonly processId: number) {
+    super()
+  }
+
+  async request<T>(_key: string, command: string): Promise<T> {
+    return (command === 'prompt' ? { disposition: 'started' } : {}) as T
+  }
+
+  sessionInfo(): { cwd: string; externalContext: boolean; running: boolean; pid: number } {
+    return { cwd: '', externalContext: false, running: true, pid: this.processId }
+  }
+}
+
+async function startIdleProcess(): Promise<ChildProcess> {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+    windowsHide: true
+  })
+  await new Promise<void>((resolve, reject) => {
+    child.once('spawn', resolve)
+    child.once('error', reject)
+  })
+  return child
+}
+
+async function stopIdleProcess(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  child.kill()
+  await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+}
+
+function unusedProcessId(): number {
+  for (let pid = 1_000_000; pid > 1; pid -= 1) {
+    try {
+      process.kill(pid, 0)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return pid
+    }
+  }
+  throw new Error('Could not find an unused process id for the test.')
 }
 
 test('failed persistence does not publish a scheduled task into memory', () => {
@@ -184,6 +248,118 @@ test('separate task services merge edits and serialize runs through the shared f
     first.dispose()
     second.dispose()
     rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('scheduled task runs share a four-process limit across app instances', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-run-slots-'))
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'provider/model',
+      thinkingLevel: 'off'
+    })
+  } as unknown as SettingsStore
+  const firstSupervisor = new RecordingSupervisor()
+  const secondSupervisor = new RecordingSupervisor()
+  const first = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: firstSupervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  const second = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: secondSupervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const tasks = Array.from({ length: 5 }, (_, index) => first.create({
+      title: `Task ${index}`,
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'once' as const, at: Date.now() + 60 * 60 * 1000 }
+    }).at(-1)!)
+    await Promise.all(tasks.slice(0, 4).map((task) => first.runNow(task.id)))
+    assert.equal(firstSupervisor.ensureCalls, 4)
+    await assert.rejects(second.runNow(tasks[4]!.id), /run slots are busy/)
+    assert.equal(secondSupervisor.ensureCalls, 0)
+
+    firstSupervisor.emit('event', {
+      ownerId: firstSupervisor.ownerIds[0],
+      event: { type: 'agent_settled', aborted: false }
+    })
+    await second.runNow(tasks[4]!.id)
+    assert.equal(secondSupervisor.ensureCalls, 1)
+  } finally {
+    for (const ownerId of firstSupervisor.ownerIds) {
+      firstSupervisor.emit('event', { ownerId, event: { type: 'agent_settled', aborted: false } })
+    }
+    for (const ownerId of secondSupervisor.ownerIds) {
+      secondSupervisor.emit('event', { ownerId, event: { type: 'agent_settled', aborted: false } })
+    }
+    first.dispose()
+    second.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('stale run slots stay occupied while their Pi processes are alive', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-live-slots-'))
+  const piProcess = await startIdleProcess()
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'provider/model',
+      thinkingLevel: 'off'
+    })
+  } as unknown as SettingsStore
+  const firstSupervisor = new RecordingProcessOwnedSupervisor(piProcess.pid!)
+  const secondSupervisor = new FakeSupervisor()
+  const first = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: firstSupervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  const second = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: secondSupervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const tasks = Array.from({ length: 5 }, (_, index) => first.create({
+      title: `Orphaned task ${index}`,
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'once' as const, at: Date.now() + 60 * 60 * 1000 }
+    }).at(-1)!)
+    await Promise.all(tasks.slice(0, 4).map((task) => first.runNow(task.id)))
+
+    for (let slot = 0; slot < 4; slot += 1) {
+      const lockFile = path.join(userData, `scheduled-task-run-slot-${slot}`)
+      const ownerFile = `${lockFile}.owner.json`
+      const owner = JSON.parse(readFileSync(ownerFile, 'utf8')) as Record<string, unknown>
+      assert.equal(owner.piPid, piProcess.pid)
+      writeFileSync(ownerFile, JSON.stringify({ ...owner, ownerPid: unusedProcessId() }))
+      const staleTime = new Date(Date.now() - 90_000)
+      utimesSync(`${lockFile}.lock`, staleTime, staleTime)
+    }
+
+    await assert.rejects(second.runNow(tasks[4]!.id), /run slots are busy/)
+    assert.equal(secondSupervisor.ensureCalls, 0)
+  } finally {
+    for (const ownerId of firstSupervisor.ownerIds) {
+      firstSupervisor.emit('event', { ownerId, event: { type: 'agent_settled', aborted: false } })
+    }
+    first.dispose()
+    second.dispose()
+    rmSync(userData, { recursive: true, force: true })
+    await stopIdleProcess(piProcess)
   }
 })
 
@@ -318,6 +494,9 @@ test('a task left running at startup is recovered after its lease expires', asyn
     const digest = createHash('sha256').update(task.id).digest('hex')
     const lockDirectory = path.join(userData, `scheduled-task-${digest}.run.lock`)
     const staleTime = new Date(Date.now() - 90_000)
+    const ownerFile = `${path.join(userData, `scheduled-task-${digest}.run`)}.owner.json`
+    const owner = JSON.parse(readFileSync(ownerFile, 'utf8')) as Record<string, unknown>
+    writeFileSync(ownerFile, JSON.stringify({ ...owner, ownerPid: unusedProcessId() }))
     let stopWaiting!: () => void
     const recovered = new Promise<void>((resolve, reject) => {
       const onChanged = (tasks: { id: string; lastStatus?: string }[]) => {
@@ -349,6 +528,71 @@ test('a task left running at startup is recovered after its lease expires', asyn
     second?.dispose()
     first.dispose()
     rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('an expired lease does not relaunch a due task while its Pi process is alive', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-live-process-'))
+  const piProcess = await startIdleProcess()
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'provider/model',
+      thinkingLevel: 'off'
+    })
+  } as unknown as SettingsStore
+  const firstSupervisor = new ProcessOwnedSupervisor(piProcess.pid!)
+  const first = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: firstSupervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  let second: ScheduledTaskService | undefined
+
+  try {
+    const task = first.create({
+      title: 'Do not overlap after restart',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '23:59' }
+    })[0]
+    assert.ok(task)
+    await first.runNow(task.id)
+
+    const taskFile = path.join(userData, 'scheduled-tasks.json')
+    const saved = JSON.parse(readFileSync(taskFile, 'utf8')) as Array<Record<string, unknown>>
+    writeFileSync(taskFile, JSON.stringify(saved.map((entry) => ({
+      ...entry,
+      nextRunAt: Date.now() - 1_000
+    }))))
+
+    const digest = createHash('sha256').update(task.id).digest('hex')
+    const ownerFile = `${path.join(userData, `scheduled-task-${digest}.run`)}.owner.json`
+    const owner = JSON.parse(readFileSync(ownerFile, 'utf8')) as Record<string, unknown>
+    assert.equal(owner.piPid, piProcess.pid)
+    writeFileSync(ownerFile, JSON.stringify({ ...owner, ownerPid: unusedProcessId() }))
+
+    const lockDirectory = path.join(userData, `scheduled-task-${digest}.run.lock`)
+    const staleTime = new Date(Date.now() - 90_000)
+    utimesSync(lockDirectory, staleTime, staleTime)
+
+    const secondSupervisor = new FakeSupervisor()
+    second = new ScheduledTaskService({
+      userData,
+      settings,
+      supervisor: secondSupervisor as unknown as SessionSupervisor,
+      customInstructions: () => undefined
+    })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    assert.equal(second.list()[0]?.lastStatus, 'running')
+    assert.equal(secondSupervisor.ensureCalls, 0)
+  } finally {
+    second?.dispose()
+    first.dispose()
+    rmSync(userData, { recursive: true, force: true })
+    await stopIdleProcess(piProcess)
   }
 })
 

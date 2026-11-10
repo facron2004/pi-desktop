@@ -25,10 +25,20 @@ export interface CaptureContext {
 export function scheduleCapture(context: CaptureContext): void {
   const target = process.env.PI_DESKTOP_SCREENSHOT
   if (!target) return
+  const window = context.window
+  if (window.isDestroyed()) {
+    app.exit(0)
+    return
+  }
+  const initialContents = window.webContents
+  if (!initialContents || initialContents.isDestroyed()) {
+    app.exit(0)
+    return
+  }
 
   // Warnings and errors from the renderer are worth seeing while looking at
   // a screenshot — a React key warning shows up as a broken layout.
-  context.window.webContents.on('console-message', (details) => {
+  initialContents.on('console-message', (details) => {
     if (details.level === 'warning' || details.level === 'error') {
       console.error(`[pi-desktop] renderer ${details.level}: ${details.message}`)
     }
@@ -41,12 +51,16 @@ export function scheduleCapture(context: CaptureContext): void {
 
   const capture = async () => {
     try {
-      if (!context.window.isVisible()) context.window.show()
-      context.window.focus()
+      if (window.isDestroyed()) return
+      if (!window.isVisible()) window.show()
+      window.focus()
       await new Promise((resolve) => setTimeout(resolve, 400))
+      if (window.isDestroyed()) return
       if (evalScript) {
         try {
-          const result = await context.window.webContents.executeJavaScript(evalScript, true)
+          const contents = window.webContents
+          if (contents.isDestroyed()) return
+          const result = await contents.executeJavaScript(evalScript, true)
           console.log('[pi-desktop] eval result:', JSON.stringify(result))
         } catch (error) {
           console.error('[pi-desktop] eval failed:', error)
@@ -54,18 +68,26 @@ export function scheduleCapture(context: CaptureContext): void {
         // Give React a frame to settle before the pixels are read.
         await new Promise((resolve) => setTimeout(resolve, evalDelay))
       }
-      const image = await context.window.webContents.capturePage()
+      if (window.isDestroyed()) return
+      const contents = window.webContents
+      if (contents.isDestroyed()) return
+      const image = await contents.capturePage()
       mkdirSync(path.dirname(path.resolve(target)), { recursive: true })
       writeFileSync(path.resolve(target), image.toPNG())
       console.log(`[pi-desktop] screenshot written to ${target}`)
     } catch (error) {
       console.error('[pi-desktop] screenshot failed:', error)
+    } finally {
+      app.exit(0)
     }
-    app.exit(0)
   }
 
   let booting = false
   const waitForReady = async () => {
+    if (window.isDestroyed()) {
+      app.exit(0)
+      return
+    }
     const hot = context.supervisor?.runningKeys() ?? []
     if (prompt && hot.length === 0 && !booting && context.supervisor && process.env.PI_DESKTOP_WORKSPACE) {
       booting = true
@@ -75,6 +97,10 @@ export function scheduleCapture(context: CaptureContext): void {
         trace: { sourceAction: 'screenshot' }
       })
       booting = false
+      if (window.isDestroyed()) {
+        app.exit(0)
+        return
+      }
       if (!started.ok) {
         setTimeout(() => void capture(), 1500)
         return
@@ -115,6 +141,7 @@ export function scheduleWindowClose(context: { window: BrowserWindow }): void {
   const closeAfter = Number(process.env.PI_DESKTOP_CLOSE_AFTER_MS ?? 0)
   if (closeAfter <= 0) return
   setTimeout(() => {
+    if (context.window.isDestroyed()) return
     console.log('[pi-desktop] closing the window on purpose')
     context.window.close()
   }, closeAfter)

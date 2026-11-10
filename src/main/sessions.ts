@@ -79,6 +79,7 @@ const LF = 0x0a
 const CR = 0x0d
 const CHUNK_SIZE = 64 * 1024
 const MAX_CACHE_ENTRIES = 2000
+const MAX_CONCURRENT_SESSION_META_READS = 4
 /** The usage cache keeps per-message projections, so bound it by source bytes as well as count. */
 const MAX_USAGE_CACHE_SOURCE_BYTES = 32 * 1024 * 1024
 const MAX_CACHED_SESSION_MESSAGE_FILES = 12
@@ -419,6 +420,29 @@ export function resolveSessionRoot(customDir?: string): string {
   return path.join(homeDir(), '.pi', 'agent', 'sessions')
 }
 
+let configuredExternalSessionRoots: (() => readonly string[]) | undefined
+
+/** Read custom chat folders configured in app settings. */
+export function configureExternalSessionRoots(getRoots: () => readonly string[]): void {
+  configuredExternalSessionRoots = getRoots
+}
+
+/** Current and previous custom chat folders plus Pi's configured root. */
+export function resolveSessionRoots(customDir?: string): string[] {
+  const roots = [
+    customDir?.trim(),
+    ...(configuredExternalSessionRoots?.() ?? []),
+    resolveSessionRoot()
+  ].filter((root): root is string => Boolean(root?.trim())).map((root) => resolveSessionRoot(root))
+  const seen = new Set<string>()
+  return roots.filter((root) => {
+    const key = process.platform === 'win32' ? path.resolve(root).toLowerCase() : path.resolve(root)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 const SESSION_FILE_FLAGS = constants.O_NONBLOCK === undefined
   ? 'r'
   : constants.O_RDONLY | constants.O_NONBLOCK
@@ -436,9 +460,16 @@ function isBelowDirectory(root: string, target: string): boolean {
 /** Open an IPC-supplied session file inside Pi's store, rejecting hard links that bypass containment. */
 export async function openSessionFile(
   file: unknown,
-  sessionRoot = resolveSessionRoot(),
+  sessionRoot: string | readonly string[] = resolveSessionRoots(),
   writable = false
 ): Promise<{ target: string; handle: FileHandle } | null> {
+  if (Array.isArray(sessionRoot)) {
+    for (const root of sessionRoot) {
+      const opened = await openSessionFile(file, root, writable)
+      if (opened) return opened
+    }
+    return null
+  }
   if (
     typeof file !== 'string' ||
     !file ||
@@ -487,7 +518,7 @@ export async function openSessionFile(
 /** Resolve a renderer-supplied path only after opening and verifying its file identity. */
 export async function resolveSessionFilePath(
   file: unknown,
-  sessionRoot = resolveSessionRoot()
+  sessionRoot: string | readonly string[] = resolveSessionRoots()
 ): Promise<string | null> {
   const opened = await openSessionFile(file, sessionRoot)
   if (!opened) return null
@@ -878,9 +909,9 @@ function recordInCache(key: string, entry: SessionCacheEntry): void {
  * Returns metadata for a session file, reusing the incremental (mtime, size) cache
  * when valid and coalescing in-flight concurrent reads.
  */
-export async function getSessionMeta(file: string, sessionRoot?: string): Promise<SessionMeta | null> {
+export async function getSessionMeta(file: string, sessionRoot?: string | readonly string[]): Promise<SessionMeta | null> {
   const key = canonicalSessionFile(file)
-  const inFlightKey = sessionRoot ? `${key}\0${path.resolve(sessionRoot)}` : key
+  const inFlightKey = sessionRoot ? `${key}\0${JSON.stringify(sessionRoot)}` : key
   const existing = inFlightReads.get(inFlightKey)
   if (existing) return existing
 
@@ -1043,17 +1074,21 @@ export interface SessionConversationRead {
   contextChecked: boolean
 }
 
+export interface SessionConversationWindowRead extends SessionConversationRead {
+  historyTruncated: boolean
+}
+
 /** Active-branch messages plus Pi Desktop's persisted tool-source classification. */
 export async function readSessionConversation(
   file: string,
   handle?: FileHandle
-): Promise<SessionConversationRead> {
+): Promise<SessionConversationWindowRead> {
   let fileStats: Stats
   try {
     fileStats = handle ? await handle.stat() : await stat(file)
   } catch {
     deleteCachedSessionMessages(canonicalSessionFile(file))
-    return { messages: [], externalContext: false, contextChecked: false }
+    return { messages: [], externalContext: false, contextChecked: false, historyTruncated: false }
   }
   const identity = fileIdentity(fileStats)
   if (fileStats.size > MAX_SESSION_BYTES) {
@@ -1071,7 +1106,8 @@ export async function readSessionConversation(
     return {
       messages: cached.messages,
       externalContext: cached.externalContext,
-      contextChecked: cached.contextChecked
+      contextChecked: cached.contextChecked,
+      historyTruncated: fileStats.size > MAX_SESSION_BYTES
     }
   }
   if (cached) deleteCachedSessionMessages(key)
@@ -1107,7 +1143,14 @@ export async function readSessionConversation(
       }
     }
   }
-  if (!lines.length) return { messages: [], externalContext: false, contextChecked: false }
+  if (!lines.length) {
+    return {
+      messages: [],
+      externalContext: false,
+      contextChecked: false,
+      historyTruncated: windowStart > 0
+    }
+  }
   const branch = activeBranch(lines)
   const messages = messagesFromBranch(branch)
   const externalContext = hasExternalContext(branch)
@@ -1121,7 +1164,7 @@ export async function readSessionConversation(
     externalContext,
     contextChecked
   )
-  return { messages, externalContext, contextChecked }
+  return { messages, externalContext, contextChecked, historyTruncated: windowStart > 0 }
 }
 
 export async function readSessionMessages(file: string, handle?: FileHandle): Promise<AgentMessage[]> {
@@ -1426,8 +1469,19 @@ export async function parseSession(
  * List every session Pi has on disk, optionally restricted to one working
  * directory. Results are sorted by most recent activity first.
  */
-export async function listSessions(cwd?: string): Promise<SessionMeta[]> {
-  const root = resolveSessionRoot()
+export async function listSessions(cwd?: string, customRoot?: string): Promise<SessionMeta[]> {
+  const sessions = new Map<string, SessionMeta>()
+  for (const root of resolveSessionRoots(customRoot)) {
+    for (const session of await listSessionsInRoot(cwd, root)) {
+      sessions.set(canonicalSessionFile(session.file), session)
+    }
+  }
+  const results = [...sessions.values()]
+  results.sort((a, b) => b.updatedAt - a.updatedAt)
+  return results
+}
+
+async function listSessionsInRoot(cwd: string | undefined, root: string): Promise<SessionMeta[]> {
   try {
     const rootStat = await stat(root)
     if (!rootStat.isDirectory()) return []
@@ -1436,6 +1490,21 @@ export async function listSessions(cwd?: string): Promise<SessionMeta[]> {
   }
 
   const results: SessionMeta[] = []
+  const readMetas = async (files: string[], expectedCwd?: string): Promise<SessionMeta[]> => {
+    const metas: (SessionMeta | null)[] = new Array(files.length).fill(null)
+    let next = 0
+    const worker = async () => {
+      while (next < files.length) {
+        const index = next++
+        metas[index] = await getSessionMeta(files[index]!, root)
+      }
+    }
+    const workerCount = Math.min(MAX_CONCURRENT_SESSION_META_READS, files.length)
+    await Promise.all(Array.from({ length: workerCount }, () => worker()))
+    return metas.filter((meta): meta is SessionMeta =>
+      meta !== null && (!expectedCwd || pathsEqual(meta.cwd, expectedCwd))
+    )
+  }
 
   if (cwd && cwd.trim()) {
     // Targeted workspace directory resolution (R3)
@@ -1452,12 +1521,7 @@ export async function listSessions(cwd?: string): Promise<SessionMeta[]> {
       return []
     }
 
-    for (const file of files) {
-      const meta = await getSessionMeta(file, root)
-      if (!meta) continue
-      if (!pathsEqual(meta.cwd, cwd)) continue
-      results.push(meta)
-    }
+    for (const meta of await readMetas(files, cwd)) results.push(meta)
   } else {
     // Global listing across all workspaces
     let workspaceDirs: string[]
@@ -1477,15 +1541,10 @@ export async function listSessions(cwd?: string): Promise<SessionMeta[]> {
       } catch {
         continue
       }
-      for (const file of files) {
-        const meta = await getSessionMeta(file, root)
-        if (!meta) continue
-        results.push(meta)
-      }
+      for (const meta of await readMetas(files)) results.push(meta)
     }
   }
 
-  results.sort((a, b) => b.updatedAt - a.updatedAt)
   return results
 }
 
@@ -1500,7 +1559,7 @@ export async function listSessions(cwd?: string): Promise<SessionMeta[]> {
 export async function searchSessions(
   query: string,
   limit = 30,
-  options: { budgetBytes?: number; shouldStop?: () => boolean } = {}
+  options: { budgetBytes?: number; shouldStop?: () => boolean; sessionRoots?: readonly string[] } = {}
 ): Promise<SessionSearchHit[]> {
   const needle = query.trim()
   if (needle.length < 2) return []
@@ -1509,49 +1568,51 @@ export async function searchSessions(
   const budget = Math.max(0, options.budgetBytes ?? MAX_SEARCH_TOTAL_BYTES)
   const shouldStop = () => options.shouldStop?.() === true
   if (shouldStop()) return []
-  const root = resolveSessionRoot()
-  try {
-    const rootStat = await stat(root)
-    if (!rootStat.isDirectory()) return []
-  } catch {
-    return []
-  }
-
-  const candidates: { file: string; mtime: number; size: number }[] = []
-  let workspaceDirs: string[]
-  if (shouldStop()) return []
-  try {
-    const entries = await readdir(root, { withFileTypes: true })
-    workspaceDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
-  } catch {
-    return []
-  }
-
-  for (const dir of workspaceDirs) {
+  const candidatesByFile = new Map<string, { file: string; mtime: number; size: number; root: string }>()
+  for (const root of options.sessionRoots ?? resolveSessionRoots()) {
     if (shouldStop()) return []
-    const folder = path.join(root, dir)
-    let names: string[]
     try {
-      names = await readdir(folder)
+      const rootStat = await stat(root)
+      if (!rootStat.isDirectory()) continue
     } catch {
       continue
     }
-    for (const name of names) {
+
+    let workspaceDirs: string[]
+    try {
+      const entries = await readdir(root, { withFileTypes: true })
+      workspaceDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+    } catch {
+      continue
+    }
+
+    for (const dir of workspaceDirs) {
       if (shouldStop()) return []
-      if (!name.endsWith('.jsonl')) continue
-      const file = path.join(folder, name)
-      const opened = await openSessionFile(file, root)
-      if (!opened) continue
+      const folder = path.join(root, dir)
+      let names: string[]
       try {
-        const s = await opened.handle.stat()
-        candidates.push({ file, mtime: s.mtimeMs, size: s.size })
+        names = await readdir(folder)
       } catch {
-        /* a file that vanished is not a search result */
-      } finally {
-        await opened.handle.close().catch(() => {})
+        continue
+      }
+      for (const name of names) {
+        if (shouldStop()) return []
+        if (!name.endsWith('.jsonl')) continue
+        const file = path.join(folder, name)
+        const opened = await openSessionFile(file, root)
+        if (!opened) continue
+        try {
+          const s = await opened.handle.stat()
+          candidatesByFile.set(canonicalSessionFile(file), { file, mtime: s.mtimeMs, size: s.size, root })
+        } catch {
+          /* a file that vanished is not a search result */
+        } finally {
+          await opened.handle.close().catch(() => {})
+        }
       }
     }
   }
+  const candidates = [...candidatesByFile.values()]
   if (shouldStop()) return []
   candidates.sort((a, b) => b.mtime - a.mtime)
 
@@ -1562,7 +1623,7 @@ export async function searchSessions(
     // burst of keystrokes does not leave several scans running at once.
     if (shouldStop()) break
     if (hits.length >= ceiling) break
-    const opened = await openSessionFile(candidate.file, root)
+    const opened = await openSessionFile(candidate.file, candidate.root)
     if (!opened) continue
     try {
       if (shouldStop()) continue
@@ -2192,7 +2253,6 @@ function emptyPeriod(period: 'today' | 'week' | 'month' | 'allTime'): PeriodUsag
  * for Today, This Week, This Month, and All-Time.
  */
 export async function getAggregatedUsage(customRoot?: string): Promise<AggregatedUsageStats> {
-  const root = resolveSessionRoot(customRoot)
   const now = new Date()
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
   const day = now.getDay()
@@ -2320,32 +2380,25 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
     for (const metric of data.metrics) recordMetric(data.sessionId, metric)
   }
 
-  let rootStat: Stats
-  try {
-    rootStat = await stat(root)
-    if (!rootStat.isDirectory()) throw new Error('not a directory')
-  } catch {
-    return {
-      today,
-      week,
-      month,
-      allTime,
-      byModel: [],
-      recentDays: toDailyStats(recentDaysMap),
-      heatmapDays: toDailyStats(heatmapDaysMap),
-      updatedAt: Date.now()
+  const seenUsageFiles = new Set<string>()
+  for (const root of resolveSessionRoots(customRoot)) {
+    let rootStat: Stats
+    try {
+      rootStat = await stat(root)
+      if (!rootStat.isDirectory()) continue
+    } catch {
+      continue
     }
-  }
 
-  let workspaceDirs: string[] = []
-  try {
-    const entries = await readdir(root, { withFileTypes: true })
-    workspaceDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
-  } catch {
-    workspaceDirs = []
-  }
+    let workspaceDirs: string[] = []
+    try {
+      const entries = await readdir(root, { withFileTypes: true })
+      workspaceDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+    } catch {
+      workspaceDirs = []
+    }
 
-  for (const dir of workspaceDirs) {
+    for (const dir of workspaceDirs) {
     const dirPath = path.join(root, dir)
     let files: string[] = []
     try {
@@ -2361,6 +2414,11 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
       if (!opened) continue
 
       const key = canonicalSessionFile(fullPath)
+      if (seenUsageFiles.has(key)) {
+        await opened.handle.close().catch(() => {})
+        continue
+      }
+      seenUsageFiles.add(key)
       const sessionId = file.replace(/\.jsonl$/, '')
       let usageData = usageCache.get(key)
 
@@ -2479,6 +2537,7 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
 
       if (usageData) applyUsageData(usageData)
     }
+  }
   }
 
   today.conversationsCount = activeInToday.size

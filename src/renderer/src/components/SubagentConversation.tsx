@@ -63,6 +63,9 @@ export function SubagentConversation({
         </span>
       </div>
       <div className="subagent-conversation__body">
+        {task.messagesTruncated ? (
+          <div className="subagent-conversation__truncated">{t('Earlier messages are omitted to keep this transcript responsive.')}</div>
+        ) : null}
         {!hasUserMessage ? (
           <div className="subagent-conversation__user">{task.task}</div>
         ) : null}

@@ -13,6 +13,8 @@
  */
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
@@ -47,8 +49,18 @@ const cli = path.join(
   'cli.js'
 )
 
+const sessionDir = mkdtempSync(path.join(tmpdir(), 'pi-e2e-sessions-'))
+process.once('exit', () => {
+  try {
+    rmSync(sessionDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  } catch {
+    // A child that failed to exit can keep the temporary session files open.
+  }
+})
+const rpcArgs = ['--mode', 'rpc', '--approve', '--session-dir', sessionDir]
+
 const cwd = process.argv[2] ?? root
-const child = spawn(process.execPath, [cli, '--mode', 'rpc'], {
+const child = spawn(process.execPath, [cli, ...rpcArgs], {
   cwd,
   stdio: ['pipe', 'pipe', 'pipe'],
   env: { ...process.env }
@@ -161,6 +173,12 @@ while (attempt < 3) {
     while (Date.now() < deadline) {
       if (events.some((event) => event.type === 'agent_settled')) break
       await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+
+    if (!events.some((event) => event.type === 'agent_settled')) {
+      console.log(`attempt ${attempt}: the run did not settle before the deadline`)
+      failures.push(`attempt ${attempt}: run did not settle`)
+      break
     }
 
     console.log(`attempt ${attempt}: ${events.length} events`)
@@ -285,7 +303,7 @@ if (failures.length > 0) {
  * T08 — stopping a run that is still working
  * ------------------------------------------------------------------ */
 
-const stopChild = spawn(process.execPath, [cli, '--mode', 'rpc'], {
+const stopChild = spawn(process.execPath, [cli, ...rpcArgs], {
   cwd,
   stdio: ['pipe', 'pipe', 'pipe'],
   env: { ...process.env }

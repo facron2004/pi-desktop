@@ -654,6 +654,8 @@ export interface SubagentTaskProgress {
   errorMessage?: string
   /** The child's transcript, captured from its JSON event stream. */
   messages?: AgentMessage[]
+  /** True when older transcript messages were dropped to keep progress bounded. */
+  messagesTruncated?: boolean
 }
 
 export interface ToolApproval {
@@ -726,6 +728,8 @@ export interface AppSettings {
   desktopNotifications?: boolean
   /** Default storage location for chats outside workspaces. */
   externalChatFolder?: string
+  /** Previous custom chat folders kept available for existing conversations. */
+  externalChatFolderHistory?: string[]
   /** Default location to open files and folders: 'vscode' | 'cursor' | 'windsurf' | 'system'. */
   defaultFileOpener?: string
   /** Agent environment on Windows: 'windows' | 'wsl'. */
@@ -1037,6 +1041,7 @@ export interface PiDesktopBridge {
     write(id: string, data: string): Promise<void>
     resize(id: string, cols: number, rows: number): Promise<void>
     kill(id: string): Promise<void>
+    acknowledgeOutput(id: string, sequence: number): void
     onData(handler: (payload: TerminalDataPayload) => void): () => void
     onExit(handler: (payload: TerminalExitPayload) => void): () => void
   }
@@ -1147,13 +1152,13 @@ export interface PiDesktopBridge {
   }
   fs: {
     /** List a directory inside the open workspace. */
-    list(dir: string): Promise<FileEntry[]>
+    list(dir: string): Promise<FileListResult>
     /** Read a text file inside the open workspace. */
     read(file: string): Promise<FileContent | null>
     /** Find files inside the open workspace whose name contains the query. */
-    search(query: string, limit?: number): Promise<FileEntry[]>
+    search(query: string, limit?: number, scope?: FileSearchScope): Promise<FileSearchResult>
     /** Find text inside the files of the open workspace. */
-    searchText(query: string, limit?: number): Promise<TextSearchHit[]>
+    searchText(query: string, limit?: number): Promise<TextSearchResult>
     /** Pictures found in one bounded walk of the open workspace. */
     listImages(): Promise<ImageListResult>
     /** Show a file in the file manager of the operating system. */
@@ -1191,6 +1196,20 @@ export interface ImageListResult {
   truncated: boolean
 }
 
+export interface FileListResult {
+  entries: FileEntry[]
+  /** True when limits or a read error may have omitted directory entries. */
+  truncated: boolean
+}
+
+export interface FileSearchResult {
+  entries: FileEntry[]
+  /** True when the result, depth, or scan limit may have omitted matching files. */
+  truncated: boolean
+}
+
+export type FileSearchScope = 'composer-mention' | 'file-tree'
+
 export interface FileContent {
   path: string
   content: string
@@ -1217,6 +1236,12 @@ export interface TextSearchHit {
   preview: string
   matchStart: number
   matchLength: number
+}
+
+export interface TextSearchResult {
+  hits: TextSearchHit[]
+  /** True when the result, depth, file-count, or byte limit may have omitted matches. */
+  truncated: boolean
 }
 
 /**
@@ -1285,6 +1310,7 @@ export interface TerminalSessionInfo {
 export interface TerminalDataPayload {
   id: string
   data: string
+  sequence: number
 }
 
 export interface TerminalExitPayload {

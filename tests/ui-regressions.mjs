@@ -10,13 +10,20 @@ import { promisify } from 'node:util'
 
 const require = createRequire(import.meta.url)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const output = path.join(root, 'output', 'playwright', 'ui-regressions')
+const output = process.env.PI_DESKTOP_UI_OUTPUT
+  ? path.resolve(process.env.PI_DESKTOP_UI_OUTPUT)
+  : path.join(root, 'output', 'playwright', 'ui-regressions')
 mkdirSync(output, { recursive: true })
 const profile = mkdtempSync(path.join(output, 'profile-'))
 const markerFile = path.join(profile, 'terminal-requests.txt')
 const workspace = path.join(profile, 'workspace')
 mkdirSync(workspace)
 writeFileSync(path.join(workspace, 'note.txt'), 'hello from the workspace\n')
+writeFileSync(path.join(workspace, 'old-only-result.txt'), 'old query result\n')
+writeFileSync(path.join(workspace, 'new-only-result.txt'), 'new query result\n')
+const nestedWorkspace = path.join(workspace, 'nested-project')
+mkdirSync(nestedWorkspace)
+writeFileSync(path.join(nestedWorkspace, 'nested-only.txt'), 'nested workspace file\n')
 // A 1×1 PNG so the Images page has something real to list.
 writeFileSync(
   path.join(workspace, 'shot.png'),
@@ -66,8 +73,12 @@ writeFileSync(path.join(profile, 'settings.json'), JSON.stringify({
   model: 'fixture/sidebar-test', thinkingLevel: 'off', permissionMode: 'full', trustProject: false, desktopNotifications: false
 }))
 
-async function checkRenderer(markerFile) {
+async function checkRenderer(markerFile, nestedWorkspace) {
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const setInputValue = (input, value) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
   const check = (condition, message) => { if (!condition) throw new Error(message) }
   const until = async (read, message, timeout = 10000) => {
     const deadline = performance.now() + timeout
@@ -154,6 +165,7 @@ async function checkRenderer(markerFile) {
     check(childStates.some((states) => states.includes('running')), 'Pi did not publish child startup progress')
     await until(() => Object.values(store.getState().threads).every((thread) => !thread.isStreaming), 'Parent did not settle')
     passed.push('real Pi subagents stay visible in background in the right panel')
+
   } finally {
     offMode()
     const workspacePath = store.getState().workspace?.path ?? store.getState().status.cwd
@@ -841,6 +853,42 @@ async function checkRenderer(markerFile) {
   await until(() => document.querySelector('.subagent-tree'), 'Back did not restore the catalog after reopening')
   passed.push('background task rows open their live child conversation and can be reopened')
 
+  await openToolPage('files', 'Files')
+  const fileSearch = await until(
+    () => document.querySelector('.tree__search input[aria-label="Find files"]'),
+    'The Files page did not render its search field'
+  )
+  const flatFileNames = () => [...document.querySelectorAll('.tree__item--flat .tree__name')].map((node) => node.textContent)
+  setInputValue(fileSearch, 'old-only')
+  await until(() => flatFileNames().includes('old-only-result.txt'), 'The first file search did not find its fixture')
+  setInputValue(fileSearch, 'new-only')
+  await pause(20)
+  check(document.querySelector('.tree__results-head')?.textContent === 'Searching…', 'The updated file search did not show its pending state')
+  check(!flatFileNames().includes('old-only-result.txt'), 'The previous file search results stayed visible under a new query')
+  await until(() => flatFileNames().includes('new-only-result.txt'), 'The updated file search did not find its fixture')
+  passed.push('file search clears stale matches while the next query is running')
+
+  setInputValue(fileSearch, '')
+  const nestedFolder = await until(
+    () => [...document.querySelectorAll('.tree__item')].find((node) => node.querySelector('.tree__name')?.textContent === 'nested-project'),
+    'The nested project folder did not appear in the parent tree'
+  )
+  nestedFolder.click()
+  await until(
+    () => [...document.querySelectorAll('.tree__item .tree__name')].some((node) => node.textContent === 'nested-only.txt'),
+    'The nested folder did not load before switching projects'
+  )
+  await store.getState().switchProject(nestedWorkspace)
+  await until(
+    () => store.getState().workspace?.path === nestedWorkspace,
+    'The nested project did not become the active workspace'
+  )
+  await until(
+    () => [...document.querySelectorAll('.tree__item .tree__name')].some((node) => node.textContent === 'nested-only.txt'),
+    'The file tree did not reload when a previously expanded folder became the workspace root'
+  )
+  passed.push('the file tree reloads a folder when it becomes the active workspace root')
+
   return passed
 }
 
@@ -859,16 +907,18 @@ Object.assign(env, {
   PI_DESKTOP_SCREENSHOT_DELAY: '1000',
   PI_DESKTOP_EVAL_DELAY: '100',
   PI_DESKTOP_RPC_TRACE: '0',
-  PI_DESKTOP_EVAL: `(${checkRenderer.toString()})(${JSON.stringify(markerFile)})`
+  PI_DESKTOP_EVAL: `(${checkRenderer.toString()})(${JSON.stringify(markerFile)}, ${JSON.stringify(nestedWorkspace)})`
 })
 try {
   const { stdout, stderr } = await promisify(execFile)(require('electron'), [root], {
     cwd: root, env, windowsHide: true, timeout: 120000, maxBuffer: 2 * 1024 * 1024
   })
+  const rendererErrors = stdout.split(/\r?\n/).filter((line) => line.includes('[pi-desktop] renderer error:'))
+  assert.deepEqual(rendererErrors, [], `Renderer console errors:\n${rendererErrors.join('\n')}`)
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 16 : 15)
+  assert.equal(passed.length, process.platform === 'win32' ? 18 : 17)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

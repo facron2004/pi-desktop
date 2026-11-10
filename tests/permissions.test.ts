@@ -25,6 +25,7 @@ test('automatic approval keeps commands, external paths and sensitive files behi
     for (const tool of ['read', 'write', 'edit']) {
       assert.equal(allowed(tool, 'notes.txt'), true)
       assert.equal(allowed(tool, 'new/directory/notes.txt'), true)
+      assert.equal(allowed(tool, '.cache/huggingface/hub/models/gpt2/config.json'), true)
       assert.equal(allowed(tool, '../outside/notes.txt'), false)
       assert.equal(allowed(tool, path.join(outside, 'notes.txt')), false)
     }
@@ -36,6 +37,7 @@ test('automatic approval keeps commands, external paths and sensitive files behi
       '.agents/skills/a.md', 'node_modules/pkg/index.js', 'secret.pem', 'auth.json',
       '.docker/config.json', '.azure/azureProfile.json', '.kube/config', '.gnupg/private-keys-v1.d',
       '.config/gcloud/application_default_credentials.json', '.config/gh/hosts.yml',
+      '.cache/huggingface/token', '.cache/huggingface/stored_tokens',
       '.git-credentials', 'credentials.json', 'service-account.json', 'secrets.yaml',
       'id_ed25519', 'client.p12', 'client.pfx', 'release.jks',
       '@../outside/a', '~/secret', 'file:///tmp/secret'
@@ -43,6 +45,16 @@ test('automatic approval keeps commands, external paths and sensitive files behi
       for (const tool of ['read', 'write', 'edit']) {
         assert.equal(allowed(tool, file), false, `${tool}: ${file}`)
       }
+    }
+    for (const [tool, file, env] of [
+      ['read', 'custom-auth/hf-token', { HF_TOKEN_PATH: path.join(cwd, 'custom-auth', 'hf-token') }],
+      ['write', 'custom-auth/stored_tokens', { HF_HOME: path.join(cwd, 'custom-auth') }]
+    ] as const) {
+      assert.equal(
+        canAutoApprove({ toolName: tool, toolSource: 'builtin', input: { path: file } }, cwd, env),
+        false,
+        `${tool}: configured Hugging Face credential path`
+      )
     }
     assert.equal(canAutoApprove({ toolName: 'bash', input: { command: 'echo hi' } }, cwd), false)
     assert.equal(

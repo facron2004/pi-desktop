@@ -2,6 +2,12 @@ import type { ProviderApi, ProviderConnection, ProviderModel, ProviderProbeResul
 import { enrichModels, record } from './metadata'
 
 const APIS: ProviderApi[] = ['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai']
+export const MAX_PROVIDER_RESPONSE_BYTES = 8 * 1024 * 1024
+export const MAX_PROVIDER_CATALOG_BYTES = 16 * 1024 * 1024
+
+interface ResponseBudget {
+  remaining: number
+}
 
 export function normalizeConnection(input: ProviderConnection): ProviderConnection {
   if (!APIS.includes(input.api)) throw new Error('Unsupported API format')
@@ -36,7 +42,44 @@ class HttpError extends Error {
   constructor(readonly status: number, message: string) { super(message) }
 }
 
-async function requestJson(url: string, connection: ProviderConnection, key: string, signal: AbortSignal, body?: unknown): Promise<unknown> {
+async function readResponseText(response: Response, maxBytes: number, limitMessage: string): Promise<{ text: string; bytes: number }> {
+  const contentLength = response.headers.get('content-length')
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > maxBytes) {
+    await response.body?.cancel().catch(() => {})
+    throw new HttpError(response.status, limitMessage)
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) return { text: '', bytes: 0 }
+  const chunks: Buffer[] = []
+  let bytes = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (bytes + value.byteLength > maxBytes) {
+        await reader.cancel().catch(() => {})
+        throw new HttpError(response.status, limitMessage)
+      }
+      const chunk = Buffer.from(value)
+      chunks.push(chunk)
+      bytes += chunk.length
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return { text: Buffer.concat(chunks, bytes).toString('utf8'), bytes }
+}
+
+async function requestJson(
+  url: string,
+  connection: ProviderConnection,
+  key: string,
+  signal: AbortSignal,
+  body?: unknown,
+  budget?: ResponseBudget
+): Promise<unknown> {
+  if (budget && budget.remaining <= 0) throw new Error('The provider model catalogue exceeds the 16 MB limit')
   const response = await fetch(url, {
     method: body === undefined ? 'GET' : 'POST',
     headers: headers(connection, key),
@@ -44,7 +87,12 @@ async function requestJson(url: string, connection: ProviderConnection, key: str
     signal,
     redirect: 'error'
   })
-  const text = await response.text()
+  const maxBytes = Math.min(MAX_PROVIDER_RESPONSE_BYTES, budget?.remaining ?? MAX_PROVIDER_RESPONSE_BYTES)
+  const limitMessage = maxBytes < MAX_PROVIDER_RESPONSE_BYTES
+    ? 'The provider model catalogue exceeds the 16 MB limit'
+    : 'The provider response exceeds the 8 MB limit'
+  const { text, bytes } = await readResponseText(response, maxBytes, limitMessage)
+  if (budget) budget.remaining -= bytes
   let data: unknown
   try { data = JSON.parse(text) } catch {
     throw new HttpError(response.status, response.ok ? 'The endpoint did not return JSON' : `HTTP ${response.status}: ${response.statusText}`)
@@ -60,15 +108,16 @@ async function requestJson(url: string, connection: ProviderConnection, key: str
 export async function fetchProviderModels(connection: ProviderConnection, key: string, catalog: ProviderModel[] = []): Promise<ProviderModel[]> {
   const normalized = normalizeConnection(connection)
   const signal = AbortSignal.timeout(20_000)
+  const budget: ResponseBudget = { remaining: MAX_PROVIDER_CATALOG_BYTES }
   const all: unknown[] = []
   let url = endpoint(normalized, 'models')
   for (let page = 0; page < 20; page++) {
-    const data = await requestJson(url, normalized, key, signal)
+    const data = await requestJson(url, normalized, key, signal, undefined, budget)
     const payload = record(data)
     const entries = Array.isArray(data) ? data : payload.data ?? payload.models
     if (!Array.isArray(entries)) throw new Error('The endpoint did not return a model list')
+    if (all.length + entries.length > 10_000) throw new Error('The upstream model list exceeds 10,000 entries')
     all.push(...entries)
-    if (all.length > 10_000) throw new Error('The upstream model list exceeds 10,000 entries')
     const next = new URL(endpoint(normalized, 'models'))
     if (typeof payload.nextPageToken === 'string' && payload.nextPageToken) next.searchParams.set('pageToken', payload.nextPageToken)
     else if (payload.has_more === true) {

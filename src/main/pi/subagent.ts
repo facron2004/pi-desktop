@@ -45,16 +45,74 @@ export function subagentExtension(
   const settingsModel = bounded(defaults.model, MODEL_PATTERN)
   const settingsThinking = bounded(defaults.thinking, THINKING_PATTERN)
 return `import { execFile, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { Type } from 'typebox';
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
+const MAX_SUBAGENT_RECORD_BYTES = 64 * 1024 * 1024;
+const MAX_SUBAGENT_OUTPUT_CHARS = 256 * 1024;
+const MAX_SUBAGENT_ERROR_CHARS = 64 * 1024;
+const MAX_SUBAGENT_STDERR_CHARS = 256 * 1024;
+const MAX_SUBAGENT_PROGRESS_OUTPUT_CHARS = 16 * 1024;
+const MAX_SUBAGENT_TRANSCRIPT_MESSAGES = 200;
+const MAX_SUBAGENT_TRANSCRIPT_BYTES = 256 * 1024;
 const APPROVAL_EXTENSION_PATH = ${JSON.stringify(permissionExtensionPath)};
 const PERMISSION_TITLE = ${JSON.stringify(permissionTitle)};
 let uiQueue = Promise.resolve();
+let activeSubagentCount = 0;
+const subagentWaiters = [];
+
+function releaseSubagentSlot() {
+  activeSubagentCount -= 1;
+  while (subagentWaiters.length > 0) {
+    const waiter = subagentWaiters.shift();
+    if (waiter.abort) waiter.signal.removeEventListener('abort', waiter.abort);
+    if (waiter.signal && waiter.signal.aborted) {
+      waiter.resolve(() => {});
+      continue;
+    }
+    activeSubagentCount += 1;
+    waiter.resolve(releaseSubagentSlot);
+    return;
+  }
+}
+
+function acquireSubagentSlot(signal) {
+  if (signal && signal.aborted) return Promise.resolve(() => {});
+  if (activeSubagentCount < MAX_CONCURRENCY) {
+    activeSubagentCount += 1;
+    return Promise.resolve(releaseSubagentSlot);
+  }
+  return new Promise(resolve => {
+    const waiter = { resolve, signal, abort: undefined };
+    if (signal) {
+      waiter.abort = () => {
+        const index = subagentWaiters.indexOf(waiter);
+        if (index === -1) return;
+        subagentWaiters.splice(index, 1);
+        signal.removeEventListener('abort', waiter.abort);
+        resolve(() => {});
+      };
+    }
+    subagentWaiters.push(waiter);
+    if (signal) {
+      signal.addEventListener('abort', waiter.abort, { once: true });
+      if (signal.aborted) waiter.abort();
+    }
+  });
+}
+
+async function runWithSubagentSlot(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
+  const release = await acquireSubagentSlot(signal);
+  try {
+    return await runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx);
+  } finally {
+    release();
+  }
+}
 // Settings for this process. '' means the setting is unset and the call follows
 // the dispatching session, exactly as it did before the setting existed.
 const SETTINGS_MODEL = ${JSON.stringify(settingsModel)};
@@ -88,6 +146,18 @@ function piInvocation(args) {
   return { command: 'pi', args };
 }
 
+function safeWorkingDirectory(defaultCwd, requestedCwd) {
+  try {
+    const root = realpathSync(defaultCwd);
+    const target = realpathSync(requestedCwd ? path.resolve(defaultCwd, requestedCwd) : defaultCwd);
+    const relative = path.relative(root, target);
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return null;
+    return statSync(target).isDirectory() ? target : null;
+  } catch {
+    return null;
+  }
+}
+
 function emptyUsage() {
   return { turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0 };
 }
@@ -97,12 +167,48 @@ function finalAssistantText(messages) {
     const message = messages[index];
     if (!message || message.role !== 'assistant') continue;
     if (!Array.isArray(message.content)) return '';
-    return message.content
-      .filter(part => part && part.type === 'text' && typeof part.text === 'string')
-      .map(part => part.text)
-      .join('');
+    const notice = '\\n[Subagent final output truncated at 262144 characters]';
+    const contentLimit = MAX_SUBAGENT_OUTPUT_CHARS - notice.length;
+    const parts = [];
+    let length = 0;
+    let truncated = false;
+    for (const part of message.content) {
+      if (!part || part.type !== 'text' || typeof part.text !== 'string') continue;
+      const remaining = contentLimit - length;
+      if (part.text.length <= remaining) {
+        parts.push(part.text);
+        length += part.text.length;
+        continue;
+      }
+      let end = 0;
+      for (const character of part.text) {
+        if (end + character.length > remaining) break;
+        end += character.length;
+      }
+      if (end > 0) parts.push(part.text.slice(0, end));
+      truncated = true;
+      break;
+    }
+    return parts.join('') + (truncated ? notice : '');
   }
   return '';
+}
+
+function boundedError(text) {
+  const notice = '\\n[Subagent error truncated at 65536 characters]';
+  if (text.length <= MAX_SUBAGENT_ERROR_CHARS) return text;
+  const contentLimit = MAX_SUBAGENT_ERROR_CHARS - notice.length;
+  let end = 0;
+  for (const character of text) {
+    if (end + character.length > contentLimit) break;
+    end += character.length;
+  }
+  return text.slice(0, end) + notice;
+}
+
+function progressOutput(text) {
+  if (text.length <= MAX_SUBAGENT_PROGRESS_OUTPUT_CHARS) return text;
+  return text.slice(0, MAX_SUBAGENT_PROGRESS_OUTPUT_CHARS) + '\\n[Progress output truncated; see the final result below]';
 }
 
 function failedResult(result) {
@@ -125,10 +231,10 @@ function buildArgs(params) {
 }
 
 function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
-  const workingDirectory = cwd ? path.resolve(defaultCwd, cwd) : defaultCwd;
+  const workingDirectory = safeWorkingDirectory(defaultCwd, cwd);
   const result = {
     task,
-    cwd: workingDirectory,
+    cwd: workingDirectory || defaultCwd,
     exitCode: -1,
     output: '',
     stderr: '',
@@ -142,14 +248,25 @@ function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
     finishedAt: undefined,
     activity: undefined,
     toolName: undefined,
-    messages: []
+    messages: [],
+    messagesTruncated: false
   };
+  if (!workingDirectory) {
+    result.exitCode = 1;
+    result.errorMessage = 'Subagent working directory must be an existing folder inside the current project.';
+    result.stopReason = 'error';
+    result.status = 'failed';
+    result.finishedAt = Date.now();
+    return Promise.resolve(result);
+  }
   const messages = [];
+  let transcriptBytes = 0;
   const emitUpdate = () => {
     if (!onUpdate) return;
+    const output = result.output ? progressOutput(result.output) : '';
     onUpdate({
-      content: [{ type: 'text', text: result.output || '(running...)' }],
-      details: { mode: 'single', results: [{ ...result, usage: { ...result.usage } }] }
+      content: [{ type: 'text', text: output || '(running...)' }],
+      details: { mode: 'single', results: [{ ...result, output, usage: { ...result.usage } }] }
     });
   };
   return new Promise(resolve => {
@@ -164,6 +281,7 @@ function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
       return;
     }
     let settled = false;
+    let agentSettled = false;
     let wasAborted = false;
     let killTimer;
     let approvalReadyTimer;
@@ -171,7 +289,9 @@ function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
     let permissionFailed = false;
     let promptSent = false;
     let stdoutBuffer = '';
-    let stderrBuffer = '';
+    let stdoutBufferBytes = 0;
+    let protocolFailed = false;
+    let rejectOversizedRecord = () => {};
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrDecoder = new StringDecoder('utf8');
     const invocation = piInvocation(buildArgs(params));
@@ -186,7 +306,7 @@ function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
       });
     } catch (error) {
       result.exitCode = 1;
-      result.errorMessage = error instanceof Error ? error.message : String(error);
+      result.errorMessage = boundedError(error instanceof Error ? error.message : String(error));
       result.status = 'failed';
       result.finishedAt = Date.now();
       emitUpdate();
@@ -248,12 +368,15 @@ function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
         result.errorMessage = result.errorMessage || 'Pi did not load its tool approval controls.';
         result.stopReason = 'error';
       }
+      if (!wasAborted && result.exitCode === 0 && !agentSettled) {
+        result.errorMessage = result.errorMessage || 'Pi exited before the subagent task settled.';
+        result.stopReason = 'error';
+      }
       if (wasAborted) {
         result.aborted = true;
         result.errorMessage = result.errorMessage || 'Subagent was aborted';
       }
-      result.output = finalAssistantText(messages);
-      result.messages = messages.slice();
+      result.messages = messages.map(entry => entry.message);
       result.status = result.aborted ? 'aborted' : failedResult(result) ? 'failed' : 'completed';
       result.finishedAt = Date.now();
       result.activity = undefined;
@@ -302,7 +425,7 @@ function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
       }
       if (event.type === 'response' && event.id === 'subagent-prompt') {
         if (!event.success) {
-          result.errorMessage = event.error || 'Pi rejected the subagent prompt';
+          result.errorMessage = boundedError(String(event.error || 'Pi rejected the subagent prompt'));
           result.stopReason = 'error';
           child.stdin.end();
         } else if (event.data?.disposition === 'handled') {
@@ -354,6 +477,7 @@ function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
         return;
       }
       if (event.type === 'agent_settled') {
+        agentSettled = true;
         child.stdin.end();
         return;
       }
@@ -371,9 +495,9 @@ function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
         setActivity(activeTools.size ? 'Running a tool' : 'Working', activeTools.size ? [...activeTools.values()].join(', ') : undefined);
       }
       if ((event.type === 'message_end' || event.type === 'tool_result_end') && event.message) {
-        messages.push(event.message);
         const message = event.message;
         if (message.role === 'assistant') {
+          result.output = finalAssistantText([message]);
           result.usage.turns += 1;
           const usage = message.usage;
           if (usage) {
@@ -386,46 +510,77 @@ function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
           }
           if (!result.model && message.model) result.model = message.model;
           if (message.stopReason) result.stopReason = message.stopReason;
-          if (message.errorMessage) result.errorMessage = message.errorMessage;
+          if (message.errorMessage) result.errorMessage = boundedError(String(message.errorMessage));
         }
-        result.output = finalAssistantText(messages);
-        result.messages = messages.slice();
+        const messageBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+        if (messageBytes > MAX_SUBAGENT_TRANSCRIPT_BYTES) {
+          messages.length = 0;
+          transcriptBytes = 0;
+          result.messagesTruncated = true;
+        } else {
+          messages.push({ message, bytes: messageBytes });
+          transcriptBytes += messageBytes;
+          while (messages.length > MAX_SUBAGENT_TRANSCRIPT_MESSAGES || transcriptBytes > MAX_SUBAGENT_TRANSCRIPT_BYTES) {
+            transcriptBytes -= messages.shift().bytes;
+            result.messagesTruncated = true;
+          }
+        }
+        result.messages = messages.map(entry => entry.message);
         emitUpdate();
       }
     };
-    child.stdout.on('data', chunk => {
-      stdoutBuffer += stdoutDecoder.write(chunk);
+    const consumeStdout = text => {
+      if (protocolFailed) return;
+      let start = 0;
       while (true) {
-        const newline = stdoutBuffer.indexOf('\\n');
-        if (newline === -1) break;
-        const line = stdoutBuffer.slice(0, newline);
-        stdoutBuffer = stdoutBuffer.slice(newline + 1);
-        processLine(line);
+        const newline = text.indexOf('\\n', start);
+        const end = newline === -1 ? text.length : newline;
+        const segment = text.slice(start, end);
+        const segmentBytes = Buffer.byteLength(segment, 'utf8');
+        if (stdoutBufferBytes + segmentBytes > MAX_SUBAGENT_RECORD_BYTES) {
+          stdoutBuffer = '';
+          stdoutBufferBytes = 0;
+          rejectOversizedRecord();
+          return;
+        }
+        stdoutBuffer += segment;
+        stdoutBufferBytes += segmentBytes;
+        if (newline === -1) return;
+        processLine(stdoutBuffer);
+        stdoutBuffer = '';
+        stdoutBufferBytes = 0;
+        start = newline + 1;
       }
-    });
+    };
+    child.stdout.on('data', chunk => consumeStdout(stdoutDecoder.write(chunk)));
     child.stdout.on('end', () => {
-      stdoutBuffer += stdoutDecoder.end();
-      if (stdoutBuffer.trim()) processLine(stdoutBuffer);
-      stdoutBuffer = '';
-    });
-    child.stderr.on('data', chunk => {
-      stderrBuffer += stderrDecoder.write(chunk);
-      while (true) {
-        const newline = stderrBuffer.indexOf('\\n');
-        if (newline === -1) break;
-        const line = stderrBuffer.slice(0, newline);
-        stderrBuffer = stderrBuffer.slice(newline + 1);
-        result.stderr += line + '\\n';
+      consumeStdout(stdoutDecoder.end());
+      if (!protocolFailed && stdoutBuffer.trim()) {
+        result.errorMessage = result.errorMessage || 'Subagent RPC record was not terminated by LF.';
+        result.stopReason = 'error';
       }
+      stdoutBuffer = '';
+      stdoutBufferBytes = 0;
     });
-    child.stderr.on('end', () => {
-      stderrBuffer += stderrDecoder.end();
-      if (stderrBuffer) result.stderr += stderrBuffer;
-    });
+    let stderrTruncated = false;
+    const appendStderr = text => {
+      if (stderrTruncated) return;
+      const notice = '\\n[Subagent stderr truncated at 262144 characters]';
+      const contentLimit = MAX_SUBAGENT_STDERR_CHARS - notice.length;
+      const remaining = contentLimit - result.stderr.length;
+      if (text.length > remaining) {
+        result.stderr += text.slice(0, Math.max(0, remaining)) + notice;
+        stderrTruncated = true;
+      } else {
+        result.stderr += text;
+      }
+    };
+    child.stderr.on('data', chunk => appendStderr(stderrDecoder.write(chunk)));
+    child.stderr.on('end', () => appendStderr(stderrDecoder.end()));
     child.stdin.on('error', () => {});
     child.on('close', code => finish(code));
     child.on('error', error => {
-      result.errorMessage = error instanceof Error ? error.message : String(error);
+      result.errorMessage = boundedError(error instanceof Error ? error.message : String(error));
       finish(1);
     });
     const writeRecord = record => {
@@ -453,6 +608,22 @@ function runSubagent(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
           signalProcessGroup('SIGKILL');
         }
       }, 5000);
+      if (typeof killTimer.unref === 'function') killTimer.unref();
+    };
+    rejectOversizedRecord = () => {
+      if (protocolFailed || settled) return;
+      protocolFailed = true;
+      result.errorMessage = 'Subagent RPC record exceeded the 64 MB limit.';
+      result.stopReason = 'error';
+      try { child.stdin.end(); } catch {}
+      treeKillPending = killProcessTree('SIGTERM');
+      killTimer = setTimeout(() => {
+        if (process.platform === 'win32') {
+          treeKillPending = Promise.all([treeKillPending, killProcessTree('SIGKILL', true)]).then(() => {});
+        } else {
+          signalProcessGroup('SIGKILL');
+        }
+      }, 1000);
       if (typeof killTimer.unref === 'function') killTimer.unref();
     };
     if (signal) {
@@ -542,7 +713,7 @@ export default function (pi) {
         tools: params.tools
       };
       if (single) {
-        const result = await runSubagent(ctx.cwd, effective, effective.task, effective.cwd, signal, onUpdate, ctx);
+        const result = await runWithSubagentSlot(ctx.cwd, effective, effective.task, effective.cwd, signal, onUpdate, ctx);
         return {
           content: [{ type: 'text', text: resultOutput(result) }],
           details: { mode: 'single', results: [result] },
@@ -575,7 +746,7 @@ export default function (pi) {
       };
       publishProgress();
       await mapWithConcurrency(tasks, MAX_CONCURRENCY, async (item, index) => {
-        const result = await runSubagent(ctx.cwd, effective, item.task, item.cwd || effective.cwd, signal, partial => {
+        const result = await runWithSubagentSlot(ctx.cwd, effective, item.task, item.cwd || effective.cwd, signal, partial => {
           const current = partial.details && partial.details.results && partial.details.results[0];
           if (current) results[index] = current;
           publishProgress();

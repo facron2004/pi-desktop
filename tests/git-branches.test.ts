@@ -113,6 +113,26 @@ test('removeWorktree stops its runtime only after validating the registered targ
   }
 })
 
+test('addWorktree rejects a project-local target whose name begins with two dots', async () => {
+  const { root, git, cleanup } = gitRepoFixture()
+  const target = path.join(root, '..nested-worktree')
+  try {
+    writeFileSync(path.join(root, 'file.txt'), 'initial\n')
+    git('add', 'file.txt')
+    git('commit', '-qm', 'initial commit')
+
+    const result = await addWorktree(root, target, 'nested-worktree', true)
+    assert.deepEqual(result, {
+      ok: false,
+      error: 'The worktree has to be outside the project folder.'
+    })
+    assert.equal(existsSync(target), false)
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+    cleanup()
+  }
+})
+
 test('countUntracked bounds reading: large files > 512KB count as 1 line without reading whole file', async () => {
   const { root, git, cleanup } = gitRepoFixture()
   try {

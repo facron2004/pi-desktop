@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -400,6 +400,31 @@ test('image save IPC rejects payloads above the shared size limit before decodin
   }
 })
 
+test('pasting an image does not recreate a workspace that disappeared', async () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'pasted-image-missing-workspace-'))
+  const deletedWorkspace = path.join(parent, 'deleted-project', 'nested')
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: deletedWorkspace }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    const result = await anyIpc._invoke('fs:savePastedImage', {}, 'AA==', 'image/png')
+    assert.equal(result, null)
+    assert.equal(existsSync(deletedWorkspace), false)
+    assert.deepEqual(readdirSync(parent), [])
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
 test('a newer project search and a cleared text search cancel previous walks', async () => {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'search-cancellation-'))
   try {
@@ -419,14 +444,125 @@ test('a newer project search and a cleared text search cancel previous walks', a
 
     const event = { sender: {} }
     const oldPathSearch = anyIpc._invoke('fs:search', event, 'match-file')
-    assert.deepEqual(await anyIpc._invoke('fs:search', event, 'no-match'), [])
-    assert.deepEqual(await oldPathSearch, [])
-    assert.equal((await anyIpc._invoke('fs:search', event, 'match-file')).length, 1)
+    assert.deepEqual(await anyIpc._invoke('fs:search', event, '', 0), { entries: [], truncated: false })
+    assert.deepEqual(await oldPathSearch, { entries: [], truncated: false })
+    assert.equal((await anyIpc._invoke('fs:search', event, 'match-file')).entries.length, 1)
 
     const oldTextSearch = anyIpc._invoke('fs:searchText', event, 'needle')
-    assert.deepEqual(await anyIpc._invoke('fs:searchText', event, ''), [])
-    assert.deepEqual(await oldTextSearch, [])
-    assert.equal((await anyIpc._invoke('fs:searchText', event, 'needle')).length, 1)
+    assert.deepEqual(await anyIpc._invoke('fs:searchText', event, ''), { hits: [], truncated: false })
+    assert.deepEqual(await oldTextSearch, { hits: [], truncated: false })
+    assert.equal((await anyIpc._invoke('fs:searchText', event, 'needle')).hits.length, 1)
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('project file and text searches stop when their renderer is destroyed', async () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'destroyed-window-search-'))
+  const sessionRoot = path.join(tempDir, 'sessions')
+  try {
+    writeFileSync(path.join(tempDir, 'match-file.txt'), 'needle text', 'utf8')
+    const sessionDir = path.join(sessionRoot, 'workspace')
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileSync(path.join(sessionDir, 'session.jsonl'), [
+      JSON.stringify({ type: 'session', version: 3, id: 'session-1', cwd: tempDir }),
+      JSON.stringify({
+        type: 'message',
+        id: 'message-1',
+        message: { role: 'user', content: [{ type: 'text', text: 'needle in a session' }] }
+      })
+    ].join('\n') + '\n', 'utf8')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: tempDir }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+    const event = { sender: { isDestroyed: () => true } }
+
+    const previousSessionRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+    process.env.PI_CODING_AGENT_SESSION_DIR = sessionRoot
+    try {
+      const liveSessionHits = await anyIpc._invoke(
+        'sessions:search',
+        { sender: { isDestroyed: () => false } },
+        'needle'
+      )
+      assert.equal(liveSessionHits.length, 1, 'the fixture should be searchable while its renderer is alive')
+      assert.deepEqual(await anyIpc._invoke('sessions:search', event, 'needle'), [])
+    } finally {
+      if (previousSessionRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+      else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessionRoot
+    }
+
+    assert.deepEqual(await anyIpc._invoke('fs:search', event, 'match-file'), { entries: [], truncated: false })
+    assert.deepEqual(await anyIpc._invoke('fs:searchText', event, 'needle'), { hits: [], truncated: false })
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('cancelling one project file search does not cancel another UI scope', async () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'scoped-search-cancellation-'))
+  try {
+    writeFileSync(path.join(tempDir, 'tree-match.txt'), 'tree result', 'utf8')
+    writeFileSync(path.join(tempDir, 'composer-match.txt'), 'composer result', 'utf8')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: tempDir }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    const event = { sender: {} }
+    const treeSearch = anyIpc._invoke('fs:search', event, 'tree-match', undefined, 'file-tree')
+    const composerSearch = anyIpc._invoke('fs:search', event, 'composer-match', 12, 'composer-mention')
+    const cancelTreeSearch = anyIpc._invoke('fs:search', event, '', 0, 'file-tree')
+    const [tree, composer] = await Promise.all([treeSearch, composerSearch, cancelTreeSearch])
+
+    assert.deepEqual(tree.entries, [])
+    assert.equal(composer.entries.length, 1)
+    assert.equal(composer.entries[0].name, 'composer-match.txt')
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('workspace directory listings cap rendered entries and report truncation', async () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'directory-list-limit-'))
+  try {
+    for (let index = 0; index < 1_001; index += 1) {
+      mkdirSync(path.join(tempDir, `directory-${String(index).padStart(4, '0')}`))
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: tempDir }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    const result = await anyIpc._invoke('fs:list', { sender: {} }, tempDir)
+    assert.equal(result.entries.length, 1_000)
+    assert.equal(result.truncated, true)
+    assert.equal(result.entries[0].name, 'directory-0000')
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
   }
@@ -453,11 +589,155 @@ test('workspace text search keeps its byte cap and returns normal file matches',
       terminals: { create: () => {} } as any
     })
 
-    const hits = await anyIpc._invoke('fs:searchText', { sender: {} }, 'needle')
-    assert.deepEqual(hits.map((hit: { path: string }) => hit.path), [normalFile])
-    assert.match(hits[0].preview, /needle/)
+    const result = await anyIpc._invoke('fs:searchText', { sender: {} }, 'needle')
+    assert.deepEqual(result.hits.map((hit: { path: string }) => hit.path), [normalFile])
+    assert.match(result.hits[0].preview, /needle/)
+    assert.equal(result.truncated, true, 'skipping a file over the per-file cap must mark the results incomplete')
   } finally {
     rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('workspace text search handles a half-million-line file without losing its line number', async () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'text-search-many-lines-'))
+  const file = path.join(tempDir, 'many-lines.txt')
+  const emptyLines = 500_000
+  try {
+    writeFileSync(file, '\n'.repeat(emptyLines) + 'needle at end\n', 'utf8')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: tempDir }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    const result = await anyIpc._invoke('fs:searchText', { sender: {} }, 'needle')
+    assert.equal(result.hits.length, 1)
+    assert.equal(result.hits[0].line, emptyLines + 1)
+    assert.equal(result.hits[0].preview, 'needle at end')
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('project searches continue past incomplete and over-deep subdirectories', async () => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'workspace-search-continues-'))
+  const firstDirectory = path.join(tempDir, 'first')
+  const secondDirectory = path.join(tempDir, 'second')
+  mkdirSync(firstDirectory)
+  mkdirSync(secondDirectory)
+  try {
+    const orderedDirectories = readdirSync(tempDir)
+    const incompleteDirectory = path.join(tempDir, orderedDirectories[0]!)
+    const searchableDirectory = path.join(tempDir, orderedDirectories[1]!)
+    const oversizedFile = path.join(incompleteDirectory, 'oversized.txt')
+    const targetFile = path.join(searchableDirectory, 'find-target.ts')
+    writeFileSync(oversizedFile, 'x', 'utf8')
+    truncateSync(oversizedFile, MAX_FILE_BYTES + 1)
+    writeFileSync(targetFile, 'needle is in a later sibling\n', 'utf8')
+
+    let deepDirectory = incompleteDirectory
+    for (let index = 0; index < 12; index += 1) {
+      deepDirectory = path.join(deepDirectory, 'level-' + String(index).padStart(2, '0'))
+      mkdirSync(deepDirectory)
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: tempDir }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+    const event = { sender: {} }
+
+    const paths = await anyIpc._invoke('fs:search', event, 'find-target')
+    assert.deepEqual(paths.entries.map((entry: { path: string }) => entry.path), [targetFile])
+    assert.equal(paths.truncated, true, 'the skipped deep subtree should be reported')
+
+    const text = await anyIpc._invoke('fs:searchText', event, 'needle')
+    assert.deepEqual(text.hits.map((hit: { path: string }) => hit.path), [targetFile])
+    assert.equal(text.truncated, true, 'the oversized file should be reported')
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('workspace scans report an unreadable root as incomplete', async () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'workspace-search-unreadable-'))
+  const rootFile = path.join(parent, 'not-a-directory')
+  writeFileSync(rootFile, 'workspace root is not a directory', 'utf8')
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: rootFile }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    const event = { sender: {} }
+    const listing = await anyIpc._invoke('fs:list', event, rootFile)
+    const paths = await anyIpc._invoke('fs:search', event, 'match')
+    const text = await anyIpc._invoke('fs:searchText', event, 'match')
+    assert.deepEqual(listing, { entries: [], truncated: true })
+    assert.deepEqual(paths, { entries: [], truncated: true })
+    assert.deepEqual(text, { hits: [], truncated: true })
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+test('full-text search marks a rejected workspace hard link as incomplete', async (t) => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'workspace-search-hardlink-'))
+  const workspace = path.join(parent, 'workspace')
+  const external = path.join(parent, 'external.txt')
+  const alias = path.join(workspace, 'alias.txt')
+  mkdirSync(workspace)
+  writeFileSync(external, 'needle in external content', 'utf8')
+  try {
+    try {
+      linkSync(external, alias)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP' || code === 'EXDEV') {
+        t.skip(`hard links are unavailable (${code})`)
+        return
+      }
+      throw error
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: workspace }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    const result = await anyIpc._invoke('fs:searchText', { sender: {} }, 'needle')
+    assert.deepEqual(result.hits, [])
+    assert.equal(result.truncated, true)
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
   }
 })
 
@@ -755,7 +1035,7 @@ test('session IPC handlers reject files outside the Pi session root', async () =
     })
     assert.deepEqual(mismatchedCwd, {
       ok: false,
-      error: 'Conversation file belongs to a different working folder.'
+      error: 'Conversation belongs to a different working folder.'
     })
     assert.equal(
       (await anyIpc._invoke('runtime:start', {}, { cwd: otherWorkspace, sessionFile })).ok,

@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { resolveSessionFilePath } from '../sessions'
+import { resolveSessionFilePath, resolveSessionRoots } from '../sessions'
 import type {
   ExtensionUiResponse,
   ExtensionUiRequest,
@@ -38,6 +38,8 @@ import {
 
 export interface RuntimeOptions {
   customPiPath?: string
+  getSessionRoots?: () => readonly string[]
+  getSessionDir?: (cwd: string) => string | undefined
   /** Trust project-local configuration such as `.pi/settings.json`. */
   trustProject?: boolean
   getPermissionMode?: () => PermissionMode
@@ -94,6 +96,10 @@ export class PiRuntime extends EventEmitter {
     return this.client?.running ?? false
   }
 
+  get pid(): number | undefined {
+    return this.client?.pid
+  }
+
   async start(options: RuntimeStartOptions): Promise<{ ok: boolean; error?: string }> {
     const generation = ++this.generation
     const trace = readTraceHint(options.trace)
@@ -112,7 +118,10 @@ export class PiRuntime extends EventEmitter {
     // The IPC check can go stale while the supervisor acquires the writer lock.
     let sessionFile: string | undefined
     if (options.sessionFile !== undefined) {
-      const verified = await resolveSessionFilePath(options.sessionFile)
+      const verified = await resolveSessionFilePath(
+        options.sessionFile,
+        this.options.getSessionRoots?.() ?? resolveSessionRoots()
+      )
       if (!verified || verified !== options.sessionFile) {
         const error = 'Conversation file changed before Pi could reopen it.'
         if (generation !== this.generation) return { ok: false }
@@ -199,6 +208,8 @@ export class PiRuntime extends EventEmitter {
         contextBreakdownFile
       )
     ]
+    const sessionDir = this.options.getSessionDir?.(options.cwd)?.trim()
+    if (sessionDir) args.push('--session-dir', path.resolve(sessionDir))
 
     // A 429 has to outlast the provider's rate window. Pi reads the budget
     // once, when this process starts, so it has to be in place before launch.
@@ -262,7 +273,7 @@ export class PiRuntime extends EventEmitter {
             return
           }
           const mode = this.options.getPermissionMode?.() ?? 'ask'
-          if (mode === 'full' || (mode === 'auto' && canAutoApprove(approval, options.cwd))) {
+          if (mode === 'full' || (mode === 'auto' && canAutoApprove(approval, options.cwd, launch.env))) {
             client.respondUi(request.id, { confirmed: true })
             return
           }
@@ -382,6 +393,9 @@ export class PiRuntime extends EventEmitter {
     timeoutMs = 30_000,
     trace?: RpcTraceHint
   ): Promise<T> {
+    if (command === 'extension_ui_response') {
+      throw new Error('Extension UI responses must use runtime:respondUi.')
+    }
     if (!this.client || !this.client.running) {
       throw new Error('Pi is not running. Open a workspace to start a session.')
     }
@@ -397,8 +411,13 @@ export class PiRuntime extends EventEmitter {
       }
     }
     const hint = readTraceHint(trace)
+    const request: Record<string, unknown> & { type: string; id?: string } = {
+      ...payload,
+      type: command
+    }
+    delete request.id
     const result = await this.client.request<T>(
-      { type: command, ...payload },
+      request,
       timeoutMs,
       this.outbound(hint?.sourceAction ?? command, hint, command)
     )

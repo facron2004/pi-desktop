@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { MAX_RPC_RECORD_BYTES, PiRpcClient } from '../src/main/pi/rpc-client'
+import { MAX_RPC_QUEUED_WRITE_BYTES, MAX_RPC_RECORD_BYTES, PiRpcClient } from '../src/main/pi/rpc-client'
 
 const echo = String.raw`
 let buffer = '';
@@ -105,6 +105,33 @@ test('stopping rejects commands with no deadline and closes the transport', asyn
   await waiting
   assert.equal(client.running, false)
   await assert.rejects(client.request({ type: 'echo' }), /not running/)
+})
+
+test('a request that cannot be serialized releases its pending slot', async () => {
+  const client = clientFor()
+  try {
+    await assert.rejects(client.request({ type: 'echo', value: 1n }, 0))
+    assert.equal((client as any).pending.size, 0)
+    assert.equal(await client.request({ type: 'echo', value: 'still works' }), 'still works')
+  } finally {
+    await client.stop()
+  }
+})
+
+test('RPC rejects an outbound record before escaped JSON exceeds the write limit', async () => {
+  const client = clientFor()
+  const oversized = '\u0000'.repeat(Math.floor(MAX_RPC_QUEUED_WRITE_BYTES / 6) + 1)
+  try {
+    await assert.rejects(
+      client.request({ type: 'echo', value: oversized }, 0),
+      /Pi RPC record exceeds the 64 MB limit/
+    )
+    assert.equal((client as any).pending.size, 0)
+    assert.equal((client as any).writeQueue.length, 0)
+    assert.equal(await client.request({ type: 'echo', value: 'still works' }), 'still works')
+  } finally {
+    await client.stop()
+  }
 })
 
 test('stop lets Pi finish its EOF cleanup before forcing termination', async () => {

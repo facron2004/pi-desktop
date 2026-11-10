@@ -45,6 +45,7 @@ function sameWorkingDirectory(left: string, right: string): boolean {
  */
 export interface ManagedSessionRuntime extends EventEmitter {
   readonly isRunning: boolean
+  readonly pid?: number
   readonly currentStatus: RuntimeStatus
   start(options: RuntimeStartOptions): Promise<{ ok: boolean; error?: string }>
   request<T = unknown>(
@@ -131,7 +132,7 @@ export class SessionSupervisor extends EventEmitter {
    * this after a run settles: a chat that only read and edited local files is
    * eligible, one that used MCP or computer use may not be.
    */
-  sessionInfo(key: string): { cwd: string; externalContext: boolean; running: boolean } | undefined {
+  sessionInfo(key: string): { cwd: string; externalContext: boolean; running: boolean; pid?: number } | undefined {
     const id = this.canonical(key)
     const runtime = this.runtimes.get(id)
     if (!runtime) return undefined
@@ -140,7 +141,8 @@ export class SessionSupervisor extends EventEmitter {
     return {
       cwd: activity.cwd,
       externalContext: activity.externalContext,
-      running: activity.running || activity.writes > 0
+      running: activity.running || activity.writes > 0,
+      pid: runtime.pid
     }
   }
 

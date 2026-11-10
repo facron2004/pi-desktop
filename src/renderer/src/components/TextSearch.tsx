@@ -26,6 +26,7 @@ export function TextSearch({
   const t = useT()
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<TextSearchHit[]>([])
+  const [truncated, setTruncated] = useState(false)
   const [status, setStatus] = useState<SearchStatus>('idle')
   const inputRef = useRef<HTMLInputElement>(null)
   const version = useRef(0)
@@ -35,26 +36,30 @@ export function TextSearch({
     const ticket = ++version.current
     if (!root || !trimmed) {
       setHits([])
+      setTruncated(false)
       setStatus('idle')
       return
     }
     // The rows of the previous query would be lying under the new one, so they
     // go as soon as the text changes; the debounce decides when to ask.
     setHits([])
+    setTruncated(false)
     setStatus('searching')
     let requestStarted = false
     const timer = window.setTimeout(() => {
       requestStarted = true
       window.pi.fs
         .searchText(trimmed, HIT_LIMIT)
-        .then((found) => {
+        .then((result) => {
           if (version.current !== ticket) return
-          setHits(found)
+          setHits(result.hits)
+          setTruncated(result.truncated)
           setStatus('done')
         })
         .catch(() => {
           if (version.current !== ticket) return
           setHits([])
+          setTruncated(false)
           setStatus('error')
         })
     }, DEBOUNCE_MS)
@@ -135,8 +140,11 @@ export function TextSearch({
         {status === 'searching' ? (
           <div className="text-search__state">{t('Searching…')}</div>
         ) : null}
-        {status === 'done' && groups.length === 0 ? (
+        {status === 'done' && groups.length === 0 && !truncated ? (
           <div className="text-search__state">{t('No matches')}</div>
+        ) : null}
+        {status === 'done' && truncated ? (
+          <div className="text-search__state">{t('Text search reached a limit; results may be incomplete.')}</div>
         ) : null}
         {groups.map(([path, fileHits]) => {
           const shown = relativePath(root, path)

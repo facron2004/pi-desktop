@@ -78,6 +78,12 @@
   padding: var(--sp-4);
 }
 
+.subagent-conversation__truncated {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+
 .subagent-conversation__user {
   align-self: flex-end;
   max-width: min(100%, 85%);

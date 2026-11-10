@@ -163,8 +163,12 @@ export function hasExplicitGlobalScopeEvidence(evidence: string | undefined, use
   const quote = evidence?.trim()
   if (!quote || quote.length > MAX_MEMORY_ENTRY_CHARS) return false
   if (!userMessages.some((message) => message.includes(quote))) return false
-  if (/\b(?:not|never|only|except|unless|excluding|without)\b/i.test(quote)) return false
-  if (/(?:不适用|不是|并非|不包括|仅限|只在|除外)/.test(quote)) return false
+  if (/\b(?:not|never|only|except|unless|excluding|without|cannot|can't)\b|\b\w+n['’]t\b/i.test(quote)) {
+    return false
+  }
+  if (/(?:不适用|不是|并非|不包括|不应|不能|不想|不要|不需要|无需|别|勿|仅限|只在|除外)/.test(quote)) {
+    return false
+  }
   return GLOBAL_SCOPE_PATTERNS.some((pattern) => pattern.test(quote))
 }
 

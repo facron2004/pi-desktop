@@ -7,8 +7,11 @@ import { canonicalPath } from './session-file'
 interface CwdLeaseRecord {
   id: string
   pid: number
+  processInstanceId?: string
   cwd: string
 }
+
+const PROCESS_INSTANCE_ID = randomUUID()
 
 interface CwdLeaseFile {
   version: 1
@@ -125,11 +128,15 @@ export class InterprocessCwdGate {
     try {
       return this.withStateLockSync(() => {
         const records = this.readRecords()
-        const active = records.filter((record) => processIsAlive(record.pid))
+        const active = records.filter((record) =>
+          record.pid === process.pid
+            ? record.processInstanceId === PROCESS_INSTANCE_ID
+            : processIsAlive(record.pid)
+        )
         if (active.length !== records.length) this.writeRecords(active)
         if (active.some((record) => CwdGate.overlaps(key, record.cwd))) return false
 
-        const lease = { id: randomUUID(), pid: process.pid, cwd: key }
+        const lease = { id: randomUUID(), pid: process.pid, processInstanceId: PROCESS_INSTANCE_ID, cwd: key }
         this.writeRecords([...active, lease])
         this.held.set(lease.id, { ownerId, cwd: key })
         return true
@@ -217,11 +224,18 @@ export class InterprocessCwdGate {
         !raw || typeof raw !== 'object' ||
         typeof raw.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(raw.id) ||
         !Number.isSafeInteger(raw.pid) || raw.pid <= 0 ||
+        (raw.processInstanceId !== undefined &&
+          (typeof raw.processInstanceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(raw.processInstanceId))) ||
         typeof raw.cwd !== 'string' || !raw.cwd
       ) {
         throw new Error('The project activity lock registry is invalid.')
       }
-      records.push({ id: raw.id, pid: raw.pid, cwd: raw.cwd })
+      records.push({
+        id: raw.id,
+        pid: raw.pid,
+        ...(typeof raw.processInstanceId === 'string' ? { processInstanceId: raw.processInstanceId } : {}),
+        cwd: raw.cwd
+      })
     }
     return records
   }

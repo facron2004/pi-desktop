@@ -15,6 +15,7 @@ Thumbs.db
 # are regenerated on demand and together they outweigh the source.
 output/
 .playwright-cli/
+/.tmp/
 
 # Agent teamwork scratch: handoffs and dispatches are working files, not
 # product source.

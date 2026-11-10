@@ -5,7 +5,12 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { enrichModels, parseModel } from '../src/main/providers/metadata'
-import { fetchProviderModels, probeProvider } from '../src/main/providers/network'
+import {
+  fetchProviderModels,
+  MAX_PROVIDER_CATALOG_BYTES,
+  MAX_PROVIDER_RESPONSE_BYTES,
+  probeProvider
+} from '../src/main/providers/network'
 import { ProviderStore } from '../src/main/providers/store'
 import { providerControlsExtension } from '../src/main/pi/provider-controls'
 import { mergeFetchedModels, modelsFromProfiles, resolveSavedModel, selectableModels } from '../src/shared/provider-models'
@@ -341,6 +346,50 @@ test('real HTTP discovery follows pagination, sends authentication and keeps sup
   const models = await fetchProviderModels({ api: 'openai-completions', baseUrl: `${base}/v1` }, 'private-test-key')
   assert.deepEqual(models.map(model => model.id), ['first', 'second'])
   assert.equal(models[1].contextWindow, 32000)
+})
+
+test('provider discovery checks the model count before spreading a large page', async t => {
+  const base = await server(t, (_request, response) => {
+    response.end(JSON.stringify({ data: Array.from({ length: 150_000 }, (_, index) => ({ id: `model-${index}` })) }))
+  })
+
+  await assert.rejects(
+    fetchProviderModels({ api: 'openai-completions', baseUrl: `${base}/v1` }, 'key'),
+    /model list exceeds 10,000 entries/
+  )
+})
+
+test('provider discovery stops a chunked response above the per-response byte limit', async t => {
+  const base = await server(t, (_request, response) => {
+    response.setHeader('transfer-encoding', 'chunked')
+    response.write(Buffer.alloc(MAX_PROVIDER_RESPONSE_BYTES, 0x78))
+    response.end(Buffer.from('x'))
+  })
+
+  await assert.rejects(
+    fetchProviderModels({ api: 'openai-completions', baseUrl: `${base}/v1` }, 'key'),
+    /8 MB limit/
+  )
+})
+
+test('provider discovery bounds the total bytes read across paginated responses', async t => {
+  let requests = 0
+  const page = (id: string) => {
+    const value = { data: [{ id }], has_more: true, last_id: id, padding: '' }
+    const paddingBytes = MAX_PROVIDER_RESPONSE_BYTES - Buffer.byteLength(JSON.stringify(value))
+    return JSON.stringify({ ...value, padding: 'x'.repeat(paddingBytes) })
+  }
+  const base = await server(t, (request, response) => {
+    requests += 1
+    response.end(page(request.url?.includes('after_id=first') ? 'second' : 'first'))
+  })
+
+  await assert.rejects(
+    fetchProviderModels({ api: 'openai-completions', baseUrl: `${base}/v1` }, 'key'),
+    /16 MB limit/
+  )
+  assert.equal(MAX_PROVIDER_CATALOG_BYTES, MAX_PROVIDER_RESPONSE_BYTES * 2)
+  assert.equal(requests, 2, 'the exhausted budget must reject before requesting another page')
 })
 
 test('connectivity probes validate all four actual inference protocols', async t => {

@@ -38,10 +38,74 @@ interface Pending {
 const LF = 0x0a
 const CR = 0x0d
 const MAX_STDERR_LINES = 200
+export const MAX_RPC_PENDING_REQUESTS = 1024
+export const MAX_RPC_QUEUED_WRITES = 1024
+export const MAX_RPC_QUEUED_WRITE_BYTES = 64 * 1024 * 1024
 // Fixed-size pages keep heavily fragmented stdout from creating an unbounded slice list.
 const RPC_RECORD_BUFFER_PAGE_BYTES = 64 * 1024
 /** A valid image message can exceed 32 MiB after base64 encoding. */
 export const MAX_RPC_RECORD_BYTES = 64 * 1024 * 1024
+
+interface QueuedWrite {
+  line: string
+  bytes: number
+  requestId?: string
+}
+
+class RpcRecordTooLargeError extends Error {}
+
+function jsonStringByteLength(value: string, limit: number): number {
+  let bytes = 2
+  if (bytes > limit) throw new RpcRecordTooLargeError()
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code === 0x22 || code === 0x5c) bytes += 2
+    else if (code <= 0x1f) bytes += code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d ? 2 : 6
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4
+        index += 1
+      } else bytes += 6
+    } else if (code >= 0xdc00 && code <= 0xdfff) bytes += 6
+    else if (code <= 0x7f) bytes += 1
+    else if (code <= 0x7ff) bytes += 2
+    else bytes += 3
+    if (bytes > limit) throw new RpcRecordTooLargeError()
+  }
+  return bytes
+}
+
+/** Stop JSON.stringify before it allocates a record larger than the write cap. */
+function serializeRpcRecord(request: RpcRequest): { line: string; bytes: number } {
+  let bytes = 1 // trailing LF
+  const addBytes = (amount: number): void => {
+    if (amount > MAX_RPC_QUEUED_WRITE_BYTES - bytes) throw new RpcRecordTooLargeError()
+    bytes += amount
+  }
+  const json = JSON.stringify(request, (_key, value: unknown) => {
+    if (typeof value === 'string') addBytes(jsonStringByteLength(value, MAX_RPC_QUEUED_WRITE_BYTES - bytes))
+    else if (value === null) addBytes(4)
+    else if (typeof value === 'boolean') addBytes(value ? 4 : 5)
+    else if (typeof value === 'number') addBytes(JSON.stringify(value).length)
+    else if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') {
+      // Undefined object properties are omitted; arrays serialize them as null.
+      addBytes(4)
+    } else if (Array.isArray(value)) {
+      addBytes(2 + Math.max(0, value.length - 1))
+    } else if (typeof value === 'object') {
+      const keys = Object.keys(value)
+      addBytes(2 + keys.length + Math.max(0, keys.length - 1))
+      for (const key of keys) addBytes(jsonStringByteLength(key, MAX_RPC_QUEUED_WRITE_BYTES - bytes) + 1)
+    }
+    return value
+  })
+  if (typeof json !== 'string') throw new TypeError('Pi RPC request did not serialize to JSON')
+  const line = `${json}\n`
+  const actualBytes = Buffer.byteLength(line, 'utf8')
+  if (actualBytes > MAX_RPC_QUEUED_WRITE_BYTES) throw new RpcRecordTooLargeError()
+  return { line, bytes: actualBytes }
+}
 
 function killProcessTree(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (process.platform === 'win32' && child.pid) {
@@ -88,7 +152,8 @@ export class PiRpcClient extends EventEmitter {
   private pending = new Map<string, Pending>()
   private sequence = 0
   private traceSequence = 0
-  private writeQueue: string[] = []
+  private writeQueue: QueuedWrite[] = []
+  private writeQueueBytes = 0
   private draining = false
   private closed = false
   private readonly stderrLines: string[] = []
@@ -141,14 +206,15 @@ export class PiRpcClient extends EventEmitter {
 
     this.child.stdin.on('error', (error: Error) => {
       if (this.closed) return
-      this.writeQueue = []
+      this.closed = true
+      this.clearWriteQueue()
       this.failAll(new Error(`Could not write to pi: ${error.message}`))
       if (this.listenerCount('error')) this.emit('error', error)
     })
 
     this.child.on('error', (error) => {
       this.closed = true
-      this.writeQueue = []
+      this.clearWriteQueue()
       this.failAll(new Error(`Failed to start pi: ${error.message}`))
       if (this.listenerCount('error')) this.emit('error', error)
     })
@@ -158,6 +224,7 @@ export class PiRpcClient extends EventEmitter {
       const pid = this.child?.pid
       this.closed = true
       this.child = null
+      this.clearWriteQueue()
       this.failAll(new Error(`pi exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`))
       this.emit('exit', { code, signal, pid })
     })
@@ -168,7 +235,7 @@ export class PiRpcClient extends EventEmitter {
     const child = this.child
     if (!child) return
     this.closed = true
-    this.writeQueue = []
+    this.clearWriteQueue()
     this.failAll(new Error('pi stopped'))
     if (child.exitCode !== null || child.signalCode !== null || !child.pid) {
       this.child = null
@@ -204,23 +271,57 @@ export class PiRpcClient extends EventEmitter {
       return Promise.reject(new Error('pi process is not running'))
     }
     const id = request.id ?? `pi-${++this.sequence}`
+    if (!id) {
+      this.trace(request, meta, false)
+      return Promise.reject(new Error('Pi RPC request id must not be empty'))
+    }
+    if (this.pending.has(id)) {
+      this.trace(request, meta, false)
+      return Promise.reject(new Error(`Duplicate Pi RPC request id "${id}"`))
+    }
+    if (this.pending.size >= MAX_RPC_PENDING_REQUESTS) {
+      this.trace(request, meta, false)
+      return Promise.reject(new Error('Too many pending Pi RPC requests'))
+    }
     return new Promise<T>((resolve, reject) => {
       const entry: Pending = { resolve: resolve as (v: unknown) => void, reject }
       if (timeoutMs > 0) {
         entry.timer = setTimeout(() => {
           if (this.pending.delete(id)) {
+            this.removeQueuedWrite(id)
             reject(new Error(`Timed out waiting for "${request.type}" response`))
           }
         }, timeoutMs)
       }
       this.pending.set(id, entry)
-      this.write({ ...request, id }, meta)
+      let result: 'queued' | 'closed' | 'full' | 'too-large'
+      try {
+        result = this.write({ ...request, id }, meta, id)
+      } catch (error) {
+        this.pending.delete(id)
+        this.removeQueuedWrite(id)
+        if (entry.timer) clearTimeout(entry.timer)
+        reject(error instanceof Error ? error : new Error(String(error)))
+        return
+      }
+      if (result !== 'queued') {
+        this.pending.delete(id)
+        if (entry.timer) clearTimeout(entry.timer)
+        reject(new Error(
+          result === 'full'
+            ? 'Pi RPC write queue is full'
+            : result === 'too-large'
+              ? `Pi RPC record exceeds the ${MAX_RPC_QUEUED_WRITE_BYTES / 1024 / 1024} MB limit`
+              : 'pi process is not running'
+        ))
+      }
     })
   }
 
   /** Fire-and-forget command (no response expected). */
   notify(request: RpcRequest, meta?: RpcOutboundMeta): void {
-    this.write(request, meta)
+    const result = this.write(request, meta)
+    if (result === 'full' || result === 'too-large') this.stopOnWriteQueueOverflow()
   }
 
   /**
@@ -231,7 +332,10 @@ export class PiRpcClient extends EventEmitter {
    * for a response that never comes.
    */
   respondUi(id: string, response: ExtensionUiResponse, meta?: RpcOutboundMeta): void {
-    this.write({ type: 'extension_ui_response', id, ...response }, meta)
+    const result = this.write({ ...response, type: 'extension_ui_response', id }, meta)
+    if (result === 'full' || result === 'too-large') {
+      this.stopOnWriteQueueOverflow()
+    }
   }
 
   private trace(request: RpcRequest, meta: RpcOutboundMeta | undefined, delivered: boolean): void {
@@ -254,24 +358,49 @@ export class PiRpcClient extends EventEmitter {
     })
   }
 
-  private write(request: RpcRequest, meta?: RpcOutboundMeta): void {
+  private write(
+    request: RpcRequest,
+    meta?: RpcOutboundMeta,
+    requestId?: string
+  ): 'queued' | 'closed' | 'full' | 'too-large' {
     const child = this.child
     if (!child || this.closed) {
       this.trace(request, meta, false)
-      return
+      return 'closed'
+    }
+    let line: string
+    let bytes: number
+    try {
+      const serialized = serializeRpcRecord(request)
+      line = serialized.line
+      bytes = serialized.bytes
+    } catch (error) {
+      if (!(error instanceof RpcRecordTooLargeError)) throw error
+      this.trace(request, meta, false)
+      return 'too-large'
+    }
+    if (
+      bytes > MAX_RPC_QUEUED_WRITE_BYTES ||
+      this.writeQueue.length >= MAX_RPC_QUEUED_WRITES ||
+      this.writeQueueBytes + bytes > MAX_RPC_QUEUED_WRITE_BYTES
+    ) {
+      this.trace(request, meta, false)
+      return 'full'
     }
     this.trace(request, meta, true)
-    const line = `${JSON.stringify(request)}\n`
-    this.writeQueue.push(line)
+    this.writeQueue.push({ line, bytes, requestId })
+    this.writeQueueBytes += bytes
     this.pump()
+    return 'queued'
   }
 
   private pump(): void {
     const child = this.child
     if (!child || this.draining) return
     while (this.writeQueue.length > 0) {
-      const line = this.writeQueue.shift()!
-      const flushed = child.stdin.write(line)
+      const queued = this.writeQueue.shift()!
+      this.writeQueueBytes -= queued.bytes
+      const flushed = child.stdin.write(queued.line)
       if (!flushed) {
         this.draining = true
         child.stdin.once('drain', () => {
@@ -281,6 +410,28 @@ export class PiRpcClient extends EventEmitter {
         return
       }
     }
+  }
+
+  private removeQueuedWrite(requestId: string): void {
+    const index = this.writeQueue.findIndex((write) => write.requestId === requestId)
+    if (index === -1) return
+    const [removed] = this.writeQueue.splice(index, 1)
+    if (removed) this.writeQueueBytes -= removed.bytes
+  }
+
+  private clearWriteQueue(): void {
+    this.writeQueue = []
+    this.writeQueueBytes = 0
+    this.draining = false
+  }
+
+  private stopOnWriteQueueOverflow(): void {
+    this.emit('event', {
+      type: 'client_notice',
+      level: 'error',
+      text: 'Pi RPC write limit was exceeded; stopping the process to avoid dropping a required command.'
+    })
+    void this.stop()
   }
 
   private consume(chunk: Buffer): void {

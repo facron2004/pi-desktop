@@ -15,7 +15,9 @@ import type {
   AuthStatus,
   ExtensionUiResponse,
   FileContent,
-  FileEntry,
+  FileListResult,
+  FileSearchResult,
+  FileSearchScope,
   GitBranches,
   GitCommit,
   GitCommitDetail,
@@ -47,7 +49,7 @@ import type {
   TerminalDataPayload,
   TerminalExitPayload,
   SessionSearchHit,
-  TextSearchHit,
+  TextSearchResult,
   UpgradeResult,
   VersionCheckResult,
   Workspace
@@ -153,6 +155,8 @@ const bridge: PiDesktopBridge = {
     resize: (id: string, cols: number, rows: number): Promise<void> =>
       ipcRenderer.invoke('terminal:resize', id, cols, rows),
     kill: (id: string): Promise<void> => ipcRenderer.invoke('terminal:kill', id),
+    acknowledgeOutput: (id: string, sequence: number): void =>
+      ipcRenderer.send('terminal:ack', id, sequence),
     onData: (handler: (payload: TerminalDataPayload) => void) =>
       subscribe<TerminalDataPayload>('terminal:data', handler),
     onExit: (handler: (payload: TerminalExitPayload) => void) =>
@@ -255,11 +259,11 @@ const bridge: PiDesktopBridge = {
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:openExternal', url)
   },
   fs: {
-    list: (dir: string): Promise<FileEntry[]> => ipcRenderer.invoke('fs:list', dir),
+    list: (dir: string): Promise<FileListResult> => ipcRenderer.invoke('fs:list', dir),
     read: (file: string): Promise<FileContent | null> => ipcRenderer.invoke('fs:read', file),
-    search: (query: string, limit?: number): Promise<FileEntry[]> =>
-      ipcRenderer.invoke('fs:search', query, limit),
-    searchText: (query: string, limit?: number): Promise<TextSearchHit[]> =>
+    search: (query: string, limit?: number, scope?: FileSearchScope): Promise<FileSearchResult> =>
+      ipcRenderer.invoke('fs:search', query, limit, scope),
+    searchText: (query: string, limit?: number): Promise<TextSearchResult> =>
       ipcRenderer.invoke('fs:searchText', query, limit),
     listImages: (): Promise<ImageListResult> => ipcRenderer.invoke('fs:listImages'),
     reveal: (file: string): Promise<void> => ipcRenderer.invoke('fs:reveal', file),

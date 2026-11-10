@@ -300,7 +300,7 @@ function cleanError(text: string): string {
 function insideWorkTree(root: string, relative: string): string | null {
   const target = path.resolve(root, relative)
   const relation = path.relative(path.resolve(root), target)
-  if (relation.startsWith('..') || path.isAbsolute(relation)) return null
+  if (relation === '..' || relation.startsWith(`..${path.sep}`) || path.isAbsolute(relation)) return null
   return target
 }
 
@@ -313,6 +313,7 @@ function pathContains(parent: string, child: string): boolean {
 interface WorktreeFileRead {
   buffer: Buffer | null
   size: number
+  mode: number
 }
 
 /** Read a regular worktree file by handle, rejecting hard links, or read a symlink's text. */
@@ -329,7 +330,11 @@ async function readWorktreeFile(
     const [realRoot, info] = await Promise.all([realpath(root), lstat(target)])
     if (info.isSymbolicLink()) {
       const buffer = Buffer.from(await readlink(target), 'utf8')
-      return { buffer: buffer.length <= maxBytes ? buffer : null, size: buffer.length }
+      return {
+        buffer: buffer.length <= maxBytes ? buffer : null,
+        size: buffer.length,
+        mode: 0o120000
+      }
     }
     if (!info.isFile()) return null
     if (info.nlink > 1) return null
@@ -349,7 +354,8 @@ async function readWorktreeFile(
     const size = opened.size > BigInt(Number.MAX_SAFE_INTEGER)
       ? Number.MAX_SAFE_INTEGER
       : Number(opened.size)
-    if (opened.size > BigInt(maxBytes)) return { buffer: null, size }
+    const mode = opened.mode & 0o111n ? 0o100755 : 0o100644
+    if (opened.size > BigInt(maxBytes)) return { buffer: null, size, mode }
 
     const buffer = Buffer.alloc(size)
     let totalRead = 0
@@ -358,7 +364,7 @@ async function readWorktreeFile(
       if (bytesRead === 0) return null
       totalRead += bytesRead
     }
-    return { buffer, size }
+    return { buffer, size, mode }
   } catch {
     return null
   } finally {
@@ -370,9 +376,16 @@ function looksBinary(buffer: Buffer): boolean {
   return buffer.subarray(0, 8000).includes(0)
 }
 
+function capUtf8Text(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  const bytes = Buffer.from(text, 'utf8')
+  if (bytes.length <= maxBytes) return { text, truncated: false }
+  let end = maxBytes
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1
+  return { text: bytes.subarray(0, end).toString('utf8'), truncated: true }
+}
+
 function capText(text: string): { text: string; truncated: boolean } {
-  if (Buffer.byteLength(text, 'utf8') <= MAX_DIFF_BYTES) return { text, truncated: false }
-  return { text: text.slice(0, MAX_DIFF_BYTES), truncated: true }
+  return capUtf8Text(text, MAX_DIFF_BYTES)
 }
 
 /**
@@ -461,13 +474,29 @@ export async function readFileDiff(root: string, filePath: string): Promise<GitF
 }
 
 /** Build a new-file patch for a file git does not track yet. */
-function untrackedPatch(relative: string, content: string, truncated: boolean): string {
+function untrackedPatch(
+  relative: string,
+  content: string,
+  truncated: boolean,
+  mode: number,
+  emptyBlobHash?: string
+): string {
   const clean = relative.replace(/\\/g, '/')
-  const lines = content.split('\n')
-  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  const hasFinalNewline = content.endsWith('\n')
+  const lines = content ? content.split('\n') : []
+  if (hasFinalNewline) lines.pop()
   const body = lines.map((line) => `+${line}`).join('\n')
-  const marker = truncated ? '\n\\ No newline at end of file' : ''
-  return `diff --git a/${clean} b/${clean}\nnew file mode 100644\n--- /dev/null\n+++ b/${clean}\n@@ -0,0 +1,${lines.length} @@\n${body}${marker}\n`
+  const modeLine = `new file mode ${mode.toString(8)}\n`
+  const indexLine = lines.length === 0 && emptyBlobHash
+    ? `index 0000000..${emptyBlobHash.slice(0, 7)}\n`
+    : ''
+  const header = `diff --git a/${clean} b/${clean}\n${modeLine}${indexLine}--- /dev/null\n+++ b/${clean}\n`
+  if (lines.length === 0) return header
+
+  const marker = !truncated && !hasFinalNewline
+    ? '\n\\ No newline at end of file'
+    : ''
+  return `${header}@@ -0,0 +1,${lines.length} @@\n${body}${marker}\n`
 }
 
 /**
@@ -485,42 +514,61 @@ export async function readPatch(root: string, filePath?: string): Promise<GitPat
   const diff = filePath
     ? await gitLiteralPathspecs(root, args, COMMIT_TIMEOUT_MS)
     : await git(root, args, COMMIT_TIMEOUT_MS)
-  let text = diff.code === 0 ? diff.stdout : ''
-  let truncated = false
-  if (text.length > MAX_PATCH_BYTES) {
-    text = text.slice(0, MAX_PATCH_BYTES)
-    truncated = true
-  }
+  const cappedDiff = capUtf8Text(diff.code === 0 ? diff.stdout : '', MAX_PATCH_BYTES)
+  let text = cappedDiff.text
+  let truncated = cappedDiff.truncated
 
   const status = await readStatus(root)
   const untracked = status.files.filter(
     (file) => file.untracked && (!filePath || file.path === filePath)
   )
+  let textBytes = Buffer.byteLength(text, 'utf8')
   for (const file of untracked) {
+    const remainingBytes = MAX_PATCH_BYTES - textBytes
+    if (remainingBytes <= 0) {
+      truncated = true
+      break
+    }
     const clean = file.path.replace(/\\/g, '/')
-    const working = await readWorktreeFile(root, file.path, MAX_PATCH_BYTES)
+    const working = await readWorktreeFile(root, file.path, Math.min(MAX_PATCH_BYTES, remainingBytes))
     if (!working) continue
-    if (working.size > MAX_PATCH_BYTES) {
-      text += `diff --git a/${clean} b/${clean}\nnew file mode 100644\nBinary files /dev/null and b/${clean} differ\n`
+    if (working.size > MAX_PATCH_BYTES || (working.buffer && looksBinary(working.buffer))) {
+      const summary = `diff --git a/${clean} b/${clean}\nnew file mode ${working.mode.toString(8)}\nBinary files /dev/null and b/${clean} differ\n`
+      const summaryBytes = Buffer.byteLength(summary, 'utf8')
+      if (summaryBytes > remainingBytes) {
+        truncated = true
+        break
+      }
+      text += summary
+      textBytes += summaryBytes
       continue
     }
-    if (working.buffer) {
-      const buffer = working.buffer
-      if (looksBinary(buffer)) {
-        text += `diff --git a/${clean} b/${clean}\nnew file mode 100644\nBinary files /dev/null and b/${clean} differ\n`
-        continue
-      }
-      const capped = capText(buffer.toString('utf8'))
-      text += untrackedPatch(file.path, capped.text, capped.truncated)
-      truncated = truncated || capped.truncated
+    const buffer = working.buffer
+    if (!buffer) {
+      // The file fits the per-file limit but not the remaining patch budget.
+      truncated = true
+      break
     }
+    const capped = capText(buffer.toString('utf8'))
+    let emptyBlobHash: string | undefined
+    if (buffer.length === 0) {
+      const format = await git(root, ['rev-parse', '--show-object-format'])
+      const algorithm = format.code === 0 && format.stdout.trim() === 'sha256' ? 'sha256' : 'sha1'
+      emptyBlobHash = createHash(algorithm).update('blob 0\0').digest('hex')
+    }
+    const patch = untrackedPatch(file.path, capped.text, capped.truncated, working.mode, emptyBlobHash)
+    const patchBytes = Buffer.byteLength(patch, 'utf8')
+    if (patchBytes > remainingBytes) {
+      truncated = true
+      break
+    }
+    text += patch
+    textBytes += patchBytes
+    truncated = truncated || capped.truncated
   }
 
-  if (Buffer.byteLength(text, 'utf8') > MAX_PATCH_BYTES) {
-    text = text.slice(0, MAX_PATCH_BYTES)
-    truncated = true
-  }
-  return { text, truncated }
+  const cappedPatch = capUtf8Text(text, MAX_PATCH_BYTES)
+  return { text: cappedPatch.text, truncated: truncated || cappedPatch.truncated }
 }
 
 /** Hashes arrive from a dialog; keep whatever runs in git to hex. */
@@ -531,19 +579,18 @@ function isHash(value: string): boolean {
 /** Parse `git show --name-status` (rename-aware) by the new path. */
 function parseNameStatus(raw: string): Map<string, { status: string; oldPath?: string }> {
   const map = new Map<string, { status: string; oldPath?: string }>()
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
-    const parts = line.split('\t')
-    const code = parts[0]?.trim() ?? ''
+  const fields = raw.split('\0')
+  for (let index = 0; index < fields.length;) {
+    const code = fields[index++] ?? ''
     if (!code) continue
     if (code.startsWith('R') || code.startsWith('C')) {
-      const oldPath = parts[1]
-      const newPath = parts[2]
+      const oldPath = fields[index++]
+      const newPath = fields[index++]
       if (!newPath) continue
       map.set(newPath, { status: code[0] ?? 'M', oldPath })
       continue
     }
-    const target = parts[1]
+    const target = fields[index++]
     if (target) map.set(target, { status: code[0] ?? 'M' })
   }
   return map
@@ -606,7 +653,7 @@ export async function readCommitDetail(
 
   const [numstat, nameStatus, shown] = await Promise.all([
     git(root, ['show', '--numstat', '--format=', '-M', '-z', hash], COMMIT_TIMEOUT_MS),
-    git(root, ['-c', 'core.quotepath=false', 'show', '--name-status', '--format=', '-M', hash], COMMIT_TIMEOUT_MS),
+    git(root, ['-c', 'core.quotepath=false', 'show', '--name-status', '--format=', '-M', '-z', hash], COMMIT_TIMEOUT_MS),
     git(root, ['show', '--no-color', '--format=', '-M', hash], COMMIT_TIMEOUT_MS)
   ])
 
@@ -620,12 +667,9 @@ export async function readCommitDetail(
     }
   })
 
-  let patch = shown.code === 0 ? shown.stdout : ''
-  let truncated = false
-  if (patch.length > MAX_PATCH_BYTES) {
-    patch = patch.slice(0, MAX_PATCH_BYTES)
-    truncated = true
-  }
+  const cappedPatch = capUtf8Text(shown.code === 0 ? shown.stdout : '', MAX_PATCH_BYTES)
+  const patch = cappedPatch.text
+  const truncated = cappedPatch.truncated
 
   return {
     hash: fullHash,
@@ -652,7 +696,7 @@ async function commitSides(
 
   // A pathspec would make git call the rename an addition (the old path is not
   // in the pathspec), so the whole commit's name-status is read instead.
-  const nameStatus = await git(root, ['-c', 'core.quotepath=false', 'show', '--name-status', '--format=', '-M', hash])
+  const nameStatus = await git(root, ['-c', 'core.quotepath=false', 'show', '--name-status', '--format=', '-M', '-z', hash])
   const entry = parseNameStatus(nameStatus.stdout).get(filePath)
   const oldPath = (entry?.oldPath ?? filePath).replace(/\\/g, '/')
 
@@ -725,12 +769,12 @@ export async function applyPatch(
   reverse = false
 ): Promise<GitCommitResult> {
   if (!root) return { ok: false, error: 'No project is open.' }
+  if (Buffer.byteLength(patch, 'utf8') > MAX_PATCH_BYTES) {
+    return { ok: false, error: 'The patch is too large to apply.' }
+  }
   const trimmed = patch.trim()
   if (!trimmed.startsWith('diff --git ')) {
     return { ok: false, error: 'That does not look like a patch.' }
-  }
-  if (trimmed.length > MAX_PATCH_BYTES) {
-    return { ok: false, error: 'The patch is too large to apply.' }
   }
 
   const dir = mkdtempSync(path.join(os.tmpdir(), 'pi-desktop-patch-'))

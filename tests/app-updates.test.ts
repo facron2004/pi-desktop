@@ -27,6 +27,14 @@ test('compares numeric version segments', () => {
   assert.equal(isNewerVersion('0.10.6', '0.10.7'), false)
 })
 
+test('compares semantic versions with prereleases and build metadata', () => {
+  assert.equal(isNewerVersion('1.5.0', '1.5.0-beta.1'), true)
+  assert.equal(isNewerVersion('1.5.0-beta.11', '1.5.0-beta.2'), true)
+  assert.equal(isNewerVersion('1.5.0-beta.2', '1.5.0-beta.11'), false)
+  assert.equal(isNewerVersion('1.5.0+build.2', 'v1.5.0+build.1'), false)
+  assert.equal(isNewerVersion('1.5.0-01', '1.5.0-beta'), false)
+})
+
 test('reports a newer app release', async () => {
   const status = await checkAppVersion('0.10.7', async () =>
     new Response(null, {

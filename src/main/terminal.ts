@@ -1,16 +1,24 @@
 import { randomUUID } from 'node:crypto'
-import * as pty from 'node-pty'
+import type * as pty from 'node-pty'
 import type { TerminalCreateOptions, TerminalSessionInfo } from '@shared/types'
 import { resolveShellSpec } from './shell'
 import { assertTerminalWorkingDirectory } from './terminal-path'
 
 const MAX_COLS = 500
 const MAX_ROWS = 300
+const OUTPUT_HIGH_WATER_BYTES = 256 * 1024
+const OUTPUT_LOW_WATER_BYTES = 64 * 1024
+const OUTPUT_HIGH_WATER_CHUNKS = 1024
+const OUTPUT_LOW_WATER_CHUNKS = 256
 
 interface Session {
   process: pty.IPty
   cwd: string
   shell: string
+  nextOutputSequence: number
+  pendingOutput: Map<number, number>
+  pendingOutputBytes: number
+  outputPaused: boolean
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -28,7 +36,10 @@ function clamp(value: number, min: number, max: number): number {
 export class TerminalManager {
   private readonly sessions = new Map<string, Session>()
 
-  constructor(private readonly send: (channel: string, payload: unknown) => void) {}
+  constructor(
+    private readonly send: (channel: string, payload: unknown) => void,
+    private readonly spawn: typeof pty.spawn
+  ) {}
 
   create(options: TerminalCreateOptions): TerminalSessionInfo {
     const cwd = options.cwd?.trim() || process.cwd()
@@ -41,7 +52,7 @@ export class TerminalManager {
     env.TERM = 'xterm-256color'
     env.COLORTERM = 'truecolor'
 
-    const processHandle = pty.spawn(shell.file, shell.args, {
+    const processHandle = this.spawn(shell.file, shell.args, {
       name: 'xterm-256color',
       cols: clamp(options.cols, 2, MAX_COLS),
       rows: clamp(options.rows, 2, MAX_ROWS),
@@ -49,10 +60,36 @@ export class TerminalManager {
       env
     })
     const id = randomUUID()
-    this.sessions.set(id, { process: processHandle, cwd, shell: shell.label })
+    const session: Session = {
+      process: processHandle,
+      cwd,
+      shell: shell.label,
+      nextOutputSequence: 0,
+      pendingOutput: new Map(),
+      pendingOutputBytes: 0,
+      outputPaused: false
+    }
+    this.sessions.set(id, session)
 
     processHandle.onData((data) => {
-      this.send('terminal:data', { id, data })
+      if (this.sessions.get(id) !== session) return
+      const sequence = ++session.nextOutputSequence
+      const bytes = Buffer.byteLength(data, 'utf8')
+      session.pendingOutput.set(sequence, bytes)
+      session.pendingOutputBytes += bytes
+      this.send('terminal:data', { id, data, sequence })
+      if (
+        !session.outputPaused &&
+        (session.pendingOutputBytes >= OUTPUT_HIGH_WATER_BYTES ||
+          session.pendingOutput.size >= OUTPUT_HIGH_WATER_CHUNKS)
+      ) {
+        session.outputPaused = true
+        try {
+          processHandle.pause()
+        } catch {
+          session.outputPaused = false
+        }
+      }
     })
     processHandle.onExit(({ exitCode, signal }) => {
       this.sessions.delete(id)
@@ -69,6 +106,27 @@ export class TerminalManager {
       session.process.write(data)
     } catch {
       /* the shell may have exited between the keystroke and this write */
+    }
+  }
+
+  acknowledgeOutput(id: string, sequence: number): void {
+    const session = this.sessions.get(id)
+    if (!session) return
+    const bytes = session.pendingOutput.get(sequence)
+    if (bytes === undefined) return
+    session.pendingOutput.delete(sequence)
+    session.pendingOutputBytes -= bytes
+    if (
+      session.outputPaused &&
+      session.pendingOutputBytes <= OUTPUT_LOW_WATER_BYTES &&
+      session.pendingOutput.size <= OUTPUT_LOW_WATER_CHUNKS
+    ) {
+      session.outputPaused = false
+      try {
+        session.process.resume()
+      } catch {
+        /* the shell may have exited between output and acknowledgement */
+      }
     }
   }
 

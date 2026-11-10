@@ -88,6 +88,7 @@ export function subagentCalls(items: readonly ThreadItem[]): SubagentCall[] {
             : undefined,
           cost: typeof usage.cost === 'number' ? usage.cost : undefined,
           messages: Array.isArray(result.messages) ? result.messages as AgentMessage[] : undefined,
+          messagesTruncated: result.messagesTruncated === true,
           output: text(result.output) || (count === 1 ? item.result : undefined),
           errorMessage: text(result.errorMessage) || (status === 'failed' ? text(result.stderr) : undefined)
         }

@@ -270,12 +270,14 @@ export function Composer() {
     setMentionFiles([])
     setMentionIndex(0)
     let cancelled = false
+    let requestStarted = false
     const timer = window.setTimeout(() => {
+      requestStarted = true
       void window.pi.fs
-        .search(mention.query, 12)
-        .then((files) => {
+        .search(mention.query, 12, 'composer-mention')
+        .then((result) => {
           if (cancelled) return
-          setMentionFiles(files)
+          setMentionFiles(result.entries)
           setMentionIndex(0)
         })
         .catch(() => {
@@ -285,6 +287,7 @@ export function Composer() {
     return () => {
       cancelled = true
       window.clearTimeout(timer)
+      if (requestStarted) void window.pi.fs.search('', 0, 'composer-mention').catch(() => undefined)
     }
   }, [mention, workspace?.path])
 

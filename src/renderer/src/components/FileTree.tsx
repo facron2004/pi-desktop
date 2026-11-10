@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronRight, File, Folder, FolderOpen, Loader2, Search, X } from 'lucide-react'
-import type { FileEntry } from '@shared/types'
+import type { FileListResult, FileSearchResult } from '@shared/types'
 import { fileTone } from '../lib/files'
 import { formatBytes } from '../lib/format'
 import { relativePath } from '../lib/path'
@@ -14,23 +14,32 @@ interface FileTreeProps {
 export function FileTree({ root, onOpen }: FileTreeProps) {
   const t = useT()
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
-  const [children, setChildren] = useState<Map<string, FileEntry[]>>(new Map())
+  const [children, setChildren] = useState<Map<string, FileListResult>>(new Map())
   const [loading, setLoading] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
-  const [matches, setMatches] = useState<FileEntry[] | null>(null)
+  const [matches, setMatches] = useState<FileSearchResult | null>(null)
   const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const activeRoot = useRef(root)
   const searchVersion = useRef(0)
   activeRoot.current = root
+  const updateQuery = (next: string) => {
+    searchVersion.current += 1
+    const hasQuery = Boolean(next.trim())
+    setMatches(hasQuery ? { entries: [], truncated: false } : null)
+    setSearching(hasQuery)
+    setSearchError(false)
+    setQuery(next)
+  }
 
   const load = useCallback(
-    async (dir: string) => {
-      if (children.has(dir)) return
+    async (dir: string, force = false) => {
+      if (!force && children.has(dir)) return
       setLoading((current) => new Set(current).add(dir))
       try {
-        const entries = await window.pi.fs.list(dir)
-        if (activeRoot.current === root) setChildren((current) => new Map(current).set(dir, entries))
+        const result = await window.pi.fs.list(dir)
+        if (activeRoot.current === root) setChildren((current) => new Map(current).set(dir, result))
       } catch {
         // The folder may disappear while it is being read.
       } finally {
@@ -53,9 +62,13 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
     setMatches(null)
     setQuery('')
     setSearching(false)
+    setSearchError(false)
     searchVersion.current += 1
     if (!root) return
-    void load(root)
+    // The previous workspace may already have loaded this path as a folder.
+    // Root changes reset the listing cache below, so do not let that old
+    // render's cache suppress the new root read.
+    void load(root, true)
     setExpanded((current) => new Set(current).add(root))
   }, [root])
 
@@ -72,26 +85,37 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
     if (!needle) {
       setMatches(null)
       setSearching(false)
+      setSearchError(false)
       return
     }
     let cancelled = false
+    let requestStarted = false
+    setMatches({ entries: [], truncated: false })
     setSearching(true)
+    setSearchError(false)
     const timer = window.setTimeout(() => {
+      requestStarted = true
       window.pi.fs
-        .search(needle)
+        .search(needle, undefined, 'file-tree')
         .then((found) => {
           if (
             !cancelled &&
             activeRoot.current === root &&
             searchVersion.current === version
-          ) setMatches(found)
+          ) {
+            setMatches(found)
+            setSearchError(false)
+          }
         })
         .catch(() => {
           if (
             !cancelled &&
             activeRoot.current === root &&
             searchVersion.current === version
-          ) setMatches([])
+          ) {
+            setMatches({ entries: [], truncated: false })
+            setSearchError(true)
+          }
         })
         .finally(() => {
           if (
@@ -104,6 +128,7 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
     return () => {
       cancelled = true
       window.clearTimeout(timer)
+      if (requestStarted) void window.pi.fs.search('', 0, 'file-tree').catch(() => undefined)
     }
   }, [query, root])
 
@@ -132,13 +157,13 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
           value={query}
           aria-label={t('Find files')}
           placeholder={t('Find files')}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => updateQuery(event.target.value)}
         />
         {query ? (
           <button
             className="icon-btn"
             onClick={() => {
-              setQuery('')
+              updateQuery('')
               searchInputRef.current?.focus()
             }}
             title={t('Clear')}
@@ -151,15 +176,22 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
 
       {matches ? (
         <div className="tree__results">
-          <div className="tree__results-head">
-            {searching
-              ? t('Searching…')
-              : `${matches.length} ${matches.length === 1 ? t('file') : t('files')} ${t('match')} “${query.trim()}”`}
-          </div>
-          {!searching && matches.length === 0 ? (
+          {searching ? <div className="tree__results-head">{t('Searching…')}</div> : null}
+          {!searching && searchError ? (
+            <div className="tree__empty" data-kind="error">{t('The file search failed.')}</div>
+          ) : null}
+          {!searching && !searchError ? (
+            <div className="tree__results-head">
+              {`${matches.entries.length} ${matches.entries.length === 1 ? t('file') : t('files')} ${t('match')} “${query.trim()}”`}
+            </div>
+          ) : null}
+          {!searching && matches.truncated ? (
+            <div className="tree__empty">{t('Search stopped at its limit; results may be incomplete.')}</div>
+          ) : null}
+          {!searching && !searchError && matches.entries.length === 0 && !matches.truncated ? (
             <div className="tree__empty">{t('Nothing found')}</div>
           ) : null}
-          {matches.map((entry) => {
+          {matches.entries.map((entry) => {
             const relative = relativePath(root, entry.path)
             const folder = relative.slice(0, Math.max(0, relative.length - entry.name.length)).replace(/[\\/]+$/, '')
             return (
@@ -205,7 +237,7 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
 interface TreeLevelProps {
   dir: string
   depth: number
-  children: Map<string, FileEntry[]>
+  children: Map<string, FileListResult>
   expanded: Set<string>
   loading: Set<string>
   onToggle: (dir: string) => void
@@ -222,75 +254,84 @@ function TreeLevel({
   onOpen
 }: TreeLevelProps) {
   const t = useT()
-  const entries = children.get(dir)
-  if (!entries) {
+  const listing = children.get(dir)
+  if (!listing) {
     return loading.has(dir) ? (
       <div className="tree__loading" style={{ paddingLeft: depth * 12 + 18 }}>
         <Loader2 size={12} className="spin" />
       </div>
     ) : null
   }
-  if (entries.length === 0) {
+  if (listing.entries.length === 0 && !listing.truncated) {
     return <div className="tree__empty" style={{ paddingLeft: depth * 12 + 18 }}>{t('empty')}</div>
   }
 
   return (
-    <ul className="tree__list" role="group">
-      {entries.map((entry) => {
-        const isOpen = expanded.has(entry.path)
-        return (
-          <li
-            key={entry.path}
-            role="treeitem"
-            aria-expanded={entry.kind === 'directory' ? isOpen : undefined}
-          >
-            <button
-              className="tree__item"
-              style={{ paddingLeft: depth * 12 + 8 }}
-              draggable={entry.kind === 'file'}
-              onDragStart={
-                entry.kind === 'file'
-                  ? (event) => {
-                      event.dataTransfer.setData('application/x-pi-file', entry.path)
-                      event.dataTransfer.effectAllowed = 'copy'
-                    }
-                  : undefined
-              }
-              onClick={() => (entry.kind === 'directory' ? onToggle(entry.path) : onOpen(entry.path))}
-              title={entry.path}
-            >
-              {entry.kind === 'directory' ? (
-                <>
-                  <ChevronRight size={12} className="caret" data-open={isOpen} />
-                  {isOpen ? <FolderOpen size={13} /> : <Folder size={13} />}
-                </>
-              ) : (
-                <>
-                  <span style={{ width: 12, display: 'inline-block' }} />
-                  <span className="tree__icon" data-tone={fileTone(entry.name)}>
-                    <File size={13} />
-                  </span>
-                </>
-              )}
-              <span className="tree__name">{entry.name}</span>
-              {entry.kind === 'file' && entry.size !== undefined ? (
-                <span className="tree__size">{formatBytes(entry.size)}</span>
-              ) : null}
-            </button>
-            {entry.kind === 'directory' && isOpen ? (
-              <TreeLevel
-                dir={entry.path}
-                depth={depth + 1}
-                children={children}
-                expanded={expanded}
-                loading={loading}
-                onToggle={onToggle}
-                onOpen={onOpen}
-              />
-            ) : null}
-          </li>
-        )
-      })}
-    </ul>
+    <>
+      {listing.entries.length > 0 ? (
+        <ul className="tree__list" role="group">
+          {listing.entries.map((entry) => {
+            const isOpen = expanded.has(entry.path)
+            return (
+              <li
+                key={entry.path}
+                role="treeitem"
+                aria-expanded={entry.kind === 'directory' ? isOpen : undefined}
+              >
+                <button
+                  className="tree__item"
+                  style={{ paddingLeft: depth * 12 + 8 }}
+                  draggable={entry.kind === 'file'}
+                  onDragStart={
+                    entry.kind === 'file'
+                      ? (event) => {
+                          event.dataTransfer.setData('application/x-pi-file', entry.path)
+                          event.dataTransfer.effectAllowed = 'copy'
+                        }
+                      : undefined
+                  }
+                  onClick={() => (entry.kind === 'directory' ? onToggle(entry.path) : onOpen(entry.path))}
+                  title={entry.path}
+                >
+                  {entry.kind === 'directory' ? (
+                    <>
+                      <ChevronRight size={12} className="caret" data-open={isOpen} />
+                      {isOpen ? <FolderOpen size={13} /> : <Folder size={13} />}
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ width: 12, display: 'inline-block' }} />
+                      <span className="tree__icon" data-tone={fileTone(entry.name)}>
+                        <File size={13} />
+                      </span>
+                    </>
+                  )}
+                  <span className="tree__name">{entry.name}</span>
+                  {entry.kind === 'file' && entry.size !== undefined ? (
+                    <span className="tree__size">{formatBytes(entry.size)}</span>
+                  ) : null}
+                </button>
+                {entry.kind === 'directory' && isOpen ? (
+                  <TreeLevel
+                    dir={entry.path}
+                    depth={depth + 1}
+                    children={children}
+                    expanded={expanded}
+                    loading={loading}
+                    onToggle={onToggle}
+                    onOpen={onOpen}
+                  />
+                ) : null}
+              </li>
+            )
+          })}
+        </ul>
+      ) : null}
+      {listing.truncated ? (
+        <div className="tree__empty" style={{ paddingLeft: depth * 12 + 18 }}>
+          {t('Folder listing may be incomplete.')}
+        </div>
+      ) : null}
+    </>
   )
 }

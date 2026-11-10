@@ -2,17 +2,20 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electro
 import { createHash } from 'node:crypto'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
+import * as pty from 'node-pty'
 import { bridgeRuntime, registerIpc, sendToWindow } from './ipc'
 import { MemoryService } from './memory/service'
 import { AutoTitleService } from './auto-title'
 import { MemoryStore } from './memory/store'
 import { ScheduledTaskService } from './scheduled-tasks'
 import { PiRuntime } from './pi/runtime'
+import { canonicalPath } from './pi/session-file'
 import { SessionSupervisor } from './pi/supervisor'
 import { RemoteAccessService } from './remote-access'
 import { applyTaskbarIcon, windowIconImage } from './app-icon'
 import { scheduleCapture, scheduleWindowClose } from './screenshot'
 import { secureUserDataDirectory, SettingsStore } from './settings'
+import { configureExternalSessionRoots, resolveSessionRoots } from './sessions'
 import { TerminalManager } from './terminal'
 import {
   claimTrayInstance,
@@ -197,11 +200,12 @@ function createWindow(): BrowserWindow {
 
   let readyToShow = false
   let rendererStartupReady = false
+  const startupContents = window.webContents
   const showWhenReady = () => {
     if (readyToShow && rendererStartupReady && !window.isDestroyed()) window.show()
   }
   const onStartupReady = (event: Electron.IpcMainEvent) => {
-    if (event.sender !== window.webContents) return
+    if (event.sender !== startupContents) return
     rendererStartupReady = true
     showWhenReady()
   }
@@ -227,7 +231,19 @@ function createWindow(): BrowserWindow {
   // reference so nothing tries to push events into a destroyed renderer.
   window.on('closed', () => {
     ipcMain.removeListener('app:startup-ready', onStartupReady)
-    if (mainWindow === window) mainWindow = null
+    if (mainWindow === window) {
+      mainWindow = null
+      terminalManager?.disposeAll()
+    }
+  })
+
+  // A crashed renderer has lost every terminal session id, so those PTYs no
+  // longer have a controllable owner.
+  window.webContents.on('render-process-gone', (_event, details) => {
+    if (mainWindow === window) terminalManager?.disposeAll()
+    if (!app.isPackaged) {
+      console.error('[renderer] process gone:', details.reason)
+    }
   })
 
   // Surface renderer problems in the terminal during development.
@@ -236,9 +252,6 @@ function createWindow(): BrowserWindow {
       if (event.level === 'error' || event.level === 'warning') {
         console.error(`[renderer] ${event.message} (${event.sourceId}:${event.lineNumber})`)
       }
-    })
-    window.webContents.on('render-process-gone', (_event, details) => {
-      console.error('[renderer] process gone:', details.reason)
     })
     window.webContents.on('preload-error', (_event, preloadPath, error) => {
       console.error('[renderer] preload error:', preloadPath, error)
@@ -288,14 +301,11 @@ function createWindow(): BrowserWindow {
 }
 
 /**
- * A stray exception in the main process must not surface as a native error
- * dialog that blocks the app. Log it to the user data folder instead so the
- * problem is still diagnosable.
+ * A stray exception can leave the main process in an inconsistent state. Log
+ * it to the user data folder and quit through the normal shutdown path rather
+ * than continuing with possibly corrupted state or showing a native dialog.
  */
 process.on('uncaughtException', (error: NodeJS.ErrnoException) => {
-  // The stream listener above usually swallows this. If one still escapes,
-  // logging it would write to the same broken pipe and the dialog would win.
-  if (error?.code === 'EPIPE') return
   try {
     const logDir = app.getPath('logs')
     mkdirSync(logDir, { recursive: true })
@@ -312,6 +322,8 @@ process.on('uncaughtException', (error: NodeJS.ErrnoException) => {
   } catch {
     /* stderr may already be closed */
   }
+  process.exitCode = 1
+  app.quit()
 })
 
 process.on('unhandledRejection', (reason: unknown) => {
@@ -332,6 +344,8 @@ process.on('unhandledRejection', (reason: unknown) => {
   } catch {
     /* stderr may already be closed */
   }
+  process.exitCode = 1
+  app.quit()
 })
 
 function handleTerminationSignal(): void {
@@ -363,6 +377,10 @@ function applyTray(): void {
 async function start(): Promise<void> {
   const settingsStore = new SettingsStore()
   settings = settingsStore
+  configureExternalSessionRoots(() => {
+    const current = settingsStore.get()
+    return [current.externalChatFolder ?? '', ...(current.externalChatFolderHistory ?? [])]
+  })
 
   // Development helper: open a folder that was passed in on the command line.
   const forcedWorkspace = process.env.PI_DESKTOP_WORKSPACE
@@ -383,6 +401,12 @@ async function start(): Promise<void> {
   const runtimeOptions = {
     customPiPath: settingsStore.get().piPath,
     trustProject: settingsStore.get().trustProject,
+    getSessionRoots: () => resolveSessionRoots(settingsStore.get().externalChatFolder),
+    getSessionDir: (cwd: string) => {
+      const projectless = path.join(app.getPath('userData'), 'chats')
+      if (canonicalPath(cwd) !== canonicalPath(projectless)) return undefined
+      return settingsStore.get().externalChatFolder?.trim() || undefined
+    },
     getPermissionMode: () => settingsStore.get().permissionMode ?? 'ask',
     getComputerUse: () => settingsStore.get().computerUse === true,
     // Read when a process is built, and only applied to a session Pi has never
@@ -414,9 +438,10 @@ async function start(): Promise<void> {
   // used MCP or a subagent. One service's rules must not edit the other's.
   autoTitleService = new AutoTitleService(() => settingsStore.get())
   autoTitleService.attach(supervisor)
-  terminalManager = new TerminalManager((channel, payload) => {
-    sendToWindow(mainWindow, channel, payload)
-  })
+  terminalManager = new TerminalManager(
+    (channel, payload) => sendToWindow(mainWindow, channel, payload),
+    pty.spawn
+  )
 
   remoteAccess = new RemoteAccessService({
     userData: app.getPath('userData'),
@@ -517,7 +542,7 @@ app.on('before-quit', (event) => {
     shutdownComplete = true
     scheduledTaskService?.dispose()
     app.quit()
-    setTimeout(() => process.exit(0), 1000).unref()
+    setTimeout(() => process.exit(process.exitCode ?? 0), 1000).unref()
   }, 20_000)
   watchdog.unref()
 

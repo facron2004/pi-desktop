@@ -1,6 +1,6 @@
 import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { subagentExtension } from '../src/main/pi/subagent'
@@ -22,6 +22,8 @@ type ToolResult = {
       toolName?: string
       startedAt?: number
       finishedAt?: number
+      messages?: unknown[]
+      messagesTruncated?: boolean
       usage: { turns: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextTokens: number }
     }[]
   }
@@ -66,19 +68,47 @@ const permissionTitle = 'test-private-permission-title'
 
 writeFileSync(
   fakeScript,
-  `import { appendFileSync } from 'node:fs';
-import { writeFileSync } from 'node:fs';
+  `import { appendFileSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 const log = process.env.PI_FAKE_LOG;
 if (log) appendFileSync(log, JSON.stringify(process.argv.slice(2)) + '\\n');
 const mode = process.env.PI_FAKE_MODE || 'ok';
+if (mode === 'exit-zero') process.exit(0);
+if (mode === 'unterminated-settle') {
+  process.stdout.write(JSON.stringify({ type: 'agent_settled', aborted: false }), () => process.exit(0));
+}
+const activeDirectory = process.env.PI_FAKE_ACTIVE_DIR;
+let activeMarker;
+if (activeDirectory) {
+  mkdirSync(activeDirectory, { recursive: true });
+  activeMarker = path.join(activeDirectory, String(process.pid));
+  writeFileSync(activeMarker, 'running');
+  process.on('exit', () => { try { unlinkSync(activeMarker); } catch {} });
+}
 const promptLog = process.env.PI_FAKE_PROMPT_LOG;
 const responseLog = process.env.PI_FAKE_RESPONSE_LOG;
 if (mode === 'fail') {
   process.stderr.write('boom from fake pi\\n');
   process.exit(3);
 }
+if (mode === 'oversized') {
+  const chunk = Buffer.alloc(64 * 1024, 0x78);
+  let remaining = 64 * 1024 * 1024 + 1;
+  function writeOversizedRecord() {
+    while (remaining > 0) {
+      const size = Math.min(chunk.length, remaining);
+      remaining -= size;
+      if (!process.stdout.write(size === chunk.length ? chunk : chunk.subarray(0, size))) {
+        process.stdout.once('drain', writeOversizedRecord);
+        return;
+      }
+    }
+  }
+  writeOversizedRecord();
+}
+if (mode === 'noisy-stderr') process.stderr.write('x'.repeat(1024 * 1024 + 1));
 if (mode === 'spawn-child') {
   const descendantSource = ${JSON.stringify(`const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(childStartedFile)}, 'started'); setTimeout(() => {}, 60000);`)};
   const descendant = spawn(process.execPath, ['-e', descendantSource], { stdio: 'ignore', windowsHide: true });
@@ -106,6 +136,25 @@ function emitResult() {
       { type: 'message_update', assistantMessageEvent: { type: 'text_start' } }
     ]) emit(event);
   }
+  if (mode === 'many-messages') {
+    for (let index = 0; index < 240; index++) {
+      emit({
+        type: 'message_end',
+        message: {
+          role: index % 2 === 0 ? 'user' : 'assistant',
+          content: [{ type: 'text', text: 'message-' + index + '-' + 'x'.repeat(128) }]
+        }
+      });
+    }
+    emit({ type: 'agent_settled', aborted: false });
+    return;
+  }
+  if (mode === 'large-message') {
+    const text = 'x'.repeat(300 * 1024);
+    emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+    emit({ type: 'agent_settled', aborted: false });
+    return;
+  }
   const text = mode === 'cwd' ? process.cwd() : process.env.PI_FAKE_TEXT || 'done';
   const content = mode === 'multi-text'
     ? [{ type: 'text', text: 'first part ' }, { type: 'text', text: 'second part' }]
@@ -124,6 +173,7 @@ function emitResult() {
   emit({ type: 'agent_settled', aborted: false });
 }
 function handle(record) {
+  if (mode === 'unterminated-settle') return;
   if (record.type === 'extension_ui_response') {
     if (responseLog) appendFileSync(responseLog, JSON.stringify(record) + '\\n');
     if (mode === 'approval') emitResult();
@@ -197,7 +247,8 @@ function createApi(factory: (pi: { registerTool: (tool: Tool) => void }) => void
 }
 
 type FakeOptions = {
-  mode?: 'ok' | 'fail' | 'slow' | 'ignore-sigterm' | 'spawn-child' | 'cwd' | 'progress' | 'approval' | 'approval-unavailable'
+  mode?: 'ok' | 'fail' | 'slow' | 'ignore-sigterm' | 'spawn-child' | 'cwd' | 'progress' | 'many-messages' | 'large-message' | 'approval' | 'approval-unavailable' | 'oversized' | 'noisy-stderr'
+  activeDirectory?: string
   text?: string
   onUpdate?: (update: Update) => void
 }
@@ -208,6 +259,7 @@ function withFakePi<T>(options: FakeOptions, run: (signal: AbortSignal | undefin
   const previousPromptLog = process.env.PI_FAKE_PROMPT_LOG
   const previousResponseLog = process.env.PI_FAKE_RESPONSE_LOG
   const previousPermissionTitle = process.env.PI_FAKE_PERMISSION_TITLE
+  const previousActiveDirectory = process.env.PI_FAKE_ACTIVE_DIR
   const previousMode = process.env.PI_FAKE_MODE
   const previousText = process.env.PI_FAKE_TEXT
   process.argv[1] = fakeScript
@@ -215,6 +267,8 @@ function withFakePi<T>(options: FakeOptions, run: (signal: AbortSignal | undefin
   process.env.PI_FAKE_PROMPT_LOG = promptFile
   process.env.PI_FAKE_RESPONSE_LOG = responseFile
   process.env.PI_FAKE_PERMISSION_TITLE = permissionTitle
+  if (options.activeDirectory) process.env.PI_FAKE_ACTIVE_DIR = options.activeDirectory
+  else delete process.env.PI_FAKE_ACTIVE_DIR
   process.env.PI_FAKE_MODE = options.mode ?? 'ok'
   process.env.PI_FAKE_TEXT = options.text ?? 'done'
   const restore = (): void => {
@@ -227,6 +281,8 @@ function withFakePi<T>(options: FakeOptions, run: (signal: AbortSignal | undefin
     else process.env.PI_FAKE_RESPONSE_LOG = previousResponseLog
     if (previousPermissionTitle === undefined) delete process.env.PI_FAKE_PERMISSION_TITLE
     else process.env.PI_FAKE_PERMISSION_TITLE = previousPermissionTitle
+    if (previousActiveDirectory === undefined) delete process.env.PI_FAKE_ACTIVE_DIR
+    else process.env.PI_FAKE_ACTIVE_DIR = previousActiveDirectory
     if (previousMode === undefined) delete process.env.PI_FAKE_MODE
     else process.env.PI_FAKE_MODE = previousMode
     if (previousText === undefined) delete process.env.PI_FAKE_TEXT
@@ -289,6 +345,88 @@ test('a single task spawns Pi in RPC mode and collects its text, usage and detai
   assert.equal(args[10], '--append-system-prompt')
   assert.ok(args[11].length > 0)
   assert.deepEqual(readRecords(promptFile), [{ type: 'prompt', id: 'subagent-prompt', message: 'Task: Inspect the repo' }])
+})
+
+test('concurrent subagent calls share one process limit and queued calls can be cancelled', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+  const activeDirectory = path.join(dir, 'active-subagents')
+  mkdirSync(activeDirectory, { recursive: true })
+
+  await withFakePi({ mode: 'slow', activeDirectory }, async () => {
+    const controllers = Array.from({ length: 8 }, () => new AbortController())
+    const calls = controllers.map((controller, index) => tool.execute(
+      `call-concurrent-${index}`,
+      { task: `Task ${index}` },
+      controller.signal,
+      undefined,
+      { cwd: process.cwd() }
+    ))
+    try {
+      const deadline = Date.now() + 10000
+      while (readdirSync(activeDirectory).length < 4 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      assert.equal(readdirSync(activeDirectory).length, 4, 'exactly four child processes should occupy the shared slots')
+      assert.equal(readArgs().length, 4, 'the remaining calls should wait before spawning Pi')
+
+      for (const controller of controllers.slice(5)) controller.abort()
+      const queuedResults = await Promise.all(calls.slice(5))
+      assert.ok(queuedResults.every((result) => result.details?.results[0]?.status === 'aborted'))
+      assert.equal(readArgs().length, 4, 'cancelled queued calls must not spawn Pi')
+
+      controllers[0]!.abort()
+      assert.equal((await calls[0]!).details?.results[0]?.status, 'aborted')
+      const releasedDeadline = Date.now() + 5000
+      while (readArgs().length < 5 && Date.now() < releasedDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      assert.equal(readArgs().length, 5, 'the oldest queued call should start when a slot is released')
+
+      for (const controller of controllers.slice(1, 5)) controller.abort()
+      const remainingResults = await Promise.all(calls.slice(1, 5))
+      assert.ok(remainingResults.every((result) => result.details?.results[0]?.status === 'aborted'))
+    } finally {
+      for (const controller of controllers) controller.abort()
+      await Promise.allSettled(calls)
+    }
+  })
+})
+
+test('subagent transcript snapshots retain a bounded tail and report omitted messages', async () => {
+  const { tool, updates } = createApi(await loadFactory())
+  const result = await withFakePi({ mode: 'many-messages' }, () =>
+    tool.execute('call-transcript-limit', { task: 'Emit many messages' }, undefined, (update) => updates.push(update), { cwd: process.cwd() })
+  )
+  const child = result.details!.results[0]
+  assert.equal(child.status, 'completed')
+  assert.equal(child.messages!.length, 200)
+  assert.equal(child.messagesTruncated, true)
+  assert.match(result.content[0].text, /^message-239-/)
+  for (const update of updates) {
+    const snapshot = update.details?.results[0]
+    if (!snapshot?.messages) continue
+    assert.ok(snapshot.messages.length <= 200)
+    assert.ok(Buffer.byteLength(JSON.stringify(snapshot.messages), 'utf8') <= 256 * 1024)
+  }
+})
+
+test('oversized transcript messages and final output are capped with visible notices', async () => {
+  const { tool, updates } = createApi(await loadFactory())
+  const result = await withFakePi({ mode: 'large-message' }, () =>
+    tool.execute('call-large-message', { task: 'Emit a large final message' }, undefined, (update) => updates.push(update), { cwd: process.cwd() })
+  )
+  const child = result.details!.results[0]
+  assert.equal(child.messages!.length, 0)
+  assert.equal(child.messagesTruncated, true)
+  const finalNotice = '\n[Subagent final output truncated at 262144 characters]'
+  assert.equal(result.content[0].text.length, 256 * 1024)
+  assert.ok(result.content[0].text.endsWith(finalNotice))
+  assert.equal(child.output, result.content[0].text)
+  const progressNotice = '\n[Progress output truncated; see the final result below]'
+  assert.ok(updates.some((update) => update.content[0].text.endsWith(progressNotice)))
+  assert.ok(updates.every((update) => update.content[0].text.length <= 16 * 1024 + progressNotice.length))
+  assert.ok(updates.every((update) => (update.details?.results[0].output?.length ?? 0) <= 16 * 1024 + progressNotice.length))
 })
 
 test('a subagent inherits the parent project trust decision', async () => {
@@ -410,6 +548,63 @@ test('a failing subagent reports its stderr and exit code', async () => {
   assert.match(result.details!.results[0].stderr, /boom from fake pi/)
 })
 
+test('a zero exit without agent_settled is not reported as a successful task', async () => {
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ mode: 'exit-zero' }, () =>
+    tool.execute('call-zero-exit', { task: 'Exit before starting' }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, true)
+  assert.match(result.content[0].text, /exited before the subagent task settled/)
+  assert.equal(result.details?.results[0].status, 'failed')
+})
+
+test('an unterminated final JSON record cannot settle a subagent', async () => {
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ mode: 'unterminated-settle' }, () =>
+    tool.execute('call-unterminated', { task: 'Emit an unterminated record' }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, true)
+  assert.match(result.content[0].text, /record was not terminated by LF/)
+  assert.equal(result.details?.results[0].status, 'failed')
+})
+
+test('an oversized subagent RPC record fails the task and stops the child', async () => {
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ mode: 'oversized' }, () =>
+    tool.execute('call-oversized-record', { task: 'Emit an oversized record' }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, true)
+  assert.match(result.content[0].text, /exceeded the 64 MB limit/)
+  assert.equal(result.details?.results[0].status, 'failed')
+})
+
+test('subagent stderr retention is capped with a visible truncation note', async () => {
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ mode: 'noisy-stderr' }, () =>
+    tool.execute('call-noisy-stderr', { task: 'Write too much stderr' }, undefined, undefined, { cwd: process.cwd() })
+  )
+  const stderr = result.details?.results[0].stderr ?? ''
+  assert.match(stderr, /Subagent stderr truncated at 262144 characters/)
+  assert.ok(stderr.length <= 256 * 1024)
+})
+
+test('parallel subagent outputs stay below the parent RPC record limit', async () => {
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ mode: 'large-message' }, () =>
+    tool.execute(
+      'call-parallel-output-limit',
+      { tasks: Array.from({ length: 8 }, (_, index) => ({ task: 'Task ' + (index + 1) })) },
+      undefined,
+      undefined,
+      { cwd: process.cwd() }
+    )
+  )
+
+  assert.equal(result.details?.results.length, 8)
+  assert.ok(result.details?.results.every((child) => child.output.length <= 256 * 1024))
+  assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') < 64 * 1024 * 1024)
+})
+
 test('parallel tasks run and return one result per task', async () => {
   resetArgs()
   const factory = await loadFactory()
@@ -447,6 +642,50 @@ test('parallel tasks inherit the batch cwd and keep per-task overrides', async (
   assert.equal(result.isError, false)
   assert.deepEqual(result.details?.results.map((entry) => entry.cwd), [dir, process.cwd()])
   assert.deepEqual(result.details?.results.map((entry) => entry.output), [dir, process.cwd()])
+})
+
+test('a subagent cannot run outside the active project working directory', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({}, () =>
+    tool.execute(
+      'call-cwd-outside',
+      { task: 'Do not run outside the project', cwd: path.dirname(process.cwd()) },
+      undefined,
+      undefined,
+      { cwd: process.cwd() }
+    )
+  )
+
+  assert.equal(result.isError, true)
+  assert.match(result.content[0].text, /inside the current project/)
+  assert.equal(result.details?.results[0].status, 'failed')
+  assert.deepEqual(readArgs(), [], 'an out-of-project Pi process must not be spawned')
+})
+
+test('a subagent cannot use an in-project symlink to leave the active project', async (t) => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+  const link = path.join(dir, 'outside-project-link')
+  try {
+    symlinkSync(path.dirname(process.cwd()), link, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    t.skip('directory symlinks are unavailable: ' + (error instanceof Error ? error.message : String(error)))
+    return
+  }
+  const result = await withFakePi({}, () =>
+    tool.execute(
+      'call-cwd-symlink',
+      { task: 'Do not run through the project symlink', cwd: path.relative(process.cwd(), link) },
+      undefined,
+      undefined,
+      { cwd: process.cwd() }
+    )
+  )
+
+  assert.equal(result.isError, true)
+  assert.match(result.content[0].text, /inside the current project/)
+  assert.deepEqual(readArgs(), [], 'a symlink escape must not launch Pi')
 })
 
 test('child permission requests use the parent UI and serialize across parallel subagents', async () => {
@@ -559,7 +798,7 @@ test('the generated source never uses readline and splits JSONL with StringDecod
   assert.doesNotMatch(source, /readline/)
   assert.match(source, /from 'node:string_decoder'/)
   assert.match(source, /new StringDecoder\('utf8'\)/)
-  assert.match(source, /indexOf\('\\n'\)/)
+  assert.match(source, /indexOf\('\\n', start\)/)
   assert.doesNotMatch(source, /\u2028|\u2029/)
 })
 

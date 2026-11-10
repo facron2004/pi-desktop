@@ -4181,6 +4181,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   -webkit-app-region: no-drag;
 }
 
+.shell__panel-toggle .icon-btn {
+  width: var(--toolpanel-tab-h);
+  height: var(--toolpanel-tab-h);
+}
+
 /* With the panel up, the corner belongs to the panel's 46px header: the band
    narrows to it so the toggle and the panel's `+` / maximize buttons share one
    centre line instead of sitting two pixels apart. */
@@ -7661,7 +7666,6 @@ button:focus-visible,
   .project__remove,
   .sidebar__section-head button,
   .titlebar > .icon-btn,
-  .shell__panel-toggle .icon-btn,
   .drawer__head > .icon-btn,
   .modal__head > .icon-btn,
   .composer__bar > .icon-btn {
