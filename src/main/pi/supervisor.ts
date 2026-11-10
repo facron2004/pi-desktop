@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
@@ -28,6 +29,9 @@ class SessionFileLockError extends Error {}
 /** How long an idle hot session keeps its process. Viewing it does not reset this. */
 const WARM_MS = 10 * 60 * 1000
 const CWD_QUEUE_POLL_MS = 250
+const MAX_QUEUED_JOBS_PER_CWD = 64
+const MAX_QUEUED_JOBS_TOTAL = 256
+const MAX_QUEUED_PAYLOAD_BYTES_TOTAL = 32 * 1024 * 1024
 
 const WRITE_COMMANDS = new Set(['prompt', 'bash'])
 const BIND_COMMANDS = new Set(['prompt', 'fork', 'clone', 'new_session'])
@@ -35,6 +39,43 @@ const BIND_COMMANDS = new Set(['prompt', 'fork', 'clone', 'new_session'])
 function sameWorkingDirectory(left: string, right: string): boolean {
   if (!left || !right) return left === right
   return CwdGate.key(left) === CwdGate.key(right)
+}
+
+function estimatePayloadBytes(value: unknown): number {
+  const pending = [value]
+  const seen = new WeakSet<object>()
+  let bytes = 0
+  while (pending.length) {
+    const item = pending.pop()
+    if (typeof item === 'string') {
+      bytes += Buffer.byteLength(item)
+      continue
+    }
+    if (!item || typeof item !== 'object') {
+      bytes += 8
+      continue
+    }
+    if (seen.has(item)) continue
+    seen.add(item)
+    if (item instanceof ArrayBuffer) {
+      bytes += item.byteLength
+      continue
+    }
+    if (ArrayBuffer.isView(item)) {
+      bytes += item.byteLength
+      continue
+    }
+    if (Array.isArray(item)) {
+      bytes += item.length * 2
+      for (const child of item) pending.push(child)
+      continue
+    }
+    for (const [key, child] of Object.entries(item)) {
+      bytes += Buffer.byteLength(key) + 2
+      pending.push(child)
+    }
+  }
+  return bytes
 }
 
 /**
@@ -66,6 +107,7 @@ interface QueuedJob {
   cwd: string
   command: string
   payload: Record<string, unknown>
+  payloadBytes: number
   timeoutMs: number
   trace?: RpcTraceHint
   preflight?: () => void
@@ -98,6 +140,7 @@ export class SessionSupervisor extends EventEmitter {
   private readonly startingCwds = new Map<string, string>()
   private readonly cancelledStarts = new Set<string>()
   private readonly aliases = new Map<string, string>()
+  private readonly aliasesByTarget = new Map<string, Set<string>>()
   /** Canonical session-file identity → the runtime map key that may write it. */
   private readonly fileOwners = new Map<string, string>()
   /** Cross-process locks held while a runtime or session-file mutation owns a JSONL. */
@@ -105,6 +148,8 @@ export class SessionSupervisor extends EventEmitter {
   private readonly gate = new CwdGate()
   private readonly interprocessGate?: InterprocessCwdGate
   private readonly queued = new Map<string, QueuedJob[]>()
+  private queuedJobCount = 0
+  private queuedPayloadBytes = 0
   private readonly approvals = new Set<string>()
   private readonly warmTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private queueDrainTimer?: ReturnType<typeof setTimeout>
@@ -354,6 +399,8 @@ export class SessionSupervisor extends EventEmitter {
       this.shuttingDown = true
       const pending = [...this.queued.values()].flat()
       this.queued.clear()
+      this.queuedJobCount = 0
+      this.queuedPayloadBytes = 0
       for (const job of pending) job.reject(new Error('Pi is shutting down.'))
       try {
         const stopping = [...this.runtimes.keys()].map(id => this.stop(id))
@@ -363,6 +410,7 @@ export class SessionSupervisor extends EventEmitter {
         if (failed) throw failed.reason
       } finally {
         this.aliases.clear()
+        this.aliasesByTarget.clear()
         this.fileOwners.clear()
         for (const [file, lock] of this.sessionFileLocks) {
           await this.releaseSessionFileLock(file, lock.ownerId)
@@ -462,7 +510,7 @@ export class SessionSupervisor extends EventEmitter {
     const owner = this.fileOwners.get(canon)
     if (owner) {
       const holder = this.canonical(owner)
-      if (holder !== requested) this.aliases.set(requested, holder)
+      if (holder !== requested) this.setAlias(requested, holder)
       return holder
     }
     this.fileOwners.set(canon, requested)
@@ -623,17 +671,28 @@ export class SessionSupervisor extends EventEmitter {
     return runtime.request<T>(command, payload, timeoutMs, trace)
   }
 
-  private enqueue<T>(job: Omit<QueuedJob, 'resolve' | 'reject'>): Promise<T> {
+  private enqueue<T>(job: Omit<QueuedJob, 'resolve' | 'reject' | 'payloadBytes'>): Promise<T> {
     const cwd = CwdGate.key(job.cwd)
     const list = this.queued.get(cwd) ?? []
+    const payloadBytes = estimatePayloadBytes(job.payload)
+    if (
+      list.length >= MAX_QUEUED_JOBS_PER_CWD ||
+      this.queuedJobCount >= MAX_QUEUED_JOBS_TOTAL ||
+      this.queuedPayloadBytes + payloadBytes > MAX_QUEUED_PAYLOAD_BYTES_TOTAL
+    ) {
+      throw new Error('The working-folder queue is full. This request was not sent; wait for the active run or clear queued work.')
+    }
     const promise = new Promise<T>((resolve, reject) => {
       list.push({
         ...job,
+        payloadBytes,
         resolve: (value) => resolve(value as T),
         reject
       })
     })
     this.queued.set(cwd, list)
+    this.queuedJobCount += 1
+    this.queuedPayloadBytes += payloadBytes
     this.emit('queued', { ownerId: job.key, cwd: job.cwd })
     this.scheduleQueueDrain()
     return promise
@@ -647,6 +706,8 @@ export class SessionSupervisor extends EventEmitter {
       for (const job of jobs) {
         if (this.canonical(job.key) === id && (!command || job.command === command)) {
           removed.push(job)
+          this.queuedJobCount -= 1
+          this.queuedPayloadBytes -= job.payloadBytes
           job.resolve({ disposition: 'handled', cancelled: true })
         } else kept.push(job)
       }
@@ -715,6 +776,8 @@ export class SessionSupervisor extends EventEmitter {
       const next = jobs[0]
       if (!next || !this.gate.claim(next.cwd, this.canonical(next.key))) continue
       jobs.shift()
+      this.queuedJobCount -= 1
+      this.queuedPayloadBytes -= next.payloadBytes
       if (jobs.length === 0) this.queued.delete(cwd)
       void this.request(next.key, next.command, next.payload, next.timeoutMs, next.trace, next.preflight)
         .then(next.resolve, next.reject)
@@ -762,12 +825,10 @@ export class SessionSupervisor extends EventEmitter {
     this.activity.get(runtime)!.ownerId = file
     // A fork moves this process, but the original JSONL remains a separate chat.
     // Only drafts and alternate spellings of the same file are aliases.
-    for (const [alias, owner] of this.aliases) {
-      if (owner === from) this.aliases.set(alias, file)
-    }
+    for (const alias of [...(this.aliasesByTarget.get(from) ?? [])]) this.setAlias(alias, file)
     const replace = startup && !from.startsWith('draft:') && canonicalSessionFile(from) !== canonicalSessionFile(file)
     if (replace || from.startsWith('draft:') || canonicalSessionFile(from) === canonicalSessionFile(file)) {
-      this.aliases.set(from, file)
+      this.setAlias(from, file)
     }
     this.gate.retarget(from, file)
     this.interprocessGate?.retargetOwner(from, file)
@@ -873,6 +934,20 @@ export class SessionSupervisor extends EventEmitter {
       current = this.aliases.get(current) ?? current
     }
     return current
+  }
+
+  private setAlias(alias: string, target: string): void {
+    const previous = this.aliases.get(alias)
+    if (previous === target) return
+    if (previous) {
+      const previousAliases = this.aliasesByTarget.get(previous)
+      previousAliases?.delete(alias)
+      if (previousAliases?.size === 0) this.aliasesByTarget.delete(previous)
+    }
+    this.aliases.set(alias, target)
+    const targetAliases = this.aliasesByTarget.get(target) ?? new Set<string>()
+    targetAliases.add(alias)
+    this.aliasesByTarget.set(target, targetAliases)
   }
 
   private scheduleWarm(key: string): void {

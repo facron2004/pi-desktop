@@ -49,16 +49,16 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 
 ## 下载与安装
 
-当前发布版本为 **v0.10.9**，内置 **Pi 1.5.0**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
+当前发布版本为 **v0.10.10**，内置 **Pi 1.5.0**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.9/Pi.Desktop-0.10.9-x64.exe) |
-| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.9/Pi.Desktop-0.10.9-arm64.exe) |
-| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.9/Pi.Desktop-0.10.9.exe) |
-| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.10.9/Pi.Desktop-0.10.9-portable-x64.zip) |
+| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.10/Pi.Desktop-0.10.10-x64.exe) |
+| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.10/Pi.Desktop-0.10.10-arm64.exe) |
+| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.10/Pi.Desktop-0.10.10.exe) |
+| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.10.10/Pi.Desktop-0.10.10-portable-x64.zip) |
 
-免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.10.9/SHA256SUMS.txt)，版本说明见 [v0.10.9 更新说明](docs/releases/v0.10.9.md)。
+免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.10.10/SHA256SUMS.txt)，版本说明见 [v0.10.10 更新说明](docs/releases/v0.10.10.md)。
 
 ## 快速上手
 

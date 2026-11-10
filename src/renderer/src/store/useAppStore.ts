@@ -42,7 +42,7 @@ import { collectProjects, type Project } from '../lib/projects'
 import { APP_COMMANDS } from '../lib/app-commands'
 import { hydrationStale, needsSessionHydration, scopeEvent, scopeStatus } from '../lib/session-scope'
 import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
-import { beginStream, finishStream, rekeyStreamState } from '../lib/stream-events'
+import { beginStream, finishStream, rekeyStreamState, resetStreamState } from '../lib/stream-events'
 import { estimateContextBreakdown, parseRequestContextBreakdown } from '../lib/context-reading'
 import { recordModelUse } from '../lib/model-recency'
 import { clearViewState, migrateViewState } from '../lib/view-state'
@@ -533,6 +533,7 @@ function beginViewChange(): number {
   return ++workspaceEpoch
 }
 const threadAliases = new Map<string, string>()
+const threadAliasesByTarget = new Map<string, Set<string>>()
 /** One restore attempt per conversation and saved model, so a miss does not loop. */
 const modelRestoreAttempts = new Set<string>()
 /** Conversations whose live process has already been told to retry rate limits. */
@@ -598,12 +599,12 @@ export function enforceSessionLru(
 
   if (inactiveLoadedKeys.length <= maxInactive) return threads
 
-  // Sort candidate inactive keys by LRU (oldest first)
+  const accessOrder = new Map<string, number>()
+  sessionAccessLru.forEach((key, index) => accessOrder.set(key, index))
+  // Sort candidate inactive keys by LRU (oldest first).
   inactiveLoadedKeys.sort((a, b) => {
-    const idxA = sessionAccessLru.indexOf(a)
-    const idxB = sessionAccessLru.indexOf(b)
-    const orderA = idxA === -1 ? -1 : idxA
-    const orderB = idxB === -1 ? -1 : idxB
+    const orderA = accessOrder.get(a) ?? -1
+    const orderB = accessOrder.get(b) ?? -1
     return orderA - orderB
   })
 
@@ -622,6 +623,7 @@ export function enforceSessionLru(
       }
       changed = true
     }
+    clearViewState(key)
     forgetSessionLru(key)
   }
 
@@ -630,6 +632,20 @@ export function enforceSessionLru(
 
 function threadKey(key: string): string {
   return threadAliases.get(key) ?? key
+}
+
+function setThreadAlias(alias: string, target: string): void {
+  const previous = threadAliases.get(alias)
+  if (previous === target) return
+  if (previous) {
+    const previousAliases = threadAliasesByTarget.get(previous)
+    previousAliases?.delete(alias)
+    if (previousAliases?.size === 0) threadAliasesByTarget.delete(previous)
+  }
+  threadAliases.set(alias, target)
+  const targetAliases = threadAliasesByTarget.get(target) ?? new Set<string>()
+  targetAliases.add(alias)
+  threadAliasesByTarget.set(target, targetAliases)
 }
 
 function stopPrewarmOnlyRuntime(sessionKey: string | undefined): void {
@@ -861,16 +877,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const offEvent = window.pi.runtime.onEvent((payload) => {
         const scoped = scopeEvent(payload, viewKeyOf(get()))
         if (!scoped) return
-        handleEvent(bindSet(set, get, scoped.ownerId), bindGet(get, scoped.ownerId), scoped.event, get, scoped.ownerId)
+        handleEvent(bindSet(set, get, scoped.ownerId), bindGet(get, scoped.ownerId), scoped.event, get, scoped.ownerId, set)
       })
       const offRekey = window.pi.runtime.onRekey?.((change) => {
         if (prewarmOnlyRuntimes.delete(change.from)) prewarmOnlyRuntimes.add(change.to)
+        if (retryArmed.delete(change.from)) retryArmed.add(change.to)
         rekeyThread(set, get, change.from, change.to, change.replace)
       })
       const offStatus = window.pi.runtime.onStatus((incoming) => {
         const scoped = scopeStatus(incoming, viewKeyOf(get()))
         if (!scoped) return
         const { ownerId: owner, status } = scoped
+        // Auto-retry is process-local. A newly starting process must be armed
+        // again, and a stopped process must not leave a stale session marker.
+        if (status.phase === 'starting' || status.phase === 'stopped') retryArmed.delete(owner)
         const ownGet = bindGet(get, owner)
         // An intentionally retired idle worker leaves a cold, usable conversation.
         const cold = status.phase === 'stopped' && !status.error && ownGet().run.settled
@@ -899,7 +919,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           if (!retryArmed.has(owner)) {
             retryArmed.add(owner)
             void tracedRpc(owner, 'set_auto_retry', { enabled: true }, undefined, 'arm-retry').catch(() => {
-              retryArmed.delete(owner)
+              retryArmed.delete(threadKey(owner))
             })
           }
         }
@@ -1031,7 +1051,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async openWorkspace(workspace, sessionFile, sourceAction = 'project-open') {
     void sourceAction
-    stopPrewarmOnlyRuntime(viewKeyOf(get()))
+    const currentKey = viewKeyOf(get())
+    if (currentKey) touchSessionLru(currentKey)
+    stopPrewarmOnlyRuntime(currentKey)
     cancelScheduledPrewarm()
     const epoch = beginProjectChange()
     drainPending()
@@ -1044,7 +1066,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const thread = cached
       ? { ...cached, notice: undefined }
       : emptyThread(workspace?.path)
-    const threads = { ...get().threads, [sessionFile ?? draftId!]: thread }
+    if (sessionFile) touchSessionLru(sessionFile)
+    const activeKey = sessionFile ?? draftId!
+    const threads = enforceSessionLru(
+      { ...get().threads, [activeKey]: thread },
+      activeKey
+    )
     set({
       workspace,
       threads,
@@ -1102,6 +1129,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async selectSession(session, sourceAction = 'sidebar-select') {
     void sourceAction
     const currentKey = viewKeyOf(get())
+    if (currentKey && currentKey !== session.file) touchSessionLru(currentKey)
     cancelScheduledPrewarm()
     if (currentKey !== session.file) stopPrewarmOnlyRuntime(currentKey)
     const workspace = get().workspace
@@ -1127,8 +1155,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       thread.isStreaming
     )
     touchSessionLru(session.file)
+    const threads = enforceSessionLru(
+      { ...get().threads, [session.file]: thread },
+      session.file
+    )
     set({
-      threads: { ...get().threads, [session.file]: thread },
+      threads,
       draftId: live ? session.file : undefined,
       activeSessionFile: live ? undefined : session.file,
       hydratingSessionFile: shouldHydrate ? session.file : undefined,
@@ -1308,6 +1340,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         set({ error: `Could not delete ${session?.name ?? 'the conversation'}` })
         return
       }
+      resetStreamState(file)
       clearViewState(file)
       forgetSessionTiming(file)
       await get().refreshSessions()
@@ -1361,18 +1394,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async newChat() {
-    stopPrewarmOnlyRuntime(viewKeyOf(get()))
+    const currentKey = viewKeyOf(get())
+    if (currentKey) touchSessionLru(currentKey)
+    stopPrewarmOnlyRuntime(currentKey)
     cancelScheduledPrewarm()
     beginViewChange()
     drainPending()
     const draftId = mintDraft()
     const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
+    const threads = enforceSessionLru(
+      { ...get().threads, [draftId]: thread },
+      draftId
+    )
     set({
       draftId,
       activeSessionFile: undefined,
       hydratingSessionFile: undefined,
       deskPage: null,
-      threads: { ...get().threads, [draftId]: thread },
+      threads,
       stats: undefined,
       ...projectThread(thread),
       status: { phase: 'ready', cwd: get().workspace?.path }
@@ -2937,11 +2976,10 @@ function rekeyThread(
   migrateScrollMemory(from, to)
   migrateViewState(from, to)
   migrateSessionTiming(from, to)
-  for (const [alias, key] of threadAliases) {
-    if (key === from) {
-      migrateScrollMemory(alias, to)
-      migrateViewState(alias, to)
-    }
+  const aliases = [...(threadAliasesByTarget.get(from) ?? [])]
+  for (const alias of aliases) {
+    migrateScrollMemory(alias, to)
+    migrateViewState(alias, to)
   }
   const state = get()
   const thread = state.threads[from]
@@ -2949,10 +2987,8 @@ function rekeyThread(
   if (thread) {
     if (replace || from.startsWith('draft:')) {
       delete threads[from]
-      for (const [alias, key] of threadAliases) {
-        if (key === from) threadAliases.set(alias, to)
-      }
-      threadAliases.set(from, to)
+      for (const alias of aliases) setThreadAlias(alias, to)
+      setThreadAlias(from, to)
     }
     threads[to] = thread
   }
@@ -3228,7 +3264,8 @@ function handleEvent(
   get: GetState,
   event: PiEvent,
   realGet?: GetState,
-  owner?: string
+  owner?: string,
+  realSet?: SetState
 ): void {
   switch (event.type) {
     case 'agent_start': {
@@ -3390,6 +3427,11 @@ function handleEvent(
             text: 'Pi stopped before the run finished'
           })
         }))
+      }
+      if (realGet && realSet) {
+        const current = realGet()
+        const threads = enforceSessionLru(current.threads, viewKeyOf(current))
+        if (threads !== current.threads) realSet({ threads })
       }
       const key = viewKeyOf(get())
       if (!event.runtimeStopped && !crashed) void get().refreshState(key)

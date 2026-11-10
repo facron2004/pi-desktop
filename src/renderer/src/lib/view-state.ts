@@ -7,51 +7,77 @@
  * These are view preferences only: none of this is execution state.
  */
 
-const toolOpen = new Map<string, boolean>()
-const toolFull = new Map<string, boolean>()
-const fileOpen = new Map<string, boolean>()
-const processOpen = new Map<string, boolean>()
-const historyExpanded = new Set<string>()
-
-function keyOf(threadId: string, id: string): string {
-  return `${threadId}\u0000${id}`
+interface ConversationViewState {
+  toolOpen: Map<string, boolean>
+  toolFull: Map<string, boolean>
+  fileOpen: Map<string, boolean>
+  processOpen: Map<string, boolean>
+  historyExpanded: boolean
 }
 
-/**
- * Whether one row of the stream is opened.
- *
- * The id is a tool call's own node id, or `group-<first call id>` for a batch
- * of consecutive calls gathered into one line — a batch is presentation, so it
- * borrows this map instead of adding a fourth kind of state.
- */
+const conversations = new Map<string, ConversationViewState>()
+
+function stateFor(threadId: string, create = false): ConversationViewState | undefined {
+  let state = conversations.get(threadId)
+  if (!state && create) {
+    state = {
+      toolOpen: new Map(),
+      toolFull: new Map(),
+      fileOpen: new Map(),
+      processOpen: new Map(),
+      historyExpanded: false
+    }
+    conversations.set(threadId, state)
+  }
+  return state
+}
+
+function prune(threadId: string, state: ConversationViewState): void {
+  if (
+    state.toolOpen.size === 0 &&
+    state.toolFull.size === 0 &&
+    state.fileOpen.size === 0 &&
+    state.processOpen.size === 0 &&
+    !state.historyExpanded
+  ) {
+    conversations.delete(threadId)
+  }
+}
+
+/** Whether one row of the stream is opened. */
 export function readToolOpen(threadId: string, toolId: string): boolean | undefined {
-  return toolOpen.get(keyOf(threadId, toolId))
+  return stateFor(threadId)?.toolOpen.get(toolId)
 }
 
 export function writeToolOpen(threadId: string, toolId: string, open: boolean | undefined): void {
-  const key = keyOf(threadId, toolId)
-  if (open === undefined) toolOpen.delete(key)
-  else toolOpen.set(key, open)
+  if (open !== undefined) {
+    stateFor(threadId, true)!.toolOpen.set(toolId, open)
+    return
+  }
+  const state = stateFor(threadId)
+  if (!state) return
+  state.toolOpen.delete(toolId)
+  prune(threadId, state)
 }
 
 export function readToolFull(threadId: string, toolId: string): boolean {
-  return toolFull.get(keyOf(threadId, toolId)) ?? false
+  return stateFor(threadId)?.toolFull.get(toolId) ?? false
 }
 
 export function writeToolFull(threadId: string, toolId: string, full: boolean): void {
-  toolFull.set(keyOf(threadId, toolId), full)
+  stateFor(threadId, true)!.toolFull.set(toolId, full)
 }
 
 export function readFileOpen(threadId: string, path: string): boolean {
-  return fileOpen.get(keyOf(threadId, path)) ?? false
+  return stateFor(threadId)?.fileOpen.get(path) ?? false
 }
 
 export function writeFileOpen(threadId: string, path: string, open: boolean): void {
-  fileOpen.set(keyOf(threadId, path), open)
+  stateFor(threadId, true)!.fileOpen.set(path, open)
 }
 
 export function readProcessOpen(threadId: string, processId: string): boolean | undefined {
-  return processOpen.get(keyOf(threadId, processId))
+  return stateFor(threadId)?.processOpen.get(processId)
 }
 
 export function writeProcessOpen(
@@ -59,44 +85,60 @@ export function writeProcessOpen(
   processId: string,
   open: boolean | undefined
 ): void {
-  const key = keyOf(threadId, processId)
-  if (open === undefined) processOpen.delete(key)
-  else processOpen.set(key, open)
+  if (open !== undefined) {
+    stateFor(threadId, true)!.processOpen.set(processId, open)
+    return
+  }
+  const state = stateFor(threadId)
+  if (!state) return
+  state.processOpen.delete(processId)
+  prune(threadId, state)
 }
 
 export function readHistoryExpanded(threadId: string): boolean {
-  return historyExpanded.has(threadId)
+  return stateFor(threadId)?.historyExpanded ?? false
 }
 
 export function writeHistoryExpanded(threadId: string, expanded: boolean): void {
-  if (expanded) historyExpanded.add(threadId)
-  else historyExpanded.delete(threadId)
+  if (expanded) {
+    stateFor(threadId, true)!.historyExpanded = true
+    return
+  }
+  const state = stateFor(threadId)
+  if (!state) return
+  state.historyExpanded = false
+  prune(threadId, state)
 }
 
 /** Drop view preferences for a conversation that no longer exists. */
 export function clearViewState(threadId: string): void {
-  const prefix = `${threadId}\u0000`
-  for (const map of [toolOpen, toolFull, fileOpen, processOpen]) {
-    for (const key of map.keys()) {
-      if (key.startsWith(prefix)) map.delete(key)
-    }
-  }
-  historyExpanded.delete(threadId)
+  conversations.delete(threadId)
 }
 
-/** Carry a draft's open rows over when Pi writes its session file. */
+/** Carry a draft's open rows over when Pi writes it to a session file. */
 export function migrateViewState(from: string, to: string): void {
   if (from === to) return
-  for (const map of [toolOpen, toolFull, fileOpen, processOpen]) {
-    for (const [key, value] of [...map]) {
-      const [threadId, id] = key.split('\u0000')
-      if (threadId !== from) continue
-      map.delete(key)
-      if (!map.has(`${to}\u0000${id}`)) map.set(`${to}\u0000${id}`, value)
-    }
+  const source = conversations.get(from)
+  if (!source) return
+  const target = conversations.get(to)
+  if (!target) {
+    conversations.delete(from)
+    conversations.set(to, source)
+    return
   }
-  if (historyExpanded.has(from)) {
-    historyExpanded.delete(from)
-    historyExpanded.add(to)
+
+  for (const [id, value] of source.toolOpen) {
+    if (!target.toolOpen.has(id)) target.toolOpen.set(id, value)
   }
+  for (const [id, value] of source.toolFull) {
+    if (!target.toolFull.has(id)) target.toolFull.set(id, value)
+  }
+  for (const [id, value] of source.fileOpen) {
+    if (!target.fileOpen.has(id)) target.fileOpen.set(id, value)
+  }
+  for (const [id, value] of source.processOpen) {
+    if (!target.processOpen.has(id)) target.processOpen.set(id, value)
+  }
+  target.historyExpanded ||= source.historyExpanded
+  conversations.delete(from)
 }
