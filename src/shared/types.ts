@@ -800,6 +800,7 @@ export interface AppInfo {
   electron: string
   node: string
   platform: string
+  isPackaged: boolean
   pi: PiLaunchInfo
   sessionRoot: string
   /**
@@ -966,10 +967,10 @@ export interface PiDesktopBridge {
     emojiFont(): Promise<Uint8Array | null>
     /** Check for updates for the application and Pi CLI. */
     checkUpdate(): Promise<VersionCheckResult>
-    /** Upgrade Pi CLI to the latest version. */
+    /** Upgrade the development Pi CLI; packaged builds use the bundled version. */
     upgradePiCli(): Promise<UpgradeResult>
-    /** Pull latest updates for the application. */
-    upgradeApp(): Promise<UpgradeResult>
+    /** Open the latest Pi Desktop release page. */
+    openReleasePage(): Promise<UpgradeResult>
   }
   dialog: {
     pickDirectory(defaultPath?: string): Promise<string | null>
@@ -1026,7 +1027,7 @@ export interface PiDesktopBridge {
     /** Search the text of every conversation on disk. */
     search(query: string, limit?: number): Promise<SessionSearchHit[]>
     /** Aggregate token consumption and conversation records across all sessions. */
-    usageStats(customDir?: string): Promise<AggregatedUsageStats>
+    usageStats(): Promise<AggregatedUsageStats>
     /** A conversation was renamed in the main process (auto-title, hot or cold). */
     onChanged(handler: (change: SessionNameChange) => void): () => void
   }
@@ -1047,7 +1048,7 @@ export interface PiDesktopBridge {
     listSkillCommands(): Promise<PiCommand[]>
     /** True when that conversation has a live process. */
     has(sessionKey: string): Promise<boolean>
-    stop(sessionKey?: string): Promise<void>
+    stop(sessionKey: string): Promise<void>
     /** Stop every process whose cwd is this workspace. */
     stopCwd(cwd: string): Promise<void>
     request<T = unknown>(

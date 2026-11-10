@@ -156,7 +156,8 @@ async function checkRenderer(markerFile) {
     passed.push('real Pi subagents stay visible in background in the right panel')
   } finally {
     offMode()
-    await window.pi.runtime.stop()
+    const workspacePath = store.getState().workspace?.path ?? store.getState().status.cwd
+    if (workspacePath) await window.pi.runtime.stopCwd(workspacePath)
     await store.getState().newChat()
   }
 
@@ -646,8 +647,41 @@ async function checkRenderer(markerFile) {
   workspaceFile.click()
   await until(() => document.querySelector('.file-workspace .viewer'), 'The file preview did not open beside the tree')
   check(document.querySelector('.file-workspace__tree'), 'Opening a file removed the file tree')
+  // The session rail hangs at the conversation's left edge, above the thread at
+  // the popover layer so its tooltip can cross into it. The maximized panel owns
+  // the whole work area, so the rail must be covered by it instead of printing
+  // its ticks over the panel's edge.
+  const railItemsBefore = store.getState().items
+  store.setState({
+    items: [
+      ...railItemsBefore,
+      { id: 'ui-rail-second-user', kind: 'user', text: 'A second turn', images: [], timestamp: 10, order: 10 },
+      {
+        id: 'ui-rail-second-assistant',
+        kind: 'assistant',
+        blocks: [{ type: 'text', text: 'A second answer' }],
+        streaming: false,
+        timestamp: 11,
+        order: 11
+      }
+    ]
+  })
+  await until(() => document.querySelector('.session-rail'), 'The session rail did not render for the maximize check')
+  check(
+    getComputedStyle(document.querySelector('.session-rail')).visibility === 'visible',
+    'The session rail is hidden before the panel is maximized'
+  )
   document.querySelector('.tool-panel__action').click()
   await until(() => document.querySelector('.tool-panel--maximized'), 'The panel did not maximize')
+  await pause(50)
+  const railTickBox = document.querySelector('.session-rail__tick').getBoundingClientRect()
+  check(
+    !document.elementFromPoint(
+      railTickBox.x + railTickBox.width / 2,
+      railTickBox.y + railTickBox.height / 2
+    )?.closest('.session-rail'),
+    'The maximized panel leaves the session rail painted over its edge'
+  )
   // Maximizing must not outrank the controls that undo it. The fixed panel once
   // sat above the shell's corner toggle and above its own menus, so every way
   // out of the state was covered by the state.
@@ -685,6 +719,11 @@ async function checkRenderer(markerFile) {
   await until(() => document.querySelector('.tool-panel--maximized'), 'The panel did not maximize again')
   document.querySelector('.tool-panel__action').click()
   await until(() => !document.querySelector('.tool-panel--maximized'), 'The panel did not restore')
+  check(
+    getComputedStyle(document.querySelector('.session-rail')).visibility === 'visible',
+    'The session rail stayed hidden after restoring the panel'
+  )
+  store.setState({ items: railItemsBefore })
   passed.push('the maximized panel keeps its own escape routes on top of it')
   passed.push('the workspace panel uses MCode page tabs, start page, maximize and the file split view')
 

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -28,12 +29,13 @@ const child = spawn(process.execPath, [cli, '--mode', 'rpc'], {
 })
 
 let buffer = ''
+const stdoutDecoder = new StringDecoder('utf8')
 const seen = []
 const pending = new Map()
 let seq = 0
 
 child.stdout.on('data', (chunk) => {
-  buffer += chunk.toString('utf8')
+  buffer += stdoutDecoder.write(chunk)
   let index = buffer.indexOf('\n')
   while (index !== -1) {
     const line = buffer.slice(0, index).replace(/\r$/, '')

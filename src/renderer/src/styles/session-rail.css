@@ -9,6 +9,15 @@
   background: var(--surface-canvas);
 }
 
+/* The maximized workspace panel covers the whole work area, including the
+   conversation's left edge. The rail rides at the popover layer so its tooltip
+   can cross into the thread; without this it prints its ticks over the panel.
+   `visibility` keeps the rail's 22px in the thread layout, so restoring the
+   panel does not reflow and move the reader's scroll position. */
+.app:has(.tool-panel--maximized) .session-rail {
+  visibility: hidden;
+}
+
 .session-rail__track {
   display: flex;
   flex-direction: column;

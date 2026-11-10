@@ -32,6 +32,11 @@ const CWD_QUEUE_POLL_MS = 250
 const WRITE_COMMANDS = new Set(['prompt', 'bash'])
 const BIND_COMMANDS = new Set(['prompt', 'fork', 'clone', 'new_session'])
 
+function sameWorkingDirectory(left: string, right: string): boolean {
+  if (!left || !right) return left === right
+  return CwdGate.key(left) === CwdGate.key(right)
+}
+
 /**
  * One Pi process the supervisor can start, talk to, and stop.
  *
@@ -103,6 +108,7 @@ export class SessionSupervisor extends EventEmitter {
   private readonly warmTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private queueDrainTimer?: ReturnType<typeof setTimeout>
   private readonly releasingCwds = new Set<string>()
+  private readonly stoppingCwds = new Map<string, number>()
   private readonly releasingOwners = new Set<string>()
   private readonly activity = new WeakMap<ManagedSessionRuntime, RuntimeActivity>()
   private shuttingDown = false
@@ -154,6 +160,24 @@ export class SessionSupervisor extends EventEmitter {
 
   async ensure(options: RuntimeEnsureOptions): Promise<{ ok: boolean; error?: string }> {
     if (this.shuttingDown) return { ok: false, error: 'Pi is shutting down.' }
+    if ([...this.stoppingCwds.keys()].some(root => this.gate.contains(root, options.cwd))) {
+      return { ok: false, error: 'Working folder is being closed.' }
+    }
+    const requestedId = this.canonical(options.sessionKey)
+    const fileOwner = options.sessionFile
+      ? this.fileOwners.get(canonicalSessionFile(options.sessionFile))
+      : undefined
+    const ownerId = fileOwner ? this.canonical(fileOwner) : requestedId
+    const current = this.runtimes.get(ownerId)
+    const boundCwd = current
+      ? this.activity.get(current)?.cwd ?? current.currentStatus.cwd
+      : this.startingCwds.get(ownerId)
+    if (
+      (current && boundCwd === undefined) ||
+      (boundCwd !== undefined && !sameWorkingDirectory(boundCwd, options.cwd))
+    ) {
+      return { ok: false, error: 'Conversation is already bound to another working folder.' }
+    }
     const id = this.reserveSession(options)
     const existing = this.runtimes.get(id)
     const stopping = existing && this.activity.get(existing)?.stopping
@@ -401,16 +425,25 @@ export class SessionSupervisor extends EventEmitter {
     return stopped
   }
 
-  async stopCwd(cwd: string): Promise<void> {
-    const keys = new Set([...this.runtimes.keys()].filter((key) => {
-      const runtime = this.runtimes.get(key)
-      return runtime?.currentStatus.cwd && this.gate.contains(cwd, runtime.currentStatus.cwd)
-    }))
-    for (const [key, startingCwd] of this.startingCwds) {
-      if (this.gate.contains(cwd, startingCwd)) keys.add(key)
+  async stopCwd(cwd: string, afterStopped?: () => void): Promise<void> {
+    const closing = CwdGate.key(cwd)
+    this.stoppingCwds.set(closing, (this.stoppingCwds.get(closing) ?? 0) + 1)
+    try {
+      const keys = new Set([...this.runtimes.keys()].filter((key) => {
+        const runtime = this.runtimes.get(key)
+        return runtime?.currentStatus.cwd && this.gate.contains(cwd, runtime.currentStatus.cwd)
+      }))
+      for (const [key, startingCwd] of this.startingCwds) {
+        if (this.gate.contains(cwd, startingCwd)) keys.add(key)
+      }
+      // Cancel every waiter before any old writer can exit and dispatch one.
+      await Promise.all([...keys].map(key => this.stop(key)))
+      afterStopped?.()
+    } finally {
+      const count = this.stoppingCwds.get(closing) ?? 0
+      if (count <= 1) this.stoppingCwds.delete(closing)
+      else this.stoppingCwds.set(closing, count - 1)
     }
-    // Cancel every waiter before any old writer can exit and dispatch one.
-    await Promise.all([...keys].map(key => this.stop(key)))
   }
 
   /**

@@ -7,9 +7,10 @@ import { test } from 'node:test'
 import { sanitizeUrl } from '../src/main/mcp'
 import { readCommitDetail, readCommitFileDiff } from '../src/main/git'
 import { MAX_FILE_BYTES, registerIpc } from '../src/main/ipc'
+import { encodeWorkspaceDir } from '../src/main/sessions'
 import { editorLaunchSpec, spawnEditor, windowsEditorLaunchSpec } from '../src/main/editor-launch'
 import { MAX_IMAGE_DATA_BYTES } from '../src/shared/types'
-import { dialog, ipcMain, shell } from 'electron'
+import { app, dialog, ipcMain, shell } from 'electron'
 
 // ---------------------------------------------------------------------------
 // 1. Adversarial Tests on MCP `sanitizeUrl`
@@ -460,15 +461,213 @@ test('workspace text search keeps its byte cap and returns normal file matches',
   }
 })
 
+test('fs:reveal only opens files within the active workspace', async () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'reveal-workspace-path-'))
+  const workspace = path.join(parent, 'workspace')
+  const insideFile = path.join(workspace, 'inside.txt')
+  const outsideFile = path.join(parent, 'outside.txt')
+  const originalShowItemInFolder = shell.showItemInFolder
+  const revealed: string[] = []
+  try {
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(insideFile, 'inside', 'utf8')
+    writeFileSync(outsideFile, 'outside', 'utf8')
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: workspace }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+    shell.showItemInFolder = (file: string) => { revealed.push(file) }
+
+    await anyIpc._invoke('fs:reveal', {}, insideFile)
+    await anyIpc._invoke('fs:reveal', {}, outsideFile)
+    await anyIpc._invoke('fs:reveal', {}, path.join(workspace, '..', 'outside.txt'))
+
+    assert.deepEqual(revealed, [insideFile])
+  } finally {
+    shell.showItemInFolder = originalShowItemInFolder
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+test('shell:openPath resolves projectless exports and rejects paths outside the chat directory', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'open-projectless-export-'))
+  const chats = path.join(userData, 'chats')
+  const exportFile = path.join(chats, 'Pi Desktop-session.html')
+  const outsideFile = path.join(userData, 'outside.html')
+  const originalGetPath = app.getPath
+  const originalOpenPath = shell.openPath
+  const opened: string[] = []
+  try {
+    mkdirSync(chats, { recursive: true })
+    writeFileSync(exportFile, '<html></html>', 'utf8')
+    writeFileSync(outsideFile, '<html></html>', 'utf8')
+    app.getPath = () => userData
+    shell.openPath = async (target: string) => {
+      opened.push(target)
+      return ''
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: { get: () => ({ activeWorkspaceId: null, workspaces: [] }) } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    assert.equal(await anyIpc._invoke('shell:openPath', {}, path.basename(exportFile)), '')
+    assert.equal(
+      await anyIpc._invoke('shell:openPath', {}, outsideFile),
+      'Path is not available inside the open project.'
+    )
+    assert.deepEqual(opened, [exportFile])
+  } finally {
+    app.getPath = originalGetPath
+    shell.openPath = originalOpenPath
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('runtime:ensure keeps blank cwd in the app-owned chats folder', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'runtime-projectless-cwd-'))
+  const chats = path.join(userData, 'chats')
+  const originalGetPath = app.getPath
+  const ensuredOptions: Record<string, unknown>[] = []
+  try {
+    app.getPath = () => userData
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {
+        has: () => false,
+        ensure: async (options: Record<string, unknown>) => {
+          ensuredOptions.push(options)
+          return { ok: true }
+        }
+      } as any,
+      settings: { get: () => ({ activeWorkspaceId: null, workspaces: [] }) } as any,
+      memory: { promptFor: () => '' } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    assert.deepEqual(
+      await anyIpc._invoke('runtime:ensure', {}, { sessionKey: 'draft:projectless', cwd: '' }),
+      { ok: true }
+    )
+    assert.equal(ensuredOptions[0]?.cwd, chats)
+    assert.equal(existsSync(chats), true)
+  } finally {
+    app.getPath = originalGetPath
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('sessions:usageStats uses the configured session folder, not a renderer path', async () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'usage-stats-root-'))
+  const configured = path.join(parent, 'configured')
+  const untrusted = path.join(parent, 'untrusted')
+  const configuredCwd = 'C:/usage-configured'
+  const untrustedCwd = 'C:/usage-untrusted'
+  mkdirSync(path.join(configured, encodeWorkspaceDir(configuredCwd)), { recursive: true })
+  mkdirSync(path.join(untrusted, encodeWorkspaceDir(untrustedCwd)), { recursive: true })
+  const writeSession = (folder: string, cwd: string, id: string, tokens: number) => {
+    writeFileSync(path.join(folder, encodeWorkspaceDir(cwd), `${id}.jsonl`), [
+      JSON.stringify({ type: 'session', version: 3, id, cwd }),
+      JSON.stringify({
+        type: 'message',
+        id: `${id}-assistant`,
+        timestamp: new Date().toISOString(),
+        message: { role: 'assistant', model: 'test/model', usage: { input: tokens, totalTokens: tokens } }
+      })
+    ].join('\n') + '\n', 'utf8')
+  }
+  writeSession(configured, configuredCwd, 'configured', 7)
+  writeSession(untrusted, untrustedCwd, 'untrusted', 900)
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: { get: () => ({ externalChatFolder: configured, workspaces: [] }) } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    const stats = await anyIpc._invoke('sessions:usageStats', {}, untrusted)
+    assert.equal(stats.allTime.tokens.totalTokens, 7)
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+test('shell:openInExplorer only opens registered workspace roots', async () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'open-registered-workspace-'))
+  const workspace = path.join(parent, 'workspace')
+  const nested = path.join(workspace, 'nested')
+  const outside = path.join(parent, 'outside')
+  const originalOpenPath = shell.openPath
+  const opened: string[] = []
+  try {
+    mkdirSync(nested, { recursive: true })
+    mkdirSync(outside)
+    shell.openPath = async (target: string) => {
+      opened.push(target)
+      return ''
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyIpc = ipcMain as any
+    anyIpc._reset()
+    registerIpc({
+      supervisor: {} as any,
+      settings: {
+        get: () => ({ activeWorkspaceId: 'project', workspaces: [{ id: 'project', path: workspace }] })
+      } as any,
+      getWindow: () => null,
+      terminals: { create: () => {} } as any
+    })
+
+    assert.equal(await anyIpc._invoke('shell:openInExplorer', {}, workspace), '')
+    assert.equal(
+      await anyIpc._invoke('shell:openInExplorer', {}, nested),
+      'Path is not a registered project folder.'
+    )
+    assert.equal(
+      await anyIpc._invoke('shell:openInExplorer', {}, outside),
+      'Path is not a registered project folder.'
+    )
+    assert.deepEqual(opened, [workspace])
+  } finally {
+    shell.openPath = originalOpenPath
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
 test('session IPC handlers reject files outside the Pi session root', async () => {
   const parent = mkdtempSync(path.join(tmpdir(), 'session-ipc-path-'))
   const root = path.join(parent, 'sessions')
   const workspace = path.join(root, 'workspace')
+  const otherWorkspace = path.join(root, 'other-workspace')
   const sessionFile = path.join(workspace, 'valid.jsonl')
   const outsideFile = path.join(parent, 'private.jsonl')
   mkdirSync(workspace, { recursive: true })
+  mkdirSync(otherWorkspace, { recursive: true })
   const sessionText = [
-    JSON.stringify({ type: 'session', version: 3, id: 'valid', cwd: 'C:/project' }),
+    JSON.stringify({ type: 'session', version: 3, id: 'valid', cwd: workspace }),
     JSON.stringify({
       type: 'message', id: 'm1', parentId: null,
       message: { role: 'user', content: 'visible session content', timestamp: 1 }
@@ -491,9 +690,18 @@ test('session IPC handlers reject files outside the Pi session root', async () =
     registerIpc({
       supervisor: {
         rename: async (file: string) => { renamedPath = file; return true },
+        withSessionFileMutation: async (_file: string, action: () => Promise<boolean>) => action(),
         ensure: async (options: Record<string, unknown>) => { ensuredOptions.push(options); return { ok: true } }
       } as any,
-      settings: { get: () => ({}) } as any,
+      settings: {
+        get: () => ({
+          activeWorkspaceId: 'project',
+          workspaces: [
+            { id: 'project', path: workspace },
+            { id: 'other', path: otherWorkspace }
+          ]
+        })
+      } as any,
       memory: { promptFor: () => '' } as any,
       getWindow: () => null,
       terminals: { create: () => {} } as any
@@ -524,15 +732,48 @@ test('session IPC handlers reject files outside the Pi session root', async () =
     )
     assert.equal(ensuredOptions.length, 0, 'an outside session file must never reach Pi')
 
+    const unregistered = await anyIpc._invoke('runtime:ensure', {}, {
+      sessionKey: sessionFile,
+      cwd: parent,
+      sessionFile
+    })
+    assert.deepEqual(unregistered, {
+      ok: false,
+      error: 'Working folder is not an available workspace.'
+    })
+    assert.equal(
+      (await anyIpc._invoke('runtime:start', {}, { cwd: parent })).ok,
+      false,
+      'a new Pi process must not start in an unregistered folder'
+    )
+    assert.equal(ensuredOptions.length, 0)
+
+    const mismatchedCwd = await anyIpc._invoke('runtime:ensure', {}, {
+      sessionKey: sessionFile,
+      cwd: otherWorkspace,
+      sessionFile
+    })
+    assert.deepEqual(mismatchedCwd, {
+      ok: false,
+      error: 'Conversation file belongs to a different working folder.'
+    })
+    assert.equal(
+      (await anyIpc._invoke('runtime:start', {}, { cwd: otherWorkspace, sessionFile })).ok,
+      false,
+      'a saved session cannot start in a different registered workspace'
+    )
+    assert.equal(ensuredOptions.length, 0)
+
     assert.equal(
       (await anyIpc._invoke('runtime:ensure', {}, {
         sessionKey: sessionFile,
-        cwd: 'C:/project',
+        cwd: workspace,
         sessionFile
       })).ok,
       true
     )
     assert.equal(ensuredOptions.at(-1)?.sessionFile, sessionFile)
+    assert.equal(ensuredOptions.at(-1)?.cwd, workspace)
   } finally {
     if (originalSessionDir === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
     else process.env.PI_CODING_AGENT_SESSION_DIR = originalSessionDir

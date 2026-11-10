@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -67,13 +68,14 @@ const child = spawn(
 )
 
 let buffer = ''
+const stdoutDecoder = new StringDecoder('utf8')
 const pending = new Map()
 const seen = []
 let sequence = 0
 const dialogs = []
 
 child.stdout.on('data', (chunk) => {
-  buffer += chunk.toString('utf8')
+  buffer += stdoutDecoder.write(chunk)
   let index = buffer.indexOf('\n')
   while (index !== -1) {
     const line = buffer.slice(0, index).replace(/\r$/, '')

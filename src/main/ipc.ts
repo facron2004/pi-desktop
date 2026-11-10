@@ -30,6 +30,7 @@ import type {
   VersionItemStatus,
   Workspace
 } from '@shared/types'
+import { APP_RELEASE_PAGE_URL, checkAppVersion, isNewerVersion } from './app-updates'
 import { checkAuth, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
 import { discoverSkillCommands } from './pi/command-catalog'
@@ -82,9 +83,11 @@ import {
   configureSessionSearchIndex,
   forgetSessionSearchIndex,
   getAggregatedUsage,
+  getSessionMeta,
   invalidateSessionCache,
   listSessions,
   openSessionFile,
+  pathsEqual,
   readSessionMessages,
   resolveSessionRoot,
   resolveSessionFilePath,
@@ -95,6 +98,7 @@ import { launchEditor } from './editor-launch'
 import { registerProviderIpc } from './providers/ipc'
 import { TerminalManager } from './terminal'
 import type { ScheduledTaskService } from './scheduled-tasks'
+import { canonicalSessionFile } from './pi/session-file'
 
 export interface IpcContext {
   supervisor: SessionSupervisor
@@ -122,11 +126,48 @@ function runtimeInstructions(context: IpcContext, cwd: string): string | undefin
 }
 
 async function validateRuntimeSessionFile(
-  file: unknown
-): Promise<{ ok: true; sessionFile?: string } | { ok: false }> {
+  file: unknown,
+  cwd: string
+): Promise<
+  | { ok: true; sessionFile?: string }
+  | { ok: false; reason: 'unavailable' | 'metadata' | 'cwd' }
+> {
   if (file === undefined) return { ok: true }
   const sessionFile = await resolveSessionFilePath(file)
-  return sessionFile ? { ok: true, sessionFile } : { ok: false }
+  if (!sessionFile) return { ok: false, reason: 'unavailable' }
+  const meta = await getSessionMeta(sessionFile, resolveSessionRoot())
+  if (!meta?.cwd) return { ok: false, reason: 'metadata' }
+  if (!(await runtimeCwdsMatch(meta.cwd, cwd))) {
+    return { ok: false, reason: 'cwd' }
+  }
+  return { ok: true, sessionFile }
+}
+
+function runtimeSessionFileError(reason: 'unavailable' | 'metadata' | 'cwd'): string {
+  if (reason === 'cwd') return 'Conversation belongs to a different working folder.'
+  if (reason === 'metadata') return 'Conversation working folder could not be verified.'
+  return "Conversation file is not in Pi's session store."
+}
+
+async function runtimeCwdsMatch(a: string, b: string): Promise<boolean> {
+  if (pathsEqual(a, b)) return true
+  try {
+    return pathsEqual(await realpath(a), await realpath(b))
+  } catch {
+    return false
+  }
+}
+
+/** Scope a renderer stop request to one registered workspace or projectless root. */
+async function resolveRuntimeStopCwd(context: IpcContext, cwd: unknown): Promise<string | null> {
+  if (typeof cwd !== 'string') return null
+  const requested = cwd.trim() ? cwd : projectlessPath()
+  if (requested && !path.isAbsolute(requested)) return null
+  const roots = [projectlessPath(), ...(context.settings.get().workspaces ?? []).map(workspace => workspace.path)]
+  for (const root of roots) {
+    if (root && await runtimeCwdsMatch(requested, root)) return root
+  }
+  return null
 }
 
 export async function removeSessionFile(
@@ -381,6 +422,55 @@ async function resolveWorkspaceLocation(
 /** Resolve a workspace path and reject links whose real target escapes it. */
 export async function resolveWorkspacePath(root: string, file: string): Promise<string | null> {
   return (await resolveWorkspaceLocation(root, file))?.target ?? null
+}
+
+type RuntimeCwdRegistration =
+  | { kind: 'projectless'; path: string }
+  | { kind: 'workspace'; id: string; path: string }
+
+interface ResolvedRuntimeCwd {
+  cwd: string
+  registration: RuntimeCwdRegistration
+}
+
+function runtimeCwdStillRegistered(context: IpcContext, resolved: ResolvedRuntimeCwd): boolean {
+  const registration = resolved.registration
+  if (registration.kind === 'projectless') {
+    return workspacePathKey(projectlessPath()) === workspacePathKey(registration.path)
+  }
+  return context.settings.get().workspaces.some(workspace =>
+    workspace.id === registration.id &&
+    workspacePathKey(workspace.path) === workspacePathKey(registration.path)
+  )
+}
+
+async function resolveRuntimeCwd(context: IpcContext, cwd: unknown): Promise<ResolvedRuntimeCwd | null> {
+  if (cwd !== undefined && cwd !== null && typeof cwd !== 'string') return null
+  const requested = typeof cwd === 'string' ? cwd : ''
+  if (requested && !path.isAbsolute(requested)) return null
+  const target = requested || projectlessRoot()
+  const projectless = projectlessPath()
+  const roots: { path: string; registration: RuntimeCwdRegistration }[] = [
+    { path: projectless, registration: { kind: 'projectless', path: projectless } },
+    ...(context.settings.get().workspaces ?? []).map(workspace => ({
+      path: workspace.path,
+      registration: { kind: 'workspace' as const, id: workspace.id, path: workspace.path }
+    }))
+  ]
+
+  for (const root of roots) {
+    if (!root.path) continue
+    const location = await resolveWorkspaceLocation(root.path, target)
+    if (!location || location.root !== location.target) continue
+    try {
+      if ((await stat(location.target)).isDirectory()) {
+        return { cwd: location.target, registration: root.registration }
+      }
+    } catch {
+      // A workspace can disappear after it was listed in settings.
+    }
+  }
+  return null
 }
 
 /** Open a contained workspace file, rejecting hard links whose other names cannot be confined. */
@@ -679,18 +769,6 @@ async function searchFileText(
   return hits
 }
 
-function isNewerVersion(latest: string, current: string): boolean {
-  const l = latest.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
-  const c = current.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
-  for (let i = 0; i < Math.max(l.length, c.length); i++) {
-    const li = l[i] ?? 0
-    const ci = c[i] ?? 0
-    if (li > ci) return true
-    if (li < ci) return false
-  }
-  return false
-}
-
 function fetchLatestPiCliVersion(): Promise<string> {
   return new Promise((resolve, reject) => {
     const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
@@ -706,7 +784,7 @@ function fetchLatestPiCliVersion(): Promise<string> {
 function runNpmInstall(cwd: string, pkg: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-    exec(`${npmCmd} install ${pkg}`, { cwd, timeout: 180_000 }, (error, stdout, stderr) => {
+    exec(`${npmCmd} install --no-save --package-lock=false ${pkg}`, { cwd, timeout: 180_000 }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(stderr || stdout || error.message))
       } else {
@@ -759,6 +837,7 @@ export function registerIpc(context: IpcContext): void {
       electron: process.versions.electron,
       node: process.versions.node,
       platform: process.platform,
+      isPackaged: app.isPackaged,
       pi: {
         source: launch.source,
         command: launch.command || undefined,
@@ -871,29 +950,27 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('app:checkUpdate', async (): Promise<VersionCheckResult> => {
     const currentPiVersion = (await piVersion(settings.get().piPath)) || '1.4.0'
-    const currentAppVersion = process.env.npm_package_version ?? app.getVersion() ?? '0.8.0'
+    const currentAppVersion = app.getVersion()
 
     let piCliStatus: VersionItemStatus = {
       current: currentPiVersion,
       hasUpdate: false
     }
 
-    try {
-      const latestPi = await fetchLatestPiCliVersion()
-      piCliStatus = {
-        current: currentPiVersion,
-        latest: latestPi,
-        hasUpdate: isNewerVersion(latestPi, currentPiVersion)
+    if (!app.isPackaged) {
+      try {
+        const latestPi = await fetchLatestPiCliVersion()
+        piCliStatus = {
+          current: currentPiVersion,
+          latest: latestPi,
+          hasUpdate: isNewerVersion(latestPi, currentPiVersion)
+        }
+      } catch (err: unknown) {
+        piCliStatus.error = err instanceof Error ? err.message : 'Failed to check Pi CLI updates'
       }
-    } catch (err: unknown) {
-      piCliStatus.error = err instanceof Error ? err.message : 'Failed to check Pi CLI updates'
     }
 
-    const appStatus: VersionItemStatus = {
-      current: currentAppVersion,
-      latest: currentAppVersion,
-      hasUpdate: false
-    }
+    const appStatus = await checkAppVersion(currentAppVersion)
 
     return {
       app: appStatus,
@@ -903,6 +980,9 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('app:upgradePiCli', async (): Promise<UpgradeResult> => {
     try {
+      if (app.isPackaged) {
+        return { success: false, error: 'The bundled Pi CLI is updated with Pi Desktop releases.' }
+      }
       const cwd = app.getAppPath()
       await runNpmInstall(cwd, '@earendil-works/pi-coding-agent@latest')
       const updatedVersion = await piVersion(settings.get().piPath)
@@ -912,15 +992,10 @@ export function registerIpc(context: IpcContext): void {
     }
   })
 
-  ipcMain.handle('app:upgradeApp', async (): Promise<UpgradeResult> => {
+  ipcMain.handle('app:openReleasePage', async (): Promise<UpgradeResult> => {
     try {
-      const root = app.getAppPath()
-      const res = await pullBranch(root)
-      if (!res.ok) {
-        return { success: false, error: res.error || 'Failed to pull update' }
-      }
-      const current = process.env.npm_package_version ?? app.getVersion() ?? '0.8.0'
-      return { success: true, version: current }
+      await shell.openExternal(APP_RELEASE_PAGE_URL)
+      return { success: true }
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
     }
@@ -1012,11 +1087,19 @@ export function registerIpc(context: IpcContext): void {
     }
   })
 
-  ipcMain.handle('workspaces:remove', (_event, id: unknown, hiddenPath?: unknown): AppSettings => {
-    return settings.removeWorkspace(
-      typeof id === 'string' ? id : undefined,
+  ipcMain.handle('workspaces:remove', async (_event, id: unknown, hiddenPath?: unknown): Promise<AppSettings> => {
+    const workspaceId = typeof id === 'string' ? id : undefined
+    const workspace = settings.get().workspaces.find(entry => entry.id === workspaceId)
+    const remove = () => settings.removeWorkspace(
+      workspaceId,
       typeof hiddenPath === 'string' ? hiddenPath : undefined
     )
+    if (!workspace) return remove()
+    let next = settings.get()
+    await supervisor.stopCwd(workspace.path, () => {
+      next = remove()
+    })
+    return next
   })
 
   // Register a project that the user picked from a conversation. The path is
@@ -1081,8 +1164,8 @@ export function registerIpc(context: IpcContext): void {
     return hits.map(withoutProjectFolder)
   })
 
-  ipcMain.handle('sessions:usageStats', async (_event, customDir?: string) => {
-    const userDir = customDir?.trim() || settings.get().externalChatFolder?.trim()
+  ipcMain.handle('sessions:usageStats', async () => {
+    const userDir = settings.get().externalChatFolder?.trim()
     return await getAggregatedUsage(userDir || undefined)
   })
 
@@ -1360,7 +1443,8 @@ export function registerIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('fs:reveal', async (_event, file: string) => {
-    shell.showItemInFolder(file)
+    const target = await resolveWorkspacePath(workspaceRoot(context), file)
+    if (target) shell.showItemInFolder(target)
   })
 
   /**
@@ -1452,10 +1536,16 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('runtime:start', async (_event, options: RuntimeStartOptions) => {
     if (!options || typeof options !== 'object') return { ok: false, error: 'Invalid runtime options.' }
-    const validated = await validateRuntimeSessionFile(options.sessionFile)
-    if (!validated.ok) return { ok: false, error: "Conversation file is not in Pi's session store." }
-    const cwd = options.cwd || projectlessRoot()
-    if (!options.cwd) mkdirSync(cwd, { recursive: true })
+    const resolvedCwd = await resolveRuntimeCwd(context, options.cwd)
+    if (!resolvedCwd) return { ok: false, error: 'Working folder is not an available workspace.' }
+    const cwd = resolvedCwd.cwd
+    const validated = await validateRuntimeSessionFile(options.sessionFile, cwd)
+    if (!validated.ok) {
+      return { ok: false, error: runtimeSessionFileError(validated.reason) }
+    }
+    if (!runtimeCwdStillRegistered(context, resolvedCwd)) {
+      return { ok: false, error: 'Working folder is no longer an available workspace.' }
+    }
     const sessionKey = validated.sessionFile || `draft:${randomUUID()}`
     return supervisor.ensure({
       ...options,
@@ -1468,7 +1558,13 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('runtime:ensure', async (_event, options: RuntimeEnsureOptions) => {
     if (!options || typeof options !== 'object') return { ok: false, error: 'Invalid runtime options.' }
-    const validated = await validateRuntimeSessionFile(options.sessionFile)
+    const resolvedCwd = await resolveRuntimeCwd(context, options.cwd)
+    if (!resolvedCwd) return { ok: false, error: 'Working folder is not an available workspace.' }
+    const cwd = resolvedCwd.cwd
+    if (typeof options.sessionKey !== 'string' || !options.sessionKey) {
+      return { ok: false, error: 'Missing conversation id' }
+    }
+    const validated = await validateRuntimeSessionFile(options.sessionFile, cwd)
     // Pi can report a newly assigned session path before it has flushed the
     // JSONL. A hot runtime already owns that key, so reuse it without treating
     // the not-yet-written path as a request to open a session file.
@@ -1476,12 +1572,26 @@ export function registerIpc(context: IpcContext): void {
       typeof options.sessionKey === 'string' &&
       typeof supervisor.has === 'function' &&
       supervisor.has(options.sessionKey)
-    if (!validated.ok && !runtimeIsLive) {
-      return { ok: false, error: "Conversation file is not in Pi's session store." }
+    const liveInfo = runtimeIsLive ? supervisor.sessionInfo?.(options.sessionKey) : undefined
+    if (runtimeIsLive) {
+      if (!liveInfo?.cwd) return { ok: false, error: runtimeSessionFileError('metadata') }
+      if (!(await runtimeCwdsMatch(liveInfo.cwd, cwd))) {
+        return { ok: false, error: runtimeSessionFileError('cwd') }
+      }
     }
-    const cwd = options.cwd || projectlessRoot()
-    if (!options.cwd) mkdirSync(cwd, { recursive: true })
-    if (!options.sessionKey) return { ok: false, error: 'Missing conversation id' }
+    const isPendingLiveFile =
+      !validated.ok &&
+      validated.reason === 'unavailable' &&
+      runtimeIsLive &&
+      typeof options.sessionFile === 'string' &&
+      canonicalSessionFile(options.sessionFile) === canonicalSessionFile(options.sessionKey) &&
+      liveInfo !== undefined
+    if (!validated.ok && !isPendingLiveFile) {
+      return { ok: false, error: runtimeSessionFileError(validated.reason) }
+    }
+    if (!runtimeCwdStillRegistered(context, resolvedCwd)) {
+      return { ok: false, error: 'Working folder is no longer an available workspace.' }
+    }
     return supervisor.ensure({
       ...options,
       sessionFile: validated.ok ? validated.sessionFile : undefined,
@@ -1503,12 +1613,14 @@ export function registerIpc(context: IpcContext): void {
     )
   })
 
-  ipcMain.handle('runtime:stop', async (_event, sessionKey?: string) => {
-    await supervisor.stop(typeof sessionKey === 'string' ? sessionKey : undefined)
+  ipcMain.handle('runtime:stop', async (_event, sessionKey: unknown) => {
+    if (typeof sessionKey !== 'string' || !sessionKey.trim()) return
+    await supervisor.stop(sessionKey)
   })
 
-  ipcMain.handle('runtime:stopCwd', async (_event, cwd: string) => {
-    if (typeof cwd === 'string') await supervisor.stopCwd(cwd || projectlessRoot())
+  ipcMain.handle('runtime:stopCwd', async (_event, cwd: unknown) => {
+    const target = await resolveRuntimeStopCwd(context, cwd)
+    if (target) await supervisor.stopCwd(target)
   })
 
   ipcMain.handle(
@@ -1613,16 +1725,22 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('shell:openPath', async (_event, target: string) => {
     const opener = settings.get().defaultFileOpener
     if (typeof target !== 'string' || !target) return 'Invalid path.'
+    const resolved = await resolveWorkspacePath(workspaceRoot(context), target)
+    if (!resolved) return 'Path is not available inside the open project.'
     if (
       (opener === 'vscode' || opener === 'cursor' || opener === 'windsurf') &&
-      (await launchEditor(opener, target))
+      (await launchEditor(opener, resolved))
     ) return ''
-    return await shell.openPath(target)
+    return await shell.openPath(resolved)
   })
 
-  ipcMain.handle('shell:openInExplorer', async (_event, target: string) => {
-    const error = await shell.openPath(target)
-    return error
+  ipcMain.handle('shell:openInExplorer', async (_event, target: unknown) => {
+    if (typeof target !== 'string' || !target) return 'Invalid path.'
+    for (const workspace of settings.get().workspaces) {
+      const location = await resolveWorkspaceLocation(workspace.path, target)
+      if (location && location.target === location.root) return await shell.openPath(location.target)
+    }
+    return 'Path is not a registered project folder.'
   })
 
   ipcMain.handle('shell:openExternal', async (_event, url: string) => {

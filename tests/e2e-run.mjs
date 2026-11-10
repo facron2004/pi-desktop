@@ -14,6 +14,7 @@
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -54,6 +55,7 @@ const child = spawn(process.execPath, [cli, '--mode', 'rpc'], {
 })
 
 let buffer = ''
+const stdoutDecoder = new StringDecoder('utf8')
 const events = []
 const pending = new Map()
 let seq = 0
@@ -76,7 +78,7 @@ function request(payload, timeout = 180000) {
 // The same LF-only framing the app uses: U+2028/U+2029 are valid inside JSON
 // strings, so nothing here may split on them.
 child.stdout.on('data', (chunk) => {
-  buffer += chunk.toString('utf8')
+  buffer += stdoutDecoder.write(chunk)
   let index = buffer.indexOf('\n')
   while (index !== -1) {
     const line = buffer.slice(0, index).replace(/\r$/, '')
@@ -290,6 +292,7 @@ const stopChild = spawn(process.execPath, [cli, '--mode', 'rpc'], {
 })
 
 let stopBuffer = ''
+const stopStdoutDecoder = new StringDecoder('utf8')
 const stopEvents = []
 const stopPending = new Map()
 let stopSeq = 0
@@ -310,7 +313,7 @@ function stopRequest(payload, timeout = 120000) {
 }
 
 stopChild.stdout.on('data', (chunk) => {
-  stopBuffer += chunk.toString('utf8')
+  stopBuffer += stopStdoutDecoder.write(chunk)
   let index = stopBuffer.indexOf('\n')
   while (index !== -1) {
     const line = stopBuffer.slice(0, index).replace(/\r$/, '')

@@ -86,7 +86,7 @@ const bridge: PiDesktopBridge = {
     emojiFont: (): Promise<Uint8Array | null> => ipcRenderer.invoke('app:emojiFont'),
     checkUpdate: (): Promise<VersionCheckResult> => ipcRenderer.invoke('app:checkUpdate'),
     upgradePiCli: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:upgradePiCli'),
-    upgradeApp: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:upgradeApp')
+    openReleasePage: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:openReleasePage')
   },
   dialog: {
     pickDirectory: (defaultPath?: string): Promise<string | null> =>
@@ -143,8 +143,7 @@ const bridge: PiDesktopBridge = {
       ipcRenderer.invoke('sessions:rename', file, name),
     search: (query: string, limit?: number): Promise<SessionSearchHit[]> =>
       ipcRenderer.invoke('sessions:search', query, limit),
-    usageStats: (customDir?: string): Promise<AggregatedUsageStats> =>
-      ipcRenderer.invoke('sessions:usageStats', customDir),
+    usageStats: (): Promise<AggregatedUsageStats> => ipcRenderer.invoke('sessions:usageStats'),
     onChanged: (handler: (change: SessionNameChange) => void) =>
       subscribe<SessionNameChange>('sessions:changed', handler)
   },
@@ -164,7 +163,7 @@ const bridge: PiDesktopBridge = {
     ensure: (options: RuntimeEnsureOptions) => ipcRenderer.invoke('runtime:ensure', options),
     listSkillCommands: (): Promise<PiCommand[]> => ipcRenderer.invoke('runtime:skill-commands'),
     has: (sessionKey: string): Promise<boolean> => ipcRenderer.invoke('runtime:has', sessionKey),
-    stop: (sessionKey?: string): Promise<void> => ipcRenderer.invoke('runtime:stop', sessionKey),
+    stop: (sessionKey: string): Promise<void> => ipcRenderer.invoke('runtime:stop', sessionKey),
     stopCwd: (cwd: string): Promise<void> => ipcRenderer.invoke('runtime:stopCwd', cwd),
     request: <T = unknown>(
       command: string,

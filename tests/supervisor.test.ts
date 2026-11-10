@@ -135,6 +135,46 @@ test('two ensures of one session start a single runtime', async () => {
   assert.equal(a.starts, 1)
 })
 
+test('an existing draft runtime stays bound to its original workspace', async () => {
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime])
+  await supervisor.ensure({ sessionKey: 'draft:1', cwd: 'C:/a' })
+
+  assert.deepEqual(await supervisor.ensure({ sessionKey: 'draft:1', cwd: 'C:/b' }), {
+    ok: false,
+    error: 'Conversation is already bound to another working folder.'
+  })
+  assert.equal(runtime.starts, 1)
+  assert.equal(supervisor.sessionInfo('draft:1')?.cwd, 'C:/a')
+})
+
+test('an in-flight draft runtime cannot be joined from another workspace', async () => {
+  const runtime = new FakeRuntime()
+  let entered!: () => void
+  let release!: () => void
+  const startEntered = new Promise<void>((resolve) => { entered = resolve })
+  const startGate = new Promise<void>((resolve) => { release = resolve })
+  const originalStart = runtime.start.bind(runtime)
+  runtime.start = async (options) => {
+    entered()
+    await startGate
+    return originalStart(options)
+  }
+  const supervisor = supervisorOf([runtime])
+  const first = supervisor.ensure({ sessionKey: 'draft:1', cwd: 'C:/a' })
+  await startEntered
+  const wrongWorkspace = supervisor.ensure({ sessionKey: 'draft:1', cwd: 'C:/b' })
+  release()
+
+  assert.deepEqual(await first, { ok: true })
+  assert.deepEqual(await wrongWorkspace, {
+    ok: false,
+    error: 'Conversation is already bound to another working folder.'
+  })
+  assert.equal(runtime.starts, 1)
+  assert.equal(supervisor.sessionInfo('draft:1')?.cwd, 'C:/a')
+})
+
 test('the same session file spelled two ways has one writer', async () => {
   const a = new FakeRuntime()
   const b = new FakeRuntime()
@@ -701,6 +741,38 @@ test('closing a workspace stops sessions running in its nested folders', async (
   await supervisor.stopCwd('C:/tree')
   assert.equal(nested.isRunning, false)
   assert.equal(sibling.isRunning, true)
+})
+
+test('a closing workspace cannot start a new runtime before its current runtimes stop', async () => {
+  const existing = new FakeRuntime()
+  const next = new FakeRuntime()
+  const originalStop = existing.stop.bind(existing)
+  let entered!: () => void
+  let release!: () => void
+  const stopEntered = new Promise<void>((resolve) => { entered = resolve })
+  const stopGate = new Promise<void>((resolve) => { release = resolve })
+  existing.stop = async () => {
+    entered()
+    await stopGate
+    await originalStop()
+  }
+  const supervisor = supervisorOf([existing, next])
+  await supervisor.ensure({ sessionKey: 'existing', cwd: 'C:/tree/project' })
+
+  const closing = supervisor.stopCwd('C:/tree')
+  await stopEntered
+  try {
+    assert.deepEqual(await supervisor.ensure({ sessionKey: 'new', cwd: 'C:/tree/other' }), {
+      ok: false,
+      error: 'Working folder is being closed.'
+    })
+  } finally {
+    release()
+    await closing
+  }
+
+  assert.deepEqual(await supervisor.ensure({ sessionKey: 'new', cwd: 'C:/tree/other' }), { ok: true })
+  assert.equal(next.starts, 1)
 })
 
 test('a start completing after a stop cannot resurrect its runtime', async () => {

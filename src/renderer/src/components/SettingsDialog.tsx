@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { VersionCheckResult } from '@shared/types'
 import {
   Archive,
   Bot,
@@ -66,6 +67,8 @@ export function SettingsDialog({
 }) {
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
+  const refreshInfo = useAppStore((state) => state.refreshInfo)
+  const showToast = useAppStore((state) => state.showToast)
   const t = useT()
   const dialogRef = useRef<HTMLDivElement>(null)
   // Opening the dialog should not land on the close icon and paint a ring on
@@ -111,6 +114,68 @@ export function SettingsDialog({
     },
     [updateSettings]
   )
+
+  // The dialog owns the update readings, not the About page. Switching
+  // settings pages unmounts that page; an upgrade started there must survive
+  // the trip or the reader comes back to a blank version section (and could
+  // start the same install twice).
+  const [updateStatus, setUpdateStatus] = useState<VersionCheckResult | null>(null)
+  const [checkingUpdates, setCheckingUpdates] = useState(false)
+  const [upgradingCli, setUpgradingCli] = useState(false)
+  const [openingReleasePage, setOpeningReleasePage] = useState(false)
+
+  const handleCheck = async (silent = false) => {
+    setCheckingUpdates(true)
+    try {
+      const result = await window.pi.app.checkUpdate()
+      setUpdateStatus(result)
+      if (!silent && !result.app.hasUpdate && !result.piCli.hasUpdate) {
+        const failed = Boolean(result.app.error || result.piCli.error)
+        showToast(t(failed ? 'Check failed' : 'Up to date'), failed ? 'error' : undefined)
+      }
+    } catch {
+      if (!silent) showToast(t('Check failed'), 'error')
+    } finally {
+      setCheckingUpdates(false)
+    }
+  }
+
+  const handleUpgradeCli = async () => {
+    setUpgradingCli(true)
+    try {
+      const res = await window.pi.app.upgradePiCli()
+      if (res.success) {
+        showToast(t('Upgrade completed'))
+        await refreshInfo()
+        const result = await window.pi.app.checkUpdate()
+        setUpdateStatus(result)
+      } else {
+        showToast(res.error ? `${t('Upgrade failed')}: ${res.error}` : t('Upgrade failed'), 'error')
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      showToast(`${t('Upgrade failed')}: ${msg}`, 'error')
+    } finally {
+      setUpgradingCli(false)
+    }
+  }
+
+  const handleOpenReleasePage = async () => {
+    setOpeningReleasePage(true)
+    try {
+      const res = await window.pi.app.openReleasePage()
+      if (res.success) {
+        showToast(t('Release page opened'))
+      } else {
+        showToast(res.error ? `${t('Upgrade failed')}: ${res.error}` : t('Upgrade failed'), 'error')
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      showToast(`${t('Upgrade failed')}: ${msg}`, 'error')
+    } finally {
+      setOpeningReleasePage(false)
+    }
+  }
 
   return (
     <div className="modal-layer no-drag" onMouseDown={onClose}>
@@ -168,7 +233,17 @@ export function SettingsDialog({
             {page === 'remote' ? <RemoteAccessSettings /> : null}
             {page === 'memory' ? <MemorySettings /> : null}
             {page === 'archived' ? <ArchivedSessionsSettings /> : null}
-            {page === 'about' ? <AboutSettings /> : null}
+            {page === 'about' ? (
+              <AboutSettings
+                updateStatus={updateStatus}
+                checking={checkingUpdates}
+                upgradingCli={upgradingCli}
+                openingReleasePage={openingReleasePage}
+                onCheck={handleCheck}
+                onUpgradeCli={handleUpgradeCli}
+                onOpenReleasePage={handleOpenReleasePage}
+              />
+            ) : null}
           </main>
         </div>
 

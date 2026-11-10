@@ -1399,7 +1399,7 @@ export function UsageSettings() {
   const loadStats = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await window.pi.sessions.usageStats(settings.externalChatFolder)
+      const res = await window.pi.sessions.usageStats()
       setUsageStats(res)
     } catch (err) {
       console.error('Failed to load usage stats:', err)
@@ -1923,12 +1923,27 @@ export function ShortcutsSettings() {
   )
 }
 
-export function AboutSettings() {
+export function AboutSettings({
+  updateStatus,
+  checking,
+  upgradingCli,
+  openingReleasePage,
+  onCheck,
+  onUpgradeCli,
+  onOpenReleasePage
+}: {
+  updateStatus: VersionCheckResult | null
+  checking: boolean
+  upgradingCli: boolean
+  openingReleasePage: boolean
+  onCheck: (silent?: boolean) => void
+  onUpgradeCli: () => void
+  onOpenReleasePage: () => void
+}) {
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
   const info = useAppStore((state) => state.info)
   const refreshInfo = useAppStore((state) => state.refreshInfo)
-  const showToast = useAppStore((state) => state.showToast)
   const t = useT()
   const infoRequested = useRef(false)
 
@@ -1937,68 +1952,6 @@ export function AboutSettings() {
     infoRequested.current = true
     void refreshInfo()
   }, [info?.pi.version, refreshInfo])
-
-  const [checking, setChecking] = useState(false)
-  const [upgradingCli, setUpgradingCli] = useState(false)
-  const [upgradingApp, setUpgradingApp] = useState(false)
-  const [updateStatus, setUpdateStatus] = useState<VersionCheckResult | null>(null)
-
-  const handleCheck = async (silent = false) => {
-    setChecking(true)
-    try {
-      const result = await window.pi.app.checkUpdate()
-      setUpdateStatus(result)
-      if (!silent && !result.app.hasUpdate && !result.piCli.hasUpdate) {
-        showToast(t('Up to date'))
-      }
-    } catch {
-      if (!silent) {
-        showToast(t('Check failed'), 'error')
-      }
-    } finally {
-      setChecking(false)
-    }
-  }
-
-  const handleUpgradeCli = async () => {
-    setUpgradingCli(true)
-    try {
-      const res = await window.pi.app.upgradePiCli()
-      if (res.success) {
-        showToast(t('Upgrade completed'))
-        await refreshInfo()
-        const result = await window.pi.app.checkUpdate()
-        setUpdateStatus(result)
-      } else {
-        showToast(res.error ? `${t('Upgrade failed')}: ${res.error}` : t('Upgrade failed'), 'error')
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      showToast(`${t('Upgrade failed')}: ${msg}`, 'error')
-    } finally {
-      setUpgradingCli(false)
-    }
-  }
-
-  const handleUpgradeApp = async () => {
-    setUpgradingApp(true)
-    try {
-      const res = await window.pi.app.upgradeApp()
-      if (res.success) {
-        showToast(t('Upgrade completed'))
-        await refreshInfo()
-        const result = await window.pi.app.checkUpdate()
-        setUpdateStatus(result)
-      } else {
-        showToast(res.error ? `${t('Upgrade failed')}: ${res.error}` : t('Upgrade failed'), 'error')
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      showToast(`${t('Upgrade failed')}: ${msg}`, 'error')
-    } finally {
-      setUpgradingApp(false)
-    }
-  }
 
   const appCurrent = info?.version ?? '—'
   const piCliCurrent = info?.pi.version ?? '—'
@@ -2023,11 +1976,11 @@ export function AboutSettings() {
                   <button
                     type="button"
                     className="btn btn--primary btn--sm"
-                    disabled={upgradingApp || upgradingCli}
-                    onClick={() => void handleUpgradeApp()}
+                    disabled={openingReleasePage || upgradingCli}
+                    onClick={() => void onOpenReleasePage()}
                   >
                     <Download size={12} />
-                    {upgradingApp ? t('Upgrading...') : t('Pull update')}
+                    {openingReleasePage ? t('Opening...') : t('Open download page')}
                   </button>
                 </>
               ) : null}
@@ -2050,8 +2003,8 @@ export function AboutSettings() {
                   <button
                     type="button"
                     className="btn btn--primary btn--sm"
-                    disabled={upgradingCli || upgradingApp}
-                    onClick={() => void handleUpgradeCli()}
+                    disabled={upgradingCli || openingReleasePage}
+                    onClick={() => void onUpgradeCli()}
                   >
                     <Download size={12} />
                     {upgradingCli ? t('Upgrading...') : t('Reinstall & Upgrade')}
@@ -2069,27 +2022,29 @@ export function AboutSettings() {
             <button
               type="button"
               className="btn btn--sm"
-              disabled={checking || upgradingCli || upgradingApp}
-              onClick={() => void handleCheck()}
+              disabled={checking || upgradingCli || openingReleasePage}
+              onClick={() => void onCheck()}
             >
               <RefreshCw size={12} className={checking ? 'spin' : ''} />
               {checking ? t('Checking...') : t('Check now')}
             </button>
           </div>
 
-          <div className="settings-item-row settings-about-row">
-            <div className="settings-item-row__info">
-              <span className="settings-item-row__title">{t('Automatically download updates')}</span>
-              <span className="settings-item-row__desc">
-                {t('Download built-in service updates in the background and restart the app to finish installing')}
-              </span>
+          {info?.isPackaged === false && info.pi.source === 'bundled' ? (
+            <div className="settings-item-row settings-about-row">
+              <div className="settings-item-row__info">
+                <span className="settings-item-row__title">{t('Automatically download updates')}</span>
+                <span className="settings-item-row__desc">
+                  {t('Download built-in service updates in the background and restart the app to finish installing')}
+                </span>
+              </div>
+              <Switch
+                checked={settings.automaticUpdates === true}
+                onChange={(value) => void updateSettings({ automaticUpdates: value })}
+                label={t('Automatically download updates')}
+              />
             </div>
-            <Switch
-              checked={settings.automaticUpdates === true}
-              onChange={(value) => void updateSettings({ automaticUpdates: value })}
-              label={t('Automatically download updates')}
-            />
-          </div>
+          ) : null}
         </div>
       </SettingsGroup>
     </div>

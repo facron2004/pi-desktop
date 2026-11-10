@@ -1078,7 +1078,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const next = await window.pi.workspaces.remove(target.id, path)
     set({ settings: next })
     applyAppearance(next, get().info?.forcedTheme)
-    if (typeof window.pi.runtime.stopCwd === 'function') await window.pi.runtime.stopCwd(path)
     if (!wasActive) return
     const replacement = next.workspaces[0]
     if (replacement) {

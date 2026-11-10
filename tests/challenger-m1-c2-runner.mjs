@@ -41,7 +41,7 @@ export const ipcMain = {
   },
   _reset: () => handlers.clear()
 };
-export const shell = { showItemInFolder: () => {}, trashItem: async () => {} };
+export const shell = { showItemInFolder: () => {}, openPath: async () => "", trashItem: async () => {} };
 export const Notification = class { show() {} };
 export const nativeTheme = { shouldUseDarkColors: false };
 export const nativeImage = {

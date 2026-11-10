@@ -145,6 +145,7 @@ export default function App() {
     // Do not replace the built-in service while any conversation is using it.
     if (
       settings.automaticUpdates !== true ||
+      info?.isPackaged !== false ||
       anySessionStreaming ||
       info?.pi.source !== 'bundled'
     ) return
@@ -158,10 +159,6 @@ export default function App() {
         const result = await window.pi.app.checkUpdate()
         if (!active) return
         let downloaded = false
-        if (result.app.hasUpdate) {
-          const appUpdate = await window.pi.app.upgradeApp()
-          downloaded = downloaded || appUpdate.success
-        }
         if (active && result.piCli.hasUpdate) {
           const serviceUpdate = await window.pi.app.upgradePiCli()
           downloaded = downloaded || serviceUpdate.success

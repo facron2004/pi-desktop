@@ -22,6 +22,8 @@ const bridge = {
   workspaces: {
     remove: async (id?: string, hiddenPath?: string) => {
       const settings = useAppStore.getState().settings
+      const workspace = settings.workspaces.find((entry) => entry.id === id)
+      if (workspace) stopped.push(workspace.path)
       return {
         ...settings,
         workspaces: settings.workspaces.filter((workspace) => workspace.id !== id),
