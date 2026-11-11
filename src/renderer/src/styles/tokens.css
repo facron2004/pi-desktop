@@ -393,6 +393,13 @@
   --sidebar-muted: var(--text-tertiary);
   --chrome-bg: var(--surface-chrome);
 
+  /* The app mark. The supplied navy is drawn for a light canvas; on the dark
+     chrome it measures about 1.4:1, so dark surfaces get a lifted blue while
+     the coral and yellow stay the source colours. */
+  --brand-mark-blue: #3f6fe0;
+  --brand-mark-coral: #cf4f3d;
+  --brand-mark-yellow: #e4b135;
+
   /* The sidebar's own metrics. A conversation row and a project row are two
      different heights, and the actions of a row live in a slot that is always
      there — so a title never changes width when the row is hovered. */
@@ -498,6 +505,11 @@
   --sidebar-hover: var(--bg-hover);
   --sidebar-active: var(--bg-active);
   --chrome-bg: #f3f3f3;
+
+  /* The light theme can use the supplied mark's own colours. */
+  --brand-mark-blue: #002090;
+  --brand-mark-coral: #cf4f3d;
+  --brand-mark-yellow: #e4b135;
 
   /* The light theme needs deeper hues: the dark ones sit on a dark canvas,
      and the same yellow on white is unreadable. */

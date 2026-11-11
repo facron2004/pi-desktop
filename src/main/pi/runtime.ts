@@ -176,7 +176,8 @@ export class PiRuntime extends EventEmitter {
           this.options.getSubagentModel?.() ?? {},
           subagentPermissionFile,
           permissionTitle,
-          this.options.trustProject === true
+          this.options.trustProject === true,
+          { command: launch.command, prefixArgs: launch.prefixArgs }
         ),
         'utf8'
       )

@@ -14,7 +14,6 @@ import { monotonicNow, type SessionTimingRecord } from './session-timing'
 export interface RunTiming {
   startedAt?: number
   startedMonotonicAt?: number
-  ttftStartedAt?: number
   ttftStartedMonotonicAt?: number
   firstTokenAt?: number
   firstTokenMonotonicAt?: number
@@ -48,7 +47,7 @@ export interface SessionMetrics {
   /** Sum of tool durations available in the transcript or local timing record. */
   toolTimeMs: number | null
   timedToolCalls: number
-  /** Average of recorded samples and the current measured run, or null. */
+  /** Average of recorded model requests and the current sample, or null. */
   averageTtftMs: number | null
   /** Sum of completed model response timings observed by this app, or the transcript. */
   modelTimeMs: number | null
@@ -59,7 +58,7 @@ export interface SessionMetrics {
   contextPercent: number | null
   /** Completed output tokens per second in the newest turn. */
   tps: number | null
-  /** Milliseconds from Pi's `agent_start` to the first text delta. */
+  /** Milliseconds from Pi's `turn_start` to the first nonempty content delta. */
   ttftMs: number | null
 }
 
@@ -158,16 +157,14 @@ export function sessionMetrics(
 
   const ttftMs = run.firstTokenMonotonicAt !== undefined && run.ttftStartedMonotonicAt !== undefined
     ? Math.max(0, run.firstTokenMonotonicAt - run.ttftStartedMonotonicAt)
-    : run.firstTokenAt !== undefined && run.ttftStartedAt !== undefined
-      ? Math.max(0, run.firstTokenAt - run.ttftStartedAt)
-      : null
+    : null
   const ttftSamples = Object.values(timing?.ttftDurationsMs ?? {})
     .filter((value) => Number.isFinite(value) && value >= 0)
-  const currentRunRecorded = Boolean(run.runId && timing?.ttftDurationsMs[run.runId] !== undefined)
-  const includeCurrentRunTtft = !currentRunRecorded && ttftMs !== null
-  const averageTtftMs = ttftSamples.length || includeCurrentRunTtft
-    ? round((ttftSamples.reduce((sum, value) => sum + value, 0) + (includeCurrentRunTtft ? ttftMs! : 0)) /
-      (ttftSamples.length + (includeCurrentRunTtft ? 1 : 0)))
+  const currentTurnRecorded = Boolean(run.turnId && timing?.ttftDurationsMs[run.turnId] !== undefined)
+  const includeCurrentTtft = !currentTurnRecorded && ttftMs !== null
+  const averageTtftMs = ttftSamples.length || includeCurrentTtft
+    ? round((ttftSamples.reduce((sum, value) => sum + value, 0) + (includeCurrentTtft ? ttftMs! : 0)) /
+      (ttftSamples.length + (includeCurrentTtft ? 1 : 0)))
     : null
   // Only monotonic samples are summed. Version-1 records measured this against
   // the wall clock, which jumps on sleep and time sync; one answer could read

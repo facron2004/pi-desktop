@@ -1,4 +1,4 @@
-appId: dev.pi.desktop.v2
+appId: dev.pi.desktop.v3
 productName: Pi Desktop
 copyright: Copyright © 2026 Pi Desktop contributors
 
@@ -23,10 +23,10 @@ files:
 # The Windows shell reads the taskbar icon itself, so the .ico has to sit
 # outside the asar. `win.icon` still embeds it in the executable.
 extraResources:
-  - from: build/icon-pixel.ico
-    to: icon-pixel.ico
-  - from: build/icon-pixel.png
-    to: icon-pixel.png
+  - from: build/icon-geometric.ico
+    to: icon-geometric.ico
+  - from: build/icon-geometric.png
+    to: icon-geometric.png
 
 asarUnpack:
   # Pi runs as a plain Node child process, so the modules it resolves at
@@ -39,7 +39,7 @@ asarUnpack:
   - node_modules/node-pty/**/*
 
 win:
-  icon: build/icon-pixel.ico
+  icon: build/icon-geometric.ico
   target:
     - target: nsis
       arch: [x64, arm64]
@@ -51,6 +51,8 @@ win:
   artifactName: ${productName}-${version}-${arch}.${ext}
 
 nsis:
+  # Keep the v2-derived installer GUID; appId v3 is only for the refreshed Windows AUMID/icon.
+  guid: 8cddbf46-9994-5396-9c61-1e6d6be69598
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true

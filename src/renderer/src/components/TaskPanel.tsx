@@ -236,41 +236,42 @@ export function TaskPanel({ onOpenTask }: { onOpenTask: (taskId: string) => void
     <div className="task-panel">
       <div className="task-panel__scroll">
         <TaskSection title={t('Environment info')} subtitle={branchLabel}>
-          <div className="task-panel__rows">
-            <button
-              type="button"
-              className="task-panel__row"
-              onClick={openChanges}
-              disabled={!git?.isRepo}
-            >
-              <FileDiff size={16} strokeWidth={1.5} className="task-panel__row-icon" aria-hidden="true" />
-              <span className="task-panel__row-label">{t('Changes')}</span>
-              {changeMeta}
-            </button>
-            <button
-              type="button"
-              className="task-panel__row"
-              disabled={!git?.isRepo || Boolean(git?.clean)}
-              onClick={() => setCommitOpen(true)}
-            >
-              <GitCommitHorizontal
-                size={16}
-                strokeWidth={1.5}
-                className="task-panel__row-icon"
-                aria-hidden="true"
-              />
-              <span className="task-panel__row-label">{t('Commit or Push')}</span>
-            </button>
-            <button type="button" className="task-panel__row" onClick={() => setHistoryOpen(true)}>
-              <GitBranch
-                size={16}
-                strokeWidth={1.5}
-                className="task-panel__row-icon"
-                aria-hidden="true"
-              />
-              <span className="task-panel__row-label">{t('Change graph')}</span>
-            </button>
-          </div>
+          {git?.isRepo ? (
+            <div className="task-panel__rows">
+              <button
+                type="button"
+                className="task-panel__row"
+                onClick={openChanges}
+              >
+                <FileDiff size={16} strokeWidth={1.5} className="task-panel__row-icon" aria-hidden="true" />
+                <span className="task-panel__row-label">{t('Changes')}</span>
+                {changeMeta}
+              </button>
+              <button
+                type="button"
+                className="task-panel__row"
+                disabled={Boolean(git.clean)}
+                onClick={() => setCommitOpen(true)}
+              >
+                <GitCommitHorizontal
+                  size={16}
+                  strokeWidth={1.5}
+                  className="task-panel__row-icon"
+                  aria-hidden="true"
+                />
+                <span className="task-panel__row-label">{t('Commit or Push')}</span>
+              </button>
+              <button type="button" className="task-panel__row" onClick={() => setHistoryOpen(true)}>
+                <GitBranch
+                  size={16}
+                  strokeWidth={1.5}
+                  className="task-panel__row-icon"
+                  aria-hidden="true"
+                />
+                <span className="task-panel__row-label">{t('Change graph')}</span>
+              </button>
+            </div>
+          ) : null}
         </TaskSection>
 
         {backgroundTasks.length > 0 ? (

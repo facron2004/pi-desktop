@@ -6,7 +6,7 @@ import path from 'node:path'
 const root = process.cwd()
 const packagedExecutable = process.argv[2] ? path.resolve(process.argv[2]) : undefined
 const output = path.join(root, 'output/playwright/2026-10-29-session-concurrency', `run-${Date.now()}`)
-const profile = path.join(output, 'profile'), agent = path.join(output, 'agent'), home = path.join(output, 'home')
+const profile = path.join(output, 'profile'), home = path.join(profile, 'home'), agent = path.join(home, '.pi', 'agent')
 const dirs = { A: path.join(output, 'workspace-a'), B: path.join(output, 'workspace-b') }
 for (const dir of [profile, agent, home, ...Object.values(dirs)]) mkdirSync(dir, { recursive: true })
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -159,6 +159,7 @@ try {
   await evaluate("(async()=>{await store.getState().refreshForkTargets();const entry=store.getState().forkTargets[0]?.entryId;if(!entry)throw Error('No fork target');await store.getState().forkFrom(entry);cases.FORK=store.getState().activeSessionFile})()")
   const forkFile = await evaluate('cases.FORK')
   check('Fork preserves the source chat cache', await evaluate('cases.C!==cases.FORK&&!!store.getState().threads[cases.C]'))
+  await select('FORK', dirs.A); await evaluate('store.getState().ensureRuntime()')
   await select('C', dirs.A); await evaluate('store.getState().ensureRuntime()')
   check('Source and fork have independent runtime identities', await evaluate("(async()=>{const a=await window.pi.runtime.request('get_state',{},undefined,undefined,cases.C);const b=await window.pi.runtime.request('get_state',{},undefined,undefined,cases.FORK);return a.sessionFile===cases.C&&b.sessionFile===cases.FORK})()"))
 
@@ -168,12 +169,14 @@ try {
   check('Provider save leaves another idle background model unchanged', await evaluate("(async()=>{const a=await window.pi.runtime.request('get_state',{},undefined,undefined,cases.C);const b=await window.pi.runtime.request('get_state',{},undefined,undefined,cases.B);return a.model.id==='test-a'&&b.model.id==='test-b'})()"))
 
   await select('C', dirs.A)
+  await evaluate("window.__terminalSmokeOutput='';window.__terminalSmokeOutputOff=window.pi.terminal.onData(({data})=>{window.__terminalSmokeOutput+=data})")
   await evaluate("window.dispatchEvent(new CustomEvent('pi:terminal-run',{detail:{command:'ping -n 8 127.0.0.1'}}))")
-  await wait("document.querySelector('.terminal__output')?.textContent.includes('127.0.0.1')", 'terminal partial output')
-  check('Terminal receives scoped output while its command is running', await evaluate("document.querySelector('.terminal__output')?.textContent.includes('127.0.0.1')&&!!document.querySelector('.terminal__actions .ghost-btn')"))
+  await wait("window.__terminalSmokeOutput.includes('127.0.0.1')", 'terminal partial output')
+  check('Terminal receives scoped output while its command is running', await evaluate("window.__terminalSmokeOutput.includes('127.0.0.1')&&!!document.querySelector('.terminal__pane[data-active]')"))
+  await evaluate('window.__terminalSmokeOutputOff()')
   await start('T', dirs.B); await until(() => live.has('T'), 'T streaming beside terminal')
-  await evaluate("document.querySelector('.terminal__actions .ghost-btn').click()")
-  await wait("!document.querySelector('.terminal__actions .ghost-btn')", 'terminal stop')
+  await evaluate("document.querySelector('.shell__panel-toggle button').click()")
+  await wait("!document.querySelector('.terminal')", 'terminal stop')
   check('Terminal stop after a view switch leaves the other chat running', live.has('T'))
   await evaluate('store.getState().stop()'); await idle('T')
   await evaluate("window.dispatchEvent(new CustomEvent('pi:toggle-terminal'))")
@@ -190,7 +193,7 @@ try {
 
   await start('G', dirs.A); await until(() => live.has('G'), 'G streaming')
   await start('H', dirs.B); await until(() => live.has('H'), 'H streaming')
-  await evaluate(`store.getState().removeWorkspace({path:${JSON.stringify(dirs.A)}})`)
+  await evaluate(`store.getState().removeWorkspace({id:'a',path:${JSON.stringify(dirs.A)}})`)
   check('Removing an inactive project stops its background writer', !(await evaluate('window.pi.runtime.has(cases.G)')))
   check('The removed project has no phantom streaming conversation', await evaluate('!store.getState().threads[cases.G].isStreaming&&store.getState().threads[cases.G].run.settled'))
   check('Removing A leaves B active and running', live.has('H') && await evaluate(`store.getState().workspace.path===${JSON.stringify(dirs.B)}`))

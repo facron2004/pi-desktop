@@ -103,13 +103,43 @@ test('pre-v4 timing records drop duration samples measured against the wall cloc
 
     recordModelDuration(sessionKey, 'newTurn', 800)
     const saved = JSON.parse(store.getItem(storageKey)!) as Record<string, unknown>
-    assert.equal(saved.modelTimingVersion, 4)
+    assert.equal(saved.modelTimingVersion, 5)
     assert.equal(saved.legacyModelDurationsMs, undefined)
     assert.deepEqual(readSessionTiming(sessionKey).modelDurationsMs, {
       keptTurn: 1_200,
       newTurn: 800
     })
   } finally {
+    restore()
+  }
+})
+
+test('v4 TTFT samples are dropped while other monotonic timings survive migration', () => {
+  const restore = installStorage()
+  const sessionKey = 'C:/sessions/old-text-ttft.jsonl'
+  const storageKey = `pi-desktop:session-timing:v1:${encodeURIComponent(sessionKey)}`
+  try {
+    const store = (globalThis as unknown as { window: { localStorage: Storage } }).window.localStorage
+    store.setItem(storageKey, JSON.stringify({
+      modelTimingVersion: 4,
+      modelDurationsMs: { turn1: 530_000 },
+      ttftDurationsMs: { run1: 526_000 },
+      toolDurationsMs: { call1: 12_000 },
+      runDurationsMs: { '1': 540_000 },
+      generationWindowMs: { '1': 510_000 }
+    }))
+    assert.deepEqual(readSessionTiming(sessionKey), {
+      modelDurationsMs: { turn1: 530_000 },
+      ttftDurationsMs: {},
+      toolDurationsMs: { call1: 12_000 },
+      runDurationsMs: { '1': 540_000 },
+      generationWindowMs: { '1': 510_000 }
+    })
+    recordTtftDuration(sessionKey, 'turn2', 250)
+    assert.deepEqual(JSON.parse(store.getItem(storageKey)!).ttftDurationsMs, { turn2: 250 })
+    assert.equal(JSON.parse(store.getItem(storageKey)!).modelTimingVersion, 5)
+  } finally {
+    forgetSessionTiming(sessionKey)
     restore()
   }
 })

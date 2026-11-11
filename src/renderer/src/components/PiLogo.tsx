@@ -9,28 +9,32 @@ export function PiLogo({
     <svg
       width={size}
       height={size}
-      viewBox="0 0 16 16"
+      viewBox="0 0 886 886"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={`pi-logo ${className ?? ''}`}
       aria-hidden="true"
       style={{ display: 'block', flexShrink: 0 }}
     >
-      {/* Top bar & right hook (Coral #F09082) */}
-      <rect x="0" y="0" width="4" height="4" rx="0.5" fill="#F09082" />
-      <rect x="4" y="0" width="4" height="4" rx="0.5" fill="#F09082" />
-      <rect x="8" y="0" width="4" height="4" rx="0.5" fill="#F09082" />
-      <rect x="8" y="4" width="4" height="4" rx="0.5" fill="#F09082" />
+      {/* The mark is centred in a square canvas, matching the app icon. */}
+      <g transform="translate(0 24)">
+        {/* Blue body: top bar, both stems and both feet. */}
+        <rect x="55" y="0" width="831" height="161" fill="var(--brand-mark-blue)" />
+        <rect x="137" y="161" width="206" height="677" fill="var(--brand-mark-blue)" />
+        <rect x="55" y="725" width="288" height="113" fill="var(--brand-mark-blue)" />
+        <rect x="543" y="161" width="207" height="677" fill="var(--brand-mark-blue)" />
+        <rect x="543" y="725" width="288" height="113" fill="var(--brand-mark-blue)" />
 
-      {/* Left stem & middle branch (Blue #4D9ABF) */}
-      <rect x="0" y="4" width="4" height="4" rx="0.5" fill="#4D9ABF" />
-      <rect x="0" y="8" width="4" height="4" rx="0.5" fill="#4D9ABF" />
-      <rect x="4" y="8" width="4" height="4" rx="0.5" fill="#4D9ABF" />
-      <rect x="0" y="12" width="4" height="4" rx="0.5" fill="#4D9ABF" />
+        {/* Coral corner and the upper half of the right leg. */}
+        <rect x="0" y="0" width="169" height="105" fill="var(--brand-mark-coral)" />
+        <rect x="0" y="105" width="55" height="56" fill="var(--brand-mark-coral)" />
+        <rect x="543" y="161" width="207" height="185" fill="var(--brand-mark-coral)" />
+        <rect x="543" y="346" width="108" height="125" fill="var(--brand-mark-coral)" />
 
-      {/* Right leg (Yellow #F1BE58) */}
-      <rect x="12" y="8" width="4" height="4" rx="0.5" fill="#F1BE58" />
-      <rect x="12" y="12" width="4" height="4" rx="0.5" fill="#F1BE58" />
+        {/* Golden accents on the top bar and the left stem. */}
+        <rect x="636" y="0" width="135" height="87" fill="var(--brand-mark-yellow)" />
+        <rect x="137" y="289" width="80" height="162" fill="var(--brand-mark-yellow)" />
+      </g>
     </svg>
   )
 }

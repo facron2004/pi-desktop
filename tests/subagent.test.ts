@@ -58,6 +58,7 @@ type Tool = {
 const dir = mkdtempSync(path.join(process.cwd(), '.tmp-subagent-test-'))
 const fakeScript = path.join(dir, 'fake-pi.mjs')
 const extensionFile = path.join(dir, 'subagent-extension.mjs')
+const fallbackExtensionFile = path.join(dir, 'subagent-extension-fallback.mjs')
 const logFile = path.join(dir, 'args.jsonl')
 const promptFile = path.join(dir, 'prompts.jsonl')
 const responseFile = path.join(dir, 'responses.jsonl')
@@ -212,6 +213,11 @@ process.stdin.on('end', () => process.exit(0));
   'utf8'
 )
 writeFileSync(extensionFile, subagentExtension(), 'utf8')
+writeFileSync(
+  fallbackExtensionFile,
+  subagentExtension({}, '', '', false, { command: process.execPath, prefixArgs: [fakeScript] }),
+  'utf8'
+)
 writeFileSync(permissionExtensionFile, permissionExtension(permissionTitle, false), 'utf8')
 const approvalExtensionFile = path.join(dir, 'subagent-extension-approval.mjs')
 writeFileSync(approvalExtensionFile, subagentExtension({}, permissionExtensionFile, permissionTitle), 'utf8')
@@ -250,6 +256,7 @@ type FakeOptions = {
   mode?: 'ok' | 'fail' | 'slow' | 'ignore-sigterm' | 'spawn-child' | 'cwd' | 'progress' | 'many-messages' | 'large-message' | 'approval' | 'approval-unavailable' | 'oversized' | 'noisy-stderr'
   activeDirectory?: string
   text?: string
+  currentScript?: string
   onUpdate?: (update: Update) => void
 }
 
@@ -262,7 +269,7 @@ function withFakePi<T>(options: FakeOptions, run: (signal: AbortSignal | undefin
   const previousActiveDirectory = process.env.PI_FAKE_ACTIVE_DIR
   const previousMode = process.env.PI_FAKE_MODE
   const previousText = process.env.PI_FAKE_TEXT
-  process.argv[1] = fakeScript
+  process.argv[1] = options.currentScript ?? fakeScript
   process.env.PI_FAKE_LOG = logFile
   process.env.PI_FAKE_PROMPT_LOG = promptFile
   process.env.PI_FAKE_RESPONSE_LOG = responseFile
@@ -345,6 +352,16 @@ test('a single task spawns Pi in RPC mode and collects its text, usage and detai
   assert.equal(args[10], '--append-system-prompt')
   assert.ok(args[11].length > 0)
   assert.deepEqual(readRecords(promptFile), [{ type: 'prompt', id: 'subagent-prompt', message: 'Task: Inspect the repo' }])
+})
+
+test('the subagent fallback uses the resolved Pi executable when its script path is unavailable', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory(fallbackExtensionFile))
+  const result = await withFakePi({ currentScript: path.join(dir, 'missing-pi-script.mjs') }, () =>
+    tool.execute('call-fallback', { task: 'Use the configured Pi' }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, false)
+  assert.deepEqual(readArgs()[0].slice(0, 4), ['--mode', 'rpc', '--no-session', '--no-approve'])
 })
 
 test('concurrent subagent calls share one process limit and queued calls can be cancelled', async () => {

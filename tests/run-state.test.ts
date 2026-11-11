@@ -369,7 +369,7 @@ test('P02 — text deltas are the only thing that makes the run "generating"', (
   assert.equal(phase(), 'tool_running', 'a tool outranks generating')
 })
 
-test('completed events persist model time and prompt TTFT for the conversation', () => {
+test('completed events persist model time and request TTFT for the conversation', () => {
   startRun()
   const sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
   const now = Date.now
@@ -692,7 +692,7 @@ test('P04d — generation time is summed per answer, not across a tool gap', () 
   }
 })
 
-test('TTFT excludes time spent queued before Pi reports agent_start', () => {
+test('TTFT excludes queueing and preparation before the model request starts', () => {
   const originalNow = Date.now
   const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
   let now = 1_000
@@ -726,19 +726,102 @@ test('TTFT excludes time spent queued before Pi reports agent_start', () => {
     now = 2_000
     monotonic = 11_000
     emit({ type: 'agent_start' })
+    monotonic = 12_000
+    emit({ type: 'turn_start' })
+    const turnId = useAppStore.getState().run.turnId!
+    emit({ type: 'message_start', message: { role: 'user', content: 'Queued prompt', timestamp: now } })
+    assert.equal(useAppStore.getState().run.ttftStartedMonotonicAt, 12_000,
+      'Pi emits turn_start before delivering the user message')
     now = 2_300
-    monotonic = 11_300
+    monotonic = 12_300
     emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'first' } })
     now = 2_500
-    monotonic = 11_500
+    monotonic = 12_500
     emit({ type: 'agent_settled', aborted: false })
 
-    assert.equal(readSessionTiming(sessionKey).ttftDurationsMs['queued-ttft-run'], 300)
+    assert.equal(readSessionTiming(sessionKey).ttftDurationsMs[turnId], 300)
   } finally {
     forgetSessionTiming(sessionKey)
     Date.now = originalNow
     if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
     startRun()
+  }
+})
+
+test('TTFT stops at reasoning or tool arguments before a minutes-long wait for final text', async () => {
+  const previous = useAppStore.getState()
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let monotonic = 1_000
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => monotonic } })
+  let sessionKey: string | undefined
+  try {
+    await useAppStore.getState().newChat()
+    startRun()
+    sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    const firstTurnId = useAppStore.getState().run.turnId!
+    emit({ type: 'message_start', message: { role: 'assistant', content: [] } })
+    monotonic = 1_100
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } })
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: '' } })
+    assert.equal(useAppStore.getState().run.firstTokenMonotonicAt, undefined)
+    monotonic = 1_250
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'Thinking' } })
+    assert.equal(readSessionTiming(sessionKey).ttftDurationsMs[firstTurnId], 250)
+
+    monotonic = 527_000
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'Final text' } })
+    emit({ type: 'message_end', message: { role: 'assistant', content: 'Final text' } })
+    assert.equal(readSessionTiming(sessionKey).ttftDurationsMs[firstTurnId], 250)
+    emit({ type: 'tool_execution_start', toolCallId: 'ttft-gap', toolName: 'read', args: {} })
+    monotonic = 727_000
+    emit({ type: 'tool_execution_end', toolCallId: 'ttft-gap', isError: false })
+
+    emit({ type: 'turn_start' })
+    const secondTurnId = useAppStore.getState().run.turnId!
+    emit({ type: 'message_start', message: { role: 'assistant', content: [] } })
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_start', contentIndex: 0, id: 'next-tool', toolName: 'read' } })
+    assert.equal(useAppStore.getState().run.firstTokenMonotonicAt, undefined)
+    monotonic = 727_400
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', contentIndex: 0, delta: '{"path":' } })
+    const state = useAppStore.getState()
+    const timing = readSessionTiming(sessionKey)
+    assert.deepEqual(timing.ttftDurationsMs, { [firstTurnId]: 250, [secondTurnId]: 400 })
+    assert.equal(sessionMetrics(state.items, state.stats, state.run, timing).averageTtftMs, 325)
+    emit({ type: 'agent_settled', aborted: true })
+    assert.equal(Object.keys(readSessionTiming(sessionKey).ttftDurationsMs).length, 2)
+  } finally {
+    forgetSessionTiming(sessionKey)
+    if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor)
+    useAppStore.setState(previous)
+  }
+})
+
+test('TTFT restarts for the retry request after its backoff', async () => {
+  const previous = useAppStore.getState()
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let monotonic = 1_000
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => monotonic } })
+  let sessionKey: string | undefined
+  try {
+    await useAppStore.getState().newChat()
+    startRun()
+    sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    monotonic = 2_000
+    emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 60_000 })
+    monotonic = 62_000
+    emit({ type: 'turn_start' })
+    const turnId = useAppStore.getState().run.turnId!
+    monotonic = 62_300
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Retried' } })
+    assert.deepEqual(readSessionTiming(sessionKey).ttftDurationsMs, { [turnId]: 300 })
+  } finally {
+    forgetSessionTiming(sessionKey)
+    if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor)
+    useAppStore.setState(previous)
   }
 })
 

@@ -123,12 +123,11 @@ export interface RunState {
   startedAt?: number
   /** Monotonic start time for duration calculations. */
   startedMonotonicAt?: number
-  /** Pi's `agent_start`, used as the start of the TTFT sample. */
-  ttftStartedAt?: number
+  /** Pi's `turn_start`, used as the monotonic start of the TTFT sample. */
   ttftStartedMonotonicAt?: number
-  /** First / last text delta, minted by the client: Pi reports no timing. */
+  /** First content token of the current model request, observed by the client. */
   firstTokenAt?: number
-  /** Monotonic first-text time, paired with ttftStartedMonotonicAt for TTFT. */
+  /** Monotonic first-token time, paired with ttftStartedMonotonicAt for TTFT. */
   firstTokenMonotonicAt?: number
   lastTokenAt?: number
   /** Monotonic start of the answer's current generation window. */
@@ -3572,8 +3571,6 @@ function handleEvent(
               turns: 0,
               startedAt,
               startedMonotonicAt,
-              ttftStartedAt: startedAt,
-              ttftStartedMonotonicAt: startedMonotonicAt,
               generationMs: 0,
               settled: false
             }
@@ -3581,8 +3578,6 @@ function handleEvent(
               ...state.run,
               startedAt: state.run.startedAt ?? startedAt,
               startedMonotonicAt: state.run.startedMonotonicAt ?? startedMonotonicAt,
-              ttftStartedAt: state.run.ttftStartedAt ?? startedAt,
-              ttftStartedMonotonicAt: state.run.ttftStartedMonotonicAt ?? startedMonotonicAt,
               phase: phaseFor(state, 'working'),
               settled: false
             }
@@ -3601,6 +3596,9 @@ function handleEvent(
               turnId: nextId('turn'),
               turns: state.run.turns + 1,
               modelTurnStartedAt,
+              ttftStartedMonotonicAt: modelTurnStartedAt,
+              firstTokenAt: undefined,
+              firstTokenMonotonicAt: undefined,
               phase: phaseFor(state, 'working'),
               settled: false
             }
@@ -3624,20 +3622,12 @@ function handleEvent(
       drainPending()
       finishStream(runContextOf(get).sessionKey)
       const state = get()
-      const ttftStartedMonotonicAt = state.run.ttftStartedMonotonicAt
       const durationMs =
         state.run.startedMonotonicAt === undefined
           ? undefined
           : Math.max(0, monotonicNow() - state.run.startedMonotonicAt)
       const timingKey = owner ? threadKey(owner) : viewKeyOf(state)
       toolStarts.delete(timingKey)
-      if (ttftStartedMonotonicAt !== undefined && state.run.firstTokenMonotonicAt !== undefined) {
-        recordTtftDuration(
-          timingKey,
-          state.run.runId,
-          Math.max(0, state.run.firstTokenMonotonicAt - ttftStartedMonotonicAt)
-        )
-      }
       // Model durations are recorded only when the assistant message ends.
       // Settling without that event means the response was interrupted or
       // incomplete, so its wait time must not become a model-time sample.
@@ -3775,6 +3765,9 @@ function handleEvent(
           ...state.run,
           phase: phaseFor(state, 'retrying'),
           modelTurnStartedAt: undefined,
+          ttftStartedMonotonicAt: undefined,
+          firstTokenAt: undefined,
+          firstTokenMonotonicAt: undefined,
           settled: false
         },
         retry: {
@@ -3954,19 +3947,20 @@ function handleEvent(
           finishModelTiming(set, get, owner)
         }
       }
-      // Assistant text arriving is the only evidence that the model is
-      // actually producing words right now, as opposed to still being
-      // waited on. A tool call or a thinking delta does not count.
+      // Only text moves the visible phase to generating. Thinking and tool
+      // arguments still count as content for timing without changing that phase.
       if (event.type === 'message_update') {
         const payload = event.assistantMessageEvent as { type?: string; delta?: unknown } | undefined
         const kind = payload?.type
         const textBlockStarted = kind === 'text_start'
-        const textDelta = kind === 'text_delta' &&
+        const contentDelta = (kind === 'text_delta' || kind === 'thinking_delta' || kind === 'toolcall_delta') &&
           typeof payload?.delta === 'string' &&
           payload.delta.length > 0
+        const textDelta = kind === 'text_delta' && contentDelta
         // Output tokens also come from thinking and tool-call blocks, so the
         // answer's generation window starts at its first block of any kind.
-        // TTFT stays text-only: it is "the first readable word".
+        // TTFT also counts reasoning and tool arguments: waiting for the
+        // final text would charge their generation and tool execution time.
         const generatingDelta =
           textBlockStarted ||
           textDelta ||
@@ -3985,20 +3979,27 @@ function handleEvent(
           closeGenerationWindow(set)
         }
         if (kind === 'done') finishModelTiming(set, get, owner)
-        const needsTextStart = textDelta && get().run.firstTokenAt === undefined
+        const needsFirstToken = contentDelta && get().run.firstTokenMonotonicAt === undefined
         const needsWindowStart = generatingDelta && get().run.messageGenerationStartedAt === undefined
         const needsPhase = textDelta && get().run.phase !== phaseFor(get(), 'generating')
-        if (needsTextStart || needsWindowStart || needsPhase) {
+        if (needsFirstToken || needsWindowStart || needsPhase) {
           const now = Date.now()
           const monotonic = monotonicNow()
+          const run = get().run
+          if (needsFirstToken && run.ttftStartedMonotonicAt !== undefined) {
+            recordTtftDuration(
+              owner ? threadKey(owner) : viewKeyOf(get()),
+              run.turnId,
+              Math.max(0, monotonic - run.ttftStartedMonotonicAt)
+            )
+          }
           set((state) => ({
             run: {
               ...state.run,
               ...(textDelta ? { phase: phaseFor(state, 'generating') } : {}),
               settled: false,
-              ...(textDelta && state.run.firstTokenAt === undefined ? { firstTokenAt: now } : {}),
-              ...(textDelta && state.run.firstTokenMonotonicAt === undefined
-                ? { firstTokenMonotonicAt: monotonic }
+              ...(needsFirstToken
+                ? { firstTokenAt: now, firstTokenMonotonicAt: monotonic }
                 : {}),
               // The start of this answer's generation window. It stays until
               // the block ends, so TPS never counts a tool gap.

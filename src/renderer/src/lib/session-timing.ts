@@ -10,7 +10,7 @@ export interface SessionTimingRecord {
 }
 
 const STORAGE_PREFIX = 'pi-desktop:session-timing:v1:'
-const MODEL_TIMING_VERSION = 4
+const MODEL_TIMING_VERSION = 5
 
 /**
  * Parsed records, kept in memory for the conversations the reader moves
@@ -68,10 +68,12 @@ function recordOf(value: unknown): SessionTimingRecord {
   // tool durations still used Date.now until version 4. Their source cannot
   // be distinguished from Pi-reported tool durations, so all pre-v4 samples
   // in those fields are dropped rather than carried forward.
+  // Version 5 measures TTFT per model request to the first content token;
+  // older samples waited for text and included thinking and tool execution.
   const version = typeof raw.modelTimingVersion === 'number' ? raw.modelTimingVersion : 1
   return {
     modelDurationsMs: version >= 2 ? durationsOf(raw.modelDurationsMs) : {},
-    ttftDurationsMs: version >= 4 ? durationsOf(raw.ttftDurationsMs) : {},
+    ttftDurationsMs: version >= 5 ? durationsOf(raw.ttftDurationsMs) : {},
     toolDurationsMs: version >= 4 ? durationsOf(raw.toolDurationsMs) : {},
     runDurationsMs: version >= 4 ? durationsOf(raw.runDurationsMs) : {},
     generationWindowMs: version >= 4 ? durationsOf(raw.generationWindowMs) : {}
@@ -128,10 +130,10 @@ export function recordModelDuration(
 
 export function recordTtftDuration(
   sessionKey: string | undefined,
-  runId: string | undefined,
+  turnId: string | undefined,
   durationMs: number
 ): void {
-  recordDuration(sessionKey, 'ttftDurationsMs', runId, durationMs)
+  recordDuration(sessionKey, 'ttftDurationsMs', turnId, durationMs)
 }
 
 export function recordToolDuration(

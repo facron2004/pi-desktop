@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="build/icon-pixel.png" alt="Pi Desktop" width="76" />
+<img src="build/icon-geometric.png" alt="Pi Desktop" width="76" />
 
 # Pi Desktop
 
@@ -8,7 +8,7 @@
 
 在一个窗口里完成对话、代码修改、Git 审查与终端操作。
 
-[![Release](https://img.shields.io/github/v/release/facron2004/pi-desktop?style=flat-square&color=2563eb)](https://github.com/facron2004/pi-desktop/releases/latest) [![Platform](https://img.shields.io/badge/Windows-x64%20%7C%20ARM64-0078D4?style=flat-square)](https://github.com/facron2004/pi-desktop/releases/latest) [![Pi](https://img.shields.io/badge/Pi-1.5.0-7c3aed?style=flat-square)](https://github.com/earendil-works/pi) [![Electron](https://img.shields.io/badge/Electron-44.5-47848F?style=flat-square&logo=electron&logoColor=white)](package.json) [![React](https://img.shields.io/badge/React-19-149ECA?style=flat-square&logo=react&logoColor=white)](package.json) [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white)](package.json) [![License](https://img.shields.io/badge/License-MIT-16a34a?style=flat-square)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/facron2004/pi-desktop?style=flat-square&color=2563eb)](https://github.com/facron2004/pi-desktop/releases/latest) [![Platform](https://img.shields.io/badge/Windows-x64%20%7C%20ARM64-0078D4?style=flat-square)](https://github.com/facron2004/pi-desktop/releases/latest) [![Pi](https://img.shields.io/badge/Pi-1.5.0-7c3aed?style=flat-square)](https://github.com/earendil-works/pi) [![Electron](https://img.shields.io/badge/Electron-44.10-47848F?style=flat-square&logo=electron&logoColor=white)](package.json) [![React](https://img.shields.io/badge/React-19-149ECA?style=flat-square&logo=react&logoColor=white)](package.json) [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white)](package.json) [![License](https://img.shields.io/badge/License-MIT-16a34a?style=flat-square)](LICENSE)
 
 [下载](https://github.com/facron2004/pi-desktop/releases/latest) · [快速上手](#快速上手) · [使用指南](docs/user-guide.md) · [开发文档](docs/development.md) · [更新日志](CHANGELOG.md)
 
@@ -49,16 +49,16 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 
 ## 下载与安装
 
-当前发布版本为 **v0.10.12**，内置 **Pi 1.5.0**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
+当前发布版本为 **v0.10.14**，内置 **Pi 1.5.0**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.12/Pi.Desktop-0.10.12-x64.exe) |
-| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.12/Pi.Desktop-0.10.12-arm64.exe) |
-| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.12/Pi.Desktop-0.10.12.exe) |
-| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.10.12/Pi.Desktop-0.10.12-portable-x64.zip) |
+| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.14/Pi.Desktop-0.10.14-x64.exe) |
+| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.14/Pi.Desktop-0.10.14-arm64.exe) |
+| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.14/Pi.Desktop-0.10.14.exe) |
+| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.10.14/Pi.Desktop-0.10.14-portable-x64.zip) |
 
-免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.10.12/SHA256SUMS.txt)，版本说明见 [v0.10.12 更新说明](docs/releases/v0.10.12.md)。
+免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.10.14/SHA256SUMS.txt)，版本说明见 [v0.10.14 更新说明](docs/releases/v0.10.14.md)。
 
 ## 快速上手
 

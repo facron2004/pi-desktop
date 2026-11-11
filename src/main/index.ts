@@ -142,7 +142,7 @@ function createWindow(): BrowserWindow {
     backgroundColor: dark ? '#16181d' : '#ffffff',
     title: 'Pi Desktop',
     // Dev runs are electron.exe, whose own icon is what the taskbar shows
-    // until the window carries the pixel mark. Packaged builds set the same
+    // until the window carries the app mark. Packaged builds set the same
     // image so the button matches the shortcut.
     ...(icon ? { icon } : {}),
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',

@@ -29,8 +29,8 @@ writeFileSync(
   path.join(workspace, 'shot.png'),
   Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
 )
-const agent = path.join(profile, 'agent')
-mkdirSync(agent)
+const agent = path.join(profile, 'home', '.pi', 'agent')
+mkdirSync(agent, { recursive: true })
 const requests = []
 const fixture = createServer(async (req, res) => {
   let body = ''
@@ -106,6 +106,21 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     15000
   )
   passed.push('the platform emoji font registers for project icons and text')
+
+  const logoBlue = document.querySelector('.pi-logo rect')
+  check(logoBlue, 'The Pi mark is missing from the sidebar')
+  const originalTheme = document.documentElement.dataset.theme
+  document.documentElement.dataset.theme = 'dark'
+  const darkLogoBlue = getComputedStyle(logoBlue).fill
+  document.documentElement.dataset.theme = 'light'
+  const lightLogoBlue = getComputedStyle(logoBlue).fill
+  if (originalTheme) document.documentElement.dataset.theme = originalTheme
+  else delete document.documentElement.dataset.theme
+  check(
+    darkLogoBlue === 'rgb(63, 111, 224)' && lightLogoBlue === 'rgb(0, 32, 144)',
+    `The Pi mark did not use its theme-specific blue: dark=${darkLogoBlue}, light=${lightLogoBlue}`
+  )
+  passed.push('the Pi mark uses the light and dark theme colours')
 
   // A page opens the way the panel does it: the `+` creates a new tab, and its
   // start page turns that tab into the chosen page. A page already open is only
@@ -538,6 +553,28 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   for (const title of ['Environment info', 'Background tasks', 'Progress', 'Deliverables']) {
     check(titles.includes(title), `The task rail is missing the ${title} section: ${titles.join(' | ')}`)
   }
+  // A folder outside Git has nothing to review or commit: the environment
+  // section keeps its "No Git repository" subtitle and drops the Git rows.
+  const gitBefore = store.getState().git
+  const noRepoGit = {
+    isRepo: false, detached: false, ahead: 0, behind: 0, files: [], staged: 0, unstaged: 0, clean: true
+  }
+  store.setState({ git: noRepoGit })
+  await until(
+    () => document.querySelector('.task-panel__section-subtitle')?.textContent === 'No Git repository',
+    'The task rail did not read the non-repo status'
+  )
+  check(!document.querySelector('.task-panel__rows'), 'A non-repo folder still shows the Git rows')
+  const workspacePath = store.getState().workspace?.path
+  check(typeof workspacePath === 'string' && workspacePath.length > 0, 'The active workspace path is missing')
+  store.setState({ git: { ...noRepoGit, isRepo: true, root: workspacePath, branch: 'main', head: 'abcdef123456' } })
+  await until(() => document.querySelectorAll('.task-panel__row').length === 3, 'The Git rows did not return for a repository')
+  check(
+    [...document.querySelectorAll('.task-panel__row-label')].map((node) => node.textContent).join('|') ===
+      'Changes|Commit or Push|Change graph',
+    'The repository environment rows changed'
+  )
+  store.setState({ git: gitBefore })
   check(document.querySelectorAll('.task-panel__task').length === 1, 'The background task row is missing')
   check(document.querySelectorAll('.task-panel__check').length === 3, 'The plan checklist is missing a step')
   check(document.querySelectorAll('.task-panel__check[data-done]').length === 2, 'A finished step is not marked as done')
@@ -918,7 +955,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 18 : 17)
+  assert.equal(passed.length, process.platform === 'win32' ? 19 : 18)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

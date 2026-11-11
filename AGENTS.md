@@ -337,19 +337,25 @@ uses the compact session statistics layout: turns and steps, model time, tool
 execution time, average TTFT and output speed. Unavailable readings say
 `Not measured yet`. Pi reports tool `durationMs` when available; the client
 measures tool start-to-end as a fallback. Model time sums client-observed
-`turn_start` to assistant-message completion intervals. Average TTFT is one
-prompt/run's `agent_start` to first text token, averaged across recorded runs.
+`turn_start` to assistant-message completion intervals. Average TTFT measures
+each model request from `turn_start` to its first nonempty text, thinking or
+tool-argument delta. Empty block starts are not tokens. Each request records
+one sample immediately, keyed by `turnId`, so tool gaps and retry backoff stay
+outside the next request's sample. Pi emits a prompt's `message_start` after
+`turn_start`, so that user message must preserve the request's TTFT clock.
 These timing samples live in localStorage per conversation and migrate when a
 draft gets its session file. A reopened transcript with no client samples is
-approximated from Pi's message timestamps and each assistant message's
-`durationMs` (prompt-to-first-assistant for TTFT, summed answer windows for
-model time and TPS). Version 1 model-time samples used the wall clock and are
-dropped; version 2 changed model time to a monotonic clock. TTFT, run,
-generation and fallback tool samples before version 4 also used the wall clock,
+approximated from each assistant message's `durationMs` for model time and TPS;
+TTFT remains unavailable without observed token arrivals. Version 1 model-time
+samples used the wall clock and are dropped; version 2 changed model time to
+a monotonic clock. TTFT, run, generation and fallback tool samples before
+version 4 also used the wall clock,
 so they are dropped during migration because the record cannot distinguish a
 Pi-reported tool duration from a client fallback. Sleeping the machine or
 syncing the time could turn one answer into hours, and a wrong total is worse
-than a missing one. The tokens and the hit rate open `UsagePanel` — total Token,
+than a missing one. Version 5 drops only older TTFT samples because they measured
+the entire run up to its first text and could include minutes of thinking and tools.
+The tokens and the hit rate open `UsagePanel` — total Token,
 cache hit rate, uncached input, cache read, cache write and output. Two
 questions, two cards; a reading printed in both would be two things to keep in
 sync.
@@ -368,8 +374,8 @@ outrank the saved model, or a stale window renders an impossible percentage.
 Token totals and the hit rate come from `get_session_stats`, with the visible
 transcript as a fallback; the hit rate counts cache reads against every prompt
 token — fresh input, cache reads and cache writes. Pi reports no generation
-timing, so `run` mints `firstTokenAt` on the first text delta (TTFT is the
-first readable word) and starts each answer's generation window at its first
+timing, so `run` mints `firstTokenAt` on the first nonempty content delta of
+each model request and starts each answer's generation window at its first
 block of any kind — text, thinking or a tool call — summing the window into
 `generationMs` when the block ends (`text_end`, `thinking_end`,
 `toolcall_end`, `message_update:done` or `message_end`). A tool gap between
@@ -451,13 +457,13 @@ and *quit*. The rules that keep the window from disappearing for good:
 
 The taskbar icon is the window icon. Windows draws the taskbar button from
 the window's own icon, so a dev run of `electron.exe` shows the Electron
-logo until the window carries the pixel mark. `app-icon.ts` owns all of it:
+logo until the window carries the app mark. `app-icon.ts` owns all of it:
 the `.ico` next to the asar (`extraResources`), the `BrowserWindow` icon,
 and the AppUserModelID, which has to be the same id electron-builder stamps
 on the shortcut (`appId` in `electron-builder.yml`) or Windows treats the
 dev run and the installed run as two different apps.
 
-Two rules about that id decide whether the taskbar draws the pixel mark or
+Two rules about that id decide whether the taskbar draws the app mark or
 the Electron atom. Both were measured on a real taskbar (`output/audit/`
 renders `Shell_TrayWnd` with `PrintWindow`, and UI Automation names the
 buttons):
@@ -472,8 +478,11 @@ buttons):
   caches an AppUserModelID together with the name and the icon of its first
   registration and never gives them back: a newer icon, a refreshed icon
   cache and a new shortcut all leave it alone. `dev.pi.desktop` was first
-  claimed by a dev run that still carried electron.exe's icon, so that id is
-  stuck on the Electron atom for good. The id in use is `dev.pi.desktop.v2`.
+  claimed by a dev run that still carried electron.exe's icon, and
+  `dev.pi.desktop.v2` was first registered with the previous pixel mark. The
+  id in use is `dev.pi.desktop.v3`. electron-builder also derives the NSIS
+  upgrade GUID from `appId`; pin `nsis.guid` to the previous value when rotating
+  the AUMID, or existing installations will not be recognized for upgrade.
 
 An `.ico` stores a PNG per size and Electron's loader keeps only the
 largest frame, so a reader that wants one particular size walks the

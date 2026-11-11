@@ -8,13 +8,13 @@ import { icoPngFrame } from './ico'
  * `electron-builder.yml`). The window has to claim the same one, or Windows
  * treats a dev run and an installed run as two different apps.
  *
- * The `v2` suffix is not the app version. Windows caches an AppUserModelID
+ * The `v3` suffix is not the app version. Windows caches an AppUserModelID
  * with the name and the icon it saw the first time, and never gives them
  * back: `dev.pi.desktop` was first claimed by a dev run that still carried
- * electron.exe's icon, so that id is stuck on the Electron atom. A fresh id
- * is the only way out.
+ * electron.exe's icon, and `dev.pi.desktop.v2` was first registered with the
+ * old pixel mark. A fresh id is the only way out.
  */
-export const APP_USER_MODEL_ID = 'dev.pi.desktop.v2'
+export const APP_USER_MODEL_ID = 'dev.pi.desktop.v3'
 
 let warned = false
 
@@ -34,7 +34,7 @@ function firstExisting(name: string): string | undefined {
 
 /** Absolute .ico path for the Windows shell. Undefined when the file is absent. */
 export function windowsIconFile(): string | undefined {
-  const file = firstExisting('icon-pixel.ico')
+  const file = firstExisting('icon-geometric.ico')
   return file ? path.resolve(file) : undefined
 }
 
@@ -48,7 +48,7 @@ function imageFromFile(file: string | undefined): NativeImage | undefined {
 export function windowIconImage(): NativeImage | undefined {
   const fromIco = imageFromFile(windowsIconFile())
   if (fromIco) return fromIco
-  const fromPng = imageFromFile(firstExisting('icon-pixel.png'))
+  const fromPng = imageFromFile(firstExisting('icon-geometric.png'))
   if (fromPng) return fromPng
   if (!warned) {
     warned = true
@@ -57,7 +57,7 @@ export function windowIconImage(): NativeImage | undefined {
   return undefined
 }
 
-/** Tray slot. Prefer the 32px frame so the pixel mark is not resampled. */
+/** Tray slot. Prefer the 32px frame so the app mark is not resampled. */
 export function trayIconImage(): NativeImage | undefined {
   const file = windowsIconFile()
   if (file) {
@@ -74,7 +74,7 @@ export function trayIconImage(): NativeImage | undefined {
 }
 
 /**
- * Point the Windows taskbar at the pixel icon.
+ * Point the Windows taskbar at the app icon.
  *
  * The AppUserModelID belongs to the window, and it must not also be set on
  * the process. `app.setAppUserModelId` registers the id for the process, and
@@ -82,7 +82,7 @@ export function trayIconImage(): NativeImage | undefined {
  * electron.exe's atom in a dev run. A window that reuses the registered id
  * inherits that entry and its own `appIconPath` is ignored; the taskbar
  * keeps drawing the Electron logo. A window that carries an id of its own
- * is registered from `appIconPath`, and the taskbar draws the pixel mark.
+ * is registered from `appIconPath`, and the taskbar draws the app mark.
  *
  * The window icon is set as well, because it is what the taskbar falls back
  * to and what Alt-Tab shows.

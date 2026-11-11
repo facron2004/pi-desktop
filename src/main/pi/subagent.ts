@@ -40,7 +40,8 @@ export function subagentExtension(
   defaults: SubagentDefaults = {},
   permissionExtensionPath = '',
   permissionTitle = '',
-  trustProject = false
+  trustProject = false,
+  fallbackInvocation: { command: string; prefixArgs: string[] } = { command: 'pi', prefixArgs: [] }
 ): string {
   const settingsModel = bounded(defaults.model, MODEL_PATTERN)
   const settingsThinking = bounded(defaults.thinking, THINKING_PATTERN)
@@ -61,6 +62,7 @@ const MAX_SUBAGENT_TRANSCRIPT_MESSAGES = 200;
 const MAX_SUBAGENT_TRANSCRIPT_BYTES = 256 * 1024;
 const APPROVAL_EXTENSION_PATH = ${JSON.stringify(permissionExtensionPath)};
 const PERMISSION_TITLE = ${JSON.stringify(permissionTitle)};
+const FALLBACK_INVOCATION = ${JSON.stringify(fallbackInvocation)};
 let uiQueue = Promise.resolve();
 let activeSubagentCount = 0;
 const subagentWaiters = [];
@@ -143,7 +145,7 @@ const SubagentParams = Type.Object({
 function piInvocation(args) {
   const currentScript = process.argv[1];
   if (currentScript && existsSync(currentScript)) return { command: process.execPath, args: [currentScript, ...args] };
-  return { command: 'pi', args };
+  return { command: FALLBACK_INVOCATION.command, args: [...FALLBACK_INVOCATION.prefixArgs, ...args] };
 }
 
 function safeWorkingDirectory(defaultCwd, requestedCwd) {
