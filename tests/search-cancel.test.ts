@@ -24,7 +24,7 @@ test('file search drops stale results on query changes and cleared searches stop
   assert.match(ipc, /senderSearches\.set\(searchScope, token\)/)
   assert.match(ipc, /if \(!root \|\| limit === 0\) return \{ entries: \[\], truncated: false \}/)
   assert.match(ipc, /latestTextSearches\.set\(event\.sender, token\)/)
-  assert.match(ipc, /const needle = typeof query === 'string' \? query\.trim\(\)\.toLowerCase\(\) : ''[\s\S]*?if \(!root \|\| !needle\) return \{ hits: \[\], truncated: false \}/)
+  assert.match(ipc, /if \(typeof query !== 'string' \|\| query\.length > MAX_SEARCH_QUERY_LENGTH\) \{\s*return \{ hits: \[\], truncated: false \}\s*\}[\s\S]*?const needle = query\.trim\(\)\.toLowerCase\(\)[\s\S]*?if \(!root \|\| !needle\) return \{ hits: \[\], truncated: false \}/)
   assert.match(ipc, /readBoundedHandle\(\s*opened\.handle,\s*Math\.min\(MAX_FILE_BYTES, remainingBytes\),\s*\(totalRead\) => \{\s*bytesRead = totalRead/)
   assert.match(ipc, /if \(result\.truncated\) \{\s*\/\/ The file may have changed during the read\.[\s\S]*?return \{ hits: \[\], bytesRead, budgetExceeded: false, incomplete: true \}/)
 })

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronRight, File, Folder, FolderOpen, Loader2, Search, X } from 'lucide-react'
+import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { FileListResult, FileSearchResult } from '@shared/types'
 import { fileTone } from '../lib/files'
 import { formatBytes } from '../lib/format'
@@ -155,6 +156,7 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
         <input
           ref={searchInputRef}
           value={query}
+          maxLength={MAX_SEARCH_QUERY_LENGTH}
           aria-label={t('Find files')}
           placeholder={t('Find files')}
           onChange={(event) => updateQuery(event.target.value)}

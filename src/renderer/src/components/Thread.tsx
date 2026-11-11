@@ -3,7 +3,8 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, List, Search,
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
 import type { Turn } from '../lib/turns'
-import { buildTurns, changedTurnsFrom, usageForTurn } from '../lib/turns'
+import { buildTurns, changedTurnsFrom, usageForTurn, userMetadataForTurns } from '../lib/turns'
+import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
 import { formatClock, formatCost, formatTokens } from '../lib/format'
@@ -36,6 +37,7 @@ import '../styles/conversation-stream.css'
 
 const VISIBLE_RECENT_TURNS = 3
 const MIN_HIDDEN_MESSAGES = 12
+type SessionTurn = Turn & { user: UserItem }
 /** How far from the bottom still counts as "following the output". */
 const FOLLOW_RANGE = 80
 const EDGE_RANGE = 16
@@ -193,23 +195,43 @@ export function Thread() {
   }, [])
 
   const turns = useMemo(() => buildTurns(items), [items])
-  const userTimestampCounts = useMemo(() => {
-    const counts = new Map<number, number>()
-    for (const turn of turns) {
-      if (!turn.user) continue
-      counts.set(turn.user.timestamp, (counts.get(turn.user.timestamp) ?? 0) + 1)
-    }
-    return counts
-  }, [turns])
-  const lastTurn = turns.at(-1)
+  const userMetadata = userMetadataForTurns(turns)
+  const userTimestampCounts = userMetadata.timestampCounts
+  const sessionTurnsCacheRef = useRef<{
+    sessionKey: string
+    turns: Turn[]
+    userCount: number
+    value: SessionTurn[]
+  } | null>(null)
+  const cachedSessionTurns = sessionTurnsCacheRef.current
+  let sessionTurns: SessionTurn[]
+  if (
+    !cachedSessionTurns ||
+    cachedSessionTurns.sessionKey !== sessionKey ||
+    cachedSessionTurns.userCount !== userMetadata.userCount
+  ) {
+    sessionTurns = turns.filter((turn): turn is SessionTurn => Boolean(turn.user))
+  } else if (cachedSessionTurns.turns === turns) {
+    sessionTurns = cachedSessionTurns.value
+  } else {
+    const firstChangedTurn = changedTurnsFrom(turns, cachedSessionTurns.turns)
+    sessionTurns = firstChangedTurn !== undefined && firstChangedTurn >= turns.length - 1
+      ? cachedSessionTurns.value
+      : turns.filter((turn): turn is SessionTurn => Boolean(turn.user))
+  }
+  sessionTurnsCacheRef.current = {
+    sessionKey,
+    turns,
+    userCount: userMetadata.userCount,
+    value: sessionTurns
+  }
   // Callbacks that only look a turn up must not change identity on every
   // streamed delta; they read the latest turns through this ref instead.
   const turnsRef = useRef(turns)
   turnsRef.current = turns
-  const sessionTurns = useMemo(
-    () => turns.filter((turn): turn is Turn & { user: UserItem } => Boolean(turn.user)),
-    [sessionKey, turns.length, turns[0]?.id, lastTurn?.id, lastTurn]
-  )
+  const lastSessionTurn = userMetadata.lastUserTurnIndex >= 0
+    ? turns[userMetadata.lastUserTurnIndex] as SessionTurn
+    : undefined
   const liveRunSummaryAtTop = Boolean(
     !run.settled &&
       run.startedAt !== undefined &&
@@ -265,9 +287,12 @@ export function Thread() {
   const historyCollapsed = !historyExpanded && hiddenMessageCount >= MIN_HIDDEN_MESSAGES
   const firstVisibleTurn = historyCollapsed ? hiddenTurnCount : 0
   const visibleTurns = historyCollapsed ? turns.slice(firstVisibleTurn) : turns
-  let visibleUserOrdinal = turns
-    .slice(0, firstVisibleTurn)
-    .reduce((count, turn) => count + Number(Boolean(turn.user)), 0)
+  const visibleUserCount = firstVisibleTurn > 0
+    ? visibleTurns.reduce((count, turn) => count + Number(Boolean(turn.user)), 0)
+    : userMetadata.userCount
+  let visibleUserOrdinal = firstVisibleTurn > 0
+    ? userMetadata.userCount - visibleUserCount
+    : 0
   const hasSearchQuery = searchOpen && Boolean(query.trim())
   const chunks = useMemo(
     () => (hasSearchQuery ? searchableChunks(turns, workspace?.path) : []),
@@ -706,6 +731,7 @@ export function Thread() {
       <SessionRail
         key={sessionKey}
         turns={sessionTurns}
+        activeTurn={lastSessionTurn!}
         activeTurnId={activeTurnId}
         onSelect={jumpToTurn}
       />
@@ -718,6 +744,7 @@ export function Thread() {
             <input
               ref={searchInputRef}
               value={query}
+              maxLength={MAX_SEARCH_QUERY_LENGTH}
               placeholder={t('Search this conversation')}
               aria-label={t('Search this conversation')}
               autoFocus

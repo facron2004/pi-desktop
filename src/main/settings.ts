@@ -34,6 +34,21 @@ function normalizeProjectOrder(paths: unknown): string[] {
 }
 
 const MAX_EXTERNAL_CHAT_FOLDERS = 16
+const MAX_SETTINGS_PATH_CHARS = 32_768
+
+function normalizePathList(values: unknown): string[] {
+  if (!Array.isArray(values)) return []
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    if (typeof value !== 'string' || !value.trim() || value.length > MAX_SETTINGS_PATH_CHARS) continue
+    const key = workspaceKey(value)
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(value)
+  }
+  return result
+}
 
 function normalizeExternalChatFolderHistory(paths: unknown, activeFolder: unknown): string[] {
   if (!Array.isArray(paths)) return []
@@ -432,8 +447,9 @@ export class SettingsStore {
         saved.externalChatFolderHistory,
         saved.externalChatFolder
       ),
-      pinnedSessions: Array.isArray(saved.pinnedSessions) ? saved.pinnedSessions : [],
-      archivedSessions: Array.isArray(saved.archivedSessions) ? saved.archivedSessions : []
+      pinnedSessions: normalizePathList(saved.pinnedSessions),
+      archivedSessions: normalizePathList(saved.archivedSessions),
+      hiddenProjects: normalizePathList(saved.hiddenProjects)
     }
   }
 
@@ -451,15 +467,9 @@ export class SettingsStore {
     }
   }
 
-  /** Read the persisted registry so remote authorization sees other app processes' edits. */
+  /** Refresh the registry when another app process changes settings, then reuse its cached snapshot. */
   getRegisteredWorkspaces(): Workspace[] {
-    const workspaces = readSettingsFile(this.file)?.workspaces
-    if (!Array.isArray(workspaces)) return []
-    return dedupeWorkspaces(workspaces.filter((workspace): workspace is Workspace =>
-      typeof workspace?.id === 'string' &&
-      typeof workspace.path === 'string' &&
-      typeof workspace.name === 'string'
-    ))
+    return this.get().workspaces
   }
 
   patch(patch: Partial<AppSettings>): AppSettings {
@@ -616,21 +626,21 @@ export class SettingsStore {
           ? current.pinnedSessions
           : mergeStringSet(
               baseline.pinnedSessions ?? [],
-              patch.pinnedSessions,
+              normalizePathList(patch.pinnedSessions),
               current.pinnedSessions ?? []
             ),
         archivedSessions: patch.archivedSessions === undefined
           ? current.archivedSessions
           : mergeStringSet(
               baseline.archivedSessions ?? [],
-              patch.archivedSessions,
+              normalizePathList(patch.archivedSessions),
               current.archivedSessions ?? []
             ),
         hiddenProjects: patch.hiddenProjects === undefined
           ? current.hiddenProjects
           : mergeStringSet(
               baseline.hiddenProjects ?? [],
-              patch.hiddenProjects,
+              normalizePathList(patch.hiddenProjects),
               current.hiddenProjects ?? []
             ),
         lastSessions: patch.lastSessions === undefined

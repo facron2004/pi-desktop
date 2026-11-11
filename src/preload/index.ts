@@ -96,8 +96,8 @@ const bridge: PiDesktopBridge = {
   dialog: {
     pickDirectory: (defaultPath?: string): Promise<string | null> =>
       ipcRenderer.invoke('dialog:pickDirectory', defaultPath),
-    pickFiles: (defaultPath?: string): Promise<PickedFile[]> =>
-      ipcRenderer.invoke('dialog:pickFiles', defaultPath)
+    pickFiles: (defaultPath?: string, imageBudgetBytes?: number): Promise<PickedFile[]> =>
+      ipcRenderer.invoke('dialog:pickFiles', defaultPath, imageBudgetBytes)
   },
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),

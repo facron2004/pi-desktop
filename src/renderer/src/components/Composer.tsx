@@ -3,13 +3,14 @@ import {
   ArrowUp,
   Bot,
   ListChecks,
+  Loader2,
   Target,
   Square,
   Wrench,
   X
 } from 'lucide-react'
 import { useAppStore, type QueueKind } from '../store/useAppStore'
-import { MAX_IMAGE_DATA_BYTES } from '@shared/types'
+import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { FileEntry, PiCommand } from '@shared/types'
 import { filterCommands } from '../lib/commands'
 import { relativePath } from '../lib/path'
@@ -34,6 +35,17 @@ interface MentionMatch {
   query: string
   start: number
   cursor: number
+}
+
+interface ComposerImage {
+  data: string
+  mimeType: string
+  byteSize: number
+}
+
+function imageByteLength(data: string): number {
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0
+  return Math.max(0, Math.floor(data.length * 3 / 4) - padding)
 }
 
 /** Detect a `/command` token that ends at the caret. */
@@ -88,7 +100,10 @@ export function Composer() {
   const toast = useAppStore((state) => state.toast)
 
   const [text, setText] = useState('')
-  const [images, setImages] = useState<{ data: string; mimeType: string }[]>([])
+  const [images, setImages] = useState<ComposerImage[]>([])
+  const imageBytesRef = useRef(0)
+  const pendingFileAdds = useRef(0)
+  const [addingFiles, setAddingFiles] = useState(false)
   // Delivery is a preference, not a per-message control in the composer:
   // configure it in Settings so this bar stays to send/stop and the model.
   const kind: QueueKind = defaultFollowUpMode === 'queue' ? 'followUp' : 'steer'
@@ -99,6 +114,18 @@ export function Composer() {
   const [mentionFiles, setMentionFiles] = useState<FileEntry[]>([])
   const [mentionIndex, setMentionIndex] = useState(0)
   const [paletteIndex, setPaletteIndex] = useState(0)
+
+  const reserveImageBytes = useCallback((bytes: number): boolean => {
+    if (!Number.isSafeInteger(bytes) || bytes <= 0 || imageBytesRef.current + bytes > MAX_COMPOSER_IMAGE_BYTES) {
+      return false
+    }
+    imageBytesRef.current += bytes
+    return true
+  }, [])
+
+  const releaseImageBytes = useCallback((bytes: number): void => {
+    imageBytesRef.current = Math.max(0, imageBytesRef.current - bytes)
+  }, [])
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
 
@@ -263,8 +290,9 @@ export function Composer() {
   // The files that match the `@` in the composer. The search waits a moment,
   // so a fast typist does not walk the project over and over.
   useEffect(() => {
-    if (!mention || !workspace?.path) {
+    if (!mention || !workspace?.path || mention.query.length > MAX_SEARCH_QUERY_LENGTH) {
       setMentionFiles([])
+      setMentionIndex(0)
       return
     }
     setMentionFiles([])
@@ -371,13 +399,14 @@ export function Composer() {
 
   const submit = useCallback(() => {
     if (submitLock.current) return
+    if (pendingFileAdds.current > 0) return
     if (!text.trim() && !images.length) return
     // Hold the lock until Pi accepts the prompt. Releasing it when the box
     // clears lets a second Enter send the same draft again while the first
     // request is still starting.
     submitLock.current = true
     const draft = text
-    const shots = images
+    const shots = images.map(({ data, mimeType }) => ({ data, mimeType }))
     const delivery = kind
     void send(draft, shots, delivery).finally(() => {
       submitLock.current = false
@@ -386,6 +415,7 @@ export function Composer() {
     setHistoryIndex(-1)
     setText('')
     setImages([])
+    imageBytesRef.current = 0
     // The draft is gone, so the next picture pasted is a fresh reference.
     pastedRefs.current.clear()
     closePalette()
@@ -494,10 +524,15 @@ export function Composer() {
     file.size > MAX_IMAGE_DATA_BYTES
       ? Promise.resolve('')
       : new Promise((resolve) => {
-          const reader = new FileReader()
-          reader.onload = () => resolve(String(reader.result ?? '').split(',')[1] ?? '')
-          reader.onerror = () => resolve('')
-          reader.readAsDataURL(file)
+          try {
+            const reader = new FileReader()
+            reader.onload = () => resolve(String(reader.result ?? '').split(',')[1] ?? '')
+            reader.onerror = () => resolve('')
+            reader.onabort = () => resolve('')
+            reader.readAsDataURL(file)
+          } catch {
+            resolve('')
+          }
         })
 
   /**
@@ -519,13 +554,19 @@ export function Composer() {
         if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
         continue
       }
-      if (file.size > MAX_IMAGE_DATA_BYTES) {
+      if (file.size > MAX_IMAGE_DATA_BYTES || !reserveImageBytes(file.size)) {
         const filePath = window.pi.fs.pathForFile(file)
         if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
         continue
       }
       const base64 = await readBase64(file)
-      if (base64) setImages((current) => [...current, { data: base64, mimeType: file.type }])
+      if (!base64) {
+        releaseImageBytes(file.size)
+        const filePath = window.pi.fs.pathForFile(file)
+        if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+        continue
+      }
+      setImages((current) => [...current, { data: base64, mimeType: file.type, byteSize: file.size }])
       // A clipboard picture keeps its name, size and stamp, so the same one
       // pasted twice is recognised before a second copy ever reaches the disk —
       // unless the composer no longer carries the name the first paste put in.
@@ -550,48 +591,77 @@ export function Composer() {
 
   const addFiles = async (files: FileList | null): Promise<void> => {
     if (!files) return
-    const items = Array.from(files)
-    // The switch decides whether a pasted picture is also named in the text,
-    // and a batch without a picture does not go near the text at all.
-    if (pasteMentions && items.some((file) => file.type.startsWith('image/'))) {
-      await addPicturesInPlace(items)
-      return
-    }
-    const references: string[] = []
-    for (const file of items) {
-      if (file.type.startsWith('image/')) {
-        if (file.size > MAX_IMAGE_DATA_BYTES) {
-          const filePath = window.pi.fs.pathForFile(file)
-          if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+    pendingFileAdds.current += 1
+    setAddingFiles(true)
+    try {
+      const items = Array.from(files)
+      // The switch decides whether a pasted picture is also named in the text,
+      // and a batch without a picture does not go near the text at all.
+      if (pasteMentions && items.some((file) => file.type.startsWith('image/'))) {
+        await addPicturesInPlace(items)
+        return
+      }
+      const references: string[] = []
+      for (const file of items) {
+        if (file.type.startsWith('image/')) {
+          if (file.size > MAX_IMAGE_DATA_BYTES || !reserveImageBytes(file.size)) {
+            const filePath = window.pi.fs.pathForFile(file)
+            if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+            continue
+          }
+          const base64 = await readBase64(file)
+          if (base64) {
+            setImages((current) => [...current, { data: base64, mimeType: file.type, byteSize: file.size }])
+          } else {
+            releaseImageBytes(file.size)
+            const filePath = window.pi.fs.pathForFile(file)
+            if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+          }
           continue
         }
-        const reader = new FileReader()
-        reader.onload = () => {
-          const result = String(reader.result ?? '')
-          const base64 = result.split(',')[1]
-          if (base64) setImages((current) => [...current, { data: base64, mimeType: file.type }])
-        }
-        reader.readAsDataURL(file)
-        continue
+        const filePath = window.pi.fs.pathForFile(file)
+        if (!filePath) continue
+        references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
       }
-      const filePath = window.pi.fs.pathForFile(file)
-      if (!filePath) continue
-      references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+      if (references.length) useAppStore.getState().insertIntoComposer(references.join('\n'))
+    } finally {
+      pendingFileAdds.current -= 1
+      setAddingFiles(pendingFileAdds.current > 0)
     }
-    if (references.length) useAppStore.getState().insertIntoComposer(references.join('\n'))
   }
 
   const pickFiles = useCallback(async () => {
+    pendingFileAdds.current += 1
+    setAddingFiles(true)
     try {
-      const picked = await window.pi.dialog.pickFiles(workspace?.path || status.cwd || undefined)
-      const images = picked.flatMap((item) => item.kind === 'image' ? [{ data: item.data, mimeType: item.mimeType }] : [])
-      const references = picked.flatMap((item) => item.kind === 'path' ? ['@' + JSON.stringify(item.path.replace(/\\/g, '/'))] : [])
+      const remainingImageBytes = Math.max(0, MAX_COMPOSER_IMAGE_BYTES - imageBytesRef.current)
+      const picked = await window.pi.dialog.pickFiles(
+        workspace?.path || status.cwd || undefined,
+        remainingImageBytes
+      )
+      const images: ComposerImage[] = []
+      const references: string[] = []
+      for (const item of picked) {
+        if (item.kind === 'path') {
+          references.push('@' + JSON.stringify(item.path.replace(/\\/g, '/')))
+          continue
+        }
+        const byteSize = imageByteLength(item.data)
+        if (!reserveImageBytes(byteSize)) {
+          if (item.path) references.push('@' + JSON.stringify(item.path.replace(/\\/g, '/')))
+          continue
+        }
+        images.push({ data: item.data, mimeType: item.mimeType, byteSize })
+      }
       if (images.length) setImages((current) => [...current, ...images])
       if (references.length) useAppStore.getState().insertIntoComposer(references.join('\n'))
     } catch {
       useAppStore.getState().showToast('Could not add files', 'error')
+    } finally {
+      pendingFileAdds.current -= 1
+      setAddingFiles(pendingFileAdds.current > 0)
     }
-  }, [workspace?.path, status.cwd])
+  }, [workspace?.path, status.cwd, reserveImageBytes])
 
   const insertMenuCommand = useCallback(
     (command: PiCommand) => {
@@ -694,7 +764,10 @@ export function Composer() {
                     <button
                       type="button"
                       className="composer__attachment-remove"
-                      onClick={() => setImages((current) => current.filter((_, i) => i !== index))}
+                      onClick={() => {
+                        releaseImageBytes(image.byteSize)
+                        setImages((current) => current.filter((_, i) => i !== index))
+                      }}
                       aria-label={`${t('Remove image')} ${index + 1}`}
                       title={`${t('Remove image')} ${index + 1}`}
                     >
@@ -825,11 +898,12 @@ export function Composer() {
                 type="button"
                 className="btn btn--primary composer__send"
                 onClick={submit}
-                disabled={!canCompose || (!text.trim() && !images.length)}
+                disabled={!canCompose || addingFiles || (!text.trim() && !images.length)}
+                aria-busy={addingFiles || undefined}
                 aria-label={t('Send message')}
                 title={t('Send message')}
               >
-                <ArrowUp size={18} strokeWidth={2.6} />
+                {addingFiles ? <Loader2 size={15} className="spin" /> : <ArrowUp size={18} strokeWidth={2.6} />}
               </button>
             )}
           </div>

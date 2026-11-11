@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { networkInterfaces } from 'node:os'
+import { performance } from 'node:perf_hooks'
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type {
@@ -23,6 +24,7 @@ const MAX_REMOTE_STATE_FILE_BYTES = 64 * 1024
 const PAIR_ATTEMPT_WINDOW_MS = 60_000
 const MAX_PAIR_ATTEMPTS_PER_WINDOW = 8
 const REMOTE_STATE_SYNC_MS = 1_000
+const REMOTE_EVENT_STATE_CHECK_MS = 250
 export const MAX_PAIR_ATTEMPT_SOURCES = 256
 export const MAX_REMOTE_EVENT_STREAMS = 24
 const MAX_PAIR_BODY_BYTES = 64 * 1024
@@ -279,6 +281,7 @@ export class RemoteAccessService {
   private readonly streams = new Set<EventStream>()
   private stateSyncTimer: ReturnType<typeof setTimeout> | undefined
   private disposed = false
+  private lastEventStateCheckAt = Number.NEGATIVE_INFINITY
 
   constructor(
     private readonly options: {
@@ -628,9 +631,13 @@ export class RemoteAccessService {
     if (!matchingStreams.length) return
 
     // A different app instance may revoke a phone or remove its workspace.
-    // Check persisted authorization before every push. The state fingerprint
-    // avoids rereading and reparsing the JSON file for every streamed event.
-    this.refreshStateFromDisk()
+    // Keep checks frequent while streaming without putting a synchronous stat
+    // on every token; the state-sync timer remains the fallback when idle.
+    const now = performance.now()
+    if (now - this.lastEventStateCheckAt >= REMOTE_EVENT_STATE_CHECK_MS) {
+      this.lastEventStateCheckAt = now
+      this.refreshStateFromDisk()
+    }
     const ref = this.sessionRefs.get(fileKey)
     const activeStreams = matchingStreams.filter((stream) => this.streams.has(stream))
     if (!activeStreams.length || !this.enabled || !this.server) return

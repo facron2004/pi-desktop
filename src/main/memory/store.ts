@@ -16,6 +16,8 @@ import { redactSecrets } from './redact'
 export const MAX_ENTRIES = 300
 export const MAX_PROJECT_ENTRIES = 80
 export const MAX_ENTRY_CHARS = 400
+export const MAX_MEMORY_ERROR_CHARS = 4_096
+const MAX_MEMORY_LEDGER_SESSIONS = 2_000
 /** Codex caps its injected summary by UTF-8 bytes; CJK text is 3 bytes a character. */
 export const MAX_SUMMARY_BYTES = 10_000
 /** Kept as a character ceiling for callers that want a stricter prose budget. */
@@ -73,6 +75,23 @@ export interface MergeResult {
   total: number
 }
 
+export function sanitizeMemoryError(error: string): string {
+  return redactSecrets(error).slice(0, MAX_MEMORY_ERROR_CHARS)
+}
+
+function recentLedgerSessions(
+  sessions: Record<string, MemorySessionRecord>
+): Record<string, MemorySessionRecord> {
+  const entries = Object.entries(sessions)
+  if (entries.length <= MAX_MEMORY_LEDGER_SESSIONS) return sessions
+  entries.sort(([leftPath, left], [rightPath, right]) => {
+    const leftAt = typeof left?.at === 'number' && Number.isFinite(left.at) ? left.at : 0
+    const rightAt = typeof right?.at === 'number' && Number.isFinite(right.at) ? right.at : 0
+    return rightAt - leftAt || leftPath.localeCompare(rightPath)
+  })
+  return Object.fromEntries(entries.slice(0, MAX_MEMORY_LEDGER_SESSIONS))
+}
+
 function readJson<T>(file: string, fallback: T): T {
   try {
     if (!existsSync(file)) return fallback
@@ -111,6 +130,28 @@ function writeTextAtomic(file: string, value: string): void {
       /* a failed write may not have created the temporary file */
     }
     throw error
+  }
+}
+
+function memoryLedgerFileVersion(file: string): string | undefined {
+  try {
+    const stats = statSync(file, { bigint: true })
+    return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : undefined
+  }
+}
+
+function cloneLedger(ledger: MemoryLedgerFile): MemoryLedgerFile {
+  return {
+    version: 1,
+    generation: ledger.generation,
+    sessions: Object.fromEntries(
+      Object.entries(ledger.sessions).map(([file, record]) => [
+        file,
+        record && typeof record === 'object' && !Array.isArray(record) ? { ...record } : record
+      ])
+    )
   }
 }
 
@@ -299,6 +340,8 @@ export class MemoryStore {
   readonly ledgerFile: string
   readonly summaryFile: string
   readonly rolloutDir: string
+  private ledgerCache: MemoryLedgerFile | undefined
+  private ledgerFileVersion: string | undefined
 
   constructor(root: string) {
     this.root = path.resolve(root)
@@ -412,14 +455,30 @@ export class MemoryStore {
   }
 
   readLedger(): MemoryLedgerFile {
+    const version = memoryLedgerFileVersion(this.ledgerFile)
+    if (version !== undefined && version === this.ledgerFileVersion && this.ledgerCache) {
+      return cloneLedger(this.ledgerCache)
+    }
     const file = readJson<MemoryLedgerFile>(this.ledgerFile, { version: 1, sessions: {} })
-    return {
+    const sessions = file?.sessions
+    const ledger: MemoryLedgerFile = {
       version: 1,
       generation: Number.isSafeInteger(file?.generation) && (file.generation ?? 0) >= 0
         ? file.generation
         : 0,
-      sessions: file && typeof file.sessions === 'object' && file.sessions ? file.sessions : {}
+      sessions: sessions && typeof sessions === 'object' && !Array.isArray(sessions)
+        ? recentLedgerSessions(sessions as Record<string, MemorySessionRecord>)
+        : {}
     }
+    const afterReadVersion = memoryLedgerFileVersion(this.ledgerFile)
+    if (version !== undefined && version === afterReadVersion) {
+      this.ledgerCache = cloneLedger(ledger)
+      this.ledgerFileVersion = version
+    } else {
+      this.ledgerCache = undefined
+      this.ledgerFileVersion = undefined
+    }
+    return cloneLedger(ledger)
   }
 
   generation(): number {
@@ -427,12 +486,26 @@ export class MemoryStore {
   }
 
   private writeLedger(ledger: MemoryLedgerFile): void {
+    ledger.sessions = recentLedgerSessions(ledger.sessions)
+    for (const record of Object.values(ledger.sessions)) {
+      if (record && typeof record.lastError === 'string') {
+        record.lastError = sanitizeMemoryError(record.lastError)
+      }
+    }
     writeJsonAtomic(this.ledgerFile, ledger)
+    this.ledgerCache = cloneLedger(ledger)
+    this.ledgerFileVersion = memoryLedgerFileVersion(this.ledgerFile)
   }
 
   /** True when this exact file revision has already been considered. */
-  wasProcessed(file: string, stats?: MemorySessionRevision): boolean {
-    const record = this.readLedger().sessions[file]
+  wasProcessed(
+    file: string,
+    stats?: MemorySessionRevision,
+    snapshotRecord?: MemorySessionRecord | null
+  ): boolean {
+    const record = snapshotRecord === undefined
+      ? this.readLedger().sessions[file]
+      : snapshotRecord ?? undefined
     if (!record) return false
     const current = stats ?? statSafe(file)
     if (!current) return false
@@ -461,7 +534,7 @@ export class MemoryStore {
         at: Date.now(),
         ...(skipped ? { skipped } : {}),
         ...(attempts ? { attempts } : {}),
-        ...(lastError && skipped === 'error' ? { lastError } : {})
+        ...(lastError && skipped === 'error' ? { lastError: sanitizeMemoryError(lastError) } : {})
       }
       this.writeLedger(ledger)
       return true

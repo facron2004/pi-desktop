@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
+import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from '@shared/types'
 import { formatRelativeTime } from '../lib/format'
 import { normalisePathKey, samePath } from '../lib/path'
@@ -50,6 +51,8 @@ import '../styles/sidebar-workspace.css'
 const MIN_WIDTH = 200
 const MAX_WIDTH = 460
 const SESSION_PREVIEW_LIMIT = 5
+const INITIAL_CONVERSATION_SEARCH_RESULTS = 50
+const CONVERSATION_SEARCH_RESULTS_PAGE = 50
 
 /** True when a conversation matches the filter of the sidebar. */
 function matches(session: SessionMeta, needle: string): boolean {
@@ -121,6 +124,10 @@ export function Sidebar({
   const t = useT()
 
   const [query, setQuery] = useState('')
+  const [conversationSearchWindow, setConversationSearchWindow] = useState({
+    needle: '',
+    count: INITIAL_CONVERSATION_SEARCH_RESULTS
+  })
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set())
   const [expandedLists, setExpandedLists] = useState<Set<string>>(() => new Set())
   const [searchOpen, setSearchOpen] = useState(false)
@@ -390,15 +397,31 @@ export function Sidebar({
     () => shown.filter((project) => !searchNeedle || `${project.name}\n${project.path}`.toLowerCase().includes(searchNeedle)),
     [shown, searchNeedle]
   )
-  const conversationSearchResults = useMemo(() => {
-    const unique = new Map<string, ConversationRow>()
-    for (const session of listed) {
-      if (!unique.has(session.file)) unique.set(session.file, session)
+  const conversationSearchCount = conversationSearchWindow.needle === searchNeedle
+    ? conversationSearchWindow.count
+    : INITIAL_CONVERSATION_SEARCH_RESULTS
+  const conversationSearchMatches = useMemo(() => {
+    const results: ConversationRow[] = []
+    let liveIndex = 0
+    let diskIndex = 0
+
+    // Both inputs are newest-first, and liveRows excludes sessions already on
+    // disk. Cache the merged matches so expanding a page does not rescan them.
+    while (liveIndex < liveRows.length || diskIndex < diskRows.length) {
+      const live = liveRows[liveIndex]
+      const disk = diskRows[diskIndex]
+      const session = !disk || (live && live.updatedAt >= disk.updatedAt) ? live : disk
+      if (!session) break
+      if (session === live) liveIndex += 1
+      else diskIndex += 1
+
+      if (archivedFiles.has(session.file) || !matches(session, searchNeedle)) continue
+      results.push(session)
     }
-    return [...unique.values()]
-      .filter((session) => !searchNeedle || matches(session, searchNeedle))
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-  }, [listed, searchNeedle])
+
+    return results
+  }, [liveRows, diskRows, archivedFiles, searchNeedle])
+  const conversationSearchResults = conversationSearchMatches.slice(0, conversationSearchCount)
 
   const persistOrder = async (next: Project<ConversationRow>[]) => {
     const current = (await window.pi.settings.get()).workspaces
@@ -1309,6 +1332,7 @@ export function Sidebar({
             <input
               ref={searchInputRef}
               value={query}
+              maxLength={MAX_SEARCH_QUERY_LENGTH}
               role="combobox"
               aria-autocomplete="list"
               aria-expanded={recentsVisible}
@@ -1436,11 +1460,11 @@ export function Sidebar({
               </section>
             ) : null}
 
-            {conversationSearchResults.length > 0 ? (
+            {conversationSearchMatches.length > 0 ? (
               <section className="search-dialog__section" aria-label={t('Search conversations')}>
                 <div className="search-dialog__section-head">
                   <span>{t('Search conversations')}</span>
-                  <span className="session-search__count">{conversationSearchResults.length}</span>
+                  <span className="session-search__count">{conversationSearchMatches.length}</span>
                 </div>
                 {conversationSearchResults.map((session) => (
                   <button
@@ -1463,6 +1487,22 @@ export function Sidebar({
                     </span>
                   </button>
                 ))}
+                {conversationSearchResults.length < conversationSearchMatches.length ? (
+                  <button
+                    type="button"
+                    className="search-dialog__more"
+                    onClick={() => setConversationSearchWindow((current) => ({
+                      needle: searchNeedle,
+                      count: (
+                        current.needle === searchNeedle
+                          ? current.count
+                          : INITIAL_CONVERSATION_SEARCH_RESULTS
+                      ) + CONVERSATION_SEARCH_RESULTS_PAGE
+                    }))}
+                  >
+                    {t('Show more')}
+                  </button>
+                ) : null}
               </section>
             ) : null}
 
@@ -1485,7 +1525,7 @@ export function Sidebar({
             ) : null}
 
             {projectSearchResults.length === 0 &&
-            conversationSearchResults.length === 0 &&
+            conversationSearchMatches.length === 0 &&
             !showContentSearch ? (
               <div className="search-dialog__empty">
                 {needle ? t('No project or conversation matches') : t('No projects or conversations yet')}

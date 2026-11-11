@@ -26,6 +26,7 @@ import type {
 import { MARKETPLACE_SNAPSHOT } from '@shared/marketplace-data'
 import { runPiCli } from './pi/cli'
 import { properLockfile } from './proper-lockfile'
+import { openWorkspaceFile, resolveWorkspacePath } from './workspace-files'
 
 /** Cache file under the Electron userData directory holding the last refresh. */
 export const MARKETPLACE_CACHE_FILE = 'marketplace-cache.json'
@@ -49,6 +50,8 @@ const GITHUB_HEADERS: Record<string, string> = {
 /** Stars a repository needs before a refresh may add it to the marketplace. */
 const DEFAULT_MIN_STARS = 100
 export const MAX_MARKETPLACE_RESPONSE_BYTES = 2 * 1024 * 1024
+const MAX_MARKETPLACE_CACHE_BYTES = 4 * 1024 * 1024
+const MAX_MARKETPLACE_SETTINGS_BYTES = 8 * 1024 * 1024
 
 /** How long `pi install` or a skill collection clone may take. */
 const INSTALL_TIMEOUT_MS = 180000
@@ -259,7 +262,10 @@ export function mergeMarketplaceSnapshot(
 
 function readMarketplaceCache(userDataDir: string): MarketplaceCache | null {
   try {
-    const raw = readFileSync(path.join(userDataDir, MARKETPLACE_CACHE_FILE), 'utf8')
+    const file = path.join(userDataDir, MARKETPLACE_CACHE_FILE)
+    const stats = statSync(file)
+    if (!stats.isFile() || stats.size > MAX_MARKETPLACE_CACHE_BYTES) return null
+    const raw = readFileSync(file, 'utf8')
     const parsed: unknown = JSON.parse(raw.replace(/^\uFEFF/, ''))
     if (
       !isRecord(parsed) ||
@@ -319,26 +325,19 @@ export async function listMarketplace(
   })
 }
 
-/** Read package sources out of one Pi settings file. Missing or malformed
- *  settings read as "nothing installed", never as an error. */
-function readPackageSources(file: string): string[] {
-  try {
-    const raw = readFileSync(file, 'utf8')
-    const parsed: unknown = JSON.parse(raw.replace(/^\uFEFF/, ''))
-    if (!isRecord(parsed) || !Array.isArray(parsed.packages)) return []
-    const sources: string[] = []
-    for (const item of parsed.packages) {
-      if (typeof item === 'string') {
-        sources.push(item)
-      } else if (isRecord(item)) {
-        if (typeof item.source === 'string') sources.push(item.source)
-        else if (typeof item.package === 'string') sources.push(item.package)
-      }
+/** Read package sources from a parsed Pi settings file. */
+function packageSources(parsed: Record<string, unknown> | null): string[] {
+  if (!parsed || !Array.isArray(parsed.packages)) return []
+  const sources: string[] = []
+  for (const item of parsed.packages) {
+    if (typeof item === 'string') {
+      sources.push(item)
+    } else if (isRecord(item)) {
+      if (typeof item.source === 'string') sources.push(item.source)
+      else if (typeof item.package === 'string') sources.push(item.package)
     }
-    return sources
-  } catch {
-    return []
   }
+  return sources
 }
 
 /** A skill collection counts as installed when its clone has a `.git` child or
@@ -371,11 +370,15 @@ export async function listInstalledMarketplaceIds(
   const snapshot = await listMarketplace(options.userDataDir)
   const agentDir = agentDirectory()
   const installedSources = new Set<string>()
-  const settingsFiles = [path.join(agentDir, 'settings.json')]
+  const userSettings = readSettingsDocument(path.join(agentDir, 'settings.json'))
+  for (const source of packageSources(userSettings)) {
+    const normalized = normaliseInstalledSource(source)
+    if (normalized) installedSources.add(normalized.toLowerCase())
+  }
   const cwd = options.cwd && options.cwd.trim() ? path.resolve(options.cwd.trim()) : undefined
-  if (cwd) settingsFiles.push(path.join(cwd, '.pi', 'settings.json'))
-  for (const file of new Set(settingsFiles)) {
-    for (const source of readPackageSources(file)) {
+  if (cwd) {
+    const projectSettings = await readWorkspaceSettingsDocument(cwd, '.pi/settings.json')
+    for (const source of packageSources(projectSettings?.document ?? null)) {
       const normalized = normaliseInstalledSource(source)
       if (normalized) installedSources.add(normalized.toLowerCase())
     }
@@ -418,9 +421,8 @@ function packageSourceOf(value: unknown): string | null {
   return trimmed || null
 }
 
-function readSettingsDocument(file: string): Record<string, unknown> | null {
+function parseSettingsDocument(raw: string): Record<string, unknown> | null {
   try {
-    const raw = readFileSync(file, 'utf8')
     const parsed: unknown = JSON.parse(raw.replace(/^\uFEFF/, ''))
     return isRecord(parsed) ? parsed : null
   } catch {
@@ -428,8 +430,53 @@ function readSettingsDocument(file: string): Record<string, unknown> | null {
   }
 }
 
-function readPackageEntries(file: string): unknown[] {
-  const document = readSettingsDocument(file)
+function readSettingsDocument(file: string): Record<string, unknown> | null {
+  try {
+    const stats = statSync(file)
+    if (!stats.isFile() || stats.size > MAX_MARKETPLACE_SETTINGS_BYTES) return null
+    return parseSettingsDocument(readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+async function readWorkspaceSettingsDocument(
+  root: string,
+  relative: string
+): Promise<{ target: string; document: Record<string, unknown> | null } | null> {
+  const opened = await openWorkspaceFile(root, relative)
+  if (!opened) return null
+  try {
+    const stats = await opened.handle.stat()
+    if (!stats.isFile() || stats.size > MAX_MARKETPLACE_SETTINGS_BYTES) {
+      return { target: opened.target, document: null }
+    }
+
+    const chunks: Buffer[] = []
+    const buffer = Buffer.allocUnsafe(64 * 1024)
+    let size = 0
+    while (size <= MAX_MARKETPLACE_SETTINGS_BYTES) {
+      const length = Math.min(buffer.length, MAX_MARKETPLACE_SETTINGS_BYTES + 1 - size)
+      const { bytesRead } = await opened.handle.read(buffer, 0, length, null)
+      if (bytesRead === 0) break
+      chunks.push(Buffer.from(buffer.subarray(0, bytesRead)))
+      size += bytesRead
+    }
+    if (size > MAX_MARKETPLACE_SETTINGS_BYTES) {
+      return { target: opened.target, document: null }
+    }
+    return {
+      target: opened.target,
+      document: parseSettingsDocument(Buffer.concat(chunks, size).toString('utf8'))
+    }
+  } catch {
+    return { target: opened.target, document: null }
+  } finally {
+    await opened.handle.close().catch(() => {})
+  }
+}
+
+function readPackageEntries(document: Record<string, unknown> | null): unknown[] {
   return document && Array.isArray(document.packages) ? document.packages : []
 }
 
@@ -554,8 +601,35 @@ function writeSettingsDocument(file: string, document: Record<string, unknown>):
   }
 }
 
+async function writeWorkspaceSettingsDocument(
+  root: string,
+  relative: string,
+  target: string,
+  document: Record<string, unknown>
+): Promise<void> {
+  const currentTarget = await resolveWorkspacePath(root, relative)
+  if (currentTarget !== target) throw new Error('The project package settings changed while it was being updated.')
+
+  const temporary = `${target}.${randomUUID()}.tmp`
+  const mode = statSync(target).mode & 0o7777
+  try {
+    writeFileSync(temporary, JSON.stringify(document, null, 2), { encoding: 'utf8', mode })
+    const latestTarget = await resolveWorkspacePath(root, relative)
+    if (latestTarget !== target) {
+      throw new Error('The project package settings changed while it was being updated.')
+    }
+    renameSync(temporary, target)
+  } catch (error) {
+    try { unlinkSync(temporary) } catch { /* the temporary file may not exist */ }
+    throw error
+  }
+}
+
 /** Coordinate package edits with Pi and the desktop's other settings writers. */
-function withPackageSettingsLock<T>(file: string, operation: () => T): T {
+async function withPackageSettingsLock<T>(
+  file: string,
+  operation: () => Promise<T> | T
+): Promise<T> {
   let release: () => void
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -571,7 +645,7 @@ function withPackageSettingsLock<T>(file: string, operation: () => T): T {
     }
   }
   try {
-    return operation()
+    return await operation()
   } finally {
     try {
       release()
@@ -583,6 +657,39 @@ function withPackageSettingsLock<T>(file: string, operation: () => T): T {
 
 function workspaceForPackageAction(cwd?: string): string | undefined {
   return cwd && cwd.trim() ? path.resolve(cwd.trim()) : managedWorkspacePath
+}
+
+async function withPackageSettingsDocument<T>(
+  scope: PackageScope,
+  file: string,
+  workspaceRoot: string | undefined,
+  operation: (
+    document: Record<string, unknown>,
+    write: (document: Record<string, unknown>) => Promise<void>
+  ) => Promise<T> | T
+): Promise<T> {
+  const unreadable = () => new Error(`Could not read the package list from ${file}.`)
+
+  if (scope === 'project') {
+    if (!workspaceRoot) throw unreadable()
+    const relative = '.pi/settings.json'
+    const initial = await readWorkspaceSettingsDocument(workspaceRoot, relative)
+    if (!initial?.document) throw unreadable()
+    return await withPackageSettingsLock(initial.target, async () => {
+      const current = await readWorkspaceSettingsDocument(workspaceRoot, relative)
+      if (!current?.document || current.target !== initial.target) throw unreadable()
+      return operation(current.document, (document) =>
+        writeWorkspaceSettingsDocument(workspaceRoot, relative, initial.target, document)
+      )
+    })
+  }
+
+  if (!existsSync(file)) throw unreadable()
+  return await withPackageSettingsLock(file, async () => {
+    const document = readSettingsDocument(file)
+    if (!document) throw unreadable()
+    return operation(document, async (next) => writeSettingsDocument(file, next))
+  })
 }
 
 /**
@@ -597,13 +704,17 @@ export async function listManagedPackages(
 
   const rows: ManagedPackage[] = []
   const seen = new Set<string>()
-  const scopes: Array<{ scope: PackageScope; file: string | null }> = [
-    { scope: 'user', file: packageSettingsFile('user') },
-    { scope: 'project', file: packageSettingsFile('project', cwd) }
+  const userFile = packageSettingsFile('user')
+  const userSettings = userFile ? readSettingsDocument(userFile) : null
+  const projectSettings = cwd
+    ? await readWorkspaceSettingsDocument(cwd, '.pi/settings.json')
+    : null
+  const scopes: Array<{ scope: PackageScope; document: Record<string, unknown> | null }> = [
+    { scope: 'user', document: userSettings },
+    { scope: 'project', document: projectSettings?.document ?? null }
   ]
-  for (const { scope, file } of scopes) {
-    if (!file) continue
-    for (const raw of readPackageEntries(file)) {
+  for (const { scope, document } of scopes) {
+    for (const raw of readPackageEntries(document)) {
       const source = packageSourceOf(raw)
       if (!source) continue
       const id = `${scope}:${source}`
@@ -636,12 +747,11 @@ export async function setPackageEnabled(
   if (typeof enabled !== 'boolean') return { ok: false, output: 'Invalid package action.' }
   const parsed = parseManagedPackageId(id)
   if (!parsed) return { ok: false, output: 'Invalid package id.' }
-  const file = packageSettingsFile(parsed.scope, workspaceForPackageAction(cwd))
+  const workspaceRoot = parsed.scope === 'project' ? workspaceForPackageAction(cwd) : undefined
+  const file = packageSettingsFile(parsed.scope, workspaceRoot)
   if (!file) return { ok: false, output: 'The project workspace is not available.' }
-  if (!existsSync(file)) return { ok: false, output: `Could not read the package list from ${file}.` }
   try {
-    return withPackageSettingsLock(file, () => {
-      const document = readSettingsDocument(file)
+    return await withPackageSettingsDocument(parsed.scope, file, workspaceRoot, async (document, write) => {
       const packages = document && Array.isArray(document.packages) ? document.packages : null
       if (!document || !packages) {
         return { ok: false, output: `Could not read the package list from ${file}.` }
@@ -682,7 +792,7 @@ export async function setPackageEnabled(
         }
       }
 
-      writeSettingsDocument(file, document)
+      await write(document)
       return {
         ok: true,
         output: `${enabled ? 'Enabled' : 'Disabled'} package "${parsed.source}" (${parsed.scope}).`
@@ -701,12 +811,11 @@ export async function removePackage(
 ): Promise<MarketplaceActionResult> {
   const parsed = parseManagedPackageId(id)
   if (!parsed) return { ok: false, output: 'Invalid package id.' }
-  const file = packageSettingsFile(parsed.scope, workspaceForPackageAction(cwd))
+  const workspaceRoot = parsed.scope === 'project' ? workspaceForPackageAction(cwd) : undefined
+  const file = packageSettingsFile(parsed.scope, workspaceRoot)
   if (!file) return { ok: false, output: 'The project workspace is not available.' }
-  if (!existsSync(file)) return { ok: false, output: `Could not read the package list from ${file}.` }
   try {
-    return withPackageSettingsLock(file, () => {
-      const document = readSettingsDocument(file)
+    return await withPackageSettingsDocument(parsed.scope, file, workspaceRoot, async (document, write) => {
       const packages = document && Array.isArray(document.packages) ? document.packages : null
       if (!document || !packages) {
         return { ok: false, output: `Could not read the package list from ${file}.` }
@@ -719,7 +828,7 @@ export async function removePackage(
         }
       }
       if (!removed) return { ok: false, output: `Package not found: ${parsed.source}` }
-      writeSettingsDocument(file, document)
+      await write(document)
       return {
         ok: true,
         output: `Removed package "${parsed.source}" from ${parsed.scope} settings.`

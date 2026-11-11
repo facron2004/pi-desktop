@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type {
   ScheduledTask,
@@ -48,16 +48,52 @@ const LIVE_PROCESS_LOCK_STALE_MS = Number.MAX_SAFE_INTEGER
 const MAX_CONCURRENT_SCHEDULED_RUNS = 4
 const MAX_SCHEDULED_TASKS = 100
 const MAX_SCHEDULED_TASK_PROMPT_CHARS = 100_000
+const MAX_SCHEDULED_TASK_ERROR_CHARS = 4_096
+const MAX_SCHEDULED_TASK_SESSION_FILE_CHARS = 32_768
+const MAX_SCHEDULED_TASK_FILE_BYTES = 96 * 1024 * 1024
 const SCHEDULED_TASK_STATUSES = new Set<ScheduledTaskStatus>(['running', 'completed', 'error', 'aborted'])
+
+class InvalidScheduledTaskFileError extends Error {}
 
 function scheduledTaskFileFingerprint(file: string): string {
   try {
     const stats = statSync(file, { bigint: true })
+    if (!stats.isFile()) throw new Error('The scheduled task file is not a regular file.')
+    if (stats.size > BigInt(MAX_SCHEDULED_TASK_FILE_BYTES)) {
+      throw new Error('The scheduled task file exceeds the size limit.')
+    }
     return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'
     throw error
   }
+}
+
+function parseStoredTasks(raw: string): ScheduledTask[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new InvalidScheduledTaskFileError('The scheduled task file is invalid.')
+  }
+  if (!Array.isArray(parsed)) throw new InvalidScheduledTaskFileError('The scheduled task file is invalid.')
+  if (parsed.length > MAX_SCHEDULED_TASKS) {
+    throw new InvalidScheduledTaskFileError(`The scheduled task file contains more than ${MAX_SCHEDULED_TASKS} tasks.`)
+  }
+  return parsed.filter(isStoredTask).map((task) => {
+    const lastError = limitScheduledTaskError(task.lastError)
+    const lastSessionFile = task.lastSessionFile !== undefined &&
+      task.lastSessionFile.length > MAX_SCHEDULED_TASK_SESSION_FILE_CHARS
+      ? undefined
+      : task.lastSessionFile
+    return lastError === task.lastError && lastSessionFile === task.lastSessionFile
+      ? task
+      : { ...task, lastError, lastSessionFile }
+  })
+}
+
+function limitScheduledTaskError(error: string | undefined): string | undefined {
+  return error === undefined ? undefined : error.slice(0, MAX_SCHEDULED_TASK_ERROR_CHARS)
 }
 
 function validScheduledTime(value: unknown): value is string {
@@ -80,10 +116,10 @@ function isStoredTask(value: unknown): value is ScheduledTask {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const task = value as Record<string, unknown>
   if (
-    typeof task.id !== 'string' || !task.id ||
+    typeof task.id !== 'string' || !task.id || task.id.length > 128 ||
     typeof task.title !== 'string' || !task.title || task.title.length > 120 ||
-    typeof task.prompt !== 'string' || !task.prompt.trim() ||
-    typeof task.workspaceId !== 'string' || !task.workspaceId ||
+    typeof task.prompt !== 'string' || !task.prompt.trim() || task.prompt.length > MAX_SCHEDULED_TASK_PROMPT_CHARS ||
+    typeof task.workspaceId !== 'string' || !task.workspaceId || task.workspaceId.length > 256 ||
     typeof task.enabled !== 'boolean' ||
     typeof task.createdAt !== 'number' || !Number.isFinite(task.createdAt)
   ) return false
@@ -140,7 +176,7 @@ function validateInput(value: ScheduledTaskInput): ScheduledTaskInput {
   const schedule = value?.schedule
   if (!title) throw new Error('Enter a task name.')
   if (!prompt) throw new Error('Enter the prompt to run.')
-  if (!workspaceId) throw new Error('Choose a project.')
+  if (!workspaceId || workspaceId.length > 256) throw new Error('Choose a project.')
   if (!schedule || !['once', 'daily', 'weekly'].includes(schedule.kind)) {
     throw new Error('Choose a valid schedule.')
   }
@@ -336,28 +372,38 @@ export class ScheduledTaskService extends EventEmitter {
   }
 
   private read(): ScheduledTask[] {
+    let fingerprint: string | undefined
     try {
-      const fingerprint = scheduledTaskFileFingerprint(this.file)
+      fingerprint = scheduledTaskFileFingerprint(this.file)
       if (fingerprint === 'missing') {
         this.fileFingerprint = fingerprint
         return []
       }
-      const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as unknown
+      const tasks = parseStoredTasks(readFileSync(this.file, 'utf8'))
       this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
         ? fingerprint
         : undefined
-      return Array.isArray(parsed) ? parsed.filter(isStoredTask) : []
+      return tasks
     } catch (error) {
+      if (fingerprint && error instanceof InvalidScheduledTaskFileError) {
+        try {
+          this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
+            ? fingerprint
+            : undefined
+        } catch {
+          this.fileFingerprint = undefined
+        }
+      }
       console.error('[pi-desktop] could not read scheduled tasks:', error)
       return []
     }
   }
 
   private readForMutation(): ScheduledTask[] {
-    if (!existsSync(this.file)) return this.pendingTasks ? this.cloneTasks(this.pendingTasks) : []
-    const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as unknown
-    if (!Array.isArray(parsed)) throw new Error('The scheduled task file is invalid.')
-    const tasks = parsed.filter(isStoredTask)
+    if (scheduledTaskFileFingerprint(this.file) === 'missing') {
+      return this.pendingTasks ? this.cloneTasks(this.pendingTasks) : []
+    }
+    const tasks = parseStoredTasks(readFileSync(this.file, 'utf8'))
     if (!this.pendingTasks) return tasks
 
     const tasksById = new Map(tasks.map((task) => [task.id, task]))
@@ -382,7 +428,11 @@ export class ScheduledTaskService extends EventEmitter {
     mkdirSync(path.dirname(this.file), { recursive: true })
     const temp = `${this.file}.${randomUUID()}.tmp`
     try {
-      writeFileSync(temp, JSON.stringify(tasks, null, 2), 'utf8')
+      const contents = JSON.stringify(tasks, null, 2)
+      if (Buffer.byteLength(contents, 'utf8') > MAX_SCHEDULED_TASK_FILE_BYTES) {
+        throw new Error('Scheduled tasks exceed the storage size limit.')
+      }
+      writeFileSync(temp, contents, 'utf8')
       renameSync(temp, this.file)
       try {
         this.fileFingerprint = scheduledTaskFileFingerprint(this.file)
@@ -421,14 +471,24 @@ export class ScheduledTaskService extends EventEmitter {
 
   private refreshFromDisk(): boolean {
     let next: ScheduledTask[]
+    let fingerprint: string | undefined
     try {
-      const fingerprint = scheduledTaskFileFingerprint(this.file)
+      fingerprint = scheduledTaskFileFingerprint(this.file)
       if (fingerprint === this.fileFingerprint) return false
       next = this.readForMutation()
       this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
         ? fingerprint
         : undefined
-    } catch {
+    } catch (error) {
+      if (fingerprint && error instanceof InvalidScheduledTaskFileError) {
+        try {
+          this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
+            ? fingerprint
+            : undefined
+        } catch {
+          this.fileFingerprint = undefined
+        }
+      }
       return false
     }
     const changed = next !== this.tasks && JSON.stringify(next) !== JSON.stringify(this.tasks)
@@ -769,7 +829,7 @@ export class ScheduledTaskService extends EventEmitter {
       releaseRunLock()
       releaseRunSlot()
       if (!(error instanceof Error && error.message === 'Scheduled task not found.')) {
-        const message = error instanceof Error ? error.message : String(error)
+        const message = limitScheduledTaskError(error instanceof Error ? error.message : String(error))
         this.tasks = this.tasks.map((entry) => entry.id === task.id
           ? { ...entry, lastStatus: 'error', lastError: message }
           : entry)
@@ -863,6 +923,7 @@ export class ScheduledTaskService extends EventEmitter {
     sessionFile?: string
   ): void {
     if (!this.activeTasks.has(taskId)) return
+    error = limitScheduledTaskError(error)
     this.activeTasks.delete(taskId)
     let releaseRunLock: (() => void) | undefined
     let releaseRunSlot: (() => void) | undefined

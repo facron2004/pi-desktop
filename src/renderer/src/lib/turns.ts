@@ -19,6 +19,12 @@ export interface Turn {
   bash: Extract<ThreadItem, { kind: 'bash' }>[]
 }
 
+export interface TurnUserMetadata {
+  userCount: number
+  timestampCounts: ReadonlyMap<number, number>
+  lastUserTurnIndex: number
+}
+
 /** Sum a turn only when every assistant request reported token usage. */
 export function usageForTurn(turn: Turn): Usage | undefined {
   if (turn.assistants.length === 0 || turn.assistants.some((assistant) => !assistant.usage)) {
@@ -94,7 +100,8 @@ interface TurnBuild {
 }
 
 let lastBuild: TurnBuild | null = null
-const turnChanges = new WeakMap<Turn[], { base: Turn[]; firstChangedIndex: number }>()
+const turnChanges = new WeakMap<Turn[], { base: WeakRef<Turn[]>; firstChangedIndex: number }>()
+const userMetadataByTurns = new WeakMap<Turn[], TurnUserMetadata>()
 
 /** Earliest turn changed since `base`, when `buildTurns` recorded the lineage. */
 export function changedTurnsFrom(turns: Turn[], base: Turn[]): number | undefined {
@@ -104,7 +111,9 @@ export function changedTurnsFrom(turns: Turn[], base: Turn[]): number | undefine
     const change = turnChanges.get(current)
     if (!change) return undefined
     firstChangedIndex = Math.min(firstChangedIndex, change.firstChangedIndex)
-    current = change.base
+    const baseTurns = change.base.deref()
+    if (!baseTurns) return undefined
+    current = baseTurns
   }
   return Number.isFinite(firstChangedIndex) ? firstChangedIndex : undefined
 }
@@ -119,6 +128,9 @@ export function changedTurnsFrom(turns: Turn[], base: Turn[]): number | undefine
 function buildFresh(items: ThreadItem[]): TurnBuild {
   const turns: Turn[] = []
   const starts: number[] = []
+  const timestampCounts = new Map<number, number>()
+  let userCount = 0
+  let lastUserTurnIndex = -1
   let current: Turn | null = null
 
   for (let index = 0; index < items.length; index += 1) {
@@ -127,6 +139,9 @@ function buildFresh(items: ThreadItem[]): TurnBuild {
       current = { id: item.id, user: item, assistants: [], tools: [], notices: [], bash: [] }
       turns.push(current)
       starts.push(index)
+      userCount += 1
+      lastUserTurnIndex = turns.length - 1
+      timestampCounts.set(item.timestamp, (timestampCounts.get(item.timestamp) ?? 0) + 1)
       continue
     }
     if (!current) {
@@ -140,7 +155,39 @@ function buildFresh(items: ThreadItem[]): TurnBuild {
     else if (item.kind === 'bash') current.bash.push(item)
   }
 
+  userMetadataByTurns.set(turns, { userCount, timestampCounts, lastUserTurnIndex })
   return { items, turns, starts }
+}
+
+/** Metadata built with the turn list and incrementally reused across stream updates. */
+export function userMetadataForTurns(turns: Turn[]): TurnUserMetadata {
+  const cached = userMetadataByTurns.get(turns)
+  if (cached) return cached
+  let userCount = 0
+  let lastUserTurnIndex = -1
+  const timestampCounts = new Map<number, number>()
+  for (let index = 0; index < turns.length; index += 1) {
+    const turn = turns[index]
+    if (!turn.user) continue
+    userCount += 1
+    lastUserTurnIndex = index
+    timestampCounts.set(turn.user.timestamp, (timestampCounts.get(turn.user.timestamp) ?? 0) + 1)
+  }
+  const metadata = { userCount, timestampCounts, lastUserTurnIndex }
+  userMetadataByTurns.set(turns, metadata)
+  return metadata
+}
+
+function userTimestamps(turns: Turn[]): number[] {
+  const timestamps: number[] = []
+  for (const turn of turns) {
+    if (turn.user) timestamps.push(turn.user.timestamp)
+  }
+  return timestamps
+}
+
+function sameTimestamps(left: number[], right: number[]): boolean {
+  return left.length === right.length && left.every((timestamp, index) => timestamp === right[index])
 }
 
 /**
@@ -201,6 +248,47 @@ export function buildTurns(items: ThreadItem[]): Turn[] {
   const suffix = buildFresh(items.slice(rebuildFrom))
   const turns =
     reuseTurns > 0 ? [...cache.turns.slice(0, reuseTurns), ...suffix.turns] : suffix.turns
+  const previousMetadata = userMetadataForTurns(cache.turns)
+  const previousSuffixTimestamps = userTimestamps(cache.turns.slice(reuseTurns))
+  const nextSuffixTimestamps = userTimestamps(suffix.turns)
+  const timestampsChanged = !sameTimestamps(previousSuffixTimestamps, nextSuffixTimestamps)
+  let timestampCounts = previousMetadata.timestampCounts
+  if (timestampsChanged) {
+    const nextTimestampCounts = new Map(previousMetadata.timestampCounts)
+    for (const timestamp of previousSuffixTimestamps) {
+      const count = nextTimestampCounts.get(timestamp) ?? 0
+      if (count <= 1) nextTimestampCounts.delete(timestamp)
+      else nextTimestampCounts.set(timestamp, count - 1)
+    }
+    for (const timestamp of nextSuffixTimestamps) {
+      nextTimestampCounts.set(timestamp, (nextTimestampCounts.get(timestamp) ?? 0) + 1)
+    }
+    timestampCounts = nextTimestampCounts
+  }
+  let lastUserTurnIndex = -1
+  for (let index = turns.length - 1; index >= reuseTurns; index -= 1) {
+    if (turns[index]?.user) {
+      lastUserTurnIndex = index
+      break
+    }
+  }
+  if (lastUserTurnIndex < 0 && previousMetadata.lastUserTurnIndex < reuseTurns) {
+    lastUserTurnIndex = previousMetadata.lastUserTurnIndex
+  } else if (lastUserTurnIndex < 0) {
+    for (let index = reuseTurns - 1; index >= 0; index -= 1) {
+      if (turns[index]?.user) {
+        lastUserTurnIndex = index
+        break
+      }
+    }
+  }
+  const userCount = previousMetadata.userCount - previousSuffixTimestamps.length + nextSuffixTimestamps.length
+  const metadata = timestampsChanged ||
+    userCount !== previousMetadata.userCount ||
+    lastUserTurnIndex !== previousMetadata.lastUserTurnIndex
+    ? { userCount, timestampCounts, lastUserTurnIndex }
+    : previousMetadata
+  userMetadataByTurns.set(turns, metadata)
   lastBuild = {
     items,
     turns,
@@ -209,6 +297,6 @@ export function buildTurns(items: ThreadItem[]): Turn[] {
       ...suffix.starts.map((index) => index + rebuildFrom)
     ]
   }
-  turnChanges.set(turns, { base: cache.turns, firstChangedIndex: reuseTurns })
+  turnChanges.set(turns, { base: new WeakRef(cache.turns), firstChangedIndex: reuseTurns })
   return turns
 }

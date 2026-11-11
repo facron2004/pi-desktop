@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowLeft, Loader2, Search, X } from 'lucide-react'
+import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { TextSearchHit } from '@shared/types'
 import { relativePath } from '../lib/path'
 import { useT } from '../lib/i18n'
@@ -103,6 +104,7 @@ export function TextSearch({
         <input
           ref={inputRef}
           value={query}
+          maxLength={MAX_SEARCH_QUERY_LENGTH}
           autoFocus
           aria-label={t('Search inside the project files')}
           placeholder={t('Search inside the project files')}

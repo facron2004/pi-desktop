@@ -137,7 +137,7 @@ export interface NoticeItem {
 export type ThreadItem = UserItem | AssistantItem | ToolItem | BashItem | NoticeItem
 
 interface ThreadItemsChange {
-  base: ThreadItem[]
+  base: WeakRef<ThreadItem[]>
   firstChangedIndex: number
 }
 
@@ -218,7 +218,7 @@ function markThreadItemsChanged(
   next: ThreadItem[],
   changedIndex: number
 ): ThreadItem[] {
-  threadItemsChanges.set(next, { base, firstChangedIndex: changedIndex })
+  threadItemsChanges.set(next, { base: new WeakRef(base), firstChangedIndex: changedIndex })
   const indexes = indexesFor(base)
   // Replacements and aborts keep ids stable. Only appends extend either index.
   for (let index = base.length; index < next.length; index += 1) {
@@ -244,7 +244,9 @@ export function changedThreadItemsFrom(
     const change = threadItemsChanges.get(current)
     if (!change) return undefined
     firstChangedIndex = Math.min(firstChangedIndex, change.firstChangedIndex)
-    current = change.base
+    const baseItems = change.base.deref()
+    if (!baseItems) return undefined
+    current = baseItems
   }
   return Number.isFinite(firstChangedIndex) ? firstChangedIndex : undefined
 }
@@ -1033,7 +1035,7 @@ export function applyEventBatch(
   }
   mutableThreadItemsDrafts.delete(next)
   if (!draft.changed) return items
-  threadItemsChanges.set(next, { base: items, firstChangedIndex: draft.firstChangedIndex })
+  threadItemsChanges.set(next, { base: new WeakRef(items), firstChangedIndex: draft.firstChangedIndex })
   return next
 }
 

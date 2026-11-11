@@ -13,7 +13,7 @@ import { canonicalSessionFile } from '../pi/session-file'
 import { getSessionMeta, listSessions, openSessionFile } from '../sessions'
 import { extractFromSession, type ExtractionDeps, type ExtractionOutcome } from './extract'
 import { quotePromptData } from './prompt'
-import type { MemorySessionRevision, MemoryStore } from './store'
+import { sanitizeMemoryError, type MemorySessionRevision, type MemoryStore } from './store'
 
 const DEFAULT_SETTLE_DELAY_MS = 20_000
 
@@ -278,19 +278,20 @@ export class MemoryService extends EventEmitter {
           if (!shouldCommit() && outcome.added === 0) {
             return { ok: true, added: 0, skipped: 'Conversation changed during memory generation' }
           }
+          const error = outcome.error ? sanitizeMemoryError(outcome.error) : undefined
           const recorded = await this.store.markProcessed(
             file,
-            outcome.error ? 'error' : outcome.skipped,
-            outcome.error,
+            error ? 'error' : outcome.skipped,
+            error,
             sourceStats,
             storeGeneration
           )
           if (!recorded) {
             return { ok: true, added: 0, skipped: 'Memory was changed during generation' }
           }
-          if (outcome.error) {
-            this.lastError = outcome.error
-            return { ok: false, added: 0, error: outcome.error }
+          if (error) {
+            this.lastError = error
+            return { ok: false, added: 0, error }
           }
           this.lastError = undefined
           return {
@@ -306,7 +307,7 @@ export class MemoryService extends EventEmitter {
           if (!shouldCommit()) {
             return { ok: true, added: 0, skipped: 'Conversation changed during memory generation' }
           }
-          const message = error instanceof Error ? error.message : String(error)
+          const message = sanitizeMemoryError(error instanceof Error ? error.message : String(error))
           this.lastError = message
           try {
             await this.store.markProcessed(file, 'error', message, sourceStats, storeGeneration)
@@ -359,7 +360,8 @@ export class MemoryService extends EventEmitter {
       await opened.handle.close().catch(() => {})
       return this.run(file, undefined, true, lifecycleVersion)
     }
-    const limit = Math.max(1, Math.min(10, Math.floor(options.limit ?? 3)))
+    const requestedLimit = Number.isFinite(options.limit) ? Math.floor(options.limit ?? 3) : 3
+    const limit = Math.max(1, Math.min(10, requestedLimit))
     const list = this.deps.list ?? listSessions
     let listed: SessionMeta[]
     try {
@@ -374,21 +376,26 @@ export class MemoryService extends EventEmitter {
     if (lifecycleVersion !== this.lifecycleVersion) {
       return { ok: true, added: 0, skipped: 'Memory was cleared' }
     }
-    const sessions = listed
-      .filter((session) => {
-        if (session.messageCount < 2 || session.file.startsWith('draft:')) return false
-        const record = this.store.sessionRecord(session.file)
-        // A failed extraction is deliberately kept retryable; the automatic
-        // pass stays one-shot per revision, but "Learn from recent" should be
-        // able to recover from a transient model failure. External-context
-        // skips stay recorded, so a startup scan cannot loop over them.
-        return (
-          !this.store.wasProcessed(session.file) ||
-          (record?.skipped === 'error' && (record.attempts ?? 0) < 3)
-        )
-      })
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, limit)
+    const ledger = this.store.readLedger()
+    const sessions: SessionMeta[] = []
+    // Keep only the newest candidates without allocating and sorting the full
+    // history. Most unprocessed sessions need no additional filesystem stat.
+    for (const session of listed) {
+      if (session.messageCount < 2 || session.file.startsWith('draft:')) continue
+      const record = ledger.sessions[session.file]
+      if (
+        record &&
+        !(record.skipped === 'error' && (record.attempts ?? 0) < 3) &&
+        this.store.wasProcessed(session.file, undefined, record)
+      ) continue
+      const insertion = sessions.findIndex((candidate) => session.updatedAt > candidate.updatedAt)
+      if (insertion < 0) {
+        if (sessions.length < limit) sessions.push(session)
+      } else {
+        sessions.splice(insertion, 0, session)
+        if (sessions.length > limit) sessions.pop()
+      }
+    }
     if (!sessions.length) {
       return { ok: true, added: 0, skipped: 'All recent conversations are already learned' }
     }

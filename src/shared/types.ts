@@ -20,9 +20,14 @@ export type {
 
 /** Maximum image payload shared by file picking, drops, paste and image writes. */
 export const MAX_IMAGE_DATA_BYTES = 24 * 1024 * 1024
+/** Keep aggregate inline images below the Pi RPC record limit, leaving room for the prompt. */
+export const MAX_COMPOSER_IMAGE_BYTES = 30 * 1024 * 1024
 
 /** Maximum prompt length accepted by the remote phone companion. */
 export const MAX_REMOTE_MESSAGE_CHARS = 100_000
+
+/** Maximum query length accepted by search inputs and main-process search handlers. */
+export const MAX_SEARCH_QUERY_LENGTH = 512
 
 /* ------------------------------------------------------------------ *
  * Pi RPC protocol
@@ -916,7 +921,7 @@ export interface MemoryGenerateResult {
 
 /** A file chosen for the composer. Pictures are inlined; other files stay as paths. */
 export type PickedFile =
-  | { kind: 'image'; data: string; mimeType: string }
+  | { kind: 'image'; data: string; mimeType: string; path?: string }
   | { kind: 'path'; path: string }
 
 export interface RemoteAccessDevice {
@@ -995,7 +1000,7 @@ export interface PiDesktopBridge {
   dialog: {
     pickDirectory(defaultPath?: string): Promise<string | null>
     /** One dialog for every file. Pictures come back inline; other files as paths. */
-    pickFiles(defaultPath?: string): Promise<PickedFile[]>
+    pickFiles(defaultPath?: string, imageBudgetBytes?: number): Promise<PickedFile[]>
   }
   settings: {
     get(): Promise<AppSettings>

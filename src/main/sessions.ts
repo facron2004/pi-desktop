@@ -1,9 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { constants, createReadStream, existsSync, readFileSync } from 'node:fs'
-import { appendFile, chmod, lstat, mkdir, open, readdir, realpath, rename, stat, unlink, writeFile, type FileHandle } from 'node:fs/promises'
+import { appendFile, chmod, lstat, mkdir, open, readdir, realpath, rename, stat, unlink, type FileHandle } from 'node:fs/promises'
 import type { Stats } from 'node:fs'
+import { StringDecoder } from 'node:string_decoder'
 import os from 'node:os'
 import path from 'node:path'
+import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type {
   AgentMessage,
   AggregatedUsageStats,
@@ -74,8 +76,10 @@ const MAX_SEARCH_INDEX_DISK_BYTES = 512 * 1024 * 1024
 const MAX_SEARCH_INDEX_FILES = 512
 /** A cold search never loads one index sidecar larger than the source scan window. */
 const MAX_SEARCH_INDEX_FILE_BYTES = 64 * 1024 * 1024
+const SEARCH_INDEX_SCAN_CHUNK_CHARS = 1024 * 1024
 /** A changed shape must rebuild instead of being read as the old one. */
-const SEARCH_INDEX_VERSION = 7
+const SEARCH_INDEX_VERSION = 8
+const SEARCH_INDEX_FILE_MAGIC = `pi-desktop-search-index-v${SEARCH_INDEX_VERSION}\n`
 const LF = 0x0a
 const CR = 0x0d
 const CHUNK_SIZE = 64 * 1024
@@ -215,6 +219,12 @@ interface SearchIndexSnapshot {
   entries: SearchIndexEntry[]
 }
 
+type SearchIndexHeader = Omit<SearchIndexSnapshot, 'entries' | 'messageIndex'> & {
+  messageIndex?: number
+}
+
+class SearchIndexTooLargeError extends Error {}
+
 interface SearchIndexLoad {
   snapshot: SearchIndexSnapshot | null
   /** Source JSONL bytes read to build or extend the index in this call. */
@@ -232,6 +242,7 @@ const inFlightSearchIndexes = new Map<string, {
   size: number
   mtime: number
   task: Promise<SearchIndexLoad>
+  cancellation: { cancelled: boolean }
 }>()
 let searchIndexPruneQueue = Promise.resolve()
 const activeSearchIndexTemps = new Set<string>()
@@ -377,16 +388,30 @@ export async function pruneSessionSearchIndexFiles(
 export function configureSessionSearchIndex(dir: string | null): void {
   searchIndexDir = dir && dir.trim() ? path.resolve(dir.trim()) : null
   clearSearchIndexCache()
+  for (const build of inFlightSearchIndexes.values()) build.cancellation.cancelled = true
   inFlightSearchIndexes.clear()
   if (searchIndexDir) void pruneSessionSearchIndexFiles()
 }
 
-/** Best-effort removal of a session's index when its file goes away. */
-export function forgetSessionSearchIndex(file: string): void {
+/** Remove a session's index after any active writer has exited. */
+export async function forgetSessionSearchIndex(file: string): Promise<void> {
   const indexPath = searchIndexPath(file)
   if (!indexPath) return
   removeCachedSearchIndex(indexPath)
-  void unlink(indexPath).catch(() => {})
+  const inFlightPrefix = `${indexPath}\0`
+  const pending: Promise<SearchIndexLoad>[] = []
+  for (const [key, build] of inFlightSearchIndexes) {
+    if (!key.startsWith(inFlightPrefix)) continue
+    build.cancellation.cancelled = true
+    pending.push(build.task)
+  }
+  await Promise.allSettled(pending)
+  for (const [key, build] of inFlightSearchIndexes) {
+    if (key.startsWith(inFlightPrefix) && build.cancellation.cancelled) {
+      inFlightSearchIndexes.delete(key)
+    }
+  }
+  await unlink(indexPath).catch(() => {})
 }
 
 function searchIndexPath(file: string): string | null {
@@ -1562,6 +1587,7 @@ export async function searchSessions(
   limit = 30,
   options: { budgetBytes?: number; shouldStop?: () => boolean; sessionRoots?: readonly string[] } = {}
 ): Promise<SessionSearchHit[]> {
+  if (typeof query !== 'string' || query.length > MAX_SEARCH_QUERY_LENGTH) return []
   const needle = query.trim()
   if (needle.length < 2) return []
   const needleLower = needle.toLowerCase()
@@ -1672,9 +1698,11 @@ export async function searchSessions(
           needle.length,
           ceiling - hits.length,
           remaining,
-          opened.handle
+          opened.handle,
+          shouldStop
         )
         bytesRead += indexed.workBytes
+        if (shouldStop()) return []
         if (indexed.usedIndex) {
           hits.push(...indexed.hits)
           continue
@@ -1694,8 +1722,10 @@ export async function searchSessions(
         needle.length,
         ceiling - hits.length,
         readLimit,
-        opened.handle
+        opened.handle,
+        shouldStop
       )
+      if (shouldStop()) return []
       hits.push(...fileHits)
     } finally {
       await opened.handle.close().catch(() => {})
@@ -1726,7 +1756,8 @@ async function searchSessionFile(
   needleLength: number,
   remaining: number,
   maxBytes: number = MAX_SEARCH_FILE_BYTES,
-  handle?: FileHandle
+  handle?: FileHandle,
+  shouldStop: () => boolean = () => false
 ): Promise<SessionSearchHit[]> {
   let sessionId = path.basename(file, '.jsonl')
   let cwd = ''
@@ -1741,6 +1772,7 @@ async function searchSessionFile(
   let messageIndex = 0
 
   for await (const raw of readJsonlLines(file, maxBytes, 0, false, handle)) {
+    if (shouldStop()) break
     const line = raw.trim()
     if (!line) continue
     let record: Record<string, unknown>
@@ -1884,33 +1916,66 @@ async function readSearchIndexFile(
     }
     if (stats.size >= maxReadBytes) return { snapshot: null, indexBytesRead: 0, skipped: true }
 
-    const buffer = Buffer.alloc(stats.size)
-    let totalRead = 0
-    while (totalRead < buffer.length) {
-      const { bytesRead } = await handle.read(buffer, totalRead, buffer.length - totalRead, totalRead)
+    const magic = Buffer.from(SEARCH_INDEX_FILE_MAGIC)
+    const foundMagic = Buffer.alloc(magic.length)
+    let position = 0
+    while (position < foundMagic.length) {
+      const { bytesRead } = await handle.read(foundMagic, position, foundMagic.length - position, position)
       if (bytesRead === 0) break
-      totalRead += bytesRead
+      position += bytesRead
+      indexBytesRead += bytesRead
     }
-    indexBytesRead = totalRead
-    if (totalRead !== buffer.length) return { snapshot: null, indexBytesRead, skipped: false }
-
-    const parsed = JSON.parse(buffer.toString('utf8')) as Record<string, unknown>
-    if (!parsed || parsed.version !== SEARCH_INDEX_VERSION || !Array.isArray(parsed.entries)) {
+    if (position !== magic.length || !foundMagic.equals(magic)) {
       return { snapshot: null, indexBytesRead, skipped: false }
     }
-    if (
-      typeof parsed.identity !== 'string' ||
-      typeof parsed.indexedSize !== 'number' ||
-      typeof parsed.sourceSize !== 'number' ||
-      typeof parsed.indexedFrom !== 'number' ||
-      typeof parsed.mtime !== 'number' ||
-      parsed.indexedFrom < 0 ||
-      parsed.indexedFrom > parsed.indexedSize ||
-      parsed.sourceSize < parsed.indexedSize
-    ) return { snapshot: null, indexBytesRead, skipped: false }
+
+    let header: SearchIndexHeader | undefined
     const entries: SearchIndexEntry[] = []
-    for (const raw of parsed.entries) {
-      if (!raw || typeof raw !== 'object') continue
+    const parseLine = (line: string): boolean => {
+      if (!header) {
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(line)
+        } catch {
+          return false
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+        const value = parsed as Record<string, unknown>
+        if (
+          value.version !== SEARCH_INDEX_VERSION ||
+          typeof value.identity !== 'string' ||
+          typeof value.indexedSize !== 'number' ||
+          typeof value.sourceSize !== 'number' ||
+          typeof value.indexedFrom !== 'number' ||
+          typeof value.mtime !== 'number' ||
+          value.indexedFrom < 0 ||
+          value.indexedFrom > value.indexedSize ||
+          value.sourceSize < value.indexedSize
+        ) return false
+        header = {
+          version: SEARCH_INDEX_VERSION,
+          file: typeof value.file === 'string' ? value.file : '',
+          identity: value.identity,
+          sessionId: typeof value.sessionId === 'string' ? value.sessionId : '',
+          cwd: typeof value.cwd === 'string' ? value.cwd : '',
+          name: typeof value.name === 'string' ? value.name : undefined,
+          preview: typeof value.preview === 'string' ? value.preview : '',
+          indexedSize: value.indexedSize,
+          sourceSize: value.sourceSize,
+          indexedFrom: value.indexedFrom,
+          mtime: value.mtime,
+          messageIndex: typeof value.messageIndex === 'number' ? value.messageIndex : undefined
+        }
+        return true
+      }
+
+      let raw: unknown
+      try {
+        raw = JSON.parse(line)
+      } catch {
+        return false
+      }
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return true
       const entry = raw as Partial<SearchIndexEntry>
       if (
         (entry.role !== 'user' && entry.role !== 'assistant') ||
@@ -1919,11 +1984,11 @@ async function readSearchIndexFile(
         typeof entry.index !== 'number' ||
         typeof entry.startOffset !== 'number' ||
         typeof entry.endOffset !== 'number' ||
-        entry.startOffset < parsed.indexedFrom ||
+        entry.startOffset < header.indexedFrom ||
         entry.endOffset < entry.startOffset ||
-        entry.endOffset > parsed.indexedSize
+        entry.endOffset > header.indexedSize
       ) {
-        continue
+        return true
       }
       entries.push({
         id: typeof entry.id === 'string' ? entry.id : undefined,
@@ -1934,22 +1999,58 @@ async function readSearchIndexFile(
         text: entry.text,
         lower: entry.lower
       })
+      return true
     }
+
+    const decoder = new StringDecoder('utf8')
+    const pendingParts: string[] = []
+    let processedLines = 0
+    const consumeText = async (text: string): Promise<boolean> => {
+      let cursor = 0
+      while (true) {
+        const newline = text.indexOf('\n', cursor)
+        if (newline < 0) break
+        pendingParts.push(text.slice(cursor, newline))
+        const line = pendingParts.join('')
+        pendingParts.length = 0
+        if (!parseLine(line)) return false
+        processedLines += 1
+        cursor = newline + 1
+        if (processedLines % 128 === 0) {
+          await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+      }
+      if (cursor < text.length) pendingParts.push(text.slice(cursor))
+      return true
+    }
+
+    const buffer = Buffer.allocUnsafe(CHUNK_SIZE)
+    position = magic.length
+    while (position < stats.size) {
+      const length = Math.min(buffer.length, stats.size - position)
+      const { bytesRead } = await handle.read(buffer, 0, length, position)
+      if (bytesRead === 0) break
+      position += bytesRead
+      indexBytesRead += bytesRead
+      if (!(await consumeText(decoder.write(buffer.subarray(0, bytesRead))))) {
+        return { snapshot: null, indexBytesRead, skipped: false }
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    const finalText = decoder.end()
+    if (!(await consumeText(finalText))) return { snapshot: null, indexBytesRead, skipped: false }
+    if (pendingParts.length > 0 && !parseLine(pendingParts.join(''))) {
+      return { snapshot: null, indexBytesRead, skipped: false }
+    }
+    if (position !== stats.size || !header) {
+      return { snapshot: null, indexBytesRead, skipped: false }
+    }
+
     const lastIndex = entries.length ? entries[entries.length - 1].index : 0
     return {
       snapshot: {
-        version: SEARCH_INDEX_VERSION,
-        file: typeof parsed.file === 'string' ? parsed.file : '',
-        identity: parsed.identity,
-        sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : '',
-        cwd: typeof parsed.cwd === 'string' ? parsed.cwd : '',
-        name: typeof parsed.name === 'string' ? parsed.name : undefined,
-        preview: typeof parsed.preview === 'string' ? parsed.preview : '',
-        indexedSize: parsed.indexedSize,
-        sourceSize: parsed.sourceSize,
-        indexedFrom: parsed.indexedFrom,
-        mtime: parsed.mtime,
-        messageIndex: typeof parsed.messageIndex === 'number' ? parsed.messageIndex : lastIndex,
+        ...header,
+        messageIndex: header.messageIndex ?? lastIndex,
         entries
       },
       indexBytesRead,
@@ -1962,28 +2063,75 @@ async function readSearchIndexFile(
   }
 }
 
-async function writeSearchIndexFile(indexPath: string, snapshot: SearchIndexSnapshot): Promise<void> {
+class SearchIndexBuildCancelledError extends Error {}
+
+async function writeSearchIndexFile(
+  indexPath: string,
+  snapshot: SearchIndexSnapshot,
+  isCurrent: () => boolean
+): Promise<void> {
+  if (!isCurrent()) return
   if (estimateSearchIndexMemory(snapshot) > MAX_SEARCH_INDEX_FILE_BYTES) {
-    await unlink(indexPath).catch(() => {})
-    return
-  }
-  const serialized = JSON.stringify(snapshot)
-  if (Buffer.byteLength(serialized, 'utf8') > MAX_SEARCH_INDEX_FILE_BYTES) {
-    await unlink(indexPath).catch(() => {})
+    if (isCurrent()) await unlink(indexPath).catch(() => {})
     return
   }
   const temp = `${indexPath}.${randomBytes(4).toString('hex')}.tmp`
   activeSearchIndexTemps.add(temp)
+  let handle: FileHandle | undefined
   try {
     const directory = path.dirname(indexPath)
     await mkdir(directory, { recursive: true, mode: 0o700 })
     if (process.platform !== 'win32') await chmod(directory, 0o700).catch(() => {})
-    await writeFile(temp, serialized, { encoding: 'utf8', mode: 0o600 })
+    handle = await open(temp, 'wx', 0o600)
+    let writtenBytes = 0
+    let batchBytes = 0
+    let batch: string[] = []
+    const assertCurrent = () => {
+      if (!isCurrent()) throw new SearchIndexBuildCancelledError()
+    }
+    const flush = async () => {
+      if (batchBytes === 0) return
+      assertCurrent()
+      const data = Buffer.from(batch.join(''))
+      let offset = 0
+      while (offset < data.length) {
+        const { bytesWritten } = await handle!.write(data, offset, data.length - offset, null)
+        if (bytesWritten === 0) throw new Error('Could not write the search index.')
+        offset += bytesWritten
+      }
+      writtenBytes += data.length
+      batch = []
+      batchBytes = 0
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    const queueLine = async (line: string) => {
+      assertCurrent()
+      const lineBytes = Buffer.byteLength(line, 'utf8')
+      if (writtenBytes + batchBytes + lineBytes > MAX_SEARCH_INDEX_FILE_BYTES) {
+        throw new SearchIndexTooLargeError()
+      }
+      batch.push(line)
+      batchBytes += lineBytes
+      if (batchBytes >= CHUNK_SIZE) await flush()
+    }
+
+    const { entries, ...header } = snapshot
+    await queueLine(SEARCH_INDEX_FILE_MAGIC)
+    await queueLine(`${JSON.stringify(header)}\n`)
+    for (const entry of entries) {
+      await queueLine(`${JSON.stringify(entry)}\n`)
+    }
+    await flush()
+    await handle.close()
+    handle = undefined
+    assertCurrent()
     await rename(temp, indexPath)
     await pruneSessionSearchIndexFiles()
-  } catch {
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {})
     // An index is an optimization: a read-only or full folder must not fail a search.
     await unlink(temp).catch(() => {})
+    if (error instanceof SearchIndexTooLargeError && isCurrent()) await unlink(indexPath).catch(() => {})
   } finally {
     activeSearchIndexTemps.delete(temp)
   }
@@ -2006,7 +2154,8 @@ async function updateSearchIndex(
   size: number,
   mtime: number,
   indexBytesRead: number,
-  handle: FileHandle
+  handle: FileHandle,
+  isCurrent: () => boolean
 ): Promise<SearchIndexLoad> {
   const canonical = canonicalSessionFile(file)
   if (base && base.identity === identity && base.sourceSize === size && base.mtime === mtime) {
@@ -2098,7 +2247,7 @@ async function updateSearchIndex(
     indexedFrom,
     mtime
   }
-  await writeSearchIndexFile(indexPath, snapshot)
+  await writeSearchIndexFile(indexPath, snapshot, isCurrent)
   return { snapshot, sourceBytesRead: readBytes, indexBytesRead }
 }
 
@@ -2124,6 +2273,7 @@ async function ensureSearchIndex(
     const pending = inFlightSearchIndexes.get(inFlightKey)
     if (pending) {
       const load = await pending.task
+      if (pending.cancellation.cancelled) return { ...load, snapshot: null }
       if (pending.size === size && pending.mtime === mtime) return load
       // A newer file version arrived during the build. Wait for the old writer
       // to finish, then rebuild or extend its snapshot against this version.
@@ -2133,7 +2283,9 @@ async function ensureSearchIndex(
       continue
     }
 
+    const cancellation = { cancelled: false }
     const task = (async (): Promise<SearchIndexLoad> => {
+      if (cancellation.cancelled) return { snapshot: null, sourceBytesRead: 0, indexBytesRead: 0 }
       const cachedAppend = cached?.file === canonicalSessionFile(file) &&
         cached.identity === identity &&
         cached.indexedSize < size &&
@@ -2141,6 +2293,7 @@ async function ensureSearchIndex(
         ? cached
         : null
       const stored = cachedAppend ? null : await readSearchIndexFile(indexPath, maxWorkBytes)
+      if (cancellation.cancelled) return { snapshot: null, sourceBytesRead: 0, indexBytesRead: 0 }
       if (stored?.skipped) {
         return { snapshot: null, sourceBytesRead: 0, indexBytesRead: 0 }
       }
@@ -2151,18 +2304,29 @@ async function ensureSearchIndex(
       if (indexBytesRead + sourceBytesEstimate >= maxWorkBytes) {
         return { snapshot: null, sourceBytesRead: 0, indexBytesRead }
       }
-      return await updateSearchIndex(file, indexPath, base, identity, size, mtime, indexBytesRead, handle)
+      return await updateSearchIndex(
+        file,
+        indexPath,
+        base,
+        identity,
+        size,
+        mtime,
+        indexBytesRead,
+        handle,
+        () => !cancellation.cancelled
+      )
     })()
-    const build = { size, mtime, task }
+    const build = { size, mtime, task, cancellation }
     inFlightSearchIndexes.set(inFlightKey, build)
     try {
       const load = await task
-      if (load.snapshot) {
+      if (!cancellation.cancelled && load.snapshot) {
         cacheSearchIndex(indexPath, load.snapshot)
       }
+      if (cancellation.cancelled) return { ...load, snapshot: null }
       return load
     } finally {
-      if (inFlightSearchIndexes.get(inFlightKey) === build) {
+      if (inFlightSearchIndexes.get(inFlightKey) === build && !cancellation.cancelled) {
         inFlightSearchIndexes.delete(inFlightKey)
       }
     }
@@ -2206,10 +2370,14 @@ async function searchIndexedSession(
   needleLength: number,
   remaining: number,
   maxWorkBytes: number,
-  handle: FileHandle
+  handle: FileHandle,
+  shouldStop: () => boolean
 ): Promise<{ hits: SessionSearchHit[]; workBytes: number; usedIndex: boolean }> {
   const load = await ensureSearchIndex(file, identity, size, mtime, maxWorkBytes, handle)
   const loadedBytes = load.sourceBytesRead + load.indexBytesRead
+  if (shouldStop()) {
+    return { hits: [], workBytes: loadedBytes, usedIndex: Boolean(load.snapshot) }
+  }
   if (!load.snapshot) {
     return { hits: [], workBytes: loadedBytes, usedIndex: false }
   }
@@ -2222,16 +2390,16 @@ async function searchIndexedSession(
   let scanned = 0
   const scanBudget = Math.max(0, maxWorkBytes - loadedBytes)
   for (const entry of snapshot.entries) {
+    if (shouldStop()) return { hits: [], workBytes: loadedBytes + scanned, usedIndex: true }
     const remainingScan = scanBudget - scanned
     if (remainingScan <= 0) break
     const entryBytes = Math.min(entry.lower.length, remainingScan)
-    const searchable = entryBytes < entry.lower.length
-      ? entry.lower.slice(0, entryBytes)
-      : entry.lower
-    const at = searchable.indexOf(needleLower)
-    scanned += entryBytes
+    const match = await findSearchIndexMatch(entry.lower, needleLower, entryBytes, shouldStop)
+    scanned += match.scanned
+    if (match.cancelled) return { hits: [], workBytes: loadedBytes + scanned, usedIndex: true }
+    const at = match.at
     if (at === -1) {
-      if (entryBytes < entry.lower.length) break
+      if (entryBytes < entry.lower.length || !match.complete) break
       continue
     }
     const snippet = snippetAround(entry.text, at, needleLength)
@@ -2255,6 +2423,42 @@ async function searchIndexedSession(
     if (entryBytes < entry.lower.length) break
   }
   return { hits, workBytes: loadedBytes + scanned, usedIndex: true }
+}
+
+/** Search cached text in bounded chunks so a large conversation cannot block the main process. */
+async function findSearchIndexMatch(
+  text: string,
+  needle: string,
+  maxChars: number,
+  shouldStop: () => boolean
+): Promise<{ at: number; scanned: number; cancelled: boolean; complete: boolean }> {
+  const limit = Math.min(text.length, Math.max(0, maxChars))
+  const overlap = Math.max(0, needle.length - 1)
+  let start = 0
+  let scanned = 0
+  let searchedTo = 0
+
+  while (start < limit && scanned < maxChars) {
+    if (shouldStop()) return { at: -1, scanned, cancelled: true, complete: false }
+    const nextCoverage = Math.min(limit, start + Math.min(SEARCH_INDEX_SCAN_CHUNK_CHARS, maxChars - scanned))
+    const end = Math.min(limit, nextCoverage + overlap)
+    const reachedLimit = end >= limit
+    const coveredTo = reachedLimit ? limit : nextCoverage
+    const at = text.slice(start, end).indexOf(needle)
+    scanned += coveredTo - start
+    searchedTo = coveredTo
+    if (at !== -1) return { at: start + at, scanned, cancelled: false, complete: true }
+    if (reachedLimit) break
+    start = coveredTo
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+
+  return {
+    at: -1,
+    scanned,
+    cancelled: shouldStop(),
+    complete: searchedTo >= limit
+  }
 }
 
 function emptyMetrics(): TokenUsageMetrics {

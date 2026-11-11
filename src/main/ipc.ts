@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { MAX_IMAGE_DATA_BYTES } from '@shared/types'
+import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import { randomUUID } from 'node:crypto'
 import { constants, mkdirSync, readFileSync, writeFileSync, type Dirent } from 'node:fs'
 import { lstat, open, opendir, realpath, stat, type FileHandle } from 'node:fs/promises'
@@ -88,6 +88,9 @@ import {
   pullBranch
 } from './git'
 import { SettingsStore } from './settings'
+import { openWorkspaceFile, resolveWorkspaceLocation, resolveWorkspacePath } from './workspace-files'
+
+export { openWorkspaceFile, resolveWorkspacePath }
 import {
   configureSessionSearchIndex,
   forgetSessionSearchIndex,
@@ -202,7 +205,7 @@ export async function removeSessionFile(
         if (before.dev !== after.dev || before.ino !== after.ino) return false
         await shell.trashItem(current.target)
         invalidateSessionCache(current.target)
-        forgetSessionSearchIndex(current.target)
+        await forgetSessionSearchIndex(current.target)
         return true
       } finally {
         await current.handle.close().catch(() => {})
@@ -420,43 +423,10 @@ async function gitWrite<T extends GitCommitResult>(
   }
 }
 
-/** Keep file access inside the open workspace. */
-function isInside(root: string, target: string): boolean {
-  if (!root) return false
-  const relative = path.relative(path.resolve(root), path.resolve(target))
-  return relative === '' || (
-    relative !== '..' &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
-  )
-}
-
 function isPathWithin(root: string, target: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(target))
   return relative === '' ||
     (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
-}
-
-/** Resolve both workspace and target while rejecting lexical and symlink escapes. */
-async function resolveWorkspaceLocation(
-  root: string,
-  file: string
-): Promise<{ root: string; target: string } | null> {
-  if (!root || typeof file !== 'string') return null
-  const lexicalRoot = path.resolve(root)
-  const lexicalTarget = path.resolve(lexicalRoot, file)
-  if (!isInside(lexicalRoot, lexicalTarget)) return null
-  try {
-    const [realRoot, realTarget] = await Promise.all([realpath(lexicalRoot), realpath(lexicalTarget)])
-    return isInside(realRoot, realTarget) ? { root: realRoot, target: realTarget } : null
-  } catch {
-    return null
-  }
-}
-
-/** Resolve a workspace path and reject links whose real target escapes it. */
-export async function resolveWorkspacePath(root: string, file: string): Promise<string | null> {
-  return (await resolveWorkspaceLocation(root, file))?.target ?? null
 }
 
 type RuntimeCwdRegistration =
@@ -506,37 +476,6 @@ async function resolveRuntimeCwd(context: IpcContext, cwd: unknown): Promise<Res
     }
   }
   return null
-}
-
-/** Open a contained workspace file, rejecting hard links whose other names cannot be confined. */
-export async function openWorkspaceFile(
-  root: string,
-  file: string
-): Promise<{ target: string; handle: FileHandle } | null> {
-  const location = await resolveWorkspaceLocation(root, file)
-  if (!location) return null
-
-  let handle: FileHandle | undefined
-  try {
-    const beforeOpen = await stat(location.target)
-    if (!beforeOpen.isFile() || beforeOpen.nlink > 1) return null
-    handle = await open(location.target, READ_FILE_FLAGS)
-    const opened = await handle.stat({ bigint: true })
-    if (!opened.isFile() || opened.nlink > 1n) return null
-
-    const current = await resolveWorkspaceLocation(root, file)
-    if (!current || current.root !== location.root || current.target !== location.target) return null
-    const named = await stat(current.target, { bigint: true })
-    if (opened.dev !== named.dev || opened.ino !== named.ino || named.nlink > 1n) return null
-
-    const result = { target: location.target, handle }
-    handle = undefined
-    return result
-  } catch {
-    return null
-  } finally {
-    if (handle) await handle.close().catch(() => {})
-  }
 }
 
 /** The picture types the inspector's viewer can draw, by file extension. */
@@ -1100,7 +1039,11 @@ export function registerIpc(context: IpcContext): void {
   // files and folders together, so folders stay on the @ picker. Pictures are
   // read here because the user just chose them, including files outside the
   // workspace; anything else is handed back as a path.
-  ipcMain.handle('dialog:pickFiles', async (_event, defaultPath?: string): Promise<PickedFile[]> => {
+  ipcMain.handle('dialog:pickFiles', async (
+    _event,
+    defaultPath?: string,
+    requestedImageBudgetBytes?: number
+  ): Promise<PickedFile[]> => {
     const options = {
       title: 'Add files',
       defaultPath: defaultPath || undefined,
@@ -1117,6 +1060,10 @@ export function registerIpc(context: IpcContext): void {
     }
     if (result.canceled) return []
     const picked: PickedFile[] = []
+    const imageBudgetBytes = Number.isFinite(requestedImageBudgetBytes)
+      ? Math.min(Math.max(Math.floor(requestedImageBudgetBytes as number), 0), MAX_COMPOSER_IMAGE_BYTES)
+      : MAX_COMPOSER_IMAGE_BYTES
+    let inlineImageBytes = 0
     for (const file of result.filePaths) {
       const mimeType = IMAGE_MIME[path.extname(file).toLowerCase()]
       if (!mimeType) {
@@ -1124,9 +1071,15 @@ export function registerIpc(context: IpcContext): void {
         continue
       }
       try {
-        const bytes = await readImageBytes(file, MAX_IMAGE_DATA_BYTES)
+        const remainingImageBytes = imageBudgetBytes - inlineImageBytes
+        const bytes = remainingImageBytes > 0
+          ? await readImageBytes(file, Math.min(MAX_IMAGE_DATA_BYTES, remainingImageBytes))
+          : null
         if (!bytes) picked.push({ kind: 'path', path: file })
-        else picked.push({ kind: 'image', data: bytes.toString('base64'), mimeType })
+        else {
+          inlineImageBytes += bytes.length
+          picked.push({ kind: 'image', data: bytes.toString('base64'), mimeType, path: file })
+        }
       } catch {
         picked.push({ kind: 'path', path: file })
       }
@@ -1421,6 +1374,7 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('sessions:search', async (event, query: string, limit?: number) => {
     const token = (sessionSearchSequence += 1)
     latestSessionSearches.set(event.sender, token)
+    if (typeof query !== 'string' || query.length > MAX_SEARCH_QUERY_LENGTH) return []
     const hits = await searchSessions(query, limit, {
       sessionRoots: resolveSessionRoots(settings.get().externalChatFolder),
       shouldStop: () => event.sender.isDestroyed?.() === true || latestSessionSearches.get(event.sender) !== token
@@ -1621,6 +1575,9 @@ export function registerIpc(context: IpcContext): void {
     senderSearches.set(searchScope, token)
     const superseded = () =>
       event.sender.isDestroyed?.() === true || senderSearches.get(searchScope) !== token
+    if (typeof query === 'string' && query.length > MAX_SEARCH_QUERY_LENGTH) {
+      return { entries: [], truncated: false }
+    }
     const root = workspaceRoot(context)
     // The separators are normalised, so "src/renderer" finds the folder on
     // Windows as well.
@@ -1712,10 +1669,13 @@ export function registerIpc(context: IpcContext): void {
     // that was already reading files.
     const token = (textSearchSequence += 1)
     latestTextSearches.set(event.sender, token)
+    if (typeof query !== 'string' || query.length > MAX_SEARCH_QUERY_LENGTH) {
+      return { hits: [], truncated: false }
+    }
     const superseded = () =>
       event.sender.isDestroyed?.() === true || latestTextSearches.get(event.sender) !== token
     const root = workspaceRoot(context)
-    const needle = typeof query === 'string' ? query.trim().toLowerCase() : ''
+    const needle = query.trim().toLowerCase()
     if (!root || !needle) return { hits: [], truncated: false }
     const requestedLimit = Number.isFinite(limit) ? Math.trunc(limit as number) : MAX_SEARCH_RESULTS
     const ceiling = Math.min(Math.max(requestedLimit, 1), MAX_SEARCH_RESULTS)
