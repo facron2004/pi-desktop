@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type {
   ScheduledTask,
@@ -49,6 +49,16 @@ const MAX_CONCURRENT_SCHEDULED_RUNS = 4
 const MAX_SCHEDULED_TASKS = 100
 const MAX_SCHEDULED_TASK_PROMPT_CHARS = 100_000
 const SCHEDULED_TASK_STATUSES = new Set<ScheduledTaskStatus>(['running', 'completed', 'error', 'aborted'])
+
+function scheduledTaskFileFingerprint(file: string): string {
+  try {
+    const stats = statSync(file, { bigint: true })
+    return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'
+    throw error
+  }
+}
 
 function validScheduledTime(value: unknown): value is string {
   return typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value)
@@ -160,6 +170,7 @@ function validateInput(value: ScheduledTaskInput): ScheduledTaskInput {
 /** Persistent local-time scheduler. A task starts a fresh Pi session per run. */
 export class ScheduledTaskService extends EventEmitter {
   private readonly file: string
+  private fileFingerprint: string | undefined
   private readonly settings: SettingsStore
   private readonly supervisor: SessionSupervisor
   private readonly customInstructions: (cwd: string) => string | undefined
@@ -326,8 +337,15 @@ export class ScheduledTaskService extends EventEmitter {
 
   private read(): ScheduledTask[] {
     try {
-      if (!existsSync(this.file)) return []
+      const fingerprint = scheduledTaskFileFingerprint(this.file)
+      if (fingerprint === 'missing') {
+        this.fileFingerprint = fingerprint
+        return []
+      }
       const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as unknown
+      this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
+        ? fingerprint
+        : undefined
       return Array.isArray(parsed) ? parsed.filter(isStoredTask) : []
     } catch (error) {
       console.error('[pi-desktop] could not read scheduled tasks:', error)
@@ -366,6 +384,11 @@ export class ScheduledTaskService extends EventEmitter {
     try {
       writeFileSync(temp, JSON.stringify(tasks, null, 2), 'utf8')
       renameSync(temp, this.file)
+      try {
+        this.fileFingerprint = scheduledTaskFileFingerprint(this.file)
+      } catch {
+        this.fileFingerprint = undefined
+      }
       this.pendingTasks = undefined
     } catch (error) {
       try {
@@ -399,11 +422,16 @@ export class ScheduledTaskService extends EventEmitter {
   private refreshFromDisk(): boolean {
     let next: ScheduledTask[]
     try {
+      const fingerprint = scheduledTaskFileFingerprint(this.file)
+      if (fingerprint === this.fileFingerprint) return false
       next = this.readForMutation()
+      this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
+        ? fingerprint
+        : undefined
     } catch {
       return false
     }
-    const changed = JSON.stringify(next) !== JSON.stringify(this.tasks)
+    const changed = next !== this.tasks && JSON.stringify(next) !== JSON.stringify(this.tasks)
     this.tasks = next
     if (changed) {
       this.emit('changed', this.cloneTasks(next))
@@ -427,6 +455,12 @@ export class ScheduledTaskService extends EventEmitter {
   }
 
   private recoverInterruptedRuns(): boolean {
+    const needsRecovery = this.tasks.some((task) =>
+      task.lastStatus === 'running' &&
+      !this.activeTasks.has(task.id) &&
+      !this.hasTaskRunLock(task.id)
+    )
+    if (!needsRecovery) return false
     try {
       return this.withDataLock(() => {
         const current = this.readForMutation()
@@ -613,7 +647,11 @@ export class ScheduledTaskService extends EventEmitter {
       this.activeTasks.size >= MAX_CONCURRENT_SCHEDULED_RUNS
     ) return
     const due = this.tasks
-      .filter((task) => task.enabled && task.nextRunAt !== undefined && !this.hasTaskRunLock(task.id))
+      .filter((task) =>
+        task.enabled &&
+        task.nextRunAt !== undefined &&
+        (task.nextRunAt > now || !this.hasTaskRunLock(task.id))
+      )
       .reduce<number | undefined>((soonest, task) =>
         soonest === undefined || task.nextRunAt! < soonest ? task.nextRunAt : soonest, undefined)
     if (due === undefined) return

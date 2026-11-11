@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { networkInterfaces } from 'node:os'
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type {
   AgentMessage,
@@ -19,6 +19,7 @@ import { properLockfile } from './proper-lockfile'
 
 const PAIRING_TTL_MS = 3 * 60 * 1000
 const MAX_DEVICES = 12
+const MAX_REMOTE_STATE_FILE_BYTES = 64 * 1024
 const PAIR_ATTEMPT_WINDOW_MS = 60_000
 const MAX_PAIR_ATTEMPTS_PER_WINDOW = 8
 const REMOTE_STATE_SYNC_MS = 1_000
@@ -34,6 +35,16 @@ const MAX_REMOTE_STRING = 16_000
 const MAX_REMOTE_VALUE_CHARS = 64_000
 const MAX_REMOTE_VALUE_NODES = 2_000
 const REMOTE_CONTENT_OMITTED = '[Content omitted on mobile]'
+
+function remoteStateFingerprint(file: string): string {
+  try {
+    const stats = statSync(file, { bigint: true })
+    return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'
+    throw error
+  }
+}
 
 interface RemoteValueBudget {
   chars: number
@@ -254,6 +265,7 @@ function sanitizeRemoteValue(value: unknown, depth: number, budget: RemoteValueB
 
 export class RemoteAccessService {
   private readonly stateFile: string
+  private stateFingerprint: string | undefined
   private enabled = false
   private devices: StoredDevice[] = []
   private server: Server | null = null
@@ -385,7 +397,9 @@ export class RemoteAccessService {
 
   private readState(): void {
     try {
+      const fingerprint = remoteStateFingerprint(this.stateFile)
       const state = this.readPersistedState()
+      this.stateFingerprint = fingerprint
       this.enabled = state.enabled
       this.devices = state.devices
     } catch {
@@ -397,6 +411,11 @@ export class RemoteAccessService {
 
   private readPersistedState(): PersistedRemoteState {
     if (!existsSync(this.stateFile)) return { enabled: false, devices: [] }
+    const stats = statSync(this.stateFile)
+    if (!stats.isFile()) throw new Error('Saved remote access settings are not a file.')
+    if (stats.size > MAX_REMOTE_STATE_FILE_BYTES) {
+      throw new Error('Saved remote access settings exceed the size limit.')
+    }
     const parsed = JSON.parse(readFileSync(this.stateFile, 'utf8')) as Partial<PersistedRemoteState>
     return {
       enabled: parsed.enabled === true,
@@ -447,6 +466,7 @@ export class RemoteAccessService {
       await this.withStateLock(() => {
         const next = update(this.readPersistedState())
         this.writeState(next)
+        this.stateFingerprint = remoteStateFingerprint(this.stateFile)
         this.enabled = next.enabled
         this.devices = next.devices
         if (!next.enabled) this.pairing = undefined
@@ -507,7 +527,10 @@ export class RemoteAccessService {
   private refreshStateFromDisk(): void {
     let state: PersistedRemoteState
     try {
+      const fingerprint = remoteStateFingerprint(this.stateFile)
+      if (fingerprint === this.stateFingerprint) return
       state = this.readPersistedState()
+      this.stateFingerprint = fingerprint
     } catch {
       state = { enabled: false, devices: [] }
       this.error = 'Saved remote access settings could not be read.'
@@ -605,8 +628,8 @@ export class RemoteAccessService {
     if (!matchingStreams.length) return
 
     // A different app instance may revoke a phone or remove its workspace.
-    // Recheck persisted authorization before each push so an open SSE stream
-    // cannot keep receiving events between the periodic state-sync ticks.
+    // Check persisted authorization before every push. The state fingerprint
+    // avoids rereading and reparsing the JSON file for every streamed event.
     this.refreshStateFromDisk()
     const ref = this.sessionRefs.get(fileKey)
     const activeStreams = matchingStreams.filter((stream) => this.streams.has(stream))
