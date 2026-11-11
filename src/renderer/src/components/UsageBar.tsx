@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { sessionMetrics } from '../lib/session-metrics'
 import { formatTokens } from '../lib/format'
@@ -19,18 +19,33 @@ import '../styles/usage-bar.css'
  * Every value is derived by `lib/session-metrics.ts`; nothing here is stored.
  */
 export function UsageBar() {
-  const items = useAppStore((state) => state.items)
+  // Text deltas do not change usage. Recompute on new items, completed
+  // answers or run/stat changes instead of walking the transcript each frame.
+  const itemCount = useAppStore((state) => state.items.length)
+  const lastCompletedAssistant = useAppStore((state) =>
+    state.items.findLast((item) => item.kind === 'assistant' && !item.streaming)
+  )
+  const hasAssistant = useAppStore((state) => state.items.some((item) => item.kind === 'assistant'))
   const stats = useAppStore((state) => state.stats)
   const run = useAppStore((state) => state.run)
   const sessionKey = useAppStore((state) => state.activeSessionFile ?? state.draftId)
   const t = useT()
+  const [timingTick, setTimingTick] = useState(0)
+
+  // Keep the live model-time reading moving without using token arrivals as
+  // a clock. Completion events still publish the final statistics immediately.
+  useEffect(() => {
+    if (run.modelTurnStartedAt === undefined) return
+    const timer = window.setInterval(() => setTimingTick((tick) => tick + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [run.modelTurnStartedAt])
 
   const metrics = useMemo(
-    () => sessionMetrics(items, stats, run, readSessionTiming(sessionKey)),
-    [items, stats, run, sessionKey]
+    () => sessionMetrics(useAppStore.getState().items, stats, run, readSessionTiming(sessionKey)),
+    [itemCount, lastCompletedAssistant, stats, run, sessionKey, timingTick]
   )
   const hasRun =
-    items.some((item) => item.kind === 'assistant') || (stats?.tokens.total ?? 0) > 0
+    hasAssistant || (stats?.tokens.total ?? 0) > 0
   if (!hasRun) return null
   const countLabel =
     t('turns') === '轮'

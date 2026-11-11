@@ -35,9 +35,10 @@ function normalizeProjectOrder(paths: unknown): string[] {
 
 const MAX_EXTERNAL_CHAT_FOLDERS = 16
 
-function normalizeExternalChatFolderHistory(paths: unknown, activeFolder?: string): string[] {
+function normalizeExternalChatFolderHistory(paths: unknown, activeFolder: unknown): string[] {
   if (!Array.isArray(paths)) return []
-  const activeKey = activeFolder?.trim() ? workspaceKey(activeFolder.trim()) : undefined
+  const activePath = typeof activeFolder === 'string' ? activeFolder.trim() : ''
+  const activeKey = activePath ? workspaceKey(activePath) : undefined
   const seen = new Set<string>()
   const folders: string[] = []
   for (const item of paths) {
@@ -58,16 +59,31 @@ function normalizeExternalChatFolderHistory(paths: unknown, activeFolder?: strin
  * this list — opening a project used to pull it to the top on every settings
  * write and undo the order the user dragged.
  */
-export function dedupeWorkspaces(workspaces: Workspace[]): Workspace[] {
+export function dedupeWorkspaces(workspaces: unknown): Workspace[] {
+  if (!Array.isArray(workspaces)) return []
   const map = new Map<string, Workspace>()
-  for (const item of workspaces) {
-    if (!item?.path) continue
-    const key = workspaceKey(item.path)
+  for (const candidate of workspaces) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue
+    const item = candidate as Partial<Workspace>
+    const id = item.id
+    const workspacePath = item.path
+    const name = item.name
+    if (typeof id !== 'string' || !id || typeof workspacePath !== 'string' || !workspacePath || typeof name !== 'string' || !name) continue
+    const workspace: Workspace = {
+      ...item,
+      id,
+      path: workspacePath,
+      name,
+      lastOpenedAt: typeof item.lastOpenedAt === 'number' && Number.isFinite(item.lastOpenedAt)
+        ? item.lastOpenedAt
+        : 0
+    }
+    const key = workspaceKey(workspace.path)
     const existing = map.get(key)
-    if (!existing || (item.lastOpenedAt || 0) >= (existing.lastOpenedAt || 0)) {
+    if (!existing || workspace.lastOpenedAt >= existing.lastOpenedAt) {
       // `Map.set` on an existing key keeps its original position, so replacing
       // the newer duplicate does not move the project.
-      map.set(key, item)
+      map.set(key, workspace)
     }
   }
   return [...map.values()]
@@ -391,14 +407,26 @@ export class SettingsStore {
     const saved = { ...parsed }
     delete saved.projectTrustReviewed
     delete saved.removedWorkspaceIds
+    const optionalString = (value: unknown): string | undefined =>
+      typeof value === 'string' ? value : undefined
     return {
       ...DEFAULT_SETTINGS,
       ...saved,
+      piPath: optionalString(saved.piPath),
+      model: optionalString(saved.model),
+      provider: optionalString(saved.provider),
+      thinkingLevel: optionalString(saved.thinkingLevel),
+      customInstructions: optionalString(saved.customInstructions),
+      memoryModel: optionalString(saved.memoryModel),
+      externalChatFolder: optionalString(saved.externalChatFolder),
+      subagentModel: optionalString(saved.subagentModel),
+      subagentProvider: optionalString(saved.subagentProvider),
+      subagentThinking: optionalString(saved.subagentThinking),
       trustProject: this.projectTrustReviewed && saved.trustProject === true,
       fontScale: normalizeFontScale(saved.fontScale),
       fontFamily: normalizeFontFamily(saved.fontFamily),
       customFg: normalizeThemeForeground(saved),
-      workspaces: dedupeWorkspaces(Array.isArray(saved.workspaces) ? saved.workspaces : []),
+      workspaces: dedupeWorkspaces(saved.workspaces),
       projectOrder: normalizeProjectOrder(saved.projectOrder),
       externalChatFolderHistory: normalizeExternalChatFolderHistory(
         saved.externalChatFolderHistory,

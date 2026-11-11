@@ -134,13 +134,15 @@ export interface RunState {
   /** Monotonic start of the answer's current generation window. */
   messageGenerationStartedAt?: number
   /**
-   * Summed generation windows of the answers completed in this run.
+   * Summed completed generation blocks in this run.
    *
    * A tool-heavy run streams in several answers separated by tool execution;
    * one window across the whole run would count the tool time as model time
    * and make TPS look far slower than the model actually was.
    */
   generationMs?: number
+  /** Generation time before the current assistant message began. */
+  messageGenerationBaseMs?: number
   /** Monotonic client clock for the current provider response. */
   modelTurnStartedAt?: number
   /** Wall-clock duration of the finished run, once it settled. */
@@ -3797,7 +3799,13 @@ function handleEvent(
       if (role === 'assistant') {
         // A fresh answer starts its own generation window; a start left open
         // by an interrupted one must not swallow the new answer's time.
-        set((state) => ({ run: { ...state.run, messageGenerationStartedAt: undefined } }))
+        set((state) => ({
+          run: {
+            ...state.run,
+            messageGenerationBaseMs: state.run.generationMs ?? 0,
+            messageGenerationStartedAt: undefined
+          }
+        }))
       }
       if (role === 'user') {
         const startedAt = Date.now()
@@ -3825,6 +3833,7 @@ function handleEvent(
                   // answers in this run must not remain in its TPS window.
                   ...state.run,
                   generationMs: 0,
+                  messageGenerationBaseMs: 0,
                   messageGenerationStartedAt: undefined
                 }
         }))

@@ -20,12 +20,14 @@ export interface RunTiming {
   firstTokenMonotonicAt?: number
   lastTokenAt?: number
   /**
-   * Summed generation windows of the answers completed in this run.
+   * Summed completed generation blocks in this run.
    *
    * A run that calls tools writes several answers; the wall clock between
    * them is tool time, not model time.
    */
   generationMs?: number
+  /** Generation time before the current assistant message began. */
+  messageGenerationBaseMs?: number
   /** Monotonic start of the answer currently being generated. */
   messageGenerationStartedAt?: number
   modelTurnStartedAt?: number
@@ -55,7 +57,7 @@ export interface SessionMetrics {
   contextTokens: number | null
   contextWindow: number | null
   contextPercent: number | null
-  /** Output tokens per second of the most recent generation window. */
+  /** Completed output tokens per second in the newest turn. */
   tps: number | null
   /** Milliseconds from Pi's `agent_start` to the first text delta. */
   ttftMs: number | null
@@ -85,6 +87,7 @@ export function sessionMetrics(
   let knownToolTimeMs = 0
   let timedToolCalls = 0
   let lastTurnGenerationMs = 0
+  let hasStreamingAssistant = false
   let transcriptModelMs = 0
 
   for (let index = 0; index < items.length; index += 1) {
@@ -110,7 +113,8 @@ export function sessionMetrics(
       transcriptModelMs += item.durationMs
     }
     if (index > lastUserIndex) {
-      if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
+      hasStreamingAssistant ||= item.streaming
+      if (!item.streaming && typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
         lastTurnGenerationMs += item.durationMs
       }
     }
@@ -122,7 +126,7 @@ export function sessionMetrics(
     total += item.usage.totalTokens
     // Only the newest turn's output belongs to the generation window that the
     // run's timing fields describe.
-    if (index > lastUserIndex) lastTurnOutput += item.usage.output
+    if (index > lastUserIndex && !item.streaming) lastTurnOutput += item.usage.output
   }
 
   // A live `get_session_stats` wins over the visible transcript, which is
@@ -178,29 +182,27 @@ export function sessionMetrics(
     : transcriptModelMs > 0
       ? transcriptModelMs
       : null
-  // The generation time of the answers completed in this run. A run's single
-  // first-to-last span would include tool execution between answers, which is
-  // not model output and made TPS look far slower on tool-heavy turns.
-  const measuredWindowMs = typeof run.generationMs === 'number' && run.generationMs > 0
-    ? run.generationMs
-    : 0
-  const liveWindowMs = run.messageGenerationStartedAt !== undefined
-    ? Math.max(0, monotonicNow() - run.messageGenerationStartedAt)
-    : 0
+  // Usage arrives when the message completes. Pair those tokens only with
+  // completed messages' windows: a growing live denominator with a frozen
+  // numerator makes the reading fall on every delta and jump on completion.
+  // Closed thinking/text blocks still belong to the unfinished message.
+  const measuredWindowMs = hasStreamingAssistant
+    ? run.messageGenerationBaseMs
+    : run.generationMs
   // Older runs, and tests, still report a single span; keep it as a fallback.
   const legacyWindowMs =
-    run.lastTokenAt !== undefined && run.firstTokenAt !== undefined
+    !hasStreamingAssistant && run.lastTokenAt !== undefined && run.firstTokenAt !== undefined
       ? run.lastTokenAt - run.firstTokenAt
       : 0
-  const restoredWindowMs = lastUserTimestamp === undefined
+  const restoredWindowMs = hasStreamingAssistant || lastUserTimestamp === undefined
     ? undefined
     : timing?.generationWindowMs[String(lastUserTimestamp)]
   // A transcript-only conversation has no client samples. Each assistant
   // message carries the duration Pi spent generating it, so summing those is
   // the same per-answer window the live path records — tool gaps excluded.
   const transcriptWindowMs = lastTurnGenerationMs
-  const windowMs = measuredWindowMs + liveWindowMs > 0
-    ? measuredWindowMs + liveWindowMs
+  const windowMs = measuredWindowMs !== undefined
+    ? measuredWindowMs
     : legacyWindowMs > 0
       ? legacyWindowMs
       : restoredWindowMs !== undefined && restoredWindowMs > 0

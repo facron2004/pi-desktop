@@ -244,8 +244,10 @@ test('usage cache stays within its source-byte budget across large sessions', as
   const parent = mkdtempSync(path.join(tmpdir(), 'pi-usage-cache-budget-'))
   const root = path.join(parent, 'sessions')
   const workspace = path.join(root, encodeWorkspaceDir('C:/usage-cache'))
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
   mkdirSync(workspace, { recursive: true })
   clearSessionCache()
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
   const content = 'x'.repeat(16 * 1024 * 1024)
 
   try {
@@ -267,6 +269,8 @@ test('usage cache stays within its source-byte budget across large sessions', as
     assert.equal(cache.entries, 1)
     assert.ok(cache.sourceBytes <= 32 * 1024 * 1024)
   } finally {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
     clearSessionCache()
     rmSync(parent, { recursive: true, force: true })
   }
@@ -277,8 +281,10 @@ test('aggregated usage includes sessions larger than the cache budget', async ()
   const root = path.join(parent, 'sessions')
   const workspace = path.join(root, encodeWorkspaceDir('C:/usage-long'))
   const file = path.join(workspace, 'long.jsonl')
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
   mkdirSync(workspace, { recursive: true })
   clearSessionCache()
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
 
   try {
     writeFileSync(file, [
@@ -298,6 +304,8 @@ test('aggregated usage includes sessions larger than the cache budget', async ()
     assert.equal(usage.byModel[0]?.totalTokens, 9)
     assert.deepEqual(getUsageCacheStats(), { entries: 0, sourceBytes: 0 })
   } finally {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
     clearSessionCache()
     rmSync(parent, { recursive: true, force: true })
   }
@@ -310,6 +318,9 @@ test('session hydration and rename stay on the verified handle after path replac
   mkdirSync(workspace, { recursive: true })
   const file = path.join(workspace, 'chat.jsonl')
   const moved = path.join(parent, 'original.jsonl')
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  clearSessionCache()
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
   const makeSession = (text: string, output: number) => [
     JSON.stringify({ type: 'session', version: 3, id: 'stable', cwd: 'C:/project' }),
     JSON.stringify({
@@ -355,6 +366,9 @@ test('session hydration and rename stay on the verified handle after path replac
     assert.equal((await getSessionMeta(file, root))?.preview, 'bravo prompt')
     assert.equal((await getAggregatedUsage(root)).allTime.tokens.totalTokens, 5)
   } finally {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    clearSessionCache()
     rmSync(parent, { recursive: true, force: true })
   }
 })

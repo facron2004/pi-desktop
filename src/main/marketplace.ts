@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import {
   existsSync,
@@ -8,6 +9,7 @@ import {
   realpathSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import os from 'node:os'
@@ -23,6 +25,7 @@ import type {
 } from '@shared/marketplace'
 import { MARKETPLACE_SNAPSHOT } from '@shared/marketplace-data'
 import { runPiCli } from './pi/cli'
+import { properLockfile } from './proper-lockfile'
 
 /** Cache file under the Electron userData directory holding the last refresh. */
 export const MARKETPLACE_CACHE_FILE = 'marketplace-cache.json'
@@ -49,6 +52,7 @@ export const MAX_MARKETPLACE_RESPONSE_BYTES = 2 * 1024 * 1024
 
 /** How long `pi install` or a skill collection clone may take. */
 const INSTALL_TIMEOUT_MS = 180000
+const packageSettingsLockWait = new Int32Array(new SharedArrayBuffer(4))
 
 /** The cache file's on-disk shape. */
 export interface MarketplaceCache {
@@ -538,9 +542,43 @@ function parseManagedPackageId(id: string): { scope: PackageScope; source: strin
 
 function writeSettingsDocument(file: string, document: Record<string, unknown>): void {
   mkdirSync(path.dirname(file), { recursive: true })
-  const temporary = `${file}.tmp`
-  writeFileSync(temporary, JSON.stringify(document, null, 2), 'utf8')
-  renameSync(temporary, file)
+  const target = existsSync(file) ? realpathSync(file) : file
+  const temporary = `${target}.${randomUUID()}.tmp`
+  const mode = existsSync(target) ? statSync(target).mode & 0o7777 : 0o600
+  try {
+    writeFileSync(temporary, JSON.stringify(document, null, 2), { encoding: 'utf8', mode })
+    renameSync(temporary, target)
+  } catch (error) {
+    try { unlinkSync(temporary) } catch { /* the temporary file may not exist */ }
+    throw error
+  }
+}
+
+/** Coordinate package edits with Pi and the desktop's other settings writers. */
+function withPackageSettingsLock<T>(file: string, operation: () => T): T {
+  let release: () => void
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      // Pi's settings manager uses realpath:false for both settings files.
+      release = properLockfile.lockSync(file, { realpath: false, retries: 0 })
+      break
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : undefined
+      if (code !== 'ELOCKED' || attempt >= 49) throw error
+      Atomics.wait(packageSettingsLockWait, 0, 0, 10)
+    }
+  }
+  try {
+    return operation()
+  } finally {
+    try {
+      release()
+    } catch (error) {
+      console.error('[pi-desktop] could not release package settings lock:', error)
+    }
+  }
 }
 
 function workspaceForPackageAction(cwd?: string): string | undefined {
@@ -595,59 +633,63 @@ export async function setPackageEnabled(
   enabled: boolean,
   cwd?: string
 ): Promise<MarketplaceActionResult> {
+  if (typeof enabled !== 'boolean') return { ok: false, output: 'Invalid package action.' }
   const parsed = parseManagedPackageId(id)
   if (!parsed) return { ok: false, output: 'Invalid package id.' }
   const file = packageSettingsFile(parsed.scope, workspaceForPackageAction(cwd))
   if (!file) return { ok: false, output: 'The project workspace is not available.' }
-  const document = readSettingsDocument(file)
-  const packages = document && Array.isArray(document.packages) ? document.packages : null
-  if (!document || !packages) {
-    return { ok: false, output: `Could not read the package list from ${file}.` }
-  }
-
-  const indices: number[] = []
-  packages.forEach((entry, index) => {
-    if (packageSourceOf(entry) === parsed.source) indices.push(index)
-  })
-  if (!indices.length) return { ok: false, output: `Package not found: ${parsed.source}` }
-
-  for (const index of indices) {
-    const current = packages[index]
-    if (enabled) {
-      if (isRecord(current)) {
-        const next: Record<string, unknown> = { ...current }
-        for (const key of PACKAGE_FILTER_KEYS) delete next[key]
-        const keys = Object.keys(next)
-        const onlySource = keys.length === 1 && (keys[0] === 'source' || keys[0] === 'package')
-        packages[index] = onlySource ? next[keys[0]] : next
-      }
-    } else if (typeof current === 'string') {
-      packages[index] = {
-        source: current.trim(),
-        extensions: [],
-        skills: [],
-        prompts: [],
-        themes: []
-      }
-    } else if (isRecord(current)) {
-      packages[index] = {
-        ...current,
-        extensions: [],
-        skills: [],
-        prompts: [],
-        themes: []
-      }
-    }
-  }
-
+  if (!existsSync(file)) return { ok: false, output: `Could not read the package list from ${file}.` }
   try {
-    writeSettingsDocument(file, document)
+    return withPackageSettingsLock(file, () => {
+      const document = readSettingsDocument(file)
+      const packages = document && Array.isArray(document.packages) ? document.packages : null
+      if (!document || !packages) {
+        return { ok: false, output: `Could not read the package list from ${file}.` }
+      }
+
+      const indices: number[] = []
+      packages.forEach((entry, index) => {
+        if (packageSourceOf(entry) === parsed.source) indices.push(index)
+      })
+      if (!indices.length) return { ok: false, output: `Package not found: ${parsed.source}` }
+
+      for (const index of indices) {
+        const current = packages[index]
+        if (enabled) {
+          if (isRecord(current)) {
+            const next: Record<string, unknown> = { ...current }
+            for (const key of PACKAGE_FILTER_KEYS) delete next[key]
+            const keys = Object.keys(next)
+            const onlySource = keys.length === 1 && (keys[0] === 'source' || keys[0] === 'package')
+            packages[index] = onlySource ? next[keys[0]] : next
+          }
+        } else if (typeof current === 'string') {
+          packages[index] = {
+            source: current.trim(),
+            extensions: [],
+            skills: [],
+            prompts: [],
+            themes: []
+          }
+        } else if (isRecord(current)) {
+          packages[index] = {
+            ...current,
+            extensions: [],
+            skills: [],
+            prompts: [],
+            themes: []
+          }
+        }
+      }
+
+      writeSettingsDocument(file, document)
+      return {
+        ok: true,
+        output: `${enabled ? 'Enabled' : 'Disabled'} package "${parsed.source}" (${parsed.scope}).`
+      }
+    })
   } catch (error) {
     return { ok: false, output: error instanceof Error ? error.message : String(error) }
-  }
-  return {
-    ok: true,
-    output: `${enabled ? 'Enabled' : 'Disabled'} package "${parsed.source}" (${parsed.scope}).`
   }
 }
 
@@ -661,27 +703,30 @@ export async function removePackage(
   if (!parsed) return { ok: false, output: 'Invalid package id.' }
   const file = packageSettingsFile(parsed.scope, workspaceForPackageAction(cwd))
   if (!file) return { ok: false, output: 'The project workspace is not available.' }
-  const document = readSettingsDocument(file)
-  const packages = document && Array.isArray(document.packages) ? document.packages : null
-  if (!document || !packages) {
-    return { ok: false, output: `Could not read the package list from ${file}.` }
-  }
-  let removed = 0
-  for (let index = packages.length - 1; index >= 0; index -= 1) {
-    if (packageSourceOf(packages[index]) === parsed.source) {
-      packages.splice(index, 1)
-      removed += 1
-    }
-  }
-  if (!removed) return { ok: false, output: `Package not found: ${parsed.source}` }
+  if (!existsSync(file)) return { ok: false, output: `Could not read the package list from ${file}.` }
   try {
-    writeSettingsDocument(file, document)
+    return withPackageSettingsLock(file, () => {
+      const document = readSettingsDocument(file)
+      const packages = document && Array.isArray(document.packages) ? document.packages : null
+      if (!document || !packages) {
+        return { ok: false, output: `Could not read the package list from ${file}.` }
+      }
+      let removed = 0
+      for (let index = packages.length - 1; index >= 0; index -= 1) {
+        if (packageSourceOf(packages[index]) === parsed.source) {
+          packages.splice(index, 1)
+          removed += 1
+        }
+      }
+      if (!removed) return { ok: false, output: `Package not found: ${parsed.source}` }
+      writeSettingsDocument(file, document)
+      return {
+        ok: true,
+        output: `Removed package "${parsed.source}" from ${parsed.scope} settings.`
+      }
+    })
   } catch (error) {
     return { ok: false, output: error instanceof Error ? error.message : String(error) }
-  }
-  return {
-    ok: true,
-    output: `Removed package "${parsed.source}" from ${parsed.scope} settings.`
   }
 }
 

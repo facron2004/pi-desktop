@@ -1,10 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { existsSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { MarketplaceActionResult } from '@shared/marketplace'
 import type { McpConfig, McpServerInfo } from '@shared/types'
+import { properLockfile } from './proper-lockfile'
 
 const MAX_CONFIG_BYTES = 1024 * 1024
+const configLockWait = new Int32Array(new SharedArrayBuffer(4))
 
 interface RawEntry {
   command?: unknown
@@ -89,10 +92,66 @@ function readConfigDocument(file: string): ConfigDocument {
 }
 
 function writeConfigDocument(file: string, document: Record<string, unknown>): void {
-  mkdirSync(path.dirname(file), { recursive: true })
-  const temporary = `${file}.tmp`
-  writeFileSync(temporary, JSON.stringify(document, null, 2), 'utf8')
-  renameSync(temporary, file)
+  const target = realpathSync(file)
+  const temporary = `${target}.${randomUUID()}.tmp`
+  const mode = statSync(target).mode & 0o7777
+  try {
+    writeFileSync(temporary, JSON.stringify(document, null, 2), { encoding: 'utf8', mode })
+    renameSync(temporary, target)
+  } catch (error) {
+    try { unlinkSync(temporary) } catch { /* the temporary file may not exist */ }
+    throw error
+  }
+}
+
+function withConfigFileLock<T>(file: string, operation: () => T): T {
+  let release: () => void
+  let lockedRetries = 0
+  let permissionRetries = 0
+  for (;;) {
+    try {
+      release = properLockfile.lockSync(file, { retries: 0 })
+      break
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : undefined
+      if (code === 'ELOCKED' && lockedRetries < 49) lockedRetries += 1
+      else if (process.platform === 'win32' && code === 'EPERM' && permissionRetries < 5) permissionRetries += 1
+      else throw error
+      Atomics.wait(configLockWait, 0, 0, 10)
+    }
+  }
+  try {
+    return operation()
+  } finally {
+    try {
+      release()
+    } catch (error) {
+      console.error('[pi-desktop] could not release MCP config lock:', error)
+    }
+  }
+}
+
+function mutateConfigFile(
+  file: string,
+  mutate: (document: Record<string, unknown>) => boolean | string
+): { updated: boolean; error?: string } {
+  if (!existsSync(file)) return { updated: false }
+  try {
+    return withConfigFileLock(file, () => {
+      if (!existsSync(file)) return { updated: false }
+      const read = readConfigDocument(file)
+      if (!read.document) return { updated: false, ...(read.error ? { error: read.error } : {}) }
+      const changed = mutate(read.document)
+      if (typeof changed === 'string') return { updated: false, error: changed }
+      if (!changed) return { updated: false }
+      writeConfigDocument(file, read.document)
+      return { updated: true }
+    })
+  } catch (error) {
+    return { updated: false, error: `${file}: ${error instanceof Error ? error.message : String(error)}` }
+  }
 }
 
 /** User config first, then the project config of the open workspace. */
@@ -313,32 +372,22 @@ export async function setMcpServerEnabled(
 ): Promise<MarketplaceActionResult> {
   const serverName = typeof name === 'string' ? name.trim() : ''
   if (!serverName) return { ok: false, output: 'Invalid MCP server name.' }
+  if (typeof enabled !== 'boolean') return { ok: false, output: 'Invalid MCP enabled state.' }
 
   const updated: string[] = []
   const errors: string[] = []
   for (const file of mcpConfigFiles(workspacePath)) {
-    if (!existsSync(file)) continue
-    const read = readConfigDocument(file)
-    if (!read.document) {
-      if (read.error) errors.push(read.error)
-      continue
-    }
-    const servers = recordValue(read.document.mcpServers)
-    if (!servers) {
-      if (read.document.mcpServers !== undefined) {
-        errors.push(`${file}: mcpServers is not an object.`)
-      }
-      continue
-    }
-    const entry = recordValue(servers[serverName])
-    if (!entry) continue
-    entry.enabled = enabled
-    try {
-      writeConfigDocument(file, read.document)
-      updated.push(file)
-    } catch (error) {
-      errors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    const result = mutateConfigFile(file, document => {
+      const servers = recordValue(document.mcpServers)
+      if (!servers) return document.mcpServers === undefined ? false : `${file}: mcpServers is not an object.`
+      if (!Object.hasOwn(servers, serverName)) return false
+      const entry = recordValue(servers[serverName])
+      if (!entry) return false
+      entry.enabled = enabled
+      return true
+    })
+    if (result.error) errors.push(result.error)
+    if (result.updated) updated.push(file)
   }
 
   if (errors.length) return { ok: false, output: errors.join('\n') }
@@ -360,21 +409,14 @@ export async function removeMcpServer(
   const removed: string[] = []
   const errors: string[] = []
   for (const file of mcpConfigFiles(workspacePath)) {
-    if (!existsSync(file)) continue
-    const read = readConfigDocument(file)
-    if (!read.document) {
-      if (read.error) errors.push(read.error)
-      continue
-    }
-    const servers = recordValue(read.document.mcpServers)
-    if (!servers || !(serverName in servers)) continue
-    delete servers[serverName]
-    try {
-      writeConfigDocument(file, read.document)
-      removed.push(file)
-    } catch (error) {
-      errors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    const result = mutateConfigFile(file, document => {
+      const servers = recordValue(document.mcpServers)
+      if (!servers || !Object.hasOwn(servers, serverName)) return false
+      delete servers[serverName]
+      return true
+    })
+    if (result.error) errors.push(result.error)
+    if (result.updated) removed.push(file)
   }
 
   if (errors.length) return { ok: false, output: errors.join('\n') }

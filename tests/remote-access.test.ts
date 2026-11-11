@@ -572,6 +572,64 @@ test('remote access serializes concurrent enable and disable transitions', async
   }
 })
 
+test('startup does not re-enable remote access disabled by another process', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-remote-startup-disable-'))
+  const stateFile = path.join(userData, 'remote-access.json')
+  writeFileSync(stateFile, JSON.stringify({ enabled: true, devices: [] }))
+  const makeService = () => new RemoteAccessService({
+    userData,
+    uiDirectory: userData,
+    settings: { get: () => ({ workspaces: [] }) } as never,
+    supervisor: new EventEmitter() as never,
+    customInstructions: () => undefined
+  })
+  const starting = makeService()
+  const other = makeService()
+  const internals = starting as unknown as {
+    enabled: boolean
+    server: object | null
+    port: number | undefined
+    startServer: () => Promise<void>
+    stopServer: () => Promise<void>
+  }
+  let notifyStart!: () => void
+  const startStarted = new Promise<void>((resolve) => { notifyStart = resolve })
+  let releaseStart!: () => void
+  const allowStart = new Promise<void>((resolve) => { releaseStart = resolve })
+  let stops = 0
+  internals.startServer = async () => {
+    notifyStart()
+    await allowStart
+    internals.enabled = true
+    internals.server = {}
+    internals.port = 1234
+  }
+  internals.stopServer = async () => {
+    stops += 1
+    internals.server = null
+    internals.port = undefined
+  }
+
+  try {
+    const initializing = starting.initialize()
+    await startStarted
+    const disabled = await other.setEnabled(false)
+    assert.equal(disabled.enabled, false)
+    assert.equal(JSON.parse(readFileSync(stateFile, 'utf8')).enabled, false)
+
+    releaseStart()
+    const status = await initializing
+    assert.equal(status.enabled, false)
+    assert.equal(stops, 1)
+    assert.equal(internals.server, null)
+    assert.equal(JSON.parse(readFileSync(stateFile, 'utf8')).enabled, false)
+  } finally {
+    releaseStart()
+    await Promise.all([starting.dispose().catch(() => {}), other.dispose().catch(() => {})])
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
 test('startup persistence failure closes the listener it already started', async () => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-remote-startup-'))
   writeFileSync(path.join(userData, 'remote-access.json'), JSON.stringify({ enabled: true, devices: [] }))

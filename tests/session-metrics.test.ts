@@ -196,7 +196,7 @@ test('TPS sums each answer\'s window, so a tool gap is not model time', () => {
   assert.equal(metrics.tps, 600)
 })
 
-test('live TPS includes the active answer window', () => {
+test('TPS holds the completed answers\' speed throughout the next streamed answer', () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
   let monotonic = 1_500
   Object.defineProperty(globalThis, 'performance', {
@@ -204,15 +204,41 @@ test('live TPS includes the active answer window', () => {
     value: { now: () => monotonic }
   })
   try {
-    const metrics = sessionMetrics(
-      [user('u1'), assistant('a1', 60), assistant('a2', 60)],
-      undefined,
-      { generationMs: 1_000, messageGenerationStartedAt: 1_000 }
-    )
-    assert.equal(metrics.tps, 80, 'two 60-token answers over 1.5 seconds produce 80 TPS')
+    const streaming = { ...assistant('a2', 0), streaming: true, usage: undefined }
+    const items = [user('u1'), assistant('a1', 60), streaming]
+    const run = {
+      generationMs: 1_000,
+      messageGenerationBaseMs: 1_000,
+      messageGenerationStartedAt: 1_000
+    }
+    for (monotonic of [1_500, 2_000, 10_000]) {
+      assert.equal(sessionMetrics(items, undefined, run).tps, 60,
+        'an unfinished answer has no final token count to pair with its growing duration')
+    }
+    assert.equal(sessionMetrics(items, undefined, {
+      ...run,
+      generationMs: 1_500,
+      messageGenerationStartedAt: undefined
+    }).tps, 60, 'ending a thinking or text block must not count time before message usage arrives')
+
+    assert.equal(sessionMetrics([user('u1'), assistant('a1', 60), assistant('a2', 120)], undefined, {
+      ...run,
+      generationMs: 2_000,
+      messageGenerationStartedAt: undefined
+    }).tps, 90, 'message completion publishes its tokens and matching duration together')
   } finally {
     if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor)
   }
+})
+
+test('TPS waits for a complete sample even if the stream contains partial usage', () => {
+  const items = [user('u1'), { ...assistant('a1', 120), streaming: true, durationMs: 400 }]
+  assert.equal(sessionMetrics(items, undefined, {
+    generationMs: 400,
+    messageGenerationBaseMs: 0,
+    firstTokenAt: 1_000,
+    lastTokenAt: 1_400
+  }).tps, null)
 })
 
 test('TPS is restored from the saved generation window after reopening a session', () => {

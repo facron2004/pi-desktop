@@ -119,6 +119,35 @@ test('an invalid settings file is preserved before defaults are written', () => 
   }
 })
 
+test('valid JSON with malformed workspace and path settings falls back without crashing', () => {
+  const fileName = `settings-malformed-values-${process.pid}.json`
+  const file = path.join('C:/tmp', fileName)
+  try {
+    writeFileSync(file, JSON.stringify({
+      workspaces: [{ id: 'broken', path: { value: 'C:/project' }, name: 'Broken' }],
+      externalChatFolder: { trim: false },
+      externalChatFolderHistory: ['C:/previous'],
+      piPath: { trim: false },
+      model: { trim: false },
+      customInstructions: { trim: false },
+      subagentModel: { trim: false }
+    }), 'utf8')
+
+    const store = new SettingsStore(fileName)
+    const settings = store.get()
+    assert.deepEqual(settings.workspaces, [])
+    assert.equal(settings.externalChatFolder, undefined)
+    assert.deepEqual(settings.externalChatFolderHistory, ['C:/previous'])
+    assert.equal(settings.piPath, undefined)
+    assert.equal(settings.model, undefined)
+    assert.equal(settings.customInstructions, undefined)
+    assert.equal(settings.subagentModel, undefined)
+    assert.doesNotThrow(() => store.patch({ language: 'zh' }))
+  } finally {
+    rmSync(file, { force: true })
+  }
+})
+
 test('workspace order follows the list, not last use', () => {
   const alpha = workspace('alpha', 'C:/alpha', 100)
   const beta = workspace('beta', 'C:/beta', 9000)

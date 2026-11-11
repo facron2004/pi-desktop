@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { AgentMessage, AppSettings, ModelInfo, PiEvent, PiState, RuntimeRekey, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
 import { forgetSessionTiming, readSessionTiming } from '../src/renderer/src/lib/session-timing'
+import { sessionMetrics } from '../src/renderer/src/lib/session-metrics'
 
 /* ------------------------------------------------------------------ *
  * A stand-in for the preload bridge.
@@ -28,7 +29,8 @@ const localValues = new Map<string, string>()
       setProperty: (name: string, value: string) => void style.set(name, value),
       removeProperty: (name: string) => void style.delete(name)
     }
-  }
+  },
+  addEventListener: () => {}
 }
 ;(globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame = (
   callback: () => void
@@ -789,6 +791,68 @@ test('P04e — a steer starts a fresh TPS window inside the same run', async () 
     if (sessionKey) forgetSessionTiming(sessionKey)
     Date.now = originalNow
     if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
+    useAppStore.setState(previous)
+  }
+})
+
+test('TPS pairs completed message usage with its generation time across streamed blocks', async () => {
+  const previous = useAppStore.getState()
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  const frameDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'requestAnimationFrame')
+  Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: undefined })
+  let monotonic = 1_000
+  Object.defineProperty(globalThis, 'performance', {
+    configurable: true,
+    value: { now: () => monotonic }
+  })
+  const speed = () => {
+    const state = useAppStore.getState()
+    return sessionMetrics(state.items, state.stats, state.run).tps
+  }
+  const usage = (output: number) => ({ input: 10, output, cacheRead: 0, cacheWrite: 0, totalTokens: 10 + output })
+  try {
+    await useAppStore.getState().newChat()
+    startRun()
+    emit({ type: 'message_start', message: { role: 'user', content: 'First prompt', timestamp: 1_000 } })
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    emit({ type: 'message_start', message: { role: 'assistant', content: [] } })
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'First answer' } })
+    assert.equal(speed(), null, 'there is no completed sample yet')
+    monotonic = 2_000
+    emit({ type: 'message_end', message: { role: 'assistant', content: 'First answer', usage: usage(60) } })
+    assert.equal(speed(), 60)
+
+    emit({ type: 'tool_execution_start', toolCallId: 'tps-gap', toolName: 'read', args: {} })
+    monotonic = 12_000
+    emit({ type: 'tool_execution_end', toolCallId: 'tps-gap', isError: false })
+    emit({ type: 'turn_start' })
+    emit({ type: 'message_start', message: { role: 'assistant', content: [] } })
+    assert.equal(useAppStore.getState().run.messageGenerationBaseMs, 1_000)
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } })
+    monotonic = 12_500
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_end', contentIndex: 0, content: 'Thinking' } })
+    assert.equal(speed(), 60, 'a finished block still has no final message usage')
+    monotonic = 12_600
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 1 } })
+    for (monotonic of [12_700, 12_800, 13_000]) {
+      emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'more' } })
+      assert.equal(speed(), 60, 'text deltas keep the completed reading')
+    }
+    monotonic = 13_100
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 1, content: 'Second answer' } })
+    assert.equal(speed(), 60)
+    emit({ type: 'message_end', message: { role: 'assistant', content: 'Second answer', usage: usage(120) } })
+    assert.equal(speed(), 90, '180 tokens over 2s of generation; the tool gap is excluded')
+
+    emit({ type: 'message_start', message: { role: 'user', content: 'Steer prompt', timestamp: 2_000 } })
+    assert.equal(useAppStore.getState().run.messageGenerationBaseMs, 0)
+    assert.equal(speed(), null, 'a new prompt cannot inherit the previous prompt\'s speed')
+  } finally {
+    forgetSessionTiming(useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId)
+    if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor)
+    if (frameDescriptor) Object.defineProperty(globalThis, 'requestAnimationFrame', frameDescriptor)
     useAppStore.setState(previous)
   }
 })

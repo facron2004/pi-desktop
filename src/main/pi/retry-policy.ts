@@ -1,6 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { properLockfile } from '../proper-lockfile'
+
+const settingsLockWait = new Int32Array(new SharedArrayBuffer(4))
 
 /**
  * Pi's built-in retry is 3 attempts at 2s, 4s and 8s. That is shorter than a
@@ -57,23 +61,62 @@ export function agentSettingsPath(): string {
  */
 function readSettings(file: string): Record<string, unknown> | undefined {
   if (!existsSync(file)) return {}
-  const parsed: unknown = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-  return parsed as Record<string, unknown>
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    return parsed as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
+function withSettingsLock<T>(file: string, operation: () => T): T {
+  mkdirSync(path.dirname(file), { recursive: true })
+  let release: () => void
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      release = properLockfile.lockSync(file, { realpath: false, retries: 0 })
+      break
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : undefined
+      if (code !== 'ELOCKED' || attempt >= 49) throw error
+      Atomics.wait(settingsLockWait, 0, 0, 10)
+    }
+  }
+  try {
+    return operation()
+  } finally {
+    try {
+      release()
+    } catch (error) {
+      console.error('[pi-desktop] could not release agent settings lock:', error)
+    }
+  }
+}
+
+function writeSettings(file: string, settings: Record<string, unknown>): void {
+  const temporary = `${file}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    renameSync(temporary, file)
+  } catch (error) {
+    try { unlinkSync(temporary) } catch { /* the temporary file may not exist */ }
+    throw error
+  }
 }
 
 export function ensurePatientRetrySettings(file = agentSettingsPath()): void {
   // A file Pi cannot parse is left untouched. Replacing it would also drop
   // defaultProvider and defaultModel, which is how the next launch loses the model.
-  const current = readSettings(file)
-  if (!current) return
-  if (!raiseRetryBudget(current).changed && existsSync(file)) return
-  // Read again at the write. Pi may have saved defaultProvider since the first read.
-  const latest = readSettings(file)
-  if (!latest) return
-  const raised = raiseRetryBudget(latest)
-  mkdirSync(path.dirname(file), { recursive: true })
-  writeFileSync(file, `${JSON.stringify(raised.settings, null, 2)}\n`, 'utf8')
+  withSettingsLock(file, () => {
+    const current = readSettings(file)
+    if (!current) return
+    const raised = raiseRetryBudget(current)
+    if (!raised.changed) return
+    writeSettings(file, raised.settings)
+  })
 }
 
 /** `provider/modelId`. A provider id has no slash; a model id may. */
@@ -94,16 +137,14 @@ export function splitModelSpec(spec: string | undefined): { provider: string; mo
 export function rememberDefaultModel(spec: string | undefined, file = agentSettingsPath()): void {
   const parsed = splitModelSpec(spec)
   if (!parsed) return
-  const current = readSettings(file)
-  if (!current) return
-  if (current.defaultProvider === parsed.provider && current.defaultModel === parsed.model) return
-  const latest = readSettings(file)
-  if (!latest) return
-  if (latest.defaultProvider === parsed.provider && latest.defaultModel === parsed.model) return
-  latest.defaultProvider = parsed.provider
-  latest.defaultModel = parsed.model
-  mkdirSync(path.dirname(file), { recursive: true })
-  writeFileSync(file, `${JSON.stringify(latest, null, 2)}\n`, 'utf8')
+  withSettingsLock(file, () => {
+    const current = readSettings(file)
+    if (!current) return
+    if (current.defaultProvider === parsed.provider && current.defaultModel === parsed.model) return
+    current.defaultProvider = parsed.provider
+    current.defaultModel = parsed.model
+    writeSettings(file, current)
+  })
 }
 
 const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
@@ -116,26 +157,23 @@ const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhi
 export function rememberDefaultThinkingLevel(level: string | undefined, file = agentSettingsPath()): void {
   const value = level?.trim().toLowerCase()
   if (!value || !THINKING_LEVELS.has(value)) return
-  const current = readSettings(file)
-  if (!current) return
-  if (current.defaultThinkingLevel === value) return
-  const latest = readSettings(file)
-  if (!latest) return
-  if (latest.defaultThinkingLevel === value) return
-  latest.defaultThinkingLevel = value
-  mkdirSync(path.dirname(file), { recursive: true })
-  writeFileSync(file, `${JSON.stringify(latest, null, 2)}\n`, 'utf8')
+  withSettingsLock(file, () => {
+    const current = readSettings(file)
+    if (!current) return
+    if (current.defaultThinkingLevel === value) return
+    current.defaultThinkingLevel = value
+    writeSettings(file, current)
+  })
 }
 
 /** Drop Pi's startup model after the desktop selection was cleared. */
 export function forgetDefaultModel(file = agentSettingsPath()): void {
-  const current = readSettings(file)
-  if (!current) return
-  if (!('defaultProvider' in current) && !('defaultModel' in current)) return
-  const latest = readSettings(file)
-  if (!latest) return
-  delete latest.defaultProvider
-  delete latest.defaultModel
-  mkdirSync(path.dirname(file), { recursive: true })
-  writeFileSync(file, `${JSON.stringify(latest, null, 2)}\n`, 'utf8')
+  withSettingsLock(file, () => {
+    const current = readSettings(file)
+    if (!current) return
+    if (!('defaultProvider' in current) && !('defaultModel' in current)) return
+    delete current.defaultProvider
+    delete current.defaultModel
+    writeSettings(file, current)
+  })
 }

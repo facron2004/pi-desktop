@@ -285,7 +285,8 @@ export class RemoteAccessService {
     if (this.enabled) {
       try {
         await this.startServer()
-        if (!await this.persistState((current) => ({ ...current, enabled: true }))) await this.stopServer()
+        const persisted = await this.persistState((current) => current)
+        if (!persisted || !this.enabled) await this.stopServer()
         else this.newPairing()
       } catch (error) {
         this.enabled = false
@@ -467,16 +468,18 @@ export class RemoteAccessService {
       try {
         await this.withStateLock(() => {
           mkdirSync(path.dirname(this.stateFile), { recursive: true })
-          writeFileSync(this.stateFile, JSON.stringify({ enabled: false, devices: [] }), { mode: 0o600 })
+          try {
+            writeFileSync(this.stateFile, JSON.stringify({ enabled: false, devices: [] }), { mode: 0o600 })
+          } catch (writeError) {
+            try {
+              unlinkSync(this.stateFile)
+            } catch {
+              if (existsSync(this.stateFile)) throw writeError
+            }
+          }
         })
       } catch {
-        try {
-          unlinkSync(this.stateFile)
-        } catch {
-          if (existsSync(this.stateFile)) {
-            this.error = 'Remote access is stopped for this session, but a saved phone pairing may return after restart.'
-          }
-        }
+        this.error = 'Remote access is stopped for this session, but saved settings may restore access after restart.'
       }
       return false
     }

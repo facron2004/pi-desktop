@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { ProviderApi, ProviderConnection, ProviderModel, ProviderProfile, SaveProviderInput } from '@shared/providers'
 import { parseModel, record } from './metadata'
 import { normalizeConnection } from './network'
+import { properLockfile } from '../proper-lockfile'
+
+const providerLockWait = new Int32Array(new SharedArrayBuffer(4))
 
 function readObject(file: string): Record<string, unknown> {
   if (!existsSync(file)) return {}
@@ -100,11 +103,90 @@ export class ProviderStore {
   private readonly authFile: string
   /** Pi's schema rejects unknown model fields, and a listed model is selectable. Disabled models live here. */
   private readonly desktopFile: string
+  private lockDepth = 0
+  private authLockDepth = 0
 
   constructor(directory: string) {
     this.file = path.join(directory, 'models.json')
     this.authFile = path.join(directory, 'auth.json')
     this.desktopFile = path.join(directory, 'models.desktop.json')
+  }
+
+  /** Keep the three provider files and selected-provider settings in one cross-process transaction. */
+  withMutation<T>(operation: () => T): T {
+    return this.withLock(operation)
+  }
+
+  private withLock<T>(operation: () => T): T {
+    if (this.lockDepth > 0) return operation()
+    mkdirSync(path.dirname(this.file), { recursive: true })
+    let release: () => void
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        release = properLockfile.lockSync(this.file, { realpath: false, retries: 0 })
+        break
+      } catch (error) {
+        const code = typeof error === 'object' && error !== null && 'code' in error
+          ? String((error as { code?: unknown }).code)
+          : undefined
+        if (code !== 'ELOCKED' || attempt >= 49) throw error
+        Atomics.wait(providerLockWait, 0, 0, 10)
+      }
+    }
+    this.lockDepth = 1
+    try {
+      return operation()
+    } finally {
+      this.lockDepth = 0
+      try {
+        release()
+      } catch (error) {
+        console.error('[pi-desktop] could not release provider configuration lock:', error)
+      }
+    }
+  }
+
+  /** Pi uses this same proper-lockfile lock for auth.json reads and writes. */
+  private withAuthLock<T>(operation: () => T): T {
+    if (this.authLockDepth > 0) return operation()
+    mkdirSync(path.dirname(this.authFile), { recursive: true })
+    if (!existsSync(this.authFile)) {
+      try {
+        writeFileSync(this.authFile, '{}', { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+      } catch (error) {
+        if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 'EEXIST') throw error
+      }
+    }
+    let release: () => void
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        // Match Pi's default realpath behavior so aliases share the same lock.
+        release = properLockfile.lockSync(this.authFile, { retries: 0 })
+        break
+      } catch (error) {
+        const code = typeof error === 'object' && error !== null && 'code' in error
+          ? String((error as { code?: unknown }).code)
+          : undefined
+        if (code !== 'ELOCKED' || attempt >= 49) throw error
+        Atomics.wait(providerLockWait, 0, 0, 10)
+      }
+    }
+    this.authLockDepth = 1
+    try {
+      return operation()
+    } finally {
+      this.authLockDepth = 0
+      try {
+        release()
+      } catch (error) {
+        console.error('[pi-desktop] could not release Pi auth lock:', error)
+      }
+    }
+  }
+
+  private writeAuthObject(data: Record<string, unknown>): void {
+    const file = existsSync(this.authFile) ? realpathSync(this.authFile) : this.authFile
+    writeObject(file, data)
   }
 
   private configured(id?: string): Record<string, unknown> {
@@ -118,13 +200,15 @@ export class ProviderStore {
   }
 
   list(): ProviderProfile[] {
-    const providers = providerMap(readObject(this.file))
-    return Object.entries(providers).map(([id, value]) => {
-      const profile = this.profile(id, record(value))
-      if (profile.external) return profile
-      const apiKey = this.savedKey(id)
-      return apiKey ? { ...profile, apiKey } : profile
-    })
+    return this.withLock(() => this.withAuthLock(() => {
+      const providers = providerMap(readObject(this.file))
+      return Object.entries(providers).map(([id, value]) => {
+        const profile = this.profile(id, record(value))
+        if (profile.external) return profile
+        const apiKey = this.savedKey(id)
+        return apiKey ? { ...profile, apiKey } : profile
+      })
+    }))
   }
 
   /** Editor catalog. A missing or unreadable file only hides disabled models; Pi's own list still loads. */
@@ -191,23 +275,31 @@ export class ProviderStore {
   }
 
   key(connection: ProviderConnection): string {
-    if (connection.apiKey?.trim()) return connection.apiKey.trim()
-    const auth = this.credential(connection.id)
-    const key = auth.type === 'api_key' && typeof auth.key === 'string' ? auth.key : resolveKey(this.configured(connection.id).apiKey)
-    if (!key) throw new Error('Enter an API key. Pi sign-in and credential commands remain managed by Pi.')
-    return key
+    return this.withLock(() => this.withAuthLock(() => {
+      if (connection.apiKey?.trim()) return connection.apiKey.trim()
+      const auth = this.credential(connection.id)
+      const key = auth.type === 'api_key' && typeof auth.key === 'string' ? auth.key : resolveKey(this.configured(connection.id).apiKey)
+      if (!key) throw new Error('Enter an API key. Pi sign-in and credential commands remain managed by Pi.')
+      return key
+    }))
   }
 
   /** The key the editor shows. A `!` credential command is left for Pi to run; this UI does not. */
   savedKey(id: string): string {
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(id) || ['constructor', 'prototype'].includes(id)) return ''
-    const auth = this.credential(id)
-    if (auth.type && auth.type !== 'api_key') return ''
-    const key = auth.type === 'api_key' && typeof auth.key === 'string' ? auth.key : resolveKey(this.configured(id).apiKey)
-    return key?.trim() ?? ''
+    return this.withLock(() => this.withAuthLock(() => {
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(id) || ['constructor', 'prototype'].includes(id)) return ''
+      const auth = this.credential(id)
+      if (auth.type && auth.type !== 'api_key') return ''
+      const key = auth.type === 'api_key' && typeof auth.key === 'string' ? auth.key : resolveKey(this.configured(id).apiKey)
+      return key?.trim() ?? ''
+    }))
   }
 
   save(input: SaveProviderInput): ProviderProfile {
+    return this.withLock(() => this.withAuthLock(() => this.saveUnlocked(input)))
+  }
+
+  private saveUnlocked(input: SaveProviderInput): ProviderProfile {
     const connection = normalizeConnection(input)
     const name = input.name?.trim()
     if (!name) throw new Error('Enter a provider name')
@@ -262,13 +354,17 @@ export class ProviderStore {
     // replaced key in sync without changing credentials belonging to other providers.
     if (input.apiKey?.trim() && this.credential(id).type === 'api_key') {
       const credentials = readObject(this.authFile)
-      writeObject(this.authFile, { ...credentials, [id]: { ...record(credentials[id]), key } })
+      this.writeAuthObject({ ...credentials, [id]: { ...record(credentials[id]), key } })
     }
     return this.profile(id, next)
   }
 
   /** Drop a provider written into models.json. Pi sign-in credentials stay. */
   remove(id: string): void {
+    this.withLock(() => this.withAuthLock(() => this.removeUnlocked(id)))
+  }
+
+  private removeUnlocked(id: string): void {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(id)) throw new Error('Invalid provider ID')
     const document = readObject(this.file)
     const providers = providerMap(document)
@@ -284,6 +380,6 @@ export class ProviderStore {
     if (record(credentials[id]).type !== 'api_key') return
     const remaining = { ...credentials }
     delete remaining[id]
-    writeObject(this.authFile, remaining)
+    this.writeAuthObject(remaining)
   }
 }
