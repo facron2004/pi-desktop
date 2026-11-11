@@ -38,7 +38,6 @@ const MAX_OVERSIZED_RECORD_SCAN_BYTES = 64 * 1024 * 1024
 const MAX_META_HEAD_BYTES = 2 * 1024 * 1024
 /** Its newest name, model and timestamps come from its tail. */
 const MAX_META_TAIL_BYTES = 1 * 1024 * 1024
-const MAX_SEARCH_FILES = 240
 /**
  * Bytes of one session a direct search reads.
  *
@@ -55,6 +54,8 @@ const MAX_SEARCH_FILE_BYTES = 8 * 1024 * 1024
  * that finds no hits.
  */
 const MAX_SEARCH_TOTAL_BYTES = 128 * 1024 * 1024
+// Bound concurrent candidate metadata lookups during full-history search.
+const MAX_CONCURRENT_SEARCH_CANDIDATE_READS = 16
 /**
  * A session longer than this is searched through a per-session index.
  *
@@ -1571,9 +1572,11 @@ export async function searchSessions(
   const candidatesByFile = new Map<string, { file: string; mtime: number; size: number; root: string }>()
   for (const root of options.sessionRoots ?? resolveSessionRoots()) {
     if (shouldStop()) return []
+    let realRoot: string
     try {
       const rootStat = await stat(root)
       if (!rootStat.isDirectory()) continue
+      realRoot = await realpath(root)
     } catch {
       continue
     }
@@ -1589,27 +1592,53 @@ export async function searchSessions(
     for (const dir of workspaceDirs) {
       if (shouldStop()) return []
       const folder = path.join(root, dir)
+      let realFolder: string
+      try {
+        realFolder = await realpath(folder)
+        if (!isBelowDirectory(realRoot, realFolder)) continue
+      } catch {
+        continue
+      }
       let names: string[]
       try {
         names = await readdir(folder)
       } catch {
         continue
       }
-      for (const name of names) {
-        if (shouldStop()) return []
-        if (!name.endsWith('.jsonl')) continue
-        const file = path.join(folder, name)
-        const opened = await openSessionFile(file, root)
-        if (!opened) continue
-        try {
-          const s = await opened.handle.stat()
-          candidatesByFile.set(canonicalSessionFile(file), { file, mtime: s.mtimeMs, size: s.size, root })
-        } catch {
-          /* a file that vanished is not a search result */
-        } finally {
-          await opened.handle.close().catch(() => {})
+      let nextFile = 0
+      const indexCandidates = async () => {
+        while (!shouldStop()) {
+          const name = names[nextFile++]
+          if (name === undefined) return
+          if (!name.endsWith('.jsonl')) continue
+          const file = path.join(folder, name)
+          let metadata: { mtime: number; size: number } | undefined
+          let target = path.join(realFolder, name)
+          try {
+            // Ranking needs metadata only. The selected file is reopened and
+            // fully verified through openSessionFile before any content read.
+            const entry = await lstat(file)
+            let details = entry
+            if (entry.isSymbolicLink()) {
+              const resolvedTarget = await realpath(file)
+              if (!isBelowDirectory(realRoot, resolvedTarget) || path.extname(resolvedTarget).toLowerCase() !== '.jsonl') continue
+              target = resolvedTarget
+              details = await stat(resolvedTarget)
+            }
+            if (!details.isFile() || details.nlink > 1 || details.size === 0) continue
+            metadata = { mtime: details.mtimeMs, size: details.size }
+          } catch {
+            /* a file that vanished is not a search result */
+            continue
+          }
+          if (!metadata) continue
+          const canonical = process.platform === 'win32' ? path.resolve(target).toLowerCase() : path.resolve(target)
+          candidatesByFile.set(canonical, { file, ...metadata, root })
         }
       }
+      const workers = Math.min(MAX_CONCURRENT_SEARCH_CANDIDATE_READS, names.length)
+      await Promise.all(Array.from({ length: workers }, () => indexCandidates()))
+      if (shouldStop()) return []
     }
   }
   const candidates = [...candidatesByFile.values()]
@@ -1618,7 +1647,7 @@ export async function searchSessions(
 
   const hits: SessionSearchHit[] = []
   let bytesRead = 0
-  for (const candidate of candidates.slice(0, MAX_SEARCH_FILES)) {
+  for (const candidate of candidates) {
     // A newer query supersedes this one: stop at the next file boundary so a
     // burst of keystrokes does not leave several scans running at once.
     if (shouldStop()) break

@@ -41,11 +41,12 @@ function durationOf(task: SubagentTreeTask, now: number): number | undefined {
 }
 
 /** All loaded conversations stay visible here while their child tasks run in the background. */
-export function SubagentTree({ sessions, threads, onSelect, onOpenTask, showEmpty = false }: {
+export function SubagentTree({ sessions, threads, onSelect, onOpenTask, onCancelTask, showEmpty = false }: {
   sessions: readonly SessionMeta[]
   threads: Readonly<Record<string, SessionThread>>
   onSelect: (session: SessionMeta) => void
   onOpenTask?: (task: SubagentTreeTask, session: SessionMeta) => void
+  onCancelTask?: (taskId: string, session: SessionMeta) => void
   showEmpty?: boolean
 }) {
   const t = useT()
@@ -89,6 +90,7 @@ export function SubagentTree({ sessions, threads, onSelect, onOpenTask, showEmpt
             now={now}
             onSelect={onSelect}
             onOpenTask={onOpenTask}
+            onCancelTask={onCancelTask}
           />
         ))}
       </div>
@@ -96,12 +98,13 @@ export function SubagentTree({ sessions, threads, onSelect, onOpenTask, showEmpt
   )
 }
 
-function ConversationBranch({ session, calls, now, onSelect, onOpenTask }: {
+function ConversationBranch({ session, calls, now, onSelect, onOpenTask, onCancelTask }: {
   session: SessionMeta
   calls: SubagentCall[]
   now: number
   onSelect: (session: SessionMeta) => void
   onOpenTask?: (task: SubagentTreeTask, session: SessionMeta) => void
+  onCancelTask?: (taskId: string, session: SessionMeta) => void
 }) {
   const t = useT()
   const [open, setOpen] = useState(() => readProcessOpen(session.file, 'subagent-tree') ?? true)
@@ -153,6 +156,7 @@ function ConversationBranch({ session, calls, now, onSelect, onOpenTask }: {
               task={task}
               now={now}
               onOpen={() => onOpenTask?.(task, session)}
+              onCancel={onCancelTask ? () => onCancelTask(task.id, session) : undefined}
             />
           ))}
         </ul>
@@ -161,27 +165,45 @@ function ConversationBranch({ session, calls, now, onSelect, onOpenTask }: {
   )
 }
 
-function TaskRow({ task, now, onOpen }: { task: SubagentTreeTask; now: number; onOpen: () => void }) {
+function TaskRow({ task, now, onOpen, onCancel }: {
+  task: SubagentTreeTask
+  now: number
+  onOpen: () => void
+  onCancel?: () => void
+}) {
   const t = useT()
   const status = t(STATUS_LABEL[task.status])
   const duration = durationOf(task, now)
   const activity = task.activity ? `${t(task.activity)}${task.toolName ? ` · ${task.toolName}` : ''}` : undefined
   return (
     <li className="subagent-tree__task" data-status={task.status} role="treeitem">
-      <button type="button" className="subagent-tree__task-row" title={task.task} onClick={onOpen} aria-label={`${status}: ${task.label || task.task}`}>
-        <span className="subagent-tree__disclosure-space" aria-hidden="true" />
-        <span className="subagent-tree__status" data-status={task.status}>
-          <StatusMark status={task.status} />
-        </span>
-        <span className="subagent-tree__task-copy">
-          <span className="subagent-tree__task-name">{task.label || task.task}</span>
-          {activity ? <span className="subagent-tree__summary">{activity}</span> : null}
-        </span>
-        <span className="subagent-tree__metrics">
-          <span className="subagent-tree__metric-token">{task.tokens ? formatTokens(task.tokens) : ''}</span>
-          <span className="subagent-tree__metric-duration">{duration !== undefined ? formatDuration(duration) : ''}</span>
-        </span>
-      </button>
+      <div className="subagent-tree__task-line">
+        <button type="button" className="subagent-tree__task-row" title={task.task} onClick={onOpen} aria-label={`${status}: ${task.label || task.task}`}>
+          <span className="subagent-tree__disclosure-space" aria-hidden="true" />
+          <span className="subagent-tree__status" data-status={task.status}>
+            <StatusMark status={task.status} />
+          </span>
+          <span className="subagent-tree__task-copy">
+            <span className="subagent-tree__task-name">{task.label || task.task}</span>
+            {activity ? <span className="subagent-tree__summary">{activity}</span> : null}
+          </span>
+          <span className="subagent-tree__metrics">
+            <span className="subagent-tree__metric-token">{task.tokens ? formatTokens(task.tokens) : ''}</span>
+            <span className="subagent-tree__metric-duration">{duration !== undefined ? formatDuration(duration) : ''}</span>
+          </span>
+        </button>
+        {onCancel && isStoppable(task) ? (
+          <button
+            type="button"
+            className="subagent-tree__task-stop"
+            title={t('Stop this subagent task')}
+            aria-label={t('Stop this subagent task')}
+            onClick={() => onCancel()}
+          >
+            <Square size={12} aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
     </li>
   )
 }

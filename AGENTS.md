@@ -359,6 +359,10 @@ Version 6 drops v5 TTFT samples because they included local request preparation
 and renderer/IPC delivery time. Version 7 drops v5/v6 TTFT samples because they
 used per-turn/request boundaries and could count hidden reasoning or tool
 arguments as first text. Other monotonic timing samples are preserved.
+Version 8 stored appended samples as individually named localStorage keys;
+version 9 uses a per-conversation indexed journal so reading one conversation
+does not enumerate the storage keys for every conversation. Version 8 samples
+are folded into the snapshot the next time a timing sample is recorded.
 The tokens and the hit rate open `UsagePanel` — total Token,
 cache hit rate, uncached input, cache read, cache write and output. Two
 questions, two cards; a reading printed in both would be two things to keep in
@@ -875,6 +879,35 @@ per-process extension that spawns a separate `pi --mode rpc` process per task,
 loads the child's permission extension, and routes its approval requests through
 the parent conversation's live permission dialog. It reads Pi's JSONL with
 `StringDecoder` (never `readline`) and returns the child's final text and usage.
+
+The delegation contract is part of the generated source, not a renderer concern:
+
+- `promptSnippet` plus `promptGuidelines` teach the model when to delegate and
+  that a briefing must be self-contained; the child's system prompt repeats it.
+- A call may carry `label`, `cwd`, `model`, `thinking`, `tools`, `timeoutMs`,
+  `retries` and `outputSchema`, at batch level or per task. A valid per-task
+  model or thinking level wins over the batch; the batch then falls back to
+  Settings and the dispatching session. Nonempty per-task tools and any
+  explicitly supplied schema override the batch; an empty tools list uses the
+  batch value. Timeouts and retries are clamped to their supported ranges; an
+  invalid working directory or schema fails before a child starts.
+- `timeoutMs` defaults to 30 minutes and also covers time spent waiting for a
+  worker slot; a timeout kills the process tree and reports `timed_out`.
+- `retries` is 0-2 and only retries an attempt that produced no assistant turn
+  and no tool event. That is the whole safety argument: nothing was changed, so
+  nothing is repeated. A timeout, a user stop and a schema mismatch are never
+  retried.
+- `outputSchema` (a bounded JSON Schema subset: type, required, properties,
+  items, enum, const and the common length/number bounds) is appended to the
+  child's prompt as a contract. The answer is parsed and checked on the parent
+  side; a mismatch fails the task with `stopReason: 'schema'` and keeps the raw
+  output visible instead of reporting success. Unsupported schema keywords fail
+  before the child starts, so ignored constraints cannot be reported as valid.
+- A running or queued task is stopped by the app, not by another tool, because
+  the parent turn is blocked inside the tool call: the extension registers
+  `/desktop-subagent-cancel <toolCallId:index>` and the tree/rail row's stop
+  button sends it through Pi's prompt channel. The id format is the one the UI
+  already derives in `lib/subagents.ts`.
 
 Computer Use is a General setting (`computerUse`), not a task mode.
 `src/main/pi/computer-use.ts` registers the `computer` tool (screenshot, list

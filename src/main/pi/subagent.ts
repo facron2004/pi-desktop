@@ -75,6 +75,13 @@ const RETRY_DELAY_MS = 500;
 const MAX_OUTPUT_SCHEMA_BYTES = 8 * 1024;
 const MAX_SCHEMA_DEPTH = 8;
 const MAX_SCHEMA_PROPERTIES = 200;
+const OUTPUT_SCHEMA_TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null']);
+const OUTPUT_SCHEMA_KEYWORDS = new Set([
+  'type', 'required', 'properties', 'additionalProperties', 'items', 'enum', 'const',
+  'minLength', 'maxLength', 'minimum', 'maximum', 'minItems', 'maxItems',
+  '$schema', '$id', '$comment', 'title', 'description', 'default', 'examples',
+  'deprecated', 'readOnly', 'writeOnly'
+]);
 const MAX_SUBAGENT_RECORD_BYTES = 64 * 1024 * 1024;
 const MAX_SUBAGENT_OUTPUT_CHARS = 256 * 1024;
 const MAX_SUBAGENT_ERROR_CHARS = 64 * 1024;
@@ -91,13 +98,14 @@ let uiQueue = Promise.resolve();
 let uiRequestSequence = 0;
 let activeSubagentCount = 0;
 const subagentWaiters = [];
-/** Running tasks by \`toolCallId:index\`, so the app can stop exactly one of them. */
+/** Cancellable tasks by \`toolCallId:index\`, including tasks waiting in a batch queue. */
 const taskCancels = new Map();
 
-function registerTaskCancel(taskId, controller) {
-  taskCancels.set(taskId, controller);
+function registerTaskCancel(taskId, controller, cancelQueued) {
+  const task = { controller, cancelQueued };
+  taskCancels.set(taskId, task);
   return () => {
-    if (taskCancels.get(taskId) === controller) taskCancels.delete(taskId);
+    if (taskCancels.get(taskId) === task) taskCancels.delete(taskId);
   };
 }
 
@@ -246,16 +254,87 @@ function normalizeRetries(value, fallback) {
   return Math.min(MAX_RETRIES, Math.max(0, number));
 }
 
-/** A schema is only accepted when it is a plain object that fits in an argv. */
-function validOutputSchema(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  try {
-    const text = JSON.stringify(value);
-    if (!text || text.length > MAX_OUTPUT_SCHEMA_BYTES) return undefined;
-    return value;
-  } catch {
-    return undefined;
+/**
+ * A schema is only accepted when it is an object that fits in an argv.
+ *
+ * Models routinely send a nested schema as a JSON *string* rather than an
+ * object, especially when the schema itself was described inside the briefing,
+ * so a string that parses to an object is accepted instead of silently
+ * disabling the contract the caller asked for.
+ */
+function parseOutputSchema(value) {
+  if (value === undefined) return { schema: undefined, error: undefined };
+  let candidate = value;
+  if (typeof candidate === 'string') {
+    const text = candidate.trim();
+    if (!text) return { schema: undefined, error: 'outputSchema must contain JSON' };
+    if (Buffer.byteLength(text, 'utf8') > MAX_OUTPUT_SCHEMA_BYTES) {
+      return { schema: undefined, error: 'outputSchema exceeds the maximum size' };
+    }
+    try { candidate = JSON.parse(text); } catch {
+      return { schema: undefined, error: 'outputSchema must contain valid JSON' };
+    }
   }
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return { schema: undefined, error: 'outputSchema must be an object schema' };
+  }
+  try {
+    const text = JSON.stringify(candidate);
+    if (!text || Buffer.byteLength(text, 'utf8') > MAX_OUTPUT_SCHEMA_BYTES) {
+      return { schema: undefined, error: 'outputSchema exceeds the maximum size' };
+    }
+    return { schema: candidate, error: undefined };
+  } catch {
+    return { schema: undefined, error: 'outputSchema must be JSON-serializable' };
+  }
+}
+
+function parseJsonValue(text) {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function isSingleLineProse(text) {
+  for (const character of text) {
+    const code = character.charCodeAt(0);
+    if (code === 10 || code === 13 || code === 0x2028 || code === 0x2029 ||
+        code === 96 || character === '{' || character === '}' || character === '[' || character === ']') {
+      return false;
+    }
+  }
+  return true;
+}
+
+function jsonValueEnd(text, start) {
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character.charCodeAt(0) === 92) escaped = true;
+      else if (character === '\"') inString = false;
+      continue;
+    }
+    if (character === '\"') {
+      inString = true;
+      continue;
+    }
+    if (character === '{' || character === '[') {
+      stack.push(character);
+      continue;
+    }
+    if (character === '}' || character === ']') {
+      const opener = stack.pop();
+      if (opener !== (character === '}' ? '{' : '[')) return -1;
+      if (stack.length === 0) return index + 1;
+    }
+  }
+  return -1;
 }
 
 /** The final answer as JSON: a fence or one line of prose around it is tolerated. */
@@ -263,37 +342,110 @@ function parseJsonOutput(text) {
   if (typeof text !== 'string') return { ok: false, error: 'no output' };
   let body = text.trim();
   const fence = body.match(/\`\`\`(?:json)?\\s*([\\s\\S]*?)\`\`\`/i);
-  if (fence) body = fence[1].trim();
-  const start = body.indexOf('{') === -1 ? body.indexOf('[') : Math.min(
-    body.indexOf('{'),
-    body.indexOf('[') === -1 ? body.indexOf('{') : body.indexOf('[')
-  );
-  if (start > 0) {
-    const opener = body[start];
-    const end = opener === '{' ? body.lastIndexOf('}') : body.lastIndexOf(']');
-    if (end > start) body = body.slice(start, end + 1);
+  if (fence) {
+    const before = body.slice(0, fence.index);
+    const after = body.slice(fence.index + fence[0].length);
+    if (!isSingleLineProse(before) || !isSingleLineProse(after)) {
+      return { ok: false, error: 'expected a single JSON value with at most one line of surrounding prose' };
+    }
+    return parseJsonValue(fence[1].trim());
   }
-  try {
-    return { ok: true, value: JSON.parse(body) };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+
+  const direct = parseJsonValue(body);
+  if (direct.ok) return direct;
+  const objectStart = body.indexOf('{');
+  const arrayStart = body.indexOf('[');
+  const start = objectStart < 0 ? arrayStart : arrayStart < 0 ? objectStart : Math.min(objectStart, arrayStart);
+  if (start < 0) return direct;
+  const end = jsonValueEnd(body, start);
+  if (end < 0 || !isSingleLineProse(body.slice(0, start)) || !isSingleLineProse(body.slice(end))) {
+    return { ok: false, error: 'expected a single JSON value with at most one line of surrounding prose' };
   }
+  return parseJsonValue(body.slice(start, end));
 }
 
-/**
- * Validates the subset of JSON Schema a delegation actually uses: type,
- * required, properties, additionalProperties, items, enum, const and the common
- * length/number bounds. Unknown keywords are ignored, while schema depth and
- * property count are capped so partial validation cannot silently pass.
- */
+/** Validate the full schema definition before spawning a child. */
+function outputSchemaDefinitionError(schema, where = 'outputSchema', depth = 0) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    return where + ' must be an object schema';
+  }
+  if (depth > MAX_SCHEMA_DEPTH) return where + ' exceeds the maximum supported outputSchema depth';
+  for (const keyword of Object.keys(schema)) {
+    if (!OUTPUT_SCHEMA_KEYWORDS.has(keyword)) {
+      return where + ' uses unsupported keyword "' + keyword + '"';
+    }
+  }
+  if (schema.type !== undefined) {
+    const types = typeof schema.type === 'string' ? [schema.type] : schema.type;
+    if (!Array.isArray(types) || types.length === 0 || types.some(type => !OUTPUT_SCHEMA_TYPES.has(type))) {
+      return where + '.type must contain supported JSON types';
+    }
+  }
+  if (schema.required !== undefined && (!Array.isArray(schema.required) || schema.required.some(name => typeof name !== 'string'))) {
+    return where + '.required must be an array of strings';
+  }
+  if (schema.properties !== undefined && (!schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties))) {
+    return where + '.properties must be an object';
+  }
+  if (schema.properties) {
+    const names = Object.keys(schema.properties);
+    if (names.length > MAX_SCHEMA_PROPERTIES) return where + ' has too many outputSchema properties';
+    for (const name of names) {
+      const failure = outputSchemaDefinitionError(schema.properties[name], where + '.properties.' + name, depth + 1);
+      if (failure) return failure;
+    }
+  }
+  if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== 'boolean') {
+    return where + '.additionalProperties must be a boolean';
+  }
+  if (schema.items !== undefined) {
+    const failure = outputSchemaDefinitionError(schema.items, where + '.items', depth + 1);
+    if (failure) return failure;
+  }
+  if (schema.enum !== undefined && (!Array.isArray(schema.enum) || schema.enum.length === 0)) {
+    return where + '.enum must be a non-empty array';
+  }
+  for (const keyword of ['minLength', 'maxLength', 'minItems', 'maxItems']) {
+    if (schema[keyword] !== undefined && (!Number.isInteger(schema[keyword]) || schema[keyword] < 0)) {
+      return where + '.' + keyword + ' must be a non-negative integer';
+    }
+  }
+  for (const keyword of ['minimum', 'maximum']) {
+    if (schema[keyword] !== undefined && (typeof schema[keyword] !== 'number' || !Number.isFinite(schema[keyword]))) {
+      return where + '.' + keyword + ' must be a finite number';
+    }
+  }
+  for (const [minimum, maximum] of [['minLength', 'maxLength'], ['minItems', 'maxItems'], ['minimum', 'maximum']]) {
+    if (schema[minimum] !== undefined && schema[maximum] !== undefined && schema[minimum] > schema[maximum]) {
+      return where + '.' + minimum + ' cannot exceed ' + maximum;
+    }
+  }
+  return '';
+}
+
+/** Compare JSON values while treating object property order as insignificant. */
+function jsonValueEqual(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  if (Array.isArray(left)) {
+    return left.length === right.length && left.every((entry, index) => jsonValueEqual(entry, right[index]));
+  }
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every(key => Object.prototype.hasOwnProperty.call(right, key) && jsonValueEqual(left[key], right[key]));
+}
+
+/** Validate a value against a schema already checked by outputSchemaDefinitionError. */
 function schemaError(schema, value, at, depth) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return '';
   const where = at || 'value';
   if (depth > MAX_SCHEMA_DEPTH) return where + ' exceeds the maximum supported outputSchema depth';
-  if (schema.const !== undefined && JSON.stringify(schema.const) !== JSON.stringify(value)) {
+  if (schema.const !== undefined && !jsonValueEqual(schema.const, value)) {
     return where + ' must equal ' + JSON.stringify(schema.const);
   }
-  if (Array.isArray(schema.enum) && schema.enum.length > 0 && !schema.enum.some(entry => JSON.stringify(entry) === JSON.stringify(value))) {
+  if (Array.isArray(schema.enum) && schema.enum.length > 0 && !schema.enum.some(entry => jsonValueEqual(entry, value))) {
     return where + ' must be one of ' + JSON.stringify(schema.enum);
   }
   const type = schema.type;
@@ -309,10 +461,11 @@ function schemaError(schema, value, at, depth) {
       : entry === actual);
     if (!matches) return where + ' must be one of ' + JSON.stringify(type) + ' (got ' + actual + ')';
   }
-  if (typeof schema.minLength === 'number' && typeof value === 'string' && value.length < schema.minLength) {
+  const stringLength = typeof value === 'string' ? Array.from(value).length : 0;
+  if (typeof schema.minLength === 'number' && typeof value === 'string' && stringLength < schema.minLength) {
     return where + ' must be at least ' + schema.minLength + ' characters';
   }
-  if (typeof schema.maxLength === 'number' && typeof value === 'string' && value.length > schema.maxLength) {
+  if (typeof schema.maxLength === 'number' && typeof value === 'string' && stringLength > schema.maxLength) {
     return where + ' must be at most ' + schema.maxLength + ' characters';
   }
   if (typeof schema.minimum === 'number' && typeof value === 'number' && value < schema.minimum) {
@@ -369,13 +522,17 @@ function checkOutputSchema(schema, output) {
 // and the dispatching session. Anything that is not a valid shape falls back,
 // so a stray string can never reach a child's argv.
 function taskParams(effective, item) {
+  const outputSchema = item && item.outputSchema !== undefined
+    ? parseOutputSchema(item.outputSchema)
+    : effective.outputSchema;
   return {
     model: validOverride(item && item.model, MODEL_PATTERN) || effective.model,
     thinking: validOverride(item && item.thinking, THINKING_PATTERN) || effective.thinking,
     tools: Array.isArray(item && item.tools) && item.tools.length > 0 ? item.tools : effective.tools,
     timeoutMs: normalizeTimeout(item && item.timeoutMs, effective.timeoutMs),
     retries: normalizeRetries(item && item.retries, effective.retries),
-    outputSchema: validOutputSchema(item && item.outputSchema) || effective.outputSchema,
+    outputSchema: outputSchema.schema,
+    outputSchemaError: outputSchema.error,
     label: typeof (item && item.label) === 'string' ? item.label.trim().slice(0, 80) : ''
   };
 }
@@ -436,7 +593,7 @@ function finalAssistantText(messages) {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
     if (!message || message.role !== 'assistant') continue;
-    if (!Array.isArray(message.content)) return '';
+    if (!Array.isArray(message.content)) return { text: '', truncated: false };
     const notice = '\\n[Subagent final output truncated at 262144 characters]';
     const contentLimit = MAX_SUBAGENT_OUTPUT_CHARS - notice.length;
     const parts = [];
@@ -459,9 +616,9 @@ function finalAssistantText(messages) {
       truncated = true;
       break;
     }
-    return parts.join('') + (truncated ? notice : '');
+    return { text: parts.join('') + (truncated ? notice : ''), truncated };
   }
-  return '';
+  return { text: '', truncated: false };
 }
 
 function boundedError(text) {
@@ -487,9 +644,8 @@ function failedResult(result) {
 
 function resultOutput(result) {
   if (result.stopReason === 'schema') {
-    // The work may be fine; the contract was not met. Show both so the parent
-    // can salvage the result instead of only seeing a failure.
-    return 'Subagent finished but its answer did not match outputSchema: '
+    // Keep schema-definition failures and answer mismatches visible to the parent.
+    return 'Subagent outputSchema validation failed: '
       + (result.schemaError || result.errorMessage || 'invalid output')
       + '\\n\\nRaw output:\\n'
       + (result.output || '(no output)');
@@ -611,9 +767,22 @@ function runSubagentOnce(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
     result.finishedAt = Date.now();
     return Promise.resolve(result);
   }
+  const schemaProblem = params.outputSchemaError || (params.outputSchema !== undefined
+    ? outputSchemaDefinitionError(params.outputSchema)
+    : '');
+  if (schemaProblem) {
+    result.exitCode = 1;
+    result.stopReason = 'schema';
+    result.schemaError = schemaProblem;
+    result.errorMessage = 'Subagent outputSchema is invalid or unsupported: ' + schemaProblem;
+    result.status = 'failed';
+    result.finishedAt = Date.now();
+    return Promise.resolve(result);
+  }
   const messages = [];
   let transcriptBytes = 0;
   let lastProgressAt = 0;
+  let outputTruncated = false;
   const emitUpdate = () => {
     if (!onUpdate) return;
     const output = result.output ? progressOutput(result.output) : '';
@@ -765,7 +934,9 @@ function runSubagentOnce(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
       // must not be reported as success, or the parent would trust a shape the
       // child never produced.
       if (params.outputSchema && !result.aborted && !timedOut && !failedResult(result)) {
-        const checked = checkOutputSchema(params.outputSchema, result.output);
+        const checked = outputTruncated
+          ? { ok: false, error: 'the final answer was truncated and cannot be fully validated' }
+          : checkOutputSchema(params.outputSchema, result.output);
         if (checked.ok) {
           result.structured = checked.value;
         } else {
@@ -919,7 +1090,9 @@ function runSubagentOnce(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
       if ((event.type === 'message_end' || event.type === 'tool_result_end') && event.message) {
         const message = event.message;
         if (message.role === 'assistant') {
-          result.output = finalAssistantText([message]);
+          const final = finalAssistantText([message]);
+          result.output = final.text;
+          outputTruncated = final.truncated;
           result.progressText = '';
           result.usage.turns += 1;
           const usage = message.usage;
@@ -1143,15 +1316,15 @@ export default function (pi) {
         timeoutMs: normalizeTimeout(params.timeoutMs, DEFAULT_TIMEOUT_MS),
         concurrency: normalizeConcurrency(params.concurrency),
         retries: normalizeRetries(params.retries, 0),
-        outputSchema: validOutputSchema(params.outputSchema)
+        outputSchema: parseOutputSchema(params.outputSchema)
       };
       // One controller per task, keyed the way the app names the row, so
       // /desktop-subagent-cancel can stop exactly one child and leave its
       // siblings running.
-      const taskSlot = index => {
+      const taskSlot = (index, cancelQueued) => {
         const controller = new AbortController();
         const taskId = (toolCallId || 'subagent') + ':' + index;
-        const release = registerTaskCancel(taskId, controller);
+        const release = registerTaskCancel(taskId, controller, cancelQueued);
         return { taskId, controller, signal: combinedSignal([signal, controller.signal]), release };
       };
       const markCancelled = (result, slot) => {
@@ -1216,20 +1389,36 @@ export default function (pi) {
           // Progress reporting must not detach child processes from the batch.
         }
       };
+      const slots = tasks.map((item, index) => taskSlot(index, () => {
+        if (results[index].status !== 'queued') return;
+        const perTask = taskParams(effective, item);
+        results[index] = queuedTaskResult(
+          ctx.cwd,
+          perTask,
+          item.task,
+          item.cwd || effective.cwd,
+          'aborted',
+          'Subagent task was stopped by the user.'
+        );
+        results[index].cancelled = true;
+        publishProgress();
+      }));
       publishProgress();
       await mapWithConcurrency(tasks, effective.concurrency, async (item, index) => {
         const perTask = taskParams(effective, item);
-        const slot = taskSlot(index);
+        const slot = slots[index];
         let result;
         try {
-          result = markCancelled(
-            await runWithSubagentSlot(ctx.cwd, perTask, item.task, item.cwd || effective.cwd, slot.signal, partial => {
-              const current = partial.details && partial.details.results && partial.details.results[0];
-              if (current) results[index] = current;
-              publishProgress();
-            }, ctx),
-            slot
-          );
+          result = results[index].cancelled
+            ? results[index]
+            : markCancelled(
+              await runWithSubagentSlot(ctx.cwd, perTask, item.task, item.cwd || effective.cwd, slot.signal, partial => {
+                const current = partial.details && partial.details.results && partial.details.results[0];
+                if (current) results[index] = current;
+                publishProgress();
+              }, ctx),
+              slot
+            );
         } catch (error) {
           result = queuedTaskResult(ctx.cwd, perTask, item.task, item.cwd || effective.cwd, 'failed',
             boundedError(error instanceof Error ? error.message : String(error)));
@@ -1257,13 +1446,14 @@ export default function (pi) {
   // stopped by the app, not by another tool: the renderer sends this command
   // through Pi's prompt channel while the batch is still running.
   pi.registerCommand('desktop-subagent-cancel', {
-    description: 'Stop one running subagent task by its id (toolCallId:index)',
+    description: 'Stop one running or queued subagent task by its id (toolCallId:index)',
     handler: async value => {
       const taskId = String(value || '').trim();
       if (!taskId) throw new Error('Usage: /desktop-subagent-cancel <taskId>');
-      const controller = taskCancels.get(taskId);
-      if (!controller) throw new Error('No running subagent task: ' + taskId);
-      controller.abort();
+      const task = taskCancels.get(taskId);
+      if (!task) throw new Error('No running subagent task: ' + taskId);
+      task.controller.abort();
+      task.cancelQueued?.();
     }
   });
 }

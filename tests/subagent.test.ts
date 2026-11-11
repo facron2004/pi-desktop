@@ -191,6 +191,12 @@ function emitResult() {
     emit({ type: 'agent_settled', aborted: false });
     return;
   }
+  if (mode === 'schema-truncated') {
+    const text = '{"ok":true}' + 'x'.repeat(300 * 1024);
+    emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+    emit({ type: 'agent_settled', aborted: false });
+    return;
+  }
   const text = mode === 'cwd' ? process.cwd() : process.env.PI_FAKE_TEXT || 'done';
   const content = mode === 'multi-text'
     ? [{ type: 'text', text: 'first part ' }, { type: 'text', text: 'second part' }]
@@ -305,7 +311,7 @@ function createApi(factory: (pi: ExtensionApi) => void): { tool: Tool; updates: 
 }
 
 type FakeOptions = {
-  mode?: 'ok' | 'fail' | 'slow' | 'ignore-sigterm' | 'spawn-child' | 'cwd' | 'progress' | 'many-messages' | 'large-message' | 'approval' | 'approval-unavailable' | 'oversized' | 'noisy-stderr'
+  mode?: 'ok' | 'fail' | 'slow' | 'ignore-sigterm' | 'spawn-child' | 'cwd' | 'progress' | 'many-messages' | 'large-message' | 'schema-truncated' | 'approval' | 'approval-unavailable' | 'oversized' | 'noisy-stderr'
   activeDirectory?: string
   text?: string
   currentScript?: string
@@ -440,6 +446,43 @@ test('the extension command cancels one active subagent task by id', async () =>
   })
 })
 
+test('the extension command cancels batch tasks waiting for the requested concurrency', async () => {
+  resetArgs()
+  const { tool, commands } = createApi(await loadFactory())
+  const cancel = commands.get('desktop-subagent-cancel')
+  assert.ok(cancel, 'extension did not register its task cancel command')
+  const updates: Update[] = []
+
+  await withFakePi({ mode: 'slow' }, async () => {
+    const call = tool.execute(
+      'call-cancel-queued-batch',
+      { tasks: [{ task: 'First' }, { task: 'Second' }, { task: 'Third' }], concurrency: 1 },
+      undefined,
+      (update) => updates.push(update),
+      { cwd: process.cwd() }
+    )
+    const deadline = Date.now() + 5000
+    while (readArgs().length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.equal(readArgs().length, 1, 'the first task should occupy the only batch slot')
+
+    await cancel.handler('call-cancel-queued-batch:1')
+    await cancel.handler('call-cancel-queued-batch:2')
+    const latest = updates.at(-1)?.details?.results
+    assert.equal(latest?.[1]?.status, 'aborted')
+    assert.equal(latest?.[1]?.cancelled, true)
+    assert.equal(latest?.[2]?.status, 'aborted')
+    assert.equal(latest?.[2]?.cancelled, true)
+
+    await cancel.handler('call-cancel-queued-batch:0')
+    const result = await call
+    assert.deepEqual(result.details?.results.map((entry) => entry.status), ['aborted', 'aborted', 'aborted'])
+    assert.ok(result.details?.results.every((entry) => entry.cancelled))
+    assert.equal(readArgs().length, 1, 'cancelled queued tasks must not spawn Pi')
+  })
+})
+
 test('a task can retry a failure that happened before the model received its prompt', async () => {
   resetArgs()
   const { tool } = createApi(await loadFactory())
@@ -498,6 +541,154 @@ test('outputSchema accepts a matching JSON answer and rejects a mismatch', async
   )
   assert.equal(tooWide.isError, true)
   assert.match(tooWide.details!.results[0]!.schemaError ?? '', /too many outputSchema properties/)
+})
+
+test('outputSchema tolerates one-line context but rejects multiline prose around JSON', async () => {
+  const { tool } = createApi(await loadFactory())
+  const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] }
+  const wrapped = await withFakePi({ text: 'Result: {"ok":true} done.' }, () =>
+    tool.execute('call-schema-one-line-prose', { task: 'Return JSON', outputSchema: schema }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(wrapped.isError, false)
+  assert.deepEqual(wrapped.details!.results[0]!.structured, { ok: true })
+
+  const wrappedNested = await withFakePi({ text: 'Result: {"ok":true,"note":"closing ] and } inside a string"} done.' }, () =>
+    tool.execute('call-schema-one-line-nested', {
+      task: 'Return JSON',
+      outputSchema: { type: 'object', properties: { ok: { type: 'boolean' }, note: { type: 'string' } }, required: ['ok', 'note'] }
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(wrappedNested.isError, false)
+  assert.deepEqual(wrappedNested.details!.results[0]!.structured, { ok: true, note: 'closing ] and } inside a string' })
+
+  const fenced = await withFakePi({ text: '```json\n{"ok":true}\n```' }, () =>
+    tool.execute('call-schema-fenced', { task: 'Return JSON', outputSchema: schema }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(fenced.isError, false)
+  assert.deepEqual(fenced.details!.results[0]!.structured, { ok: true })
+
+  const invalid = await withFakePi({ text: 'Result: {"ok":true}\nI could not actually verify this.' }, () =>
+    tool.execute('call-schema-multiline-prose', { task: 'Return JSON', outputSchema: schema }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(invalid.isError, true)
+  assert.equal(invalid.details!.results[0]!.status, 'failed')
+  assert.match(invalid.details!.results[0]!.schemaError ?? '', /single JSON value/)
+})
+
+test('outputSchema rejects a truncated answer even when its prefix matches', async () => {
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ mode: 'schema-truncated' }, () =>
+    tool.execute('call-schema-truncated', {
+      task: 'Return JSON',
+      outputSchema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] }
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  const child = result.details!.results[0]!
+  assert.equal(result.isError, true)
+  assert.equal(child.status, 'failed')
+  assert.equal(child.structured, undefined)
+  assert.match(child.schemaError ?? '', /truncated and cannot be fully validated/)
+  assert.match(child.output, /final output truncated at 262144 characters/)
+})
+
+test('unsupported outputSchema keywords fail before a child is spawned', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ text: '{}' }, () =>
+    tool.execute('call-schema-unsupported', {
+      task: 'Return JSON',
+      outputSchema: { type: 'object', properties: { name: { type: 'string', pattern: '^[A-Z]+$' } } }
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  const child = result.details!.results[0]!
+  assert.equal(result.isError, true)
+  assert.equal(child.status, 'failed')
+  assert.equal(child.stopReason, 'schema')
+  assert.match(child.schemaError ?? '', /unsupported keyword "pattern"/)
+  assert.deepEqual(readArgs(), [], 'an unsupported schema must be rejected before Pi starts')
+})
+
+test('outputSchema string lengths count Unicode code points', async () => {
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ text: '"😀"' }, () =>
+    tool.execute('call-schema-unicode-length', {
+      task: 'Return one emoji',
+      outputSchema: { type: 'string', maxLength: 1 }
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, false)
+  assert.deepEqual(result.details!.results[0]!.structured, '😀')
+})
+
+test('outputSchema const and enum compare JSON objects without key-order sensitivity', async () => {
+  const { tool } = createApi(await loadFactory())
+  for (const outputSchema of [
+    { type: 'object', const: { second: 2, first: 1 } },
+    { type: 'object', enum: [{ second: 2, first: 1 }] }
+  ]) {
+    const result = await withFakePi({ text: '{"first":1,"second":2}' }, () =>
+      tool.execute('call-schema-object-equality', {
+        task: 'Return the required object',
+        outputSchema
+      }, undefined, undefined, { cwd: process.cwd() })
+    )
+    assert.equal(result.isError, false)
+    assert.deepEqual(result.details!.results[0]!.structured, { first: 1, second: 2 })
+  }
+})
+
+test('a schema sent as a JSON string still becomes a contract', async () => {
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ text: '{"ok":true}' }, () =>
+    tool.execute('call-schema-string', {
+      task: 'Return JSON',
+      outputSchema: '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}'
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, false)
+  assert.deepEqual(result.details!.results[0]!.structured, { ok: true })
+})
+
+test('an invalid outputSchema string fails closed instead of disappearing or inheriting', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+
+  const single = await withFakePi({ text: 'unvalidated answer' }, () =>
+    tool.execute('call-schema-invalid-string', {
+      task: 'Return JSON',
+      outputSchema: '{"type":'
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(single.isError, true)
+  assert.equal(single.details!.results[0]!.stopReason, 'schema')
+  assert.match(single.details!.results[0]!.schemaError ?? '', /valid JSON/)
+  assert.deepEqual(readArgs(), [], 'an invalid top-level schema must be rejected before Pi starts')
+
+  resetArgs()
+  const batch = await withFakePi({ text: '{"ok":true}' }, () =>
+    tool.execute('call-schema-invalid-task-override', {
+      tasks: [{ task: 'Return JSON', outputSchema: '{"type":' }],
+      outputSchema: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } }
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(batch.isError, true)
+  assert.equal(batch.details!.results[0]!.stopReason, 'schema')
+  assert.match(batch.details!.results[0]!.schemaError ?? '', /valid JSON/)
+  assert.deepEqual(readArgs(), [], 'an invalid task schema must not inherit the batch schema and spawn Pi')
+})
+
+test('outputSchema size limits count UTF-8 bytes', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ text: 'answer' }, () =>
+    tool.execute('call-schema-utf8-limit', {
+      task: 'Return a string',
+      outputSchema: { type: 'string', description: '界'.repeat(3000) }
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, true)
+  assert.match(result.details!.results[0]!.schemaError ?? '', /maximum size/)
+  assert.deepEqual(readArgs(), [], 'an oversized UTF-8 schema must be rejected before Pi starts')
 })
 
 test('concurrent subagent calls share one process limit and queued calls can be cancelled', async () => {

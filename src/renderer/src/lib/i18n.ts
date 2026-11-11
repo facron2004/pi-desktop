@@ -650,6 +650,7 @@ const zhCN: Record<string, string> = {
   'Parallel tasks': '并行任务',
   'Collapse subagents': '收起子代理',
   'Expand subagents': '展开子代理',
+  'Stop this subagent task': '停止此子代理任务',
   Starting: '启动中',
   Working: '处理中',
   Responding: '回复中',

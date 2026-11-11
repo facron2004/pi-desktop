@@ -193,6 +193,14 @@ export function Thread() {
   }, [])
 
   const turns = useMemo(() => buildTurns(items), [items])
+  const userTimestampCounts = useMemo(() => {
+    const counts = new Map<number, number>()
+    for (const turn of turns) {
+      if (!turn.user) continue
+      counts.set(turn.user.timestamp, (counts.get(turn.user.timestamp) ?? 0) + 1)
+    }
+    return counts
+  }, [turns])
   const lastTurn = turns.at(-1)
   // Callbacks that only look a turn up must not change identity on every
   // streamed delta; they read the latest turns through this ref instead.
@@ -851,7 +859,12 @@ export function Thread() {
                   run={run}
                   runDurationMs={
                     turn.user
-                      ? userTimingDuration(runDurationsMs, turn.user.timestamp, userOrdinal)
+                      ? userTimingDuration(
+                        runDurationsMs,
+                        turn.user.timestamp,
+                        userOrdinal,
+                        userTimestampCounts.get(turn.user.timestamp) ?? 0
+                      )
                       : undefined
                   }
                   isLastTurn={isLastTurn}

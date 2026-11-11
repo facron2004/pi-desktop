@@ -468,6 +468,52 @@ const scenarios = [
     }
   },
   {
+    name: 'schema-delegation',
+    title: '结构化输出：outputSchema 产出可校验的 JSON',
+    description: '父代理带 outputSchema 委派一次；子代理返回匹配的 JSON，父侧 details.structured 得到解析后的对象。',
+    setup() {
+      // Intentionally empty: the answer is the schema shape itself.
+    },
+    prompt:
+      'Use the subagent tool exactly once. Set outputSchema to {"type":"object","properties":{"status":{"type":"string"},"count":{"type":"number"}},"required":["status","count"],"additionalProperties":false} and give the child this task: "Reply with exactly this JSON and nothing else: {"status":"ok","count":3}". Then report the child status and count.',
+    grade(ctx) {
+      const result = ctx.rawResults[0]
+      const structured = result && result.structured
+      return [
+        check('single-subagent-call', ctx.toolCalls.length === 1, `calls: ${ctx.toolCalls.length}`),
+        check('child-completed', result ? result.status === 'completed' : false, result ? `status=${result.status} stopReason=${result.stopReason}` : 'no result'),
+        check('structured-object', Boolean(structured) && structured.status === 'ok' && structured.count === 3, truncate(structured, 300)),
+        check('parent-reports-values', /ok/i.test(ctx.finalText) && hasNumber(ctx.finalText, 3), truncate(ctx.finalText, 400))
+      ]
+    }
+  },
+  {
+    name: 'cancel-task',
+    title: '单任务取消：扩展命令停止一个运行中的子任务',
+    description: '父代理委派一个刻意放慢的子任务；20s 探针确认仍在运行后，harness 发送 /desktop-subagent-cancel <toolCallId>:0，子任务应被停止并标记 cancelled。',
+    setup() {
+      // Intentionally empty.
+    },
+    prompt:
+      'Use the subagent tool exactly once. Give the child this task: "Run the bash command node -e "setTimeout(() => {}, 120000)" and wait for it to exit. Only after it exits, reply DONE. Do not use any other tool and do not shorten the wait." Do not stop or abort it yourself; report when it finishes.',
+    probeAfterMs: 20_000,
+    cancelAfterProbe: true,
+    abortTimeoutMs: 30_000,
+    grade(ctx) {
+      const result = ctx.rawResults[0]
+      const latency = ctx.cancelSentAt && ctx.settledAt ? ctx.settledAt - ctx.cancelSentAt : null
+      return [
+        check('single-subagent-call', ctx.toolCalls.length === 1, `calls: ${ctx.toolCalls.length}`),
+        check('long-task-was-running', Boolean(ctx.probe && ctx.probe.stillRunning === true), ctx.probe ? `probe@${ctx.probe.afterMs}ms stillRunning=${ctx.probe.stillRunning}` : 'probe never fired'),
+        check('child-aborted', Boolean(result && result.status === 'aborted'), result ? `status=${result.status} aborted=${result.aborted}` : 'no result'),
+        check('child-marked-user-cancelled', Boolean(result && result.cancelled === true), result ? `cancelled=${result.cancelled}` : 'no result'),
+        check('stop-reason-names-the-user', /stopped by the user/i.test(String((result && result.errorMessage) || '')), truncate(result && result.errorMessage, 300)),
+        check('cancel-settled-in-time', latency !== null && latency <= 30_000, latency === null ? 'cancel was not sent' : `${latency}ms`),
+        check('scenario-not-hard-timed-out', ctx.timedOut === false, ctx.timedOut ? 'hard timeout fired' : 'ok')
+      ]
+    }
+  },
+  {
     name: 'long-running-timeout',
     title: '长任务超时观测：20s 探针 + 父进程 abort 清理',
     description: '故意让子代理跑 120s。观察当前实现没有 per-task 超时；随后通过 RPC abort 验证整棵进程树可被取消。',
@@ -627,6 +673,7 @@ async function runScenario(scenario, options) {
   let timedOut = false
   let probe = null
   let abortSentAt = null
+  let cancelSentAt = null
   let abortAckedAt = null
   let abortTimedOut = false
   let unparsable = 0
@@ -712,6 +759,7 @@ async function runScenario(scenario, options) {
       statusTimeline: uniqueStatusTimeline(statusSnapshots),
       probe,
       abortSentAt: abortSentAt ? abortSentAt - startedAt : null,
+      cancelSentAt: cancelSentAt ? cancelSentAt - startedAt : null,
       abortAckedAt: abortAckedAt ? abortAckedAt - startedAt : null,
       abortTimedOut,
       settledAborted,
@@ -733,6 +781,7 @@ async function runScenario(scenario, options) {
       settledAt: settled ? Date.now() : null,
       probe,
       abortSentAt,
+      cancelSentAt,
       abortAckedAt,
       parallel,
       parallelObserved: record.parallelObserved,
@@ -796,6 +845,19 @@ async function runScenario(scenario, options) {
             stillRunning: !settled,
             statuses: latestStatuses(),
             childStatus: latestStatuses()
+          }
+          if (!settled && scenario.cancelAfterProbe) {
+            // The stop travels the way the app sends it: the extension command
+            // through Pi's prompt channel, addressed by toolCallId:index.
+            cancelSentAt = Date.now()
+            const sent = write({ type: 'prompt', id: 'eval-cancel', message: '/desktop-subagent-cancel ' + call.toolCallId + ':0' })
+            if (!sent) stderr += '\n[eval] cancel could not be written'
+            abortTimer = setTimeout(() => {
+              if (finished) return
+              abortTimedOut = true
+              stderr += '\n[eval] cancel did not settle within the grace period'
+              void finalize('cancel-timeout')
+            }, scenario.abortTimeoutMs || 25_000)
           }
           if (!settled && scenario.abortAfterProbe) {
             abortSentAt = Date.now()

@@ -280,6 +280,38 @@ test('TPS is restored from the saved generation window after reopening a session
   assert.equal(metrics.tps, 60)
 })
 
+test('TPS survives a long-session tail that restarts user ordinals at zero', () => {
+  const items: ThreadItem[] = [
+    { ...user('u43'), timestamp: 2_000 },
+    assistant('a43', 120)
+  ]
+  const metrics = sessionMetrics(items, undefined, {}, {
+    modelDurationsMs: {},
+    ttftDurationsMs: {},
+    toolDurationsMs: {},
+    runDurationsMs: {},
+    generationWindowMs: { 'user:42:2000': 2_000 }
+  })
+  assert.equal(metrics.tps, 60)
+})
+
+test('TPS does not reuse a sample when another user message shares its timestamp', () => {
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 2_000 },
+    assistant('a1', 120),
+    { ...user('u2'), timestamp: 2_000 },
+    assistant('a2', 90)
+  ]
+  const metrics = sessionMetrics(items, undefined, {}, {
+    modelDurationsMs: {},
+    ttftDurationsMs: {},
+    toolDurationsMs: {},
+    runDurationsMs: {},
+    generationWindowMs: { 'user:42:2000': 2_000 }
+  })
+  assert.equal(metrics.tps, null)
+})
+
 test('reopened conversations do not infer TTFT from message timestamps', () => {
   const items: ThreadItem[] = [
     { ...user('u1'), timestamp: 1_000 },

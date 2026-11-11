@@ -190,11 +190,19 @@
   border-top: 1px solid var(--border-subtle);
 }
 
+.subagent-tree__task-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
 .subagent-tree__task-row {
   display: flex;
   align-items: flex-start;
   gap: var(--sp-2);
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
   min-height: var(--ctl-lg);
   padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
   border-radius: var(--r-sm);
@@ -203,6 +211,27 @@
 
 .subagent-tree__task-row:hover {
   background: var(--bg-hover);
+}
+
+.subagent-tree__task-stop {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  margin-right: var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+}
+
+.subagent-tree__task-stop:hover {
+  background: var(--bg-hover);
+  color: var(--red);
+}
+
+.subagent-tree__task-stop:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .subagent-tree__task-copy {

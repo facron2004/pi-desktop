@@ -27,6 +27,7 @@ export function SubagentPanel({ selected, onSelectTask }: {
   const activeKey = useAppStore((state) => state.activeSessionFile ?? state.draftId ?? '')
   const workspace = useAppStore((state) => state.workspace)
   const selectSession = useAppStore((state) => state.selectSession)
+  const cancelSubagentTask = useAppStore((state) => state.cancelSubagentTask)
   // Use the same merge as the sidebar so a live draft or a prompt still on its
   // way to Pi does not disappear from the subagent page before it is persisted.
   const listed = useMemo(
@@ -52,6 +53,7 @@ export function SubagentPanel({ selected, onSelectTask }: {
         threads={threads}
         onSelect={(session) => void selectSession(session)}
         onOpenTask={(task, session) => onSelectTask({ sessionKey: session.file, taskId: task.id })}
+        onCancelTask={(taskId, session) => void cancelSubagentTask(taskId, session.file)}
         showEmpty
       />
     </div>

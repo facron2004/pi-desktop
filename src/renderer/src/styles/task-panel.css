@@ -227,11 +227,20 @@
   list-style: none;
 }
 
+.task-panel__task-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
 .task-panel__task-action {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
   min-height: 28px;
   padding: 0 8px;
   border: 0;
@@ -248,6 +257,26 @@
 }
 
 .task-panel__task-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.task-panel__task-stop {
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+}
+
+.task-panel__task-stop:hover {
+  background: var(--bg-hover);
+  color: var(--red);
+}
+
+.task-panel__task-stop:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }

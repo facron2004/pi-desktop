@@ -80,6 +80,7 @@ export default function App() {
   const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
   const compact = useAppStore((state) => state.compact)
   const showToast = useAppStore((state) => state.showToast)
+  const cancelSubagentTask = useAppStore((state) => state.cancelSubagentTask)
   const anySessionStreaming = useAppStore((state) =>
     Object.values(state.threads).some((thread) => thread.isStreaming)
   )
@@ -823,11 +824,14 @@ export default function App() {
               aria-label={t('Task status')}
             >
               <div className="task-rail__body">
-                <TaskPanel onOpenTask={(taskId) => {
-                  setSubagentSelection({ sessionKey: activeSessionFile ?? draftId ?? '', taskId })
-                  setPanelView('subagents')
-                  setChangesOpen(true)
-                }} />
+                <TaskPanel
+                  onOpenTask={(taskId) => {
+                    setSubagentSelection({ sessionKey: activeSessionFile ?? draftId ?? '', taskId })
+                    setPanelView('subagents')
+                    setChangesOpen(true)
+                  }}
+                  onCancelTask={(taskId) => void cancelSubagentTask(taskId)}
+                />
               </div>
             </aside>
           ) : null}

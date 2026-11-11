@@ -240,6 +240,42 @@ test('session search and usage ignore JSONL symlinks that escape their scan root
   }
 })
 
+test('session search keeps JSONL symlinks whose target stays inside the root', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-session-search-internal-link-'))
+  const workspace = path.join(root, '--C--proj--')
+  const target = path.join(workspace, 'target.jsonl')
+  const link = path.join(workspace, 'linked.jsonl')
+  mkdirSync(workspace, { recursive: true })
+  configureSessionSearchIndex(null)
+  try {
+    writeFileSync(target, [
+      JSON.stringify({ type: 'session', version: 3, id: 'linked', cwd: 'C:/proj' }),
+      JSON.stringify({
+        type: 'message', id: 'user', parentId: null,
+        message: { role: 'user', content: 'inrootmarker', timestamp: 1 }
+      })
+    ].join('\n') + '\n', 'utf8')
+    try {
+      symlinkSync(target, link, 'file')
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') {
+        t.diagnostic(`file links are unavailable (${code})`)
+        return
+      }
+      throw error
+    }
+
+    const hits = await searchSessions('inrootmarker', 10, { sessionRoots: [root] })
+    assert.equal(hits.length, 1)
+    assert.equal(hits[0]?.snippet.includes('inrootmarker'), true)
+  } finally {
+    configureSessionSearchIndex(null)
+    clearSessionCache()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('usage cache stays within its source-byte budget across large sessions', async () => {
   const parent = mkdtempSync(path.join(tmpdir(), 'pi-usage-cache-budget-'))
   const root = path.join(parent, 'sessions')
@@ -846,15 +882,15 @@ test('searchSessions: a superseded query stops during candidate enumeration', as
   try {
     let checks = 0
     const stopped = await searchSessions('needle', 10, {
-      // Checks cover root/directory discovery, candidate enumeration, and the
-      // post-open boundary; cancellation arrives before the older file opens.
+      // Cancellation arrives while bounded candidate workers are active; no
+      // text-search work should continue after the worker pool settles.
       shouldStop: () => {
         checks += 1
         return checks > 7
       }
     })
     assert.deepEqual(stopped, [], 'the superseded scan must not read further files')
-    assert.equal(checks, 9)
+    assert.ok(checks > 7, 'the query was cancelled during candidate enumeration')
   } finally {
     if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
     else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
@@ -1257,6 +1293,37 @@ test('searchSessions: a long session is searchable through its index', async () 
       else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
     }
   } finally {
+    clearSessionCache()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('searchSessions searches past the newest 240 conversations when its byte budget allows', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-search-many-sessions-'))
+  const folder = path.join(root, '--C--proj--')
+  mkdirSync(folder)
+  const target = path.join(folder, 'oldest-match.jsonl')
+  configureSessionSearchIndex(null)
+  try {
+    for (let index = 0; index <= 240; index += 1) {
+      const file = index === 0 ? target : path.join(folder, `recent-${index}.jsonl`)
+      const content = index === 0 ? 'oldestmatch' : `recent conversation ${index}`
+      writeFileSync(file, [
+        JSON.stringify({ type: 'session', version: 3, id: `search-${index}`, cwd: 'C:/proj' }),
+        JSON.stringify({
+          type: 'message', id: `user-${index}`, parentId: null,
+          message: { role: 'user', content, timestamp: index }
+        })
+      ].join('\n') + '\n', 'utf8')
+      const modified = new Date(Date.UTC(2024, 0, 1) + index * 1000)
+      utimesSync(file, modified, modified)
+    }
+
+    const hits = await searchSessions('oldestmatch', 1, { sessionRoots: [root] })
+    assert.equal(hits.length, 1)
+    assert.equal(hits[0]?.file, target)
+  } finally {
+    configureSessionSearchIndex(null)
     clearSessionCache()
     rmSync(root, { recursive: true, force: true })
   }

@@ -82,6 +82,7 @@ export function sessionMetrics(
   let lastUserIndex = -1
   let lastUserTimestamp: number | undefined
   let lastUserOrdinal: number | undefined
+  const userTimestampCounts = new Map<number, number>()
   let transcriptTurnCount = 0
   let toolItemCount = 0
   let knownToolTimeMs = 0
@@ -96,6 +97,7 @@ export function sessionMetrics(
       lastUserIndex = index
       lastUserTimestamp = item.timestamp
       lastUserOrdinal = transcriptTurnCount
+      userTimestampCounts.set(item.timestamp, (userTimestampCounts.get(item.timestamp) ?? 0) + 1)
       transcriptTurnCount += 1
     } else if (item.kind === 'tool') {
       toolItemCount += 1
@@ -195,7 +197,12 @@ export function sessionMetrics(
       : 0
   const restoredWindowMs = hasStreamingAssistant || lastUserTimestamp === undefined
     ? undefined
-    : userTimingDuration(timing?.generationWindowMs ?? {}, lastUserTimestamp, lastUserOrdinal)
+    : userTimingDuration(
+      timing?.generationWindowMs ?? {},
+      lastUserTimestamp,
+      lastUserOrdinal,
+      userTimestampCounts.get(lastUserTimestamp) ?? 0
+    )
   // A transcript-only conversation has no client samples. Each assistant
   // message carries the duration Pi spent generating it, so summing those is
   // the same per-answer window the live path records — tool gaps excluded.

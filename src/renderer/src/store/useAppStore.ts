@@ -267,8 +267,8 @@ export interface AppStore {
   /** Run a task-mode extension command through the live Pi process. */
   runTaskCommand: (command: string) => Promise<void>
   /**
-   * Stop one running subagent task. The id is the `toolCallId:index` the
-   * subagent tree shows; a session that is not on screen is targeted by key.
+   * Stop one running or queued subagent task. The id is the `toolCallId:index`
+   * the subagent tree shows; a session that is not on screen is targeted by key.
    */
   cancelSubagentTask: (taskId: string, sessionKey?: string) => Promise<void>
   isStreaming: boolean

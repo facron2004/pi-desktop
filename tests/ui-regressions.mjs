@@ -300,6 +300,13 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   check(branch.querySelectorAll('.subagent-tree__task').length === 3, 'Subagent tree lost tasks')
   check(branch.querySelector('[data-status="running"]') && branch.querySelector('[data-status="queued"]'), 'Subagent states are missing')
   check([...branch.querySelectorAll('.subagent-tree__task-row')].every((row) => row.getBoundingClientRect().right <= branch.getBoundingClientRect().right + 1), 'Long task labels overflowed the right panel')
+  const originalCancelSubagentTask = store.getState().cancelSubagentTask
+  const cancelledTasks = []
+  store.setState({ cancelSubagentTask: async (taskId, sessionKey) => cancelledTasks.push({ taskId, sessionKey }) })
+  await until(() => branch.querySelectorAll('.subagent-tree__task-stop').length === 2, 'Active tasks did not show stop controls')
+  branch.querySelector('[data-status="running"] .subagent-tree__task-stop').click()
+  check(cancelledTasks.length === 1 && cancelledTasks[0].taskId && cancelledTasks[0].sessionKey === owner, 'The stop control did not cancel its task in the owning conversation')
+  store.setState({ cancelSubagentTask: originalCancelSubagentTask })
   await store.getState().selectSession({ id: other, file: other, cwd: baseThread.status.cwd, preview: 'Another conversation', updatedAt: 1, messageCount: 0 })
   await pause(50)
   check(document.querySelector(`.subagent-tree__branch[data-session-file="${owner}"]`) === branch, 'Background subagent tree disappeared')
@@ -591,6 +598,13 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   )
   store.setState({ git: gitBefore })
   check(document.querySelectorAll('.task-panel__task').length === 1, 'The background task row is missing')
+  const originalTaskRailCancel = store.getState().cancelSubagentTask
+  let taskRailCancelledId
+  store.setState({ cancelSubagentTask: async (taskId) => { taskRailCancelledId = taskId } })
+  const taskRailStop = await until(() => document.querySelector('.task-panel__task-stop'), 'The running task has no stop control in the task rail')
+  taskRailStop.click()
+  check(Boolean(taskRailCancelledId), 'The task rail stop control did not dispatch task cancellation')
+  store.setState({ cancelSubagentTask: originalTaskRailCancel })
   check(document.querySelectorAll('.task-panel__check').length === 3, 'The plan checklist is missing a step')
   check(document.querySelectorAll('.task-panel__check[data-done]').length === 2, 'A finished step is not marked as done')
   check(document.querySelectorAll('.task-panel__folder').length === 0, 'The deliverables still draw folder rows')
