@@ -527,6 +527,10 @@ export class ScheduledTaskService extends EventEmitter {
       released = true
       try {
         releaseLock()
+      } catch (error) {
+        // proper-lockfile rejects release after a lease is compromised. Keep
+        // cleanup moving so the paired run-slot lock can still be released.
+        console.error('[pi-desktop] could not release scheduled task lock:', error)
       } finally {
         this.removeRunLockOwner(ownerFile, token)
       }

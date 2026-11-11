@@ -252,6 +252,8 @@ function normalizeThemeForeground(parsed: Partial<AppSettings>): string | undefi
 interface PersistedAppSettings extends Partial<AppSettings> {
   /** Marks a project-trust choice explicitly reviewed by the user. */
   projectTrustReviewed?: boolean
+  /** Workspace removals that stale full-list patches must not undo. */
+  removedWorkspaceIds?: string[]
 }
 
 function readSettingsFile(file: string): PersistedAppSettings | null {
@@ -375,6 +377,8 @@ export class SettingsStore {
   private data: AppSettings
   private projectTrustReviewed = false
   private fileVersion: string | undefined
+  // Persisted with settings so other app processes share the same removals.
+  private readonly removedWorkspaceIds = new Set<string>()
 
   constructor(fileName = 'settings.json') {
     this.file = path.join(app.getPath('userData'), fileName)
@@ -386,6 +390,7 @@ export class SettingsStore {
     if (!parsed) return { ...DEFAULT_SETTINGS }
     const saved = { ...parsed }
     delete saved.projectTrustReviewed
+    delete saved.removedWorkspaceIds
     return {
       ...DEFAULT_SETTINGS,
       ...saved,
@@ -498,6 +503,10 @@ export class SettingsStore {
     if (!force && version === this.fileVersion) return
     const parsed = readSettingsFile(this.file)
     this.projectTrustReviewed = parsed?.projectTrustReviewed === true
+    this.removedWorkspaceIds.clear()
+    for (const id of Array.isArray(parsed?.removedWorkspaceIds) ? parsed.removedWorkspaceIds : []) {
+      if (typeof id === 'string') this.removedWorkspaceIds.add(id)
+    }
     this.data = this.read(parsed)
     this.fileVersion = version
   }
@@ -535,10 +544,31 @@ export class SettingsStore {
       this.refreshFromDisk(true)
       const current = this.data
       const patch = patchFor(current)
+      const blockedWorkspaceIds = new Set([...this.removedWorkspaceIds, ...removedWorkspaceIds])
+      const workspaces = patch.workspaces === undefined
+        ? current.workspaces
+        : mergeWorkspaces(
+            baseline.workspaces,
+            patch.workspaces,
+            current.workspaces,
+            blockedWorkspaceIds
+          )
+      const currentActiveWorkspaceId = current.activeWorkspaceId ?? null
+      const requestedActiveWorkspaceId = patch.activeWorkspaceId === undefined
+        ? currentActiveWorkspaceId
+        : patch.activeWorkspaceId
+      const isActiveWorkspaceId = (id: string | null) =>
+        id === null || workspaces.some((workspace) => workspace.id === id)
+      const activeWorkspaceId = isActiveWorkspaceId(requestedActiveWorkspaceId)
+        ? requestedActiveWorkspaceId
+        : isActiveWorkspaceId(currentActiveWorkspaceId)
+          ? currentActiveWorkspaceId
+          : workspaces[0]?.id ?? null
       const projectTrustReviewed = this.projectTrustReviewed || 'trustProject' in patch
       const next: AppSettings = {
         ...current,
         ...patch,
+        activeWorkspaceId,
         externalChatFolderHistory: patch.externalChatFolderHistory === undefined
           ? current.externalChatFolderHistory
           : normalizeExternalChatFolderHistory(
@@ -546,9 +576,7 @@ export class SettingsStore {
               patch.externalChatFolder ?? current.externalChatFolder
             ),
         trustProject: 'trustProject' in patch ? patch.trustProject === true : current.trustProject,
-        workspaces: patch.workspaces === undefined
-          ? current.workspaces
-          : mergeWorkspaces(baseline.workspaces, patch.workspaces, current.workspaces, removedWorkspaceIds),
+        workspaces,
         projectOrder: patch.projectOrder === undefined
           ? current.projectOrder
           : mergeProjectOrder(
@@ -588,15 +616,21 @@ export class SettingsStore {
               current.shortcutBindings ?? {}
             )
       }
-      this.write(next, projectTrustReviewed)
+      this.write(next, projectTrustReviewed, blockedWorkspaceIds)
       this.data = next
       this.projectTrustReviewed = projectTrustReviewed
+      this.removedWorkspaceIds.clear()
+      for (const id of blockedWorkspaceIds) this.removedWorkspaceIds.add(id)
       this.fileVersion = settingsFileVersion(this.file)
     })
     return this.get()
   }
 
-  private write(data: AppSettings, projectTrustReviewed: boolean): void {
+  private write(
+    data: AppSettings,
+    projectTrustReviewed: boolean,
+    removedWorkspaceIds: ReadonlySet<string>
+  ): void {
     const tmp = `${this.file}.${randomUUID()}.tmp`
     try {
       mkdirSync(path.dirname(this.file), { recursive: true })
@@ -605,7 +639,11 @@ export class SettingsStore {
         copyFileSync(this.file, recoveryFile)
         console.error(`[pi-desktop] invalid settings were preserved at ${recoveryFile}`)
       }
-      writeFileSync(tmp, JSON.stringify({ ...data, projectTrustReviewed }, null, 2), 'utf8')
+      writeFileSync(tmp, JSON.stringify({
+        ...data,
+        projectTrustReviewed,
+        ...(removedWorkspaceIds.size ? { removedWorkspaceIds: [...removedWorkspaceIds] } : {})
+      }, null, 2), 'utf8')
       renameSync(tmp, this.file)
     } catch (error) {
       console.error('[pi-desktop] failed to persist settings:', error)

@@ -123,6 +123,8 @@ interface RuntimeActivity {
   settlements: number
   /** The conversation used MCP, computer use, subagents or another outside tool. */
   externalContext: boolean
+  binding?: Promise<void>
+  finalizing?: boolean
   stopping?: Promise<void>
 }
 
@@ -456,19 +458,31 @@ export class SessionSupervisor extends EventEmitter {
         await starting
         // A launch that was still in flight must not resurrect a stopped writer.
         if (runtime.isRunning) await runtime.stop()
+        activity.finalizing = true
+        await activity.binding?.catch(() => {})
         if (wasBusy && activity.settlements === settlementsAtStop) {
           // The transport was detached before shutdown, so Pi's final event
           // could not arrive (or abort did not settle it). Process exit confirms
           // that this run was stopped.
-          this.emit('event', { ownerId: id, event: { type: 'agent_settled', aborted: true, runtimeStopped: true } })
+          this.emit('event', {
+            ownerId: activity.ownerId,
+            event: { type: 'agent_settled', aborted: true, runtimeStopped: true }
+          })
         }
       } finally {
-        this.clearWarm(id)
-        if (this.runtimes.get(id) === runtime) this.runtimes.delete(id)
-        this.approvals.delete(id)
-        await this.releaseFile(id)
+        activity.finalizing = true
+        await activity.binding?.catch(() => {})
+        const owner = activity.ownerId
+        this.clearWarm(owner)
+        this.dropQueued(owner)
+        this.approvals.delete(owner)
+        // Keep the stopping runtime discoverable until its session-file lock
+        // is released. Use its current owner because an in-flight state read
+        // may have rebound it while shutdown was waiting for Pi to exit.
+        await this.releaseFile(owner)
+        if (this.runtimes.get(owner) === runtime) this.runtimes.delete(owner)
         activity.stopping = undefined
-        await this.release(id, activity.cwd)
+        await this.release(owner, activity.cwd)
       }
     })()
     activity.stopping = stopped
@@ -816,13 +830,41 @@ export class SessionSupervisor extends EventEmitter {
     }
   }
 
-  private async bindFile(from: string, file: string, startup = false): Promise<void> {
+  private bindFile(from: string, file: string, startup = false): Promise<void> {
     const runtime = this.runtimes.get(from)
-    if (!runtime || from === file) return
+    const activity = runtime && this.activity.get(runtime)
+    if (!runtime || !activity || from === file || activity.finalizing) return Promise.resolve()
+    const previous = activity.binding ?? Promise.resolve()
+    const binding = previous.then(
+      () => this.bindFileNow(runtime, activity, from, file, startup),
+      () => this.bindFileNow(runtime, activity, from, file, startup)
+    )
+    let tracked: Promise<void>
+    tracked = binding.finally(() => {
+      if (activity.binding === tracked) activity.binding = undefined
+    })
+    activity.binding = tracked
+    return tracked
+  }
+
+  private async bindFileNow(
+    runtime: ManagedSessionRuntime,
+    activity: RuntimeActivity,
+    from: string,
+    file: string,
+    startup: boolean
+  ): Promise<void> {
+    if (activity.finalizing || this.ownerOf(runtime) !== from || from === file) return
     await this.acquireSessionFileLock(file, from)
+    if (activity.finalizing || this.ownerOf(runtime) !== from) {
+      // Another state read may have rebound this runtime while the lock was
+      // being acquired. Do not leave a second map entry or an orphaned lock.
+      await this.releaseSessionFileLock(file, from)
+      return
+    }
     this.runtimes.delete(from)
     this.runtimes.set(file, runtime)
-    this.activity.get(runtime)!.ownerId = file
+    activity.ownerId = file
     // A fork moves this process, but the original JSONL remains a separate chat.
     // Only drafts and alternate spellings of the same file are aliases.
     for (const alias of [...(this.aliasesByTarget.get(from) ?? [])]) this.setAlias(alias, file)
@@ -865,6 +907,7 @@ export class SessionSupervisor extends EventEmitter {
       lock.ownerId === id || this.canonical(lock.ownerId) === id
     )
     await Promise.all(locks.map(([file, lock]) => this.releaseSessionFileLock(file, lock.ownerId)))
+    this.clearAliasesForTarget(id)
   }
 
   async withSessionFileMutation<T>(file: string, action: () => Promise<T>): Promise<T> {
@@ -948,6 +991,23 @@ export class SessionSupervisor extends EventEmitter {
     const targetAliases = this.aliasesByTarget.get(target) ?? new Set<string>()
     targetAliases.add(alias)
     this.aliasesByTarget.set(target, targetAliases)
+  }
+
+  private clearAliasesForTarget(target: string): void {
+    const pending = [target]
+    const cleared = new Set<string>()
+    while (pending.length > 0) {
+      const current = pending.pop()!
+      if (cleared.has(current)) continue
+      cleared.add(current)
+      const aliases = this.aliasesByTarget.get(current)
+      this.aliasesByTarget.delete(current)
+      if (!aliases) continue
+      for (const alias of aliases) {
+        if (this.aliases.get(alias) === current) this.aliases.delete(alias)
+        pending.push(alias)
+      }
+    }
   }
 
   private scheduleWarm(key: string): void {

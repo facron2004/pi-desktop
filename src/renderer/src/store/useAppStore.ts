@@ -425,6 +425,7 @@ export interface AppStore {
   runAppCommand: (name: string) => Promise<void>
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>
   saveProvider: (input: SaveProviderInput) => Promise<{ provider: ProviderProfile; applied: boolean; applyError?: string }>
+  removeProvider: (id: string) => Promise<void>
   /** Pin a conversation to the top of the sidebar, or unpin it. */
   togglePin: (file: string) => Promise<void>
   dismissError: () => void
@@ -508,6 +509,7 @@ let pendingProjectPath: string | null | undefined
  * its own owner and continues to update background conversations.
  */
 let workspaceEpoch = 0
+let projectTransitionTarget: string | null | undefined
 /**
  * The project that owns the screen, as opposed to the conversation on it.
  *
@@ -517,19 +519,40 @@ let workspaceEpoch = 0
  * is in flight must not throw the fresh list away.
  */
 let projectEpoch = 0
+let sessionListRequest = 0
+/** Prevent older Pi state reads from overwriting a newer snapshot per thread. */
+let refreshStateRequestSequence = 0
+const refreshStateRequests = new Map<string, number>()
+let modelCatalogRequestSequence = 0
+let agentSettingSelectionInFlight = false
+let modelPreferenceSequence = 0
+let modelPreferenceValue: string | null | undefined
+let thinkingPreferenceSequence = 0
+let thinkingPreferenceValue: string | null | undefined
+let sessionSettingsQueue: Promise<void> = Promise.resolve()
+
+function queueSessionSettings<T>(operation: () => Promise<T>): Promise<T> {
+  const result = sessionSettingsQueue.then(operation, operation)
+  sessionSettingsQueue = result.then(() => undefined, () => undefined)
+  return result
+}
 
 /** How long a burst of file edits waits before one git read of the tree. */
 const GIT_REFRESH_DEBOUNCE_MS = 700
 let gitRefreshTimer: number | null = null
+const HIDDEN_EVENT_FLUSH_MS = 100
+let gitStatusRequest = 0
 
 /** A project switch: the view and the project both move. */
-function beginProjectChange(): number {
+function beginProjectChange(target: string | null): number {
+  projectTransitionTarget = target
   ++projectEpoch
   return ++workspaceEpoch
 }
 
 /** A view-only change: the conversation on screen moves, the project does not. */
 function beginViewChange(): number {
+  projectTransitionTarget = undefined
   return ++workspaceEpoch
 }
 const threadAliases = new Map<string, string>()
@@ -646,6 +669,30 @@ function setThreadAlias(alias: string, target: string): void {
   const targetAliases = threadAliasesByTarget.get(target) ?? new Set<string>()
   targetAliases.add(alias)
   threadAliasesByTarget.set(target, targetAliases)
+}
+
+function clearThreadAliasesForTarget(target: string): string[] {
+  const pending = [target]
+  const cleared = new Set<string>()
+  while (pending.length > 0) {
+    const current = pending.pop()!
+    if (cleared.has(current)) continue
+    cleared.add(current)
+    const aliases = threadAliasesByTarget.get(current)
+    threadAliasesByTarget.delete(current)
+    if (!aliases) continue
+    for (const alias of aliases) {
+      if (threadAliases.get(alias) !== current) continue
+      threadAliases.delete(alias)
+      pending.push(alias)
+    }
+  }
+  cleared.delete(target)
+  return [...cleared]
+}
+
+function isCurrentStateRefresh(key: string, request: number): boolean {
+  return refreshStateRequests.get(threadKey(key)) === request
 }
 
 function stopPrewarmOnlyRuntime(sessionKey: string | undefined): void {
@@ -987,23 +1034,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async closeWorkspace() {
+    const epoch = beginProjectChange(null)
     drainPending()
     pendingProjectPath = undefined
     set({ pendingProject: undefined })
     const cwd = get().workspace?.path ?? get().status.cwd ?? ''
     if (typeof window.pi.runtime.stopCwd === 'function') await window.pi.runtime.stopCwd(cwd)
     else if (viewKeyOf(get())) await window.pi.runtime.stop(viewKeyOf(get()))
+    if (epoch !== workspaceEpoch) return
     const settings = await window.pi.settings.patch({ activeWorkspaceId: null })
+    if (epoch !== workspaceEpoch) return
     set({ settings })
     await get().openWorkspace(undefined)
   },
 
   async switchProject(path, options) {
-    const epoch = beginProjectChange()
     const current = get().workspace
     const same = path === null
       ? !current && get().settings.activeWorkspaceId === null
       : Boolean(current && samePath(current.path, path))
+    const epoch = same ? beginViewChange() : beginProjectChange(path)
     // Changing the project on screen does not stop a conversation that is
     // still running in this one, or in any other.
     void options
@@ -1012,6 +1062,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
         // A queued switch is moot if the same project is opened right now.
         pendingProjectPath = undefined
         set({ pendingProject: undefined })
+      }
+      if (path !== null && current) {
+        const { workspace, settings } = await window.pi.workspaces.add(path)
+        if (epoch !== workspaceEpoch) return
+        const next = settings.activeWorkspaceId === workspace.id
+          ? settings
+          : await window.pi.settings.patch({ activeWorkspaceId: workspace.id })
+        if (epoch !== workspaceEpoch) return
+        set({ workspace, settings: next })
+        applyAppearance(next, get().info?.forcedTheme)
+        await get().refreshSessions()
+        if (epoch !== workspaceEpoch) return
+        await get().refreshGit()
       }
       return
     }
@@ -1055,7 +1118,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (currentKey) touchSessionLru(currentKey)
     stopPrewarmOnlyRuntime(currentKey)
     cancelScheduledPrewarm()
-    const epoch = beginProjectChange()
+    const epoch = beginProjectChange(workspace?.path ?? null)
     drainPending()
     pendingProjectPath = undefined
     const cached = sessionFile ? get().threads[sessionFile] : undefined
@@ -1096,17 +1159,32 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async removeWorkspace(target) {
-    const current = get().workspace
     const path = target.path
     if (!path) return
+    const queuedSwitchRemoved = typeof pendingProjectPath === 'string' && samePath(pendingProjectPath, path)
+    if (queuedSwitchRemoved) {
+      pendingProjectPath = undefined
+      set({ pendingProject: undefined })
+    }
+    const active = get().workspace
+    const removesActive = Boolean(active && samePath(active.path, path))
+    const removesTransitionTarget =
+      typeof projectTransitionTarget === 'string' && samePath(projectTransitionTarget, path)
+    const epoch = removesActive || queuedSwitchRemoved || removesTransitionTarget
+      ? beginProjectChange(path)
+      : projectEpoch
     // Removing a project that is not the active one must not move the user
     // somewhere else; only the project that goes away needs a replacement.
-    const wasActive = Boolean(current && samePath(current.path, path))
-    const next = await window.pi.workspaces.remove(target.id, path)
-    set({ settings: next })
-    applyAppearance(next, get().info?.forcedTheme)
-    if (!wasActive) return
-    const replacement = next.workspaces[0]
+    await window.pi.workspaces.remove(target.id, path)
+    const settings = await window.pi.settings.get()
+    set({ settings })
+    applyAppearance(settings, get().info?.forcedTheme)
+    if (epoch !== projectEpoch) return
+    const currentWorkspace = get().workspace
+    if (!currentWorkspace || !samePath(currentWorkspace.path, path)) return
+    if (settings.workspaces.some((workspace) => samePath(workspace.path, path))) return
+    const replacement =
+      settings.workspaces.find((workspace) => workspace.id === settings.activeWorkspaceId) ?? settings.workspaces[0]
     if (replacement) {
       await get().openWorkspace(replacement, undefined, 'project-remove')
     } else {
@@ -1116,13 +1194,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async refreshSessions() {
     const epoch = projectEpoch
+    const request = ++sessionListRequest
     const sessions = await window.pi.sessions.list()
-    // The list is the project's conversations on disk, not the one on screen,
-    // so only a project switch makes a read obsolete. Guarding it with the
-    // view epoch is what made two conversations created in quick succession
-    // both vanish from the sidebar: a new chat bumped that epoch while the
-    // read was out, and the fresh list was thrown away.
-    if (epoch !== projectEpoch) return
+    // The list belongs to the project, not the conversation on screen, so a
+    // view change must not invalidate it. The project epoch rejects reads
+    // across project switches; the request sequence rejects older same-project
+    // scans. A view epoch here made new conversations vanish from the sidebar.
+    if (epoch !== projectEpoch || request !== sessionListRequest) return
     set({ sessions })
   },
 
@@ -1136,7 +1214,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const changesProject = session.cwd
       ? !workspace || !samePath(session.cwd, workspace.path)
       : Boolean(workspace || get().settings.activeWorkspaceId !== null)
-    const epoch = changesProject ? beginProjectChange() : beginViewChange()
+    const epoch = changesProject ? beginProjectChange(session.cwd ?? null) : beginViewChange()
     // Paint anything still queued for the conversation being left. Those
     // reducers name their own owner, so they cannot land in the new view.
     drainPending()
@@ -1228,9 +1306,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
           : estimateContextBreakdown(messages ?? [], current.stats?.contextUsage?.tokens),
         version: current.version + 1
       }
-      touchSessionLru(file)
       const rawThreads = { ...get().threads, [file]: next }
-      const threads = enforceSessionLru(rawThreads, file)
+      const threads = enforceSessionLru(rawThreads, viewKeyOf(get()))
       if (get().activeSessionFile === file) set({ threads, ...projectThread(next) })
       else set({ threads })
     } finally {
@@ -1323,27 +1400,43 @@ export const useAppStore = create<AppStore>((set, get) => ({
           /* a cold conversation has no process */
         }
       }
+      const removed = await window.pi.sessions.remove(file)
+      if (!removed) {
+        await get().refreshSessions().catch(() => {})
+        set({ error: `Could not delete ${session?.name ?? 'the conversation'}` })
+        return
+      }
       const threads = { ...get().threads }
       delete threads[file]
-      forgetSessionLru(file)
-      clearScrollMemory(file)
+      forgetDeletedThread(file)
+      const sessions = get().sessions.filter((entry) => entry.file !== file)
       if (get().activeSessionFile === file) {
         const draftId = mintDraft()
         const thread = emptyThread(get().workspace?.path)
         threads[draftId] = thread
-        set({ threads, draftId, activeSessionFile: undefined, hydratingSessionFile: undefined, ...projectThread(thread) })
+        set({ sessions, threads, draftId, activeSessionFile: undefined, hydratingSessionFile: undefined, ...projectThread(thread) })
       } else {
-        set({ threads })
+        set({ sessions, threads })
       }
-      const removed = await window.pi.sessions.remove(file)
-      if (!removed) {
-        set({ error: `Could not delete ${session?.name ?? 'the conversation'}` })
-        return
+      let preferenceCleanupError: string | undefined
+      try {
+        await queueSessionSettings(async () => {
+          const pinned = get().settings.pinnedSessions ?? []
+          const archived = get().settings.archivedSessions ?? []
+          if (!pinned.includes(file) && !archived.includes(file)) return
+          const settings = await window.pi.settings.patch({
+            ...(pinned.includes(file) ? { pinnedSessions: pinned.filter((entry) => entry !== file) } : {}),
+            ...(archived.includes(file) ? { archivedSessions: archived.filter((entry) => entry !== file) } : {})
+          })
+          set({ settings })
+        })
+      } catch (error) {
+        preferenceCleanupError = messageOf(error)
       }
-      resetStreamState(file)
-      clearViewState(file)
-      forgetSessionTiming(file)
       await get().refreshSessions()
+      if (preferenceCleanupError) {
+        set({ error: `Conversation deleted, but saved preferences could not be updated: ${preferenceCleanupError}` })
+      }
       get().showToast('Conversation deleted')
     } catch (error) {
       set({ error: messageOf(error) })
@@ -1352,26 +1445,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async archiveSession(file) {
     if (!file || file.startsWith('draft:')) return
-    const archived = get().settings.archivedSessions ?? []
-    if (archived.includes(file)) return
-    const pinned = get().settings.pinnedSessions ?? []
     try {
-      const settings = await window.pi.settings.patch({
-        archivedSessions: [...archived, file],
-        ...(pinned.includes(file)
-          ? { pinnedSessions: pinned.filter((entry) => entry !== file) }
-          : {})
+      const archivedNow = await queueSessionSettings(async () => {
+        if (!get().sessions.some((session) => session.file === file)) return false
+        const archived = get().settings.archivedSessions ?? []
+        if (archived.includes(file)) return false
+        // Keep restore/pin operations behind this transition while the runtime
+        // stops; otherwise a fast restore can observe the old settings and be
+        // overwritten by this delayed archive.
+        if (typeof window.pi.runtime.stop === 'function') await window.pi.runtime.stop(file)
+        const pinned = get().settings.pinnedSessions ?? []
+        const settings = await window.pi.settings.patch({
+          archivedSessions: [...archived, file],
+          ...(pinned.includes(file)
+            ? { pinnedSessions: pinned.filter((entry) => entry !== file) }
+            : {})
+        })
+        set({ settings })
+        return true
       })
-      set({ settings })
-      // The row is gone from the sidebar, so its process must not keep changing
-      // the folder where nobody can see it.
-      if (typeof window.pi.runtime.stop === 'function') {
-        try {
-          await window.pi.runtime.stop(file)
-        } catch {
-          /* a cold conversation has no process */
-        }
-      }
+      if (!archivedNow) return
       if (get().activeSessionFile === file) await get().newChat()
       get().showToast('Conversation archived')
     } catch (error) {
@@ -1380,14 +1473,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async restoreSession(file) {
-    const archived = get().settings.archivedSessions ?? []
-    if (!file || !archived.includes(file)) return
+    if (!file) return
     try {
-      const settings = await window.pi.settings.patch({
-        archivedSessions: archived.filter((entry) => entry !== file)
+      const restored = await queueSessionSettings(async () => {
+        const archived = get().settings.archivedSessions ?? []
+        if (!archived.includes(file)) return false
+        const settings = await window.pi.settings.patch({
+          archivedSessions: archived.filter((entry) => entry !== file)
+        })
+        set({ settings })
+        return true
       })
-      set({ settings })
-      get().showToast('Conversation restored to the sidebar')
+      if (restored) get().showToast('Conversation restored to the sidebar')
     } catch (error) {
       set({ error: messageOf(error) })
     }
@@ -1724,8 +1821,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async setModel(model) {
+    if (agentSettingSelectionInFlight) {
+      get().showToast('A model or reasoning change is already in progress', 'warning')
+      return false
+    }
+    agentSettingSelectionInFlight = true
     const owner = viewKeyOf(get())
     const key = threadKey(owner)
+    const selection = ++modelPreferenceSequence
+    modelPreferenceValue = `${model.provider}/${model.id}`
     try {
       // Pi starts when a message is sent, not when a picker changes. A cold
       // conversation has no process to hear `set_model`, so store the choice
@@ -1740,9 +1844,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const starting = get().threads[key]?.status.phase === 'starting'
       if (!running && !starting) {
         const spec = `${model.provider}/${model.id}`
-        if (get().settings.model !== spec || get().settings.provider !== model.provider) {
-          const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
-          set({ settings })
+        if (selection === modelPreferenceSequence) {
+          const shouldWrite = get().settings.model !== spec ||
+            get().settings.provider !== model.provider ||
+            (modelPreferenceValue !== undefined && modelPreferenceValue !== spec)
+          modelPreferenceValue = spec
+          if (shouldWrite) {
+            const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
+            if (modelPreferenceSequence === selection) {
+              set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
+            }
+          }
         }
         // A draft's next launch already receives the saved default through
         // `ensureRuntime`; only a resumed session needs the extra command.
@@ -1772,23 +1884,35 @@ export const useAppStore = create<AppStore>((set, get) => ({
       )
       await get().refreshState(threadKey(owner))
       const spec = `${model.provider}/${model.id}`
-      if (get().settings.model !== spec || get().settings.provider !== model.provider) {
-        const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
-        set({ settings })
+      if (selection === modelPreferenceSequence) {
+        const shouldWrite = get().settings.model !== spec ||
+          get().settings.provider !== model.provider ||
+          (modelPreferenceValue !== undefined && modelPreferenceValue !== spec)
+        modelPreferenceValue = spec
+        if (shouldWrite) {
+          const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
+          if (modelPreferenceSequence === selection) {
+            set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
+          }
+        }
       }
       recordModelUse(model)
       return true
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
       return false
+    } finally {
+      agentSettingSelectionInFlight = false
     }
   },
 
   async refreshModelCatalog() {
     const list = window.pi.providers?.list
     if (typeof list !== 'function') return
+    const request = ++modelCatalogRequestSequence
     try {
       const profiles = await list()
+      if (request !== modelCatalogRequestSequence) return
       if (Array.isArray(profiles)) set({
         catalogModels: modelsFromProfiles(profiles),
         disabledModelSpecs: profiles.filter(profile => !profile.external).flatMap(profile =>
@@ -1801,7 +1925,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async setThinkingLevel(level) {
+    if (agentSettingSelectionInFlight) {
+      get().showToast('A model or reasoning change is already in progress', 'warning')
+      return
+    }
+    agentSettingSelectionInFlight = true
     const owner = viewKeyOf(get())
+    const selection = ++thinkingPreferenceSequence
+    thinkingPreferenceValue = level
     try {
       // A cold chat has no process yet. Starting one just to store the effort
       // is what the empty card was avoiding; the next launch already reads
@@ -1812,12 +1943,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
         await tracedRpc(key, 'set_thinking_level', { level }, undefined, 'set-thinking')
         await get().refreshState(threadKey(owner))
       }
-      if (get().settings.thinkingLevel !== level) {
-        const settings = await window.pi.settings.patch({ thinkingLevel: level })
-        set({ settings })
+      if (selection === thinkingPreferenceSequence) {
+        const shouldWrite = get().settings.thinkingLevel !== level ||
+          (thinkingPreferenceValue !== undefined && thinkingPreferenceValue !== level)
+        thinkingPreferenceValue = level
+        if (shouldWrite) {
+          const settings = await window.pi.settings.patch({ thinkingLevel: level })
+          if (thinkingPreferenceSequence === selection) {
+            set({ settings: { ...get().settings, thinkingLevel: settings.thinkingLevel } })
+          }
+        }
       }
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
+    } finally {
+      agentSettingSelectionInFlight = false
     }
   },
 
@@ -1828,6 +1968,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
    * order while making providers saved since this process started available.
    */
   async cycleModel(direction = 1) {
+    if (agentSettingSelectionInFlight) {
+      get().showToast('A model or reasoning change is already in progress', 'warning')
+      return
+    }
     const state = get()
     const models = selectableModels(state.models, state.catalogModels, state.disabledModelSpecs)
     if (models.length === 0) {
@@ -1849,6 +1993,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async cycleThinkingLevel(direction = 1) {
+    if (agentSettingSelectionInFlight) {
+      get().showToast('A model or reasoning change is already in progress', 'warning')
+      return
+    }
     const { thinkingLevels, piState } = get()
     const levels = thinkingLevels
     if (levels.length === 0) {
@@ -1994,6 +2142,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async refreshState(sessionKey = viewKeyOf(get())) {
     if (!sessionKey) return
     const key = threadKey(sessionKey)
+    const request = ++refreshStateRequestSequence
+    refreshStateRequests.set(key, request)
     const update = bindSet(set, get, key)
     try {
       const [state, models, levels, stats] = await Promise.all([
@@ -2019,10 +2169,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
         tracedRpc<SessionStats>(key, 'get_session_stats', undefined, undefined, 'refresh-state')
           .catch(() => undefined as SessionStats | undefined)
       ])
+      if (!isCurrentStateRefresh(key, request)) return
       if (state?.sessionFile) {
         if (threadKey(key) !== state.sessionFile) rekeyThread(set, get, key, state.sessionFile)
         if (viewKeyOf(get()) === state.sessionFile) void get().rememberSession(state.sessionFile)
       }
+      if (!isCurrentStateRefresh(key, request)) return
       // An empty or failed model list is not a reason to forget the provider.
       // Pi reports nothing while its registry is still loading, and replacing
       // the list with [] is what clears the picker.
@@ -2049,7 +2201,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
             { provider: saved.provider, modelId: saved.id },
             undefined,
             'restore-model'
-          ).then(() => get().refreshState(owner)).catch(() => { /* the chip still shows the saved model */ })
+          ).then(async () => {
+            await get().refreshState(owner)
+            const model = bindGet(get, owner)().piState?.model
+            if (model?.provider === saved.provider && model.id === saved.id) {
+              modelRestoreAttempts.delete(attempt)
+            }
+          }).catch(() => {
+            modelRestoreAttempts.delete(attempt)
+          })
         }
       }
       const savedLevel = get().settings.thinkingLevel
@@ -2058,12 +2218,22 @@ export const useAppStore = create<AppStore>((set, get) => ({
         if (!modelRestoreAttempts.has(attempt)) {
           modelRestoreAttempts.add(attempt)
           void tracedRpc(owner, 'set_thinking_level', { level: savedLevel }, undefined, 'restore-thinking')
-            .then(() => get().refreshState(owner))
-            .catch(() => { /* the control still shows the saved level */ })
+            .then(async () => {
+              await get().refreshState(owner)
+              if (bindGet(get, owner)().piState?.thinkingLevel === savedLevel) {
+                modelRestoreAttempts.delete(attempt)
+              }
+            })
+            .catch(() => {
+              modelRestoreAttempts.delete(attempt)
+            })
         }
       }
     } catch (error) {
-      update({ error: messageOf(error) })
+      if (isCurrentStateRefresh(key, request)) update({ error: messageOf(error) })
+    } finally {
+      const currentKey = threadKey(key)
+      if (refreshStateRequests.get(currentKey) === request) refreshStateRequests.delete(currentKey)
     }
   },
 
@@ -2253,18 +2423,61 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async updateSettings(patch) {
+    if ('model' in patch || 'provider' in patch) {
+      modelPreferenceSequence += 1
+      const model = 'model' in patch ? patch.model : get().settings.model
+      modelPreferenceValue = typeof model === 'string' ? model : null
+    }
+    if ('thinkingLevel' in patch) {
+      thinkingPreferenceSequence += 1
+      thinkingPreferenceValue = typeof patch.thinkingLevel === 'string' ? patch.thinkingLevel : null
+    }
     const settings = await window.pi.settings.patch(patch)
     set({ settings })
     applyAppearance(settings, get().info?.forcedTheme)
   },
 
   async saveProvider(input) {
+    const selection = ++modelPreferenceSequence
+    modelPreferenceValue = input.id && input.selectedModel
+      ? `${input.id}/${input.selectedModel}`
+      : null
     const key = viewKeyOf(get())
     const result = await window.pi.providers.save(input, key)
-    set({ settings: result.settings })
+    if (modelPreferenceSequence === selection) {
+      modelPreferenceValue = `${result.provider.id}/${input.selectedModel}`
+      set({
+        settings: {
+          ...get().settings,
+          provider: result.settings.provider,
+          model: result.settings.model
+        }
+      })
+    }
     await get().refreshModelCatalog()
     if (result.applied) await get().refreshState(threadKey(key))
     return result
+  },
+
+  async removeProvider(id) {
+    const prefix = `${id}/`
+    const selected = get().settings.provider === id ||
+      get().settings.model?.startsWith(prefix) === true ||
+      modelPreferenceValue?.startsWith(prefix) === true
+    const selection = selected ? ++modelPreferenceSequence : modelPreferenceSequence
+    if (selected) modelPreferenceValue = null
+    const result = await window.pi.providers.remove(id)
+    if (modelPreferenceSequence === selection) {
+      modelPreferenceValue = typeof result.settings.model === 'string' ? result.settings.model : null
+      set({
+        settings: {
+          ...get().settings,
+          provider: result.settings.provider,
+          model: result.settings.model
+        }
+      })
+    }
+    await get().refreshModelCatalog()
   },
 
   dismissError() {
@@ -2282,13 +2495,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async togglePin(file) {
-    const pinned = get().settings.pinnedSessions ?? []
-    const wasPinned = pinned.includes(file)
-    const next = wasPinned
-      ? pinned.filter((entry) => entry !== file)
-      : [...pinned, file]
-    const settings = await window.pi.settings.patch({ pinnedSessions: next })
-    set({ settings })
+    const wasPinned = await queueSessionSettings(async () => {
+      const pinned = get().settings.pinnedSessions ?? []
+      const wasPinned = pinned.includes(file)
+      const next = wasPinned
+        ? pinned.filter((entry) => entry !== file)
+        : [...pinned, file]
+      const settings = await window.pi.settings.patch({ pinnedSessions: next })
+      set({ settings })
+      return wasPinned
+    })
     const name = get().sessions.find((session) => session.file === file)?.name
     get().showToast(
       wasPinned ? `${name ?? 'Conversation'} unpinned` : `${name ?? 'Conversation'} pinned to the top`
@@ -2474,12 +2690,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async refreshGit() {
     // Git describes the open folder, not the conversation on screen.
     const epoch = projectEpoch
+    const request = ++gitStatusRequest
     try {
       const git = await window.pi.git.status()
-      if (epoch !== projectEpoch) return
+      if (epoch !== projectEpoch || request !== gitStatusRequest) return
       set({ git })
     } catch {
-      if (epoch !== projectEpoch) return
+      if (epoch !== projectEpoch || request !== gitStatusRequest) return
       // A folder that is not a repository is a normal state, not an error.
       set({ git: undefined })
     }
@@ -2950,9 +3167,11 @@ function bindSet(set: SetState, get: GetState, owner: string): SetState {
   return (partial) => {
     const state = get()
     const key = threadKey(owner)
-    const base = state.threads[key] ?? emptyThread(state.workspace?.path)
-    const patch = typeof partial === 'function' ? partial({ ...state, ...projectThread(base) }) : partial
-    const next = threadFromPatch(base, patch)
+    const base = state.threads[key]
+    if (key && !base) return
+    const thread = base ?? emptyThread(state.workspace?.path)
+    const patch = typeof partial === 'function' ? partial({ ...state, ...projectThread(thread) }) : partial
+    const next = threadFromPatch(thread, patch)
     const threads = { ...state.threads, ...(key ? { [key]: next } : {}) }
     if (!key || key === viewKeyOf(state)) set({ ...patch, threads })
     else set({ threads })
@@ -2969,6 +3188,14 @@ function rekeyThread(
   drainPending()
   from = threadKey(from)
   if (from === to) return
+  const stateRefreshRequest = refreshStateRequests.get(from)
+  if (stateRefreshRequest !== undefined) {
+    const targetRequest = refreshStateRequests.get(to)
+    if (targetRequest === undefined || stateRefreshRequest > targetRequest) {
+      refreshStateRequests.set(to, stateRefreshRequest)
+    }
+    refreshStateRequests.delete(from)
+  }
   rekeyStreamState(from, to)
   migrateToolStarts(from, to)
   // The reader's place belongs to the conversation, not to whether Pi has
@@ -3063,6 +3290,7 @@ function scheduleItems(
 ): void {
   const context = runContextOf(get)
   if (flushImmediately || typeof requestAnimationFrame !== 'function') {
+    drainPending()
     set((state) => ({ items: applyEvent(state.items, event, context) }))
     return
   }
@@ -3073,6 +3301,15 @@ function scheduleItems(
   if (merged) last.event = merged
   else batch.events.push({ event, context })
   pending.set(key, batch)
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    if (hiddenFlushTimer === null) {
+      hiddenFlushTimer = globalThis.setTimeout(() => {
+        hiddenFlushTimer = null
+        drainPending()
+      }, HIDDEN_EVENT_FLUSH_MS)
+    }
+    return
+  }
   scheduleFlush()
 }
 
@@ -3128,6 +3365,7 @@ const pending = new Map<string, {
 /** Monotonic tool starts live at the event boundary, keeping the thread reducer deterministic. */
 const toolStarts = new Map<string, Map<string, number>>()
 let flushHandle: number | null = null
+let hiddenFlushTimer: ReturnType<typeof setTimeout> | null = null
 
 function rememberToolStart(sessionKey: string, toolCallId: string): void {
   const starts = toolStarts.get(sessionKey) ?? new Map<string, number>()
@@ -3157,6 +3395,10 @@ function takeToolStart(sessionKey: string, toolCallId: string): number | undefin
 
 /** Apply every queued reducer now, in the order the events arrived. */
 function drainPending(): void {
+  if (hiddenFlushTimer !== null) {
+    clearTimeout(hiddenFlushTimer)
+    hiddenFlushTimer = null
+  }
   if (flushHandle !== null) {
     if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(flushHandle)
     flushHandle = null
@@ -3167,6 +3409,43 @@ function drainPending(): void {
     batch.set((state) => ({
       items: applyEventBatch(state.items, batch.events)
     }))
+  }
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden' && pending.size > 0) drainPending()
+  })
+}
+
+function forgetDeletedThread(file: string): void {
+  const keys = new Set([file, ...clearThreadAliasesForTarget(file)])
+  if (scheduledPrewarmKey && keys.has(scheduledPrewarmKey)) cancelScheduledPrewarm()
+  for (const key of keys) {
+    refreshStateRequests.delete(key)
+    retryArmed.delete(key)
+    prewarmOnlyRuntimes.delete(key)
+    pendingModelSelections.delete(key)
+    toolStarts.delete(key)
+    pending.delete(key)
+    forgetSessionLru(key)
+    clearScrollMemory(key)
+    clearViewState(key)
+    forgetSessionTiming(key)
+    resetStreamState(key)
+    for (const attempt of modelRestoreAttempts) {
+      if (attempt.startsWith(`${key}:`)) modelRestoreAttempts.delete(attempt)
+    }
+  }
+  if (pending.size === 0) {
+    if (hiddenFlushTimer !== null) {
+      clearTimeout(hiddenFlushTimer)
+      hiddenFlushTimer = null
+    }
+    if (flushHandle !== null) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(flushHandle)
+      flushHandle = null
+    }
   }
 }
 

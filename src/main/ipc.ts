@@ -872,6 +872,18 @@ function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
 
 export function registerIpc(context: IpcContext): void {
   const { supervisor, settings, getWindow, terminals } = context
+  const workspaceMutations = new Map<string, Promise<unknown>>()
+  const serializeWorkspaceMutation = <T>(targetPath: string, operation: () => T | Promise<T>): Promise<T> => {
+    const key = workspacePathKey(targetPath)
+    const previous = workspaceMutations.get(key) ?? Promise.resolve()
+    const result = previous.then(operation, operation)
+    const settled = result.then(() => undefined, () => undefined)
+    workspaceMutations.set(key, settled)
+    void settled.then(() => {
+      if (workspaceMutations.get(key) === settled) workspaceMutations.delete(key)
+    })
+    return result
+  }
   // Large sessions are searched through an index kept beside the app's data,
   // never inside the user's project folder.
   configureSessionSearchIndex(path.join(app.getPath('userData'), 'session-search-index'))
@@ -1148,14 +1160,20 @@ export function registerIpc(context: IpcContext): void {
         : await dialog.showOpenDialog({ properties: ['openDirectory'] })
       if (result.canceled || !result.filePaths.length) return null
       const dir = path.resolve(result.filePaths[0])
-      const workspace: Workspace = {
-        id: randomUUID(),
-        path: dir,
-        name: workspaceName(dir),
-        lastOpenedAt: Date.now()
-      }
-      const next = settings.addWorkspace(workspace)
-      return next.workspaces.find((item) => workspacePathKey(item.path) === workspacePathKey(dir)) ?? workspace
+      return await serializeWorkspaceMutation(dir, () => {
+        const existing = settings.get().workspaces.find(
+          (item) => workspacePathKey(item.path) === workspacePathKey(dir)
+        )
+        if (existing) return existing
+        const workspace: Workspace = {
+          id: randomUUID(),
+          path: dir,
+          name: workspaceName(dir),
+          lastOpenedAt: Date.now()
+        }
+        const next = settings.addWorkspace(workspace)
+        return next.workspaces.find((item) => workspacePathKey(item.path) === workspacePathKey(dir)) ?? workspace
+      })
     } catch {
       return null
     }
@@ -1163,17 +1181,17 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('workspaces:remove', async (_event, id: unknown, hiddenPath?: unknown): Promise<AppSettings> => {
     const workspaceId = typeof id === 'string' ? id : undefined
-    const workspace = settings.get().workspaces.find(entry => entry.id === workspaceId)
-    const remove = () => settings.removeWorkspace(
-      workspaceId,
-      typeof hiddenPath === 'string' ? hiddenPath : undefined
-    )
-    if (!workspace) return remove()
-    let next = settings.get()
-    await supervisor.stopCwd(workspace.path, () => {
-      next = remove()
+    const hidden = typeof hiddenPath === 'string' ? hiddenPath : undefined
+    const initialWorkspace = settings.get().workspaces.find(entry => entry.id === workspaceId)
+    const targetPath = initialWorkspace?.path ?? hidden
+    if (!targetPath) return settings.removeWorkspace(workspaceId)
+    return serializeWorkspaceMutation(targetPath, async () => {
+      const workspace = settings.get().workspaces.find(entry => entry.id === workspaceId)
+      const remove = () => settings.removeWorkspace(workspaceId, hidden)
+      if (workspace) await supervisor.stopCwd(workspace.path, remove)
+      else remove()
+      return settings.get()
     })
-    return next
   })
 
   // Register a project that the user picked from a conversation. The path is
@@ -1181,23 +1199,25 @@ export function registerIpc(context: IpcContext): void {
   // decided here where the file system is reachable.
   ipcMain.handle(
     'workspaces:add',
-    (_event, rawPath: string): { workspace: Workspace; settings: AppSettings } => {
+    (_event, rawPath: string): Promise<{ workspace: Workspace; settings: AppSettings }> => {
       const dir = path.resolve(rawPath)
-      const current = settings.get()
-      const key = workspacePathKey(dir)
-      const existing = current.workspaces.find(
-        (item) => workspacePathKey(item.path) === key
-      )
-      if (existing) return { workspace: existing, settings: current }
-      const workspace: Workspace = {
-        id: randomUUID(),
-        path: dir,
-        name: workspaceName(dir),
-        lastOpenedAt: Date.now()
-      }
-      const next = settings.addWorkspace(workspace)
-      const saved = next.workspaces.find((item) => workspacePathKey(item.path) === key) ?? workspace
-      return { workspace: saved, settings: next }
+      return serializeWorkspaceMutation(dir, () => {
+        const current = settings.get()
+        const key = workspacePathKey(dir)
+        const existing = current.workspaces.find(
+          (item) => workspacePathKey(item.path) === key
+        )
+        if (existing) return { workspace: existing, settings: current }
+        const workspace: Workspace = {
+          id: randomUUID(),
+          path: dir,
+          name: workspaceName(dir),
+          lastOpenedAt: Date.now()
+        }
+        const next = settings.addWorkspace(workspace)
+        const saved = next.workspaces.find((item) => workspacePathKey(item.path) === key) ?? workspace
+        return { workspace: saved, settings: next }
+      })
     }
   )
 

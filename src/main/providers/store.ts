@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { ProviderApi, ProviderConnection, ProviderModel, ProviderProfile, SaveProviderInput } from '@shared/providers'
 import { parseModel, record } from './metadata'
@@ -17,8 +17,13 @@ function readObject(file: string): Record<string, unknown> {
 function writeObject(file: string, data: Record<string, unknown>): void {
   mkdirSync(path.dirname(file), { recursive: true })
   const temporary = `${file}.${randomUUID()}.tmp`
-  writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
-  renameSync(temporary, file)
+  try {
+    writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    renameSync(temporary, file)
+  } catch (error) {
+    try { unlinkSync(temporary) } catch { /* the temporary file may not exist */ }
+    throw error
+  }
 }
 
 function revision(value: unknown): string {
@@ -244,6 +249,10 @@ export class ProviderStore {
       apiKey: input.apiKey?.trim() ? literalKey(key) : previous?.apiKey ?? literalKey(key),
       models: written.filter(model => model.enabled).map(model => model.pi)
     }
+    // Validate credentials before either provider file changes. A newly typed
+    // key can bypass `key()`'s auth.json read, which otherwise failed only
+    // after models.json and the desktop sidecar had already been written.
+    readObject(this.authFile)
     writeObject(this.file, { ...document, providers: { ...providers, [id]: next } })
     writeObject(this.desktopFile, {
       ...desktopDocument,
@@ -264,6 +273,8 @@ export class ProviderStore {
     const document = readObject(this.file)
     const providers = providerMap(document)
     if (!Object.hasOwn(providers, id)) throw new Error('This provider is managed by Pi')
+    // Do not partially remove a provider if its credential file is unreadable.
+    readObject(this.authFile)
     const rest = { ...providers }
     delete rest[id]
     writeObject(this.file, { ...document, providers: rest })

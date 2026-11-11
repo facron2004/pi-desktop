@@ -1,5 +1,9 @@
-import { memo, useMemo } from 'react'
-import { splitStreamingMarkdown } from '../../lib/streaming-markdown'
+import { memo, useMemo, useRef } from 'react'
+import {
+  appendStreamingMarkdown,
+  splitStreamingMarkdown,
+  type StreamingMarkdownSplit
+} from '../../lib/streaming-markdown'
 import { Markdown } from '../Markdown'
 
 export interface StreamingTextProps {
@@ -26,16 +30,28 @@ export const StreamingText = memo(function StreamingText({
   streaming,
   commentary = false
 }: StreamingTextProps) {
-  const split = useMemo(() => splitStreamingMarkdown(text), [text])
+  const previous = useRef<{ text: string; streaming: boolean; split: StreamingMarkdownSplit } | null>(null)
+  const split = useMemo(() => {
+    const cached = previous.current
+    const next = cached && streaming && cached.streaming && text.startsWith(cached.text)
+      ? appendStreamingMarkdown(cached.split, text.slice(cached.text.length))
+      : splitStreamingMarkdown(text)
+    previous.current = { text, streaming: Boolean(streaming), split: next }
+    return next
+  }, [text, streaming])
+  const finishedBlocks = useMemo(
+    () => split.blocks.map((block, index) => (
+      <Markdown key={`block-${index}`} bare>
+        {block}
+      </Markdown>
+    )),
+    [split.blocks]
+  )
 
   return (
     <div className="assistant__text" data-commentary={commentary || undefined}>
       <div className="md">
-        {split.blocks.map((block, index) => (
-          <Markdown key={`block-${index}`} bare>
-            {block}
-          </Markdown>
-        ))}
+        {finishedBlocks}
         {split.tail ? (
           <Markdown key="tail" bare streaming={streaming}>
             {split.tail}

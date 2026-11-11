@@ -256,10 +256,10 @@ export function useProviders() {
     if (!provider.revision) return
     setError('')
     try {
-      const result = await window.pi.providers.remove(provider.id)
+      const store = useAppStore.getState()
+      await store.removeProvider(provider.id)
       setConfigured(current => current.filter(item => item.id !== provider.id))
-      useAppStore.setState({ settings: result.settings })
-      useAppStore.getState().showToast(t('Provider removed'))
+      store.showToast(t('Provider removed'))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }

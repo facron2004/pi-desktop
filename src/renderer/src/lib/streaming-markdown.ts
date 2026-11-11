@@ -20,6 +20,26 @@ export interface StreamingMarkdownSplit {
   tail: string
 }
 
+/**
+ * Advance a live split when text is appended to its current tail. Finished
+ * blocks have already passed the safe-boundary scan, so only the tail needs
+ * scanning again. A reference definition is document-global and forces the
+ * original whole-document path.
+ */
+export function appendStreamingMarkdown(
+  previous: StreamingMarkdownSplit,
+  delta: string
+): StreamingMarkdownSplit {
+  if (!delta) return previous
+  const growingTail = previous.tail + delta
+  if (!previous.blocks.length || REFERENCE_DEFINITION.test(growingTail)) {
+    return splitStreamingMarkdown(previous.blocks.join('') + growingTail)
+  }
+  const next = splitStreamingMarkdown(growingTail)
+  if (!next.blocks.length) return { blocks: previous.blocks, tail: next.tail }
+  return { blocks: [...previous.blocks, ...next.blocks], tail: next.tail }
+}
+
 /** Below this a whole-document parse is cheap and splitting is not worth it. */
 const MIN_SPLIT_CHARS = 1200
 
@@ -34,6 +54,18 @@ const LIST_ITEM = /^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 /** Reference definitions are document-global: splitting would break tail links. */
 const REFERENCE_DEFINITION = /^ {0,3}\[[^\]]+\]:[ \t]*\S/m
+
+function htmlBlockTerminator(line: string): RegExp | undefined {
+  const trimmed = line.trimStart()
+  if (line.length - trimmed.length > 3) return undefined
+  const tag = /^<(script|pre|style|textarea)(?:[\s/>]|$)/i.exec(trimmed)?.[1]
+  if (tag) return new RegExp(`<\\/${tag}\\s*>`, 'i')
+  if (trimmed.startsWith('<!--')) return /-->/
+  if (trimmed.startsWith('<?')) return /\?>/
+  if (/^<!\[CDATA\[/i.test(trimmed)) return /\]\]>/
+  if (/^<![A-Z]/.test(trimmed)) return />/
+  return undefined
+}
 
 interface Line {
   text: string
@@ -66,6 +98,7 @@ export function splitStreamingMarkdown(text: string): StreamingMarkdownSplit {
   const complete: string[] = []
   let blockStart = 0
   let fence: { marker: string; length: number } | null = null
+  let htmlEnd: RegExp | undefined
   let listIndent: number | null = null
   let inQuote = false
   let inIndented = false
@@ -88,9 +121,20 @@ export function splitStreamingMarkdown(text: string): StreamingMarkdownSplit {
       continue
     }
 
+    if (htmlEnd) {
+      if (htmlEnd.test(line.text)) htmlEnd = undefined
+      continue
+    }
+
     const open = FENCE.exec(line.text)
     if (open) {
       fence = { marker: open[1][0], length: open[1].length }
+      continue
+    }
+
+    const htmlTerminator = htmlBlockTerminator(line.text)
+    if (htmlTerminator) {
+      if (!htmlTerminator.test(line.text)) htmlEnd = htmlTerminator
       continue
     }
 
