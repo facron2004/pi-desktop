@@ -1,5 +1,9 @@
 import { create } from 'zustand'
-import { CONTEXT_BREAKDOWN_STATUS_KEY } from '@shared/types'
+import {
+  CONTEXT_BREAKDOWN_STATUS_KEY,
+  GENERATION_TIMING_STATUS_KEY,
+  SUBAGENT_EDITOR_CANCEL_STATUS_KEY
+} from '@shared/types'
 import type {
   AgentMessage,
   AgentMode,
@@ -123,12 +127,10 @@ export interface RunState {
   startedAt?: number
   /** Monotonic start time for duration calculations. */
   startedMonotonicAt?: number
-  /** Pi's `turn_start`, used as the monotonic start of the TTFT sample. */
-  ttftStartedMonotonicAt?: number
+  /** Run-start to first-text TTFT measured in Pi's process. */
+  ttftMs?: number
   /** First content token of the current model request, observed by the client. */
   firstTokenAt?: number
-  /** Monotonic first-token time, paired with ttftStartedMonotonicAt for TTFT. */
-  firstTokenMonotonicAt?: number
   lastTokenAt?: number
   /** Monotonic start of the answer's current generation window. */
   messageGenerationStartedAt?: number
@@ -264,6 +266,11 @@ export interface AppStore {
   setAgentMode: (mode: AgentMode) => Promise<void>
   /** Run a task-mode extension command through the live Pi process. */
   runTaskCommand: (command: string) => Promise<void>
+  /**
+   * Stop one running subagent task. The id is the `toolCallId:index` the
+   * subagent tree shows; a session that is not on screen is targeted by key.
+   */
+  cancelSubagentTask: (taskId: string, sessionKey?: string) => Promise<void>
   isStreaming: boolean
   piState?: PiState
   models: ModelInfo[]
@@ -895,6 +902,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await get().refreshState(threadKey(key))
     } catch (error) {
       bindSet(set, get, key)({ error: messageOf(error) })
+    }
+  },
+
+  async cancelSubagentTask(taskId, sessionKey) {
+    const key = sessionKey || viewKeyOf(get())
+    if (!key) {
+      get().showToast('Start a conversation first', 'warning')
+      return
+    }
+    try {
+      // The parent turn is blocked inside the tool call, so the stop travels as
+      // the extension command the subagent extension registered. Pi runs an
+      // extension command immediately even while the session is streaming.
+      await get().ensureRuntime(key, 'subagent-cancel')
+      await tracedRpc(threadKey(key), 'prompt', { message: `/desktop-subagent-cancel ${taskId}` }, 30_000, 'subagent-cancel')
+    } catch (error) {
+      get().showToast(messageOf(error), 'warning')
     }
   },
 
@@ -3596,9 +3620,7 @@ function handleEvent(
               turnId: nextId('turn'),
               turns: state.run.turns + 1,
               modelTurnStartedAt,
-              ttftStartedMonotonicAt: modelTurnStartedAt,
               firstTokenAt: undefined,
-              firstTokenMonotonicAt: undefined,
               phase: phaseFor(state, 'working'),
               settled: false
             }
@@ -3644,15 +3666,22 @@ function handleEvent(
       const runUser = recentUsers.find(
         (item) => item.kind === 'user' && item.runId === state.run.runId
       ) ?? recentUsers[0]
+      const runUserIndex = runUser?.kind === 'user' ? state.items.indexOf(runUser) : -1
+      const runUserOrdinal = runUserIndex < 0
+        ? undefined
+        : state.items.slice(0, runUserIndex).reduce(
+          (count, item) => count + Number(item.kind === 'user'),
+          0
+        )
       if (!aborted && !failed && runUser?.kind === 'user') {
         if (durationMs !== undefined) {
-          recordRunDuration(timingKey, runUser.timestamp, durationMs)
+          recordRunDuration(timingKey, runUser.timestamp, durationMs, runUserOrdinal)
         }
         // The summed windows of the answers in this turn. A tool gap between
         // them is not generation time and must not slow the restored TPS.
         const generatedMs = state.run.generationMs ?? 0
         if (generatedMs > 0) {
-          recordGenerationWindow(timingKey, runUser.timestamp, generatedMs)
+          recordGenerationWindow(timingKey, runUser.timestamp, generatedMs, runUserOrdinal)
         }
       }
       // A mark means "there is something in this conversation the reader has
@@ -3765,9 +3794,7 @@ function handleEvent(
           ...state.run,
           phase: phaseFor(state, 'retrying'),
           modelTurnStartedAt: undefined,
-          ttftStartedMonotonicAt: undefined,
           firstTokenAt: undefined,
-          firstTokenMonotonicAt: undefined,
           settled: false
         },
         retry: {
@@ -3959,8 +3986,7 @@ function handleEvent(
         const textDelta = kind === 'text_delta' && contentDelta
         // Output tokens also come from thinking and tool-call blocks, so the
         // answer's generation window starts at its first block of any kind.
-        // TTFT also counts reasoning and tool arguments: waiting for the
-        // final text would charge their generation and tool execution time.
+        // TTFT is recorded separately from Pi's agent_start to first text delta.
         const generatingDelta =
           textBlockStarted ||
           textDelta ||
@@ -3979,27 +4005,19 @@ function handleEvent(
           closeGenerationWindow(set)
         }
         if (kind === 'done') finishModelTiming(set, get, owner)
-        const needsFirstToken = contentDelta && get().run.firstTokenMonotonicAt === undefined
+        const needsFirstToken = contentDelta && get().run.firstTokenAt === undefined
         const needsWindowStart = generatingDelta && get().run.messageGenerationStartedAt === undefined
         const needsPhase = textDelta && get().run.phase !== phaseFor(get(), 'generating')
         if (needsFirstToken || needsWindowStart || needsPhase) {
           const now = Date.now()
           const monotonic = monotonicNow()
-          const run = get().run
-          if (needsFirstToken && run.ttftStartedMonotonicAt !== undefined) {
-            recordTtftDuration(
-              owner ? threadKey(owner) : viewKeyOf(get()),
-              run.turnId,
-              Math.max(0, monotonic - run.ttftStartedMonotonicAt)
-            )
-          }
           set((state) => ({
             run: {
               ...state.run,
               ...(textDelta ? { phase: phaseFor(state, 'generating') } : {}),
               settled: false,
               ...(needsFirstToken
-                ? { firstTokenAt: now, firstTokenMonotonicAt: monotonic }
+                ? { firstTokenAt: now }
                 : {}),
               // The start of this answer's generation window. It stays until
               // the block ends, so TPS never counts a tool gap.
@@ -4065,6 +4083,34 @@ function handleExtensionUi(
     case 'setStatus': {
       const key = request.statusKey
       if (!key) break
+      if (key === GENERATION_TIMING_STATUS_KEY) {
+        let sample: { ttftMs?: unknown }
+        try { sample = JSON.parse(request.statusText ?? '') } catch { break }
+        const ttftMs = sample?.ttftMs
+        const state = get()
+        if (typeof ttftMs !== 'number' || !Number.isFinite(ttftMs) || ttftMs < 0 ||
+            state.run.settled || !state.run.runId || state.run.ttftMs !== undefined) break
+        recordTtftDuration(owner ? threadKey(owner) : viewKeyOf(state), state.run.runId, ttftMs)
+        set((current) => ({ run: { ...current.run, ttftMs } }))
+        break
+      }
+      if (key === SUBAGENT_EDITOR_CANCEL_STATUS_KEY) {
+        let cancellation: { requestId?: unknown }
+        try { cancellation = JSON.parse(request.statusText ?? '') } catch { break }
+        const requestId = cancellation?.requestId
+        const state = get()
+        if (typeof requestId !== 'string' || state.uiRequest?.id !== requestId) break
+        const sessionKey = taggedRequest.sessionKey || viewKeyOf(state)
+        set((current) => ({
+          uiRequest: undefined,
+          run: current.run.phase === 'waiting_approval'
+            ? { ...current.run, phase: 'working' as const }
+            : current.run
+        }))
+        void window.pi.runtime.respondUi(requestId, { confirmed: false, cancelled: true }, sessionKey)
+          .catch((error: unknown) => get().showToast(messageOf(error), 'error'))
+        break
+      }
       if (key === CONTEXT_BREAKDOWN_STATUS_KEY) {
         const contextBreakdown = parseRequestContextBreakdown(request.statusText)
         if (contextBreakdown) {

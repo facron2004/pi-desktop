@@ -36,7 +36,7 @@ function statusOf(tool: ToolItem, result: Record<string, unknown>): SubagentTree
   if (tool.status === 'proposed') return 'proposed'
   // A sibling can still be running after this task finishes. Likewise, a
   // parent abort must not change a child that already completed successfully.
-  if (result.status === 'completed' || result.status === 'failed' || result.status === 'aborted') {
+  if (result.status === 'completed' || result.status === 'failed' || result.status === 'aborted' || result.status === 'timed_out') {
     return result.status
   }
   // A stopped parent makes every unfinished child aborted even if a late
@@ -76,11 +76,13 @@ export function subagentCalls(items: readonly ThreadItem[]): SubagentCall[] {
         return {
           id: `${id}:${index}`,
           task: text(result.task) || text(args.task) || 'Subagent',
+          label: text(result.label) || text(args.label),
           cwd: text(result.cwd) || text(args.cwd) || text(item.args.cwd) || '',
           status,
           model: text(result.model) || text(item.args.model),
           activity: status === 'running' ? text(result.activity) : undefined,
           toolName: status === 'running' ? text(result.toolName) : undefined,
+          progressText: status === 'running' ? text(result.progressText) : undefined,
           startedAt: time(result.startedAt),
           finishedAt: time(result.finishedAt) ?? (status === 'aborted' ? item.finishedAt : undefined),
           tokens: usage.input !== undefined || usage.output !== undefined

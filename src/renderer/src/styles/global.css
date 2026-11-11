@@ -668,7 +668,9 @@ transition: background var(--dur-fast) var(--ease);
   font-weight: var(--font-weight-ui);
   line-height: var(--leading-body);
   color: var(--text-primary);
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Pulse the project name itself while a folded project has active work. */

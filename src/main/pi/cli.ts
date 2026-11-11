@@ -16,6 +16,10 @@ export interface CliResult {
 const CLI_TIMEOUT_MS = 10_000
 const MAX_CLI_OUTPUT_CHARS = 1024 * 1024
 const CLI_OUTPUT_TRUNCATION_NOTICE = `\n[Pi CLI output truncated at ${MAX_CLI_OUTPUT_CHARS} characters]`
+let activeBundledCommands = 0
+let bundledMaintenanceDone: Promise<void> | undefined
+let resolveBundledMaintenance: (() => void) | undefined
+let resolveBundledCommandsDrained: (() => void) | undefined
 const WINDOWS_CHILD_PROCESS_PRELOAD = `
 const childProcess = require('node:child_process')
 const { syncBuiltinESMExports } = require('node:module')
@@ -56,9 +60,26 @@ function cliOutput(capture: CapturedOutput): string {
   return capture.truncated ? `${capture.text}${CLI_OUTPUT_TRUNCATION_NOTICE}` : capture.text
 }
 
-function killProcessTree(child: ChildProcess, done: () => void): void {
+export function killProcessTree(child: ChildProcess, done: () => void): void {
   const killChild = () => {
     try { child.kill('SIGKILL') } catch { /* the process may already have exited */ }
+  }
+  const waitForChildClose = (): Promise<void> => {
+    const closed =
+      (child.exitCode !== null || child.signalCode !== null) &&
+      [child.stdin, child.stdout, child.stderr].every((stream) => !stream || stream.destroyed)
+    if (closed) return Promise.resolve()
+    return new Promise((resolve) => child.once('close', () => resolve()))
+  }
+  const waitForProcessGroupExit = async (pid: number): Promise<void> => {
+    for (;;) {
+      try {
+        process.kill(-pid, 0)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 50))
+    }
   }
   if (process.platform === 'win32' && child.pid) {
     execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
@@ -66,17 +87,88 @@ function killProcessTree(child: ChildProcess, done: () => void): void {
       timeout: 10_000
     }, () => {
       if (child.exitCode === null && child.signalCode === null) killChild()
-      done()
+      void waitForChildClose().then(done)
     })
     return
   }
+  if (!child.pid) {
+    killChild()
+    done()
+    return
+  }
   try {
-    if (child.pid) process.kill(-child.pid, 'SIGKILL')
-    else killChild()
+    process.kill(-child.pid, 'SIGKILL')
   } catch {
     killChild()
   }
-  done()
+  void Promise.all([waitForProcessGroupExit(child.pid), waitForChildClose()]).then(done)
+}
+
+/** Block new bundled CLI processes and wait for existing one-shot commands to exit. */
+export async function beginBundledPiCliMaintenance(): Promise<() => void> {
+  if (bundledMaintenanceDone) throw new Error('Pi CLI maintenance is already in progress.')
+  bundledMaintenanceDone = new Promise<void>((resolve) => {
+    resolveBundledMaintenance = resolve
+  })
+  if (activeBundledCommands > 0) {
+    await new Promise<void>((resolve) => {
+      resolveBundledCommandsDrained = resolve
+    })
+  }
+
+  let finished = false
+  return () => {
+    if (finished) return
+    finished = true
+    const resolve = resolveBundledMaintenance
+    resolveBundledMaintenance = undefined
+    resolveBundledCommandsDrained = undefined
+    bundledMaintenanceDone = undefined
+    resolve?.()
+  }
+}
+
+export function isBundledPiCliMaintenanceInProgress(): boolean {
+  return bundledMaintenanceDone !== undefined
+}
+
+function releaseBundledCommand(): void {
+  activeBundledCommands -= 1
+  if (activeBundledCommands !== 0) return
+  const resolve = resolveBundledCommandsDrained
+  resolveBundledCommandsDrained = undefined
+  resolve?.()
+}
+
+/** Hold the bundled CLI package in place while a direct Pi child is running. */
+export async function acquireBundledPiCliCommand(): Promise<() => void> {
+  while (bundledMaintenanceDone) await bundledMaintenanceDone
+  activeBundledCommands += 1
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    releaseBundledCommand()
+  }
+}
+
+function waitForBundledMaintenance(maintenance: Promise<void>, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (ready: boolean): void => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
+      resolve(ready)
+    }
+    const onAbort = (): void => finish(false)
+    if (signal?.aborted) {
+      finish(false)
+      return
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    void maintenance.then(() => finish(true))
+  })
 }
 
 /**
@@ -106,12 +198,25 @@ function hideNestedWindows(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 /** Run the Pi CLI once and capture its output. */
 export function runPiCli(
   args: string[],
-  options: { cwd?: string; customPiPath?: string; timeoutMs?: number; input?: string; signal?: AbortSignal } = {}
+  options: {
+    cwd?: string
+    customPiPath?: string
+    timeoutMs?: number
+    input?: string
+    signal?: AbortSignal
+    allowDuringMaintenance?: boolean
+  } = {}
 ): Promise<CliResult> {
   if (options.signal?.aborted) {
     return Promise.resolve({ code: null, stdout: '', stderr: 'Command cancelled' })
   }
   const launch = resolvePiLaunch(options.customPiPath)
+  if (bundledMaintenanceDone && launch.source !== 'custom' && !options.allowDuringMaintenance) {
+    const maintenance = bundledMaintenanceDone
+    return waitForBundledMaintenance(maintenance, options.signal).then((ready) =>
+      ready ? runPiCli(args, options) : { code: null, stdout: '', stderr: 'Command cancelled' }
+    )
+  }
   if (launch.source === 'none') {
     return Promise.resolve({
       code: null,
@@ -119,6 +224,7 @@ export function runPiCli(
       stderr: 'Pi CLI not found. Install it or set a custom path in Settings.'
     })
   }
+  const trackBundledCommand = launch.source === 'bundled' && !options.allowDuringMaintenance
   // A workspace folder can disappear between listing it and running a CLI
   // command. Windows spawn reports that as "spawn <exe> ENOENT", which looks
   // like a missing binary; fall back to a cwd that certainly exists instead.
@@ -132,6 +238,7 @@ export function runPiCli(
       detached: process.platform !== 'win32',
       windowsHide: true
     })
+    if (trackBundledCommand) activeBundledCommands += 1
     if (options.input !== undefined) {
       child.stdin?.on('error', () => {
         /* the child may exit before consuming its prompt; close handles it */
@@ -143,7 +250,13 @@ export function runPiCli(
     const stdoutDecoder = new StringDecoder('utf8')
     const stderrDecoder = new StringDecoder('utf8')
     let settled = false
+    let activeCommandReleased = false
     let outputFinalized = false
+    const releaseActiveCommand = (): void => {
+      if (!trackBundledCommand || activeCommandReleased) return
+      activeCommandReleased = true
+      releaseBundledCommand()
+    }
     const finishOutput = () => {
       if (outputFinalized) return
       outputFinalized = true
@@ -168,6 +281,7 @@ export function runPiCli(
       cleanup()
       killProcessTree(child, () => {
         finishOutput()
+        releaseActiveCommand()
         resolve(result(null, reason))
       })
     }
@@ -187,6 +301,7 @@ export function runPiCli(
       settled = true
       cleanup()
       finishOutput()
+      releaseActiveCommand()
       resolve(result(null, error.message))
     })
     child.on('close', (code) => {
@@ -194,6 +309,7 @@ export function runPiCli(
       settled = true
       cleanup()
       finishOutput()
+      releaseActiveCommand()
       resolve(result(code))
     })
     if (options.signal) {
@@ -249,8 +365,11 @@ export async function checkAuth(
 }
 
 /** Read the installed Pi version, used for the About panel. */
-export async function piVersion(customPiPath?: string): Promise<string | undefined> {
-  const result = await runPiCli(['--version'], { customPiPath })
+export async function piVersion(
+  customPiPath?: string,
+  options: { allowDuringMaintenance?: boolean } = {}
+): Promise<string | undefined> {
+  const result = await runPiCli(['--version'], { customPiPath, ...options })
   const value = result.stdout.trim() || result.stderr.trim()
   return value ? value.split('\n')[0] : undefined
 }

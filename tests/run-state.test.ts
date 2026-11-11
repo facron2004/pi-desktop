@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import type { AgentMessage, AppSettings, ModelInfo, PiEvent, PiState, RuntimeRekey, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
 import { forgetSessionTiming, readSessionTiming } from '../src/renderer/src/lib/session-timing'
 import { sessionMetrics } from '../src/renderer/src/lib/session-metrics'
+import { GENERATION_TIMING_STATUS_KEY } from '../src/shared/types'
 
 /* ------------------------------------------------------------------ *
  * A stand-in for the preload bridge.
@@ -45,6 +46,11 @@ type Handler = (event: PiEvent) => void
 let emit: Handler = () => {}
 let emitStatus: (status: RuntimeStatus) => void = () => {}
 let emitRekey: (change: RuntimeRekey) => void = () => {}
+
+function emitTtft(ttftMs: number): void {
+  emit({ type: 'extension_ui_request', id: 'timing-sample', method: 'setStatus',
+    statusKey: GENERATION_TIMING_STATUS_KEY, statusText: JSON.stringify({ ttftMs }) })
+}
 
 const ok = <T,>(value: T) => Promise.resolve(value)
 
@@ -369,7 +375,7 @@ test('P02 — text deltas are the only thing that makes the run "generating"', (
   assert.equal(phase(), 'tool_running', 'a tool outranks generating')
 })
 
-test('completed events persist model time and request TTFT for the conversation', () => {
+test('completed events persist model time and run TTFT for the conversation', () => {
   startRun()
   const sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
   const now = Date.now
@@ -386,6 +392,7 @@ test('completed events persist model time and request TTFT for the conversation'
     monotonic = 350
     Date.now = () => 125_000
     emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } })
+    emitTtft(250)
     monotonic = 900
     Date.now = () => 180_000
     emit({ type: 'message_end', message: { role: 'assistant', content: [] } })
@@ -443,8 +450,8 @@ test('a prompt event before agent_start keeps its identity and elapsed metrics',
   }
 
   const timing = readSessionTiming(sessionKey)
-  assert.equal(timing.runDurationsMs['900'], 800)
-  assert.equal(timing.generationWindowMs['900'], 550)
+  assert.equal(timing.runDurationsMs['user:0:900'], 800)
+  assert.equal(timing.generationWindowMs['user:0:900'], 550)
   assert.equal(timing.modelDurationsMs[turnId!], 800)
 })
 
@@ -653,12 +660,12 @@ test('P04d — generation time is summed per answer, not across a tool gap', () 
     now = 1_050
     monotonic = 10_050
     emit({ type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
-    assert.equal(useAppStore.getState().run.firstTokenMonotonicAt, undefined)
+    assert.equal(useAppStore.getState().run.firstTokenAt, undefined)
     assert.equal(phase(), 'working', 'a text block start has not produced readable text yet')
     now = 1_100
     monotonic = 10_100
     emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'first' } })
-    assert.equal(useAppStore.getState().run.firstTokenMonotonicAt, 10_100)
+    assert.equal(useAppStore.getState().run.firstTokenAt, 1_100)
     now = 1_400
     monotonic = 10_400
     emit({ type: 'message_end', message: { role: 'assistant', content: [], timestamp: now } })
@@ -692,7 +699,7 @@ test('P04d — generation time is summed per answer, not across a tool gap', () 
   }
 })
 
-test('TTFT excludes queueing and preparation before the model request starts', () => {
+test('a run-scoped TTFT sample survives user-message and turn events', () => {
   const originalNow = Date.now
   const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
   let now = 1_000
@@ -728,10 +735,11 @@ test('TTFT excludes queueing and preparation before the model request starts', (
     emit({ type: 'agent_start' })
     monotonic = 12_000
     emit({ type: 'turn_start' })
-    const turnId = useAppStore.getState().run.turnId!
+    const runId = useAppStore.getState().run.runId!
     emit({ type: 'message_start', message: { role: 'user', content: 'Queued prompt', timestamp: now } })
-    assert.equal(useAppStore.getState().run.ttftStartedMonotonicAt, 12_000,
-      'Pi emits turn_start before delivering the user message')
+    emitTtft(300)
+    assert.equal(useAppStore.getState().run.ttftMs, 300,
+      'the run sample survives the user-message event')
     now = 2_300
     monotonic = 12_300
     emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'first' } })
@@ -739,7 +747,7 @@ test('TTFT excludes queueing and preparation before the model request starts', (
     monotonic = 12_500
     emit({ type: 'agent_settled', aborted: false })
 
-    assert.equal(readSessionTiming(sessionKey).ttftDurationsMs[turnId], 300)
+    assert.equal(readSessionTiming(sessionKey).ttftDurationsMs[runId], 300)
   } finally {
     forgetSessionTiming(sessionKey)
     Date.now = originalNow
@@ -748,7 +756,7 @@ test('TTFT excludes queueing and preparation before the model request starts', (
   }
 })
 
-test('TTFT stops at reasoning or tool arguments before a minutes-long wait for final text', async () => {
+test('TTFT remains run-scoped across thinking, tool calls and later model turns', async () => {
   const previous = useAppStore.getState()
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
   let monotonic = 1_000
@@ -760,37 +768,41 @@ test('TTFT stops at reasoning or tool arguments before a minutes-long wait for f
     sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
     emit({ type: 'agent_start' })
     emit({ type: 'turn_start' })
-    const firstTurnId = useAppStore.getState().run.turnId!
+    const runId = useAppStore.getState().run.runId!
     emit({ type: 'message_start', message: { role: 'assistant', content: [] } })
     monotonic = 1_100
     emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } })
     emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: '' } })
-    assert.equal(useAppStore.getState().run.firstTokenMonotonicAt, undefined)
+    assert.equal(useAppStore.getState().run.firstTokenAt, undefined)
     monotonic = 1_250
     emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'Thinking' } })
-    assert.equal(readSessionTiming(sessionKey).ttftDurationsMs[firstTurnId], 250)
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', contentIndex: 1, delta: '{' } })
+    assert.equal(useAppStore.getState().run.ttftMs, undefined,
+      'renderer thinking and tool-call deltas do not mint a TTFT sample')
+    assert.deepEqual(readSessionTiming(sessionKey).ttftDurationsMs, {})
 
     monotonic = 527_000
+    emitTtft(526_000)
     emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'Final text' } })
     emit({ type: 'message_end', message: { role: 'assistant', content: 'Final text' } })
-    assert.equal(readSessionTiming(sessionKey).ttftDurationsMs[firstTurnId], 250)
+    assert.equal(readSessionTiming(sessionKey).ttftDurationsMs[runId], 526_000)
     emit({ type: 'tool_execution_start', toolCallId: 'ttft-gap', toolName: 'read', args: {} })
     monotonic = 727_000
     emit({ type: 'tool_execution_end', toolCallId: 'ttft-gap', isError: false })
 
     emit({ type: 'turn_start' })
-    const secondTurnId = useAppStore.getState().run.turnId!
     emit({ type: 'message_start', message: { role: 'assistant', content: [] } })
     emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_start', contentIndex: 0, id: 'next-tool', toolName: 'read' } })
-    assert.equal(useAppStore.getState().run.firstTokenMonotonicAt, undefined)
+    assert.equal(useAppStore.getState().run.firstTokenAt, undefined)
     monotonic = 727_400
     emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', contentIndex: 0, delta: '{"path":' } })
     const state = useAppStore.getState()
     const timing = readSessionTiming(sessionKey)
-    assert.deepEqual(timing.ttftDurationsMs, { [firstTurnId]: 250, [secondTurnId]: 400 })
-    assert.equal(sessionMetrics(state.items, state.stats, state.run, timing).averageTtftMs, 325)
+    assert.deepEqual(timing.ttftDurationsMs, { [runId]: 526_000 })
+    assert.equal(state.run.ttftMs, 526_000, 'a later model turn does not replace the run sample')
+    assert.equal(sessionMetrics(state.items, state.stats, state.run, timing).averageTtftMs, 526_000)
     emit({ type: 'agent_settled', aborted: true })
-    assert.equal(Object.keys(readSessionTiming(sessionKey).ttftDurationsMs).length, 2)
+    assert.equal(Object.keys(readSessionTiming(sessionKey).ttftDurationsMs).length, 1)
   } finally {
     forgetSessionTiming(sessionKey)
     if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor)
@@ -798,7 +810,7 @@ test('TTFT stops at reasoning or tool arguments before a minutes-long wait for f
   }
 })
 
-test('TTFT restarts for the retry request after its backoff', async () => {
+test('TTFT stays prompt-scoped through retry backoff', async () => {
   const previous = useAppStore.getState()
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
   let monotonic = 1_000
@@ -809,6 +821,7 @@ test('TTFT restarts for the retry request after its backoff', async () => {
     startRun()
     sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
     emit({ type: 'agent_start' })
+    const runId = useAppStore.getState().run.runId!
     emit({ type: 'turn_start' })
     monotonic = 2_000
     emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 60_000 })
@@ -817,10 +830,46 @@ test('TTFT restarts for the retry request after its backoff', async () => {
     const turnId = useAppStore.getState().run.turnId!
     monotonic = 62_300
     emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Retried' } })
-    assert.deepEqual(readSessionTiming(sessionKey).ttftDurationsMs, { [turnId]: 300 })
+    emitTtft(61_300)
+    assert.deepEqual(readSessionTiming(sessionKey).ttftDurationsMs, { [runId]: 61_300 })
+    assert.notEqual(runId, turnId)
   } finally {
     forgetSessionTiming(sessionKey)
     if (descriptor) Object.defineProperty(globalThis, 'performance', descriptor)
+    useAppStore.setState(previous)
+  }
+})
+
+test('run timing samples are validated, deduplicated and never replaced by renderer deltas', async () => {
+  const previous = useAppStore.getState()
+  let sessionKey: string | undefined
+  try {
+    await useAppStore.getState().newChat()
+    startRun()
+    sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'Thinking' } })
+    assert.equal(useAppStore.getState().run.ttftMs, undefined, 'no source sample means unmeasured')
+    for (const statusText of ['invalid', 'null', '{}', '{"ttftMs":-1}', '{"ttftMs":"250"}']) {
+      emit({ type: 'extension_ui_request', id: 'invalid-timing', method: 'setStatus',
+        statusKey: GENERATION_TIMING_STATUS_KEY, statusText })
+      assert.equal(useAppStore.getState().run.ttftMs, undefined)
+    }
+    emitTtft(250)
+    emitTtft(99_999)
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Answer' } })
+    assert.equal(useAppStore.getState().run.ttftMs, 250)
+    assert.deepEqual(Object.values(readSessionTiming(sessionKey).ttftDurationsMs), [250])
+    assert.equal(useAppStore.getState().uiStatuses.some(status => status.key === GENERATION_TIMING_STATUS_KEY), false)
+
+    emit({ type: 'turn_start' })
+    emitTtft(26_500)
+    assert.equal(useAppStore.getState().run.ttftMs, 250, 'a later turn cannot replace the prompt sample')
+    const state = useAppStore.getState()
+    assert.equal(sessionMetrics(state.items, state.stats, state.run, readSessionTiming(sessionKey)).averageTtftMs, 250)
+  } finally {
+    forgetSessionTiming(sessionKey)
     useAppStore.setState(previous)
   }
 })
@@ -868,8 +917,8 @@ test('P04e — a steer starts a fresh TPS window inside the same run', async () 
 
     emit({ type: 'agent_settled', aborted: false })
     const timings = readSessionTiming(sessionKey)
-    assert.equal(timings.generationWindowMs['2000'], 300)
-    assert.equal(timings.generationWindowMs['1000'], undefined)
+    assert.equal(timings.generationWindowMs['user:1:2000'], 300)
+    assert.equal(timings.generationWindowMs['user:0:1000'], undefined)
   } finally {
     if (sessionKey) forgetSessionTiming(sessionKey)
     Date.now = originalNow

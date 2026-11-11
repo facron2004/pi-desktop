@@ -21,6 +21,7 @@ import type {
   ModelInfo,
   ModelUsageStat,
   PermissionMode,
+  PiCliUpgradeProgress,
   VersionCheckResult
 } from '@shared/types'
 import { resolveSavedModel, selectableModels } from '@shared/provider-models'
@@ -1927,6 +1928,7 @@ export function AboutSettings({
   updateStatus,
   checking,
   upgradingCli,
+  piCliProgress,
   openingReleasePage,
   onCheck,
   onUpgradeCli,
@@ -1935,6 +1937,7 @@ export function AboutSettings({
   updateStatus: VersionCheckResult | null
   checking: boolean
   upgradingCli: boolean
+  piCliProgress: PiCliUpgradeProgress | null
   openingReleasePage: boolean
   onCheck: (silent?: boolean) => void
   onUpgradeCli: () => void
@@ -1986,7 +1989,6 @@ export function AboutSettings({
               ) : null}
             </div>
           </div>
-
           <div className="settings-item-row settings-about-row">
             <div className="settings-item-row__info">
               <span className="settings-item-row__title">{t('Built-in service version')}</span>
@@ -2007,12 +2009,26 @@ export function AboutSettings({
                     onClick={() => void onUpgradeCli()}
                   >
                     <Download size={12} />
-                    {upgradingCli ? t('Upgrading...') : t('Reinstall & Upgrade')}
+                    {upgradingCli
+                      ? `${t('Upgrading...')}${piCliProgress ? ` ${Math.round(piCliProgress.percent)}%` : ''}`
+                      : t('Reinstall & Upgrade')}
                   </button>
                 </>
               ) : null}
             </div>
           </div>
+          {upgradingCli && piCliProgress ? (
+            <div
+              className="settings-upgrade-progress"
+              role="progressbar"
+              aria-label={t('Upgrading...')}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(piCliProgress.percent)}
+            >
+              <span style={{ width: `${Math.min(100, Math.max(0, piCliProgress.percent))}%` }} />
+            </div>
+          ) : null}
 
           <div className="settings-item-row settings-about-row">
             <div className="settings-item-row__info">

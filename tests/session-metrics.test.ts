@@ -85,16 +85,26 @@ test('the context reading is a projection of get_session_stats', () => {
   assert.equal(cold.cacheHitPercent, null)
 })
 
-test('TTFT uses the model request\'s monotonic start and first token', () => {
+test('TTFT uses the sample measured from run start to the first text delta', () => {
   const metrics = sessionMetrics([], undefined, {
+    runId: 'run-1',
     startedAt: 1_000,
     startedMonotonicAt: 100,
-    ttftStartedMonotonicAt: 200,
-    firstTokenAt: 1_820,
-    firstTokenMonotonicAt: 350
+    ttftMs: 820,
+    firstTokenAt: 1_820
   })
-  assert.equal(metrics.ttftMs, 150, 'TTFT starts at the model request, after earlier queue time')
+  assert.equal(metrics.ttftMs, 820)
   assert.equal(sessionMetrics([], undefined, { startedAt: 1_000, firstTokenAt: 1_820 }).ttftMs, null)
+})
+
+test('TTFT average includes the current prompt run when its sample is not yet persisted', () => {
+  const run = {
+    runId: 'run-current',
+    ttftMs: 26_500
+  }
+  const metrics = sessionMetrics([], undefined, run)
+  assert.equal(metrics.ttftMs, 26_500)
+  assert.equal(metrics.averageTtftMs, 26_500)
 })
 
 test('model time and average TTFT use locally recorded session samples', () => {
@@ -117,22 +127,20 @@ test('model time and average TTFT use locally recorded session samples', () => {
 test('a settled run keeps its measured TTFT when local storage did not record it', () => {
   const metrics = sessionMetrics([], undefined, {
     runId: 'run-current',
-    ttftStartedMonotonicAt: 100,
-    firstTokenMonotonicAt: 350,
+    ttftMs: 250,
     settled: true
   })
   assert.equal(metrics.averageTtftMs, 250)
 })
 
-test('average TTFT counts each model request once, including multiple turns in one run', () => {
+test('average TTFT counts one sample per run across multiple model turns', () => {
   const metrics = sessionMetrics([], undefined, {
-    runId: 'same-run',
+    runId: 'run-2',
     turnId: 'turn-2',
-    ttftStartedMonotonicAt: 1_000,
-    firstTokenMonotonicAt: 1_300
+    ttftMs: 300
   }, {
     modelDurationsMs: {},
-    ttftDurationsMs: { 'turn-1': 100, 'turn-2': 300 },
+    ttftDurationsMs: { 'run-1': 100, 'run-2': 300 },
     toolDurationsMs: {},
     runDurationsMs: {},
     generationWindowMs: {}

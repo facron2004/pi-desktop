@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { PiEvent } from '@shared/types'
-import { buildTurns, changedTurnsFrom, replyStartOf } from '../src/renderer/src/lib/turns'
+import { buildTurns, changedTurnsFrom, replyStartOf, usageForTurn } from '../src/renderer/src/lib/turns'
 import { applyEvent, changedThreadItemsFrom, type AssistantItem, type NoticeItem, type ThreadItem, type ToolItem, type UserItem } from '../src/renderer/src/lib/thread'
 
 function user(id: string): UserItem {
@@ -16,6 +16,20 @@ function assistant(id: string, streaming = false): AssistantItem {
     streaming,
     timestamp: 2,
     order: 2
+  }
+}
+
+function assistantWithUsage(id: string, totalTokens: number): AssistantItem {
+  return {
+    ...assistant(id),
+    usage: {
+      input: totalTokens - 10,
+      output: 5,
+      cacheRead: 3,
+      cacheWrite: 2,
+      totalTokens,
+      cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 }
+    }
   }
 }
 
@@ -116,6 +130,28 @@ test('buildTurns attaches everything after a user message to that turn', () => {
   assert.deepEqual(turns[0].tools.map((item) => item.id), ['t1'])
   assert.deepEqual(turns[0].notices.map((item) => item.id), ['n1'])
   assert.equal(turns[1].user?.id, 'u2')
+})
+
+test('usageForTurn sums every assistant request within each displayed turn', () => {
+  const turns = buildTurns([
+    user('u1'),
+    assistantWithUsage('a1-tool-call', 1_000),
+    tool('t1'),
+    assistantWithUsage('a1-reply', 2_000),
+    user('u2'),
+    assistantWithUsage('a2-reply', 3_000)
+  ])
+
+  assert.deepEqual(usageForTurn(turns[0]), {
+    input: 2_980,
+    output: 10,
+    cacheRead: 6,
+    cacheWrite: 4,
+    totalTokens: 3_000,
+    cost: { input: 2, output: 4, cacheRead: 6, cacheWrite: 8, total: 20 }
+  })
+  assert.equal(usageForTurn(turns[1])?.totalTokens, 3_000)
+  assert.equal(usageForTurn(buildTurns([user('u3')])[0]), undefined)
 })
 
 test('buildTurns gives leading items their own synthetic turn', () => {

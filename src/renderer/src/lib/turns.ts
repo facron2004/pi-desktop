@@ -1,3 +1,4 @@
+import type { Usage } from '@shared/types'
 import type { AssistantBlock, AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from './thread'
 import { changedThreadItemsFrom } from './thread'
 
@@ -16,6 +17,44 @@ export interface Turn {
   tools: ToolItem[]
   notices: NoticeItem[]
   bash: Extract<ThreadItem, { kind: 'bash' }>[]
+}
+
+/** Sum a turn only when every assistant request reported token usage. */
+export function usageForTurn(turn: Turn): Usage | undefined {
+  if (turn.assistants.length === 0 || turn.assistants.some((assistant) => !assistant.usage)) {
+    return undefined
+  }
+  const messages = turn.assistants.map((assistant) => assistant.usage!)
+
+  const usage: Usage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0
+  }
+  const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+  let costComplete = true
+
+  for (const message of messages) {
+    usage.input += message.input
+    usage.output += message.output
+    usage.cacheRead += message.cacheRead
+    usage.cacheWrite += message.cacheWrite
+    usage.totalTokens += message.totalTokens
+    if (message.cost) {
+      cost.input += message.cost.input
+      cost.output += message.cost.output
+      cost.cacheRead += message.cost.cacheRead
+      cost.cacheWrite += message.cost.cacheWrite
+      cost.total += message.cost.total
+    } else {
+      costComplete = false
+    }
+  }
+
+  if (costComplete) usage.cost = cost
+  return usage
 }
 
 /** The spoken reply after the last tool call; earlier text is progress commentary. */

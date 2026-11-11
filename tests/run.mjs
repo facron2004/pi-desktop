@@ -40,6 +40,7 @@ const suites = [
   'pi-cli.test.ts',
   'session-metrics.test.ts',
   'session-timing.test.ts',
+  'generation-timing.test.ts',
   'context-reading.test.ts',
   'git-status.test.ts',
   'diff-fold.test.ts',

@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, List, Search,
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
 import type { Turn } from '../lib/turns'
-import { buildTurns, changedTurnsFrom } from '../lib/turns'
+import { buildTurns, changedTurnsFrom, usageForTurn } from '../lib/turns'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
 import { formatClock, formatCost, formatTokens } from '../lib/format'
@@ -13,7 +13,7 @@ import { describeTool } from '../lib/tools'
 import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
 import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition } from '../lib/scroll-memory'
-import { readSessionTiming } from '../lib/session-timing'
+import { readSessionTiming, userTimingDuration } from '../lib/session-timing'
 import { readHistoryExpanded, readProcessOpen, writeHistoryExpanded, writeProcessOpen } from '../lib/view-state'
 import { keysFor, matchesShortcut } from '../lib/shortcuts'
 import { SearchContext, useSearchQuery } from '../lib/search-context'
@@ -39,6 +39,7 @@ const MIN_HIDDEN_MESSAGES = 12
 /** How far from the bottom still counts as "following the output". */
 const FOLLOW_RANGE = 80
 const EDGE_RANGE = 16
+const searchableChunksByTurn = new WeakMap<Turn, { root?: string; chunks: SearchableChunk[] }>()
 
 function scrollKeyOf(sessionFile: string | undefined): string {
   return sessionFile ?? 'draft'
@@ -48,13 +49,24 @@ function scrollKeyOf(sessionFile: string | undefined): string {
 function searchableChunks(turns: Turn[], root?: string): SearchableChunk[] {
   const chunks: SearchableChunk[] = []
   for (const turn of turns) {
+    const cached = searchableChunksByTurn.get(turn)
+    if (cached && cached.root === root) {
+      for (const chunk of cached.chunks) chunks.push(chunk)
+      continue
+    }
+    const turnChunks: SearchableChunk[] = []
     if (turn.user?.text.trim()) {
-      chunks.push({ turnId: turn.id, messageId: turn.user.id, source: 'You', text: turn.user.text })
+      turnChunks.push({
+        turnId: turn.id,
+        messageId: turn.user.id,
+        source: 'You',
+        text: turn.user.text
+      })
     }
     for (const assistant of turn.assistants) {
       for (const block of assistant.blocks) {
         if (block.type === 'text' && block.text.trim()) {
-          chunks.push({ turnId: turn.id, messageId: assistant.id, source: 'Pi', text: block.text })
+          turnChunks.push({ turnId: turn.id, messageId: assistant.id, source: 'Pi', text: block.text })
         }
       }
     }
@@ -63,13 +75,15 @@ function searchableChunks(turns: Turn[], root?: string): SearchableChunk[] {
       // summary of the call goes into the index. Otherwise every word of
       // every edited file turns into a search hit.
       const label = describeTool(tool.toolName).summary(tool.args ?? {}, root)
-      chunks.push({
+      turnChunks.push({
         turnId: turn.id,
         messageId: tool.id,
         source: 'Tool',
         text: `${tool.toolName} ${label}`
       })
     }
+    searchableChunksByTurn.set(turn, { root, chunks: turnChunks })
+    for (const chunk of turnChunks) chunks.push(chunk)
   }
   return chunks
 }
@@ -107,6 +121,7 @@ export function Thread() {
   const isStreaming = useAppStore((state) => state.isStreaming)
   const run = useAppStore((state) => state.run)
   const transport = useAppStore((state) => state.transport)
+  const toolCallSummary = useAppStore((state) => state.settings.toolCallSummary === true)
   const retry = useAppStore((state) => state.retry)
   const stop = useAppStore((state) => state.stop)
   /**
@@ -178,13 +193,14 @@ export function Thread() {
   }, [])
 
   const turns = useMemo(() => buildTurns(items), [items])
+  const lastTurn = turns.at(-1)
   // Callbacks that only look a turn up must not change identity on every
   // streamed delta; they read the latest turns through this ref instead.
   const turnsRef = useRef(turns)
   turnsRef.current = turns
   const sessionTurns = useMemo(
     () => turns.filter((turn): turn is Turn & { user: UserItem } => Boolean(turn.user)),
-    [sessionKey, turns.length, turns[0]?.id, turns.at(-1)?.id]
+    [sessionKey, turns.length, turns[0]?.id, lastTurn?.id, lastTurn]
   )
   const liveRunSummaryAtTop = Boolean(
     !run.settled &&
@@ -241,6 +257,9 @@ export function Thread() {
   const historyCollapsed = !historyExpanded && hiddenMessageCount >= MIN_HIDDEN_MESSAGES
   const firstVisibleTurn = historyCollapsed ? hiddenTurnCount : 0
   const visibleTurns = historyCollapsed ? turns.slice(firstVisibleTurn) : turns
+  let visibleUserOrdinal = turns
+    .slice(0, firstVisibleTurn)
+    .reduce((count, turn) => count + Number(Boolean(turn.user)), 0)
   const hasSearchQuery = searchOpen && Boolean(query.trim())
   const chunks = useMemo(
     () => (hasSearchQuery ? searchableChunks(turns, workspace?.path) : []),
@@ -815,6 +834,7 @@ export function Thread() {
           {visibleTurns.map((turn, index) => {
             const turnIndex = firstVisibleTurn + index
             const userId = turn.user?.id
+            const userOrdinal = turn.user ? visibleUserOrdinal++ : undefined
             const isLastTurn = turnIndex === turns.length - 1
             return (
               <ErrorBoundary key={`${sessionKey}:${turn.id}`} scope="turn">
@@ -830,7 +850,9 @@ export function Thread() {
                   forking={Boolean(userId && forkByUserId.has(userId) && forking)}
                   run={run}
                   runDurationMs={
-                    turn.user ? runDurationsMs[String(turn.user.timestamp)] : undefined
+                    turn.user
+                      ? userTimingDuration(runDurationsMs, turn.user.timestamp, userOrdinal)
+                      : undefined
                   }
                   isLastTurn={isLastTurn}
                 />
@@ -847,6 +869,7 @@ export function Thread() {
             onStopRetry={stop}
             activity={activity}
             showElapsed={!liveRunSummaryAtTop}
+            hideActivitySummary={toolCallSummary && !run.settled}
           />
         ) : null}
 
@@ -973,6 +996,9 @@ const ThreadTurnView = memo(function ThreadTurnView({
   // own, at the position it was created in.
   const orphanTools = turn.tools.filter((tool) => !referenced.has(tool.toolCallId))
   const lastAssistant = turn.assistants.at(-1)
+  const turnUsage = usageForTurn(turn)
+  const incompleteTokenUsage = turn.assistants.some((assistant) => !assistant.usage)
+  const incompleteCost = turn.assistants.some((assistant) => !assistant.usage?.cost)
   const liveOutcome = Boolean(
     isLastTurn &&
       !run.settled &&
@@ -1011,9 +1037,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
   const processId = `turn-${turn.id}`
   const [manualProcessOpen, setManualProcessOpen] = useState(() => readProcessOpen(threadKey, processId))
   const query = useSearchQuery().trim().toLowerCase()
-  const searchMatch = Boolean(query) && searchableChunks([turn]).some((chunk) =>
-    chunk.text.toLowerCase().includes(query)
-  )
+  const searchMatch = Boolean(query) && findMatches(searchableChunks([turn]), query, 1).length > 0
   const processOpen = searchMatch || (manualProcessOpen ?? !autoFoldProcess)
   const toggleProcess = () => {
     const next = !processOpen
@@ -1132,11 +1156,11 @@ const ThreadTurnView = memo(function ThreadTurnView({
             {replySettled &&
             lastAssistant &&
             lastAssistant.stopReason !== 'error' &&
-            (lastAssistant.model || lastAssistant.usage) ? (
+            (lastAssistant.model || turnUsage || incompleteTokenUsage) ? (
               <div className="assistant__response-actions">
                 <div className="assistant__footer">
                   {lastAssistant.model ? <span>{modelName(models, lastAssistant.model)}</span> : null}
-                  {lastAssistant.usage ? (
+                  {turnUsage ? (
                     <Popover
                       trigger="hover"
                       placement="top"
@@ -1150,12 +1174,12 @@ const ThreadTurnView = memo(function ThreadTurnView({
                           onClick={toggle}
                           aria-label={t('Usage details')}
                         >
-                          {formatTokens(lastAssistant.usage?.totalTokens)} {t('tokens')}
+                          {formatTokens(turnUsage.totalTokens)} {t('tokens')}
                         </button>
                       )}
                     >
                       {() => {
-                        const usage = lastAssistant.usage
+                        const usage = turnUsage
                         const cost = usage?.cost?.total
                         return (
                           <div className="usage-popover__body">
@@ -1190,12 +1214,27 @@ const ThreadTurnView = memo(function ThreadTurnView({
                                   <span>{t('Cost')}</span>
                                   <span>{formatCost(cost)}</span>
                                 </div>
+                              ) : incompleteCost ? (
+                                <div
+                                  className="ctx__row"
+                                  title={t('Not all model requests reported cost.')}
+                                >
+                                  <span>{t('Cost')}</span>
+                                  <span>—</span>
+                                </div>
                               ) : null}
                             </div>
                           </div>
                         )
                       }}
                     </Popover>
+                  ) : incompleteTokenUsage ? (
+                    <span
+                      className="assistant__usage"
+                      title={t('Not all model requests reported token usage.')}
+                    >
+                      — {t('tokens')}
+                    </span>
                   ) : null}
                   <span>{formatClock(lastAssistant.timestamp)}</span>
                 </div>

@@ -72,3 +72,35 @@ test('malformed details fall back to task arguments and unrelated tools stay out
   assert.equal(calls.length, 1)
   assert.deepEqual(calls[0].tasks.map((task) => task.task), ['Inspect', 'Verify'])
 })
+
+test('a task label names the tree row while the briefing stays available', () => {
+  const briefing = 'Read every file in src and summarise the architecture'
+  const calls = subagentCalls([tool({
+    args: { tasks: [{ task: briefing, label: 'Scout' }] },
+    details: { results: [{ task: briefing, label: 'Scout', status: 'completed' }] }
+  })])
+  assert.equal(calls[0].tasks[0].label, 'Scout')
+  assert.equal(calls[0].tasks[0].task, briefing)
+})
+
+test('a timed out child is a terminal state of its own', () => {
+  const calls = subagentCalls([tool({
+    args: { task: 'Long task' },
+    details: { results: [{ task: 'Long task', status: 'timed_out', errorMessage: 'Subagent timed out after 1000 ms.' }] }
+  })])
+  assert.equal(calls[0].tasks[0].status, 'timed_out')
+  assert.match(calls[0].tasks[0].errorMessage ?? '', /timed out/i)
+})
+
+test('live progress text is projected only while the child is running', () => {
+  const running = subagentCalls([tool({
+    args: { task: 'Stream' },
+    details: { results: [{ task: 'Stream', status: 'running', progressText: 'LIVE-PROGRESS' }] }
+  })])[0].tasks[0]
+  assert.equal(running.progressText, 'LIVE-PROGRESS')
+  const done = subagentCalls([tool({
+    args: { task: 'Stream' },
+    details: { results: [{ task: 'Stream', status: 'completed', progressText: 'LIVE-PROGRESS' }] }
+  })])[0].tasks[0]
+  assert.equal(done.progressText, undefined)
+})

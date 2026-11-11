@@ -17,11 +17,20 @@ type ToolResult = {
       output: string
       stderr: string
       aborted: boolean
-      status: 'queued' | 'running' | 'completed' | 'failed' | 'aborted'
+      status: 'queued' | 'running' | 'completed' | 'failed' | 'aborted' | 'timed_out'
+      label?: string
+      cancelled?: boolean
+      stopReason?: string
+      progressText?: string
+      errorMessage?: string
       activity?: string
       toolName?: string
       startedAt?: number
       finishedAt?: number
+      attempts?: number
+      retriesUsed?: number
+      structured?: unknown
+      schemaError?: string
       messages?: unknown[]
       messagesTruncated?: boolean
       usage: { turns: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextTokens: number }
@@ -52,6 +61,14 @@ type Tool = {
     }
   ) => Promise<ToolResult>
 }
+type RegisteredCommand = {
+  description: string
+  handler: (args: string) => unknown
+}
+type ExtensionApi = {
+  registerTool: (tool: Tool) => void
+  registerCommand: (name: string, command: RegisteredCommand) => void
+}
 
 // The generated extension imports typebox, so it has to live inside the
 // project tree where Node can resolve the dependency.
@@ -66,16 +83,32 @@ const childPidFile = path.join(dir, 'child.pid')
 const childStartedFile = path.join(dir, 'child-started')
 const permissionExtensionFile = path.join(dir, 'permission-extension.mjs')
 const permissionTitle = 'test-private-permission-title'
+const counterFile = path.join(dir, 'attempts.count')
 
 writeFileSync(
   fakeScript,
-  `import { appendFileSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+  `import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 const log = process.env.PI_FAKE_LOG;
 if (log) appendFileSync(log, JSON.stringify(process.argv.slice(2)) + '\\n');
 const mode = process.env.PI_FAKE_MODE || 'ok';
+const counterFile = process.env.PI_FAKE_COUNTER;
+function nextAttempt() {
+  let count = 0;
+  if (counterFile) {
+    try { count = Number(readFileSync(counterFile, 'utf8')) || 0; } catch {}
+    count += 1;
+    try { writeFileSync(counterFile, String(count)); } catch {}
+  }
+  return count;
+}
+const attempt = nextAttempt();
+if (mode === 'flaky' && attempt <= Number(process.env.PI_FAKE_FLAKY || '0')) {
+  process.stderr.write('flaky spawn failure ' + attempt + '\\n');
+  process.exit(7);
+}
 if (mode === 'exit-zero') process.exit(0);
 if (mode === 'unterminated-settle') {
   process.stdout.write(JSON.stringify({ type: 'agent_settled', aborted: false }), () => process.exit(0));
@@ -134,7 +167,9 @@ function emitResult() {
       { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'PRIVATE_REASONING_SHOULD_NOT_LEAK' } },
       { type: 'tool_execution_start', toolCallId: 'read', toolName: 'read' },
       { type: 'tool_execution_end', toolCallId: 'read', toolName: 'read' },
-      { type: 'message_update', assistantMessageEvent: { type: 'text_start' } }
+      { type: 'message_update', assistantMessageEvent: { type: 'text_start' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'LIVE-' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'PROGRESS' } }
     ]) emit(event);
   }
   if (mode === 'many-messages') {
@@ -194,6 +229,19 @@ function handle(record) {
     });
     return;
   }
+  if (mode === 'fail-after-message') {
+    emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'partial work' }],
+        usage: { input: 10, output: 5, totalTokens: 15 },
+        stopReason: 'stop'
+      }
+    });
+    setTimeout(() => process.exit(9), 5);
+    return;
+  }
   emitResult();
 }
 process.stdin.on('data', chunk => {
@@ -237,19 +285,23 @@ after(() => {
 
 async function loadFactory(
   file = extensionFile
-): Promise<(pi: { registerTool: (tool: Tool) => void }) => void> {
+): Promise<(pi: ExtensionApi) => void> {
   const module = (await import(pathToFileURL(file).href)) as {
-    default: (pi: { registerTool: (tool: Tool) => void }) => void
+    default: (pi: ExtensionApi) => void
   }
   return module.default
 }
 
-function createApi(factory: (pi: { registerTool: (tool: Tool) => void }) => void): { tool: Tool; updates: Update[] } {
+function createApi(factory: (pi: ExtensionApi) => void): { tool: Tool; updates: Update[]; commands: Map<string, RegisteredCommand> } {
   let tool: Tool | undefined
   const updates: Update[] = []
-  factory({ registerTool: (definition) => { tool = definition } })
+  const commands = new Map<string, RegisteredCommand>()
+  factory({
+    registerTool: (definition) => { tool = definition },
+    registerCommand: (name, command) => { commands.set(name, command) }
+  })
   assert.ok(tool, 'extension did not register a tool')
-  return { tool, updates }
+  return { tool, updates, commands }
 }
 
 type FakeOptions = {
@@ -362,6 +414,90 @@ test('the subagent fallback uses the resolved Pi executable when its script path
   )
   assert.equal(result.isError, false)
   assert.deepEqual(readArgs()[0].slice(0, 4), ['--mode', 'rpc', '--no-session', '--no-approve'])
+})
+
+test('the extension command cancels one active subagent task by id', async () => {
+  resetArgs()
+  const { tool, commands } = createApi(await loadFactory())
+  const cancel = commands.get('desktop-subagent-cancel')
+  assert.ok(cancel, 'extension did not register its task cancel command')
+
+  await withFakePi({ mode: 'slow' }, async () => {
+    const call = tool.execute('call-cancel-one', { task: 'Keep running until stopped' }, undefined, undefined, { cwd: process.cwd() })
+    const deadline = Date.now() + 5000
+    while (readArgs().length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.equal(readArgs().length, 1, 'the child should be running before cancellation')
+
+    await cancel.handler('call-cancel-one:0')
+    const result = await call
+    const child = result.details!.results[0]!
+    assert.equal(child.status, 'aborted')
+    assert.equal(child.cancelled, true)
+    assert.match(child.errorMessage ?? '', /stopped by the user/i)
+    assert.equal(readArgs().length, 1, 'cancellation should stop the existing child without restarting it')
+  })
+})
+
+test('a task can retry a failure that happened before the model received its prompt', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ mode: 'fail' }, () =>
+    tool.execute('call-retry', { task: 'Retry only if no model turn started', retries: 2 }, undefined, undefined, { cwd: process.cwd() })
+  )
+  const child = result.details!.results[0]!
+  assert.equal(result.isError, true)
+  assert.equal(child.status, 'failed')
+  assert.equal(child.attempts, 3)
+  assert.equal(child.retriesUsed, 2)
+  assert.equal(readArgs().length, 3)
+})
+
+test('outputSchema accepts a matching JSON answer and rejects a mismatch', async () => {
+  const schema = {
+    type: 'object',
+    properties: { ok: { type: 'boolean' } },
+    required: ['ok'],
+    additionalProperties: false
+  }
+  const { tool } = createApi(await loadFactory())
+  const valid = await withFakePi({ text: '{"ok":true}' }, () =>
+    tool.execute('call-schema-valid', { task: 'Return JSON', outputSchema: schema }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(valid.isError, false)
+  assert.equal(valid.details!.results[0]!.status, 'completed')
+  assert.deepEqual(valid.details!.results[0]!.structured, { ok: true })
+
+  const invalid = await withFakePi({ text: '{"ok":"yes"}' }, () =>
+    tool.execute('call-schema-invalid', { task: 'Return JSON', outputSchema: schema }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(invalid.isError, true)
+  assert.equal(invalid.details!.results[0]!.status, 'failed')
+  assert.equal(invalid.details!.results[0]!.stopReason, 'schema')
+  assert.match(invalid.details!.results[0]!.schemaError ?? '', /\.ok must be boolean/)
+
+  let deepSchema: Record<string, unknown> = { type: 'string' }
+  let deepValue: unknown = 'done'
+  for (let depth = 0; depth < 10; depth++) {
+    deepSchema = { type: 'object', properties: { value: deepSchema }, required: ['value'] }
+    deepValue = { value: deepValue }
+  }
+  const tooDeep = await withFakePi({ text: JSON.stringify(deepValue) }, () =>
+    tool.execute('call-schema-deep', { task: 'Return deeply nested JSON', outputSchema: deepSchema }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(tooDeep.isError, true)
+  assert.match(tooDeep.details!.results[0]!.schemaError ?? '', /maximum supported outputSchema depth/)
+
+  const wideProperties = Object.fromEntries(Array.from({ length: 201 }, (_, index) => [`property${index}`, { type: 'boolean' }]))
+  const tooWide = await withFakePi({ text: '{}' }, () =>
+    tool.execute('call-schema-wide', {
+      task: 'Return JSON with bounded schema width',
+      outputSchema: { type: 'object', properties: wideProperties }
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(tooWide.isError, true)
+  assert.match(tooWide.details!.results[0]!.schemaError ?? '', /too many outputSchema properties/)
 })
 
 test('concurrent subagent calls share one process limit and queued calls can be cancelled', async () => {
@@ -917,4 +1053,133 @@ test('aborting a batch cancels queued tasks without starting their processes', a
   assert.deepEqual(result.details?.results.map((entry) => entry.status), Array(6).fill('aborted'))
   assert.ok(result.details?.results.slice(4).every((entry) => entry.startedAt === undefined))
   assert.ok(readArgs().length <= 4)
+})
+
+test('the generated source ships the delegation contract, timeouts and per-task schema', () => {
+  const source = subagentExtension()
+  assert.match(source, /promptSnippet:/)
+  assert.match(source, /promptGuidelines: \[/)
+  assert.match(source, /const DEFAULT_TIMEOUT_MS = 30 \* 60 \* 1000;/)
+  assert.match(source, /const MAX_PROGRESS_TEXT_CHARS = 4096;/)
+  assert.match(source, /'timed_out'/)
+  assert.match(source, /timeoutMs: Type.Optional/)
+  assert.match(source, /concurrency: Type.Optional/)
+  assert.match(source, /label: Type.Optional/)
+  assert.match(source, /A child cannot see this conversation/)
+  assert.match(source, /normalizeConcurrency\(/)
+  assert.match(source, /taskParams\(/)
+  assert.doesNotMatch(source, /readline/)
+})
+
+test('a batch can give each task its own model, thinking and tools', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ text: 'per-task' }, () =>
+    tool.execute('call-per-task', {
+      tasks: [
+        { task: 'Scout the repo', label: 'scout', model: 'anthropic/haiku', thinking: 'low', tools: ['read', 'grep'] },
+        { task: 'Build the fix', label: 'build', model: 'openai/gpt', thinking: 'high', tools: ['read', 'write'] },
+        { task: 'Follow the batch', label: 'follow' }
+      ],
+      model: 'x/y', thinking: 'medium', tools: ['read']
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, false)
+  assert.deepEqual(result.details?.results.map((entry) => entry.label), ['scout', 'build', 'follow'])
+  const signatures = readArgs().map((args) => {
+    const flag = (name: string): string => {
+      const index = args.indexOf(name)
+      return index === -1 ? '' : args[index + 1] ?? ''
+    }
+    return [flag('--model'), flag('--thinking'), flag('--tools')].join('|')
+  }).sort()
+  assert.deepEqual(signatures, [
+    'anthropic/haiku|low|read,grep',
+    'openai/gpt|high|read,write',
+    'x/y|medium|read'
+  ].sort())
+})
+
+test('invalid per-task overrides fall back to the batch defaults', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+  await withFakePi({ text: 'fallback' }, () =>
+    tool.execute('call-per-task-invalid', {
+      tasks: [{ task: 'One', model: 'not a model', thinking: 'ultra', tools: [] }, { task: 'Two' }],
+      model: 'x/y', thinking: 'medium', tools: ['read']
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  const signatures = readArgs().map((args) => {
+    const flag = (name: string): string => {
+      const index = args.indexOf(name)
+      return index === -1 ? '' : args[index + 1] ?? ''
+    }
+    return [flag('--model'), flag('--thinking'), flag('--tools')].join('|')
+  })
+  assert.equal(signatures.length, 2)
+  assert.ok(signatures.every((signature) => signature === 'x/y|medium|read'))
+})
+
+test('a batch concurrency cap limits the number of simultaneous child processes', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+  const activeDirectory = path.join(dir, 'active-concurrency')
+  mkdirSync(activeDirectory, { recursive: true })
+  await withFakePi({ mode: 'slow', activeDirectory }, async () => {
+    const controller = new AbortController()
+    // concurrency is a property of ONE batch call, not of several calls in
+    // flight: six parallel execute() calls would each contend for the shared
+    // process-wide slots and measure the global cap instead.
+    const run = tool.execute(
+      'call-concurrency-cap',
+      { tasks: Array.from({ length: 6 }, (_, index) => ({ task: `Task ${index}` })), concurrency: 2 },
+      controller.signal,
+      undefined,
+      { cwd: process.cwd() }
+    )
+    try {
+      const deadline = Date.now() + 10000
+      while (readdirSync(activeDirectory).length < 2 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      assert.equal(readdirSync(activeDirectory).length, 2, 'concurrency: 2 starts only two Pi processes')
+      assert.equal(readArgs().length, 2)
+    } finally {
+      controller.abort()
+      await Promise.allSettled([run])
+    }
+  })
+})
+
+test('a task that exceeds its timeout is killed and reported as timed_out', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ mode: 'slow' }, () =>
+    tool.execute('call-timeout', { task: 'Never finish', timeoutMs: 600 }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, true)
+  const child = result.details!.results[0]
+  assert.equal(child.status, 'timed_out')
+  assert.match(result.content[0].text, /timed out/i)
+  assert.match(child.errorMessage ?? '', /timed out/i)
+})
+
+test('a single task can carry a short label', async () => {
+  const { tool } = createApi(await loadFactory())
+  const result = await withFakePi({ text: 'labelled' }, () =>
+    tool.execute('call-label', { task: 'A very long briefing that should not be the row name', label: 'Scout' }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.details?.results[0].label, 'Scout')
+})
+
+test('live answer text is published while a subagent runs, without leaking reasoning', async () => {
+  const { tool, updates } = createApi(await loadFactory())
+  await withFakePi({ mode: 'progress' }, () =>
+    tool.execute('call-live-text', { task: 'Stream text' }, undefined, (update) => updates.push(update), { cwd: process.cwd() })
+  )
+  const snapshots = updates.map((update) => update.details?.results[0]).filter(Boolean)
+  assert.ok(snapshots.some((snapshot) => snapshot!.progressText?.startsWith('LIVE-')))
+  assert.ok(snapshots.every((snapshot) => (snapshot!.progressText ?? '').length <= 4096))
+  assert.doesNotMatch(JSON.stringify(updates), /PRIVATE_REASONING_SHOULD_NOT_LEAK/)
 })

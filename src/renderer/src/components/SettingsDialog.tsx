@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { VersionCheckResult } from '@shared/types'
+import type { PiCliUpgradeProgress, VersionCheckResult } from '@shared/types'
 import {
   Archive,
   Bot,
@@ -118,11 +118,20 @@ export function SettingsDialog({
   // The dialog owns the update readings, not the About page. Switching
   // settings pages unmounts that page; an upgrade started there must survive
   // the trip or the reader comes back to a blank version section (and could
-  // start the same install twice).
+  // start the same upgrade twice).
   const [updateStatus, setUpdateStatus] = useState<VersionCheckResult | null>(null)
   const [checkingUpdates, setCheckingUpdates] = useState(false)
   const [upgradingCli, setUpgradingCli] = useState(false)
+  const [piCliProgress, setPiCliProgress] = useState<PiCliUpgradeProgress | null>(null)
   const [openingReleasePage, setOpeningReleasePage] = useState(false)
+
+  useEffect(
+    () =>
+      window.pi.app.onPiCliUpgradeProgress((progress) => {
+        setPiCliProgress(progress)
+      }),
+    []
+  )
 
   const handleCheck = async (silent = false) => {
     setCheckingUpdates(true)
@@ -142,6 +151,7 @@ export function SettingsDialog({
 
   const handleUpgradeCli = async () => {
     setUpgradingCli(true)
+    setPiCliProgress({ stage: 'preparing', percent: 0 })
     try {
       const res = await window.pi.app.upgradePiCli()
       if (res.success) {
@@ -157,6 +167,7 @@ export function SettingsDialog({
       showToast(`${t('Upgrade failed')}: ${msg}`, 'error')
     } finally {
       setUpgradingCli(false)
+      setPiCliProgress(null)
     }
   }
 
@@ -238,6 +249,7 @@ export function SettingsDialog({
                 updateStatus={updateStatus}
                 checking={checkingUpdates}
                 upgradingCli={upgradingCli}
+                piCliProgress={piCliProgress}
                 openingReleasePage={openingReleasePage}
                 onCheck={handleCheck}
                 onUpgradeCli={handleUpgradeCli}

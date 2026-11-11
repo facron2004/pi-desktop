@@ -1,8 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { MAX_IMAGE_DATA_BYTES } from '@shared/types'
-import { exec } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { constants, mkdirSync, writeFileSync, type Dirent } from 'node:fs'
+import { constants, mkdirSync, readFileSync, writeFileSync, type Dirent } from 'node:fs'
 import { lstat, open, opendir, realpath, stat, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type {
@@ -20,6 +19,7 @@ import type {
   MemoryState,
   PickedFile,
   PiEvent,
+  PiCliUpgradeProgress,
   RuntimeEnsureOptions,
   RuntimeRekey,
   RuntimeStartOptions,
@@ -34,9 +34,14 @@ import type {
   VersionItemStatus,
   Workspace
 } from '@shared/types'
-import { APP_RELEASE_PAGE_URL, checkAppVersion, isNewerVersion } from './app-updates'
-import { checkAuth, piVersion } from './pi/cli'
+import {
+  APP_RELEASE_PAGE_URL,
+  checkAppVersion,
+  isNewerVersion
+} from './app-updates'
+import { beginBundledPiCliMaintenance, checkAuth, killProcessTree, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
+import { spawn } from './pi/spawn'
 import { discoverSkillCommands } from './pi/command-catalog'
 import { getModelThinkingLevels } from './pi/model-catalog'
 import { readTraceHint } from './pi/trace'
@@ -839,29 +844,160 @@ async function searchFileText(
   return { hits, bytesRead, budgetExceeded: false, incomplete: false }
 }
 
-function fetchLatestPiCliVersion(): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-    exec(`${npmCmd} view @earendil-works/pi-coding-agent version`, { timeout: 8_000 }, (err, stdout) => {
-      if (err) return reject(err)
-      const v = stdout.trim()
-      if (v) resolve(v)
-      else reject(new Error('No version returned by npm'))
-    })
+const PI_CLI_PACKAGE_NAME = '@earendil-works/pi-coding-agent'
+
+function piCliPackageSpec(cwd: string): string {
+  const manifest = JSON.parse(readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
+    dependencies?: Record<string, string>
+    devDependencies?: Record<string, string>
+  }
+  const range = manifest.dependencies?.[PI_CLI_PACKAGE_NAME] ?? manifest.devDependencies?.[PI_CLI_PACKAGE_NAME]
+  if (!range) throw new Error(`No ${PI_CLI_PACKAGE_NAME} dependency range in package.json`)
+  return `${PI_CLI_PACKAGE_NAME}@${range}`
+}
+
+function fetchLatestPiCliVersion(packageSpec: string): Promise<string> {
+  return runNpmCommand(
+    ['view', packageSpec, 'version', '--json'],
+    process.cwd(),
+    8_000
+  ).then(({ stdout }) => {
+    let reported: unknown
+    try {
+      reported = JSON.parse(stdout.trim())
+    } catch {
+      throw new Error('npm returned an invalid Pi CLI version')
+    }
+    const versions = (Array.isArray(reported) ? reported : [reported])
+      .filter((value): value is string => typeof value === 'string')
+    const version = versions.at(-1)
+    if (!version) throw new Error('No version returned by npm')
+    return version
   })
 }
 
-function runNpmInstall(cwd: string, pkg: string): Promise<void> {
+interface NpmCommandOutput {
+  stdout: string
+  stderr: string
+}
+
+const NPM_ERROR_TAIL_CHARS = 4_000
+
+function appendTail(current: string, chunk: Buffer | string): string {
+  const next = current + String(chunk)
+  return next.length > NPM_ERROR_TAIL_CHARS ? next.slice(-NPM_ERROR_TAIL_CHARS) : next
+}
+
+/** Run npm without a shell and kill its full process tree on timeout. */
+function runNpmCommand(
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  onOutput?: (chunk: string) => void
+): Promise<NpmCommandOutput> {
   return new Promise((resolve, reject) => {
-    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-    exec(`${npmCmd} install --no-save --package-lock=false ${pkg}`, { cwd, timeout: 180_000 }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error(stderr || stdout || error.message))
-      } else {
-        resolve()
-      }
+    const child = spawn('npm', args, {
+      cwd,
+      detached: process.platform !== 'win32',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
     })
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let timedOut = false
+    let timeout: NodeJS.Timeout | undefined
+
+    const finish = (error?: Error, result?: NpmCommandOutput): void => {
+      if (settled) return
+      settled = true
+      if (timeout) clearTimeout(timeout)
+      if (error) reject(error)
+      else resolve(result ?? { stdout, stderr })
+    }
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout = appendTail(stdout, chunk)
+      onOutput?.(String(chunk))
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr = appendTail(stderr, chunk)
+      onOutput?.(String(chunk))
+    })
+    child.once('error', (error) => {
+      if (!timedOut) finish(error)
+    })
+    child.once('close', (code, signal) => {
+      if (timedOut) return
+      if (code === 0) {
+        finish(undefined, { stdout, stderr })
+        return
+      }
+      const detail = stderr.trim() || stdout.trim()
+      finish(new Error(detail || `npm ${args[0]} exited with ${code ?? signal ?? 'no status'}`))
+    })
+
+    timeout = setTimeout(() => {
+      if (settled) return
+      timedOut = true
+      killProcessTree(child, () => {
+        const detail = stderr.trim() || stdout.trim()
+        const message = `npm ${args[0]} timed out after ${timeoutMs}ms`
+        finish(new Error(detail ? `${message}\n${detail}` : message))
+      })
+    }, timeoutMs)
   })
+}
+
+/**
+ * Install a Pi CLI package through npm.
+ *
+ * npm does not print a determinate download bar when it has no TTY, so the
+ * progress below follows the work it reports (`npm http` fetches) and fills
+ * the remaining time with a bounded timer. It never reports completion before
+ * npm exits, so the UI cannot show 100% for a failed install.
+ */
+async function runNpmInstall(
+  cwd: string,
+  pkg: string,
+  onProgress?: (progress: PiCliUpgradeProgress) => void
+): Promise<void> {
+  let percent = 3
+  let downloads = 0
+  const report = (stage: PiCliUpgradeProgress['stage'], next: number): void => {
+    percent = Math.max(percent, Math.min(99, Math.round(next)))
+    onProgress?.({ stage, percent })
+  }
+  report('preparing', percent)
+
+  const onOutput = (chunk: string): void => {
+    // A single chunk can contain many npm http lines; count them rather
+    // than waiting for the buffered exec callback at the end.
+    const fetches = chunk.match(/npm http (?:fetch|cache)/g)?.length ?? 0
+    if (fetches > 0) {
+      downloads += fetches
+      report('downloading', 10 + Math.min(70, downloads * 2))
+    }
+  }
+
+  // npm can spend a long time in reify without another http line. One
+  // percent per second keeps the bar alive while staying below completion.
+  const timer = setInterval(() => {
+    if (percent >= 95) return
+    report(percent < 20 ? 'preparing' : 'downloading', percent + 1)
+  }, 1_000)
+
+  try {
+    await runNpmCommand(
+      ['install', '--no-save', '--package-lock=true', '--loglevel=http', pkg],
+      cwd,
+      180_000,
+      onOutput
+    )
+    onProgress?.({ stage: 'installing', percent: 100 })
+  } finally {
+    clearInterval(timer)
+  }
 }
 
 /** The theme a development flag forces for this run, if any. */
@@ -873,6 +1009,7 @@ function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
 export function registerIpc(context: IpcContext): void {
   const { supervisor, settings, getWindow, terminals } = context
   const workspaceMutations = new Map<string, Promise<unknown>>()
+  let piCliUpgradeInFlight: Promise<UpgradeResult> | null = null
   const serializeWorkspaceMutation = <T>(targetPath: string, operation: () => T | Promise<T>): Promise<T> => {
     const key = workspacePathKey(targetPath)
     const previous = workspaceMutations.get(key) ?? Promise.resolve()
@@ -1035,17 +1172,19 @@ export function registerIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('app:checkUpdate', async (): Promise<VersionCheckResult> => {
-    const currentPiVersion = (await piVersion(settings.get().piPath)) || '1.4.0'
+    const piPath = settings.get().piPath
+    const currentPiVersion = (await piVersion(piPath)) || '1.4.0'
     const currentAppVersion = app.getVersion()
+    const canUpdateBundledPi = !app.isPackaged && resolvePiLaunch(piPath).source === 'bundled'
 
     let piCliStatus: VersionItemStatus = {
       current: currentPiVersion,
       hasUpdate: false
     }
 
-    if (!app.isPackaged) {
+    if (canUpdateBundledPi) {
       try {
-        const latestPi = await fetchLatestPiCliVersion()
+        const latestPi = await fetchLatestPiCliVersion(piCliPackageSpec(app.getAppPath()))
         piCliStatus = {
           current: currentPiVersion,
           latest: latestPi,
@@ -1064,17 +1203,47 @@ export function registerIpc(context: IpcContext): void {
     }
   })
 
-  ipcMain.handle('app:upgradePiCli', async (): Promise<UpgradeResult> => {
-    try {
-      if (app.isPackaged) {
-        return { success: false, error: 'The bundled Pi CLI is updated with Pi Desktop releases.' }
+  ipcMain.handle('app:upgradePiCli', async (event): Promise<UpgradeResult> => {
+    if (piCliUpgradeInFlight) return piCliUpgradeInFlight
+    const operation = (async (): Promise<UpgradeResult> => {
+      try {
+        const piPath = settings.get().piPath
+        if (resolvePiLaunch(piPath).source !== 'bundled') {
+          return { success: false, error: 'The selected Pi CLI is managed outside this app.' }
+        }
+        if (app.isPackaged) {
+          return { success: false, error: 'The bundled Pi CLI is updated with Pi Desktop releases.' }
+        }
+        const cwd = app.getAppPath()
+        const packageSpec = piCliPackageSpec(cwd)
+        const latestPiCliVersion = await fetchLatestPiCliVersion(packageSpec)
+        const finishCliMaintenance = await beginBundledPiCliMaintenance()
+        let supervisorPrepared = false
+        try {
+          const ready = await supervisor.prepareForCliUpgrade()
+          if (!ready) {
+            return { success: false, error: 'Finish or stop active Pi work before upgrading the CLI.' }
+          }
+          supervisorPrepared = true
+          const sendProgress = (progress: PiCliUpgradeProgress): void => {
+            sendToWindow(BrowserWindow.fromWebContents(event.sender), 'app:piCliUpgradeProgress', progress)
+          }
+          await runNpmInstall(cwd, `${PI_CLI_PACKAGE_NAME}@${latestPiCliVersion}`, sendProgress)
+          const updatedVersion = await piVersion(piPath, { allowDuringMaintenance: true })
+          return { success: true, version: updatedVersion || undefined }
+        } finally {
+          if (supervisorPrepared) supervisor.finishCliUpgrade()
+          finishCliMaintenance()
+        }
+      } catch (err: unknown) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) }
       }
-      const cwd = app.getAppPath()
-      await runNpmInstall(cwd, '@earendil-works/pi-coding-agent@latest')
-      const updatedVersion = await piVersion(settings.get().piPath)
-      return { success: true, version: updatedVersion || undefined }
-    } catch (err: unknown) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    })()
+    piCliUpgradeInFlight = operation
+    try {
+      return await operation
+    } finally {
+      if (piCliUpgradeInFlight === operation) piCliUpgradeInFlight = null
     }
   })
 

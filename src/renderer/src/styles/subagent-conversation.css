@@ -64,8 +64,22 @@
   color: var(--status-success);
 }
 
-.subagent-conversation__meta [data-status='failed'] {
+.subagent-conversation__meta [data-status='failed'],
+.subagent-conversation__meta [data-status='timed_out'] {
   color: var(--status-danger);
+}
+
+.subagent-conversation__live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.subagent-conversation__live-label {
+  color: var(--text-tertiary);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
 }
 
 .subagent-conversation__body {

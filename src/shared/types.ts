@@ -225,6 +225,9 @@ export interface ContextBreakdown {
 }
 
 export const CONTEXT_BREAKDOWN_STATUS_KEY = 'pi-desktop-context-breakdown'
+export const GENERATION_TIMING_STATUS_KEY = 'pi-desktop-generation-timing'
+export const SUBAGENT_EDITOR_PENDING_STATUS_KEY = 'pi-desktop-subagent-editor-pending'
+export const SUBAGENT_EDITOR_CANCEL_STATUS_KEY = 'pi-desktop-subagent-editor-cancel'
 
 /* ------------------------------------------------------------------ *
  * Extension UI sub-protocol
@@ -638,16 +641,20 @@ export type PermissionMode = 'ask' | 'auto' | 'full'
  */
 export type AgentMode = 'default' | 'goal' | 'plan' | 'subagent' | 'plugin'
 
-export type SubagentTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'aborted'
+export type SubagentTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'aborted' | 'timed_out'
 
 /** Progress published in the subagent tool's result details. */
 export interface SubagentTaskProgress {
   task: string
+  /** Short display name; the tree falls back to the full briefing for old sessions. */
+  label?: string
   cwd: string
   status: SubagentTaskStatus
   model?: string
   activity?: string
   toolName?: string
+  /** Bounded tail of the child's live answer text while it is streaming. */
+  progressText?: string
   startedAt?: number
   finishedAt?: number
   output?: string
@@ -833,6 +840,13 @@ export interface VersionCheckResult {
   piCli: VersionItemStatus
 }
 
+/** Progress of the development Pi CLI upgrade while npm is running. */
+export interface PiCliUpgradeProgress {
+  stage: 'preparing' | 'downloading' | 'installing'
+  /** Monotonic percentage for the bar; capped below 100 until npm exits. */
+  percent: number
+}
+
 export interface UpgradeResult {
   success: boolean
   version?: string
@@ -973,7 +987,9 @@ export interface PiDesktopBridge {
     checkUpdate(): Promise<VersionCheckResult>
     /** Upgrade the development Pi CLI; packaged builds use the bundled version. */
     upgradePiCli(): Promise<UpgradeResult>
-    /** Open the latest Pi Desktop release page. */
+    /** Progress of the running Pi CLI upgrade. */
+    onPiCliUpgradeProgress(handler: (progress: PiCliUpgradeProgress) => void): () => void
+    /** Open the latest Pi Desktop release page for a manual update. */
     openReleasePage(): Promise<UpgradeResult>
   }
   dialog: {
@@ -1290,6 +1306,8 @@ export interface RuntimeStatus {
 /* ------------------------------------------------------------------ *
  * Terminal (real PTY)
  * ------------------------------------------------------------------ */
+
+export const MAX_TERMINAL_SESSIONS = 12
 
 export interface TerminalCreateOptions {
   cols: number

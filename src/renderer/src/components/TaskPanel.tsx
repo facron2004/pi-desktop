@@ -23,7 +23,8 @@ const STATUS_LABEL = {
   running: 'Running',
   completed: 'Completed',
   failed: 'Failed',
-  aborted: 'Stopped'
+  aborted: 'Stopped',
+  timed_out: 'Timed out'
 } as const
 
 /**
@@ -71,7 +72,6 @@ function TaskSection({
           </span>
         </button>
       </h2>
-      {subtitle ? <p className="task-panel__section-subtitle">{subtitle}</p> : null}
       <div
         id={contentId}
         className="task-panel__section-body"
@@ -79,6 +79,7 @@ function TaskSection({
         aria-hidden={!open}
       >
         <div className="task-panel__section-inner">
+          {subtitle ? <p className="task-panel__section-subtitle">{subtitle}</p> : null}
           <div className="task-panel__section-content">{children}</div>
         </div>
       </div>
@@ -92,9 +93,10 @@ function BackgroundTaskRow({ task, onOpen }: {
   onOpen: (taskId: string) => void
 }) {
   const t = useT()
-  // The label is the task goal — never the live activity or the tool name.
+  // The short label names the task; the full goal remains available as a tooltip.
+  const label = task.label || task.task
   const tone =
-    task.status === 'failed' || task.status === 'aborted'
+    task.status === 'failed' || task.status === 'aborted' || task.status === 'timed_out'
       ? 'danger'
       : task.status === 'completed'
         ? 'success'
@@ -108,11 +110,11 @@ function BackgroundTaskRow({ task, onOpen }: {
         type="button"
         className="task-panel__task-action"
         title={task.task}
-        aria-label={`${t(STATUS_LABEL[task.status])}: ${task.task}`}
+        aria-label={`${t(STATUS_LABEL[task.status])}: ${label}`}
         onClick={() => onOpen(task.id)}
       >
         <span className="task-panel__dot" data-tone={tone} aria-hidden="true" />
-        <span className="task-panel__task-name">{task.task}</span>
+        <span className="task-panel__task-name">{label}</span>
       </button>
     </li>
   )

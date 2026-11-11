@@ -338,11 +338,11 @@ execution time, average TTFT and output speed. Unavailable readings say
 `Not measured yet`. Pi reports tool `durationMs` when available; the client
 measures tool start-to-end as a fallback. Model time sums client-observed
 `turn_start` to assistant-message completion intervals. Average TTFT measures
-each model request from `turn_start` to its first nonempty text, thinking or
-tool-argument delta. Empty block starts are not tokens. Each request records
-one sample immediately, keyed by `turnId`, so tool gaps and retry backoff stay
-outside the next request's sample. Pi emits a prompt's `message_start` after
-`turn_start`, so that user message must preserve the request's TTFT clock.
+each prompt/run from `agent_start` to its first nonempty text delta.
+`generation-timing.ts` measures both boundaries with Pi's own monotonic clock
+and publishes only the duration through a reserved status key. Thinking and
+tool-argument deltas do not count as first text. The store records each sample
+once, keyed by `runId`; tool calls and retries do not reset the prompt's TTFT.
 These timing samples live in localStorage per conversation and migrate when a
 draft gets its session file. A reopened transcript with no client samples is
 approximated from each assistant message's `durationMs` for model time and TPS;
@@ -355,6 +355,10 @@ Pi-reported tool duration from a client fallback. Sleeping the machine or
 syncing the time could turn one answer into hours, and a wrong total is worse
 than a missing one. Version 5 drops only older TTFT samples because they measured
 the entire run up to its first text and could include minutes of thinking and tools.
+Version 6 drops v5 TTFT samples because they included local request preparation
+and renderer/IPC delivery time. Version 7 drops v5/v6 TTFT samples because they
+used per-turn/request boundaries and could count hidden reasoning or tool
+arguments as first text. Other monotonic timing samples are preserved.
 The tokens and the hit rate open `UsagePanel` — total Token,
 cache hit rate, uncached input, cache read, cache write and output. Two
 questions, two cards; a reading printed in both would be two things to keep in
@@ -488,6 +492,19 @@ An `.ico` stores a PNG per size and Electron's loader keeps only the
 largest frame, so a reader that wants one particular size walks the
 directory itself: `src/main/ico.ts`. The tray wants 32px, and the shell
 wants a real file path — neither can be served by a resample of the other.
+
+**The notification sender name is the executable's, not the window's.** Windows
+groups toasts under an app identity resolved from the AppUserModelID; a process
+with no id of its own falls back to `electron.app.Electron`, so a dev run of
+`electron.exe` is labelled "Electron" in the notification center while the
+packaged `Pi Desktop.exe` — whose version resource says "Pi Desktop" — is
+labelled correctly. That difference is the build, not a bug to fix in code:
+`app.setName` only changes `app.getName()`, a custom id only renames the
+`wpndatabase.db` handler, and `groupTitle` merely adds a second "Pi Desktop"
+line under the "Electron" heading. All three were measured on the real center.
+The one remaining lever is a Start-menu shortcut carrying the id, and writing
+that into the user's Start menu on every dev launch costs more than it buys.
+`desktop-notification.ts` keeps this note next to the code.
 
 ## Starting the app
 

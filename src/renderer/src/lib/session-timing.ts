@@ -1,16 +1,17 @@
 /** Client-observed timing samples kept outside Pi's session transcript. */
 export interface SessionTimingRecord {
   modelDurationsMs: Record<string, number>
+  /** Prompt-to-first-text TTFT keyed by the client-minted run id. */
   ttftDurationsMs: Record<string, number>
   toolDurationsMs: Record<string, number>
-  /** Keyed by the user's message timestamp, which survives transcript hydration. */
+  /** Keyed by the user's ordinal and timestamp; legacy timestamp-only keys still load. */
   runDurationsMs: Record<string, number>
-  /** Generation window keyed by the user's message timestamp, for restored TPS. */
+  /** Generation window keyed by the user's ordinal and timestamp, for restored TPS. */
   generationWindowMs: Record<string, number>
 }
 
 const STORAGE_PREFIX = 'pi-desktop:session-timing:v1:'
-const MODEL_TIMING_VERSION = 5
+const MODEL_TIMING_VERSION = 7
 
 /**
  * Parsed records, kept in memory for the conversations the reader moves
@@ -68,12 +69,12 @@ function recordOf(value: unknown): SessionTimingRecord {
   // tool durations still used Date.now until version 4. Their source cannot
   // be distinguished from Pi-reported tool durations, so all pre-v4 samples
   // in those fields are dropped rather than carried forward.
-  // Version 5 measures TTFT per model request to the first content token;
-  // older samples waited for text and included thinking and tool execution.
+  // Versions 5 and 6 measure turn/request timing to the first content delta.
+  // Version 7 measures run-start to first text, so older samples are dropped.
   const version = typeof raw.modelTimingVersion === 'number' ? raw.modelTimingVersion : 1
   return {
     modelDurationsMs: version >= 2 ? durationsOf(raw.modelDurationsMs) : {},
-    ttftDurationsMs: version >= 5 ? durationsOf(raw.ttftDurationsMs) : {},
+    ttftDurationsMs: version >= 7 ? durationsOf(raw.ttftDurationsMs) : {},
     toolDurationsMs: version >= 4 ? durationsOf(raw.toolDurationsMs) : {},
     runDurationsMs: version >= 4 ? durationsOf(raw.runDurationsMs) : {},
     generationWindowMs: version >= 4 ? durationsOf(raw.generationWindowMs) : {}
@@ -130,10 +131,10 @@ export function recordModelDuration(
 
 export function recordTtftDuration(
   sessionKey: string | undefined,
-  turnId: string | undefined,
+  runId: string | undefined,
   durationMs: number
 ): void {
-  recordDuration(sessionKey, 'ttftDurationsMs', turnId, durationMs)
+  recordDuration(sessionKey, 'ttftDurationsMs', runId, durationMs)
 }
 
 export function recordToolDuration(
@@ -147,12 +148,13 @@ export function recordToolDuration(
 export function recordRunDuration(
   sessionKey: string | undefined,
   userTimestamp: number | undefined,
-  durationMs: number
+  durationMs: number,
+  userOrdinal?: number
 ): void {
   recordDuration(
     sessionKey,
     'runDurationsMs',
-    userTimestamp === undefined ? undefined : String(userTimestamp),
+    userTimingKey(userTimestamp, userOrdinal),
     durationMs
   )
 }
@@ -160,14 +162,35 @@ export function recordRunDuration(
 export function recordGenerationWindow(
   sessionKey: string | undefined,
   userTimestamp: number | undefined,
-  durationMs: number
+  durationMs: number,
+  userOrdinal?: number
 ): void {
   recordDuration(
     sessionKey,
     'generationWindowMs',
-    userTimestamp === undefined ? undefined : String(userTimestamp),
+    userTimingKey(userTimestamp, userOrdinal),
     durationMs
   )
+}
+
+function userTimingKey(userTimestamp: number | undefined, userOrdinal?: number): string | undefined {
+  if (userTimestamp === undefined) return undefined
+  if (typeof userOrdinal === 'number' && Number.isInteger(userOrdinal) && userOrdinal >= 0) {
+    return `user:${userOrdinal}:${userTimestamp}`
+  }
+  return String(userTimestamp)
+}
+
+/** Prefer collision-safe samples and fall back to records written by older versions. */
+export function userTimingDuration(
+  durations: Record<string, number>,
+  userTimestamp: number | undefined,
+  userOrdinal?: number
+): number | undefined {
+  if (userTimestamp === undefined) return undefined
+  const key = userTimingKey(userTimestamp, userOrdinal)
+  if (!key) return undefined
+  return durations[key] ?? durations[String(userTimestamp)]
 }
 
 /** Drop the samples of a conversation the user deleted. */

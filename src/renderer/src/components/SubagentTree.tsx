@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Bot, ChevronRight, Loader2 } from 'lucide-react'
+import { Bot, ChevronRight, Loader2, Square } from 'lucide-react'
 import type { SessionMeta } from '@shared/types'
 import type { SessionThread } from '../store/useAppStore'
 import { subagentCalls, type SubagentCall, type SubagentTreeTask } from '../lib/subagents'
@@ -14,7 +14,8 @@ const STATUS_LABEL = {
   running: 'Running',
   completed: 'Completed',
   failed: 'Failed',
-  aborted: 'Stopped'
+  aborted: 'Stopped',
+  timed_out: 'Timed out'
 } as const
 
 /** The catalog's status column: a loader for work in flight, a quiet dot otherwise. */
@@ -22,12 +23,17 @@ function StatusMark({ status, className }: { status: SubagentTreeTask['status'] 
   if (status === 'running') {
     return <Loader2 size={12} className={`subagent-tree__status-icon spin${className ? ` ${className}` : ''}`} aria-hidden="true" />
   }
-  const tone = status === 'completed' ? 'success' : status === 'failed' ? 'danger' : 'idle'
+  const tone = status === 'completed' ? 'success' : status === 'failed' || status === 'timed_out' ? 'danger' : 'idle'
   return <span className={`subagent-tree__dot${className ? ` ${className}` : ''}`} data-tone={tone} aria-hidden="true" />
 }
 
 function isActive(task: SubagentTreeTask): boolean {
   return task.status === 'running' || task.status === 'queued'
+}
+
+/** Only a task that still occupies a slot can be stopped. */
+function isStoppable(task: SubagentTreeTask): boolean {
+  return isActive(task)
 }
 
 function durationOf(task: SubagentTreeTask, now: number): number | undefined {
@@ -100,7 +106,7 @@ function ConversationBranch({ session, calls, now, onSelect, onOpenTask }: {
   const t = useT()
   const [open, setOpen] = useState(() => readProcessOpen(session.file, 'subagent-tree') ?? true)
   const tasks = calls.flatMap((call) => call.tasks)
-  const completed = tasks.filter((task) => ['completed', 'failed', 'aborted'].includes(task.status)).length
+  const completed = tasks.filter((task) => ['completed', 'failed', 'aborted', 'timed_out'].includes(task.status)).length
   const active = tasks.some(isActive)
   const totals = tasks.reduce(
     (acc, task) => ({
@@ -162,13 +168,13 @@ function TaskRow({ task, now, onOpen }: { task: SubagentTreeTask; now: number; o
   const activity = task.activity ? `${t(task.activity)}${task.toolName ? ` · ${task.toolName}` : ''}` : undefined
   return (
     <li className="subagent-tree__task" data-status={task.status} role="treeitem">
-      <button type="button" className="subagent-tree__task-row" title={task.task} onClick={onOpen} aria-label={`${status}: ${task.task}`}>
+      <button type="button" className="subagent-tree__task-row" title={task.task} onClick={onOpen} aria-label={`${status}: ${task.label || task.task}`}>
         <span className="subagent-tree__disclosure-space" aria-hidden="true" />
         <span className="subagent-tree__status" data-status={task.status}>
           <StatusMark status={task.status} />
         </span>
         <span className="subagent-tree__task-copy">
-          <span className="subagent-tree__task-name">{task.task}</span>
+          <span className="subagent-tree__task-name">{task.label || task.task}</span>
           {activity ? <span className="subagent-tree__summary">{activity}</span> : null}
         </span>
         <span className="subagent-tree__metrics">

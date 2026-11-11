@@ -52,9 +52,12 @@
 }
 
 .search-dialog__input:focus-within {
-  border-color: var(--focus-ring);
+  /* One focus ring, not a border nested under an outline. The input's border
+     and the offset outline used to leave a gap that showed the old frame as a
+     second line; hide the border and let the outline be the only edge. */
+  border-color: transparent;
   outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline-offset: 0;
 }
 
 .search-dialog__input input {

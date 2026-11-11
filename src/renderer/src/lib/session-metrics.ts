@@ -1,6 +1,6 @@
 import type { SessionStats } from '@shared/types'
 import type { ThreadItem } from './thread'
-import { monotonicNow, type SessionTimingRecord } from './session-timing'
+import { monotonicNow, type SessionTimingRecord, userTimingDuration } from './session-timing'
 
 /**
  * The numbers shown under the composer after a run.
@@ -14,9 +14,9 @@ import { monotonicNow, type SessionTimingRecord } from './session-timing'
 export interface RunTiming {
   startedAt?: number
   startedMonotonicAt?: number
-  ttftStartedMonotonicAt?: number
+  /** Pi-observed run start to the first nonempty text delta. */
+  ttftMs?: number
   firstTokenAt?: number
-  firstTokenMonotonicAt?: number
   lastTokenAt?: number
   /**
    * Summed completed generation blocks in this run.
@@ -47,7 +47,7 @@ export interface SessionMetrics {
   /** Sum of tool durations available in the transcript or local timing record. */
   toolTimeMs: number | null
   timedToolCalls: number
-  /** Average of recorded model requests and the current sample, or null. */
+  /** Average of recorded runs and the current run sample, or null. */
   averageTtftMs: number | null
   /** Sum of completed model response timings observed by this app, or the transcript. */
   modelTimeMs: number | null
@@ -58,7 +58,7 @@ export interface SessionMetrics {
   contextPercent: number | null
   /** Completed output tokens per second in the newest turn. */
   tps: number | null
-  /** Milliseconds from Pi's `turn_start` to the first nonempty content delta. */
+  /** Pi's run-start to first-text timing sample. */
   ttftMs: number | null
 }
 
@@ -81,6 +81,7 @@ export function sessionMetrics(
   let lastTurnOutput = 0
   let lastUserIndex = -1
   let lastUserTimestamp: number | undefined
+  let lastUserOrdinal: number | undefined
   let transcriptTurnCount = 0
   let toolItemCount = 0
   let knownToolTimeMs = 0
@@ -94,6 +95,7 @@ export function sessionMetrics(
     if (item.kind === 'user') {
       lastUserIndex = index
       lastUserTimestamp = item.timestamp
+      lastUserOrdinal = transcriptTurnCount
       transcriptTurnCount += 1
     } else if (item.kind === 'tool') {
       toolItemCount += 1
@@ -155,13 +157,13 @@ export function sessionMetrics(
   const contextWindow = context?.contextWindow ?? null
   const contextPercent = context?.percent ?? null
 
-  const ttftMs = run.firstTokenMonotonicAt !== undefined && run.ttftStartedMonotonicAt !== undefined
-    ? Math.max(0, run.firstTokenMonotonicAt - run.ttftStartedMonotonicAt)
+  const ttftMs = typeof run.ttftMs === 'number' && Number.isFinite(run.ttftMs) && run.ttftMs >= 0
+    ? run.ttftMs
     : null
   const ttftSamples = Object.values(timing?.ttftDurationsMs ?? {})
     .filter((value) => Number.isFinite(value) && value >= 0)
-  const currentTurnRecorded = Boolean(run.turnId && timing?.ttftDurationsMs[run.turnId] !== undefined)
-  const includeCurrentTtft = !currentTurnRecorded && ttftMs !== null
+  const currentRunRecorded = Boolean(run.runId && timing?.ttftDurationsMs[run.runId] !== undefined)
+  const includeCurrentTtft = !currentRunRecorded && ttftMs !== null
   const averageTtftMs = ttftSamples.length || includeCurrentTtft
     ? round((ttftSamples.reduce((sum, value) => sum + value, 0) + (includeCurrentTtft ? ttftMs! : 0)) /
       (ttftSamples.length + (includeCurrentTtft ? 1 : 0)))
@@ -193,7 +195,7 @@ export function sessionMetrics(
       : 0
   const restoredWindowMs = hasStreamingAssistant || lastUserTimestamp === undefined
     ? undefined
-    : timing?.generationWindowMs[String(lastUserTimestamp)]
+    : userTimingDuration(timing?.generationWindowMs ?? {}, lastUserTimestamp, lastUserOrdinal)
   // A transcript-only conversation has no client samples. Each assistant
   // message carries the duration Pi spent generating it, so summing those is
   // the same per-answer window the live path records — tool gaps excluded.

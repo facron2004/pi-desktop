@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type * as pty from 'node-pty'
-import type { TerminalCreateOptions, TerminalSessionInfo } from '@shared/types'
+import {
+  MAX_TERMINAL_SESSIONS,
+  type TerminalCreateOptions,
+  type TerminalSessionInfo
+} from '@shared/types'
 import { resolveShellSpec } from './shell'
 import { assertTerminalWorkingDirectory } from './terminal-path'
 
@@ -42,6 +46,9 @@ export class TerminalManager {
   ) {}
 
   create(options: TerminalCreateOptions): TerminalSessionInfo {
+    if (this.sessions.size >= MAX_TERMINAL_SESSIONS) {
+      throw new Error('Maximum number of terminals reached')
+    }
     const cwd = options.cwd?.trim() || process.cwd()
     assertTerminalWorkingDirectory(cwd)
     const shell = resolveShellSpec(options.shell)

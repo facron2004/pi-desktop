@@ -101,15 +101,15 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   font-size: var(--text-button);
   font-weight: var(--weight-regular);
   line-height: var(--leading-button);
+  /* One border, not a border plus an inset highlight: on hover the highlight
+     traced a second rounded edge that did not overlap the border. */
   border: 1px solid var(--border);
   background: var(--bg-elevated);
-  box-shadow: var(--border-specular);
   color: var(--text-muted);
   transition:
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease),
-    box-shadow var(--dur-fast) var(--ease);
+    border-color var(--dur-fast) var(--ease);
   white-space: nowrap;
 }
 

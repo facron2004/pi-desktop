@@ -15,7 +15,8 @@ const STATUS_LABEL: Record<SubagentTreeTask['status'], string> = {
   running: 'Running',
   completed: 'Completed',
   failed: 'Failed',
-  aborted: 'Stopped'
+  aborted: 'Stopped',
+  timed_out: 'Timed out'
 }
 
 export interface SubagentConversationTarget {
@@ -45,6 +46,7 @@ export function SubagentConversation({
   const duration = task.startedAt === undefined
     ? undefined
     : Math.max(0, (task.finishedAt ?? Date.now()) - task.startedAt)
+  const liveProgress = task.status === 'running' ? task.progressText : undefined
 
   return (
     <div className="subagent-conversation">
@@ -55,7 +57,7 @@ export function SubagentConversation({
         </button>
         <span className="subagent-conversation__identity">
           <Bot size={14} aria-hidden="true" />
-          <strong title={task.task}>{task.task}</strong>
+          <strong title={task.task}>{task.label || task.task}</strong>
         </span>
         <span className="subagent-conversation__meta">
           <span data-status={task.status}>{t(STATUS_LABEL[task.status])}</span>
@@ -89,11 +91,22 @@ export function SubagentConversation({
             return <ToolCard key={item.id} item={item} presentation="card" />
           }
           return null
-        }) : task.output || task.errorMessage ? (
+        }) : liveProgress ? (
+          <div className="subagent-conversation__live" role="status">
+            <span className="subagent-conversation__live-label">{t('Live output')}</span>
+            <LogOutput text={liveProgress} />
+          </div>
+        ) : task.output || task.errorMessage ? (
           <LogOutput text={task.output || task.errorMessage || ''} />
         ) : (
           <div className="subagent-conversation__empty" role="status">{t('Waiting for output…')}</div>
         )}
+        {items.length > 0 && liveProgress ? (
+          <div className="subagent-conversation__live" role="status">
+            <span className="subagent-conversation__live-label">{t('Live output')}</span>
+            <LogOutput text={liveProgress} />
+          </div>
+        ) : null}
       </div>
     </div>
   )

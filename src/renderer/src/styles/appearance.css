@@ -1110,6 +1110,44 @@
   justify-content: flex-end;
 }
 
+.settings-upgrade-progress {
+  height: 3px;
+  margin: -2px var(--sp-5) var(--sp-3);
+  overflow: hidden;
+  border-radius: var(--r-full);
+  background: var(--border-soft);
+}
+
+.settings-upgrade-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--dur-fast) var(--ease);
+}
+
+.settings-upgrade-progress[data-indeterminate='true'] > span {
+  width: 35%;
+  animation: settings-upgrade-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes settings-upgrade-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-upgrade-progress[data-indeterminate='true'] > span {
+    width: 100%;
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
 .settings-badge[data-tone='amber'] {
   background: var(--amber-soft);
   color: var(--amber);

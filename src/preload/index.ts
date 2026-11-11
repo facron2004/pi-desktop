@@ -33,6 +33,7 @@ import type {
   MemoryState,
   PickedFile,
   PiCommand,
+  PiCliUpgradeProgress,
   PiDesktopBridge,
   RpcTraceHint,
   RuntimeEnsureOptions,
@@ -88,6 +89,8 @@ const bridge: PiDesktopBridge = {
     emojiFont: (): Promise<Uint8Array | null> => ipcRenderer.invoke('app:emojiFont'),
     checkUpdate: (): Promise<VersionCheckResult> => ipcRenderer.invoke('app:checkUpdate'),
     upgradePiCli: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:upgradePiCli'),
+    onPiCliUpgradeProgress: (handler: (progress: PiCliUpgradeProgress) => void) =>
+      subscribe<PiCliUpgradeProgress>('app:piCliUpgradeProgress', handler),
     openReleasePage: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:openReleasePage')
   },
   dialog: {

@@ -5,13 +5,20 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* One rhythm for the whole caption: every control is 24px tall and carries
+     4px of horizontal padding, so with a zero column gap the space between
+     two readings is the same 8px as the space inside one. The old mix of a
+     6px bar gap, 6px control padding and 12px inner gaps made the middle of
+     the line read as a wide, uneven hole. */
+  column-gap: 0;
+  row-gap: var(--sp-2);
   /* One line at any normal width. The wrap is the fallback for a window too
      narrow to hold the four readings: wrapping a reading is better than
      clipping the last one, and it only happens below the composer's own
      minimum width. */
   flex-wrap: wrap;
-  gap: var(--sp-2);
-  padding: var(--sp-1) 0 0;
+  min-height: 24px;
+  padding: 0;
   color: var(--text-muted);
   font-size: var(--text-assist);
   line-height: var(--leading-assist);
@@ -21,12 +28,16 @@
 }
 
 /* Both readings are buttons, so the whole group is one click target and the
-   focus ring lands on the group rather than on each number. */
+   focus ring lands on the group rather than on each number. A shared height
+   and centre alignment keep the digits, the separator and the ring on one
+   line instead of mixing baselines with a taller icon. */
 .usage-bar__control {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
+  height: 24px;
   min-width: 0;
-  padding: 2px var(--sp-2);
+  gap: var(--sp-3);
+  padding: 0 var(--sp-1);
   border-radius: var(--r-sm);
   background: transparent;
   color: inherit;
@@ -34,12 +45,9 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
-.usage-bar__summary {
-  gap: var(--sp-4);
-}
-
+.usage-bar__summary,
 .usage-bar__generation {
-  gap: var(--sp-2);
+  gap: var(--sp-3);
 }
 
 .usage-bar__control:hover,
@@ -50,7 +58,7 @@
 
 .usage-bar__item {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--sp-1);
   min-width: 0;
 }
@@ -69,6 +77,19 @@
    percentage, and that control's own box belongs to `.context-ring` (task-2's
    stylesheet) — a width pin in this sheet is exactly what would clip the label
    once it appears. The bar only keeps it on the line. */
+/* Match the readings' 24px row and 4px padding, so the arc and its percentage
+   sit on the same centre line as the digits instead of hanging above them. */
+.usage-bar .context-ring {
+  min-width: 24px;
+  height: 24px;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-1);
+}
+
+.usage-bar .context-ring__svg {
+  width: 14px;
+  height: 14px;
+}
 
 /* ---- popovers ---------------------------------------------------------- */
 

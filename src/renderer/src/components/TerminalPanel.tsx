@@ -9,7 +9,7 @@ import {
 import { Copy, Eraser, Plus, RotateCcw, SquareTerminal, X } from 'lucide-react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import type { TerminalDataPayload } from '@shared/types'
+import { MAX_TERMINAL_SESSIONS, type TerminalDataPayload } from '@shared/types'
 import { EarlyTerminalExits } from '../lib/terminal-startup'
 import { useAppStore } from '../store/useAppStore'
 import { useIsDark } from '../lib/theme'
@@ -430,11 +430,12 @@ export function TerminalPanel({
   }, [])
 
   const addTab = useCallback(() => {
+    if (tabs.length >= MAX_TERMINAL_SESSIONS) return
     const key = `terminal-${nextKeyRef.current}`
     nextKeyRef.current += 1
     setTabs((previous) => [...previous, { key, label: '' }])
     setActiveKey(key)
-  }, [])
+  }, [tabs.length])
 
   const closeTab = useCallback(
     (key: string) => {
@@ -584,8 +585,11 @@ export function TerminalPanel({
           <button
             type="button"
             className="terminal__new"
-            title={t('New terminal')}
+            title={t(
+              tabs.length >= MAX_TERMINAL_SESSIONS ? 'Terminal limit reached' : 'New terminal'
+            )}
             aria-label={t('New terminal')}
+            disabled={tabs.length >= MAX_TERMINAL_SESSIONS}
             onClick={addTab}
           >
             <Plus size={18} />

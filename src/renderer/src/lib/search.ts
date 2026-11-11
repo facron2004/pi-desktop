@@ -21,6 +21,16 @@ export interface SearchHit {
   index: number
 }
 
+interface CachedChunkMatches {
+  text: string
+  needle: string
+  indexes: number[]
+  scannedLimit: number
+  complete: boolean
+}
+
+const matchesByChunk = new WeakMap<SearchableChunk, CachedChunkMatches>()
+
 /** Find every occurrence of the query, in chunk order. */
 export function findMatches(
   chunks: SearchableChunk[],
@@ -31,11 +41,34 @@ export function findMatches(
   if (!needle) return []
   const hits: SearchHit[] = []
   for (const [chunkIndex, chunk] of chunks.entries()) {
-    const haystack = chunk.text.toLowerCase()
-    let from = 0
-    for (;;) {
-      const index = haystack.indexOf(needle, from)
-      if (index === -1) break
+    const remaining = Math.max(1, limit - hits.length)
+    const cached = matchesByChunk.get(chunk)
+    let indexes: number[]
+    if (
+      cached?.text === chunk.text &&
+      cached.needle === needle &&
+      (cached.scannedLimit >= remaining || cached.complete)
+    ) {
+      indexes = cached.indexes
+    } else {
+      const haystack = chunk.text.toLowerCase()
+      indexes = []
+      let from = 0
+      let index = haystack.indexOf(needle, from)
+      while (index !== -1 && indexes.length < remaining) {
+        indexes.push(index)
+        from = index + needle.length
+        index = haystack.indexOf(needle, from)
+      }
+      matchesByChunk.set(chunk, {
+        text: chunk.text,
+        needle,
+        indexes,
+        scannedLimit: remaining,
+        complete: index === -1
+      })
+    }
+    for (const index of indexes) {
       hits.push({
         key: `${chunk.turnId}:${chunkIndex}:${index}`,
         turnId: chunk.turnId,
@@ -44,7 +77,6 @@ export function findMatches(
         snippet: snippetAround(chunk.text, index, needle.length),
         index
       })
-      from = index + needle.length
       if (hits.length >= limit) return hits
     }
   }

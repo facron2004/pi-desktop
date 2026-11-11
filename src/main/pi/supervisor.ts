@@ -160,6 +160,7 @@ export class SessionSupervisor extends EventEmitter {
   private readonly releasingOwners = new Set<string>()
   private readonly activity = new WeakMap<ManagedSessionRuntime, RuntimeActivity>()
   private shuttingDown = false
+  private cliUpgradeInProgress = false
 
   constructor(private readonly factory: SessionRuntimeFactory, cwdLockDirectory?: string) {
     super()
@@ -172,6 +173,35 @@ export class SessionSupervisor extends EventEmitter {
 
   runningKeys(): string[] {
     return [...this.runtimes.keys()].filter((key) => this.runtimes.get(key)?.isRunning)
+  }
+
+  /** Stop idle Pi processes and block new work while the bundled CLI is replaced. */
+  async prepareForCliUpgrade(): Promise<boolean> {
+    if (
+      this.cliUpgradeInProgress ||
+      this.shuttingDown ||
+      this.starting.size > 0 ||
+      this.queuedJobCount > 0 ||
+      [...this.runtimes.values()].some((runtime) => {
+        const activity = this.activity.get(runtime)
+        return activity?.running || activity?.writes
+      })
+    ) return false
+
+    this.cliUpgradeInProgress = true
+    try {
+      const stopped = await Promise.allSettled(this.runningKeys().map((key) => this.stop(key)))
+      const failed = stopped.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+      if (failed) throw failed.reason
+      return true
+    } catch (error) {
+      this.cliUpgradeInProgress = false
+      throw error
+    }
+  }
+
+  finishCliUpgrade(): void {
+    this.cliUpgradeInProgress = false
   }
 
   /**
@@ -208,6 +238,7 @@ export class SessionSupervisor extends EventEmitter {
   }
 
   async ensure(options: RuntimeEnsureOptions): Promise<{ ok: boolean; error?: string }> {
+    if (this.cliUpgradeInProgress) return { ok: false, error: 'The Pi CLI is updating. Try again when it finishes.' }
     if (this.shuttingDown) return { ok: false, error: 'Pi is shutting down.' }
     if ([...this.stoppingCwds.keys()].some(root => this.gate.contains(root, options.cwd))) {
       return { ok: false, error: 'Working folder is being closed.' }
@@ -259,6 +290,7 @@ export class SessionSupervisor extends EventEmitter {
     preflight?: () => void
   ): Promise<T> {
     const id = this.canonical(key)
+    if (this.cliUpgradeInProgress) throw new Error('The Pi CLI is updating. Try again when it finishes.')
     if (this.shuttingDown) throw new Error('Pi is shutting down.')
     const runtime = this.runtimes.get(id)
     const activity = runtime && this.activity.get(runtime)

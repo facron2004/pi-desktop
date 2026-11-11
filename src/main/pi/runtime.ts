@@ -4,6 +4,10 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { resolveSessionFilePath, resolveSessionRoots } from '../sessions'
+import {
+  SUBAGENT_EDITOR_CANCEL_STATUS_KEY,
+  SUBAGENT_EDITOR_PENDING_STATUS_KEY
+} from '@shared/types'
 import type {
   ExtensionUiResponse,
   ExtensionUiRequest,
@@ -23,6 +27,7 @@ import { taskModesExtension } from './task-modes'
 import { subagentExtension } from './subagent'
 import { computerUseExtension } from './computer-use'
 import { contextBreakdownExtension } from './context-breakdown'
+import { generationTimingExtension } from './generation-timing'
 import { providerControlsExtension } from './provider-controls'
 import {
   allowlistedEnv,
@@ -69,6 +74,7 @@ export class PiRuntime extends EventEmitter {
   private status: RuntimeStatus = { phase: 'stopped' }
   private pendingApprovalId?: string
   private pendingUiRequestId?: string
+  private pendingSubagentEditor?: { token: string; requestId?: string; cancelled: boolean }
   private aborting = false
   /** Bumped on every start and stop so a superseded launch cannot publish status. */
   private generation = 0
@@ -153,11 +159,12 @@ export class PiRuntime extends EventEmitter {
     const subagentFile = path.join(userData, `pi-desktop-subagent-${scratchId}.mjs`)
     const computerFile = path.join(userData, `pi-desktop-computer-${scratchId}.mjs`)
     const contextBreakdownFile = path.join(userData, `pi-desktop-context-breakdown-${scratchId}.mjs`)
+    const generationTimingFile = path.join(userData, `pi-desktop-generation-timing-${scratchId}.mjs`)
     const permissionTitle = `pi-desktop-permissions-${scratchId}`
     const files: string[] = []
     try {
       mkdirSync(userData, { recursive: true })
-      files.push(permissionFile, subagentPermissionFile, modeFile, providerFile, subagentFile, computerFile, contextBreakdownFile)
+      files.push(permissionFile, subagentPermissionFile, modeFile, providerFile, subagentFile, computerFile, contextBreakdownFile, generationTimingFile)
       writeFileSync(permissionFile, permissionExtension(permissionTitle), 'utf8')
       writeFileSync(subagentPermissionFile, permissionExtension(permissionTitle, false), 'utf8')
       // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
@@ -183,6 +190,7 @@ export class PiRuntime extends EventEmitter {
       )
       writeFileSync(computerFile, computerUseExtension(), 'utf8')
       writeFileSync(contextBreakdownFile, contextBreakdownExtension(), 'utf8')
+      writeFileSync(generationTimingFile, generationTimingExtension(), 'utf8')
       if (options.customInstructions?.trim()) {
         files.push(customInstructionsFile)
         writeFileSync(customInstructionsFile, options.customInstructions.trim(), 'utf8')
@@ -206,7 +214,8 @@ export class PiRuntime extends EventEmitter {
         providerFile,
         subagentFile,
         computerFile,
-        contextBreakdownFile
+        contextBreakdownFile,
+        generationTimingFile
       )
     ]
     const sessionDir = this.options.getSessionDir?.(options.cwd)?.trim()
@@ -259,10 +268,35 @@ export class PiRuntime extends EventEmitter {
       if (event.type === 'agent_settled') {
         this.pendingApprovalId = undefined
         this.pendingUiRequestId = undefined
+        this.pendingSubagentEditor = undefined
       }
+      let cancelSubagentEditorRequestId: string | undefined
       if (event.type === 'extension_ui_request') {
         const request = event as unknown as ExtensionUiRequest
         if (request.method === 'setStatus' && request.statusKey === 'pi-desktop-mode') modesReady = true
+        if (request.method === 'setStatus' && request.statusKey === SUBAGENT_EDITOR_PENDING_STATUS_KEY) {
+          const token = typeof request.statusText === 'string' && request.statusText
+            ? request.statusText
+            : undefined
+          if (token) this.pendingSubagentEditor = { token, cancelled: false }
+          else if (this.pendingSubagentEditor && !this.pendingSubagentEditor.requestId) {
+            this.pendingSubagentEditor = undefined
+          }
+          return
+        }
+        if (request.method === 'setStatus' && request.statusKey === SUBAGENT_EDITOR_CANCEL_STATUS_KEY) {
+          const pending = this.pendingSubagentEditor
+          if (pending && pending.token === request.statusText) {
+            pending.cancelled = true
+            if (pending.requestId) {
+              this.emit('event', {
+                ...request,
+                statusText: JSON.stringify({ requestId: pending.requestId })
+              })
+            }
+          }
+          return
+        }
         if (request.method === 'setStatus' && request.statusKey === permissionTitle) {
           permissionsReady = request.statusText === 'ready'
           return
@@ -289,13 +323,26 @@ export class PiRuntime extends EventEmitter {
         }
         if (['select', 'confirm', 'input', 'editor'].includes(request.method)) {
           if (this.aborting) {
+            this.pendingSubagentEditor = undefined
             client.respondUi(request.id, { confirmed: false, cancelled: true }, this.outbound('extension-ui-cancel'))
             return
+          }
+          if (request.method === 'editor' && this.pendingSubagentEditor && !this.pendingSubagentEditor.requestId) {
+            this.pendingSubagentEditor.requestId = request.id
+            if (this.pendingSubagentEditor.cancelled) cancelSubagentEditorRequestId = request.id
           }
           this.pendingUiRequestId = request.id
         }
       }
       this.emit('event', event)
+      if (cancelSubagentEditorRequestId) {
+        this.emit('event', {
+          ...event,
+          method: 'setStatus',
+          statusKey: SUBAGENT_EDITOR_CANCEL_STATUS_KEY,
+          statusText: JSON.stringify({ requestId: cancelSubagentEditorRequestId })
+        })
+      }
     })
     client.on('stderr', (line: string) => this.emit('stderr', line))
     client.on('protocol-error', (payload: { line: string }) => {
@@ -410,6 +457,7 @@ export class PiRuntime extends EventEmitter {
         this.client.respondUi(this.pendingUiRequestId, { confirmed: false, cancelled: true }, this.outbound('extension-ui-cancel', trace))
         this.pendingUiRequestId = undefined
       }
+      this.pendingSubagentEditor = undefined
     }
     const hint = readTraceHint(trace)
     const request: Record<string, unknown> & { type: string; id?: string } = {
@@ -435,7 +483,10 @@ export class PiRuntime extends EventEmitter {
    */
   respondUi(id: string, response: ExtensionUiResponse): void {
     if (id === this.pendingApprovalId) this.pendingApprovalId = undefined
-    if (id === this.pendingUiRequestId) this.pendingUiRequestId = undefined
+    if (id === this.pendingUiRequestId) {
+      this.pendingUiRequestId = undefined
+      if (this.pendingSubagentEditor?.requestId === id) this.pendingSubagentEditor = undefined
+    }
     this.client?.respondUi(id, response, this.outbound('extension-ui-response'))
   }
 
@@ -461,6 +512,7 @@ export class PiRuntime extends EventEmitter {
     }
     this.pendingApprovalId = undefined
     this.pendingUiRequestId = undefined
+    this.pendingSubagentEditor = undefined
     const client = this.client
     this.client = null
     if (client) await this.dispose(client)

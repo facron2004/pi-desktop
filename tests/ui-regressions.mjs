@@ -565,6 +565,21 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     'The task rail did not read the non-repo status'
   )
   check(!document.querySelector('.task-panel__rows'), 'A non-repo folder still shows the Git rows')
+  const environmentSection = [...document.querySelectorAll('.task-panel__section')].find((node) =>
+    node.querySelector('.task-panel__section-title')?.textContent === 'Environment info'
+  )
+  const environmentToggle = environmentSection?.querySelector('.task-panel__section-toggle')
+  const environmentHeadHeight = environmentSection?.querySelector('.task-panel__section-head')?.getBoundingClientRect().height
+  environmentToggle?.click()
+  await pause(250)
+  check(environmentToggle?.getAttribute('aria-expanded') === 'false', 'The environment section did not fold shut')
+  check(
+    environmentSection && environmentHeadHeight !== undefined &&
+      environmentSection.getBoundingClientRect().height <= environmentHeadHeight + 1,
+    'The non-repo subtitle still occupies space after folding the environment section'
+  )
+  environmentToggle?.click()
+  await pause(250)
   const workspacePath = store.getState().workspace?.path
   check(typeof workspacePath === 'string' && workspacePath.length > 0, 'The active workspace path is missing')
   store.setState({ git: { ...noRepoGit, isRepo: true, root: workspacePath, branch: 'main', head: 'abcdef123456' } })
@@ -926,6 +941,58 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   )
   passed.push('the file tree reloads a folder when it becomes the active workspace root')
 
+  // The usage caption is one evenly spaced, vertically centred line: all three
+  // controls share a height and a centre line, and the ring no longer towers
+  // over the digits. Mixing baselines with a taller icon once made the middle
+  // of the line read as a ragged gap.
+  store.setState((state) => ({
+    items: [
+      { id: 'usage-u', kind: 'user', text: 'hello', images: [], timestamp: 1, order: 1 },
+      {
+        id: 'usage-a', kind: 'assistant', streaming: false, stopReason: 'stop', timestamp: 2, order: 2,
+        blocks: [{ type: 'text', text: 'done' }],
+        usage: { input: 300, output: 120, cacheRead: 700, cacheWrite: 0, totalTokens: 1120 }
+      }
+    ],
+    stats: {
+      userMessages: 1, assistantMessages: 1, toolCalls: 0, toolResults: 0, totalMessages: 2,
+      tokens: { input: 300, output: 120, cacheRead: 700, cacheWrite: 0, total: 1120 }, cost: 0,
+      contextUsage: { tokens: 18400, contextWindow: 200000, percent: 9 }
+    },
+    run: { phase: 'idle', turns: 1, settled: true, outcome: 'completed' },
+    settings: { ...state.settings, showContextUsage: true }
+  }))
+  const usageBar = await until(() => document.querySelector('.usage-bar'), 'The usage line did not render')
+  const usageBoxes = [...usageBar.children].map((node) => node.getBoundingClientRect())
+  const usageHeights = new Set(usageBoxes.map((box) => Math.round(box.height)))
+  const usageCentres = new Set(usageBoxes.map((box) => Math.round(box.top + box.height / 2)))
+  check(usageHeights.size === 1, `Usage controls do not share a height: ${[...usageHeights].join(', ')}`)
+  check(usageCentres.size === 1, `Usage controls are not vertically centred: ${[...usageCentres].join(', ')}`)
+  const usageComposer = document.querySelector('.composer')?.getBoundingClientRect()
+  const usageBarBox = usageBar.getBoundingClientRect()
+  const usageCentre = (usageBarBox.left + usageBarBox.right) / 2
+  check(
+    usageComposer && Math.abs(usageCentre - (usageComposer.left + usageComposer.right) / 2) <= 1,
+    'The usage line is not centred on the composer'
+  )
+  const ringSvg = usageBar.querySelector('.context-ring__svg')?.getBoundingClientRect()
+  const usageLabel = usageBar.querySelector('.context-ring__label')?.getBoundingClientRect()
+  check(
+    ringSvg && usageLabel &&
+      Math.abs((ringSvg.top + ringSvg.height / 2) - (usageLabel.top + usageLabel.height / 2)) <= 2,
+    'The context ring is not centred with its percentage label'
+  )
+  passed.push('the usage line shares one height and centre on the composer axis')
+
+  // Leave the environment section folded in the harness screenshot so the
+  // collapsed state remains visible for visual review.
+  const finalEnvironmentToggle = [...document.querySelectorAll('.task-panel__section')]
+    .find((node) => node.querySelector('.task-panel__section-title')?.textContent === 'Environment info')
+    ?.querySelector('.task-panel__section-toggle')
+  if (finalEnvironmentToggle?.getAttribute('aria-expanded') !== 'false') finalEnvironmentToggle?.click()
+  await pause(250)
+  check(finalEnvironmentToggle?.getAttribute('aria-expanded') === 'false', 'The final environment screenshot is not folded')
+
   return passed
 }
 
@@ -955,7 +1022,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 19 : 18)
+  assert.equal(passed.length, process.platform === 'win32' ? 20 : 19)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

@@ -1,4 +1,5 @@
 import type { PiCommand } from '@shared/types'
+import { acquireBundledPiCliCommand, isBundledPiCliMaintenanceInProgress } from './cli'
 import { PiRpcClient } from './rpc-client'
 import { resolvePiLaunch } from './locate'
 
@@ -12,29 +13,42 @@ export async function discoverSkillCommands(
   customPiPath?: string,
   trustProject = false
 ): Promise<PiCommand[]> {
-  const launch = resolvePiLaunch(customPiPath)
-  if (launch.source === 'none') return []
-
-  const client = new PiRpcClient({
-    command: launch.command,
-    args: [
-      ...launch.prefixArgs,
-      '--mode',
-      'rpc',
-      '--offline',
-      '--no-extensions',
-      trustProject ? '--approve' : '--no-approve'
-    ],
-    cwd,
-    env: launch.env
-  })
-
+  let launch = resolvePiLaunch(customPiPath)
+  const needsBundledGate = launch.source === 'bundled' ||
+    (launch.source !== 'custom' && isBundledPiCliMaintenanceInProgress())
+  if (launch.source === 'none' && !needsBundledGate) return []
+  const releaseCli = needsBundledGate
+    ? await acquireBundledPiCliCommand()
+    : () => {}
   try {
-    client.start()
-    await client.request({ type: 'get_state' }, 30_000)
-    const data = await client.request<{ commands?: PiCommand[] }>({ type: 'get_commands' }, 30_000)
-    return (data?.commands ?? []).filter((command) => command.source === 'skill')
+    // Resolve again after acquiring the gate so a waiting default lookup uses
+    // the bundled executable that is present once an update has finished.
+    if (needsBundledGate) launch = resolvePiLaunch(customPiPath)
+    if (launch.source === 'none') return []
+
+    const client = new PiRpcClient({
+      command: launch.command,
+      args: [
+        ...launch.prefixArgs,
+        '--mode',
+        'rpc',
+        '--offline',
+        '--no-extensions',
+        trustProject ? '--approve' : '--no-approve'
+      ],
+      cwd,
+      env: launch.env
+    })
+
+    try {
+      client.start()
+      await client.request({ type: 'get_state' }, 30_000)
+      const data = await client.request<{ commands?: PiCommand[] }>({ type: 'get_commands' }, 30_000)
+      return (data?.commands ?? []).filter((command) => command.source === 'skill')
+    } finally {
+      await client.stop()
+    }
   } finally {
-    await client.stop()
+    releaseCli()
   }
 }

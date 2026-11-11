@@ -53,6 +53,12 @@ test('a new conversation is launched without a session file', () => {
   assert.equal(args[1], 'rpc')
 })
 
+test('provider timing is loaded into the owning Pi process', () => {
+  const args = buildRpcArgs({ cwd: 'C:/project' }, false, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, 'timing.mjs')
+  assert.deepEqual(args.slice(0, 4), ['--mode', 'rpc', '--extension', 'timing.mjs'])
+})
+
 test('an omitted project trust decision defaults to no project approval', () => {
   const args = buildRpcArgs({ cwd: 'C:/unreviewed-project' })
   assert.equal(args.at(-1), '--no-approve')
