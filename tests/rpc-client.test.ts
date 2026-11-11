@@ -1,9 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { MAX_RPC_QUEUED_WRITE_BYTES, MAX_RPC_RECORD_BYTES, PiRpcClient } from '../src/main/pi/rpc-client'
+import {
+  MAX_RPC_QUEUED_WRITE_BYTES,
+  MAX_RPC_RECORD_BYTES,
+  MAX_RPC_STDERR_TAIL_BYTES,
+  PiRpcClient
+} from '../src/main/pi/rpc-client'
 
 const echo = String.raw`
 let buffer = '';
@@ -39,6 +44,27 @@ test('RPC preserves fragmented UTF-8, Unicode line separators and out-of-order r
     assert.equal(await slow, text)
   } finally {
     await client.stop()
+  }
+})
+
+test('RPC launches a Windows batch shim from a path with spaces', {
+  skip: process.platform !== 'win32'
+}, async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pi rpc shim-'))
+  const target = path.join(directory, 'pi.cmd')
+  const responder = `let buffer='';process.stdin.on('data',chunk=>{buffer+=chunk;const newline=buffer.indexOf('\\n');if(newline<0)return;const request=JSON.parse(buffer.slice(0,newline));process.stdout.write(JSON.stringify({type:'response',id:request.id,success:true,data:'shim-ok'})+'\\n')})`
+  const encoded = Buffer.from(responder).toString('base64')
+  writeFileSync(
+    target,
+    `@echo off\r\n"${process.execPath}" -e "eval(Buffer.from('${encoded}','base64').toString())"\r\n`
+  )
+  const client = new PiRpcClient({ command: target, args: [], cwd: process.cwd() })
+  try {
+    client.start()
+    assert.equal(await client.request({ type: 'get_state' }), 'shim-ok')
+  } finally {
+    await client.stop()
+    rmSync(directory, { recursive: true, force: true })
   }
 })
 
@@ -84,6 +110,32 @@ test('RPC drops an oversized record without retaining the rest of its bytes', ()
   assert.equal(errors.length, 1)
   assert.deepEqual(received, { type: 'after_oversized_record' })
   assert.equal((client as any).discardingOversizedRecord, false)
+})
+
+test('RPC bounds retained stderr by bytes and keeps the newest diagnostic tail', async () => {
+  const noisy = String.raw`
+let buffer = '';
+process.stdin.on('data', chunk => {
+  buffer += chunk;
+  const newline = buffer.indexOf('\n');
+  if (newline === -1) return;
+  const command = JSON.parse(buffer.slice(0, newline));
+  process.stderr.write('x'.repeat(1024 * 1024) + 'TAIL', () => {
+    process.stdout.write(JSON.stringify({ type: 'response', id: command.id, success: true }) + '\n');
+  });
+});`
+  const client = clientFor(noisy)
+  try {
+    await client.request({ type: 'noisy' })
+    await client.stop()
+    const tail = client.stderrTail
+    const bytes = tail.reduce((sum, line) => sum + Buffer.byteLength(line, 'utf8'), 0)
+    assert.ok(bytes <= MAX_RPC_STDERR_TAIL_BYTES)
+    assert.ok(tail.length <= 200)
+    assert.ok(tail.join('').endsWith('TAIL'))
+  } finally {
+    await client.stop()
+  }
 })
 
 test('a failed spawn cannot report a running transport', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.10.12",
+  "version": "0.10.13",
   "description": "Pi Desktop — a native GUI for the Pi coding agent",
   "main": "./out/main/index.js",
   "author": "Facron",
@@ -32,6 +32,7 @@
     "@earendil-works/pi-coding-agent": "^1.5.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "cross-spawn": "7.0.6",
     "diff": "^9.0.0",
     "lucide-react": "^1.59.0",
     "node-pty": "^1.1.0",

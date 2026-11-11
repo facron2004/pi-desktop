@@ -28,6 +28,7 @@ import {
 import { initialBounds, wasMaximized, watchWindowState } from './window-state'
 import { isTrustedRendererNavigation, resolveRendererEntry } from './navigation-policy'
 import { denyWebviewPopups, hardenWebviewPreferences, isAllowedWebviewUrl } from './webview-policy'
+import { isolateUserDataEnvironment } from './user-data'
 
 const isMac = process.platform === 'darwin'
 
@@ -51,7 +52,9 @@ for (const stream of [process.stdout, process.stderr]) {
 // The name of the variable is the whole contract: it points the app at a
 // throwaway data folder, whatever else the run is doing.
 if (process.env.PI_DESKTOP_USER_DATA) {
-  app.setPath('userData', path.resolve(process.env.PI_DESKTOP_USER_DATA))
+  const userData = path.resolve(process.env.PI_DESKTOP_USER_DATA)
+  app.setPath('userData', userData)
+  isolateUserDataEnvironment(userData)
 }
 if (!secureUserDataDirectory(app.getPath('userData'))) {
   const message = 'Pi Desktop could not restrict access to its private app data directory and will exit to protect saved data.'

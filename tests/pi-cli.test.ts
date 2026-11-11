@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { runPiCli } from '../src/main/pi/cli'
@@ -29,6 +29,22 @@ test('runPiCli still launches when the requested cwd does not exist', async () =
 test('runPiCli uses a valid cwd unchanged', async () => {
   const result = await runPiCli(['--version'], { cwd: process.cwd(), timeoutMs: 30_000 })
   assert.equal(result.code, 0, `Pi CLI failed: ${result.stderr}`)
+})
+
+test('runPiCli launches a Windows batch shim from a path with spaces', {
+  skip: process.platform !== 'win32'
+}, async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'pi cli shim-'))
+  const target = path.join(directory, 'pi.cmd')
+  writeFileSync(target, '@echo off\r\necho shim-ok\r\nexit /b 0\r\n')
+  try {
+    const result = await runPiCli(['& echo injected'], { customPiPath: target })
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /shim-ok/)
+    assert.doesNotMatch(result.stdout, /injected/i)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('runPiCli preserves UTF-8 characters split across stdout and stderr chunks', async () => {

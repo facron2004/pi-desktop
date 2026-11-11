@@ -1,10 +1,11 @@
 import { app } from 'electron'
-import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { execFile, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import type { AuthStatus } from '@shared/types'
 import { resolvePiLaunch } from './locate'
+import { spawn } from './spawn'
 
 export interface CliResult {
   code: number | null

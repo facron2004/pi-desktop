@@ -1,8 +1,9 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { execFile, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { StringDecoder } from 'node:string_decoder'
 import type { ExtensionUiResponse, PiEvent, RpcResponse } from '@shared/types'
 import { describeCommand, type RpcCommandTrace, type RpcOutboundMeta } from './trace'
+import { spawn } from './spawn'
 
 export interface RpcRequest {
   type: string
@@ -38,6 +39,7 @@ interface Pending {
 const LF = 0x0a
 const CR = 0x0d
 const MAX_STDERR_LINES = 200
+export const MAX_RPC_STDERR_TAIL_BYTES = 256 * 1024
 export const MAX_RPC_PENDING_REQUESTS = 1024
 export const MAX_RPC_QUEUED_WRITES = 1024
 export const MAX_RPC_QUEUED_WRITE_BYTES = 64 * 1024 * 1024
@@ -53,6 +55,14 @@ interface QueuedWrite {
 }
 
 class RpcRecordTooLargeError extends Error {}
+
+function stderrTail(line: string): string {
+  const bytes = Buffer.from(line, 'utf8')
+  if (bytes.length <= MAX_RPC_STDERR_TAIL_BYTES) return line
+  let start = bytes.length - MAX_RPC_STDERR_TAIL_BYTES
+  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start += 1
+  return bytes.subarray(start).toString('utf8')
+}
 
 function jsonStringByteLength(value: string, limit: number): number {
   let bytes = 2
@@ -157,6 +167,7 @@ export class PiRpcClient extends EventEmitter {
   private draining = false
   private closed = false
   private readonly stderrLines: string[] = []
+  private stderrBytes = 0
 
   constructor(private readonly options: PiRpcClientOptions) {
     super()
@@ -198,9 +209,18 @@ export class PiRpcClient extends EventEmitter {
       const text = this.decoder.write(chunk)
       for (const line of text.split(/\r?\n/)) {
         if (!line.trim()) continue
-        this.stderrLines.push(line)
-        if (this.stderrLines.length > MAX_STDERR_LINES) this.stderrLines.shift()
-        this.emit('stderr', line)
+        const retained = stderrTail(line)
+        const bytes = Buffer.byteLength(retained, 'utf8')
+        this.stderrLines.push(retained)
+        this.stderrBytes += bytes
+        while (
+          this.stderrLines.length > MAX_STDERR_LINES ||
+          this.stderrBytes > MAX_RPC_STDERR_TAIL_BYTES
+        ) {
+          const removed = this.stderrLines.shift()
+          if (removed !== undefined) this.stderrBytes -= Buffer.byteLength(removed, 'utf8')
+        }
+        this.emit('stderr', retained)
       }
     })
 

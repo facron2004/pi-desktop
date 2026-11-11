@@ -35,6 +35,7 @@ const suites = [
   'run-state.test.ts',
   'projects.test.ts',
   'settings.test.ts',
+  'user-data.test.ts',
   'app-updates.test.ts',
   'pi-cli.test.ts',
   'session-metrics.test.ts',
