@@ -906,19 +906,26 @@ export default function App() {
           up — so opening and closing moved the icon, and the panel's enter/exit
           animation slid and faded it on the way. As a child of the shell it
           keeps the same pixels in every state and the animation cannot reach
-          it; the panel reserves the corner it sits in. */}
-      <div className="shell__panel-toggle">
-        <button
-          className="icon-btn"
-          type="button"
-          aria-label={t(changesOpen ? 'Hide tools panel' : 'Show tools panel')}
-          title={t(changesOpen ? 'Hide tools panel' : 'Show tools panel')}
-          aria-expanded={changesOpen}
-          onClick={() => (changesOpen ? setChangesOpen(false) : openInspector(panelView))}
-        >
-          <PanelRight size={16} strokeWidth={1.7} />
-        </button>
-      </div>
+          it; the panel reserves the corner it sits in.
+
+          A desk page owns the whole content row, so the toggle is not drawn
+          there: its header already carries its own actions in that corner, and
+          a tools-panel button over the plugins or schedule page would be a
+          control for a surface that is not on screen. */}
+      {deskPage ? null : (
+        <div className="shell__panel-toggle">
+          <button
+            className="icon-btn"
+            type="button"
+            aria-label={t(changesOpen ? 'Hide tools panel' : 'Show tools panel')}
+            title={t(changesOpen ? 'Hide tools panel' : 'Show tools panel')}
+            aria-expanded={changesOpen}
+            onClick={() => (changesOpen ? setChangesOpen(false) : openInspector(panelView))}
+          >
+            <PanelRight size={16} strokeWidth={1.7} />
+          </button>
+        </div>
+      )}
       {settingsOpen ? (
         <SettingsDialog
           initialPage={settingsPage}
