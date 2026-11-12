@@ -4,12 +4,12 @@ import {
   clearViewState,
   migrateViewState,
   readFileOpen,
-  readHistoryExpanded,
+  readHistoryFirstVisibleTurn,
   readProcessOpen,
   readToolFull,
   readToolOpen,
   writeFileOpen,
-  writeHistoryExpanded,
+  writeHistoryFirstVisibleTurn,
   writeProcessOpen,
   writeToolFull,
   writeToolOpen
@@ -35,13 +35,13 @@ test('full and file expansion are independent per conversation', () => {
   assert.equal(readFileOpen('thread-b', 'src/a.ts'), false)
 })
 
-test('process and history expansion survive a component remount', () => {
+test('process and history position survive a component remount', () => {
   writeProcessOpen('thread-a', 'process-1', true)
   assert.equal(readProcessOpen('thread-a', 'process-1'), true)
-  writeHistoryExpanded('thread-a', true)
-  assert.equal(readHistoryExpanded('thread-a'), true)
-  writeHistoryExpanded('thread-a', false)
-  assert.equal(readHistoryExpanded('thread-a'), false)
+  writeHistoryFirstVisibleTurn('thread-a', 3)
+  assert.equal(readHistoryFirstVisibleTurn('thread-a'), 3)
+  writeHistoryFirstVisibleTurn('thread-a', undefined)
+  assert.equal(readHistoryFirstVisibleTurn('thread-a'), undefined)
 })
 
 test('a draft migration carries every expansion map to the session file', () => {
@@ -51,7 +51,7 @@ test('a draft migration carries every expansion map to the session file', () => 
   writeToolFull(draft, 'tool-1', true)
   writeFileOpen(draft, 'src/a.ts', true)
   writeProcessOpen(draft, 'process-1', true)
-  writeHistoryExpanded(draft, true)
+  writeHistoryFirstVisibleTurn(draft, 3)
 
   migrateViewState(draft, file)
 
@@ -60,7 +60,7 @@ test('a draft migration carries every expansion map to the session file', () => 
   assert.equal(readToolFull(file, 'tool-1'), true)
   assert.equal(readFileOpen(file, 'src/a.ts'), true)
   assert.equal(readProcessOpen(file, 'process-1'), true)
-  assert.equal(readHistoryExpanded(file), true)
+  assert.equal(readHistoryFirstVisibleTurn(file), 3)
 })
 
 test('deleting a conversation clears only its saved view preferences', () => {
@@ -71,7 +71,7 @@ test('deleting a conversation clears only its saved view preferences', () => {
     writeToolFull(thread, 'tool-1', true)
     writeFileOpen(thread, 'src/a.ts', true)
     writeProcessOpen(thread, 'process-1', true)
-    writeHistoryExpanded(thread, true)
+    writeHistoryFirstVisibleTurn(thread, 2)
   }
 
   clearViewState(deleted)
@@ -80,10 +80,10 @@ test('deleting a conversation clears only its saved view preferences', () => {
   assert.equal(readToolFull(deleted, 'tool-1'), false)
   assert.equal(readFileOpen(deleted, 'src/a.ts'), false)
   assert.equal(readProcessOpen(deleted, 'process-1'), undefined)
-  assert.equal(readHistoryExpanded(deleted), false)
+  assert.equal(readHistoryFirstVisibleTurn(deleted), undefined)
   assert.equal(readToolOpen(retained, 'tool-1'), true)
   assert.equal(readToolFull(retained, 'tool-1'), true)
   assert.equal(readFileOpen(retained, 'src/a.ts'), true)
   assert.equal(readProcessOpen(retained, 'process-1'), true)
-  assert.equal(readHistoryExpanded(retained), true)
+  assert.equal(readHistoryFirstVisibleTurn(retained), 2)
 })

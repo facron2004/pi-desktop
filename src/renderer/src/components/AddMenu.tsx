@@ -127,9 +127,9 @@ export function AddMenu({ ready, busy, mode, skillCommands, pluginCommands, onMo
               {commands.length ? (
                 <div className="composer__add-list">
                   {commands.map((command) => (
-                    <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description} onClick={() => { close(); onInsertCommand(command) }}>
+                    <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description ? t(command.description) : undefined} onClick={() => { close(); onInsertCommand(command) }}>
                       <span className="composer__add-command-name">/{command.name}</span>
-                      {command.description ? <span className="composer__add-command-description">{command.description}</span> : null}
+                      {command.description ? <span className="composer__add-command-description">{t(command.description)}</span> : null}
                     </button>
                   ))}
                 </div>

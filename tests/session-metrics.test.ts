@@ -85,7 +85,7 @@ test('the context reading is a projection of get_session_stats', () => {
   assert.equal(cold.cacheHitPercent, null)
 })
 
-test('TTFT uses the sample measured from run start to the first text delta', () => {
+test('TTFT uses the sample Pi published, not the renderer first-token timestamp', () => {
   const metrics = sessionMetrics([], undefined, {
     runId: 'run-1',
     startedAt: 1_000,

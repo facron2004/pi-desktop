@@ -6831,7 +6831,7 @@ body.is-resizing {
 .change__content .tool__pre,
 .change__content .diff__code,
 .change__content .diff__gutter {
-  font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   line-height: 1.6;
 }

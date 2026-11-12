@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Command as CommandIcon } from 'lucide-react'
-import type { PiCommand } from '@shared/types'
+import type { AppLanguage, PiCommand } from '@shared/types'
+import { appCommandName } from '../lib/app-commands'
 import { COMMAND_SOURCE } from '../lib/command-source'
 import { useT } from '../lib/i18n'
 
@@ -8,6 +9,7 @@ interface CommandPaletteProps {
   commands: PiCommand[]
   query: string
   activeIndex: number
+  language: AppLanguage
   loading?: boolean
   onActiveChange: (index: number) => void
   onSelect: (command: PiCommand) => void
@@ -17,6 +19,7 @@ export function CommandPalette({
   commands,
   query,
   activeIndex,
+  language,
   loading = false,
   onActiveChange,
   onSelect
@@ -62,12 +65,11 @@ export function CommandPalette({
           {commands.map((command, index) => {
             const meta = COMMAND_SOURCE[command.source] ?? COMMAND_SOURCE.extension
             const Icon = meta.Icon
-            const desc = command.description
-              ? command.source === 'app'
-                ? t(command.description)
-                : command.description
-              : undefined
-            const tooltip = desc ? `/${command.name} — ${desc}` : `/${command.name}`
+            const desc = command.description ? t(command.description) : undefined
+            const name = command.source === 'app' && language === 'zh-CN'
+              ? appCommandName(command.name, language)
+              : `/${command.name}`
+            const tooltip = desc ? `${name} — ${desc}` : name
 
             return (
               <button
@@ -83,13 +85,13 @@ export function CommandPalette({
                 <span className="palette__icon">
                   <Icon size={12} />
                 </span>
-                <span className="palette__name">/{command.name}</span>
+                <span className="palette__name">{name}</span>
                 {desc ? (
                   <span className="palette__desc" title={desc}>
                     {desc}
                   </span>
                 ) : null}
-                <span className={`palette__badge ${meta.className}`}>{meta.label}</span>
+                <span className={`palette__badge ${meta.className}`}>{t(meta.label)}</span>
               </button>
             )
           })}

@@ -94,6 +94,7 @@ const suites = [
   'session-tree.test.ts',
   'renderer-utils.test.ts',
   'i18n.test.ts',
+  'compaction-error.test.ts',
   'highlight-cache.test.ts',
   'marketplace.test.ts',
   'memory.test.ts',

@@ -1,4 +1,40 @@
-import type { PiCommand } from '@shared/types'
+import type { AppLanguage, PiCommand } from '@shared/types'
+
+/** Chinese aliases are what users see and type in the Chinese interface. */
+export const APP_COMMAND_ZH_NAMES: Record<string, string> = {
+  name: '重命名',
+  plan: '计划',
+  goal: '目标',
+  subagent: '子代理',
+  plugin: '插件',
+  export: '导出对话',
+  duplicate: '复制对话',
+  branch: '创建分支',
+  tree: '会话树',
+  mcp: '服务配置',
+  compact: '压缩上下文',
+  copy: '复制回复',
+  changes: '查看更改',
+  commit: '提交更改',
+  terminal: '终端',
+  files: '项目文件',
+  new: '新建对话'
+}
+
+export function appCommandName(name: string, language: AppLanguage): string {
+  return language === 'zh-CN' ? APP_COMMAND_ZH_NAMES[name] ?? name : name
+}
+
+/** Convert a Chinese command typed in the composer to Pi's canonical token. */
+export function normalizeAppCommandInput(text: string): string {
+  const match = /^\/([^\s]+)([\s\S]*)$/.exec(text)
+  if (!match) return text
+  const alias = match[1].toLocaleLowerCase()
+  const canonical = Object.entries(APP_COMMAND_ZH_NAMES).find(
+    ([, localized]) => localized.toLocaleLowerCase() === alias
+  )?.[0]
+  return canonical ? `/${canonical}${match[2]}` : text
+}
 
 /**
  * The commands the desktop app offers next to Pi's own.

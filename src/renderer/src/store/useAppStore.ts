@@ -43,7 +43,8 @@ import { basename, resolveAgainst, samePath } from '../lib/path'
 import { updateThreadSessionName } from '../lib/live-sessions'
 import { stripAnsi } from '../lib/ansi'
 import { collectProjects, type Project } from '../lib/projects'
-import { APP_COMMANDS } from '../lib/app-commands'
+import { APP_COMMANDS, normalizeAppCommandInput } from '../lib/app-commands'
+import { describeCompactionFailure } from '../lib/compaction-error'
 import { hydrationStale, needsSessionHydration, scopeEvent, scopeStatus } from '../lib/session-scope'
 import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
 import { beginStream, finishStream, rekeyStreamState, resetStreamState } from '../lib/stream-events'
@@ -408,7 +409,7 @@ export interface AppStore {
   /** Move to the next reasoning effort, or to the previous one. */
   cycleThinkingLevel: (direction?: 1 | -1) => Promise<void>
   /** Compact the context, optionally with instructions for the summary. */
-  compact: (instructions?: string) => Promise<void>
+  compact: (instructions?: string) => Promise<boolean>
   setAutoCompaction: (enabled: boolean) => Promise<void>
   setAutoRetry: (enabled: boolean) => Promise<void>
   /** How steering messages are delivered: one at a time or all at once. */
@@ -1591,7 +1592,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async send(text, images, kind = 'steer') {
-    const trimmed = text.trim()
+    const trimmed = normalizeAppCommandInput(text.trim())
     if (!trimmed && !images.length) return
     // `!cmd` and `!!cmd` run a shell command inline via Pi's `bash` RPC.
     // `!cmd` enters the model's context; `!!cmd` stays out of context.
@@ -2050,18 +2051,35 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const key = await get().ensureRuntime(owner, 'compact')
       const payload: Record<string, unknown> = {}
       if (instructions?.trim()) payload.customInstructions = instructions.trim()
-      await tracedRpc(key, 'compact', payload, 180_000, 'compact')
+      // Pi may make multiple model calls while summarising a long session.
+      // Its RPC client documents compaction as a command without a deadline.
+      await tracedRpc(key, 'compact', payload, 0, 'compact')
       await get().refreshState(threadKey(owner))
       // The summary Pi wrote is an entry of the session, so the thread has
       // to read it again — otherwise the conversation on screen still shows
       // the messages that were just folded away.
       await get().reloadMessages(threadKey(owner))
+      // A retry that worked must not leave the previous failure on screen,
+      // but it must not clear an unrelated error either.
+      bindSet(set, get, owner)((state) =>
+        /^Context compaction (?:failed|timed out)/.test(state.error ?? '')
+          ? { error: undefined }
+          : {}
+      )
       get().showToast('The conversation was summarised')
+      return true
     } catch (error) {
+      // Pi rejects a compact it cannot act on ("Nothing to compact",
+      // "Already compacted") with the same error response as a provider
+      // failure. Keep the real reason; only a genuine failure gets the
+      // thread-level banner, a benign answer is a toast.
+      const failure = describeCompactionFailure(messageOf(error))
+      if (failure.benign) get().showToast(failure.message, 'warning')
       bindSet(set, get, owner)((state) => ({
-        error: messageOf(error),
+        ...(failure.benign ? {} : { error: failure.message }),
         run: { ...state.run, compaction: undefined }
       }))
+      return false
     }
   },
 
@@ -3105,7 +3123,7 @@ export function applyAppearance(
       sans: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       chinese: "'PingFang SC', '苹方', '苹方-简', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif",
       mono: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace",
-      serif: "'Newsreader', 'Georgia', 'Songti SC', 'SimSun', serif"
+      serif: "'Newsreader', 'Georgia', serif"
     }
     const mapped = fontMap[settings.fontFamily]
     // The installed copy is registered as 苹方; keep both names so either one resolves.
@@ -3124,9 +3142,10 @@ export function applyAppearance(
       (settings.fontFamily.includes(',') || settings.fontFamily.includes('"') || settings.fontFamily.includes("'")
         ? settings.fontFamily
         : `"${settings.fontFamily}", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif`)
-    root.style.setProperty('--font-ui', fontVal)
-    root.style.setProperty('--font-sidebar', fontVal)
-    root.style.setProperty('--font-reading', fontVal)
+    const fontWithCjkFallback = `var(--font-cjk), ${fontVal}`
+    root.style.setProperty('--font-ui', fontWithCjkFallback)
+    root.style.setProperty('--font-sidebar', fontWithCjkFallback)
+    root.style.setProperty('--font-reading', fontWithCjkFallback)
   } else {
     remove('--font-ui')
     remove('--font-sidebar')

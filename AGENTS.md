@@ -338,11 +338,14 @@ execution time, average TTFT and output speed. Unavailable readings say
 `Not measured yet`. Pi reports tool `durationMs` when available; the client
 measures tool start-to-end as a fallback. Model time sums client-observed
 `turn_start` to assistant-message completion intervals. Average TTFT measures
-each prompt/run from `agent_start` to its first nonempty text delta.
-`generation-timing.ts` measures both boundaries with Pi's own monotonic clock
-and publishes only the duration through a reserved status key. Thinking and
-tool-argument deltas do not count as first text. The store records each sample
-once, keyed by `runId`; tool calls and retries do not reset the prompt's TTFT.
+one model request, from just before the provider request to that request's
+first nonempty text delta; every new request starts a fresh clock, so tool
+execution and retry backoff cannot inflate it. `generation-timing.ts` measures
+both boundaries with Pi's own monotonic clock and publishes only the duration
+through a reserved status key. Thinking and tool-argument deltas do not count
+as first text, and one request needing more than two minutes to reach it is
+dropped as a stalled boundary rather than poisoning the average. The store
+records each sample once, keyed by `runId`.
 These timing samples live in localStorage per conversation and migrate when a
 draft gets its session file. A reopened transcript with no client samples is
 approximated from each assistant message's `durationMs` for model time and TPS;
@@ -363,6 +366,10 @@ Version 8 stored appended samples as individually named localStorage keys;
 version 9 uses a per-conversation indexed journal so reading one conversation
 does not enumerate the storage keys for every conversation. Version 8 samples
 are folded into the snapshot the next time a timing sample is recorded.
+Version 10 drops every v7-v9 TTFT sample: those started at `agent_start` and
+could hold minutes of tool work (one real sample read 4m29s for a "first
+token"). The v9 journal is folded into the snapshot first, so model, tool,
+run and generation timings survive the migration.
 The tokens and the hit rate open `UsagePanel` — total Token,
 cache hit rate, uncached input, cache read, cache write and output. Two
 questions, two cards; a reading printed in both would be two things to keep in

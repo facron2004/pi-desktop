@@ -12,6 +12,7 @@ import {
 import { useAppStore, type QueueKind } from '../store/useAppStore'
 import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { FileEntry, PiCommand } from '@shared/types'
+import { appCommandName } from '../lib/app-commands'
 import { filterCommands } from '../lib/commands'
 import { relativePath } from '../lib/path'
 import { openingLabel, useT } from '../lib/i18n'
@@ -51,7 +52,7 @@ function imageByteLength(data: string): number {
 /** Detect a `/command` token that ends at the caret. */
 function detectSlash(text: string, cursor: number): SlashMatch | null {
   const before = text.slice(0, cursor)
-  const match = before.match(/(?:^|\s)\/([\w:.-]*)$/)
+  const match = before.match(/(?:^|\s)\/([\p{L}\p{N}_:.-]*)$/u)
   if (!match) return null
   const query = match[1]
   return { query, start: cursor - query.length - 1, cursor }
@@ -86,7 +87,7 @@ export function Composer() {
   const setAgentMode = useAppStore((state) => state.setAgentMode)
   const commands = useAppStore((state) => state.commands)
   const refreshSkillCommands = useAppStore((state) => state.refreshSkillCommands)
-  const runAppCommand = useAppStore((state) => state.runAppCommand)
+  const language = useAppStore((state) => state.settings.language ?? 'en')
   const composerText = useAppStore((state) => state.composerText)
   const clearComposerText = useAppStore((state) => state.clearComposerText)
   const composerInsert = useAppStore((state) => state.composerInsert)
@@ -224,8 +225,8 @@ export function Composer() {
   }, [composerInsert])
 
   const matching = useMemo(
-    () => (slash ? filterCommands(commands, slash.query) : []),
-    [commands, slash]
+    () => (slash ? filterCommands(commands, slash.query, language) : []),
+    [commands, slash, language]
   )
   const skillCommands = useMemo(
     () => commands.filter((command) => command.source === 'skill'),
@@ -368,33 +369,22 @@ export function Composer() {
 
   const insertCommand = useCallback(
     (command: PiCommand) => {
-      // The app's own commands run right away; Pi's are text that is sent
-      // to the agent. A command that needs an argument is typed instead.
-      if (command.source === 'app' && !command.takesArgument) {
-        setSlash(null)
-        if (slash) {
-          // The typed command is consumed by the app.
-          const cursor = textareaRef.current?.selectionStart ?? text.length
-          setText(`${text.slice(0, slash.start)}${text.slice(cursor)}`.trim())
-        }
-        void runAppCommand(command.name)
-        return
-      }
       if (!slash) return
       const node = textareaRef.current
       const cursor = node?.selectionStart ?? slash.cursor
-      const next = `${text.slice(0, slash.start)}/${command.name} ${text.slice(cursor)}`
+      const commandName = command.source === 'app' ? appCommandName(command.name, language) : command.name
+      const next = `${text.slice(0, slash.start)}/${commandName} ${text.slice(cursor)}`
       setText(next)
       setSlash(null)
       requestAnimationFrame(() => {
         const target = textareaRef.current
         if (!target) return
-        const position = slash.start + command.name.length + 2
+        const position = slash.start + commandName.length + 2
         target.focus()
         target.setSelectionRange(position, position)
       })
     },
-    [slash, text, runAppCommand]
+    [slash, text, language]
   )
 
   const submit = useCallback(() => {
@@ -666,7 +656,8 @@ export function Composer() {
   const insertMenuCommand = useCallback(
     (command: PiCommand) => {
       const prefix = text.trimEnd()
-      const next = `${prefix ? `${prefix}\n` : ''}/${command.name} `
+      const commandName = command.source === 'app' ? appCommandName(command.name, language) : command.name
+      const next = `${prefix ? `${prefix}\n` : ''}/${commandName} `
       setText(next)
       setSlash(null)
       setMention(null)
@@ -677,7 +668,7 @@ export function Composer() {
         target.setSelectionRange(next.length, next.length)
       })
     },
-    [text]
+    [text, language]
   )
 
   const pendingQueue = [
@@ -693,6 +684,7 @@ export function Composer() {
             commands={matching}
             query={slash.query}
             activeIndex={paletteIndex}
+            language={language}
             loading={loadingSkillCommands}
             onActiveChange={setPaletteIndex}
             onSelect={insertCommand}

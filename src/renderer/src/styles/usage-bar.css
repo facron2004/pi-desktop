@@ -5,6 +5,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  width: max-content;
+  max-width: 100%;
+  margin: var(--sp-2) auto 0;
   /* One rhythm for the whole caption: every control is 24px tall and carries
      4px of horizontal padding, so with a zero column gap the space between
      two readings is the same 8px as the space inside one. The old mix of a

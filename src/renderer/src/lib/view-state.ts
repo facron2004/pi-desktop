@@ -12,7 +12,7 @@ interface ConversationViewState {
   toolFull: Map<string, boolean>
   fileOpen: Map<string, boolean>
   processOpen: Map<string, boolean>
-  historyExpanded: boolean
+  historyFirstVisibleTurn?: number
 }
 
 const conversations = new Map<string, ConversationViewState>()
@@ -24,8 +24,7 @@ function stateFor(threadId: string, create = false): ConversationViewState | und
       toolOpen: new Map(),
       toolFull: new Map(),
       fileOpen: new Map(),
-      processOpen: new Map(),
-      historyExpanded: false
+      processOpen: new Map()
     }
     conversations.set(threadId, state)
   }
@@ -38,7 +37,7 @@ function prune(threadId: string, state: ConversationViewState): void {
     state.toolFull.size === 0 &&
     state.fileOpen.size === 0 &&
     state.processOpen.size === 0 &&
-    !state.historyExpanded
+    state.historyFirstVisibleTurn === undefined
   ) {
     conversations.delete(threadId)
   }
@@ -95,18 +94,15 @@ export function writeProcessOpen(
   prune(threadId, state)
 }
 
-export function readHistoryExpanded(threadId: string): boolean {
-  return stateFor(threadId)?.historyExpanded ?? false
+export function readHistoryFirstVisibleTurn(threadId: string): number | undefined {
+  return stateFor(threadId)?.historyFirstVisibleTurn
 }
 
-export function writeHistoryExpanded(threadId: string, expanded: boolean): void {
-  if (expanded) {
-    stateFor(threadId, true)!.historyExpanded = true
-    return
-  }
-  const state = stateFor(threadId)
+export function writeHistoryFirstVisibleTurn(threadId: string, firstVisibleTurn: number | undefined): void {
+  const state = stateFor(threadId, firstVisibleTurn !== undefined)
   if (!state) return
-  state.historyExpanded = false
+  if (firstVisibleTurn === undefined) delete state.historyFirstVisibleTurn
+  else state.historyFirstVisibleTurn = Math.max(0, Math.floor(firstVisibleTurn))
   prune(threadId, state)
 }
 
@@ -139,6 +135,10 @@ export function migrateViewState(from: string, to: string): void {
   for (const [id, value] of source.processOpen) {
     if (!target.processOpen.has(id)) target.processOpen.set(id, value)
   }
-  target.historyExpanded ||= source.historyExpanded
+  if (source.historyFirstVisibleTurn !== undefined) {
+    target.historyFirstVisibleTurn = target.historyFirstVisibleTurn === undefined
+      ? source.historyFirstVisibleTurn
+      : Math.min(target.historyFirstVisibleTurn, source.historyFirstVisibleTurn)
+  }
   conversations.delete(from)
 }

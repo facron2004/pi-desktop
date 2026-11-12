@@ -97,9 +97,12 @@ export function ContextPanel({ close }: { close: () => void }) {
   const runCompact = async () => {
     setBusy(true)
     try {
-      await compact(instructions)
-      setInstructions('')
-      close()
+      // A failure leaves the panel open so the reader can retry with the
+      // same instructions; the thread banner explains what Pi answered.
+      if (await compact(instructions)) {
+        setInstructions('')
+        close()
+      }
     } finally {
       setBusy(false)
     }

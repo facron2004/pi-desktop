@@ -15,7 +15,7 @@ import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
 import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition } from '../lib/scroll-memory'
 import { readSessionTiming, userTimingDuration } from '../lib/session-timing'
-import { readHistoryExpanded, readProcessOpen, writeHistoryExpanded, writeProcessOpen } from '../lib/view-state'
+import { readHistoryFirstVisibleTurn, readProcessOpen, writeHistoryFirstVisibleTurn, writeProcessOpen } from '../lib/view-state'
 import { keysFor, matchesShortcut } from '../lib/shortcuts'
 import { SearchContext, useSearchQuery } from '../lib/search-context'
 import { NoticeMessage, UserMessage } from './MessageItem'
@@ -37,6 +37,7 @@ import '../styles/conversation-stream.css'
 
 const VISIBLE_RECENT_TURNS = 3
 const MIN_HIDDEN_MESSAGES = 12
+const HISTORY_PAGE_TURNS = 20
 const SEARCH_INDEX_REFRESH_MS = 120
 const MAX_SEARCH_HITS = 50
 type SessionTurn = Turn & { user: UserItem }
@@ -239,9 +240,7 @@ export function Thread() {
   /** One active-turn measurement per frame, not one per scroll event. */
   const activeSyncFrameRef = useRef(0)
   const [scrolledTurnId, setScrolledTurnId] = useState<string | null>(null)
-  const [expandedHistorySession, setExpandedHistorySession] = useState<string | null>(() =>
-    readHistoryExpanded(sessionKey) ? sessionKey : null
-  )
+  const [, setHistoryViewVersion] = useState(0)
   const pendingTurnJumpRef = useRef<string | null>(null)
   const { copied, copy } = useCopy()
 
@@ -315,43 +314,52 @@ export function Thread() {
     }
     setScrolledTurnId(activeTurn?.dataset.turn ?? null)
   }, [])
-  const historySessionKey = sessionKey
-  const historyExpanded = expandedHistorySession === historySessionKey
-  const expandHistory = useCallback(() => {
-    writeHistoryExpanded(sessionKey, true)
-    setExpandedHistorySession(sessionKey)
-  }, [sessionKey])
-  useEffect(() => {
-    setExpandedHistorySession(readHistoryExpanded(sessionKey) ? sessionKey : null)
-  }, [sessionKey])
   const hiddenTurnCount = Math.max(0, turns.length - VISIBLE_RECENT_TURNS)
   const hiddenMessageCountRef = useRef<{
     sessionKey: string
-    hiddenTurnCount: number
+    firstHiddenTurn: number
     turns: Turn[]
     count: number
   } | null>(null)
-  const hiddenMessageCountCache = hiddenMessageCountRef.current
-  let hiddenMessageCount: number
-  if (
-    hiddenMessageCountCache &&
-    hiddenMessageCountCache.sessionKey === sessionKey &&
-    hiddenMessageCountCache.hiddenTurnCount === hiddenTurnCount &&
-    (hiddenMessageCountCache.turns === turns ||
-      hiddenTurnCount === 0 ||
-      (changedTurnsFrom(turns, hiddenMessageCountCache.turns) ?? -1) >= hiddenTurnCount)
-  ) {
-    hiddenMessageCount = hiddenMessageCountCache.count
-    hiddenMessageCountCache.turns = turns
-  } else {
-    hiddenMessageCount = turns
-      .slice(0, hiddenTurnCount)
-      .reduce((count, turn) => count + Number(Boolean(turn.user)) + turn.assistants.length, 0)
-    hiddenMessageCountRef.current = { sessionKey, hiddenTurnCount, turns, count: hiddenMessageCount }
+  const messagesBeforeTurn = (firstHiddenTurn: number): number => {
+    const cached = hiddenMessageCountRef.current
+    if (
+      cached &&
+      cached.sessionKey === sessionKey &&
+      cached.firstHiddenTurn === firstHiddenTurn &&
+      (cached.turns === turns || firstHiddenTurn === 0 ||
+        (changedTurnsFrom(turns, cached.turns) ?? -1) >= firstHiddenTurn)
+    ) {
+      cached.turns = turns
+      return cached.count
+    }
+    const count = turns
+      .slice(0, firstHiddenTurn)
+      .reduce((total, turn) => total + Number(Boolean(turn.user)) + turn.assistants.length, 0)
+    hiddenMessageCountRef.current = { sessionKey, firstHiddenTurn, turns, count }
+    return count
   }
-  const historyCollapsed = !historyExpanded && hiddenMessageCount >= MIN_HIDDEN_MESSAGES
-  const firstVisibleTurn = historyCollapsed ? hiddenTurnCount : 0
+  const savedHistoryStart = readHistoryFirstVisibleTurn(sessionKey)
+  let firstVisibleTurn: number
+  if (savedHistoryStart === undefined) {
+    firstVisibleTurn = messagesBeforeTurn(hiddenTurnCount) >= MIN_HIDDEN_MESSAGES
+      ? hiddenTurnCount
+      : 0
+  } else {
+    firstVisibleTurn = Math.min(savedHistoryStart, hiddenTurnCount)
+  }
+  const historyCollapsed = firstVisibleTurn > 0
+  const hiddenMessageCount = historyCollapsed ? messagesBeforeTurn(firstVisibleTurn) : 0
   const visibleTurns = historyCollapsed ? turns.slice(firstVisibleTurn) : turns
+  const revealOlderHistory = useCallback(() => {
+    if (firstVisibleTurn === 0) return
+    writeHistoryFirstVisibleTurn(sessionKey, Math.max(0, firstVisibleTurn - HISTORY_PAGE_TURNS))
+    setHistoryViewVersion((version) => version + 1)
+  }, [firstVisibleTurn, sessionKey])
+  const expandHistory = useCallback(() => {
+    writeHistoryFirstVisibleTurn(sessionKey, 0)
+    setHistoryViewVersion((version) => version + 1)
+  }, [sessionKey])
   const visibleUserCount = firstVisibleTurn > 0
     ? visibleTurns.reduce((count, turn) => count + Number(Boolean(turn.user)), 0)
     : userMetadata.userCount
@@ -995,7 +1003,7 @@ export function Thread() {
               type="button"
               aria-expanded={false}
               aria-label={t(`Up ${hiddenMessageCount} messages`)}
-              onClick={expandHistory}
+              onClick={revealOlderHistory}
             >
               <span>{t(`Up ${hiddenMessageCount} messages`)}</span>
               <ChevronRight size={15} strokeWidth={1.6} />

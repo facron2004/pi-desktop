@@ -531,6 +531,18 @@ const zhCN: Record<string, string> = {
   'Show the MCP servers configured for this project': '显示此项目配置的 MCP 服务器',
   'Copy the last answer to the clipboard': '复制上一条回复到剪贴板',
   'Browse the project files': '浏览项目文件',
+  App: '应用',
+  Extension: '扩展',
+  'Context compaction timed out. Check the model connection and try again.':
+    '上下文压缩等待超时，请检查模型服务连接后重试。',
+  'Context compaction failed. Check the model connection and try again.':
+    '上下文压缩失败，请检查模型服务连接后重试。',
+  'There is no earlier history to compress yet.': '当前对话还没有可压缩的历史记录。',
+  'This conversation has already been compressed.': '这段对话刚刚压缩过，暂无更早的历史可再压缩。',
+  'Context compaction was cancelled.': '上下文压缩已取消。',
+  'Nothing to compact (session too small)': '对话太短，没有可压缩的历史记录',
+  'Already compacted': '刚刚已经压缩过',
+  'Compaction cancelled': '压缩已取消',
   Files: '文件',
   Compact: '压缩上下文',
   'Summarise the conversation to free up the context window': '总结对话以释放上下文窗口',
@@ -681,6 +693,7 @@ const zhCN: Record<string, string> = {
     '进入计划模式：只读探索后提交计划审批',
   'Set a goal this conversation keeps working toward': '为当前会话设置一个持续推进的目标',
   'Switch to Subagent Mode — delegate independent work': '切换到子代理模式：委托独立任务',
+  'Switch to Plugin Mode — build or modify a Pi extension': '切换到插件模式：构建或修改 Pi 扩展',
   Goal: '目标',
   Pause: '暂停',
   Resume: '恢复',
@@ -1691,6 +1704,38 @@ export function translate(text: string, language: AppLanguage): string {
     if (text === 'Period Month') return 'This month'
     if (text === 'Period All') return 'All time'
     return text
+  }
+  const compacting = /^Compacting context \((manual|threshold|overflow)\)…$/.exec(text)
+  if (compacting) {
+    const reasons: Record<string, string> = {
+      manual: '手动',
+      threshold: '达到阈值',
+      overflow: '上下文超出限制'
+    }
+    return `正在压缩上下文（${reasons[compacting[1]]}）…`
+  }
+  if (/Timed out waiting for ["']compact["'] response/i.test(text)) {
+    return '等待上下文压缩结果超时，请检查模型服务连接后重试。'
+  }
+  if (text === 'Compaction aborted') return '上下文压缩已取消'
+  // Both the transcript notice and the thread banner carry Pi's real reason.
+  // Keep it: a provider 429 or "Nothing to compact" is not a dead connection.
+  const compactionFailure = /^Context compaction failed:\s*(.+)$/s.exec(text)
+  if (compactionFailure) {
+    return `上下文压缩失败：${translate(compactionFailure[1].trim(), language)}`
+  }
+  const noticeFailure = /^Compaction failed(?::\s*(.*))?$/s.exec(text)
+  if (noticeFailure) {
+    const detail = noticeFailure[1]?.trim()
+    return detail
+      ? `上下文压缩失败：${translate(detail, language)}`
+      : '上下文压缩失败，请检查模型服务连接后重试。'
+  }
+  const compacted = /^Context compacted(?: \((\d+) → ~(\d+) tokens\))?$/.exec(text)
+  if (compacted) {
+    return compacted[1]
+      ? `上下文已压缩（压缩前 ${compacted[1]} 个 Token，压缩后约 ${compacted[2]} 个 Token）`
+      : '上下文已压缩'
   }
   const exported = /^Exported (.+)$/.exec(text)
   if (exported) return `已导出 ${exported[1]}`

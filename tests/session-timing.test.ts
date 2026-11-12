@@ -106,7 +106,7 @@ test('pre-v4 timing records drop duration samples measured against the wall cloc
 
     recordModelDuration(sessionKey, 'newTurn', 800)
     const saved = JSON.parse(store.getItem(storageKey)!) as Record<string, unknown>
-    assert.equal(saved.modelTimingVersion, 9)
+    assert.equal(saved.modelTimingVersion, 10)
     assert.equal(saved.legacyModelDurationsMs, undefined)
     assert.deepEqual(readSessionTiming(sessionKey).modelDurationsMs, {
       keptTurn: 1_200,
@@ -140,7 +140,47 @@ test('v6 TTFT samples are dropped while other monotonic timings survive migratio
     })
     recordTtftDuration(sessionKey, 'run2', 250)
     assert.deepEqual(JSON.parse(store.getItem(storageKey)!).ttftDurationsMs, { run2: 250 })
-    assert.equal(JSON.parse(store.getItem(storageKey)!).modelTimingVersion, 9)
+    assert.equal(JSON.parse(store.getItem(storageKey)!).modelTimingVersion, 10)
+  } finally {
+    forgetSessionTiming(sessionKey)
+    restore()
+  }
+})
+
+test('v9 TTFT samples are dropped from the snapshot and the journal', () => {
+  const restore = installStorage()
+  const sessionKey = 'C:/sessions/v9-ttft.jsonl'
+  const storageKey = `pi-desktop:session-timing:v1:${encodeURIComponent(sessionKey)}`
+  try {
+    const store = (globalThis as unknown as { window: { localStorage: Storage } }).window.localStorage
+    store.setItem(storageKey, JSON.stringify({
+      modelTimingVersion: 9,
+      modelDurationsMs: { turn1: 900 },
+      ttftDurationsMs: { staleRun: 269_388 }
+    }))
+    store.setItem(`${storageKey}:journal:count`, '2')
+    store.setItem(`${storageKey}:journal:0`, JSON.stringify({
+      field: 'ttftDurationsMs', id: 'run-2', duration: 549_650
+    }))
+    store.setItem(`${storageKey}:journal:1`, JSON.stringify({
+      field: 'toolDurationsMs', id: 'call-1', duration: 1_200
+    }))
+
+    assert.deepEqual(readSessionTiming(sessionKey), {
+      modelDurationsMs: { turn1: 900 },
+      ttftDurationsMs: {},
+      toolDurationsMs: { 'call-1': 1_200 },
+      runDurationsMs: {},
+      generationWindowMs: {}
+    })
+
+    recordTtftDuration(sessionKey, 'run-3', 320)
+    const saved = JSON.parse(store.getItem(storageKey)!)
+    assert.equal(saved.modelTimingVersion, 10)
+    assert.deepEqual(saved.ttftDurationsMs, { 'run-3': 320 })
+    assert.equal(saved.modelDurationsMs.turn1, 900, 'the v9 journal is folded before upgrade')
+    assert.equal(store.getItem(`${storageKey}:journal:0`), null)
+    assert.equal(store.getItem(`${storageKey}:journal:count`), null)
   } finally {
     forgetSessionTiming(sessionKey)
     restore()
@@ -231,7 +271,7 @@ test('new timing samples append without rewriting the full session snapshot', ()
       'turn-2': 1_400
     })
     recordModelDuration(sessionKey, 'turn-3', 1_600)
-    assert.equal(JSON.parse(store.getItem(storageKey)!).modelTimingVersion, 9)
+    assert.equal(JSON.parse(store.getItem(storageKey)!).modelTimingVersion, 10)
     assert.equal(store.getItem(`${storageKey}:sample:modelDurationsMs:turn-2`), null)
     assert.deepEqual(readSessionTiming(sessionKey).modelDurationsMs, {
       'turn-1': 1_200,

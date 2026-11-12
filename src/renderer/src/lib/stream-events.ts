@@ -24,6 +24,7 @@ import type {
   PiEvent
 } from '@shared/types'
 import { isRateLimitError } from './provider-error'
+import { describeCompactionFailure } from './compaction-error'
 
 /* ------------------------------------------------------------------ *
  * Identity
@@ -362,7 +363,11 @@ function noticeTextForRetryStart(event: PiEvent): string {
 function noticeTextForCompactionEnd(event: PiEvent): { level: StreamNoticeLevel; text: string } {
   if (Boolean(event.aborted)) return { level: 'warn', text: 'Compaction aborted' }
   if (event.errorMessage) {
-    return { level: 'error', text: `Compaction failed: ${String(event.errorMessage)}` }
+    // Pi's own errorMessage is already prefixed ("Compaction failed: …" or
+    // "Auto-compaction failed: …"). Classify it instead of stacking another
+    // prefix, and keep the provider's detail so the reader can act on it.
+    const failure = describeCompactionFailure(String(event.errorMessage))
+    return { level: failure.benign ? 'warn' : 'error', text: failure.message }
   }
   const result = event.result as { tokensBefore?: number; estimatedTokensAfter?: number } | undefined
   const before = result?.tokensBefore

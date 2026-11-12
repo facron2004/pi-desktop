@@ -43,7 +43,7 @@ export function ThreadErrorBanner({ message, onDismiss }: ThreadErrorBannerProps
     <div className="thread-error-banner" role="alert">
       <div className="thread-error-banner__content">
         <CircleAlert size={16} className="thread-error-banner__icon" />
-        <span className="thread-error-banner__text">{message}</span>
+        <span className="thread-error-banner__text">{t(message)}</span>
       </div>
       {onDismiss ? (
         <button

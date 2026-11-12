@@ -11,7 +11,7 @@ export interface SessionTimingRecord {
 }
 
 const STORAGE_PREFIX = 'pi-desktop:session-timing:v1:'
-const MODEL_TIMING_VERSION = 9
+const MODEL_TIMING_VERSION = 10
 const MAX_JOURNAL_SAMPLES = 128
 const SAMPLE_MARKER = ':sample:'
 const JOURNAL_MARKER = ':journal:'
@@ -90,14 +90,6 @@ function compactJournal(store: Storage, key: string, record: SessionTimingRecord
     store.removeItem(journalSampleKey(key, index))
   }
   store.removeItem(journalCountKey(key))
-}
-
-function removeLegacySampleRecords(store: Storage, key: string): void {
-  const prefix = legacySamplePrefix(key)
-  for (let index = store.length - 1; index >= 0; index -= 1) {
-    const candidate = store.key(index)
-    if (candidate?.startsWith(prefix)) store.removeItem(candidate)
-  }
 }
 
 function removeSampleRecords(store: Storage, key: string): void {
@@ -209,11 +201,14 @@ function recordOf(value: unknown): SessionTimingRecord {
   // Versions 5 and 6 measure turn/request timing to the first content delta.
   // Version 7 measures run-start to first text, so older samples are dropped.
   // Versions 8 and 9 keep the same measurements; v8 used enumerated keys and
-  // v9 uses a per-session indexed journal.
+  // v9 uses a per-session indexed journal. Versions 7-9 still started the
+  // clock at agent_start, so a run's tool calls and retries ended up inside
+  // its TTFT (4m29s for a first token). Version 10 measures one model request
+  // at a time, so every pre-v10 TTFT sample is dropped as untrustworthy.
   const version = typeof raw.modelTimingVersion === 'number' ? raw.modelTimingVersion : 1
   return {
     modelDurationsMs: version >= 2 ? durationsOf(raw.modelDurationsMs) : {},
-    ttftDurationsMs: version >= 7 ? durationsOf(raw.ttftDurationsMs) : {},
+    ttftDurationsMs: version >= 10 ? durationsOf(raw.ttftDurationsMs) : {},
     toolDurationsMs: version >= 4 ? durationsOf(raw.toolDurationsMs) : {},
     runDurationsMs: version >= 4 ? durationsOf(raw.runDurationsMs) : {},
     generationWindowMs: version >= 4 ? durationsOf(raw.generationWindowMs) : {}
@@ -235,8 +230,11 @@ function readStoredRecord(store: Storage, key: string, raw: string | null): Sess
   if (!raw) return record
   try {
     const version = storedVersion(raw)
-    if (version >= MODEL_TIMING_VERSION) readJournalSamples(store, key, record)
+    // v9 already wrote the indexed journal, so its samples have to be folded
+    // into the snapshot before they can be discarded with the upgrade.
+    if (version >= 9) readJournalSamples(store, key, record)
     else if (version >= 8) readLegacySamples(store, key, record)
+    if (version < MODEL_TIMING_VERSION) record.ttftDurationsMs = {}
   } catch {
     // A readable snapshot remains useful if the browser cannot enumerate keys.
   }
@@ -284,8 +282,10 @@ function recordDuration(
     if (version < MODEL_TIMING_VERSION) {
       // Fold legacy samples into the snapshot once. Later samples use the
       // indexed journal so recording a duration does not rewrite history.
+      // The v9 journal is folded too, then removed: its TTFT entries are the
+      // run-level readings version 10 replaces.
       writeRecord(store, key, record)
-      if (version >= 8) removeLegacySampleRecords(store, key)
+      if (version >= 8) removeSampleRecords(store, key)
       memoryVersions.set(sessionKey, MODEL_TIMING_VERSION)
     } else {
       const countKey = journalCountKey(key)

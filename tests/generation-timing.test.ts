@@ -22,7 +22,9 @@ function fixture() {
   }
 }
 
-test('run TTFT includes preparation and hidden blocks, stopping at the first text delta', () => {
+const text = (delta = 'Hello') => ({ assistantMessageEvent: { type: 'text_delta', delta } })
+
+test('TTFT starts at the model request, not at agent_start', () => {
   const f = fixture()
   f.emit('agent_start')
   f.at(26_000)
@@ -32,41 +34,66 @@ test('run TTFT includes preparation and hidden blocks, stopping at the first tex
   f.at(26_250)
   f.emit('message_update', { assistantMessageEvent: { type: 'toolcall_delta', delta: '{' } })
   assert.deepEqual(f.samples, [])
-  f.at(526_000)
-  f.emit('message_update', { assistantMessageEvent: { type: 'text_delta', delta: 'Final answer' } })
-  assert.deepEqual(f.samples, [526_000])
+  f.at(26_500)
+  f.emit('message_update', text('Final answer'))
+  assert.deepEqual(f.samples, [500])
 })
 
-test('a slow prompt remains a 26.5-second TTFT sample', () => {
+test('turn_start is the fallback when a transport has no provider hook', () => {
   const f = fixture()
   f.emit('agent_start')
+  f.emit('turn_start')
   f.at(26_500)
-  f.emit('message_update', { assistantMessageEvent: { type: 'text_delta', delta: 'Hello' } })
+  f.emit('message_update', text())
   assert.deepEqual(f.samples, [26_500])
 })
 
-test('tool calls and retries stay inside one prompt TTFT window until its first text', () => {
+test('tool execution and retry backoff between turns stay out of TTFT', () => {
   const f = fixture()
   f.emit('agent_start')
+  f.emit('turn_start')
   f.at(400)
   f.emit('message_update', { assistantMessageEvent: { type: 'toolcall_delta', delta: '{' } })
   f.emit('turn_end')
-  f.at(60_000)
+  // Four minutes of tool work and retry backoff happen between the requests.
+  f.at(240_000)
   f.emit('turn_start')
-  f.at(60_300)
-  f.emit('message_update', { assistantMessageEvent: { type: 'text_delta', delta: 'Retried' } })
-  assert.deepEqual(f.samples, [60_300])
+  f.emit('before_provider_request')
+  f.at(240_300)
+  f.emit('message_update', text('Retried'))
+  assert.deepEqual(f.samples, [300])
 })
 
-test('no text before settle or outside a run creates a timing sample', () => {
+test('a stalled request is dropped and a later request can still be measured', () => {
   const f = fixture()
-  f.emit('before_provider_request')
   f.emit('agent_start')
-  f.at(26_500)
-  f.emit('message_update', { assistantMessageEvent: { type: 'thinking_delta', delta: 'Hidden' } })
-  f.emit('agent_end')
-  f.emit('agent_settled')
   f.emit('before_provider_request')
-  f.emit('message_update', { assistantMessageEvent: { type: 'text_delta', delta: 'Late' } })
+  f.at(180_000)
+  f.emit('message_update', text('Very late'))
   assert.deepEqual(f.samples, [])
+  f.at(181_000)
+  f.emit('before_provider_request')
+  f.at(181_500)
+  f.emit('message_update', text('Next answer'))
+  assert.deepEqual(f.samples, [500])
+})
+
+test('one sample per run, and nothing outside a run', () => {
+  const f = fixture()
+  f.emit('agent_start')
+  f.emit('before_provider_request')
+  f.at(1_200)
+  f.emit('message_update', text('First'))
+  f.at(1_400)
+  f.emit('message_update', text('Still streaming'))
+  assert.deepEqual(f.samples, [1_200])
+  f.emit('agent_settled')
+  f.at(2_000)
+  f.emit('message_update', text('Late'))
+  assert.deepEqual(f.samples, [1_200])
+  f.emit('agent_start')
+  f.emit('before_provider_request')
+  f.at(2_300)
+  f.emit('message_update', text('New run'))
+  assert.deepEqual(f.samples, [1_200, 300])
 })

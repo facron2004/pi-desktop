@@ -19,6 +19,30 @@
 /* MCode's code face. The reference app bundles JetBrains Mono and selects it
    in Appearance; the same OFL files live here so code, diffs and the terminal
    render with the same glyphs instead of falling through to Consolas. */
+/* Keep Chinese glyphs out of Windows' default serif fallback while letting
+   Latin text continue to use the selected UI or code face. */
+@font-face {
+  font-family: 'Pi Desktop CJK';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local('Microsoft YaHei UI'), local('Microsoft YaHei'), local('PingFang SC Regular'), local('PingFang SC');
+  unicode-range: U+2000-206F, U+2E80-2EFF, U+3000-303F, U+31C0-31EF, U+3200-32FF, U+3300-33FF,
+    U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF, U+20000-2FA1F, U+30000-3134F;
+}
+
+@font-face {
+  font-family: 'Pi Desktop CJK';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src:
+    local('Microsoft YaHei UI Bold'), local('Microsoft YaHei Bold'), local('PingFang SC Bold'), local('PingFang SC');
+  unicode-range: U+2000-206F, U+2E80-2EFF, U+3000-303F, U+31C0-31EF, U+3200-32FF, U+3300-33FF,
+    U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF, U+20000-2FA1F, U+30000-3134F;
+}
+
 @font-face {
   font-family: 'JetBrains Mono';
   font-style: normal;
@@ -187,12 +211,10 @@
      registered in App) because this Windows image has the font file but no
      usable registry entry for it. The rest of the stack keeps the UI type. */
   --font-emoji: 'Pi Desktop Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Emoji';
-  /* MCode's system typography recipe. Leaving the CJK fallback to the generic
-     sans-serif family is what resolves Chinese to Noto Sans SC in MCode; an
-     explicit Microsoft YaHei family would change every Chinese glyph. */
-  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', var(--font-emoji), sans-serif;
+  --font-cjk: 'Pi Desktop CJK';
+  --font-ui: var(--font-cjk), -apple-system, BlinkMacSystemFont, 'Segoe UI', var(--font-emoji), sans-serif;
   --font-reading: var(--font-ui);
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Consolas,
+  --font-mono: var(--font-cjk), 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Consolas,
     'Liberation Mono', var(--font-emoji), monospace;
   --font-sidebar: var(--font-ui);
   --font-weight-ui: 430;

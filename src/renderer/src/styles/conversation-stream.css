@@ -20,6 +20,12 @@
   color: var(--text-muted);
 }
 
+.run-status[data-compacting='true'] {
+  width: 100%;
+  margin-inline: auto;
+  justify-content: center;
+}
+
 .run-status__icon {
   display: grid;
   place-items: center;
