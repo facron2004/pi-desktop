@@ -49,7 +49,9 @@
 
 .sidebar-tip__row {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr);
+  /* Wide enough for the longest label ("Conversations"); the labels are a
+     column, so they cannot wrap and cannot overlap their values. */
+  grid-template-columns: 84px minmax(0, 1fr);
   align-items: start;
   gap: var(--sp-2);
 }
@@ -60,6 +62,8 @@
   color: var(--sidebar-muted);
   /* The label is a column, so the values line up under each other. */
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-tip__value {

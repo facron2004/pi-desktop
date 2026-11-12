@@ -46,6 +46,29 @@ interface TipState<T> {
 }
 
 /**
+ * When the pointer last pressed something, anywhere in the window.
+ *
+ * A click focuses the button it lands on, so the row's `focus` handler fires
+ * for a mouse too. The card must answer "what is this row" for the keyboard,
+ * not stay open because someone clicked a conversation — so a focus that
+ * arrives right after a press is ignored. `:focus-visible` would be the
+ * idiomatic test, but it reports a heuristic rather than the actual input that
+ * caused the focus, and it is false for a programmatic focus.
+ */
+let lastPointerDownAt = 0
+const POINTER_FOCUS_WINDOW_MS = 600
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(
+    'pointerdown',
+    () => {
+      lastPointerDownAt = Date.now()
+    },
+    true
+  )
+}
+
+/**
  * Owns the "is the pointer resting on this row" state for a list of rows.
  *
  * One instance serves every row of a list 鈥?only one can be hovered 鈥?so the
@@ -95,6 +118,12 @@ export function useHoverTip<T>(): {
   const enter = useCallback(
     (payload: T) => (event: ReactMouseEvent<HTMLElement> | ReactFocusEvent<HTMLElement>) => {
       stopClose()
+      // A mouse click focuses the button too. The card must answer "what is
+      // this row" for the keyboard, not pop up and stay up because someone
+      // clicked a conversation.
+      if (event.type === 'focus' && Date.now() - lastPointerDownAt < POINTER_FOCUS_WINDOW_MS) {
+        return
+      }
       pending.current = payload
       // The described element is the whole row, not the button that happened
       // to be hit: the card is placed past the row's action slot so it lands

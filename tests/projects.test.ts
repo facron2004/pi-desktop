@@ -118,3 +118,24 @@ test('a project missing from projectOrder joins at the end', () => {
     ['beta', 'alpha']
   )
 })
+
+test('a project keeps its registered start date and falls back to its oldest conversation', () => {
+  const sessions = [
+    { id: 'a', file: 'a.jsonl', cwd: 'C:/alpha', preview: 'a', createdAt: 500, updatedAt: 900, messageCount: 1 },
+    { id: 'b', file: 'b.jsonl', cwd: 'C:/beta', preview: 'b', updatedAt: 200, messageCount: 1 }
+  ]
+
+  const [alpha, beta] = collectProjects(
+    // A folder registered before the field existed has no date of its own.
+    [{ id: 'alpha', path: 'C:/alpha', name: 'alpha', lastOpenedAt: 10 }],
+    sessions
+  )
+  assert.equal(alpha.createdAt, 500, 'A registered project falls back to its oldest conversation')
+  assert.equal(beta.createdAt, 200, 'A conversation with no start date falls back to its last activity')
+
+  const [dated] = collectProjects(
+    [{ id: 'alpha', path: 'C:/alpha', name: 'alpha', lastOpenedAt: 10, createdAt: 100 }],
+    sessions
+  )
+  assert.equal(dated.createdAt, 100, 'The registered date outranks the conversations')
+})

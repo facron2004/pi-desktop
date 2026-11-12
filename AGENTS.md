@@ -275,9 +275,13 @@ it off and the card never covers the row it describes. `useHoverTip` owns the
 row's own button — never on a wrapper element, because the rows are laid out to
 the pixel and a wrapper would move the title. The delay before it appears and
 the grace period after the pointer leaves are both there so moving across the
-list to click something does not flash a card; keyboard focus shows it at once.
-One card exists at a time, so it has one fixed id (`SIDEBAR_TIP_ID`) and the
-described row carries `aria-describedby` only while the card is up.
+list to click something does not flash a card. A `focus` event opens it only
+when it did not follow a pointer press: a click focuses the button too, and a
+card that popped up on every click would stay over the list. Do not test
+`:focus-visible` for that — it is a heuristic, and it is false for a
+programmatic focus. One card exists at a time, so it has one fixed id
+(`SIDEBAR_TIP_ID`) and the described row carries `aria-describedby` only while
+the card is up.
 
 The card answers "when" and "where": `Created` is the moment the row joined the
 list, `Conversations` its count, `Path` the folder. A project has no start date

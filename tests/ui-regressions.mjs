@@ -1009,6 +1009,66 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   )
   passed.push('the usage line shares one height and centre on the composer axis')
 
+  // A sidebar row explains itself in a card, not in the native tooltip: the
+  // card carries a label column and the details the row cannot show, and it
+  // sits beside the row instead of covering it.
+  const hoveredSession = await until(
+    () => [...document.querySelectorAll('.session-item')].find((row) =>
+      row.querySelector('.session-item__title')?.textContent?.trim()
+    ),
+    'No conversation row rendered for the hover card'
+  )
+  const hoveredMain = hoveredSession.querySelector('.session-item__main')
+  check(!hoveredMain.getAttribute('title'), 'A conversation row still uses the native title tooltip')
+  // `focusin` is what React's `onFocus` is delegated from; a bare `focus`
+  // event does not bubble and never reaches the handler.
+  hoveredMain.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+  const sessionTip = await until(() => document.querySelector('.sidebar-tip'), 'The conversation hover card did not open')
+  const sessionLabels = [...sessionTip.querySelectorAll('.sidebar-tip__label')].map((node) => node.textContent)
+  check(
+    ['Created', 'Path', 'Status'].every((label) => sessionLabels.includes(label)),
+    `The conversation card is missing a row: ${sessionLabels.join(', ')}`
+  )
+  const sessionTipBox = sessionTip.getBoundingClientRect()
+  const hoveredBox = hoveredSession.getBoundingClientRect()
+  check(sessionTipBox.width > 0 && sessionTipBox.height > 0, 'The conversation hover card has no size')
+  check(
+    sessionTipBox.left >= hoveredBox.right - 1 || sessionTipBox.right <= hoveredBox.left + 1,
+    'The conversation hover card covers the row it describes'
+  )
+  check(
+    sessionTipBox.right <= innerWidth + 1 && sessionTipBox.bottom <= innerHeight + 1,
+    'The conversation hover card runs outside the window'
+  )
+  // The path wraps instead of being clipped: a half path answers nothing.
+  const pathValue = [...sessionTip.querySelectorAll('.sidebar-tip__value')]
+    .find((node) => node.dataset.path === 'true')
+  check(
+    pathValue && pathValue.scrollWidth <= pathValue.clientWidth + 1,
+    'The conversation card clips its path instead of wrapping it'
+  )
+  hoveredMain.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+  await pause(200)
+
+  const hoveredProject = await until(
+    () => document.querySelector('.project__main'),
+    'No project row rendered for the hover card'
+  )
+  check(!hoveredProject.getAttribute('title'), 'A project row still uses the native title tooltip')
+  hoveredProject.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+  const projectTip = await until(
+    () => document.querySelector('.sidebar-tip'),
+    'The project hover card did not open'
+  )
+  const projectLabels = [...projectTip.querySelectorAll('.sidebar-tip__label')].map((node) => node.textContent)
+  check(
+    ['Created', 'Conversations', 'Path'].every((label) => projectLabels.includes(label)),
+    `The project card is missing a row: ${projectLabels.join(', ')}`
+  )
+  hoveredProject.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+  await pause(200)
+  passed.push('sidebar rows explain themselves in a card instead of a native tooltip')
+
   // Leave the environment section folded in the harness screenshot so the
   // collapsed state remains visible for visual review.
   const finalEnvironmentToggle = [...document.querySelectorAll('.task-panel__section')]
@@ -1047,7 +1107,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 20 : 19)
+  assert.equal(passed.length, process.platform === 'win32' ? 21 : 20)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')
