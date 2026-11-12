@@ -91,7 +91,13 @@ export function dedupeWorkspaces(workspaces: unknown): Workspace[] {
       name,
       lastOpenedAt: typeof item.lastOpenedAt === 'number' && Number.isFinite(item.lastOpenedAt)
         ? item.lastOpenedAt
-        : 0
+        : 0,
+      // A folder registered before this field existed has no start date; leave
+      // it absent so the sidebar can fall back to its oldest conversation
+      // instead of showing "added just now" for an old project.
+      ...(typeof item.createdAt === 'number' && Number.isFinite(item.createdAt)
+        ? { createdAt: item.createdAt }
+        : {})
     }
     const key = workspaceKey(workspace.path)
     const existing = map.get(key)
@@ -510,7 +516,10 @@ export class SettingsStore {
       // put it. Only a folder that has never been added goes on the end.
       if (existing) return { activeWorkspaceId: existing.id }
       return {
-        workspaces: [...current.workspaces, workspace],
+        workspaces: [...current.workspaces, {
+          ...workspace,
+          createdAt: workspace.createdAt ?? workspace.lastOpenedAt ?? Date.now()
+        }],
         activeWorkspaceId: workspace.id
       }
     })

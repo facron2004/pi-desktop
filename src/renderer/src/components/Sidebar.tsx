@@ -26,13 +26,14 @@ import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from '@shared/types'
-import { formatRelativeTime } from '../lib/format'
+import { formatDateTime, formatRelativeTime } from '../lib/format'
 import { normalisePathKey, samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
 import { liveConversationRows, streamingProjectPaths, type ConversationRow } from '../lib/live-sessions'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Popover } from './Popover'
+import { SidebarTip, SIDEBAR_TIP_ID, useHoverTip, type SidebarTipRow } from './SidebarTip'
 import { PiLogo } from './PiLogo'
 import { ProjectIconPicker } from './ProjectIconPicker'
 import { projectIconColor, projectIconEmoji } from '../lib/project-icons'
@@ -46,6 +47,7 @@ import {
   useSessionSearch
 } from '../lib/session-search'
 import '../styles/session-search.css'
+import '../styles/sidebar-tip.css'
 import '../styles/sidebar-workspace.css'
 
 const MIN_WIDTH = 200
@@ -144,6 +146,8 @@ export function Sidebar({
   const [recentIndex, setRecentIndex] = useState(-1)
   const blurTimer = useRef<number | undefined>(undefined)
   const recentsRef = useRef<HTMLDivElement | null>(null)
+  // One card serves the whole project list: only one row can be hovered.
+  const projectTip = useHoverTip<SidebarTipRow[]>()
 
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus()
@@ -926,6 +930,16 @@ export function Sidebar({
                 const emoji = projectIconEmoji(project.icon)
                 const runningCollapsed =
                   !expanded && runningProjectKeys.has(normalisePathKey(project.path))
+                // Built once per row: the card is the same for the pointer and
+                // for the keyboard.
+                const projectTipRows: SidebarTipRow[] = [
+                  {
+                    label: t('Created'),
+                    value: formatDateTime(project.createdAt, settings.language) || '—'
+                  },
+                  { label: t('Conversations'), value: String(projectSessions.length) },
+                  { label: t('Path'), value: project.path, path: true }
+                ]
                 return (
                   <div
                     className="project"
@@ -942,10 +956,24 @@ export function Sidebar({
                     }
                   >
                     <div className="project__row">
+                      {projectTip.tip ? (
+                        <SidebarTip
+                          anchor={projectTip.tip.anchor}
+                          title={project.name}
+                          rows={projectTip.tip.payload}
+                        />
+                      ) : null}
                       <button
                         className="project__main"
                         type="button"
-                        title={project.path}
+                        // The card carries what the row cannot: when the folder
+                        // joined the list, how many conversations live in it,
+                        // and where it is.
+                        aria-describedby={projectTip.tip ? SIDEBAR_TIP_ID : undefined}
+                        onMouseEnter={projectTip.enter(projectTipRows)}
+                        onMouseLeave={projectTip.leave}
+                        onFocus={projectTip.enter(projectTipRows)}
+                        onBlur={projectTip.leave}
                         aria-expanded={expanded}
                         onPointerDown={(event) => onProjectPointerDown(project, event)}
                         onClick={() => {
@@ -1583,6 +1611,8 @@ const SessionRow = memo(function SessionRow({
 }: SessionRowProps) {
   const t = useT()
   const mainRef = useRef<HTMLButtonElement>(null)
+  const language = useAppStore((state) => state.settings.language ?? 'en')
+  const tip = useHoverTip<SidebarTipRow[]>()
   const focusMenuItem = useCallback((button: HTMLButtonElement | null) => {
     if (!button) return
     requestAnimationFrame(() => {
@@ -1590,6 +1620,28 @@ const SessionRow = memo(function SessionRow({
     })
   }, [])
   const title = session.name || session.preview || t('Untitled session')
+  // What the row cannot say in one line: when the conversation was started,
+  // where its file lives, and how it is doing right now.
+  const tipRows = useCallback((): SidebarTipRow[] => {
+    const status =
+      indicator === 'needs-input'
+        ? t('Waiting for your answer')
+        : indicator === 'error'
+          ? t('The last run failed')
+          : indicator === 'unread'
+            ? t('Unread')
+            : running
+              ? t('Running')
+              : t('Idle')
+    return [
+      { label: t('Created'), value: formatDateTime(session.createdAt, language) || '—' },
+      { label: t('Path'), value: session.file, path: true },
+      { label: t('Status'), value: status },
+      // A conversation pinned out of its project is the only row whose project
+      // is not obvious from its surroundings, so only that one names it.
+      ...(project ? [{ label: t('Project'), value: project }] : [])
+    ]
+  }, [indicator, language, project, running, session.createdAt, session.file, t])
   return (
     <div
       className="session-item"
@@ -1600,6 +1652,7 @@ const SessionRow = memo(function SessionRow({
       // worked on, and it has no file to rename, delete or pin.
       data-live={session.onDisk ? undefined : 'true'}
     >
+      {tip.tip ? <SidebarTip anchor={tip.tip.anchor} title={title} rows={tip.tip.payload} /> : null}
       {renaming ? (
         <input
           className="session-item__input"
@@ -1627,7 +1680,13 @@ const SessionRow = memo(function SessionRow({
           type="button"
           className="session-item__main"
           onClick={() => onSelect(session.file)}
-          title={project ? `${project} · ${title}` : title}
+          // The card replaces the native tooltip, which could only carry the
+          // name the row already shows.
+          aria-describedby={tip.tip ? SIDEBAR_TIP_ID : undefined}
+          onMouseEnter={tip.enter(tipRows())}
+          onMouseLeave={tip.leave}
+          onFocus={tip.enter(tipRows())}
+          onBlur={tip.leave}
           aria-current={active ? 'page' : undefined}
           aria-busy={running ? true : undefined}
         >

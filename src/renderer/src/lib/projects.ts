@@ -10,6 +10,11 @@ export interface Project<Session extends SessionMeta = SessionMeta> {
   /** True when the project is in the settings and can be removed from there. */
   registered: boolean
   lastOpenedAt: number
+  /**
+   * When the folder joined the list. A project known only from sessions has
+   * none, so a reader falls back to its oldest conversation.
+   */
+  createdAt?: number
   sessions: Session[]
   folders?: string[]
   /** Emoji the project wears instead of the folder icon. */
@@ -48,6 +53,7 @@ export function collectProjects<Session extends SessionMeta>(
       existing.registered = true
       existing.id = item.id || existing.id
       existing.lastOpenedAt = Math.max(existing.lastOpenedAt, item.lastOpenedAt || 0)
+      if (item.createdAt) existing.createdAt = Math.min(existing.createdAt ?? item.createdAt, item.createdAt)
       if (item.name && (!existing.name || existing.name === 'Unknown project')) {
         existing.name = basename(item.name)
       }
@@ -63,6 +69,7 @@ export function collectProjects<Session extends SessionMeta>(
         id: item.id,
         registered: true,
         lastOpenedAt: item.lastOpenedAt || 0,
+        createdAt: item.createdAt,
         sessions: [],
         folders: item.folders && item.folders.length > 0 ? [...item.folders] : [item.path],
         icon: item.icon,
@@ -88,6 +95,18 @@ export function collectProjects<Session extends SessionMeta>(
       map.set(key, project)
     }
     project.sessions.push(session)
+  }
+
+  // A folder that was never registered has no start date of its own; its
+  // oldest conversation is the honest stand-in, and better than an empty row.
+  for (const project of map.values()) {
+    if (project.createdAt) continue
+    let earliest = 0
+    for (const session of project.sessions) {
+      const at = session.createdAt || session.updatedAt
+      if (at && (!earliest || at < earliest)) earliest = at
+    }
+    if (earliest) project.createdAt = earliest
   }
 
   // `projectOrder` includes projects that are known only from sessions, so a

@@ -1,0 +1,79 @@
+/* The card a sidebar row shows while it is hovered or focused.
+
+   It replaces the native `title` tooltip: a row has more to say than one
+   string — when it started, where it lives, how it is doing — and that wants a
+   label column, not a wrapped line. The colours come from the app's own
+   tokens, so the card belongs to the window instead of to the OS theme. */
+
+.sidebar-tip {
+  position: fixed;
+  z-index: var(--z-floating);
+  /* Wide enough for a full project path on two lines, narrow enough to stay
+     beside a 280px sidebar without covering the conversation. */
+  width: max-content;
+  max-width: 320px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface-glass);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  box-shadow: var(--shadow-lg);
+  /* The card is placed next to the row and must not swallow the pointer: it
+     has no interactive content, so it never takes a click. */
+  pointer-events: none;
+  animation: pop var(--dur-fast) var(--ease);
+  /* The row it describes stays visible while the card is up. */
+  color: var(--text-primary);
+}
+
+.sidebar-tip__title {
+  font-size: var(--text-small);
+  font-weight: var(--font-weight-ui);
+  line-height: var(--leading-body);
+  /* A long conversation name is the one thing that may be cut: the rest of the
+     card is the answer, the title only says which row it is. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-bottom: var(--sp-2);
+  margin-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sidebar-tip__rows {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+}
+
+.sidebar-tip__row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--sp-2);
+}
+
+.sidebar-tip__label {
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  color: var(--sidebar-muted);
+  /* The label is a column, so the values line up under each other. */
+  white-space: nowrap;
+}
+
+.sidebar-tip__value {
+  margin: 0;
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+/* A path breaks at its separators rather than being clipped: the reader asked
+   where the file is, and half a path answers nothing. */
+.sidebar-tip__value[data-path='true'] {
+  font-family: var(--font-mono);
+  word-break: break-all;
+  color: var(--text-secondary);
+}

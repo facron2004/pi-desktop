@@ -1497,6 +1497,12 @@ const zhCN: Record<string, string> = {
   'Model distribution': '模型用量分布',
   'Recent daily trend': '近7天每日消耗趋势',
   Conversations: '对话数',
+  // The sidebar hover card's label column. `Created`, `Project` and `Running`
+  // already have entries elsewhere and must not be repeated here: an object
+  // literal cannot hold the same key twice.
+  Path: '路径',
+  Status: '状态',
+  Idle: '空闲',
   'Message turns': '消息轮次',
   Turns: '交互轮次',
   'Avg / conversation': '平均每场对话',

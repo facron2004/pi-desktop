@@ -261,15 +261,26 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     'Plan progress did not render in the task rail'
   )
   check(!document.querySelector('.status-strip, .plan-strip'), 'A status or plan strip returned above the composer')
+  // A desk page owns the content row: the tools panel closes with it, and the
+  // corner toggle is not drawn over the page's own header.
+  if (!document.querySelector('.tool-panel')) {
+    document.querySelector('.shell__panel-toggle button').click()
+    await until(() => document.querySelector('.tool-panel'), 'The tools panel did not open')
+  }
   document.querySelector('.sidebar__plugin-entry button').click()
   await until(() => document.querySelector('.desk-page'), 'Plugins desk page did not open')
-  check(!document.querySelector('.goal-bar, .widget, .task-rail'), 'Conversation controls remained underneath the desk page')
+  await until(() => !document.querySelector('.tool-panel'), 'The tools panel stayed open over the desk page')
+  check(
+    !document.querySelector('.goal-bar, .widget, .task-rail, .shell__panel-toggle'),
+    'Conversation controls remained underneath the desk page'
+  )
   document.querySelector('.sidebar__plugin-entry button').click()
   await until(() => !document.querySelector('.desk-page'), 'Plugins desk page did not close')
   await until(
     () => document.querySelector('.task-panel__check')?.textContent.includes('Inspect the extension status'),
     'Plan progress did not return with the conversation'
   )
+  check(document.querySelector('.shell__panel-toggle'), 'The tools-panel toggle did not come back with the conversation')
   check(!document.querySelector('.status-strip, .plan-strip'), 'A status or plan strip returned with the conversation')
   passed.push('plan progress stays in the task rail and leaves desk pages clear')
 

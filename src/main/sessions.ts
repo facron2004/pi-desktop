@@ -1338,6 +1338,10 @@ export async function parseLargeSessionMeta(
     cwd: sessionHeader.cwd ?? '',
     name,
     preview: preview.replace(/\s+/g, ' ').slice(0, 120),
+    // The header is the first line Pi writes and it is never rewritten, so its
+    // timestamp is the conversation's start. `updatedAt` cannot stand in for
+    // it: a resumed session moves that one forward on every message.
+    createdAt: Date.parse(sessionHeader.timestamp ?? '') || 0,
     updatedAt: Math.max(Date.parse(lastTimestamp) || 0, mtimeMs),
     messageCount,
     model
@@ -1485,6 +1489,7 @@ export async function parseSession(
     cwd: header.cwd ?? '',
     name,
     preview: preview.replace(/\s+/g, ' ').slice(0, 120),
+    createdAt: Date.parse(header.timestamp ?? '') || 0,
     updatedAt,
     messageCount,
     model

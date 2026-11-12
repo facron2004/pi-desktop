@@ -27,6 +27,7 @@ export function conversationPreview(thread: SessionThread): string {
 interface LiveThreadSummary {
   items: ThreadItem[]
   preview: string
+  earliestTimestamp: number
   latestTimestamp: number
   messageCount: number
 }
@@ -46,27 +47,34 @@ function summarizeThread(items: ThreadItem[], previous?: LiveThreadSummary): Liv
     changedThreadItemsFrom(items, previous.items) !== undefined
   ) {
     // Reducer replacements preserve kind and timestamp; only the appended tail changes these totals.
-    let { preview, latestTimestamp, messageCount } = previous
+    let { preview, earliestTimestamp, latestTimestamp, messageCount } = previous
     for (let index = previous.items.length; index < items.length; index += 1) {
       const item = items[index]
       if (!item) continue
-      if (typeof item.timestamp === 'number' && item.timestamp > latestTimestamp) {
-        latestTimestamp = item.timestamp
+      if (typeof item.timestamp === 'number') {
+        if (item.timestamp > latestTimestamp) latestTimestamp = item.timestamp
+        if (!earliestTimestamp || item.timestamp < earliestTimestamp) {
+          earliestTimestamp = item.timestamp
+        }
       }
       if (item.kind === 'user' || item.kind === 'assistant') messageCount += 1
       if (!preview && item.kind === 'user' && item.text.trim()) {
         preview = item.text.trim().replace(/\s+/g, ' ').slice(0, 120)
       }
     }
-    return { items, preview, latestTimestamp, messageCount }
+    return { items, preview, earliestTimestamp, latestTimestamp, messageCount }
   }
 
   let preview = ''
+  let earliestTimestamp = 0
   let latestTimestamp = 0
   let messageCount = 0
   for (const item of items) {
-    if (typeof item.timestamp === 'number' && item.timestamp > latestTimestamp) {
-      latestTimestamp = item.timestamp
+    if (typeof item.timestamp === 'number') {
+      if (item.timestamp > latestTimestamp) latestTimestamp = item.timestamp
+      if (!earliestTimestamp || item.timestamp < earliestTimestamp) {
+        earliestTimestamp = item.timestamp
+      }
     }
     if (item.kind === 'user' || item.kind === 'assistant') {
       messageCount += 1
@@ -75,7 +83,7 @@ function summarizeThread(items: ThreadItem[], previous?: LiveThreadSummary): Liv
       }
     }
   }
-  return { items, preview, latestTimestamp, messageCount }
+  return { items, preview, earliestTimestamp, latestTimestamp, messageCount }
 }
 
 /**
@@ -152,6 +160,9 @@ export function liveConversationRows(
     const summary = summarizeThread(thread.items, cached?.summary)
     const preview = summary.preview
     const updatedAt = summary.latestTimestamp || thread.run.startedAt || 0
+    // A conversation Pi has not written yet still has a start: its first
+    // stamped item, or the moment its run began when nothing has arrived.
+    const createdAt = summary.earliestTimestamp || thread.run.startedAt || 0
     const messageCount = summary.messageCount
     const model = thread.piState?.model ? `${thread.piState.model.provider}/${thread.piState.model.id}` : undefined
 
@@ -161,6 +172,7 @@ export function liveConversationRows(
       cached.row.cwd === cwd &&
       cached.row.name === name &&
       cached.row.preview === preview &&
+      cached.row.createdAt === createdAt &&
       cached.row.updatedAt === updatedAt &&
       cached.row.messageCount === messageCount &&
       cached.row.model === model
@@ -174,6 +186,7 @@ export function liveConversationRows(
         cwd,
         name,
         preview,
+        createdAt,
         updatedAt,
         messageCount,
         model,

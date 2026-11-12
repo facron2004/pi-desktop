@@ -32,6 +32,28 @@ export function formatClock(timestamp: number | undefined): string {
   })
 }
 
+/**
+ * A whole moment — date and time — for a card that answers "when".
+ *
+ * The conversation list already says how long ago something happened, but a
+ * hover card is where a reader asks exactly when, and "3 months ago" cannot
+ * answer that. The year only appears when it is not the current one, so the
+ * common case stays short.
+ */
+export function formatDateTime(timestamp: number | undefined, language: AppLanguage = 'en'): string {
+  if (!timestamp) return ''
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return ''
+  const sameYear = date.getFullYear() === new Date().getFullYear()
+  return date.toLocaleString(language === 'zh-CN' ? 'zh-CN' : undefined, {
+    ...(sameYear ? {} : { year: 'numeric' }),
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
 export function formatRelativeTime(timestamp: number | undefined, language: AppLanguage = 'en'): string {
   if (!timestamp) return ''
   const delta = Date.now() - timestamp

@@ -208,6 +208,14 @@ export default function App() {
     }
   }, [changesOpen, panelMounted])
 
+  // The panel is a conversation surface: its pages read the project and the
+  // session on screen. A desk page owns the whole content row, so the panel is
+  // closed when one opens — otherwise it would stay as a drawer whose only
+  // toggle is not drawn there.
+  useEffect(() => {
+    if (deskPage) setChangesOpen(false)
+  }, [deskPage])
+
   // Mount the terminal on its first visit and keep it alive afterwards, so a
   // tab switch does not throw away the shells it is running. Closing the whole
   // panel ends them, exactly like closing the drawer used to.

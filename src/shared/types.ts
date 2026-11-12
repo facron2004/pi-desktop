@@ -314,6 +314,13 @@ export interface Workspace {
   name: string
   /** Activity metadata; the sidebar order is the array order, never this. */
   lastOpenedAt: number
+  /**
+   * When the folder was added to the list. A registered project has this from
+   * the write that created it; one discovered from a session on disk may not,
+   * and a reader must then fall back to its oldest conversation rather than
+   * printing 1970.
+   */
+  createdAt?: number
   folders?: string[]
   /** Emoji the project wears instead of the folder icon. */
   icon?: string
@@ -332,6 +339,13 @@ export interface SessionMeta {
   name?: string
   /** First user message on the active branch, used as the list preview. */
   preview: string
+  /**
+   * When the conversation was started, from the `timestamp` of Pi's session
+   * header — the first line of the JSONL, written once when the file is
+   * created. Absent when a session file has no header timestamp, so a reader
+   * must treat 0/undefined as "unknown" rather than as 1970.
+   */
+  createdAt?: number
   /** ISO timestamp of the last activity. */
   updatedAt: number
   messageCount: number

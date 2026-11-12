@@ -265,6 +265,29 @@ list. The icon list and its keywords come from MCode's own picker
 find the same emoji in both apps. The tint is a token, never a literal: the
 component writes `data-icon-color` and the stylesheet picks the hue.
 
+### The row's hover card
+
+A row's details live in a **card**, not in the native `title` attribute:
+`SidebarTip` (`components/SidebarTip.tsx`) draws a label/value list in a portal,
+positioned from the row's own rectangle, so a scrolled or clipped list cannot cut
+it off and the card never covers the row it describes. `useHoverTip` owns the
+"pointer is resting here" state for one row and returns handlers that go on the
+row's own button — never on a wrapper element, because the rows are laid out to
+the pixel and a wrapper would move the title. The delay before it appears and
+the grace period after the pointer leaves are both there so moving across the
+list to click something does not flash a card; keyboard focus shows it at once.
+One card exists at a time, so it has one fixed id (`SIDEBAR_TIP_ID`) and the
+described row carries `aria-describedby` only while the card is up.
+
+The card answers "when" and "where": `Created` is the moment the row joined the
+list, `Conversations` its count, `Path` the folder. A project has no start date
+of its own when it is known only from sessions, so `collectProjects` falls back
+to its oldest conversation; `Workspace.createdAt` is written when the folder is
+registered and stays absent for a folder registered before the field existed —
+never `0`, which would read as 1970. A conversation's start comes from Pi's
+session header (the first JSONL line, never rewritten); `updatedAt` cannot stand
+in for it because a resumed session moves that forward on every message.
+
 ### Project order
 
 The order of project rows is `settings.projectOrder` — the path list the user
@@ -286,8 +309,15 @@ covers a folder discovered from a session becoming registered.
 「插件与技能 / Plugins & skills」and「定时任务 / Scheduled tasks」are desk
 pages, not dialogs. Their sidebar entries toggle `deskPage`, and `App` renders
 only `<div className="desk-page">` inside `main__body`: the composer, GoalBar,
-widgets and task rail all belong to the conversation
-branch and must not sit underneath the page. There is no Back control in the
+widgets, task rail **and the corner tools-panel toggle** all belong to the
+conversation branch and must not sit underneath the page. The toggle is drawn
+only while no desk page is open — it floats over the content row's top-right
+corner, which on a desk page is that page's own header, so leaving it there put
+a conversation control over a page that has nothing to do with the
+conversation. The tools panel closes with the conversation branch as well: with
+the toggle gone nothing would close a panel left open over the page, and the
+panel's pages read the project and the session, not the desk page. There is no
+Back control in the
 titlebar; selecting a conversation, starting a new chat, or clicking the same
 sidebar entry again clears `deskPage` and restores the conversation unchanged.
 Destructive confirmations stay inline as well: deleting a scheduled task asks
