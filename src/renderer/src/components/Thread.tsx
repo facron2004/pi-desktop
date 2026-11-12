@@ -38,11 +38,26 @@ import '../styles/conversation-stream.css'
 const VISIBLE_RECENT_TURNS = 3
 const MIN_HIDDEN_MESSAGES = 12
 const SEARCH_INDEX_REFRESH_MS = 120
+const MAX_SEARCH_HITS = 50
 type SessionTurn = Turn & { user: UserItem }
 /** How far from the bottom still counts as "following the output". */
 const FOLLOW_RANGE = 80
 const EDGE_RANGE = 16
 const searchableChunksByTurn = new WeakMap<Turn, { root?: string; chunks: SearchableChunk[] }>()
+
+type IndexedSearchHit = SearchHit & { turnIndex: number }
+
+interface SearchSnapshot {
+  query: string
+  sessionKey: string
+  root?: string
+  turns: Turn[]
+  hits: IndexedSearchHit[]
+}
+
+interface SearchSource extends Omit<SearchSnapshot, 'hits'> {
+  active: boolean
+}
 
 function scrollKeyOf(sessionFile: string | undefined): string {
   return sessionFile ?? 'draft'
@@ -89,6 +104,55 @@ function searchableChunks(turns: Turn[], root?: string): SearchableChunk[] {
     for (const chunk of turnChunks) chunks.push(chunk)
   }
   return chunks
+}
+
+function searchQueryKey(query: string): string {
+  return query.trim().toLowerCase()
+}
+
+function matchesSearchContext(
+  context: Pick<SearchSnapshot, 'query' | 'sessionKey' | 'root'> | null,
+  sessionKey: string,
+  root: string | undefined,
+  query: string
+): boolean {
+  return context?.sessionKey === sessionKey && context.root === root && context.query === searchQueryKey(query)
+}
+
+/** Reuse hits from untouched turns and scan only the changed suffix. */
+function buildSearchSnapshot(
+  turns: Turn[],
+  query: string,
+  root: string | undefined,
+  sessionKey: string,
+  previous: SearchSnapshot | null
+): SearchSnapshot {
+  const queryKey = searchQueryKey(query)
+  const sameContext = matchesSearchContext(previous, sessionKey, root, query)
+  const reusable = sameContext ? previous : null
+  if (reusable?.turns === turns) return reusable
+
+  let firstChangedTurn = 0
+  if (reusable) {
+    const sharedLength = Math.min(turns.length, reusable.turns.length)
+    while (firstChangedTurn < sharedLength && turns[firstChangedTurn] === reusable.turns[firstChangedTurn]) {
+      firstChangedTurn += 1
+    }
+  }
+  const hits = reusable
+    ? reusable.hits.filter((hit) => hit.turnIndex < firstChangedTurn)
+    : []
+
+  for (let index = firstChangedTurn; index < turns.length && hits.length < MAX_SEARCH_HITS; index += 1) {
+    const turnHits = findMatches(
+      searchableChunks([turns[index]], root),
+      query,
+      MAX_SEARCH_HITS - hits.length
+    )
+    for (const hit of turnHits) hits.push({ ...hit, turnIndex: index })
+  }
+
+  return { query: queryKey, sessionKey, root, turns, hits }
 }
 
 function searchTextForMessage(item: UserItem | AssistantItem): string {
@@ -296,54 +360,82 @@ export function Thread() {
     : 0
   const hasSearchQuery = searchOpen && Boolean(query.trim())
   const searchRoot = workspace?.path
-  const latestSearchSourceRef = useRef({ turns, root: searchRoot })
-  latestSearchSourceRef.current = { turns, root: searchRoot }
-  const searchContextRef = useRef<{ sessionKey: string; root?: string } | null>(null)
-  const searchActiveRef = useRef(false)
+  const latestSearchSourceRef = useRef<SearchSource>({
+    turns,
+    root: searchRoot,
+    sessionKey,
+    query,
+    active: hasSearchQuery
+  })
+  latestSearchSourceRef.current = { turns, root: searchRoot, sessionKey, query, active: hasSearchQuery }
+  const searchSnapshotRef = useRef<SearchSnapshot | null>(null)
+  const scheduledSearchContextRef = useRef<Pick<SearchSnapshot, 'query' | 'sessionKey' | 'root'> | null>(null)
   const searchRefreshTimerRef = useRef<number | null>(null)
-  const [chunks, setChunks] = useState<SearchableChunk[]>([])
+  const [searchRefreshVersion, setSearchRefreshVersion] = useState(0)
+  const hits: SearchHit[] = useMemo(() => {
+    if (!hasSearchQuery) return []
+    const previous = searchSnapshotRef.current
+    if (previous && matchesSearchContext(previous, sessionKey, searchRoot, query) && previous.turns !== turns) {
+      return previous.hits
+    }
+    const next = buildSearchSnapshot(turns, query, searchRoot, sessionKey, previous)
+    searchSnapshotRef.current = next
+    return next.hits
+  }, [hasSearchQuery, query, sessionKey, searchRoot, turns, searchRefreshVersion])
+
   useEffect(() => {
     if (!hasSearchQuery) {
-      if (searchActiveRef.current) {
-        searchActiveRef.current = false
-        if (searchRefreshTimerRef.current !== null) {
-          window.clearTimeout(searchRefreshTimerRef.current)
-          searchRefreshTimerRef.current = null
-        }
-        setChunks([])
-      }
-      return
-    }
-
-    const previousContext = searchContextRef.current
-    const contextChanged = previousContext?.sessionKey !== sessionKey || previousContext?.root !== searchRoot
-    if (!searchActiveRef.current || contextChanged) {
-      searchActiveRef.current = true
-      searchContextRef.current = { sessionKey, root: searchRoot }
       if (searchRefreshTimerRef.current !== null) {
         window.clearTimeout(searchRefreshTimerRef.current)
         searchRefreshTimerRef.current = null
       }
-      setChunks(searchableChunks(turns, searchRoot))
+      scheduledSearchContextRef.current = null
+      searchSnapshotRef.current = null
       return
     }
 
+    if (
+      searchRefreshTimerRef.current !== null &&
+      !matchesSearchContext(scheduledSearchContextRef.current, sessionKey, searchRoot, query)
+    ) {
+      window.clearTimeout(searchRefreshTimerRef.current)
+      searchRefreshTimerRef.current = null
+      scheduledSearchContextRef.current = null
+    }
+
+    const snapshot = searchSnapshotRef.current
+    if (snapshot && matchesSearchContext(snapshot, sessionKey, searchRoot, query) && snapshot.turns === turns) {
+      if (searchRefreshTimerRef.current !== null) {
+        window.clearTimeout(searchRefreshTimerRef.current)
+        searchRefreshTimerRef.current = null
+        scheduledSearchContextRef.current = null
+      }
+      return
+    }
     if (searchRefreshTimerRef.current !== null) return
+
+    scheduledSearchContextRef.current = { query: searchQueryKey(query), sessionKey, root: searchRoot }
     searchRefreshTimerRef.current = window.setTimeout(() => {
       searchRefreshTimerRef.current = null
+      scheduledSearchContextRef.current = null
       const latest = latestSearchSourceRef.current
-      setChunks(searchableChunks(latest.turns, latest.root))
+      if (!latest.active) return
+      const previous = searchSnapshotRef.current
+      const next = buildSearchSnapshot(latest.turns, latest.query, latest.root, latest.sessionKey, previous)
+      if (next === previous) return
+      searchSnapshotRef.current = next
+      setSearchRefreshVersion((version) => version + 1)
     }, SEARCH_INDEX_REFRESH_MS)
-  }, [hasSearchQuery, turns, sessionKey, searchRoot])
+  }, [hasSearchQuery, query, sessionKey, searchRoot, turns])
   useEffect(() => {
     return () => {
       if (searchRefreshTimerRef.current !== null) {
         window.clearTimeout(searchRefreshTimerRef.current)
         searchRefreshTimerRef.current = null
       }
+      scheduledSearchContextRef.current = null
     }
   }, [])
-  const hits: SearchHit[] = useMemo(() => findMatches(chunks, query), [chunks, query])
   const forkByUserId = useMemo(
     () => pairForkTargets(items, forkTargets),
     [sessionKey, turns.length, forkTargets]
