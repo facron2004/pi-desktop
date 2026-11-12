@@ -3531,12 +3531,22 @@ function phaseFor(state: AppStore, next: RunPhase): RunPhase {
   return next
 }
 
-function finishModelTiming(set: SetState, get: GetState, owner?: string): void {
+function finishModelTiming(
+  set: SetState,
+  get: GetState,
+  owner?: string,
+  messageTimestamp?: number
+): void {
   const run = get().run
   if (run.modelTurnStartedAt === undefined) return
   const timingKey = owner ? threadKey(owner) : viewKeyOf(get())
   const turnId = run.turnId ?? run.runId
-  recordModelDuration(timingKey, turnId, Math.max(0, monotonicNow() - run.modelTurnStartedAt))
+  recordModelDuration(
+    timingKey,
+    turnId,
+    Math.max(0, monotonicNow() - run.modelTurnStartedAt),
+    messageTimestamp
+  )
   set((state) => ({ run: { ...state.run, modelTurnStartedAt: undefined } }))
 }
 
@@ -3899,7 +3909,7 @@ function handleEvent(
       }
       let eventForItems = event
       if (event.type === 'tool_execution_end') {
-        // Apply a queued start first so its local timestamp can fill in when
+        // Apply a queued start first so its monotonic clock can fill in when
         // Pi omitted the duration on the completion event.
         drainPending()
         const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : undefined
@@ -3911,15 +3921,22 @@ function handleEvent(
         const timingKey = owner ? threadKey(owner) : viewKeyOf(get())
         const startedMonotonicAt = toolCallId ? takeToolStart(timingKey, toolCallId) : undefined
         if (!terminal && toolCallId) {
-          const supplied = typeof event.durationMs === 'number' ? event.durationMs : undefined
+          const supplied = typeof event.durationMs === 'number' &&
+            Number.isFinite(event.durationMs) && event.durationMs >= 0
+            ? event.durationMs
+            : undefined
           const observed = supplied ?? (startedMonotonicAt !== undefined
             ? Math.max(0, monotonicNow() - startedMonotonicAt)
-            : existing?.kind === 'tool' && existing.startedAt !== undefined
-              ? Math.max(0, Date.now() - existing.startedAt)
-              : undefined)
+            : undefined)
           if (observed !== undefined) {
             recordToolDuration(timingKey, toolCallId, observed)
             if (supplied === undefined) eventForItems = { ...event, durationMs: observed }
+          } else {
+            eventForItems = {
+              ...event,
+              durationMs: undefined,
+              __piDesktopDurationUnavailable: true
+            }
           }
         }
       } else if (event.type === 'tool_execution_start') {
@@ -3966,18 +3983,27 @@ function handleEvent(
         }
       }
       if (event.type === 'message_end') {
-        const message = event.message as { role?: unknown } | undefined
+        const message = event.message as { role?: unknown; timestamp?: unknown } | undefined
         if (message?.role === 'assistant' || (message?.role === undefined && get().run.modelTurnStartedAt !== undefined)) {
           // The answer's own window, not the whole run's: tool execution in
           // between is not model generation time.
           closeGenerationWindow(set)
-          finishModelTiming(set, get, owner)
+          finishModelTiming(
+            set,
+            get,
+            owner,
+            typeof message?.timestamp === 'number' ? message.timestamp : undefined
+          )
         }
       }
       // Only text moves the visible phase to generating. Thinking and tool
       // arguments still count as content for timing without changing that phase.
       if (event.type === 'message_update') {
-        const payload = event.assistantMessageEvent as { type?: string; delta?: unknown } | undefined
+        const payload = event.assistantMessageEvent as {
+          type?: string
+          delta?: unknown
+          message?: { timestamp?: unknown }
+        } | undefined
         const kind = payload?.type
         const textBlockStarted = kind === 'text_start'
         const contentDelta = (kind === 'text_delta' || kind === 'thinking_delta' || kind === 'toolcall_delta') &&
@@ -4004,7 +4030,14 @@ function handleEvent(
           // instead of a top-level `message_end`; both bound TPS.
           closeGenerationWindow(set)
         }
-        if (kind === 'done') finishModelTiming(set, get, owner)
+        if (kind === 'done') {
+          finishModelTiming(
+            set,
+            get,
+            owner,
+            typeof payload?.message?.timestamp === 'number' ? payload.message.timestamp : undefined
+          )
+        }
         const needsFirstToken = contentDelta && get().run.firstTokenAt === undefined
         const needsWindowStart = generatingDelta && get().run.messageGenerationStartedAt === undefined
         const needsPhase = textDelta && get().run.phase !== phaseFor(get(), 'generating')

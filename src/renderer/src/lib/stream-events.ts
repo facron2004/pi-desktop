@@ -152,6 +152,8 @@ export interface ToolFinishedStreamEvent extends StreamEventBase {
   result?: unknown
   isError: boolean
   durationMs?: number
+  /** The runtime has no trustworthy duration source for this completion. */
+  durationUnavailable?: boolean
 }
 
 /* ------------------------------------------------------------------ *
@@ -690,7 +692,10 @@ export function normalizePiEvent(
         args: event.args === undefined ? undefined : argsOf(event.args),
         result: event.result,
         isError,
-        durationMs: typeof event.durationMs === 'number' ? event.durationMs : undefined,
+        durationMs: typeof event.durationMs === 'number' && Number.isFinite(event.durationMs) && event.durationMs >= 0
+          ? event.durationMs
+          : undefined,
+        ...(event.__piDesktopDurationUnavailable === true ? { durationUnavailable: true } : {}),
         messageId: state.messageByToolCall.get(toolCallId),
         status: isError ? 'error' : 'ok'
       }

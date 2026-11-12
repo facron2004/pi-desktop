@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.10.18",
+  "version": "0.10.19",
   "description": "Pi Desktop — a native GUI for the Pi coding agent",
   "main": "./out/main/index.js",
   "author": "Facron",

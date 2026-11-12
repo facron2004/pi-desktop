@@ -930,9 +930,11 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       const isError = event.isError
       const result = extractToolResult(event.result)
       const durationMs = event.durationMs ?? (
-        existing?.startedAt !== undefined
-          ? Math.max(0, Date.now() - existing.startedAt)
-          : existing?.durationMs
+        event.durationUnavailable
+          ? existing?.durationMs
+          : existing?.startedAt !== undefined
+            ? Math.max(0, Date.now() - existing.startedAt)
+            : existing?.durationMs
       )
       return patchTool(
         items,

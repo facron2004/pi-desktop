@@ -309,9 +309,16 @@ function recordDuration(
 export function recordModelDuration(
   sessionKey: string | undefined,
   turnId: string | undefined,
-  durationMs: number
+  durationMs: number,
+  messageTimestamp?: number
 ): void {
   recordDuration(sessionKey, 'modelDurationsMs', turnId, durationMs)
+  if (typeof messageTimestamp === 'number' && Number.isFinite(messageTimestamp)) {
+    const messageId = turnId
+      ? `assistant:${messageTimestamp}:${turnId}`
+      : `assistant:${messageTimestamp}`
+    recordDuration(sessionKey, 'modelDurationsMs', messageId, durationMs)
+  }
 }
 
 export function recordTtftDuration(

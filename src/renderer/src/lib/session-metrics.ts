@@ -49,7 +49,7 @@ export interface SessionMetrics {
   timedToolCalls: number
   /** Average of recorded runs and the current run sample, or null. */
   averageTtftMs: number | null
-  /** Sum of completed model response timings observed by this app, or the transcript. */
+  /** Sum of recorded model response timings for the session. */
   modelTimeMs: number | null
   /** Cache reads as a share of all prompt tokens, or null when unknown. */
   cacheHitPercent: number | null
@@ -102,19 +102,22 @@ export function sessionMetrics(
     } else if (item.kind === 'tool') {
       toolItemCount += 1
       const terminal = item.status === 'ok' || item.status === 'error' || item.status === 'aborted'
-      const duration = item.durationMs ?? timing?.toolDurationsMs[item.toolCallId]
-      if (terminal && typeof duration === 'number' && Number.isFinite(duration) && duration >= 0) {
+      const duration = [item.durationMs, timing?.toolDurationsMs[item.toolCallId]].find(
+        (value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
+      )
+      if (terminal && duration !== undefined) {
         knownToolTimeMs += duration
         timedToolCalls += 1
+      }
+    } else if (item.kind === 'assistant') {
+      if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
+        transcriptModelMs += item.durationMs
       }
     }
   }
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
     if (item.kind !== 'assistant') continue
-    if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
-      transcriptModelMs += item.durationMs
-    }
     if (index > lastUserIndex) {
       hasStreamingAssistant ||= item.streaming
       if (!item.streaming && typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
@@ -170,16 +173,53 @@ export function sessionMetrics(
     ? round((ttftSamples.reduce((sum, value) => sum + value, 0) + (includeCurrentTtft ? ttftMs! : 0)) /
       (ttftSamples.length + (includeCurrentTtft ? 1 : 0)))
     : null
-  // Only monotonic samples are summed. Version-1 records measured this against
-  // the wall clock, which jumps on sleep and time sync; one answer could read
-  // as hours, so `session-timing.ts` drops those samples when a record is read.
-  const modelSamples = Object.values(timing?.modelDurationsMs ?? {})
-    .filter((value) => Number.isFinite(value) && value >= 0)
+  // Pi's session statistics cover the full session. Keep model samples at that
+  // same scope, including messages in other branches and outside a long tail.
+  const modelEntries = Object.entries(timing?.modelDurationsMs ?? {})
+    .filter(([, value]) => Number.isFinite(value) && value >= 0)
+  const turnSamples = modelEntries.filter(([id]) => !id.startsWith('assistant:'))
+  const messageSamples = modelEntries.filter(([id]) => id.startsWith('assistant:'))
+  const sampledMessageIds = new Set<string>()
+  const sampledTimestampOnlyMessages = new Set<number>()
+  const sampleTurnIds = new Set<string>()
+  for (const [id] of messageSamples) {
+    const identity = id.slice('assistant:'.length)
+    const separator = identity.indexOf(':')
+    const rawTimestamp = separator < 0 ? identity : identity.slice(0, separator)
+    const timestamp = Number(rawTimestamp)
+    if (Number.isFinite(timestamp)) {
+      if (separator < 0) sampledTimestampOnlyMessages.add(timestamp)
+      else sampledMessageIds.add(`${timestamp}:${identity.slice(separator + 1)}`)
+    }
+    if (separator >= 0) sampleTurnIds.add(identity.slice(separator + 1))
+  }
+  const hasUnmatchedTurnSamples = turnSamples.some(([id]) => !sampleTurnIds.has(id))
+  const modelSamples = turnSamples.length > 0 ? turnSamples : messageSamples
+  let measuredModelMs = modelSamples.reduce((sum, [, value]) => sum + value, 0)
+  let hasModelDuration = modelSamples.length > 0
+  // Older turn-keyed records cannot be tied back to a message after hydration.
+  // Only add transcript estimates when every turn sample has a stable message
+  // match; otherwise those estimates could count the same response twice.
+  if (!hasUnmatchedTurnSamples) {
+    for (const item of items) {
+      if (
+        item.kind === 'assistant' &&
+        !(typeof item.turnId === 'string' && sampledMessageIds.has(`${item.timestamp}:${item.turnId}`)) &&
+        !sampledTimestampOnlyMessages.has(item.timestamp) &&
+        typeof item.durationMs === 'number' &&
+        Number.isFinite(item.durationMs) &&
+        item.durationMs >= 0
+      ) {
+        measuredModelMs += item.durationMs
+        hasModelDuration = true
+      }
+    }
+  }
   const liveModelTime = run.modelTurnStartedAt !== undefined
     ? Math.max(0, monotonicNow() - run.modelTurnStartedAt)
     : 0
-  const modelTimeMs = modelSamples.length || liveModelTime > 0
-    ? modelSamples.reduce((sum, value) => sum + value, 0) + liveModelTime
+  const modelTimeMs = hasModelDuration || liveModelTime > 0
+    ? measuredModelMs + liveModelTime
     : transcriptModelMs > 0
       ? transcriptModelMs
       : null
