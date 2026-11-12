@@ -58,7 +58,8 @@ if (!scripts[action]) {
 
     for (const script of scripts[action]) {
       if (interruptedExitCode !== null) break
-      const code = await runNpmScript(script)
+      const args = action === 'dist' || action === 'dist:dir' ? process.argv.slice(3) : []
+      const code = await runNpmScript(script, args)
       if (code !== 0) {
         process.exitCode = interruptedExitCode ?? code
         break
@@ -88,9 +89,9 @@ if (!scripts[action]) {
   }
 }
 
-function runNpmScript(script) {
+function runNpmScript(script, args = []) {
   return new Promise((resolveExit) => {
-    const child = crossSpawn('npm', ['run', script], {
+    const child = crossSpawn('npm', ['run', script, ...(args.length ? ['--', ...args] : [])], {
       cwd: root,
       detached: process.platform !== 'win32',
       stdio: 'inherit',

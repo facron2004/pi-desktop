@@ -37,6 +37,7 @@ import '../styles/conversation-stream.css'
 
 const VISIBLE_RECENT_TURNS = 3
 const MIN_HIDDEN_MESSAGES = 12
+const SEARCH_INDEX_REFRESH_MS = 120
 type SessionTurn = Turn & { user: UserItem }
 /** How far from the bottom still counts as "following the output". */
 const FOLLOW_RANGE = 80
@@ -294,10 +295,54 @@ export function Thread() {
     ? userMetadata.userCount - visibleUserCount
     : 0
   const hasSearchQuery = searchOpen && Boolean(query.trim())
-  const chunks = useMemo(
-    () => (hasSearchQuery ? searchableChunks(turns, workspace?.path) : []),
-    [hasSearchQuery, turns, workspace?.path]
-  )
+  const searchRoot = workspace?.path
+  const latestSearchSourceRef = useRef({ turns, root: searchRoot })
+  latestSearchSourceRef.current = { turns, root: searchRoot }
+  const searchContextRef = useRef<{ sessionKey: string; root?: string } | null>(null)
+  const searchActiveRef = useRef(false)
+  const searchRefreshTimerRef = useRef<number | null>(null)
+  const [chunks, setChunks] = useState<SearchableChunk[]>([])
+  useEffect(() => {
+    if (!hasSearchQuery) {
+      if (searchActiveRef.current) {
+        searchActiveRef.current = false
+        if (searchRefreshTimerRef.current !== null) {
+          window.clearTimeout(searchRefreshTimerRef.current)
+          searchRefreshTimerRef.current = null
+        }
+        setChunks([])
+      }
+      return
+    }
+
+    const previousContext = searchContextRef.current
+    const contextChanged = previousContext?.sessionKey !== sessionKey || previousContext?.root !== searchRoot
+    if (!searchActiveRef.current || contextChanged) {
+      searchActiveRef.current = true
+      searchContextRef.current = { sessionKey, root: searchRoot }
+      if (searchRefreshTimerRef.current !== null) {
+        window.clearTimeout(searchRefreshTimerRef.current)
+        searchRefreshTimerRef.current = null
+      }
+      setChunks(searchableChunks(turns, searchRoot))
+      return
+    }
+
+    if (searchRefreshTimerRef.current !== null) return
+    searchRefreshTimerRef.current = window.setTimeout(() => {
+      searchRefreshTimerRef.current = null
+      const latest = latestSearchSourceRef.current
+      setChunks(searchableChunks(latest.turns, latest.root))
+    }, SEARCH_INDEX_REFRESH_MS)
+  }, [hasSearchQuery, turns, sessionKey, searchRoot])
+  useEffect(() => {
+    return () => {
+      if (searchRefreshTimerRef.current !== null) {
+        window.clearTimeout(searchRefreshTimerRef.current)
+        searchRefreshTimerRef.current = null
+      }
+    }
+  }, [])
   const hits: SearchHit[] = useMemo(() => findMatches(chunks, query), [chunks, query])
   const forkByUserId = useMemo(
     () => pairForkTargets(items, forkTargets),

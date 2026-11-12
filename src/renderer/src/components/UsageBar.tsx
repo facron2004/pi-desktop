@@ -3,7 +3,7 @@ import { useAppStore } from '../store/useAppStore'
 import { sessionMetrics } from '../lib/session-metrics'
 import { formatTokens } from '../lib/format'
 import { useT } from '../lib/i18n'
-import { readSessionTiming } from '../lib/session-timing'
+import { monotonicNow, readSessionTiming } from '../lib/session-timing'
 import { ContextRing } from './ContextRing'
 import { Popover } from './Popover'
 import { GenerationPanel, UsagePanel } from './UsagePanel'
@@ -25,12 +25,14 @@ export function UsageBar() {
   const lastCompletedAssistant = useAppStore((state) =>
     state.items.findLast((item) => item.kind === 'assistant' && !item.streaming)
   )
-  const hasAssistant = useAppStore((state) => state.items.some((item) => item.kind === 'assistant'))
+  const hasAssistant = useAppStore((state) =>
+    state.items.findLast((item) => item.kind === 'assistant') !== undefined
+  )
   const stats = useAppStore((state) => state.stats)
   const run = useAppStore((state) => state.run)
   const sessionKey = useAppStore((state) => state.activeSessionFile ?? state.draftId)
   const t = useT()
-  const [timingTick, setTimingTick] = useState(0)
+  const [, setTimingTick] = useState(0)
 
   // Keep the live model-time reading moving without using token arrivals as
   // a clock. Completion events still publish the final statistics immediately.
@@ -41,16 +43,27 @@ export function UsageBar() {
   }, [run.modelTurnStartedAt])
 
   const metrics = useMemo(
-    () => sessionMetrics(useAppStore.getState().items, stats, run, readSessionTiming(sessionKey)),
-    [itemCount, lastCompletedAssistant, stats, run, sessionKey, timingTick]
+    () => sessionMetrics(
+      useAppStore.getState().items,
+      stats,
+      { ...run, modelTurnStartedAt: undefined },
+      readSessionTiming(sessionKey)
+    ),
+    [itemCount, lastCompletedAssistant, stats, run, sessionKey]
   )
+  const liveModelTimeMs = run.modelTurnStartedAt === undefined
+    ? 0
+    : Math.max(0, monotonicNow() - run.modelTurnStartedAt)
+  const displayMetrics = liveModelTimeMs > 0
+    ? { ...metrics, modelTimeMs: (metrics.modelTimeMs ?? 0) + liveModelTimeMs }
+    : metrics
   const hasRun =
     hasAssistant || (stats?.tokens.total ?? 0) > 0
   if (!hasRun) return null
   const countLabel =
     t('turns') === '轮'
-      ? `${metrics.turnCount}轮 ${metrics.stepCount}步`
-      : `${metrics.turnCount} ${metrics.turnCount === 1 ? t('turn') : t('turns')} · ${metrics.stepCount} ${t('steps')}`
+      ? `${displayMetrics.turnCount}轮 ${displayMetrics.stepCount}步`
+      : `${displayMetrics.turnCount} ${displayMetrics.turnCount === 1 ? t('turn') : t('turns')} · ${displayMetrics.stepCount} ${t('steps')}`
 
   return (
     <div className="usage-bar" role="group" aria-label={t('Usage')}>
@@ -72,9 +85,9 @@ export function UsageBar() {
             <span title={t('Session statistics')}>{countLabel}</span>
             <span aria-hidden="true">·</span>
             <span title={t('Output tokens per second')}>
-              {metrics.tps !== null ? (
+              {displayMetrics.tps !== null ? (
                 <>
-                  <strong>{metrics.tps.toLocaleString()}</strong> {t('tok/s')}
+                  <strong>{displayMetrics.tps.toLocaleString()}</strong> {t('tok/s')}
                 </>
               ) : (
                 <strong>—</strong>
@@ -83,7 +96,7 @@ export function UsageBar() {
           </button>
         )}
       >
-        {() => <GenerationPanel metrics={metrics} />}
+        {() => <GenerationPanel metrics={displayMetrics} />}
       </Popover>
 
       <Popover
@@ -103,18 +116,18 @@ export function UsageBar() {
           >
             <span className="usage-bar__item" title={t('Tokens used in this conversation')}>
               <span className="usage-bar__label">{t('Tokens')}</span>
-              <strong>{formatTokens(metrics.totalTokens)}</strong>
+              <strong>{formatTokens(displayMetrics.totalTokens)}</strong>
             </span>
             <span className="usage-bar__item" title={t('Cache hit rate')}>
               <span className="usage-bar__label">{t('Cache hit rate')}</span>
               <strong>
-                {metrics.cacheHitPercent !== null ? `${metrics.cacheHitPercent}%` : '—'}
+                {displayMetrics.cacheHitPercent !== null ? `${displayMetrics.cacheHitPercent}%` : '—'}
               </strong>
             </span>
           </button>
         )}
       >
-        {() => <UsagePanel metrics={metrics} />}
+        {() => <UsagePanel metrics={displayMetrics} />}
       </Popover>
 
       {/* The ring owns the window reading, including its percentage label. */}

@@ -1,8 +1,9 @@
 // Verify the packaged asar carries the current build: version, the main bundle
 // and the expected application code paths.
 const asar = require('@electron/asar')
+const path = require('node:path')
 const expectedVersion = require('../package.json').version
-const archive = 'release/win-unpacked/resources/app.asar'
+const archive = path.resolve(process.argv[2] ?? 'release/win-unpacked/resources/app.asar')
 const raw = asar.listPackage(archive)
 const normalized = raw.map((entry) => entry.replace(/\\/g, '/'))
 const pkg = JSON.parse(asar.extractFile(archive, 'package.json').toString())
