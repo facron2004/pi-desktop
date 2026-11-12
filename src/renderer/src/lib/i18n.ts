@@ -554,6 +554,8 @@ const zhCN: Record<string, string> = {
   Output: '输出',
   'Cache read': '缓存读取',
   'Cache write': '缓存写入',
+  'Tokens spent by subagents, separate from this conversation':
+    '子代理自己消耗的 Token，不计入本对话的用量',
   Total: '总计',
   Cost: '费用',
   Requests: '请求数',

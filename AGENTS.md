@@ -908,6 +908,25 @@ The delegation contract is part of the generated source, not a renderer concern:
   `/desktop-subagent-cancel <toolCallId:index>` and the tree/rail row's stop
   button sends it through Pi's prompt channel. The id format is the one the UI
   already derives in `lib/subagents.ts`.
+- Named agent presets are Markdown + flat `name: value` frontmatter in
+  `~/.pi/agent/agents/*.md` (always read) and `<workspace>/.pi/agents/*.md`
+  (only while project trust is on — the same gate as `.pi/mcp.json`). A project
+  preset with the same name replaces the user's and claims its slot before
+  global presets when the 32-preset cap applies. `src/main/pi/agents.ts` owns
+  discovery, `realpath` escape checks, file/size/prompt bounds and skipping
+  malformed files; `subagentExtension()` re-validates every preset before it
+  becomes part of a child's argv. The roster is interpolated into the tool
+  description so the model routes by `description`, and `agent: "<name>"` adds
+  the preset's body to the child's system prompt plus its model / thinking /
+  tools / timeout defaults. Precedence is: the call's explicit value > the named
+  agent > the batch default (Settings, then the dispatching session). An unknown
+  `agent` fails that task before a child starts, with the available names in the
+  error; a sibling in the same batch keeps running.
+- Subagent token/cost is a separate reading, never folded into the parent's
+  `totalTokens` or cache hit rate (`lib/subagent-usage.ts` → `SessionMetrics`):
+  a child is its own Pi process and never appears in the parent's transcript or
+  `get_session_stats`. `UsagePanel` shows the row only when a conversation
+  actually delegated.
 
 Computer Use is a General setting (`computerUse`), not a task mode.
 `src/main/pi/computer-use.ts` registers the `computer` tool (screenshot, list

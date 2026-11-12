@@ -281,6 +281,29 @@ writeFileSync(trustedExtensionFile, subagentExtension({}, '', '', true), 'utf8')
 // them winning over the dispatching session and losing to the call's own argument.
 const settingsExtensionFile = path.join(dir, 'subagent-extension-settings.mjs')
 writeFileSync(settingsExtensionFile, subagentExtension({ model: 'x/y', thinking: 'low' }), 'utf8')
+// A roster of named agent presets: the contract must show the routing argument,
+// the merged argv, the injected role prompt and the unknown-name failure.
+const agents = [
+  {
+    name: 'scout',
+    description: 'Explores a codebase area and reports structure and risks',
+    prompt: 'You are a scout. Report entry points and risks.',
+    model: 'x/y',
+    thinking: 'low',
+    tools: ['read', 'grep'],
+    timeoutMs: 60000
+  },
+  {
+    name: 'reviewer',
+    description: 'Reviews a change for correctness',
+    prompt: 'You are a reviewer. Verify before you approve.',
+    model: 'x/z',
+    thinking: 'high',
+    tools: ['read']
+  }
+]
+const agentsExtensionFile = path.join(dir, 'subagent-extension-agents.mjs')
+writeFileSync(agentsExtensionFile, subagentExtension({}, '', '', false, { command: 'pi', prefixArgs: [] }, agents), 'utf8')
 
 after(() => {
   if (existsSync(childPidFile)) {
@@ -1373,4 +1396,129 @@ test('live answer text is published while a subagent runs, without leaking reaso
   assert.ok(snapshots.some((snapshot) => snapshot!.progressText?.startsWith('LIVE-')))
   assert.ok(snapshots.every((snapshot) => (snapshot!.progressText ?? '').length <= 4096))
   assert.doesNotMatch(JSON.stringify(updates), /PRIVATE_REASONING_SHOULD_NOT_LEAK/)
+})
+
+function flagOf(args: string[], name: string): string {
+  const index = args.indexOf(name)
+  return index === -1 ? '' : args[index + 1] ?? ''
+}
+
+test('a named agent routes the task and reaches the child argv and system prompt', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory(agentsExtensionFile))
+  const result = await withFakePi({ text: 'scouted' }, () =>
+    tool.execute('call-agent-scout', { task: 'Map the login flow', agent: 'scout' }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, false)
+  const args = readArgs()[0]
+  assert.equal(flagOf(args, '--model'), 'x/y')
+  assert.equal(flagOf(args, '--thinking'), 'low')
+  assert.equal(flagOf(args, '--tools'), 'read,grep')
+  assert.ok(args.some((arg) => arg.includes('You are a scout. Report entry points and risks.')), 'the agent body joins the child system prompt')
+})
+
+test('the call still wins over the named agent, and the agent over the batch', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory(agentsExtensionFile))
+  await withFakePi({ text: 'override' }, () =>
+    tool.execute('call-agent-override', {
+      task: 'Map the login flow',
+      agent: 'scout',
+      model: 'openai/gpt',
+      thinking: 'max'
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  const args = readArgs()[0]
+  assert.equal(flagOf(args, '--model'), 'openai/gpt', 'the call argument beats the preset')
+  assert.equal(flagOf(args, '--thinking'), 'max', 'the call argument beats the preset')
+  assert.equal(flagOf(args, '--tools'), 'read,grep', 'an unset call value keeps the preset')
+})
+
+test('a batch task can name its own agent', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory(agentsExtensionFile))
+  const result = await withFakePi({ text: 'done' }, () =>
+    tool.execute('call-agent-batch', {
+      tasks: [
+        { task: 'Map the login flow', agent: 'scout' },
+        { task: 'Check the change', agent: 'reviewer' },
+        { task: 'Untouched task' }
+      ]
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, false)
+  const signatures = readArgs().map((args) => [flagOf(args, '--model'), flagOf(args, '--thinking'), flagOf(args, '--tools')].join('|')).sort()
+  assert.deepEqual(signatures, ['x/y|low|read,grep', 'x/z|high|read', '||'].sort())
+})
+
+test('an unknown agent name fails the task before any child starts', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory(agentsExtensionFile))
+  const result = await withFakePi({ text: 'never' }, () =>
+    tool.execute('call-agent-unknown', { task: 'Do something', agent: 'ghost' }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, true)
+  const child = result.details!.results[0]!
+  assert.equal(child.status, 'failed')
+  assert.match(child.errorMessage ?? '', /Unknown subagent agent "ghost"\. Available agents: scout, reviewer/)
+  assert.deepEqual(readArgs(), [], 'an unknown agent must not spawn a child')
+})
+
+test('one unknown agent in a batch fails alone and leaves its siblings running', async () => {
+  resetArgs()
+  const { tool } = createApi(await loadFactory(agentsExtensionFile))
+  const result = await withFakePi({ text: 'done' }, () =>
+    tool.execute('call-agent-mixed', {
+      tasks: [
+        { task: 'Map the login flow', agent: 'ghost' },
+        { task: 'Map the settings flow', agent: 'scout' }
+      ]
+    }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, false, 'one failed task out of two is not a tool error')
+  assert.equal(result.details?.results[0]?.status, 'failed')
+  assert.match(result.details!.results[0]!.errorMessage ?? '', /Unknown subagent agent/)
+  assert.equal(result.details?.results[1]?.status, 'completed')
+  assert.equal(readArgs().length, 1, 'only the known agent spawns a child')
+})
+
+test('an agent preset timeout bounds the task', async () => {
+  const shortTimeoutAgents = [{ name: 'blink', description: 'A very short budget', prompt: '', timeoutMs: 1000 }]
+  const file = path.join(dir, 'subagent-extension-short-timeout.mjs')
+  writeFileSync(file, subagentExtension({}, '', '', false, { command: 'pi', prefixArgs: [] }, shortTimeoutAgents), 'utf8')
+  const { tool } = createApi(await loadFactory(file))
+  const result = await withFakePi({ mode: 'slow' }, () =>
+    tool.execute('call-agent-timeout', { task: 'Take forever', agent: 'blink' }, undefined, undefined, { cwd: process.cwd() })
+  )
+  assert.equal(result.isError, true)
+  assert.equal(result.details?.results[0]?.status, 'timed_out')
+  // The queue may spend a millisecond of the budget before the child starts,
+  // so the reported number can be one less than the preset's exact value.
+  assert.match(result.content[0].text, /timed out after \d+ ms/)
+})
+
+test('the generated source ships the agent roster only when presets exist', () => {
+  const plain = subagentExtension()
+  assert.ok(plain.includes('const AGENTS = [];'))
+  assert.ok(!plain.includes('Named agent presets are available'))
+  assert.ok(!plain.includes('named agent presets fits the work'), 'no guideline may promise agents that do not exist')
+
+  const roster = subagentExtension({}, '', '', false, { command: 'pi', prefixArgs: [] }, agents)
+  assert.ok(roster.includes('"name":"scout"'))
+  assert.ok(roster.includes('Named agent presets are available through the agent parameter:'), 'the roster is named in the tool description')
+  assert.ok(roster.includes('scout'), 'an available agent is named in the tool description')
+  assert.ok(roster.includes('named agent presets fits the work'))
+
+  // A preset the sanitizer drops must not reach the generated source at all.
+  const dirty = subagentExtension({}, '', '', false, { command: 'pi', prefixArgs: [] }, [
+    ...agents,
+    { name: 'BAD NAME', description: 'rejected', prompt: 'x' },
+    { name: 'no description', prompt: 'x' },
+    { name: 'scout', description: 'duplicate', prompt: 'duplicate' },
+    { name: 'bad-model', description: 'invalid model', prompt: 'x', model: 'not a model' }
+  ])
+  assert.ok(!dirty.includes('BAD NAME'))
+  assert.ok(!dirty.includes('"name":"no description"'))
+  assert.equal((dirty.match(/"name":"scout"/g) ?? []).length, 1, 'a duplicate name keeps the first preset')
+  assert.ok(!dirty.includes('"model":"not a model"'), 'an invalid model falls away rather than reaching argv')
 })

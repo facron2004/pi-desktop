@@ -99,7 +99,10 @@ const suites = [
   'memory.test.ts',
   'auto-title.test.ts',
   'branch-menu-worktree.test.ts',
-  'title-sync.test.ts'
+  'title-sync.test.ts',
+  'agents.test.ts',
+  'subagent-usage.test.ts',
+  'subagent-worktree.test.ts'
 ]
 const debug = process.argv[2] === '--debug'
 

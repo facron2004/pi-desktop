@@ -2,6 +2,7 @@ import {
   SUBAGENT_EDITOR_CANCEL_STATUS_KEY,
   SUBAGENT_EDITOR_PENDING_STATUS_KEY
 } from '@shared/types'
+import type { AgentPreset } from './agents'
 
 /** Settings choices for a spawned subagent; an absent one follows the conversation. */
 export interface SubagentDefaults {
@@ -29,6 +30,45 @@ function bounded(value: string | undefined, pattern: RegExp): string {
   return pattern.test(text) ? text : ''
 }
 
+const AGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
+const MAX_AGENT_DESCRIPTION_CHARS = 500
+const MAX_AGENT_PROMPT_CHARS = 32 * 1024
+const MAX_AGENT_TOOLS = 32
+
+/**
+ * Re-validates everything the main process read, because the preset is about
+ * to become part of a child's argv and system prompt. A preset that fails a
+ * check here is dropped, the same fallback doctrine as every other value: a
+ * stray shape never reaches a child, it just stops pretending to be an agent.
+ */
+function sanitizeAgentPreset(preset: AgentPreset): AgentPreset | null {
+  const name = typeof preset?.name === 'string' ? preset.name.trim().toLowerCase() : ''
+  const description = typeof preset?.description === 'string' ? preset.description.trim() : ''
+  const prompt = typeof preset?.prompt === 'string' ? preset.prompt.trim().slice(0, MAX_AGENT_PROMPT_CHARS) : ''
+  if (!AGENT_NAME_PATTERN.test(name) || !description) return null
+  const clean: AgentPreset = {
+    name,
+    description: description.slice(0, MAX_AGENT_DESCRIPTION_CHARS),
+    prompt
+  }
+  const model = bounded(preset.model, MODEL_PATTERN)
+  if (model) clean.model = model
+  const thinking = bounded(preset.thinking, THINKING_PATTERN)
+  if (thinking) clean.thinking = thinking
+  if (Array.isArray(preset.tools) && preset.tools.length > 0) {
+    const tools = preset.tools
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_AGENT_TOOLS)
+    if (tools.length > 0) clean.tools = tools
+  }
+  if (typeof preset.timeoutMs === 'number' && Number.isFinite(preset.timeoutMs) && preset.timeoutMs > 0) {
+    clean.timeoutMs = preset.timeoutMs
+  }
+  return clean
+}
+
 /**
  * Builds the Pi extension that adds the `subagent` tool.
  *
@@ -46,12 +86,36 @@ export function subagentExtension(
   permissionExtensionPath = '',
   permissionTitle = '',
   trustProject = false,
-  fallbackInvocation: { command: string; prefixArgs: string[] } = { command: 'pi', prefixArgs: [] }
+  fallbackInvocation: { command: string; prefixArgs: string[] } = { command: 'pi', prefixArgs: [] },
+  agents: AgentPreset[] = []
 ): string {
   const settingsModel = bounded(defaults.model, MODEL_PATTERN)
   const settingsThinking = bounded(defaults.thinking, THINKING_PATTERN)
+  // The presets were read and validated in the main process; this second pass
+  // is the same boundary every other interpolated value crosses. Duplicates
+  // keep the first entry so the generated source is deterministic.
+  const sanitizedAgents: AgentPreset[] = []
+  const seenAgentNames = new Set<string>()
+  for (const entry of agents ?? []) {
+    const preset = sanitizeAgentPreset(entry)
+    if (!preset || seenAgentNames.has(preset.name)) continue
+    seenAgentNames.add(preset.name)
+    sanitizedAgents.push(preset)
+  }
+  const agentRoster = sanitizedAgents.length > 0
+    ? ' Named agent presets are available through the agent parameter: '
+      + sanitizedAgents
+        .map((preset) => `${preset.name} — ${preset.description}`)
+        .join('; ')
+        .slice(0, 1200)
+      + '. Pass agent with the name, keep the briefing about the goal, and the preset adds the role, the model, the tools and the time budget.'
+    : ''
+  const agentGuideline = sanitizedAgents.length > 0
+    ? ['When one of the named agent presets fits the work (see the subagent tool description), pass its name in agent and write the briefing about the goal; the preset already carries the role instructions, the model and the tool allowlist.']
+    : []
 return `import { execFile, spawn } from 'node:child_process';
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { Type } from 'typebox';
@@ -89,11 +153,17 @@ const MAX_SUBAGENT_STDERR_CHARS = 256 * 1024;
 const MAX_SUBAGENT_PROGRESS_OUTPUT_CHARS = 16 * 1024;
 const MAX_SUBAGENT_TRANSCRIPT_MESSAGES = 200;
 const MAX_SUBAGENT_TRANSCRIPT_BYTES = 256 * 1024;
+// Worktrees live inside the project so the realpath cwd sandbox still holds.
+// They are registered in .git/info/exclude, never in the user's .gitignore.
+const WORKTREE_ROOT = '.pi/worktrees';
+const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SUBAGENT_EDITOR_PENDING_STATUS_KEY = ${JSON.stringify(SUBAGENT_EDITOR_PENDING_STATUS_KEY)};
 const SUBAGENT_EDITOR_CANCEL_STATUS_KEY = ${JSON.stringify(SUBAGENT_EDITOR_CANCEL_STATUS_KEY)};
 const APPROVAL_EXTENSION_PATH = ${JSON.stringify(permissionExtensionPath)};
 const PERMISSION_TITLE = ${JSON.stringify(permissionTitle)};
 const FALLBACK_INVOCATION = ${JSON.stringify(fallbackInvocation)};
+const AGENTS = ${JSON.stringify(sanitizedAgents)};
+const AGENT_NAMES = AGENTS.map(agent => agent.name);
 let uiQueue = Promise.resolve();
 let uiRequestSequence = 0;
 let activeSubagentCount = 0;
@@ -189,7 +259,34 @@ async function runWithSubagentSlot(defaultCwd, params, task, cwd, signal, onUpda
     clearTimeout(timeout);
     if (signal) signal.removeEventListener('abort', abortQueue);
     const remainingTimeout = Math.max(1, params.timeoutMs - Math.ceil(elapsed));
-    return await runSubagent(defaultCwd, { ...params, timeoutMs: remainingTimeout }, task, cwd, signal, onUpdate, ctx);
+    // A worktree is created only after the task owns a slot, so a cancelled
+    // queue never leaves one behind. The child cwd is the worktree path, still
+    // verified by safeWorkingDirectory against the project root.
+    let worktree = null;
+    let childCwd = cwd;
+    if (params.worktree) {
+      const created = await createWorktree(defaultCwd);
+      if (created.error) {
+        return queuedTaskResult(defaultCwd, params, task, cwd, 'failed', created.error);
+      }
+      worktree = created;
+      childCwd = path.relative(defaultCwd, created.path);
+    }
+    const result = await runSubagent(defaultCwd, { ...params, timeoutMs: remainingTimeout }, task, childCwd, signal, onUpdate, ctx);
+    if (worktree) {
+      try {
+        result.worktree = await finalizeWorktree(worktree, defaultCwd);
+      } catch (error) {
+        result.worktree = {
+          name: worktree.name,
+          branch: worktree.branch,
+          path: worktree.path,
+          kept: true,
+          reason: 'worktree could not be finalized: ' + (error instanceof Error ? error.message : String(error))
+        };
+      }
+    }
+    return result;
   } finally {
     clearTimeout(timeout);
     if (signal) signal.removeEventListener('abort', abortQueue);
@@ -223,7 +320,8 @@ function queuedTaskResult(defaultCwd, params, task, cwd, status, errorMessage) {
     retriesUsed: 0,
     cancelled: false,
     structured: undefined,
-    schemaError: undefined
+    schemaError: undefined,
+    worktree: undefined
   };
 }
 // Settings for this process. '' means the setting is unset and the call follows
@@ -518,22 +616,42 @@ function checkOutputSchema(schema, output) {
   return { ok: true, value: parsed.value };
 }
 
-// Per-task values win over the batch defaults, which already won over Settings
-// and the dispatching session. Anything that is not a valid shape falls back,
-// so a stray string can never reach a child's argv.
+function agentByName(requested) {
+  const name = typeof requested === 'string' ? requested.trim().toLowerCase() : '';
+  if (!name) return undefined;
+  return AGENTS.find(agent => agent.name === name);
+}
+
+// Per-task values win over the named agent's preset, which wins over the batch
+// defaults, which already won over Settings and the dispatching session.
+// Anything that is not a valid shape falls back, so a stray string can never
+// reach a child's argv.
 function taskParams(effective, item) {
+  const agent = agentByName(item && item.agent);
   const outputSchema = item && item.outputSchema !== undefined
     ? parseOutputSchema(item.outputSchema)
     : effective.outputSchema;
+  const agentRequested = Boolean(item && typeof item.agent === 'string' && item.agent.trim());
   return {
-    model: validOverride(item && item.model, MODEL_PATTERN) || effective.model,
-    thinking: validOverride(item && item.thinking, THINKING_PATTERN) || effective.thinking,
-    tools: Array.isArray(item && item.tools) && item.tools.length > 0 ? item.tools : effective.tools,
-    timeoutMs: normalizeTimeout(item && item.timeoutMs, effective.timeoutMs),
+    model: validOverride(item && item.model, MODEL_PATTERN) || (agent && agent.model) || effective.model,
+    thinking: validOverride(item && item.thinking, THINKING_PATTERN) || (agent && agent.thinking) || effective.thinking,
+    tools: Array.isArray(item && item.tools) && item.tools.length > 0
+      ? item.tools
+      : (agent && Array.isArray(agent.tools) && agent.tools.length > 0 ? agent.tools : effective.tools),
+    timeoutMs: normalizeTimeout(item && item.timeoutMs, (agent && agent.timeoutMs) || effective.timeoutMs),
     retries: normalizeRetries(item && item.retries, effective.retries),
     outputSchema: outputSchema.schema,
     outputSchemaError: outputSchema.error,
-    label: typeof (item && item.label) === 'string' ? item.label.trim().slice(0, 80) : ''
+    label: typeof (item && item.label) === 'string' ? item.label.trim().slice(0, 80) : '',
+    prompt: agent && agent.prompt ? agent.prompt : '',
+    agentName: agent ? agent.name : '',
+    worktree: item && item.worktree !== undefined ? item.worktree === true : effective.worktree === true,
+    // An unknown name must fail the task before a child starts: silently
+    // running a generic subagent would make the caller believe it got the role.
+    agentError: agentRequested && !agent
+      ? 'Unknown subagent agent "' + String(item.agent).trim() + '". Available agents: '
+        + (AGENT_NAMES.join(', ') || 'none')
+      : ''
   };
 }
 
@@ -544,18 +662,21 @@ const OutputSchemaParam = Type.Optional(Type.Any({
 const TaskItem = Type.Object({
   task: Type.String({ description: 'A complete, self-contained briefing for the child: goal, exact paths or data, constraints and definition of done. The child cannot see this conversation.' }),
   label: Type.Optional(Type.String({ description: 'A short human-readable name for this task, shown in the subagent tree instead of the whole briefing.' })),
+  agent: Type.Optional(Type.String({ description: 'Name of a named agent preset for this task. Available agents are listed in the tool description; an unknown name fails the task before a child starts.' })),
   cwd: Type.Optional(Type.String({ description: 'Working directory for this task, resolved inside the current project.' })),
   model: Type.Optional(Type.String({ description: 'Model override for this task only, for example provider/model.' })),
   thinking: Type.Optional(Type.String({ description: 'Thinking level override for this task only.' })),
   tools: Type.Optional(Type.Array(Type.String(), { description: 'Tool allowlist for this task only.' })),
   timeoutMs: Type.Optional(Type.Number({ description: 'Wall-clock timeout for this task in milliseconds (1000-86400000, default 1800000).' })),
   retries: Type.Optional(Type.Number({ description: 'Retries for this task, 0-2. A retry happens only when the attempt never reached the model, so no work is repeated.' })),
-  outputSchema: OutputSchemaParam
+  outputSchema: OutputSchemaParam,
+  worktree: Type.Optional(Type.Boolean({ description: 'Run this task in its own git worktree and branch. Parallel write tasks then cannot overwrite each other; a worktree with changes is kept and the branch is reported.' }))
 });
 
 const SubagentParams = Type.Object({
   task: Type.Optional(Type.String({ description: 'One self-contained task to delegate. Write a full briefing: the child sees no conversation history.' })),
-  tasks: Type.Optional(Type.Array(TaskItem, { description: 'Independent tasks to delegate in parallel (max 8). Each may carry its own label, cwd, model, thinking, tools, timeoutMs, retries and outputSchema.' })),
+  tasks: Type.Optional(Type.Array(TaskItem, { description: 'Independent tasks to delegate in parallel (max 8). Each may carry its own label, agent, cwd, model, thinking, tools, timeoutMs, retries and outputSchema.' })),
+  agent: Type.Optional(Type.String({ description: 'Name of a named agent preset for a single task. Available agents are listed in the tool description; an unknown name fails the task before a child starts.' })),
   cwd: Type.Optional(Type.String({ description: 'Default working directory for the child processes, resolved inside the current project.' })),
   model: Type.Optional(Type.String({ description: 'Default model override, for example provider/model.' })),
   thinking: Type.Optional(Type.String({ description: 'Default thinking level override.' })),
@@ -564,6 +685,7 @@ const SubagentParams = Type.Object({
   concurrency: Type.Optional(Type.Number({ description: 'Maximum tasks of this batch running at once (1-8, default 4; the process-wide cap is 4).' })),
   retries: Type.Optional(Type.Number({ description: 'Default retry count for this call, 0-2. Only an attempt that never reached the model is retried.' })),
   outputSchema: OutputSchemaParam,
+  worktree: Type.Optional(Type.Boolean({ description: 'Run every task of this batch in its own git worktree and branch, so parallel write tasks cannot overwrite each other.' })),
   label: Type.Optional(Type.String({ description: 'A short name for a single task, shown in the subagent tree.' }))
 });
 
@@ -583,6 +705,113 @@ function safeWorkingDirectory(defaultCwd, requestedCwd) {
   } catch {
     return null;
   }
+}
+
+function runGit(args, cwd) {
+  return new Promise(resolve => {
+    execFile('git', args, {
+      cwd,
+      windowsHide: true,
+      timeout: 30000,
+      maxBuffer: 1024 * 1024
+    }, (error, stdout, stderr) => {
+      resolve({
+        ok: !error,
+        stdout: String(stdout || ''),
+        stderr: String(stderr || ''),
+        message: error ? (error.message || String(error)) : ''
+      });
+    });
+  });
+}
+
+/**
+ * Give one task its own git worktree, inside the project so the realpath cwd
+ * sandbox still holds. The name is a generated slug, never caller-supplied, so
+ * a task brief cannot choose a path or a branch ref.
+ */
+async function createWorktree(defaultCwd) {
+  const repo = await runGit(['rev-parse', '--is-inside-work-tree'], defaultCwd);
+  if (!repo.ok || repo.stdout.trim() !== 'true') {
+    return { error: 'worktree requires a git repository: ' + (repo.stderr.trim() || repo.message || 'git rev-parse failed') };
+  }
+  const name = 'pi-subagent-' + randomUUID().slice(0, 12);
+  const branch = 'pi-subagent/' + name;
+  const worktreePath = path.join(defaultCwd, WORKTREE_ROOT, name);
+  // Create the parent before checking containment: realpathSync on a path that
+  // does not exist yet always fails. If .pi is a link out of the project, the
+  // check below still catches it because the resolved parent is outside.
+  const parent = path.join(defaultCwd, WORKTREE_ROOT);
+  mkdirSync(parent, { recursive: true });
+  if (!resolvesInside(defaultCwd, parent)) {
+    return { error: 'worktree directory escapes the project' };
+  }
+  const add = await runGit(['worktree', 'add', '-b', branch, '--', worktreePath], defaultCwd);
+  if (!add.ok) {
+    return { error: 'git worktree add failed: ' + (add.stderr.trim() || add.message) };
+  }
+  if (!safeWorkingDirectory(defaultCwd, path.join(WORKTREE_ROOT, name))) {
+    await runGit(['worktree', 'remove', '--force', worktreePath], defaultCwd);
+    return { error: 'worktree resolved outside the project after creation' };
+  }
+  // Keep the worktree directory out of git status without touching the
+  // user's committed .gitignore: info/exclude is local to this repository.
+  try {
+    const excludePath = await runGit(['rev-parse', '--git-path', 'info/exclude'], defaultCwd);
+    const target = path.resolve(defaultCwd, excludePath.stdout.trim());
+    const exclusion = '/' + WORKTREE_ROOT + '/';
+    const existing = existsSync(target) ? readFileSync(target, 'utf8') : '';
+    if (!existing.split(/\\r?\\n/).includes(exclusion)) {
+      mkdirSync(path.dirname(target), { recursive: true });
+      appendFileSync(target, (existing && !existing.endsWith('\\n') ? '\\n' : '') + exclusion + '\\n', 'utf8');
+    }
+  } catch {
+    // A missing info/exclude only costs a noisy git status, not isolation.
+  }
+  return { name, branch, path: worktreePath };
+}
+
+function resolvesInside(root, candidate) {
+  try {
+    const relative = path.relative(realpathSync(root), realpathSync(candidate));
+    return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Keep a worktree only when the child actually produced something: uncommitted
+ * changes or a commit the parent branch does not have. Otherwise remove the
+ * worktree and its branch so a failed read-only task leaves nothing behind.
+ */
+async function finalizeWorktree(worktree, defaultCwd) {
+  const status = await runGit(['-C', worktree.path, 'status', '--porcelain'], defaultCwd);
+  const childHead = await runGit(['-C', worktree.path, 'rev-parse', 'HEAD'], defaultCwd);
+  const parentHead = await runGit(['rev-parse', 'HEAD'], defaultCwd);
+  const hasChanges = status.ok && status.stdout.trim().length > 0;
+  const hasCommits = childHead.ok && parentHead.ok && childHead.stdout.trim() !== parentHead.stdout.trim();
+  const kept = hasChanges || hasCommits || !status.ok || !childHead.ok;
+  if (kept) {
+    return {
+      name: worktree.name,
+      branch: worktree.branch,
+      path: worktree.path,
+      kept: true,
+      reason: hasChanges ? 'the child left uncommitted changes' : hasCommits ? 'the child created a commit' : 'git status could not be read'
+    };
+  }
+  const removed = await runGit(['worktree', 'remove', '--force', worktree.path], defaultCwd);
+  if (removed.ok) {
+    await runGit(['branch', '-D', worktree.branch], defaultCwd);
+  }
+  return {
+    name: worktree.name,
+    branch: worktree.branch,
+    path: worktree.path,
+    kept: false,
+    reason: 'the child produced no changes; the worktree and branch were cleaned up'
+  };
 }
 
 function emptyUsage() {
@@ -661,6 +890,9 @@ function buildArgs(params) {
   if (params.thinking) args.push('--thinking', params.thinking);
   if (Array.isArray(params.tools) && params.tools.length > 0) args.push('--tools', params.tools.join(','));
   let systemPrompt = SUBAGENT_SYSTEM_PROMPT;
+  if (params.prompt) {
+    systemPrompt += '\\n\\n' + params.prompt;
+  }
   if (params.outputSchema) {
     systemPrompt += '\\n\\nYour final answer must be a single JSON value that conforms to this JSON Schema. Output only the JSON value: no prose, no markdown fences, no notes.\\n'
       + JSON.stringify(params.outputSchema);
@@ -757,7 +989,9 @@ function runSubagentOnce(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
     /** The parsed answer when the task ran with an outputSchema. */
     structured: undefined,
     /** Why the answer did not match outputSchema, when it did not. */
-    schemaError: undefined
+    schemaError: undefined,
+    /** The worktree and branch this task ran in, when isolation was requested. */
+    worktree: undefined
   };
   if (!workingDirectory) {
     result.exitCode = 1;
@@ -1272,7 +1506,7 @@ export default function (pi) {
   pi.registerTool({
     name: 'subagent',
     label: 'Subagent',
-    description: 'Delegate self-contained work to isolated Pi subagents. Each child runs in its own process and context window: it sees only the briefing you write, the project files and the tools you allow. Use task for one child, or tasks for a parallel batch (max 8, default concurrency 4, default timeout 30 minutes). Write a complete briefing and give each task a short label; per-task model, thinking, tools, timeoutMs, retries and cwd may differ. Give a task an outputSchema when you need a machine-checkable answer: the child must then reply with one JSON value that matches it, and a mismatch fails the task instead of passing as success. Every child returns a final text report, with status, usage, attempts and transcript in the details.',
+    description: 'Delegate self-contained work to isolated Pi subagents. Each child runs in its own process and context window: it sees only the briefing you write, the project files and the tools you allow. Use task for one child, or tasks for a parallel batch (max 8, default concurrency 4, default timeout 30 minutes). Write a complete briefing and give each task a short label; per-task agent, model, thinking, tools, timeoutMs, retries and cwd may differ. Give a task an outputSchema when you need a machine-checkable answer: the child must then reply with one JSON value that matches it, and a mismatch fails the task instead of passing as success. Set worktree when a task writes files in parallel with other tasks: it runs in its own git worktree and branch, so the writes cannot collide; a worktree with changes is kept and its branch is reported, a clean one is removed. Every child returns a final text report, with status, usage, attempts and transcript in the details.${agentRoster}',
     parameters: SubagentParams,
     promptSnippet: 'Delegate self-contained work to isolated subagents',
     promptGuidelines: [
@@ -1280,7 +1514,9 @@ export default function (pi) {
       'Write each subagent task as a complete briefing: state the goal, the exact paths or data to use, the constraints and the definition of done. A child cannot see this conversation, so never refer to "the file we discussed" without naming it.',
       'Use the subagent tool with a tasks array for independent work that can run at the same time; keep one coherent goal per task and give each a short label so the results are easy to tell apart.',
       'Do not use the subagent tool for a trivial one-step read or edit that is cheaper to do directly, and do not delegate work that needs to see the live conversation.',
-      'Report every child result faithfully: if a child failed, timed out or was stopped, say so and show its error instead of claiming success.'
+      'Set worktree to true when two or more delegated tasks may write to the same files, so each child gets its own git worktree and branch instead of overwriting another child. Review the reported branches before merging.',
+      'Report every child result faithfully: if a child failed, timed out or was stopped, say so and show its error instead of claiming success.',
+      ...${JSON.stringify(agentGuideline)}
     ],
     defaultActive: true,
     annotations: { destructiveHint: true, readOnlyHint: false, openWorldHint: true },
@@ -1316,7 +1552,8 @@ export default function (pi) {
         timeoutMs: normalizeTimeout(params.timeoutMs, DEFAULT_TIMEOUT_MS),
         concurrency: normalizeConcurrency(params.concurrency),
         retries: normalizeRetries(params.retries, 0),
-        outputSchema: parseOutputSchema(params.outputSchema)
+        outputSchema: parseOutputSchema(params.outputSchema),
+        worktree: params.worktree === true
       };
       // One controller per task, keyed the way the app names the row, so
       // /desktop-subagent-cancel can stop exactly one child and leave its
@@ -1337,10 +1574,25 @@ export default function (pi) {
       if (single) {
         const perTask = taskParams(effective, {
           label: params.label,
+          agent: params.agent,
+          // The call's own values stay in the item so they can beat the named
+          // agent's preset; effective.model etc. already carry Settings and the
+          // dispatching session as the next fallback.
+          model: params.model,
+          thinking: params.thinking,
+          tools: params.tools,
           timeoutMs: params.timeoutMs,
           retries: params.retries,
           outputSchema: params.outputSchema
         });
+        if (perTask.agentError) {
+          const failed = queuedTaskResult(ctx.cwd, perTask, effective.task, effective.cwd, 'failed', perTask.agentError);
+          return {
+            content: [{ type: 'text', text: resultOutput(failed) }],
+            details: { mode: 'single', results: [failed] },
+            isError: true
+          };
+        }
         const slot = taskSlot(0);
         let result;
         try {
@@ -1411,14 +1663,18 @@ export default function (pi) {
         try {
           result = results[index].cancelled
             ? results[index]
-            : markCancelled(
-              await runWithSubagentSlot(ctx.cwd, perTask, item.task, item.cwd || effective.cwd, slot.signal, partial => {
-                const current = partial.details && partial.details.results && partial.details.results[0];
-                if (current) results[index] = current;
-                publishProgress();
-              }, ctx),
-              slot
-            );
+            // An unknown agent fails only this task, before any child starts;
+            // its siblings keep their own slots and keep running.
+            : perTask.agentError
+              ? queuedTaskResult(ctx.cwd, perTask, item.task, item.cwd || effective.cwd, 'failed', perTask.agentError)
+              : markCancelled(
+                await runWithSubagentSlot(ctx.cwd, perTask, item.task, item.cwd || effective.cwd, slot.signal, partial => {
+                  const current = partial.details && partial.details.results && partial.details.results[0];
+                  if (current) results[index] = current;
+                  publishProgress();
+                }, ctx),
+                slot
+              );
         } catch (error) {
           result = queuedTaskResult(ctx.cwd, perTask, item.task, item.cwd || effective.cwd, 'failed',
             boundedError(error instanceof Error ? error.message : String(error)));
@@ -1454,6 +1710,25 @@ export default function (pi) {
       if (!task) throw new Error('No running subagent task: ' + taskId);
       task.controller.abort();
       task.cancelQueued?.();
+    }
+  });
+
+  // A kept worktree is the user's to merge or discard; this removes it only
+  // when explicitly named, and only from the directory the tool created.
+  pi.registerCommand('desktop-subagent-worktree-remove', {
+    description: 'Remove a kept subagent worktree and its branch by name',
+    handler: async value => {
+      const name = String(value || '').trim();
+      if (!WORKTREE_NAME_PATTERN.test(name)) {
+        throw new Error('Usage: /desktop-subagent-worktree-remove <pi-subagent-...>');
+      }
+      const worktreePath = path.join(process.cwd(), WORKTREE_ROOT, name);
+      if (!resolvesInside(process.cwd(), worktreePath)) {
+        throw new Error('Worktree path escapes the project');
+      }
+      const removed = await runGit(['worktree', 'remove', '--force', worktreePath], process.cwd());
+      if (!removed.ok) throw new Error('Could not remove worktree: ' + (removed.stderr.trim() || removed.message));
+      await runGit(['branch', '-D', 'pi-subagent/' + name], process.cwd());
     }
   });
 }

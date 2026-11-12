@@ -25,6 +25,7 @@ import { canAutoApprove, parseToolApproval, permissionExtension } from './permis
 import { ensurePatientRetrySettings, rememberDefaultModel, rememberDefaultThinkingLevel } from './retry-policy'
 import { taskModesExtension } from './task-modes'
 import { subagentExtension } from './subagent'
+import type { AgentPreset } from './agents'
 import { computerUseExtension } from './computer-use'
 import { contextBreakdownExtension } from './context-breakdown'
 import { generationTimingExtension } from './generation-timing'
@@ -60,6 +61,12 @@ export interface RuntimeOptions {
    * Read when the extension is generated; empty follows the dispatching session.
    */
   getSubagentModel?: () => { model?: string; thinking?: string }
+  /**
+   * Named agent presets readable from the workspace. Read when the extension
+   * is generated, so a preset file change reaches the next conversation, not a
+   * live one — the same lifecycle every other baked default has.
+   */
+  getAgentPresets?: (cwd: string) => AgentPreset[]
 }
 
 /**
@@ -184,7 +191,11 @@ export class PiRuntime extends EventEmitter {
           subagentPermissionFile,
           permissionTitle,
           this.options.trustProject === true,
-          { command: launch.command, prefixArgs: launch.prefixArgs }
+          { command: launch.command, prefixArgs: launch.prefixArgs },
+          // Named agent presets are project data, not Settings, but they cross
+          // the same boundary: read here once per process, verified and bounded
+          // by the loader, so the generated extension never re-opens a file.
+          this.options.getAgentPresets?.(options.cwd) ?? []
         ),
         'utf8'
       )

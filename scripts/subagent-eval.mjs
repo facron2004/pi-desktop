@@ -64,6 +64,26 @@ const DEFAULT_TIMEOUT_MS = 180_000
  */
 const DEFAULT_EVAL_MODEL = 'magpie/workbuddy/glm-5.3-flash'
 
+/** Static named-agent presets, injected only when --agents is passed. */
+const EVAL_AGENT_PRESETS = [
+  {
+    name: 'scout',
+    description: 'Explores a codebase area, reads files and reports the answer as a single number',
+    prompt: 'You are a scout. Read only the files you need and reply with the requested number alone.',
+    model: 'magpie/workbuddy/glm-5.3-flash',
+    thinking: 'low',
+    tools: ['read', 'grep', 'find', 'ls'],
+    timeoutMs: 120000
+  },
+  {
+    name: 'reviewer',
+    description: 'Checks a computed answer for correctness',
+    prompt: 'You are a reviewer. Verify the answer before you approve it.',
+    tools: ['read', 'grep'],
+    timeoutMs: 120000
+  }
+]
+
 const FORCED_SUBAGENT_INSTRUCTION = [
   'You must always use the subagent tool to perform the work requested by the user.',
   'Never do the work yourself and never answer a task directly, even when it looks trivial.',
@@ -218,6 +238,7 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     model: DEFAULT_EVAL_MODEL,
     sourcePath: null,
+    withAgents: false,
     keepTemp: false,
     list: false
   }
@@ -243,12 +264,14 @@ function parseArgs(argv) {
       const value = argv[++index]
       if (!value) throw new Error('--source needs a path to a subagent.ts')
       options.sourcePath = path.resolve(process.cwd(), value)
+    } else if (argument === '--agents') {
+      options.withAgents = true
     } else if (argument === '--keep-temp') {
       options.keepTemp = true
     } else if (argument === '--list') {
       options.list = true
     } else if (argument === '--help' || argument === '-h') {
-      console.log(`Usage: node scripts/subagent-eval.mjs [--scenario <name>] [--json <path>] [--model <provider/model>] [--source <subagent.ts>] [--timeout <ms>] [--keep-temp] [--list]`)
+      console.log(`Usage: node scripts/subagent-eval.mjs [--scenario <name>] [--json <path>] [--model <provider/model>] [--source <subagent.ts>] [--agents] [--timeout <ms>] [--keep-temp] [--list]`)
       process.exit(0)
     } else {
       throw new Error(`Unknown argument: ${argument}`)
@@ -427,6 +450,49 @@ const scenarios = [
     }
   },
   {
+    name: 'named-agent',
+    title: '命名 agent 预设：按角色路由一次委派',
+    description: '仅在 --agents 注入静态 preset 时有意义。父代理用 agent 参数选择 scout，子代理拿到该角色的 model/tools/系统提示并回答。',
+    setup(fixture) {
+      writeFileSync(path.join(fixture, 'numbers.txt'), 'alpha 17\nbeta 42\ngamma 8\n', 'utf8')
+    },
+    prompt:
+      'Use the subagent tool exactly once with agent set to "scout". Ask the child: "Read numbers.txt in the current working directory and reply with the number on the beta line and nothing else." Then report the number.',
+    grade(ctx) {
+      const call = ctx.toolCalls[0]
+      const result = ctx.rawResults[0]
+      return [
+        check('single-subagent-call', ctx.toolCalls.length === 1, `calls: ${ctx.toolCalls.length}`),
+        check('agent-routed-to-scout', call && call.args && call.args.agent === 'scout', JSON.stringify(call && call.args)),
+        check('child-completed', result ? result.status === 'completed' : false, result ? `status=${result.status}` : 'no result'),
+        check('child-answer-is-42', hasNumber(result && result.output, 42), truncate(result && result.output, 400)),
+        check('parent-reports-42', hasNumber(ctx.finalText, 42), truncate(ctx.finalText, 400))
+      ]
+    }
+  },
+  {
+    name: 'unknown-agent',
+    title: '未知 agent 名：spawn 前快速失败',
+    description: '仅在 --agents 时有意义。未知名字必须在启动子进程之前失败，且父代理如实报告。',
+    setup() {
+      // Intentionally empty.
+    },
+    prompt:
+      'Use the subagent tool exactly once with agent set to "ghost". Ask the child to compute 6*7. Do not retry with another agent. Report the exact failure message.',
+    grade(ctx) {
+      const call = ctx.toolCalls[0]
+      const result = ctx.rawResults[0]
+      return [
+        check('single-subagent-call', ctx.toolCalls.length === 1, `calls: ${ctx.toolCalls.length}`),
+        check('unknown-agent-argument', call && call.args && call.args.agent === 'ghost', JSON.stringify(call && call.args)),
+        check('child-failed', result ? result.status === 'failed' : false, result ? `status=${result.status}` : 'no result'),
+        check('no-child-spawned', result ? result.startedAt === undefined && result.usage.turns === 0 : false, result ? `startedAt=${result.startedAt} turns=${result.usage && result.usage.turns}` : 'no result'),
+        check('failure-names-available-agents', /Unknown subagent agent/i.test(String((result && result.errorMessage) || '')), truncate(result && result.errorMessage, 300)),
+        check('fast-failure', ctx.durationMs < 30_000, `${ctx.durationMs}ms`)
+      ]
+    }
+  },
+  {
     name: 'per-task-config',
     title: '新增能力：label / per-task tools / timeoutMs 在真实委派中生效',
     description: '仅用于优化后实现：父代理用 tasks 数组携带 label、任务级 tools 与 timeoutMs；检查这些参数能被模型写出并透传到 details。旧实现没有这些参数，故不与 baseline 对照。',
@@ -561,7 +627,7 @@ function fixtureText(files, name) {
 // Extension build
 // ---------------------------------------------------------------------------
 
-async function buildExtension(tempRoot, explicitSource) {
+async function buildExtension(tempRoot, explicitSource, withAgents) {
   const entry = explicitSource || path.join(root, 'src', 'main', 'pi', 'subagent.ts')
   if (!existsSync(entry)) throw new Error(`subagent source not found: ${entry}`)
   const factoryPath = path.join(tempRoot, 'subagent-factory.mjs')
@@ -580,7 +646,10 @@ async function buildExtension(tempRoot, explicitSource) {
   if (typeof factory.subagentExtension !== 'function') {
     throw new Error('bundled subagent.ts did not export subagentExtension()')
   }
-  const source = factory.subagentExtension()
+  const fallbackInvocation = { command: process.execPath, prefixArgs: [] }
+  const source = withAgents
+    ? factory.subagentExtension({}, '', '', false, fallbackInvocation, EVAL_AGENT_PRESETS)
+    : factory.subagentExtension()
   if (typeof source !== 'string' || !source.includes('registerTool')) {
     throw new Error('subagentExtension() did not return extension source')
   }
@@ -1219,7 +1288,7 @@ async function main() {
     : scenarios
 
   const tempRoot = mkdtempSync(path.join(tmpdir(), 'pi-subagent-eval-'))
-  const extension = await buildExtension(tempRoot, options.sourcePath)
+  const extension = await buildExtension(tempRoot, options.sourcePath, options.withAgents)
   const extensionSha = sha256File(extension.extensionPath)
   const environment = captureEnvironment()
 

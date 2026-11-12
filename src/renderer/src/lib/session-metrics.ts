@@ -1,5 +1,6 @@
 import type { SessionStats } from '@shared/types'
 import type { ThreadItem } from './thread'
+import { subagentUsage } from './subagent-usage'
 import { monotonicNow, type SessionTimingRecord, userTimingDuration } from './session-timing'
 
 /**
@@ -60,6 +61,17 @@ export interface SessionMetrics {
   tps: number | null
   /** Pi's run-start to first-text timing sample. */
   ttftMs: number | null
+  /**
+   * Tokens the subagents reported, kept apart from `totalTokens`.
+   *
+   * A child process has its own Pi statistics, so those tokens are not part of
+   * the parent's prompt and adding them would distort the cache hit rate.
+   */
+  subagentTokens: number
+  /** Summed subagent cost, or null when no task reported one. */
+  subagentCost: number | null
+  /** Tasks that contributed to the subagent reading. */
+  subagentTaskCount: number
 }
 
 function round(value: number, digits = 1): number {
@@ -257,6 +269,11 @@ export function sessionMetrics(
   const tps =
     windowMs > 0 && lastTurnOutput > 0 ? round(lastTurnOutput / (windowMs / 1000)) : null
 
+  // Kept apart from the token totals above: the children are their own Pi
+  // processes, so their usage is neither in the parent's statistics nor in
+  // the parent transcript's usage.
+  const subagents = subagentUsage(items)
+
   return {
     totalTokens,
     inputTokens,
@@ -274,6 +291,9 @@ export function sessionMetrics(
     contextWindow,
     contextPercent,
     tps,
-    ttftMs
+    ttftMs,
+    subagentTokens: subagents.tokens,
+    subagentCost: subagents.cost ?? null,
+    subagentTaskCount: subagents.tasks
   }
 }

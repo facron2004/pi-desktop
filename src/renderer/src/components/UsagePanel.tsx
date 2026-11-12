@@ -58,6 +58,20 @@ export function UsagePanel({ metrics }: { metrics: SessionMetrics }) {
           <span>{t('Output')}</span>
           <span>{formatExactTokens(metrics.outputTokens)}</span>
         </div>
+        {/* A child is its own Pi process, so this reading is not part of the
+            token totals above; mixing them would distort the cache hit rate. */}
+        {metrics.subagentTaskCount > 0 && (
+          <div
+            className="usage-panel__row"
+            title={t('Tokens spent by subagents, separate from this conversation')}
+          >
+            <span>{t('Subagents')}</span>
+            <span>
+              {formatExactTokens(metrics.subagentTokens)}
+              {metrics.subagentCost !== null ? ` · $${metrics.subagentCost.toFixed(4)}` : ''}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -9,6 +9,7 @@ import { AutoTitleService } from './auto-title'
 import { MemoryStore } from './memory/store'
 import { ScheduledTaskService } from './scheduled-tasks'
 import { PiRuntime } from './pi/runtime'
+import { readAgentPresets } from './pi/agents'
 import { canonicalPath } from './pi/session-file'
 import { SessionSupervisor } from './pi/supervisor'
 import { RemoteAccessService } from './remote-access'
@@ -426,7 +427,11 @@ async function start(): Promise<void> {
       const spec = model.includes('/') || !provider ? model : `${provider}/${model}`
       const thinking = current.subagentThinking?.trim()
       return { model: spec || undefined, thinking: thinking || undefined }
-    }
+    },
+    // Named agent presets: the project directory is only read while the user's
+    // project-trust choice is on, the same gate `.pi/mcp.json` passes through.
+    getAgentPresets: (cwd: string) =>
+      readAgentPresets(cwd, settingsStore.get().trustProject === true)
   }
   supervisor = new SessionSupervisor(
     () => new PiRuntime(runtimeOptions),
