@@ -17,7 +17,8 @@ export function buildRpcArgs(
   subagentFile?: string,
   computerFile?: string,
   contextBreakdownFile?: string,
-  generationTimingFile?: string
+  generationTimingFile?: string,
+  mermaidFile?: string
 ): string[] {
   const args = ['--mode', 'rpc']
   if (providerFile) args.push('--extension', providerFile)
@@ -27,6 +28,7 @@ export function buildRpcArgs(
   if (computerFile) args.push('--extension', computerFile)
   if (contextBreakdownFile) args.push('--extension', contextBreakdownFile)
   if (generationTimingFile) args.push('--extension', generationTimingFile)
+  if (mermaidFile) args.push('--extension', mermaidFile)
   if (options.sessionFile) {
     args.push('--session', options.sessionFile)
   }

@@ -115,7 +115,7 @@ export function subagentExtension(
     : []
 return `import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { Type } from 'typebox';
@@ -738,10 +738,10 @@ async function createWorktree(defaultCwd) {
   const name = 'pi-subagent-' + randomUUID().slice(0, 12);
   const branch = 'pi-subagent/' + name;
   const worktreePath = path.join(defaultCwd, WORKTREE_ROOT, name);
-  // Create the parent before checking containment: realpathSync on a path that
-  // does not exist yet always fails. If .pi is a link out of the project, the
-  // check below still catches it because the resolved parent is outside.
   const parent = path.join(defaultCwd, WORKTREE_ROOT);
+  if (!resolvesExistingAncestorInside(defaultCwd, parent)) {
+    return { error: 'worktree directory escapes the project' };
+  }
   mkdirSync(parent, { recursive: true });
   if (!resolvesInside(defaultCwd, parent)) {
     return { error: 'worktree directory escapes the project' };
@@ -774,6 +774,29 @@ async function createWorktree(defaultCwd) {
 function resolvesInside(root, candidate) {
   try {
     const relative = path.relative(realpathSync(root), realpathSync(candidate));
+    return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  } catch {
+    return false;
+  }
+}
+
+function resolvesExistingAncestorInside(root, candidate) {
+  try {
+    const rootReal = realpathSync(root);
+    let ancestor = path.resolve(candidate);
+    while (true) {
+      try {
+        lstatSync(ancestor);
+        break;
+      } catch (error) {
+        if (error?.code !== 'ENOENT') return false;
+        const parent = path.dirname(ancestor);
+        if (parent === ancestor) return false;
+        ancestor = parent;
+      }
+    }
+    const realAncestor = realpathSync(ancestor);
+    const relative = path.relative(rootReal, realAncestor);
     return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
   } catch {
     return false;
@@ -951,6 +974,7 @@ function shouldRetry(result) {
     && result.stopReason !== 'timeout'
     && result.stopReason !== 'schema'
     && result.startedAt !== undefined
+    && result.sawTool !== true
     && result.usage !== undefined
     && result.usage.turns === 0
     && Array.isArray(result.messages)
@@ -986,6 +1010,8 @@ function runSubagentOnce(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
     attempts: 0,
     retriesUsed: 0,
     cancelled: false,
+    /** True once a tool started; such an attempt must never be retried. */
+    sawTool: false,
     /** The parsed answer when the task ran with an outputSchema. */
     structured: undefined,
     /** Why the answer did not match outputSchema, when it did not. */
@@ -1315,9 +1341,11 @@ function runSubagentOnce(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
         }
       }
       if (event.type === 'tool_execution_start') {
+        result.sawTool = true;
         activeTools.set(event.toolCallId, event.toolName || 'tool');
         setActivity('Running a tool', [...activeTools.values()].join(', '));
       } else if (event.type === 'tool_execution_end') {
+        result.sawTool = true;
         activeTools.delete(event.toolCallId);
         setActivity(activeTools.size ? 'Running a tool' : 'Working', activeTools.size ? [...activeTools.values()].join(', ') : undefined);
       }

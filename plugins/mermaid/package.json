@@ -1,0 +1,30 @@
+{
+  "name": "pi-mermaid-plugin",
+  "version": "0.1.0",
+  "description": "Mermaid diagram authoring for Pi: product-manager templates, syntax checking and a model-facing skill.",
+  "keywords": [
+    "pi-package",
+    "mermaid",
+    "diagram",
+    "product-management",
+    "flowchart",
+    "swimlane"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/mermaid.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "dependencies": {
+    "lovely-mermaid": "^0.3.3"
+  }
+}

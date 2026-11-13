@@ -91,11 +91,17 @@ if (!scripts[action]) {
 
 function runNpmScript(script, args = []) {
   return new Promise((resolveExit) => {
+    // Electron-hosted terminals export this for their Node children. It must
+    // not reach `electron-vite preview` (npm run start), or Electron starts as
+    // plain Node instead of opening the app.
+    const env = { ...process.env }
+    delete env.ELECTRON_RUN_AS_NODE
     const child = crossSpawn('npm', ['run', script, ...(args.length ? ['--', ...args] : [])], {
       cwd: root,
       detached: process.platform !== 'win32',
       stdio: 'inherit',
-      windowsHide: true
+      windowsHide: true,
+      env
     })
     activeChild = child
     let settled = false

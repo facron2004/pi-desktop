@@ -125,6 +125,59 @@ function readInstalledIds(): Record<string, boolean> {
   }
 }
 
+/** Deterministic tile colour for an entry whose upstream avatar cannot load. */
+function avatarColor(name: string): string {
+  let hash = 0
+  for (let index = 0; index < name.length; index += 1) {
+    hash = (hash * 31 + name.charCodeAt(index)) | 0
+  }
+  return `hsl(${((hash % 360) + 360) % 360} 55% 48%)`
+}
+
+/**
+ * The card's upstream mark.
+ *
+ * GitHub serves an owner's avatar at `github.com/<owner>.png`; the renderer
+ * loads it directly and lets the browser cache it, the way DSH's market does.
+ * The initial tile is the fallback for a repo with no owner, a blocked image
+ * or an offline machine — never a broken image icon.
+ */
+function MarketplaceAvatar({ entry }: { entry: MarketplaceEntry }) {
+  const [failed, setFailed] = useState(false)
+  const owner = entry.repo.includes('/') ? entry.repo.slice(0, entry.repo.indexOf('/')) : ''
+  const displayName = entry.name.replace(/^(?:pi|dsh)[-_]?/i, '').trim()
+  const initial = displayName.charAt(0).toUpperCase()
+    || entry.name.trim().charAt(0).toUpperCase()
+    || 'P'
+  if (!owner || failed) {
+    return (
+      <span
+        className="marketplace-card__sigil marketplace-card__sigil--initial"
+        data-kind={entry.kind}
+        style={{ backgroundColor: avatarColor(entry.name) }}
+        aria-hidden="true"
+      >
+        {initial}
+      </span>
+    )
+  }
+  return (
+    <span className="marketplace-card__sigil" data-kind={entry.kind} data-has-icon="true" aria-hidden="true">
+      <img
+        className="marketplace-card__avatar"
+        src={`https://github.com/${encodeURIComponent(owner)}.png?size=96`}
+        alt=""
+        width={40}
+        height={40}
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+      />
+    </span>
+  )
+}
+
 function MarketplaceSkeleton() {
   return (
     <div className="marketplace-card marketplace-card--skeleton" aria-hidden="true">
@@ -180,9 +233,7 @@ function MarketplaceCard({
     <article className="marketplace-card" data-installed={installed || undefined} aria-label={entry.name}>
       <div className="marketplace-card__head">
         <div className="marketplace-card__identity">
-          <span className="marketplace-card__sigil" data-kind={entry.kind}>
-            {entry.kind === 'skill' ? <Sparkles size={15} /> : <Package size={15} />}
-          </span>
+          <MarketplaceAvatar entry={entry} />
           <div className="marketplace-card__names">
             <div className="marketplace-card__title-row">
               <h3 className="marketplace-card__title" title={entry.name}>
@@ -370,7 +421,19 @@ export function Marketplace() {
     void installedFn()
       .then((ids) => {
         if (cancelled || !Array.isArray(ids)) return
-        setServerInstalled(ids.filter((id): id is string => typeof id === 'string'))
+        const list = ids.filter((id): id is string => typeof id === 'string')
+        setServerInstalled(list)
+        // The two marks answer the same question. Once the file is readable it
+        // is the truth, so a package removed on the Manage page cannot stay
+        // "Installed" through the localStorage fallback.
+        const known = new Set(list.map((id) => id.toLowerCase()))
+        setInstalled((previous) => {
+          const next: Record<string, boolean> = {}
+          for (const [id, value] of Object.entries(previous)) {
+            if (known.has(id.toLowerCase())) next[id] = value
+          }
+          return Object.keys(next).length === Object.keys(previous).length ? previous : next
+        })
       })
       .catch(() => {
         // The local marks still work when the settings file cannot be read.
@@ -378,7 +441,9 @@ export function Marketplace() {
     return () => {
       cancelled = true
     }
-  }, [])
+    // Leaving the Manage page can have removed or added a package; re-reading
+    // the installed list keeps a card from staying disabled as "Installed".
+  }, [view])
 
   useEffect(() => {
     try {

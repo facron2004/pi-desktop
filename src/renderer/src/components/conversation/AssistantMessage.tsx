@@ -22,8 +22,8 @@ type TurnSegment = { kind: 'node'; node: ReactNode } | { kind: 'process'; buffer
  * Spoken text keeps the column. Text before the final call is commentary and
  * folds with the process once a reply arrives; a partial reply stays visible.
  * Thinking and tool calls between two stretches
- * of text are one process: open and indented while it is the live tail,
- * collapsed to a single indented line once that stretch has finished — or, when
+ * of text are one process: open on the reading column while it is the live tail,
+ * collapsed to a single line once that stretch has finished — or, when
  * `toolCallSummary` is on, one line while it is still working too. That choice
  * is ProcessTrail's; this component only cuts the turn into stretches.
  * Tools stay grouped inside it until text, thinking or an image interrupts them,

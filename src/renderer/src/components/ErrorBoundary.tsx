@@ -1,6 +1,7 @@
 import { Component, type ReactNode } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { translate } from '../lib/i18n'
+import { dismissStartupScreen } from '../lib/startup-screen'
 
 interface State {
   error: Error | null
@@ -28,6 +29,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
   }
 
   override componentDidCatch(error: Error, info: { componentStack?: string | null }) {
+    if (!this.props.scope && !this.props.inline) dismissStartupScreen()
     // The dev console surfaces renderer errors to the terminal, so the same
     // message lands next to the app's own logs.
     console.error(`[pi-desktop] error in ${this.props.scope ?? 'interface'}:`, error, info.componentStack)

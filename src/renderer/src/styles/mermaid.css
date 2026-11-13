@@ -1,0 +1,462 @@
+/* ------------------------------------------------------------------ *
+ * Mermaid diagrams in Markdown
+ *
+ * A small framed canvas rather than a raw code block: a quiet chrome bar,
+ * a soft tinted drawing surface, rounded nodes and restrained shadows. The
+ * canvas is a scroll container, never a clip: a product map that is wider
+ * than the chat is read by scrolling, and fit-to-width only ever scales down.
+ * ------------------------------------------------------------------ */
+
+.mermaid-diagram {
+  position: relative;
+  margin: 0 0 0.85em;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  background: var(--surface-sunken);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.mermaid-diagram:hover {
+  border-color: var(--border-strong);
+}
+
+.mermaid-diagram__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-height: 34px;
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+  background: linear-gradient(180deg, var(--surface-raised), var(--surface-chrome));
+}
+
+.mermaid-diagram__label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  flex: 1 1 auto;
+  font-family: var(--font-ui);
+  font-size: var(--text-assist);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-small);
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+
+/* A small accent dot gives the diagram a designed header without adding a
+   second icon to the row; it disappears while the spinner is showing. */
+.mermaid-diagram__label::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.mermaid-diagram__bar[data-busy='true'] .mermaid-diagram__label::before {
+  display: none;
+}
+
+.mermaid-diagram__label .spin {
+  flex: 0 0 auto;
+}
+
+.mermaid-diagram__type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mermaid-diagram__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-hair);
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.mermaid-diagram__tools::-webkit-scrollbar {
+  display: none;
+}
+
+.mermaid-diagram__tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+
+.mermaid-diagram__tool:hover:not(:disabled),
+.mermaid-diagram__tool:focus-visible {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.mermaid-diagram__tool:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.mermaid-diagram__tool:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.mermaid-diagram__tool[data-active='true'] {
+  color: var(--text-primary);
+  background: var(--bg-active);
+}
+
+.mermaid-diagram__zoom {
+  flex: 0 0 auto;
+  min-width: 38px;
+  padding: 0 var(--sp-1);
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-assist);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+/* The canvas: a barely-there accent glow, then the drawing surface itself.
+   Scroll both axes, drag to pan, Ctrl/Cmd + wheel to zoom. */
+.mermaid-diagram__viewport {
+  position: relative;
+  max-height: min(720px, 72vh);
+  min-height: 96px;
+  padding: 14px var(--sp-4) var(--sp-6);
+  overflow: auto;
+  overscroll-behavior: contain;
+  background:
+    radial-gradient(90% 70% at 50% 0%, var(--accent-soft), transparent 62%),
+    var(--surface-sunken);
+  outline: none;
+  user-select: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.mermaid-diagram__viewport:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.mermaid-diagram__viewport::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.mermaid-diagram__viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mermaid-diagram__viewport::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--r-full);
+  background: var(--border-strong);
+  background-clip: padding-box;
+}
+
+/* At fit the stage already matches the content width; a horizontal scrollbar
+   here is a phantom from the scaled SVG's layout box, not a real overflow. */
+.mermaid-diagram__viewport[data-fit='true'] {
+  overflow-x: hidden;
+}
+
+.mermaid-diagram__viewport[data-pannable='true'] {
+  cursor: grab;
+}
+
+.mermaid-diagram__viewport[data-dragging='true'] {
+  cursor: grabbing;
+}
+
+.mermaid-diagram__stage {
+  position: relative;
+  margin: 0 auto;
+}
+
+/* The stage is sized to the *scaled* diagram. The untransformed SVG must be
+   taken out of flow, or its natural width would still contribute to the
+   scroll container and leave a permanent scrollbar under a diagram that fits. */
+.mermaid-diagram__stage > .mermaid-diagram__graph {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.mermaid-diagram__graph {
+  transform-origin: 0 0;
+  animation: mermaid-diagram-arrive var(--dur-base) var(--ease);
+}
+
+@keyframes mermaid-diagram-arrive {
+  from {
+    opacity: 0.35;
+  }
+}
+
+.mermaid-diagram__graph svg {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+}
+
+.mermaid-diagram__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  min-height: 128px;
+  padding: var(--sp-5);
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+}
+
+.mermaid-diagram__streaming-note {
+  position: absolute;
+  right: var(--sp-3);
+  bottom: var(--sp-3);
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-xs);
+  background: var(--surface-glass);
+  color: var(--text-tertiary);
+  font-size: var(--text-assist);
+  line-height: var(--leading-small);
+  pointer-events: none;
+}
+
+.mermaid-diagram__source {
+  margin: 0;
+  padding: var(--sp-4);
+  max-height: 360px;
+  overflow: auto;
+  background: var(--surface-sunken);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-code-block);
+  line-height: var(--leading-code-block);
+  white-space: pre;
+  tab-size: 2;
+}
+
+.mermaid-diagram__source:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.mermaid-diagram__error {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  background: var(--surface-sunken);
+}
+
+.mermaid-diagram__error-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--status-danger);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+}
+
+.mermaid-diagram__error-message {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-code-block);
+  line-height: var(--leading-code-block);
+  white-space: pre-wrap;
+}
+
+.mermaid-diagram__error-source {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mermaid-diagram__error-source-label {
+  color: var(--text-tertiary);
+  font-size: var(--text-assist);
+}
+
+.mermaid-diagram__error-source pre {
+  margin: 0;
+  max-height: 260px;
+  padding: var(--sp-3);
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-code-block);
+  line-height: var(--leading-code-block);
+  white-space: pre;
+}
+
+/* Fullscreen: a portal above every panel, sized by the viewport rather than
+   by the chat column. The frame itself is the dialog so focus trapping and
+   Escape behave exactly like the app's other modals. */
+.mermaid-layer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: grid;
+  place-items: center;
+  padding: 24px 32px;
+  background: var(--scrim);
+  backdrop-filter: blur(6px);
+  animation: mermaid-fade var(--dur-fast) var(--ease);
+}
+
+@keyframes mermaid-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.mermaid-diagram--fullscreen {
+  display: flex;
+  flex-direction: column;
+  width: min(1400px, 100%);
+  height: min(900px, calc(100vh - 48px));
+  margin: 0;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  outline: none;
+}
+
+.mermaid-diagram--fullscreen .mermaid-diagram__bar {
+  min-height: 40px;
+  padding-right: 40px;
+}
+
+.mermaid-diagram--fullscreen .mermaid-diagram__tool {
+  width: 28px;
+  height: 28px;
+}
+
+.mermaid-diagram--fullscreen .mermaid-diagram__viewport {
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: 0;
+}
+
+.mermaid-diagram--fullscreen .mermaid-diagram__source {
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: 0;
+}
+
+.mermaid-diagram--fullscreen .mermaid-diagram__error {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.mermaid-diagram__dialog-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.mermaid-diagram__dialog-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  color: var(--text-tertiary);
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+
+.mermaid-diagram__dialog-close:hover,
+.mermaid-diagram__dialog-close:focus-visible {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.mermaid-diagram__dialog-close:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+@media (hover: none), (pointer: coarse), (any-pointer: coarse) {
+  .mermaid-diagram__bar {
+    min-height: 34px;
+  }
+
+  .mermaid-diagram__tool {
+    width: 30px;
+    height: 30px;
+  }
+}
+
+@media (max-width: 560px) {
+  .mermaid-diagram__bar {
+    padding-left: var(--sp-3);
+  }
+
+  .mermaid-diagram__zoom {
+    min-width: 32px;
+  }
+
+  .mermaid-layer {
+    padding: var(--sp-3);
+  }
+
+  .mermaid-diagram--fullscreen {
+    height: calc(100vh - 24px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mermaid-layer {
+    animation: none;
+  }
+
+  .mermaid-diagram__graph {
+    animation: none;
+  }
+
+  .mermaid-diagram__tool,
+  .mermaid-diagram__dialog-close {
+    transition: none;
+  }
+}

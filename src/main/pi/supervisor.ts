@@ -603,6 +603,7 @@ export class SessionSupervisor extends EventEmitter {
         sessionFile: options.sessionFile,
         model: options.model,
         thinkingLevel: options.thinkingLevel,
+        rememberDefaults: options.rememberDefaults,
         customInstructions: options.customInstructions,
         trace: { ...options.trace, sourceAction: options.trace?.sourceAction ?? 'ensure', uiSessionId: id }
       })
@@ -825,8 +826,18 @@ export class SessionSupervisor extends EventEmitter {
       this.queuedJobCount -= 1
       this.queuedPayloadBytes -= next.payloadBytes
       if (jobs.length === 0) this.queued.delete(cwd)
+      const owner = this.canonical(next.key)
       void this.request(next.key, next.command, next.payload, next.timeoutMs, next.trace, next.preflight)
-        .then(next.resolve, next.reject)
+        .then(next.resolve, (error) => {
+          // `request` rejects before it claims anything when the runtime is
+          // already gone; the reservation made above would then outlive the
+          // job and lock the whole project. While the runtime is still alive
+          // `request` owns the claim and its own release/drain path, and
+          // touching the gate here could free a lease the next job just took.
+          const runtime = this.runtimes.get(owner)
+          if (!runtime?.isRunning) void this.release(owner, next.cwd).catch(() => {})
+          next.reject(error)
+        })
     }
     this.scheduleQueueDrain()
   }
@@ -1049,11 +1060,13 @@ export class SessionSupervisor extends EventEmitter {
       // was armed. Follow that alias, and never retire a session that is
       // writing or waiting on the user.
       const id = this.canonical(key)
-      this.warmTimers.delete(id)
+      this.warmTimers.delete(key)
       if (this.gate.holds(id) || this.approvals.has(id) || [...this.queued.values()].some(jobs => jobs.some(job => this.canonical(job.key) === id))) return
       const runtime = this.runtimes.get(id)
       if (!runtime?.isRunning) return
-      void this.stop(id)
+      void this.stop(id).catch((error) => {
+        console.error('[pi-desktop] could not retire an idle Pi process:', error)
+      })
     }, WARM_MS)
     timer.unref?.()
     this.warmTimers.set(key, timer)

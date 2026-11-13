@@ -7,26 +7,23 @@
  * hard-coded.
  * ------------------------------------------------------------------ */
 
-/* The line that says what the agent is doing. It is deliberately quiet —
-   one row, one sentence, one counter — so it can sit under a long answer
-   without competing with it. */
+/* Pending work and exceptional states share the reply's text edge. Routine
+   activity is already carried by the live summary and the tool rows. */
 .run-status {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   min-height: var(--ctl-sm);
   padding: var(--sp-2) 0;
-  font-size: var(--text-xs);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
   color: var(--text-muted);
 }
 
-.run-status[data-compacting='true'] {
-  width: 100%;
-  margin-inline: auto;
-  justify-content: center;
-}
-
 .run-status__icon {
+  position: absolute;
+  right: calc(100% + var(--sp-2));
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -145,17 +142,17 @@
   color: var(--status-danger);
 }
 
-/* The elapsed-time summary sits above the answer during and after a run. */
+/* One quiet disclosure above the answer, without a full-width status strip. */
 .run-outcome {
   display: flex;
   align-items: center;
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
   min-width: 0;
-  min-height: calc(var(--ctl-sm) + var(--sp-1));
+  min-height: var(--ctl-sm);
   margin: 0 0 var(--sp-2);
-  padding: 0 0 var(--sp-2);
+  padding: 0;
   border: 0;
-  border-bottom: 1px solid var(--border-subtle);
   border-radius: 0;
   background: none;
   color: var(--text-muted);
@@ -243,7 +240,7 @@
 /* The reply is the document, not a second chat bubble. A pill sits on a
    different left edge from the trace under it, and its padding is what made
    a one-line status eat the height of a paragraph. Text shares the column;
-   the trace is indented beneath it. */
+   the trace shares its left edge. */
 .assistant__text {
   align-self: stretch;
   width: auto;
@@ -307,9 +304,8 @@
   line-height: var(--leading-body);
 }
 
-/* Activity is a disclosure in the document, with a guide only when opened.
-   Finished stretches leave the column entirely: ProcessTrail indents them
-   and collapses thinking plus tool calls into one line. */
+/* Activity stays on the document's column, with a guide only when opened.
+   Finished stretches collapse thinking plus tool calls into one line. */
 .assistant__body .tool--group,
 .assistant__body .tool[data-status='running'] {
   border-color: transparent;
@@ -332,10 +328,8 @@
 
 .process,
 .process--live {
-  /* Stretch already subtracts the margin, so a second calc would pull the
-     trace in twice and the caret would no longer share one indent. */
   align-self: stretch;
-  margin-left: var(--sp-5);
+  margin-left: 0;
   min-width: 0;
   max-width: 100%;
 }
@@ -360,8 +354,8 @@
   background: none;
   color: var(--text-tertiary);
   font: inherit;
-  font-size: var(--text-xs);
-  line-height: 1.4;
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
   text-align: left;
   cursor: pointer;
 }

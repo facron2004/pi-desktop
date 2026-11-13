@@ -352,6 +352,32 @@ function lastStreamingAssistant(items: ThreadItem[]): AssistantItem | undefined 
   return undefined
 }
 
+/**
+ * The assistant bubble an event belongs to.
+ *
+ * Pi's adapter stamps every message event with its own `messageId`, and a
+ * replayed or delayed record can arrive after the next message has already
+ * started. "Last streaming assistant" would then write the old message's
+ * final content over the new bubble and swallow the new answer. An event that
+ * names a message only ever touches that message; an older projection without
+ * message identities keeps the previous last-streaming fallback.
+ */
+function assistantForMessage(
+  items: ThreadItem[],
+  messageId: string | undefined,
+  requireStreaming = true
+): AssistantItem | undefined {
+  if (!messageId) return lastStreamingAssistant(items)
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (item.kind !== 'assistant' || item.messageId !== messageId) continue
+    if (!requireStreaming || item.streaming) return item
+    return undefined
+  }
+  const legacy = lastStreamingAssistant(items)
+  return legacy?.messageId === undefined ? legacy : undefined
+}
+
 function replaceItem(items: ThreadItem[], id: string, next: ThreadItem): ThreadItem[] {
   const index = indexOfItem(items, id)
   if (index < 0) return items
@@ -691,7 +717,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
     }
 
     case 'message.block.started': {
-      const assistant = lastStreamingAssistant(items)
+      const assistant = assistantForMessage(items, event.messageId)
       if (!assistant) return items
       const blocks = assistant.blocks.slice()
       const index = event.contentIndex ?? blocks.length
@@ -720,7 +746,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
     }
 
     case 'message.delta': {
-      const assistant = lastStreamingAssistant(items)
+      const assistant = assistantForMessage(items, event.messageId)
       if (!assistant) return items
       const blocks = assistant.blocks.slice()
       const index = event.contentIndex ?? blocks.length
@@ -738,7 +764,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
     }
 
     case 'message.block.completed': {
-      const assistant = lastStreamingAssistant(items)
+      const assistant = assistantForMessage(items, event.messageId, false)
       if (!assistant) return items
       const blocks = assistant.blocks.slice()
       const index = event.contentIndex ?? blocks.length
@@ -760,7 +786,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
     case 'tool.proposed': {
       // The model named a tool. It is not running yet — the node exists from
       // here on so a call that never executes is still visible.
-      const assistant = lastStreamingAssistant(items)
+      const assistant = assistantForMessage(items, event.messageId, false)
       if (!assistant) return items
       const toolCallId = event.toolCallId ?? nextId('call')
       const toolName = event.toolName
@@ -790,7 +816,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
     }
 
     case 'tool.args': {
-      const assistant = lastStreamingAssistant(items)
+      const assistant = assistantForMessage(items, event.messageId, false)
       if (!assistant) return items
       const toolCallId = event.toolCallId ?? ''
       const existing = findTool(items, toolCallId)
@@ -857,7 +883,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       const message = event.message
       if (!message) return items
       if (message.role === 'assistant') {
-        const assistant = lastStreamingAssistant(items)
+        const assistant = assistantForMessage(items, event.messageId, false)
         if (!assistant) return items
         const rawDuration = (message as unknown as { durationMs?: unknown }).durationMs
         const next: AssistantItem = {

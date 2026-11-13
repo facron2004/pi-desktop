@@ -101,7 +101,7 @@ export function resolvePiLaunch(customPath?: string): PiLaunchSpec {
     const target = customPath.trim()
     if (isScriptFile(target)) {
       const node = nodeSatisfiesPi() ? process.execPath : findOnPath('node')
-      if (node) {
+      if (node && existsSync(target)) {
         return {
           command: node,
           prefixArgs: [target],

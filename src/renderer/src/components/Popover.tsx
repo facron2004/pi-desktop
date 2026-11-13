@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -52,6 +53,7 @@ export function Popover({
   closeDelay = 160
 }: PopoverProps) {
   const [open, setOpen] = useState(false)
+  const popoverId = useId()
   const containerRef = useRef<HTMLDivElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLElement | null>(null)
@@ -239,6 +241,8 @@ export function Popover({
   return (
     <div
       className="popover-wrap"
+      data-open={open ? 'true' : undefined}
+      data-popover-id={popoverId}
       ref={containerRef}
       onMouseEnter={scheduleOpen}
       onMouseLeave={scheduleClose}
@@ -249,6 +253,7 @@ export function Popover({
       {open ? createPortal(
         <div
           ref={popoverRef}
+          data-popover-id={popoverId}
           className={`popover ${className ?? ''}`}
           onMouseEnter={stopClosing}
           onMouseLeave={scheduleClose}

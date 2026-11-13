@@ -47,6 +47,7 @@ function stable(items: ThreadItem[]): unknown {
       key === 'startedAt' ||
       key === 'finishedAt' ||
       key === 'threadId' ||
+      key === 'messageId' ||
       key === 'sequence'
         ? undefined
         : value
@@ -379,6 +380,7 @@ test('finishing a stream clears tool identity mappings but preserves sequence', 
 test('applyEvent and applyStreamEvent(normalizePiEvent) project the same thread', () => {
   resetStreamState()
   const context = contextOf('thread-equivalence')
+  const compatibilityContext = contextOf('thread-equivalence-compatibility')
   const events: PiEvent[] = [
     { type: 'agent_start' },
     { type: 'turn_start' },
@@ -458,7 +460,7 @@ test('applyEvent and applyStreamEvent(normalizePiEvent) project the same thread'
     const streamEvent = normalizePiEvent(event, context)
     assert.ok(streamEvent, `${event.type} should normalize`)
     viaAdapter = applyStreamEvent(viaAdapter, streamEvent)
-    viaApply = applyEvent(viaApply, event, context)
+    viaApply = applyEvent(viaApply, event, compatibilityContext)
     assert.deepEqual(stable(viaAdapter), stable(viaApply), `after ${event.type}`)
   }
 

@@ -370,6 +370,10 @@ export interface ScheduledTaskInput {
   prompt: string
   workspaceId: string
   schedule: ScheduledTaskSchedule
+  /** Pi model as `provider/model`. Unset follows the app's default model. */
+  model?: string
+  /** Pi reasoning effort. Unset follows the app's default effort. */
+  thinkingLevel?: string
 }
 
 export interface ScheduledTask extends ScheduledTaskInput {
@@ -1304,6 +1308,12 @@ export interface RuntimeStartOptions {
   thinkingLevel?: string
   /** App-level instructions appended to the system prompt for this process. */
   customInstructions?: string
+  /**
+   * Write `model` / `thinkingLevel` into Pi's agent settings as the next
+   * launch's defaults. A task-specific choice passes false so it does not
+   * become the app-wide default.
+   */
+  rememberDefaults?: boolean
   /** Diagnostic only. Stripped before the process is spawned. */
   trace?: RpcTraceHint
 }

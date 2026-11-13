@@ -11,9 +11,9 @@ import { useT } from '../lib/i18n'
 /**
  * The working trace of one stretch of a turn: thinking and tool calls.
  *
- * While that stretch is the live tail it stays open and indented, so the
+ * While that stretch is the live tail it stays open on the reading column, so the
  * step can be watched. Once the stretch is no longer the thing happening,
- * it collapses to a single indented line — the answer keeps the column,
+ * it collapses to a single line — the answer keeps the column,
  * and the trace stays one click away instead of stacking under it.
  *
  * Both of those are settings, and this is the only component that reads them:
@@ -119,10 +119,10 @@ export function ProcessTrail({
         title={summarizing ? t(open ? 'Collapse' : 'Expand') : undefined}
         onClick={toggleOpen}
       >
-        <ChevronRight size={13} className="caret" data-open={open} />
         <span className="process__label">{title}</span>
         {summarizing && activity.status === 'running' ? <span className="spinner" /> : null}
         {summary ? <span className="process__summary">{summary}</span> : null}
+        <ChevronRight size={13} className="caret" data-open={open} />
       </button>
       {open ? <div className="process__body">{children}</div> : null}
     </div>

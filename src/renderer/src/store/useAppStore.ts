@@ -1181,7 +1181,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (epoch !== workspaceEpoch) return
     await get().refreshSessions()
     if (epoch !== workspaceEpoch) return
-    await get().refreshGit()
+    // The branch and the change counts are a reading of the folder, not part
+    // of restoring the conversation. Reading Git here would put a git process
+    // in front of the first frame, so it lands just after the window is up.
+    void get().refreshGit()
   },
 
   async removeWorkspace(target) {
@@ -1196,9 +1199,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const removesActive = Boolean(active && samePath(active.path, path))
     const removesTransitionTarget =
       typeof projectTransitionTarget === 'string' && samePath(projectTransitionTarget, path)
-    const epoch = removesActive || queuedSwitchRemoved || removesTransitionTarget
-      ? beginProjectChange(path)
-      : projectEpoch
+    // `beginProjectChange` returns the workspace epoch, which also moves for
+    // view-only changes. This guard is about the project, so it has to compare
+    // the project epoch itself: using the returned value made the replacement
+    // branch dead code after any new-chat/sidebar click.
+    if (removesActive || queuedSwitchRemoved || removesTransitionTarget) beginProjectChange(path)
+    const epoch = projectEpoch
     // Removing a project that is not the active one must not move the user
     // somewhere else; only the project that goes away needs a replacement.
     await window.pi.workspaces.remove(target.id, path)
@@ -1323,7 +1329,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const messages = await hydrate(file)
       const current = get().threads[file]
       if (!current) return
-      if (hydrationStale(versionAtStart, current.version, current.isStreaming)) return
+      if (hydrationStale(versionAtStart, current.version, current.isStreaming)) {
+        // A version bump can come from a status/stats patch that says nothing
+        // about the transcript. Only a live transcript that already holds
+        // items outranks the disk read; with none, applying it is still right.
+        if (current.isStreaming || current.items.length > 0) return
+      }
       const next: SessionThread = {
         ...current,
         items: itemsFromMessages(messages ?? []),
@@ -1336,6 +1347,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const threads = enforceSessionLru(rawThreads, viewKeyOf(get()))
       if (get().activeSessionFile === file) set({ threads, ...projectThread(next) })
       else set({ threads })
+    } catch (error) {
+      // `openWorkspace` fires this read without awaiting it; a rejected read
+      // must surface on the conversation instead of becoming an unhandled
+      // rejection in the renderer.
+      if (get().activeSessionFile === file) set({ error: messageOf(error) })
     } finally {
       if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
     }
@@ -1816,7 +1832,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       await tracedRpc(threadKey(key), 'abort', undefined, undefined, 'user-stop')
     } catch (error) {
-      update({ error: messageOf(error) })
+      // The stop never reached Pi. Leaving the phase on `aborting` would keep
+      // rejecting every later prompt and keep the stop button disabled for
+      // the rest of the process's life.
+      update((state) =>
+        state.run.phase === 'aborting'
+          ? {
+              error: messageOf(error),
+              run: {
+                ...state.run,
+                phase: state.isStreaming ? 'working' : 'idle',
+                ...(state.isStreaming ? {} : { settled: true })
+              }
+            }
+          : { error: messageOf(error) }
+      )
     }
   },
 
@@ -2837,15 +2867,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async openSearchHit(hit, query) {
     const known = get().sessions.find((entry) => entry.file === hit.file)
-    const session: SessionMeta = known ?? {
-      id: hit.sessionId,
-      file: hit.file,
-      cwd: hit.cwd,
-      name: hit.name,
-      preview: hit.preview,
-      updatedAt: hit.updatedAt,
-      messageCount: 0
-    }
+    const session: SessionMeta = known
+      ? { ...known, messageCount: Math.max(1, known.messageCount) }
+      : {
+          id: hit.sessionId,
+          file: hit.file,
+          cwd: hit.cwd,
+          name: hit.name,
+          preview: hit.preview,
+          updatedAt: hit.updatedAt,
+          // A search hit proves this on-disk session has at least one message.
+          // Keep that fact so selectSession hydrates the transcript and can land
+          // the pending jump in the message that matched.
+          messageCount: 1
+        }
     try {
       // Another project's conversation is opened first; the thread of that
       // project is the one the jump belongs to. A run in the current one is
@@ -2853,6 +2888,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (get().activeSessionFile !== hit.file) {
         await get().selectSession(session, 'search-open')
       }
+      if (get().activeSessionFile !== hit.file) return
       set((state) => ({
         pendingJump: {
           file: hit.file,
@@ -2951,7 +2987,7 @@ let chromeOverlayCount = -1
 let chromeDark = false
 
 /** Full-window layers: whatever paints here also paints under the native controls. */
-const CHROME_OVERLAYS = '.modal-layer, .lightbox-layer'
+const CHROME_OVERLAYS = '.modal-layer, .lightbox-layer, .mermaid-layer'
 
 /**
  * The native window controls are drawn by the OS over the top-right corner of
@@ -3602,6 +3638,10 @@ function handleEvent(
 ): void {
   switch (event.type) {
     case 'agent_start': {
+      // Queued records still belong to the message that just ended. Applying
+      // them before the identity reset below is what keeps a `message_end`
+      // from being re-stamped with the next turn's message id.
+      drainPending()
       beginStream(runContextOf(get).sessionKey)
       // One run per prompt. A follow-up prompt that arrives while a run is
       // active does not open a second one: Pi folds it into the current run.
@@ -3638,6 +3678,7 @@ function handleEvent(
       break
     }
     case 'turn_start': {
+      drainPending()
       beginStream(runContextOf(get).sessionKey)
       const modelTurnStartedAt = monotonicNow()
       set((state) => ({

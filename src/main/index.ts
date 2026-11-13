@@ -19,12 +19,12 @@ import { secureUserDataDirectory, SettingsStore } from './settings'
 import { configureExternalSessionRoots, resolveSessionRoots } from './sessions'
 import { TerminalManager } from './terminal'
 import {
-  claimTrayInstance,
+  claimSingleInstance,
+  isQuitting,
   noteQuitting,
   shouldHideToTray,
   showWindow,
-  syncTray,
-  trayWantedAtStartup
+  syncTray
 } from './tray'
 import { initialBounds, wasMaximized, watchWindowState } from './window-state'
 import { isTrustedRendererNavigation, resolveRendererEntry } from './navigation-policy'
@@ -51,24 +51,28 @@ for (const stream of [process.stdout, process.stderr]) {
 
 // Keep a harness run from reading or writing the user's regular app data.
 // The name of the variable is the whole contract: it points the app at a
-// throwaway data folder, whatever else the run is doing.
+// throwaway data folder, whatever else the run is doing. It comes before the
+// single-instance lock because Electron keys that lock on the data folder.
 if (process.env.PI_DESKTOP_USER_DATA) {
   const userData = path.resolve(process.env.PI_DESKTOP_USER_DATA)
   app.setPath('userData', userData)
   isolateUserDataEnvironment(userData)
 }
-if (!secureUserDataDirectory(app.getPath('userData'))) {
+
+// One app, one window. The lock is taken before any startup work, so a second
+// launch — a double-click while the first copy is still starting — exits at
+// once and asks the running instance to reveal its window. The screenshot
+// harness is the one exception: it has to start beside a running copy.
+const primaryInstance = claimSingleInstance()
+
+// A process that lost the lock is about to quit: securing the data folder is
+// the first copy's job and the expensive checks would only delay that exit.
+if (primaryInstance && !secureUserDataDirectory(app.getPath('userData'))) {
   const message = 'Pi Desktop could not restrict access to its private app data directory and will exit to protect saved data.'
   console.error(`[pi-desktop] ${message}`)
   dialog.showErrorBox('Pi Desktop could not start', message)
   process.exit(1)
 }
-
-// A second launch while the app is only in the tray would open another window
-// the user cannot find. The lock is taken only when that mode is already on,
-// and never for the screenshot harness, which has to be able to start beside
-// a running copy.
-const primaryInstance = !trayWantedAtStartup() || claimTrayInstance()
 
 let mainWindow: BrowserWindow | null = null
 let settings: SettingsStore | null = null
@@ -79,6 +83,7 @@ let autoTitleService: AutoTitleService | null = null
 let remoteAccess: RemoteAccessService | null = null
 let remoteInitialization: Promise<void> | null = null
 let scheduledTaskService: ScheduledTaskService | null = null
+let startupFinished = false
 
 app.on('web-contents-created', (_event, contents) => {
   contents.on('will-attach-webview', (event, webPreferences, params) => {
@@ -148,12 +153,14 @@ function createWindow(): BrowserWindow {
     ...(icon ? { icon } : {}),
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac
-      ? { trafficLightPosition: { x: 18, y: 18 } }
+      ? { trafficLightPosition: { x: 18, y: 12 } }
       : {
           titleBarOverlay: {
             color: dark ? '#111317' : '#f3f3f3',
             symbolColor: dark ? '#9da4b2' : '#686868',
-            height: 44
+            // Same as --titlebar-h in tokens.css: the large control step, so
+            // the native controls share the app menu strip's height.
+            height: 36
           }
         }),
     webPreferences: {
@@ -202,21 +209,35 @@ function createWindow(): BrowserWindow {
   // the next run's input and the window creeps bigger on every launch.
   window.setContentSize(bounds.width, bounds.height)
 
-  let readyToShow = false
   let rendererStartupReady = false
-  const startupContents = window.webContents
-  const showWhenReady = () => {
-    if (readyToShow && rendererStartupReady && !window.isDestroyed()) window.show()
+  // The HTML loading screen can show the window before the app module loads.
+  // Keep a fallback if that early readiness signal never arrives.
+  const STARTUP_SHOW_FALLBACK_MS = 1500
+  let showFallback: ReturnType<typeof setTimeout> | undefined
+  const clearShowFallback = () => {
+    if (showFallback === undefined) return
+    clearTimeout(showFallback)
+    showFallback = undefined
   }
+  const startupContents = window.webContents
   const onStartupReady = (event: Electron.IpcMainEvent) => {
-    if (event.sender !== startupContents) return
+    if (event.sender !== startupContents || rendererStartupReady) return
     rendererStartupReady = true
-    showWhenReady()
+    clearShowFallback()
+    if (!window.isDestroyed()) window.show()
+    // The native window can defer its first show during initial navigation.
+    setImmediate(() => {
+      if (!window.isDestroyed() && !window.isVisible()) window.show()
+    })
   }
   ipcMain.on('app:startup-ready', onStartupReady)
   window.once('ready-to-show', () => {
-    readyToShow = true
-    showWhenReady()
+    if (rendererStartupReady || window.isDestroyed()) return
+    showFallback = setTimeout(() => {
+      showFallback = undefined
+      if (!window.isDestroyed()) window.show()
+    }, STARTUP_SHOW_FALLBACK_MS)
+    showFallback.unref?.()
   })
 
   // The size and place the user left the window in are kept for the next run.
@@ -235,6 +256,7 @@ function createWindow(): BrowserWindow {
   // reference so nothing tries to push events into a destroyed renderer.
   window.on('closed', () => {
     ipcMain.removeListener('app:startup-ready', onStartupReady)
+    clearShowFallback()
     if (mainWindow === window) {
       mainWindow = null
       terminalManager?.disposeAll()
@@ -360,11 +382,15 @@ process.on('SIGINT', handleTerminationSignal)
 process.on('SIGTERM', handleTerminationSignal)
 
 function revealMainWindow(): void {
+  // A second launch that arrives while `start` is still building the window
+  // must not create another one: the window already on its way will appear.
+  // The same is true while the app is quitting — a new window there would be
+  // built only to be closed again.
+  if (!startupFinished || isQuitting()) return
   if (!mainWindow || mainWindow.isDestroyed()) {
-    // Settings exist only after startup. A second launch that arrives before
-    // the first window is up has nothing to reveal yet.
     if (!settings) return
     mainWindow = createWindow()
+    applyTray()
   }
   showWindow(mainWindow)
 }
@@ -510,6 +536,7 @@ async function start(): Promise<void> {
       applyTray()
     }
   })
+  startupFinished = true
 }
 
 if (primaryInstance) {

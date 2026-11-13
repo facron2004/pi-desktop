@@ -1,11 +1,13 @@
-import { useLayoutEffect, useRef, useState } from 'react'
-import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, Target, Wrench } from 'lucide-react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, Target, Workflow, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { useT } from '../lib/i18n'
+import { mermaidTemplateList } from '../lib/mermaid-templates'
+import { useAppStore } from '../store/useAppStore'
 import { Popover } from './Popover'
 import '../styles/add-menu.css'
 
-type AddMenuPage = 'actions' | 'skills' | 'plugins'
+type AddMenuPage = 'actions' | 'skills' | 'plugins' | 'diagrams'
 
 const MODES = [
   { value: 'goal', label: 'Goal Mode', icon: Target, description: 'Continue until the goal is complete or blocked' },
@@ -15,6 +17,7 @@ const MODES = [
 ] as const
 
 const PAGES = [
+  { page: 'diagrams', label: 'Diagrams', icon: Workflow },
   { page: 'plugins', label: 'Plugins', icon: Wrench },
   { page: 'skills', label: 'Skills', icon: Sparkles }
 ] as const
@@ -30,10 +33,14 @@ export function AddMenu({ ready, busy, mode, skillCommands, pluginCommands, onMo
   onInsertCommand: (command: PiCommand) => void
 }) {
   const t = useT()
+  const language = useAppStore((state) => state.settings.language ?? 'en')
+  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
+  const diagramTemplates = useMemo(() => mermaidTemplateList(language), [language])
   const [page, setPage] = useState<AddMenuPage>('actions')
   const panelRef = useRef<HTMLDivElement>(null)
   const returnPage = useRef<AddMenuPage>('actions')
   const commands = page === 'skills' ? skillCommands : pluginCommands
+  const pageLabel = page === 'skills' ? 'Skills' : page === 'plugins' ? 'Plugins' : 'Diagrams'
 
   const navigate = (next: AddMenuPage) => {
     if (next !== 'actions') returnPage.current = next
@@ -122,9 +129,26 @@ export function AddMenu({ ready, busy, mode, skillCommands, pluginCommands, onMo
                 <button type="button" className="icon-btn composer__add-back" aria-label={t('Back')} title={t('Back')} onClick={() => navigate('actions')}>
                   <ChevronLeft size={15} />
                 </button>
-                <div className="popover__label">{t(page === 'skills' ? 'Skills' : 'Plugins')}</div>
+                <div className="popover__label">{t(pageLabel)}</div>
               </div>
-              {commands.length ? (
+              {page === 'diagrams' ? (
+                <div className="composer__add-list">
+                  {diagramTemplates.map((template) => (
+                    <button
+                      key={template.id}
+                      type="button"
+                      className="popover__item composer__add-command composer__add-template"
+                      role="menuitem"
+                      data-template={template.id}
+                      title={template.description}
+                      onClick={() => { close(); insertIntoComposer(template.prompt) }}
+                    >
+                      <span className="composer__add-command-name">{template.name}</span>
+                      <span className="composer__add-command-description">{template.description}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : commands.length ? (
                 <div className="composer__add-list">
                   {commands.map((command) => (
                     <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description ? t(command.description) : undefined} onClick={() => { close(); onInsertCommand(command) }}>

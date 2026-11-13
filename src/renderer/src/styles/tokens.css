@@ -322,7 +322,11 @@
   /* Status card beside the conversation (not the Tools drawer). */
   --task-rail-w: 280px;
   --shell-inset: var(--sp-3);
-  --titlebar-h: 44px;
+  /* The app menu strip is the large control step (36px), so its 28px buttons
+   * sit with 4px of air above and below — the relaxed proportion, between the
+   * cramped 32 and the original airy 44. The native window controls are told
+   * the same height in src/main/index.ts and src/main/ipc.ts. */
+  --titlebar-h: var(--ctl-lg);
   /* The 1px rule that closes the title bar. The content headers sit under it,
      so anything pinned to the shell has to start there too or its controls
      stand a pixel above the line they belong to. */

@@ -1,44 +1,34 @@
 import { app, Menu, Tray, type BrowserWindow } from 'electron'
 import { trayIconImage } from './app-icon'
-import { readPersistedFlag } from './settings'
 
 let tray: Tray | null = null
 let quitting = false
 let lockHeld = false
 
 function harnessProcess(): boolean {
-  return Boolean(process.env.PI_DESKTOP_SCREENSHOT) || process.env.PI_DESKTOP_KEEP_ALIVE === '1'
+  // Only the screenshot harness has to start beside a running copy. The
+  // keep-alive flag is a window-close aid, not a second-instance licence:
+  // treating it as one let any inherited environment variable produce two
+  // full app instances.
+  return Boolean(process.env.PI_DESKTOP_SCREENSHOT)
 }
 
 /**
- * True when this launch should refuse to open a second window.
+ * Hold the app-wide single-instance lock.
  *
- * The flag comes from the settings file the store writes, read before the
- * store exists: the single-instance lock has to be taken before the app is
- * ready.
+ * One app, one window. A second launch — a double-click while the first copy
+ * is still starting, or a shortcut that was left in the tray — asks this
+ * process to reveal its window instead of building a second app beside it.
+ * The harness runs are exempt because they start beside a running copy on
+ * purpose. Returns false when another instance already holds the lock.
  */
-export function trayWantedAtStartup(): boolean {
-  if (harnessProcess()) return false
-  return readPersistedFlag('trayPersistent')
-}
-
-/**
- * Hold the lock so a later launch focuses this window instead of starting
- * another process that the user cannot see (the first one is only in the tray).
- * Returns false when another instance already holds it.
- */
-export function claimTrayInstance(): boolean {
-  if (lockHeld || harnessProcess()) return lockHeld || harnessProcess()
+export function claimSingleInstance(): boolean {
+  if (harnessProcess()) return true
+  if (lockHeld) return true
   const got = app.requestSingleInstanceLock()
   if (!got) return false
   lockHeld = true
   return true
-}
-
-export function releaseTrayInstance(): void {
-  if (!lockHeld) return
-  app.releaseSingleInstanceLock()
-  lockHeld = false
 }
 
 export function showWindow(window: BrowserWindow | null): void {
@@ -51,6 +41,11 @@ export function showWindow(window: BrowserWindow | null): void {
 export function noteQuitting(): void {
   quitting = true
   destroyTray()
+}
+
+/** True from the moment a quit starts; no new window may be built. */
+export function isQuitting(): boolean {
+  return quitting
 }
 
 function destroyTray(): void {
@@ -81,22 +76,16 @@ export function syncTray(options: {
   language?: string
   show: () => void
 }): void {
-  if (!options.enabled) {
+  // A settings write or a second launch can arrive while the app is quitting;
+  // rebuilding the tray then would leave a ghost icon beside a closing app.
+  if (quitting || !options.enabled) {
     destroyTray()
-    releaseTrayInstance()
     return
   }
   if (harnessProcess()) return
-  if (!claimTrayInstance()) {
-    // Another copy owns the lock, so a later launch focuses that one and not
-    // this window. The tray is still worth having, but the split is worth a
-    // line in the log.
-    console.error('[pi-desktop] another instance holds the single-instance lock')
-  }
   const image = trayIconImage()
   if (!image) {
     destroyTray()
-    releaseTrayInstance()
     return
   }
   if (!tray || tray.isDestroyed()) {

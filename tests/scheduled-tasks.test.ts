@@ -13,10 +13,22 @@ import type { SessionSupervisor } from '../src/main/pi/supervisor'
 class FakeSupervisor extends EventEmitter {
   ownerId: string | undefined
   ensureCalls = 0
+  lastEnsure: {
+    sessionKey: string
+    model?: string
+    thinkingLevel?: string
+    rememberDefaults?: boolean
+  } | undefined
 
-  async ensure(options: { sessionKey: string }): Promise<{ ok: boolean }> {
+  async ensure(options: {
+    sessionKey: string
+    model?: string
+    thinkingLevel?: string
+    rememberDefaults?: boolean
+  }): Promise<{ ok: boolean }> {
     this.ownerId = options.sessionKey
     this.ensureCalls += 1
+    this.lastEnsure = options
     return { ok: true }
   }
 
@@ -1018,6 +1030,267 @@ test('invalid persisted schedules are ignored before reaching the timer', async 
     assert.deepEqual(service.list().map((task) => task.id), ['valid-task'])
     await new Promise((resolve) => setTimeout(resolve, 20))
     assert.equal(supervisor.ensureCalls, 0)
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('a scheduled task runs with its pinned model and reasoning effort', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-model-'))
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'app/default',
+      thinkingLevel: 'off'
+    })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const task = service.create({
+      title: 'Pinned model',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '23:59' },
+      model: 'provider/special',
+      thinkingLevel: 'high'
+    })[0]
+    assert.ok(task)
+    assert.equal(task.model, 'provider/special')
+    assert.equal(task.thinkingLevel, 'high')
+
+    await service.runNow(task.id)
+    assert.equal(supervisor.lastEnsure?.model, 'provider/special')
+    assert.equal(supervisor.lastEnsure?.thinkingLevel, 'high')
+    // The task's choice must not become the app-wide default.
+    assert.equal(supervisor.lastEnsure?.rememberDefaults, false)
+
+    supervisor.emit('event', {
+      ownerId: supervisor.ownerId,
+      event: { type: 'agent_settled', aborted: false }
+    })
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('a task without its own choice follows the app defaults', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-defaults-'))
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'app/default',
+      thinkingLevel: 'medium'
+    })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const task = service.create({
+      title: 'App defaults',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '23:59' }
+    })[0]
+    assert.ok(task)
+    assert.equal(task.model, undefined)
+    assert.equal(task.thinkingLevel, undefined)
+
+    await service.runNow(task.id)
+    assert.equal(supervisor.lastEnsure?.model, 'app/default')
+    assert.equal(supervisor.lastEnsure?.thinkingLevel, 'medium')
+    assert.equal(supervisor.lastEnsure?.rememberDefaults, true)
+
+    supervisor.emit('event', {
+      ownerId: supervisor.ownerId,
+      event: { type: 'agent_settled', aborted: false }
+    })
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('a finished one-time task can be edited without rescheduling it', () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-edit-past-'))
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'app/default',
+      thinkingLevel: 'off'
+    })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const task = service.create({
+      title: 'Once',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'once', at: Date.now() + 60 * 60 * 1000 },
+      model: 'provider/first',
+      thinkingLevel: 'low'
+    })[0]
+    assert.ok(task)
+
+    // Make it look like a task that already ran: past date, paused, completed.
+    const file = path.join(userData, 'scheduled-tasks.json')
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as Array<Record<string, unknown>>
+    const pastAt = Date.now() - 60_000
+    saved[0] = {
+      ...saved[0],
+      schedule: { kind: 'once', at: pastAt },
+      enabled: false,
+      lastStatus: 'completed'
+    }
+    writeFileSync(file, JSON.stringify(saved))
+
+    const updated = service.update(task.id, {
+      title: 'Renamed after it ran',
+      prompt: 'Rewrite the summary',
+      workspaceId: 'project',
+      schedule: { kind: 'once', at: pastAt },
+      model: 'provider/second',
+      thinkingLevel: 'high'
+    })[0]
+    assert.ok(updated)
+    assert.equal(updated.title, 'Renamed after it ran')
+    assert.equal(updated.enabled, false, 'editing does not silently re-enable the task')
+    assert.deepEqual(updated.schedule, { kind: 'once', at: pastAt })
+    assert.equal(updated.model, 'provider/second')
+    assert.equal(updated.thinkingLevel, 'high')
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('an enabled one-time task still rejects a past date', () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-edit-enabled-'))
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const task = service.create({
+      title: 'Still armed',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'once', at: Date.now() + 60 * 60 * 1000 }
+    })[0]
+    assert.ok(task)
+    assert.throws(() => service.update(task.id, {
+      title: task.title,
+      prompt: task.prompt,
+      workspaceId: task.workspaceId,
+      schedule: { kind: 'once', at: Date.now() - 60_000 }
+    }), /future date/)
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('clearing a task model and effort makes it follow the app defaults', () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-clear-model-'))
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const task = service.create({
+      title: 'Pinned then cleared',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '23:59' },
+      model: 'provider/model',
+      thinkingLevel: 'low'
+    })[0]
+    assert.ok(task)
+
+    const updated = service.update(task.id, {
+      title: task.title,
+      prompt: task.prompt,
+      workspaceId: task.workspaceId,
+      schedule: task.schedule
+    })[0]
+    assert.ok(updated)
+    assert.equal(updated.model, undefined)
+    assert.equal(updated.thinkingLevel, undefined)
+    const saved = JSON.parse(readFileSync(path.join(userData, 'scheduled-tasks.json'), 'utf8'))
+    assert.equal(Object.hasOwn(saved[0], 'model'), false)
+    assert.equal(Object.hasOwn(saved[0], 'thinkingLevel'), false)
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('unusable persisted model values fall back to the app defaults', () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-bad-model-'))
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const now = Date.now()
+  writeFileSync(path.join(userData, 'scheduled-tasks.json'), JSON.stringify([{
+    id: 'stored-task',
+    title: 'Stored task',
+    prompt: 'Do the work',
+    workspaceId: 'project',
+    schedule: { kind: 'once', at: now + 60 * 60 * 1000 },
+    enabled: true,
+    createdAt: now,
+    nextRunAt: now + 60 * 60 * 1000,
+    model: 'x'.repeat(1_000),
+    thinkingLevel: 'turbo'
+  }]))
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const [task] = service.list()
+    assert.ok(task, 'the task survives an unusable model choice')
+    assert.equal(task.model, undefined)
+    assert.equal(task.thinkingLevel, undefined)
   } finally {
     service.dispose()
     rmSync(userData, { recursive: true, force: true })

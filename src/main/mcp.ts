@@ -182,9 +182,17 @@ export function sanitizeUrl(rawUrl?: string): string | undefined {
     sanitized = `${proto}${user}:***@${hostAndRest}`
   }
 
-  const sensitiveParamNames = /^(token|secret|api_?key|key|auth|password|access_?token)$/i
-  const sensitiveQueryRegex =
-    /([?&](?:token|secret|api_?key|key|auth|password|access_?token)=)[^&#]*/gi
+  const isSensitiveParamName = (name: string): boolean => {
+    let decoded = name
+    try {
+      decoded = decodeURIComponent(name.replace(/\+/g, ' '))
+    } catch {
+      /* Keep checking the raw key when it contains malformed encoding. */
+    }
+    const normalized = decoded.replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    return /(?:^|[._-])(?:token|access[-_.]?token|refresh[-_.]?token|secret|client[-_.]?secret|api[-_.]?key|key|auth(?:orization)?|password|passwd|pwd|credential|credentials|signature|sig|bearer|jwt)(?:$|[._-])/i.test(normalized)
+  }
+  const sensitiveQueryRegex = /([?&])([^=&#]+)=([^&#]*)/gi
 
   try {
     const parsed = new URL(sanitized)
@@ -192,13 +200,15 @@ export function sanitizeUrl(rawUrl?: string): string | undefined {
       parsed.password = '***'
     }
     for (const key of Array.from(parsed.searchParams.keys())) {
-      if (sensitiveParamNames.test(key)) {
+      if (isSensitiveParamName(key)) {
         parsed.searchParams.set(key, '***')
       }
     }
     return parsed.toString()
   } catch {
-    return sanitized.replace(sensitiveQueryRegex, '$1***')
+    return sanitized.replace(sensitiveQueryRegex, (match, separator: string, key: string) =>
+      isSensitiveParamName(key) ? `${separator}${key}=***` : match
+    )
   }
 }
 

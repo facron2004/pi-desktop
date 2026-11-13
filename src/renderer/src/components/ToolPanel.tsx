@@ -86,7 +86,9 @@ export function ToolPanel({
 }) {
   const t = useT()
   const panelRef = useRef<HTMLElement>(null)
-  useDialogFocus(panelRef, onClose, overlay)
+  // The overlay keeps the focus trap but not Escape: a find box inside the
+  // panel owns that key. The panel's own handler below closes it otherwise.
+  useDialogFocus(panelRef, onClose, { enabled: overlay, closeOnEscape: false })
 
   // The strip holds the pages the reader opened in this panel visit. App still
   // owns the active view, while each new-tab page gets its own tab identity.
@@ -166,6 +168,27 @@ export function ToolPanel({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [maximized])
+
+  // The overlay panel used to close from the dialog hook's capture listener,
+  // which ran before a find box inside it could see Escape. It handles the key
+  // itself now, and leaves it alone while an editable control is focused.
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+  useEffect(() => {
+    if (!overlay || maximized) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      const target = event.target
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))
+      ) return
+      if (document.querySelector('.modal-layer, .popover, .tool-tab-menu, .lightbox-layer')) return
+      closeRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [overlay, maximized])
 
   const openView = useCallback(
     (next: Exclude<ToolPanelView, 'start'>) => {
@@ -286,16 +309,23 @@ export function ToolPanel({
         widthRef.current = nextWidth
         onResize(nextWidth)
       }
-      const up = () => {
+      let finished = false
+      const finish = () => {
+        if (finished) return
+        finished = true
         handle.removeEventListener('pointermove', move)
-        handle.removeEventListener('pointerup', up)
+        handle.removeEventListener('pointerup', finish)
+        handle.removeEventListener('pointercancel', finish)
+        handle.removeEventListener('lostpointercapture', finish)
         document.body.classList.remove('is-resizing')
         onResizeEnd?.(widthRef.current)
       }
 
       handle.setPointerCapture(event.pointerId)
       handle.addEventListener('pointermove', move)
-      handle.addEventListener('pointerup', up)
+      handle.addEventListener('pointerup', finish)
+      handle.addEventListener('pointercancel', finish)
+      handle.addEventListener('lostpointercapture', finish)
       document.body.classList.add('is-resizing')
     },
     [onResize, onResizeEnd, width]

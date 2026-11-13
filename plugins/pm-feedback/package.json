@@ -1,0 +1,29 @@
+{
+  "name": "pi-pm-feedback",
+  "version": "0.1.0",
+  "description": "User-feedback parsing, deterministic keyword pre-clustering and theme reports for product managers in Pi: CSV/JSON/lines input, bilingual themes, statistics and a defensible Markdown report.",
+  "keywords": [
+    "pi-package",
+    "product-management",
+    "user-feedback",
+    "voc",
+    "feedback-analysis",
+    "reviews",
+    "support-tickets",
+    "thematic-analysis"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/pm-feedback.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

@@ -49,9 +49,12 @@ const MAX_CONCURRENT_SCHEDULED_RUNS = 4
 const MAX_SCHEDULED_TASKS = 100
 const MAX_SCHEDULED_TASK_PROMPT_CHARS = 100_000
 const MAX_SCHEDULED_TASK_ERROR_CHARS = 4_096
+const MAX_SCHEDULED_TASK_MODEL_CHARS = 256
 const MAX_SCHEDULED_TASK_SESSION_FILE_CHARS = 32_768
 const MAX_SCHEDULED_TASK_FILE_BYTES = 96 * 1024 * 1024
 const SCHEDULED_TASK_STATUSES = new Set<ScheduledTaskStatus>(['running', 'completed', 'error', 'aborted'])
+/** Pi's own effort scale, the one `--thinking` accepts. */
+const SCHEDULED_TASK_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 
 class InvalidScheduledTaskFileError extends Error {}
 
@@ -86,10 +89,28 @@ function parseStoredTasks(raw: string): ScheduledTask[] {
       task.lastSessionFile.length > MAX_SCHEDULED_TASK_SESSION_FILE_CHARS
       ? undefined
       : task.lastSessionFile
-    return lastError === task.lastError && lastSessionFile === task.lastSessionFile
+    const model = normalizeScheduledTaskModel(task.model)
+    const thinkingLevel = normalizeScheduledTaskThinkingLevel(task.thinkingLevel)
+    return lastError === task.lastError &&
+      lastSessionFile === task.lastSessionFile &&
+      model === task.model &&
+      thinkingLevel === task.thinkingLevel
       ? task
-      : { ...task, lastError, lastSessionFile }
+      : { ...task, lastError, lastSessionFile, model, thinkingLevel }
   })
+}
+
+/** An empty or unusable model is "follow the app default", not a broken task. */
+function normalizeScheduledTaskModel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const model = value.trim()
+  return model && model.length <= MAX_SCHEDULED_TASK_MODEL_CHARS ? model : undefined
+}
+
+function normalizeScheduledTaskThinkingLevel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const level = value.trim().toLowerCase()
+  return SCHEDULED_TASK_THINKING_LEVELS.has(level) ? level : undefined
 }
 
 function limitScheduledTaskError(error: string | undefined): string | undefined {
@@ -147,6 +168,8 @@ function isStoredTask(value: unknown): value is ScheduledTask {
   if (task.lastStatus !== undefined && !SCHEDULED_TASK_STATUSES.has(task.lastStatus as ScheduledTaskStatus)) return false
   if (task.lastError !== undefined && typeof task.lastError !== 'string') return false
   if (task.lastSessionFile !== undefined && typeof task.lastSessionFile !== 'string') return false
+  if (task.model !== undefined && typeof task.model !== 'string') return false
+  if (task.thinkingLevel !== undefined && typeof task.thinkingLevel !== 'string') return false
   return true
 }
 
@@ -165,7 +188,10 @@ function nextOccurrence(schedule: ScheduledTaskSchedule, from: number): number |
   return candidate.getTime()
 }
 
-function validateInput(value: ScheduledTaskInput): ScheduledTaskInput {
+function validateInput(
+  value: ScheduledTaskInput,
+  options: { allowPastOnce?: boolean } = {}
+): ScheduledTaskInput {
   const title = String(value?.title ?? '').trim().slice(0, 120)
   const rawPrompt = String(value?.prompt ?? '')
   if (rawPrompt.length > MAX_SCHEDULED_TASK_PROMPT_CHARS) {
@@ -174,17 +200,31 @@ function validateInput(value: ScheduledTaskInput): ScheduledTaskInput {
   const prompt = rawPrompt.trim()
   const workspaceId = String(value?.workspaceId ?? '').trim()
   const schedule = value?.schedule
+  const rawModel = typeof value?.model === 'string' ? value.model.trim() : ''
+  const model = rawModel ? normalizeScheduledTaskModel(rawModel) : undefined
+  const rawThinkingLevel = typeof value?.thinkingLevel === 'string' ? value.thinkingLevel.trim() : ''
+  const thinkingLevel = rawThinkingLevel ? normalizeScheduledTaskThinkingLevel(rawThinkingLevel) : undefined
   if (!title) throw new Error('Enter a task name.')
   if (!prompt) throw new Error('Enter the prompt to run.')
   if (!workspaceId || workspaceId.length > 256) throw new Error('Choose a project.')
+  if (rawModel && !model) throw new Error('Choose a valid model.')
+  if (rawThinkingLevel && !thinkingLevel) throw new Error('Choose a valid reasoning effort.')
   if (!schedule || !['once', 'daily', 'weekly'].includes(schedule.kind)) {
     throw new Error('Choose a valid schedule.')
   }
+  // An unset choice follows the app's current default, so it stays absent.
+  const choice = {
+    ...(model ? { model } : {}),
+    ...(thinkingLevel ? { thinkingLevel } : {})
+  }
   if (schedule.kind === 'once') {
-    if (!Number.isFinite(schedule.at) || schedule.at <= Date.now()) {
+    if (!Number.isFinite(schedule.at)) {
+      throw new Error('Choose a valid date and time.')
+    }
+    if (schedule.at <= Date.now() && !options.allowPastOnce) {
       throw new Error('Choose a future date and time.')
     }
-    return { title, prompt, workspaceId, schedule: { kind: 'once', at: schedule.at } }
+    return { title, prompt, workspaceId, schedule: { kind: 'once', at: schedule.at }, ...choice }
   }
   if (!validScheduledTime(schedule.time)) {
     throw new Error('Choose a valid local time.')
@@ -197,10 +237,11 @@ function validateInput(value: ScheduledTaskInput): ScheduledTaskInput {
       title,
       prompt,
       workspaceId,
-      schedule: { kind: 'weekly', time: schedule.time, weekday: schedule.weekday }
+      schedule: { kind: 'weekly', time: schedule.time, weekday: schedule.weekday },
+      ...choice
     }
   }
-  return { title, prompt, workspaceId, schedule: { kind: 'daily', time: schedule.time } }
+  return { title, prompt, workspaceId, schedule: { kind: 'daily', time: schedule.time }, ...choice }
 }
 
 /** Persistent local-time scheduler. A task starts a fresh Pi session per run. */
@@ -261,15 +302,22 @@ export class ScheduledTaskService extends EventEmitter {
   }
 
   update(id: string, input: ScheduledTaskInput): ScheduledTask[] {
-    const normalized = validateInput(input)
-    this.assertWorkspace(normalized.workspaceId)
     this.mutateTasks((tasks) => {
-      this.requireTask(id, tasks)
+      const current = this.requireTask(id, tasks)
+      // A one-time task that already ran keeps its past date when only its
+      // title, prompt or model is edited. An enabled task still has to point
+      // at the future: its schedule is what will launch it.
+      const normalized = validateInput(input, { allowPastOnce: !current.enabled })
+      this.assertWorkspace(normalized.workspaceId)
       const now = Date.now()
       return tasks.map((task) => task.id === id
         ? {
             ...task,
             ...normalized,
+            // An omitted choice means "follow the app default" and has to clear
+            // the value the task carried before.
+            model: normalized.model,
+            thinkingLevel: normalized.thinkingLevel,
             nextRunAt: task.enabled ? nextOccurrence(normalized.schedule, now) : undefined
           }
         : task)
@@ -858,11 +906,16 @@ export class ScheduledTaskService extends EventEmitter {
 
     try {
       const settings = this.settings.get()
+      // A task may pin its own model and effort; otherwise the app defaults
+      // apply. A pinned choice must not rewrite Pi's global default.
+      const model = currentTask.model ?? settings.model
+      const thinkingLevel = currentTask.thinkingLevel ?? settings.thinkingLevel
       const ensured = await this.supervisor.ensure({
         sessionKey,
         cwd: workspace.path,
-        model: settings.model,
-        thinkingLevel: settings.thinkingLevel,
+        model,
+        thinkingLevel,
+        rememberDefaults: !currentTask.model && !currentTask.thinkingLevel,
         customInstructions: this.customInstructions(workspace.path),
         trace: { sourceAction: 'scheduled-task', uiSessionId: sessionKey }
       })

@@ -1,0 +1,28 @@
+{
+  "name": "pi-pm-connectors",
+  "version": "0.1.0",
+  "description": "PM connector recipes and least-privilege guardrails for Jira, Linear, Notion, Slack, Feishu, DingTalk, analytics, support and CRM MCP servers.",
+  "keywords": [
+    "pi-package",
+    "product-management",
+    "connector",
+    "mcp",
+    "jira",
+    "linear",
+    "notion"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/pm-connectors.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

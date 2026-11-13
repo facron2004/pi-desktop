@@ -372,12 +372,13 @@
 
 .marketplace-card__sigil {
   display: grid;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
   place-items: center;
+  overflow: hidden;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   background: var(--bg-hover);
   color: var(--text-secondary);
 }
@@ -386,6 +387,29 @@
   border-color: var(--accent-line);
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+/* The upstream owner avatar fills the frame; a real mark reads better than a
+   generic package glyph at this size. */
+.marketplace-card__sigil[data-has-icon='true'] {
+  background: var(--surface-canvas);
+}
+
+.marketplace-card__avatar {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.marketplace-card__sigil--initial {
+  border-color: transparent;
+  color: #fff;
+  font-size: var(--text-small);
+  font-weight: var(--weight-medium);
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .marketplace-card__names {
@@ -589,10 +613,10 @@
 }
 
 .marketplace-skeleton__sigil {
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
-  border-radius: var(--r-sm);
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border-radius: var(--r-md);
   background: var(--bg-hover);
 }
 

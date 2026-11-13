@@ -189,7 +189,6 @@ export function Thread() {
   const isStreaming = useAppStore((state) => state.isStreaming)
   const run = useAppStore((state) => state.run)
   const transport = useAppStore((state) => state.transport)
-  const toolCallSummary = useAppStore((state) => state.settings.toolCallSummary === true)
   const retry = useAppStore((state) => state.retry)
   const stop = useAppStore((state) => state.stop)
   /**
@@ -458,8 +457,7 @@ export function Thread() {
    *
    * Derived from the run state and from the tool call that is actually
    * executing — not from the last tool in the list, which may have finished
-   * a while ago. The reader may have scrolled up, so the footer says what
-   * the agent is working on as well.
+   * a while ago. This is the fallback when no live turn summary is available.
    */
   const activity = useMemo(() => {
     const last = turns[turns.length - 1]
@@ -1054,7 +1052,7 @@ export function Thread() {
             onStopRetry={stop}
             activity={activity}
             showElapsed={!liveRunSummaryAtTop}
-            hideActivitySummary={toolCallSummary && !run.settled}
+            hideRoutineStatus={liveRunSummaryAtTop}
           />
         ) : null}
 

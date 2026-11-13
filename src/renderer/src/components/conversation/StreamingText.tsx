@@ -18,7 +18,7 @@ export interface StreamingTextProps {
  * The assistant's spoken text.
  *
  * It is a document block, not a chat bubble: the reply keeps the conversation
- * column and the trace indents beneath it.
+ * column and the trace shares its left edge.
  *
  * While the block is still growing it is split into finished Markdown blocks
  * and a live tail, so a delta re-parses only the paragraph being written

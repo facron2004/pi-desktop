@@ -30,7 +30,7 @@ export const RunStatusRow = memo(function RunStatusRow({
   onStopRetry,
   activity,
   showElapsed = true,
-  hideActivitySummary = false
+  hideRoutineStatus = false
 }: {
   run: RunState
   transport: 'connected' | 'disconnected'
@@ -40,8 +40,8 @@ export const RunStatusRow = memo(function RunStatusRow({
   activity?: ToolActivity
   /** Keep the timer here only when no live reply summary shows it above. */
   showElapsed?: boolean
-  /** The live process line above already summarizes this tool activity. */
-  hideActivitySummary?: boolean
+  /** The turn already carries its live summary and tool rows. */
+  hideRoutineStatus?: boolean
 }) {
   const t = useT()
   const compacting =
@@ -61,16 +61,13 @@ export const RunStatusRow = memo(function RunStatusRow({
   const elapsedSinceWall = compacting?.startedAt ?? run.startedAt
   const elapsedStart = elapsedSince ?? elapsedSinceWall
 
-  // When a live reply summary sits above the thread and the process trail is
-  // already gathered into one line, this footer only repeats the same tool
-  // activity. Keep the footer for phases that the process line does not carry —
-  // retry, approval, queued and compaction.
+  // The live summary already says the run is working, and tool rows carry
+  // their own state. Only an exceptional phase needs another visible notice.
   if (
-    hideActivitySummary &&
-    activity &&
-    run.phase === 'tool_running' &&
+    hideRoutineStatus &&
+    (run.phase === 'working' || run.phase === 'generating' || run.phase === 'tool_running') &&
     transport === 'connected' &&
-    !waiting &&
+    !retry &&
     !compacting
   ) {
     return null

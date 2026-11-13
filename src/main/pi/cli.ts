@@ -72,12 +72,17 @@ export function killProcessTree(child: ChildProcess, done: () => void): void {
     return new Promise((resolve) => child.once('close', () => resolve()))
   }
   const waitForProcessGroupExit = async (pid: number): Promise<void> => {
+    // A process group can keep one member that cannot die (a D-state child or
+    // a process stuck in an uninterruptible call). Waiting on it forever would
+    // leave the caller — and CLI maintenance — pending for the app's lifetime.
+    const deadline = Date.now() + 5_000
     for (;;) {
       try {
         process.kill(-pid, 0)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ESRCH') return
       }
+      if (Date.now() >= deadline) return
       await new Promise<void>((resolve) => setTimeout(resolve, 50))
     }
   }

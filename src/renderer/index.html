@@ -6,13 +6,47 @@
     <title>Pi Desktop</title>
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; frame-src 'self' data: blob:; connect-src 'self' ws: http://localhost:*"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://github.com https://avatars.githubusercontent.com; font-src 'self' data:; frame-src 'self' data: blob:; connect-src 'self' ws: http://localhost:*"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script src="./startup-theme.js"></script>
+    <link rel="stylesheet" href="/src/styles/tokens.css" />
+    <link rel="stylesheet" href="/src/styles/startup.css" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="startup-screen" class="startup-screen" role="status" aria-label="Starting Pi Desktop">
+      <div class="startup-screen__content" aria-hidden="true">
+        <svg class="startup-screen__mark" viewBox="0 0 886 886" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <g id="startup-brand" transform="translate(0 24)">
+              <g fill="var(--brand-mark-blue)">
+                <rect x="55" width="831" height="161" />
+                <rect x="137" y="161" width="206" height="677" />
+                <rect x="55" y="725" width="288" height="113" />
+                <rect x="543" y="161" width="207" height="677" />
+                <rect x="543" y="725" width="288" height="113" />
+              </g>
+              <g fill="var(--brand-mark-coral)">
+                <rect width="169" height="105" />
+                <rect y="105" width="55" height="56" />
+                <rect x="543" y="161" width="207" height="185" />
+                <rect x="543" y="346" width="108" height="125" />
+              </g>
+              <g fill="var(--brand-mark-yellow)">
+                <rect x="636" width="135" height="87" />
+                <rect x="137" y="289" width="80" height="162" />
+              </g>
+            </g>
+            <mask id="startup-matrix" maskUnits="userSpaceOnUse" x="0" y="0" width="886" height="886"></mask>
+          </defs>
+          <use href="#startup-brand" opacity="0.08" />
+          <use href="#startup-brand" mask="url(#startup-matrix)" />
+        </svg>
+        <span class="startup-screen__name">Pi Desktop</span>
+      </div>
+    </div>
+    <div id="root" inert aria-hidden="true"></div>
+    <script src="./startup.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

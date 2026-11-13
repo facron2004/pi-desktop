@@ -1526,32 +1526,14 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   padding: var(--sp-2);
 }
 
-.ctx__overview > .popover__label,
-.ctx__compact > .popover__label {
-  padding: 0 0 var(--sp-2);
-  font-weight: 500;
-}
-
-/* The heading and the refresh control share one row: the refresh is an
-   `.icon-btn`, so it keeps its own hit area and never moves the label. The
-   spacing the label used to carry moves to the row, so the button sits on the
-   heading's own line instead of the headline's. */
+/* The heading owns the row above the bar. `.ctx__headline` carries the
+   percentage on the left and the token reading on the right. */
 .ctx__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-3);
   margin-bottom: var(--sp-2);
-}
-
-.ctx__head > .popover__label {
-  padding: 0;
-  font-weight: 500;
-  min-width: 0;
-}
-
-.ctx__refresh {
-  flex: 0 0 auto;
 }
 
 .ctx__headline {
@@ -1581,14 +1563,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   margin-left: auto;
   color: var(--text);
   white-space: nowrap;
-}
-
-.ctx__refresh {
-  flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  color: var(--text-faint);
 }
 
 .ctx__bar {
@@ -1646,120 +1620,10 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   font-variant-numeric: tabular-nums;
 }
 
-.ctx__section {
-  margin-top: var(--sp-4);
-}
-
+/* Shared with the turn usage popover in Thread.tsx. */
 .ctx__rows {
   display: flex;
   flex-direction: column;
-}
-
-.ctx__summary {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-3);
-}
-
-.ctx__summary .ctx__row {
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: flex-start;
-  gap: var(--sp-1);
-  min-width: 0;
-  margin: 0;
-  padding: var(--sp-2) 0;
-  border: 0;
-}
-
-.ctx__summary .ctx__row > span:first-child {
-  color: var(--text-faint);
-}
-
-.ctx__summary .ctx__row > span:last-child {
-  font-size: var(--text-md);
-}
-
-.ctx__compact {
-  padding-bottom: var(--sp-1);
-}
-
-.ctx__details {
-  border-top: 1px solid var(--border-subtle);
-}
-
-.ctx__more {
-  margin-top: var(--sp-3);
-}
-
-.ctx__more-body {
-  padding-bottom: var(--sp-2);
-}
-
-.ctx__fold {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  width: 100%;
-  padding: var(--sp-3) 0;
-  list-style: none;
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-
-.ctx__fold::-webkit-details-marker {
-  display: none;
-}
-
-.ctx__fold:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-  border-radius: var(--r-sm);
-}
-
-.ctx__caret {
-  flex: 0 0 auto;
-  color: var(--text-faint);
-}
-
-.ctx__details[open] > .ctx__fold .ctx__caret {
-  transform: rotate(90deg);
-}
-
-.ctx__body {
-  padding-bottom: var(--sp-3);
-}
-
-.ctx__body .ctx__row > span:first-child {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.ctx__body .ctx__row > span:last-child {
-  flex: 0 0 auto;
-}
-
-.ctx__settings .ctx__row {
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--sp-2);
-  padding: var(--sp-2) 0;
-}
-
-.ctx__settings .segmented {
-  align-self: flex-start;
-  max-width: 100%;
-}
-
-.ctx__settings .ctx__toggle > span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.ctx__settings .switch {
-  flex-shrink: 0;
 }
 
 .ctx__row {
@@ -1775,63 +1639,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .ctx__row > span:last-child {
   font-variant-numeric: tabular-nums;
   color: var(--text);
-}
-
-.ctx__row--strong {
-  margin-top: var(--sp-1);
-  padding-top: var(--sp-2);
-  border-top: 1px solid var(--border-soft);
-  font-weight: 500;
-  color: var(--text);
-}
-
-.ctx__input {
-  width: 100%;
-  height: var(--ctl-sm);
-  padding: 0 var(--sp-3);
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border-strong);
-  background: var(--bg-deep);
-  color: var(--text);
-  font-size: var(--text-2xs);
-  outline: none;
-transition: border-color var(--dur-fast) var(--ease);
-}
-
-.ctx__input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-soft);
-}
-
-.ctx__input::placeholder {
-  color: var(--text-muted);
-  opacity: 0.75;
-}
-
-.ctx__action {
-  justify-content: center;
-  margin-top: var(--sp-3);
-  width: 100%;
-  border-color: var(--border-strong);
-  background: var(--bg-panel);
-  color: var(--text);
-}
-
-.ctx__action:hover {
-  border-color: var(--accent-line);
-  color: var(--accent);
-}
-
-.ctx__toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  margin-top: var(--sp-3);
-  padding-top: var(--sp-3);
-  border-top: 1px solid var(--border-soft);
-  font-size: var(--text-2xs);
-  color: var(--text-muted);
 }
 
 .ctx__hint {

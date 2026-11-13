@@ -54,6 +54,18 @@
   line-height: 1.5;
 }
 
+/* Template rows are the same two-line shape as command rows, but the name is
+   the thing the reader scans — keep it in the item foreground and the
+   description quiet underneath. */
+.composer__add-popover .composer__add-template {
+  gap: 2px;
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.composer__add-template .composer__add-command-name {
+  color: var(--text);
+}
+
 .composer__add-empty {
   padding: var(--sp-3);
 }

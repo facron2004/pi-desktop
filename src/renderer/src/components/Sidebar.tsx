@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
+import { useDialogFocus } from '../hooks/useDialogFocus'
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from '@shared/types'
 import { formatDateTime, formatRelativeTime } from '../lib/format'
@@ -133,6 +134,7 @@ export function Sidebar({
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set())
   const [expandedLists, setExpandedLists] = useState<Set<string>>(() => new Set())
   const [searchOpen, setSearchOpen] = useState(false)
+  const searchDialogRef = useRef<HTMLElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const searchTriggerRef = useRef<HTMLButtonElement>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -186,16 +188,25 @@ export function Sidebar({
         widthRef.current = width
         onResize(width)
       }
-      const up = () => {
+      let finished = false
+      const finish = () => {
+        if (finished) return
+        finished = true
         handle.removeEventListener('pointermove', move)
-        handle.removeEventListener('pointerup', up)
+        handle.removeEventListener('pointerup', finish)
+        handle.removeEventListener('pointercancel', finish)
+        handle.removeEventListener('lostpointercapture', finish)
         document.body.classList.remove('is-resizing')
         onResizeEnd?.(widthRef.current)
       }
 
       handle.setPointerCapture(event.pointerId)
       handle.addEventListener('pointermove', move)
-      handle.addEventListener('pointerup', up)
+      handle.addEventListener('pointerup', finish)
+      // A cancelled pointer (window blur, touch interruption, capture lost)
+      // must end the drag too, or the resize cursor stays on the whole app.
+      handle.addEventListener('pointercancel', finish)
+      handle.addEventListener('lostpointercapture', finish)
       document.body.classList.add('is-resizing')
     },
     [onResize, onResizeEnd, width]
@@ -730,6 +741,11 @@ export function Sidebar({
       window.requestAnimationFrame(() => searchTriggerRef.current?.focus())
     }
   }
+
+  useDialogFocus(searchDialogRef, () => closeSearch(true), {
+    enabled: searchOpen,
+    closeOnEscape: false
+  })
 
   // A hit opens the conversation and asks the thread to scroll to the message
   // it belongs to; the query comes along so the words stay marked.
@@ -1335,12 +1351,21 @@ export function Sidebar({
         }}
       >
         <section
+          ref={searchDialogRef}
           className="modal search-dialog"
           id="conversation-search-dialog"
           role="dialog"
           aria-modal="true"
           aria-label={t('Search projects and conversations')}
           onMouseDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            // Escape has to work from a result row or the close button too,
+            // not only from the input (which handles its own key first).
+            if (event.key !== 'Escape') return
+            event.preventDefault()
+            event.stopPropagation()
+            closeSearch(true)
+          }}
         >
           <header className="search-dialog__head">
             <h2>{t('Search projects and conversations')}</h2>

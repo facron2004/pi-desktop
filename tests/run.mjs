@@ -103,7 +103,15 @@ const suites = [
   'title-sync.test.ts',
   'agents.test.ts',
   'subagent-usage.test.ts',
-  'subagent-worktree.test.ts'
+  'subagent-worktree.test.ts',
+  'mermaid-plugin.test.ts',
+  'mermaid-renderer.test.ts',
+  'mermaid-policy.test.ts',
+  'pm-toolkit.test.ts',
+  'pm-connectors.test.ts',
+  'pm-feedback.test.ts',
+  'pm-competitor.test.ts',
+  'pm-pricing.test.ts'
 ]
 const debug = process.argv[2] === '--debug'
 
@@ -146,7 +154,8 @@ try {
   if (debug) {
     execFileSync(process.execPath, [built[0]], { stdio: 'inherit' })
   } else {
-    execFileSync(process.execPath, ['--test', ...built], {
+    // Bound child-process tests so Windows startup probes do not starve each other.
+    execFileSync(process.execPath, ['--test', '--test-concurrency=4', ...built], {
       stdio: 'inherit'
     })
   }

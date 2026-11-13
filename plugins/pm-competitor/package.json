@@ -1,0 +1,28 @@
+{
+  "name": "pi-pm-competitor",
+  "version": "0.1.0",
+  "description": "Competitive-intelligence toolkit for Pi: weighted feature matrices, battlecards, pricing comparison and an evidence source log for product managers.",
+  "keywords": [
+    "pi-package",
+    "product-management",
+    "competitive-intelligence",
+    "competitor-analysis",
+    "battlecard",
+    "pricing-comparison",
+    "feature-matrix"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/pm-competitor.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

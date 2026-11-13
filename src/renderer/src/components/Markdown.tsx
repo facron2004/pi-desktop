@@ -10,7 +10,9 @@ import { useSearchQuery } from '../lib/search-context'
 import { useIsDark } from '../lib/theme'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
+import { isMermaidLanguage } from '../lib/mermaid'
 import { ImageButton } from './Lightbox'
+import { MermaidDiagram } from './MermaidDiagram'
 import { ErrorBoundary } from './ErrorBoundary'
 
 const FILE_EXTS = new Set([
@@ -107,25 +109,42 @@ interface CodeBlockProps {
   language?: string
 }
 
+const StreamingContext = createContext<boolean>(false)
+
 function Marked({ children }: { children?: ReactNode }) {
   return <Highlight query={useSearchQuery()}>{children}</Highlight>
 }
 
+/**
+ * A fenced block. Mermaid fences become a live diagram; every other language
+ * keeps the existing syntax-highlighted CodeBlock behaviour untouched.
+ */
+function PreBlock({ children: content }: { children?: ReactNode }) {
+  const streaming = useContext(StreamingContext)
+  const child = Array.isArray(content) ? content[0] : content
+  if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
+    // `pre` always wraps the `code` element in Markdown. Use the element's
+    // own className to recover the fence language; comparing `child.type`
+    // to the string 'code' fails because the renderer maps it to the custom
+    // component below.
+    const match = /language-([\w+-]+)/.exec(child.props.className ?? '')
+    const text = String(child.props.children ?? '').replace(/\n$/, '')
+    if (isMermaidLanguage(match?.[1])) {
+      // One bad diagram must not take down the rest of the Markdown tree.
+      return (
+        <ErrorBoundary inline scope="Mermaid diagram">
+          <MermaidDiagram code={text} streaming={streaming} />
+        </ErrorBoundary>
+      )
+    }
+    return <CodeBlock code={text} language={match?.[1]} />
+  }
+  return <pre>{content}</pre>
+}
+
 const markdownComponents: Components = {
   // Keep renderer component identities stable while streamed text grows.
-  pre({ children: content }: { children?: ReactNode }) {
-    const child = Array.isArray(content) ? content[0] : content
-    if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
-      // `pre` always wraps the `code` element in Markdown. Use the element's
-      // own className to recover the fence language; comparing `child.type`
-      // to the string 'code' fails because the renderer maps it to the custom
-      // component below.
-      const match = /language-([\w+-]+)/.exec(child.props.className ?? '')
-      const text = String(child.props.children ?? '').replace(/\n$/, '')
-      return <CodeBlock code={text} language={match?.[1]} />
-    }
-    return <pre>{content}</pre>
-  },
+  pre: PreBlock,
   code({ className, children, node: _node, ...rest }) {
     const raw = String(children ?? '')
     if (!className && !raw.includes('\n')) {
@@ -237,8 +256,6 @@ const markdownComponents: Components = {
     return <MarkdownImage src={src} alt={alt} title={title} />
   }
 }
-
-const StreamingContext = createContext<boolean>(false)
 
 /**
  * Resolves an image src the page cannot load by itself — a project-relative

@@ -101,7 +101,7 @@ export function ContextRing() {
         </button>
       )}
     >
-      {(close) => <ContextPanel close={close} />}
+      {() => <ContextPanel />}
     </Popover>
   )
 }

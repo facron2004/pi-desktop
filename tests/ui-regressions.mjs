@@ -97,6 +97,11 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   await store.getState().updateSettings({ language: 'en', terminalShell: 'cmd' })
   const passed = []
 
+  await until(() => !document.getElementById('startup-screen'), 'The startup screen did not leave after bootstrap')
+  check(!document.getElementById('root').inert, 'The interface stayed inert after startup')
+  check(!document.getElementById('root').hasAttribute('aria-hidden'), 'The interface stayed hidden from assistive technology')
+  passed.push('the startup screen reveals the interactive interface after bootstrap')
+
   // The OS font registry can point at nothing even when the emoji file exists;
   // the bridge hands the renderer the bytes and App registers a real FontFace.
   await until(
@@ -430,25 +435,32 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   await until(() => document.querySelector('.run-outcome[data-running="true"]'), 'Live elapsed summary did not render')
   check(document.querySelector('.run-outcome').textContent.includes('Working'), 'Live elapsed summary claimed the run was finished')
   check(streamBody().textContent.includes('STREAM_PROGRESS'), 'The live partial progress disappeared')
+  check(!document.querySelector('.run-status'), 'A routine working status repeated below the live output')
+  const processBox = document.querySelector('.process').getBoundingClientRect()
+  const progressBox = document.querySelector('.assistant__text').getBoundingClientRect()
+  check(Math.abs(processBox.left - progressBox.left) <= 1, 'The process does not share the reply column')
+  store.setState((state) => ({ run: { ...state.run, phase: 'generating' } }))
+  await pause(50)
+  check(!document.querySelector('.run-status'), 'A writing status repeated below the live output')
   showStream('draft:stream-stopped', streamItems.slice(0, 3), {
     phase: 'idle', turns: 1, settled: true, outcome: 'aborted'
   })
   await until(() => document.querySelector('.run-outcome[data-outcome="aborted"]'), 'Stopped summary did not render')
   check(streamBody().textContent.includes('STREAM_PROGRESS'), 'Stopping lost the partial progress')
 
-  // A command is an argument, not the newest output: the live footer says what
-  // kind of work is running but never prints the shell line itself.
+  // The command's own row carries its running state; there is no second
+  // activity line beneath the output, with either tool-summary setting.
   showStream('draft:stream-command', [
     { id: 'cmd-user', kind: 'user', text: 'Run the check', images: [], timestamp: 1, order: 1 },
     { id: 'cmd-tool', kind: 'tool', toolCallId: 'cmd-tool', toolName: 'bash',
       args: { command: 'cd /e/Program/Coffee && grep -ril pressure' }, status: 'running', timestamp: 2, order: 2 }
   ], { phase: 'tool_running', turns: 1, settled: false, startedAt: Date.now() - 3000 })
-  const commandStatus = await until(
-    () => document.querySelector('.run-status__activity'),
-    'A live command status did not render'
+  const commandRow = await until(
+    () => document.querySelector('.tool--link[data-status="running"] .tool-link'),
+    'A live command row did not render'
   )
-  check(commandStatus.textContent.includes('Running a command'), 'The live status lost its tool label')
-  check(!document.querySelector('.run-status__activity-detail'), 'The shell command leaked into the live status')
+  check(commandRow.querySelector('.spinner'), 'The command row lost its running state')
+  check(!document.querySelector('.run-status'), 'A tool status repeated below the live output')
 
   showStream('draft:stream-replay', streamItems, { phase: 'idle', turns: 0, settled: true })
   await until(() => document.querySelector('.run-outcome[data-foldable="true"]'), 'Replayed turn lost its process fold without saved timing')
@@ -465,6 +477,7 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     () => document.querySelector('.process[data-live] .process__head'),
     'A live tool summary did not render'
   )
+  check(!document.querySelector('.run-status'), 'Gathered tool calls left a duplicate working status')
   check(!streamBody().querySelector('.tool-link'), 'A live tool row leaked below its summary')
   liveSummary.click()
   await until(() => streamBody().querySelector('.tool-link'), 'Opening the live summary did not reveal the tool row')
@@ -1107,7 +1120,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 21 : 20)
+  assert.equal(passed.length, process.platform === 'win32' ? 22 : 21)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

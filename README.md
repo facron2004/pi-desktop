@@ -10,7 +10,7 @@
 
 [![Release](https://img.shields.io/github/v/release/facron2004/pi-desktop?style=flat-square&color=2563eb)](https://github.com/facron2004/pi-desktop/releases/latest) [![Platform](https://img.shields.io/badge/Windows-x64%20%7C%20ARM64-0078D4?style=flat-square)](https://github.com/facron2004/pi-desktop/releases/latest) [![Pi](https://img.shields.io/badge/Pi-1.5.0-7c3aed?style=flat-square)](https://github.com/earendil-works/pi) [![Electron](https://img.shields.io/badge/Electron-44.10-47848F?style=flat-square&logo=electron&logoColor=white)](package.json) [![React](https://img.shields.io/badge/React-19-149ECA?style=flat-square&logo=react&logoColor=white)](package.json) [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white)](package.json) [![License](https://img.shields.io/badge/License-MIT-16a34a?style=flat-square)](LICENSE)
 
-[下载](https://github.com/facron2004/pi-desktop/releases/latest) · [快速上手](#快速上手) · [使用指南](docs/user-guide.md) · [开发文档](docs/development.md) · [更新日志](CHANGELOG.md)
+[下载](https://github.com/facron2004/pi-desktop/releases/latest) · [快速上手](#快速上手) · [使用指南](docs/user-guide.md) · [Mermaid 图表插件](docs/mermaid-plugin.md) · [PM 插件套件](docs/pm-plugin-suite.md) · [开发文档](docs/development.md) · [更新日志](CHANGELOG.md)
 
 </div>
 
@@ -31,6 +31,8 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 | Git 工作流 | 查看分支、工作区和逐文件差异，暂存、提交、回退改动，管理分支与 worktree。 |
 | 工作区工具 | 文件名与全文搜索、语法高亮、差异审查、图片与网页查看，以及带 PowerShell、CMD、Git Bash 和 WSL 的内置终端。 |
 | 模型与任务 | 配置提供商和模型，选择权限与推理强度；支持普通、Goal、Plan 和 Subagent 模式、计划进度及后台任务。 |
+| Mermaid 图表 | 对话里的 Mermaid 代码块直接渲染为可缩放、可全屏、可导出的图表；输入框提供流程图、泳道图、时序图等 13 个产品经理模板，并内置作图规范与校验插件。 |
+| 产品经理插件套件 | 5 个可独立安装的 PM 插件：PRD / 用户故事 / 优先级 / 实验、竞品情报、用户反馈聚类、定价与包装、Jira / Linear / Notion / 飞书等 MCP 连接配方。 |
 | 自动化与远程 | 设置一次性或周期定时任务；在可信局域网中配对手机，浏览项目和会话并发送消息。 |
 | 记忆与个性化 | 按项目保存可管理的会话记忆；设置自动标题、粘贴图片的文件引用、主题、字体与字号。 |
 
@@ -49,16 +51,16 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 
 ## 下载与安装
 
-当前发布版本为 **v0.10.21**，内置 **Pi 1.5.0**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
+当前发布版本为 **v0.11.1**，内置 **Pi 1.5.0**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.21/Pi.Desktop-0.10.21-x64.exe) |
-| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.21/Pi.Desktop-0.10.21-arm64.exe) |
-| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.10.21/Pi.Desktop-0.10.21.exe) |
-| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.10.21/Pi.Desktop-0.10.21-portable-x64.zip) |
+| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.1/Pi.Desktop-0.11.1-x64.exe) |
+| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.1/Pi.Desktop-0.11.1-arm64.exe) |
+| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.1/Pi.Desktop-0.11.1.exe) |
+| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.11.1/Pi.Desktop-0.11.1-portable-x64.zip) |
 
-免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.10.21/SHA256SUMS.txt)，版本说明见 [v0.10.21 更新说明](docs/releases/v0.10.21.md)。
+免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.11.1/SHA256SUMS.txt)，版本说明见 [v0.11.1 更新说明](docs/releases/v0.11.1.md)。
 
 ## 快速上手
 

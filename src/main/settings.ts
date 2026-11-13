@@ -317,17 +317,6 @@ function settingsFileVersion(file: string): string | undefined {
 
 const settingsLockWait = new Int32Array(new SharedArrayBuffer(4))
 
-/**
- * One persisted flag, read before the store exists.
- *
- * The tray takes the single-instance lock before the app is ready, and the
- * store is built in `start`, so this is the one early reader of the file.
- */
-export function readPersistedFlag(key: 'trayPersistent'): boolean {
-  const file = path.join(app.getPath('userData'), 'settings.json')
-  return readSettingsFile(file)?.[key] === true
-}
-
 /** Restrict the app's private data directory before reading persisted user data. */
 export function secureUserDataDirectory(directory: string): boolean {
   try {
@@ -379,12 +368,14 @@ export function windowsUserDataAclCommands(
 }
 
 function secureWindowsUserDataDirectory(directory: string): boolean {
+  const target = path.resolve(directory)
   const systemRoot = process.env.SystemRoot
   if (!systemRoot) return false
-  const target = path.resolve(directory)
 
   try {
     const systemDirectory = path.join(systemRoot, 'System32')
+    const icacls = path.join(systemDirectory, 'icacls.exe')
+    const marker = path.join(target, '.acl-secured-v1')
     const userOutput = execFileSync(path.join(systemDirectory, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -395,9 +386,13 @@ function secureWindowsUserDataDirectory(directory: string): boolean {
 
     const hasChildren = readdirSync(target).length > 0
     const commands = windowsUserDataAclCommands(target, userSid, hasChildren)
-    const icacls = path.join(systemDirectory, 'icacls.exe')
     for (const args of commands) {
       execFileSync(icacls, args, { stdio: 'ignore', windowsHide: true })
+    }
+    try {
+      if (/^[a-f\d]{64}$/i.test(readFileSync(marker, 'utf8').trim())) unlinkSync(marker)
+    } catch {
+      /* No legacy marker to remove. */
     }
     return true
   } catch {

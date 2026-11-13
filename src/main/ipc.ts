@@ -1103,7 +1103,8 @@ export function registerIpc(context: IpcContext): void {
         window.setTitleBarOverlay({
           color: hex(colors?.color) ?? fallback.color,
           symbolColor: hex(colors?.symbolColor) ?? fallback.symbolColor,
-          height: 44
+          // Same as --titlebar-h in tokens.css.
+          height: 36
         })
         if (process.env.PI_DESKTOP_SCREENSHOT) {
           // The overlay is drawn outside the web content, so a screenshot cannot

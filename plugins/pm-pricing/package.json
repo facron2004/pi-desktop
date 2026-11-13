@@ -1,0 +1,30 @@
+{
+  "name": "pi-pm-pricing",
+  "version": "0.1.0",
+  "description": "Pricing and packaging analysis for product managers: Van Westendorp price sensitivity, tier and feature matrices, value-metric scoring, and a migration-aware pricing report.",
+  "keywords": [
+    "pi-package",
+    "product-management",
+    "pricing",
+    "packaging",
+    "van-westendorp",
+    "price-sensitivity",
+    "value-metric",
+    "monetization",
+    "tiers"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/pm-pricing.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

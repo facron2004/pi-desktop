@@ -235,7 +235,11 @@ export function contextReading(input: {
 
   const context = stats?.contextUsage
   const reportedTokens = typeof context?.tokens === 'number' ? context.tokens : null
-  const window = windowOf(model, fallbackModel) ?? (context?.contextWindow || null)
+  const reportedWindow =
+    typeof context?.contextWindow === 'number' && context.contextWindow > 0
+      ? context.contextWindow
+      : null
+  const window = reportedWindow ?? windowOf(model, fallbackModel)
 
   // Pi reporting `null` tokens means it has no valid usage yet (right after a
   // compaction). The transcript's newest message is then the honest estimate.

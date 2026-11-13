@@ -1,0 +1,71 @@
+/* Loaded by the HTML shell so the first paint does not wait for React. */
+.startup-screen {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-overlay) + 1);
+  display: grid;
+  place-items: center;
+  background: var(--chrome-bg);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  opacity: 1;
+  transition: opacity var(--dur-slow) var(--ease);
+  -webkit-app-region: drag;
+}
+
+.startup-screen[data-ready='true'] {
+  opacity: 0;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+
+.startup-screen__content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.startup-screen__mark {
+  display: block;
+  width: 128px;
+  height: 128px;
+}
+
+.startup-screen__name {
+  font-size: var(--text-large);
+  line-height: var(--leading-large);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.06em;
+}
+
+.startup-screen__tile {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: startup-matrix 2s ease-in-out infinite;
+}
+
+@keyframes startup-matrix {
+  0%, 100% {
+    opacity: 0.2;
+    transform: scale(0.72);
+  }
+  35%, 55% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  80% {
+    opacity: 0.35;
+    transform: scale(0.86);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-screen {
+    transition: none;
+  }
+
+  .startup-screen__tile {
+    animation: none;
+  }
+}

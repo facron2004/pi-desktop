@@ -29,6 +29,7 @@ import type { AgentPreset } from './agents'
 import { computerUseExtension } from './computer-use'
 import { contextBreakdownExtension } from './context-breakdown'
 import { generationTimingExtension } from './generation-timing'
+import { mermaidPolicyExtension } from './mermaid'
 import { providerControlsExtension } from './provider-controls'
 import {
   allowlistedEnv,
@@ -167,11 +168,12 @@ export class PiRuntime extends EventEmitter {
     const computerFile = path.join(userData, `pi-desktop-computer-${scratchId}.mjs`)
     const contextBreakdownFile = path.join(userData, `pi-desktop-context-breakdown-${scratchId}.mjs`)
     const generationTimingFile = path.join(userData, `pi-desktop-generation-timing-${scratchId}.mjs`)
+    const mermaidFile = path.join(userData, `pi-desktop-mermaid-${scratchId}.mjs`)
     const permissionTitle = `pi-desktop-permissions-${scratchId}`
     const files: string[] = []
     try {
       mkdirSync(userData, { recursive: true })
-      files.push(permissionFile, subagentPermissionFile, modeFile, providerFile, subagentFile, computerFile, contextBreakdownFile, generationTimingFile)
+      files.push(permissionFile, subagentPermissionFile, modeFile, providerFile, subagentFile, computerFile, contextBreakdownFile, generationTimingFile, mermaidFile)
       writeFileSync(permissionFile, permissionExtension(permissionTitle), 'utf8')
       writeFileSync(subagentPermissionFile, permissionExtension(permissionTitle, false), 'utf8')
       // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
@@ -202,6 +204,7 @@ export class PiRuntime extends EventEmitter {
       writeFileSync(computerFile, computerUseExtension(), 'utf8')
       writeFileSync(contextBreakdownFile, contextBreakdownExtension(), 'utf8')
       writeFileSync(generationTimingFile, generationTimingExtension(), 'utf8')
+      writeFileSync(mermaidFile, mermaidPolicyExtension(), 'utf8')
       if (options.customInstructions?.trim()) {
         files.push(customInstructionsFile)
         writeFileSync(customInstructionsFile, options.customInstructions.trim(), 'utf8')
@@ -226,7 +229,8 @@ export class PiRuntime extends EventEmitter {
         subagentFile,
         computerFile,
         contextBreakdownFile,
-        generationTimingFile
+        generationTimingFile,
+        mermaidFile
       )
     ]
     const sessionDir = this.options.getSessionDir?.(options.cwd)?.trim()
@@ -236,8 +240,12 @@ export class PiRuntime extends EventEmitter {
     // once, when this process starts, so it has to be in place before launch.
     try {
       ensurePatientRetrySettings()
-      rememberDefaultModel(options.model)
-      rememberDefaultThinkingLevel(options.thinkingLevel)
+      // A launch with its own model ids (a scheduled task, for example) must
+      // not rewrite the app-wide default Pi falls back to.
+      if (options.rememberDefaults !== false) {
+        rememberDefaultModel(options.model)
+        rememberDefaultThinkingLevel(options.thinkingLevel)
+      }
     } catch {
       /* an unreadable settings file keeps Pi's own budget and model */
     }
@@ -480,7 +488,13 @@ export class PiRuntime extends EventEmitter {
       request,
       timeoutMs,
       this.outbound(hint?.sourceAction ?? command, hint, command)
-    )
+    ).catch((error: unknown) => {
+      // The flag exists to auto-reject dialogs while an abort is in flight.
+      // An abort that never reached Pi leaves the run alive, and keeping the
+      // flag would silently reject every later approval for the rest of it.
+      if (command === 'abort' || command === 'abort_retry') this.aborting = false
+      throw error
+    })
     if (command === 'get_state') this.observe(result)
     if (this.tracing && shouldProbeState(command) && hint?.sourceAction !== 'state-probe' && hint?.sourceAction !== 'shutdown-abort') {
       await this.probeAfter(command)

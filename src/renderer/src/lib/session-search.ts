@@ -153,7 +153,8 @@ export function sessionMetaForHit(hit: SessionSearchHit): SessionMeta {
     name: hit.name,
     preview: hit.preview,
     updatedAt: hit.updatedAt,
-    messageCount: 0
+    // A hit can only come from a message in the session.
+    messageCount: 1
   }
 }
 

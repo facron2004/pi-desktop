@@ -1,0 +1,30 @@
+{
+  "name": "pi-pm-toolkit",
+  "version": "0.1.0",
+  "description": "A product-manager toolkit for Pi: PRD and document skeletons, user stories, RICE/ICE prioritisation, roadmap and launch checklists, research guides, metrics and A/B experiment maths.",
+  "keywords": [
+    "pi-package",
+    "product-management",
+    "prd",
+    "user-story",
+    "prioritization",
+    "rice",
+    "roadmap",
+    "product-metrics",
+    "experiment"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/pm-toolkit.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

@@ -325,7 +325,20 @@ Back control in the
 titlebar; selecting a conversation, starting a new chat, or clicking the same
 sidebar entry again clears `deskPage` and restores the conversation unchanged.
 Destructive confirmations stay inline as well: deleting a scheduled task asks
-in its own row, so these pages never open a native or modal dialog.
+in its detail pane, so these pages never open a native or modal dialog. The
+scheduled page is a DSH-shaped master-detail: list rows only select, and the
+47% right pane owns the editable rule, run history, pause/more/close controls
+and the inline delete confirmation.
+
+A scheduled task carries its own project, prompt, schedule, **model and
+reasoning effort**. Empty model/effort fields mean "follow the app's saved
+default" and must stay absent from `scheduled-tasks.json`; a pinned choice is
+passed to that run only and must not be written into Pi's global agent
+defaults (`rememberDefaults: false`). Editing is allowed while a task runs
+(the change reaches the next run). A finished one-time task keeps its past
+date so its title, prompt, model or effort can be edited without
+rescheduling; an enabled task still has to point at the future, and editing
+never re-enables a paused task.
 
 ### The row never moves
 
@@ -411,8 +424,8 @@ sync.
 
 The ring is `ContextRing`: the arc plus its percentage, one colour, following
 the `showContextUsage` setting. It opens `ContextPanel`, which asks Pi for
-`get_session_stats` on open (`readSessionStats`) and offers a refresh. Both
-components read through `lib/context-reading.ts`, never off `stats` directly:
+`get_session_stats` once on open (`readSessionStats`). Both components read
+through `lib/context-reading.ts`, never off `stats` directly:
 `get_session_stats` only answers while a process is running, so a conversation
 merely reopened from disk has no `stats` at all. That module falls back to the
 newest assistant message's usage and the model's `contextWindow` — the saved
@@ -495,14 +508,14 @@ and *quit*. The rules that keep the window from disappearing for good:
 - Hide only while the tray icon is really there. A missing icon, a real quit
   and the screenshot harness all close the window for real; hiding without a
   tray would leave no way back at all.
-- The single-instance lock is taken only in tray mode. A second launch then
-  focuses the window that already sits in the tray instead of opening a
-  second one the user cannot find. With the tray off, no lock is taken and
-  the app opens a second window as it always did.
-- The flag is read from the settings file *before* the app is ready, because
-  the lock has to be claimed before `start` builds the store.
-  `readPersistedFlag` in `settings.ts` is that early reader. It must stay
-  the only one: two readers of one file are two notions of a byte order mark.
+- The single-instance lock is taken by every launch, harness runs excepted.
+  A second launch — a double-click while the first copy is still starting, or
+  a shortcut left in the tray — focuses the window that already exists
+  instead of opening a second app beside it. The lock is claimed before any
+  startup work, so the duplicate process exits at once.
+- The lock is not tied to `trayPersistent`; turning the tray off must not
+  release it. With the tray on, closing the window still only hides it, and
+  a second launch is the way back to that window.
 
 The taskbar icon is the window icon. Windows draws the taskbar button from
 the window's own icon, so a dev run of `electron.exe` shows the Electron

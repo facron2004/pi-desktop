@@ -23,7 +23,7 @@
 | 阅读列（对话/Composer） | 720px | `--content-w`（740 → 720，长中文行更稳） |
 | 侧栏 default / min / max | 240 / 200 / 480 | `--sidebar-w` |
 | 右侧工作区面板 | default 520 / min 360 / max 760 | `--drawer-w`（MCode 对齐轮改；任务栏另占 280） |
-| 标题栏 / 通用面板头 | 44 / 52 | `--titlebar-h` / `--panel-head-h` |
+| 标题栏 / 通用面板头 | 36 / 52 | `--titlebar-h` / `--panel-head-h` |
 | 右侧工作区面板头 | 46 | `--toolpanel-head-h` |
 | 外壳内缩 | 8 | `--shell-inset` |
 | 主列最小宽 | 480 | grid `minmax(480px, 1fr)` |

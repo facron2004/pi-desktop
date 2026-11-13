@@ -42,6 +42,7 @@ import { Popover } from './components/Popover'
 import { keysFor, matchesShortcut, type ShortcutId } from './lib/shortcuts'
 import { activeConversationTitle } from './lib/live-sessions'
 import { openingLabel, useT } from './lib/i18n'
+import { dismissStartupScreen } from './lib/startup-screen'
 
 /** Matches the closing animation in global.css; the panel stays mounted that long. */
 const INSPECTOR_EXIT_MS = 200
@@ -104,6 +105,8 @@ export default function App() {
   // requests instead of one the drawer already ran.
   const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
   const terminalSeqRef = useRef(0)
+  /** Last automatic update check; the effect below re-runs when a run settles. */
+  const lastAutomaticUpdateCheck = useRef(0)
   const [changesOpen, setChangesOpen] = useState(false)
   // Independent of Tools: a status card column beside the conversation.
   const [taskRailOpen, setTaskRailOpen] = useState(true)
@@ -156,6 +159,7 @@ export default function App() {
     const checkAndDownload = async () => {
       if (running) return
       running = true
+      lastAutomaticUpdateCheck.current = Date.now()
       try {
         const result = await window.pi.app.checkUpdate()
         if (!active) return
@@ -172,7 +176,12 @@ export default function App() {
       }
     }
 
-    void checkAndDownload()
+    // `anySessionStreaming` is a dependency so the check never races a run in
+    // progress, but a finished turn flipping it back must not fire a network
+    // check of its own. The interval owns the schedule.
+    if (Date.now() - lastAutomaticUpdateCheck.current >= AUTOMATIC_UPDATE_INTERVAL_MS) {
+      void checkAndDownload()
+    }
     const interval = window.setInterval(
       () => void checkAndDownload(),
       AUTOMATIC_UPDATE_INTERVAL_MS
@@ -246,21 +255,23 @@ export default function App() {
    * still has a panel to be drawn in.
    */
   const openInspector = useCallback((view: ToolPanelView) => {
+    setDeskPage(null)
     setPanelView(view)
     setInspectorFile(null)
     setChangesOpen(true)
-  }, [])
+  }, [setDeskPage])
   const openChanges = useCallback(() => openInspector('changes'), [openInspector])
   const openFiles = useCallback(() => openInspector('files'), [openInspector])
   /** `Ctrl+\`` and the title bar: show the terminal, or close it if it is up. */
   const toggleTerminal = useCallback(() => {
+    setDeskPage(null)
     if (changesOpen && panelView === 'terminal') {
       setChangesOpen(false)
       return
     }
     setPanelView('terminal')
     setChangesOpen(true)
-  }, [changesOpen, panelView])
+  }, [changesOpen, panelView, setDeskPage])
   const launcherActions = useLauncherActions({
     sidebarOpen,
     toggleSidebar,
@@ -305,7 +316,10 @@ export default function App() {
   }, [bootstrap])
 
   useEffect(() => {
-    if (bootstrapComplete) window.pi.app.startupReady()
+    if (!bootstrapComplete) return
+    window.pi.app.startupReady()
+    const frame = window.requestAnimationFrame(dismissStartupScreen)
+    return () => window.cancelAnimationFrame(frame)
   }, [bootstrapComplete])
 
   // Chromium can fail to find the platform emoji font through a broken
@@ -507,8 +521,13 @@ export default function App() {
     // The command palette and the thread can ask for one tool of the panel.
     const onOpenInspector = (event: Event) => {
       const request = (event as CustomEvent<InspectorRequest>).detail
+      // A desk page owns the content row; opening a conversation tool has to
+      // leave it first, or the panel would be drawn over an unrelated page.
+      setDeskPage(null)
       setPanelView(request?.tab === 'files' ? 'files' : 'changes')
-      if (request?.file) setInspectorFile({ path: request.file, line: request.line })
+      // A request without a file means the changes list; keeping the previous
+      // preview would leave the panel showing that file instead of the list.
+      setInspectorFile(request?.file ? { path: request.file, line: request.line } : null)
       setChangesOpen(true)
     }
     window.addEventListener('pi:open-inspector', onOpenInspector)
@@ -521,6 +540,7 @@ export default function App() {
     const onTerminalRun = (event: Event) => {
       const command = (event as CustomEvent<{ command?: string }>).detail?.command
       if (typeof command !== 'string' || !command.trim()) return
+      setDeskPage(null)
       terminalSeqRef.current += 1
       setTerminalRequest({ command, seq: terminalSeqRef.current })
       setPanelView('terminal')
@@ -564,7 +584,9 @@ export default function App() {
     launcherOpen,
     cycleModel,
     cycleThinkingLevel,
-    startRename
+    startRename,
+    toggleTerminal,
+    setDeskPage
   ])
 
   // The handed-over command is a one-shot. Once the terminal is no longer the

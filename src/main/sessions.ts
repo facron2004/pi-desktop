@@ -85,6 +85,8 @@ const CR = 0x0d
 const CHUNK_SIZE = 64 * 1024
 const MAX_CACHE_ENTRIES = 2000
 const MAX_CONCURRENT_SESSION_META_READS = 4
+/** Workspace folders listed at once; each folder still caps its own file reads. */
+const MAX_CONCURRENT_WORKSPACE_DIRECTORIES = 4
 /** The usage cache keeps per-message projections, so bound it by source bytes as well as count. */
 const MAX_USAGE_CACHE_SOURCE_BYTES = 32 * 1024 * 1024
 const MAX_CACHED_SESSION_MESSAGE_FILES = 12
@@ -932,6 +934,34 @@ function recordInCache(key: string, entry: SessionCacheEntry): void {
 }
 
 /**
+ * Bound the sessions parsed at once across every caller.
+ *
+ * The per-directory workers below make the global listing faster, but a
+ * medium session is held as parsed entries for its whole branch, so sixteen
+ * 20 MB files at once would be a memory spike, not a speed-up. Opening and
+ * stat-ing still run concurrently; only the parse waits for a slot.
+ */
+let activeMetaParses = 0
+const metaParseWaiters: Array<() => void> = []
+
+async function withMetaParseSlot<T>(task: () => Promise<T>): Promise<T> {
+  if (activeMetaParses >= MAX_CONCURRENT_SESSION_META_READS) {
+    await new Promise<void>((resolve) => metaParseWaiters.push(resolve))
+  } else {
+    activeMetaParses += 1
+  }
+  try {
+    return await task()
+  } finally {
+    // Hand the slot straight to the next waiter, so a reader that resumed on
+    // the same tick cannot push the count past the limit.
+    const next = metaParseWaiters.shift()
+    if (next) next()
+    else activeMetaParses -= 1
+  }
+}
+
+/**
  * Returns metadata for a session file, reusing the incremental (mtime, size) cache
  * when valid and coalescing in-flight concurrent reads.
  */
@@ -955,7 +985,9 @@ export async function getSessionMeta(file: string, sessionRoot?: string | readon
         return cached.meta
       }
 
-      const meta = await parseSession(file, { size: s.size, mtimeMs: s.mtimeMs, identity }, opened?.handle)
+      const meta = await withMetaParseSlot(() =>
+        parseSession(file, { size: s.size, mtimeMs: s.mtimeMs, identity }, opened?.handle)
+      )
       if (meta) {
         recordInCache(key, {
           identity,
@@ -1554,7 +1586,10 @@ async function listSessionsInRoot(cwd: string | undefined, root: string): Promis
 
     for (const meta of await readMetas(files, cwd)) results.push(meta)
   } else {
-    // Global listing across all workspaces
+    // Global listing across all workspaces. Directories are independent, so
+    // they are read with a small worker pool instead of one after another: a
+    // cold start pays this scan before the sidebar can paint, and a user with
+    // many projects used to wait for the sum of every folder's reads.
     let workspaceDirs: string[]
     try {
       const entries = await readdir(root, { withFileTypes: true })
@@ -1563,17 +1598,29 @@ async function listSessionsInRoot(cwd: string | undefined, root: string): Promis
       return []
     }
 
-    for (const dir of workspaceDirs) {
+    const readDirectory = async (dir: string): Promise<SessionMeta[]> => {
       const dirPath = path.join(root, dir)
       let files: string[]
       try {
         const names = await readdir(dirPath)
         files = names.filter((f) => f.endsWith('.jsonl')).map((f) => path.join(dirPath, f))
       } catch {
-        continue
+        return []
       }
-      for (const meta of await readMetas(files)) results.push(meta)
+      return await readMetas(files)
     }
+
+    const perDirectory: SessionMeta[][] = new Array(workspaceDirs.length)
+    let nextDirectory = 0
+    const directoryWorker = async () => {
+      while (nextDirectory < workspaceDirs.length) {
+        const index = nextDirectory++
+        perDirectory[index] = await readDirectory(workspaceDirs[index]!)
+      }
+    }
+    const directoryWorkers = Math.min(MAX_CONCURRENT_WORKSPACE_DIRECTORIES, workspaceDirs.length)
+    await Promise.all(Array.from({ length: directoryWorkers }, () => directoryWorker()))
+    for (const metas of perDirectory) results.push(...metas)
   }
 
   return results
