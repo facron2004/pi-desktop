@@ -32,6 +32,18 @@ test('validateMermaid accepts a valid flowchart', () => {
   assert.deepEqual(result.errors, [])
 })
 
+test('sequence message punctuation is plain text rather than node brackets', () => {
+  const result = validateMermaid('sequenceDiagram\n  A->>B: Send [ key')
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.errors, [])
+})
+
+test('sequence diagrams accept the supported solid, dashed and asynchronous arrows', () => {
+  for (const arrow of ['->', '-->', '->>', '-->>', '-x', '--x', '-)', '--)', '<<->>', '<<-->>']) {
+    assert.equal(validateMermaid(`sequenceDiagram\n  A${arrow}B: Request`).ok, true, arrow)
+  }
+})
+
 test('validateMermaid accepts quoted parentheses in labels', () => {
   const result = validateMermaid(`flowchart LR
   A["Start (draft)"] --> B["Done (ready)"]`)

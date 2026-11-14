@@ -762,6 +762,61 @@
   overflow-wrap: anywhere;
 }
 
+/* The install in progress: what is running, the CLI's newest line and a clock.
+   A package install can take a minute, and a bare spinner in the button read as
+   a frozen window. */
+.marketplace-create__progress {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-sunken);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+}
+
+.marketplace-create__progress > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.marketplace-create__progress-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.marketplace-create__progress-title {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+}
+
+/* One line only: a package manager prints a wall of text and the dialog is not
+   a console. The full newest line stays on the tooltip. */
+.marketplace-create__progress-line {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.marketplace-create__progress-time {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .marketplace-create__error svg {
   flex: 0 0 auto;
   margin-top: 1px;
@@ -1020,7 +1075,7 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
+.marketplace-more {\n  display: flex;\n  justify-content: center;\n  padding: var(--sp-4) 0 var(--sp-2);\n}\n\n@media (prefers-reduced-motion: reduce) {
   .marketplace-skeleton__line,
   .marketplace-toast {
     animation: none;

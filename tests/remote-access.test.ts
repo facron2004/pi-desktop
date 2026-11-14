@@ -516,6 +516,85 @@ test('remote session references are retained only while event streams are open',
   }
 })
 
+test('remote session snapshot restores whether a desktop approval is still pending', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-remote-waiting-snapshot-'))
+  const sessionRoot = path.join(userData, 'sessions')
+  const workspacePath = path.join(userData, 'workspace')
+  const priorSessionRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  process.env.PI_CODING_AGENT_SESSION_DIR = sessionRoot
+
+  try {
+    mkdirSync(workspacePath, { recursive: true })
+    const workspaceSessions = path.join(sessionRoot, encodeWorkspaceDir(workspacePath))
+    mkdirSync(workspaceSessions, { recursive: true })
+    const sessionId = 'waiting-session'
+    writeFileSync(path.join(workspaceSessions, `${sessionId}.jsonl`), JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: sessionId,
+      cwd: workspacePath,
+      timestamp: new Date(1_700_000_000_000).toISOString()
+    }) + '\n')
+
+    const accessToken = 'a'.repeat(32)
+    const device = {
+      id: 'phone-1',
+      name: 'Phone',
+      pairedAt: 1,
+      tokenHash: createHash('sha256').update(accessToken).digest('hex')
+    }
+    writeFileSync(path.join(userData, 'remote-access.json'), JSON.stringify({ enabled: true, devices: [device] }))
+    let sessionState = { running: false, waitingForInput: false }
+    const supervisor = Object.assign(new EventEmitter(), {
+      sessionInfo: () => ({ cwd: workspacePath, externalContext: false, ...sessionState })
+    })
+    const service = new RemoteAccessService({
+      userData,
+      uiDirectory: userData,
+      settings: { get: () => ({ workspaces: [{ id: 'workspace-1', path: workspacePath }] }) } as never,
+      supervisor: supervisor as never,
+      customInstructions: () => undefined
+    })
+    const internals = service as unknown as {
+      server: object | null
+      handleRequest: (request: unknown, response: unknown) => Promise<void>
+    }
+    internals.server = {}
+
+    const snapshot = async () => {
+      let body = ''
+      const response = {
+        headersSent: false,
+        setHeader: () => {},
+        writeHead: () => { response.headersSent = true },
+        end: (value?: string) => { body = value ?? '' }
+      }
+      await internals.handleRequest({
+        method: 'GET',
+        url: `/api/session?workspaceId=workspace-1&sessionId=${sessionId}`,
+        headers: { host: '127.0.0.1', authorization: `Bearer ${accessToken}` },
+        socket: { remoteAddress: '127.0.0.1' }
+      }, response)
+      return JSON.parse(body) as { waitingForDesktop: boolean }
+    }
+
+    try {
+      assert.equal((await snapshot()).waitingForDesktop, false)
+      sessionState = { running: true, waitingForInput: true }
+      assert.equal((await snapshot()).waitingForDesktop, true)
+      sessionState = { running: true, waitingForInput: false }
+      assert.equal((await snapshot()).waitingForDesktop, false)
+    } finally {
+      internals.server = null
+      await service.dispose()
+    }
+  } finally {
+    if (priorSessionRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = priorSessionRoot
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
 test('remote access serializes concurrent enable and disable transitions', async () => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-remote-lifecycle-'))
   const service = new RemoteAccessService({

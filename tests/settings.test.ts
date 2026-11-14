@@ -368,3 +368,51 @@ test('projectOrder keeps the display order and drops duplicate paths', () => {
     rmSync(path.join('C:/tmp', fileName), { force: true })
   }
 })
+
+test('malformed shortcut patches preserve saved bindings while an empty object clears them', () => {
+  const fileName = `settings-shortcut-patch-${process.pid}.json`
+  const file = path.join('C:/tmp', fileName)
+  try {
+    const store = new SettingsStore(fileName)
+    const bindings = { 'new-chat': [['Ctrl', 'N']] }
+    store.patch({ shortcutBindings: bindings })
+    store.patch({ shortcutBindings: { broken: 'not-an-array' } as unknown as typeof bindings })
+    assert.deepEqual(new SettingsStore(fileName).get().shortcutBindings, { 'new-chat': ['Ctrl', 'N'] })
+    store.patch({ shortcutBindings: {} })
+    assert.equal(new SettingsStore(fileName).get().shortcutBindings, undefined)
+  } finally {
+    rmSync(file, { force: true })
+  }
+})
+
+test('shortcutBindings persists multi-chord, legacy, and unbound entries while stripping malformed data', () => {
+  const fileName = `settings-shortcuts-${process.pid}.json`
+  const file = path.join('C:/tmp', fileName)
+  try {
+    writeFileSync(
+      file,
+      JSON.stringify({
+        shortcutBindings: {
+          'new-chat': [['Ctrl', 'N'], ['Ctrl', 'Shift', 'O'], []],
+          'focus-composer': ['Ctrl', 'Alt', 'K'],
+          'toggle-sidebar': [],
+          broken: 'not-an-array'
+        }
+      }),
+      'utf8'
+    )
+
+    const loaded = new SettingsStore(fileName).get().shortcutBindings
+    assert.deepEqual(loaded, {
+      'new-chat': [['Ctrl', 'N'], ['Ctrl', 'Shift', 'O']],
+      'focus-composer': ['Ctrl', 'Alt', 'K'],
+      'toggle-sidebar': []
+    })
+
+    const store = new SettingsStore(fileName)
+    store.patch({ shortcutBindings: {} })
+    assert.equal(new SettingsStore(fileName).get().shortcutBindings, undefined)
+  } finally {
+    rmSync(file, { force: true })
+  }
+})

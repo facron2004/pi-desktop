@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { ExtensionUiResponse, PiEvent, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
-import { SessionSupervisor, type ManagedSessionRuntime } from '../src/main/pi/supervisor'
+import { SessionSupervisor, MAX_IDLE_RUNTIMES, type ManagedSessionRuntime } from '../src/main/pi/supervisor'
 import { InterprocessCwdGate } from '../src/main/pi/cwd-gate'
 import { properLockfile } from '../src/main/proper-lockfile'
 
@@ -333,6 +333,41 @@ test('an approval response is delivered only to the session that asked', async (
   assert.deepEqual(a.approvals, [{ id: 'req-a', response: { confirmed: true } }])
   assert.deepEqual(b.approvals, [])
   assert.deepEqual(forbidden(b), [])
+})
+
+test('sessionInfo derives and clears pending UI input from approvals', async () => {
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime])
+  await supervisor.ensure({ sessionKey: 'A.jsonl', cwd: 'C:/a', sessionFile: 'A.jsonl' })
+
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput, false)
+  runtime.emit('event', {
+    type: 'extension_ui_request',
+    method: 'confirm',
+    id: 'dialog-1'
+  } as PiEvent)
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput, true)
+
+  supervisor.respondUi('A.jsonl', 'dialog-1', { confirmed: true })
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput, false)
+
+  runtime.emit('event', {
+    type: 'extension_ui_request',
+    method: 'confirm',
+    id: 'dialog-2'
+  } as PiEvent)
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput, true)
+  runtime.emit('event', { type: 'agent_settled' } as PiEvent)
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput, false)
+
+  runtime.emit('event', {
+    type: 'extension_ui_request',
+    method: 'confirm',
+    id: 'dialog-3'
+  } as PiEvent)
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput, true)
+  await supervisor.stop('A.jsonl')
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput ?? false, false)
 })
 
 test('a failed start releases the session file so the next start can own it', async () => {
@@ -1018,4 +1053,304 @@ test('a fork idle timer cannot retire the original session reopened later', asyn
   assert.equal(a.stops, 1, 'the fork has been idle for ten minutes')
   assert.equal(b.stops, 0, 'the reopened original has not reached its deadline')
   await supervisor.stop()
+})
+
+test('MAX_IDLE_RUNTIMES cap evicts least-recently-used idle process when exceeded', async () => {
+  assert.equal(MAX_IDLE_RUNTIMES, 4)
+  const r1 = new FakeRuntime()
+  const r2 = new FakeRuntime()
+  const r3 = new FakeRuntime()
+  const r4 = new FakeRuntime()
+  const r5 = new FakeRuntime()
+
+  const supervisor = supervisorOf([r1, r2, r3, r4, r5])
+
+  // Ensure 4 idle runtimes sequentially
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+  await supervisor.ensure({ sessionKey: 'B', cwd: 'C:/b' })
+  await supervisor.ensure({ sessionKey: 'C', cwd: 'C:/c' })
+  await supervisor.ensure({ sessionKey: 'D', cwd: 'C:/d' })
+
+  assert.equal(r1.stops, 0)
+  assert.equal(r2.stops, 0)
+  assert.equal(r3.stops, 0)
+  assert.equal(r4.stops, 0)
+
+  // Ensuring 5th idle runtime exceeds MAX_IDLE_RUNTIMES (4)
+  await supervisor.ensure({ sessionKey: 'E', cwd: 'C:/e' })
+
+  // r1 was least recently used, so r1 must be evicted
+  assert.equal(r1.stops, 1, 'r1 should be evicted as least recently used')
+  assert.equal(r2.stops, 0)
+  assert.equal(r3.stops, 0)
+  assert.equal(r4.stops, 0)
+  assert.equal(r5.stops, 0)
+  await supervisor.stop()
+})
+
+test('LRU eviction does not evict active/running processes', async () => {
+  const r1 = new FakeRuntime()
+  const r2 = new FakeRuntime()
+  const r3 = new FakeRuntime()
+  const r4 = new FakeRuntime()
+  const r5 = new FakeRuntime()
+  const r6 = new FakeRuntime()
+
+  const supervisor = supervisorOf([r1, r2, r3, r4, r5, r6])
+
+  // r1 is started and active
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+  await supervisor.request('A', 'prompt')
+  r1.emit('event', { type: 'agent_start' })
+  assert.equal(supervisor.sessionInfo('A')?.running, true)
+
+  // Ensure r2, r3, r4, r5 (now 4 idle runtimes + 1 active running runtime r1)
+  await supervisor.ensure({ sessionKey: 'B', cwd: 'C:/b' })
+  await supervisor.ensure({ sessionKey: 'C', cwd: 'C:/c' })
+  await supervisor.ensure({ sessionKey: 'D', cwd: 'C:/d' })
+  await supervisor.ensure({ sessionKey: 'E', cwd: 'C:/e' })
+
+  assert.equal(r1.stops, 0)
+  assert.equal(r2.stops, 0)
+  assert.equal(r3.stops, 0)
+  assert.equal(r4.stops, 0)
+  assert.equal(r5.stops, 0)
+
+  // Ensure r6 (would make 5 idle runtimes, exceeding MAX_IDLE_RUNTIMES=4)
+  await supervisor.ensure({ sessionKey: 'F', cwd: 'C:/f' })
+
+  // r1 is the oldest accessed runtime, BUT it is running, so it must NOT be evicted!
+  assert.equal(r1.stops, 0, 'active running runtime must not be evicted')
+  // r2 is the oldest idle runtime, so r2 must be evicted
+  assert.equal(r2.stops, 1, 'oldest idle runtime should be evicted')
+  assert.equal(r3.stops, 0)
+  assert.equal(r4.stops, 0)
+  assert.equal(r5.stops, 0)
+  assert.equal(r6.stops, 0)
+
+  // Settle r1
+  r1.emit('event', { type: 'agent_settled' })
+  await supervisor.stop()
+})
+
+test('LRU eviction does not evict processes with pending UI approvals', async () => {
+  const r1 = new FakeRuntime()
+  const r2 = new FakeRuntime()
+  const r3 = new FakeRuntime()
+  const r4 = new FakeRuntime()
+  const r5 = new FakeRuntime()
+  const r6 = new FakeRuntime()
+
+  const supervisor = supervisorOf([r1, r2, r3, r4, r5, r6])
+
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+  // r1 has a pending extension UI dialog
+  r1.emit('event', { type: 'extension_ui_request', method: 'confirm', id: 'dlg-1' } as PiEvent)
+
+  await supervisor.ensure({ sessionKey: 'B', cwd: 'C:/b' })
+  await supervisor.ensure({ sessionKey: 'C', cwd: 'C:/c' })
+  await supervisor.ensure({ sessionKey: 'D', cwd: 'C:/d' })
+  await supervisor.ensure({ sessionKey: 'E', cwd: 'C:/e' })
+  await supervisor.ensure({ sessionKey: 'F', cwd: 'C:/f' })
+
+  // r1 has pending approval, must NOT be evicted even though it is oldest
+  assert.equal(r1.stops, 0, 'dialog-holding runtime must not be evicted')
+  // r2 was oldest idle, so r2 is evicted
+  assert.equal(r2.stops, 1, 'oldest idle runtime without approvals should be evicted')
+  await supervisor.stop()
+})
+
+test('LRU eviction does not evict processes with queued jobs or holding CWD gate', async () => {
+  const r1 = new FakeRuntime()
+  const r2 = new FakeRuntime()
+  const r3 = new FakeRuntime()
+  const r4 = new FakeRuntime()
+  const r5 = new FakeRuntime()
+  const r6 = new FakeRuntime()
+  const r7 = new FakeRuntime()
+
+  const supervisor = supervisorOf([r1, r2, r3, r4, r5, r6, r7])
+
+  // r1 and r2 share C:/shared directory
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/shared' })
+  await supervisor.ensure({ sessionKey: 'B', cwd: 'C:/shared' })
+  await supervisor.ensure({ sessionKey: 'C', cwd: 'C:/c' })
+  await supervisor.ensure({ sessionKey: 'D', cwd: 'C:/d' })
+
+  // r1 starts writing, holding the gate
+  const promptA = supervisor.request('A', 'prompt')
+  // r2 queues behind r1
+  const promptB = supervisor.request('B', 'prompt')
+
+  // Ensure E and F (at this point, idle runtimes are C, D, E, F = 4 idle runtimes)
+  await supervisor.ensure({ sessionKey: 'E', cwd: 'C:/e' })
+  await supervisor.ensure({ sessionKey: 'F', cwd: 'C:/f' })
+
+  assert.equal(r3.stops, 0)
+
+  // Ensure G (now 5 idle runtimes: C, D, E, F, G, exceeding MAX_IDLE_RUNTIMES=4)
+  await supervisor.ensure({ sessionKey: 'G', cwd: 'C:/g' })
+
+  // Neither r1 (holding gate) nor r2 (queued) should be evicted
+  assert.equal(r1.stops, 0, 'gate-holding runtime must not be evicted')
+  assert.equal(r2.stops, 0, 'queued runtime must not be evicted')
+  // r3 is oldest idle, so r3 is evicted
+  assert.equal(r3.stops, 1, 'oldest idle runtime without lease/queue should be evicted')
+
+  // Clean up
+  r1.emit('event', { type: 'agent_settled' })
+  r2.emit('event', { type: 'agent_settled' })
+  await promptA
+  await promptB
+  await supervisor.stop()
+})
+
+test('accessing an older idle runtime refreshes its LRU position', async () => {
+  const r1 = new FakeRuntime()
+  const r2 = new FakeRuntime()
+  const r3 = new FakeRuntime()
+  const r4 = new FakeRuntime()
+  const r5 = new FakeRuntime()
+
+  const supervisor = supervisorOf([r1, r2, r3, r4, r5])
+
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+  await supervisor.ensure({ sessionKey: 'B', cwd: 'C:/b' })
+  await supervisor.ensure({ sessionKey: 'C', cwd: 'C:/c' })
+  await supervisor.ensure({ sessionKey: 'D', cwd: 'C:/d' })
+
+  // Touch A again via ensure so its lastAccessed is refreshed to be the newest
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+
+  // Now ensure E (5th idle runtime)
+  await supervisor.ensure({ sessionKey: 'E', cwd: 'C:/e' })
+
+  // A was refreshed, so B is now the least recently used idle runtime!
+  assert.equal(r1.stops, 0, 'touched runtime A must not be evicted')
+  assert.equal(r2.stops, 1, 'unrefreshed runtime B should be evicted as least recently used')
+  assert.equal(r3.stops, 0)
+  assert.equal(r4.stops, 0)
+  assert.equal(r5.stops, 0)
+  await supervisor.stop()
+})
+
+test('supervisor emits attributed stderr with ownerId and line', async () => {
+  const r1 = new FakeRuntime()
+  const supervisor = supervisorOf([r1])
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+
+  const received: { ownerId: string; line: string }[] = []
+  supervisor.on('stderr', (payload) => {
+    received.push(payload)
+  })
+
+  r1.emit('stderr', 'test diagnostic message')
+  assert.equal(received.length, 1)
+  assert.deepEqual(received[0], { ownerId: 'A', line: 'test diagnostic message' })
+  await supervisor.stop()
+})
+
+test('respondUi refreshes LRU timestamp to protect active dialog responder from eviction', async () => {
+  const r1 = new FakeRuntime()
+  const r2 = new FakeRuntime()
+  const r3 = new FakeRuntime()
+  const r4 = new FakeRuntime()
+  const r5 = new FakeRuntime()
+
+  const supervisor = supervisorOf([r1, r2, r3, r4, r5])
+
+  // Boot 4 idle runtimes: A, B, C, D in order (initial LRU order: A oldest, D newest)
+  await supervisor.ensure({ sessionKey: 'A', cwd: 'C:/a' })
+  await supervisor.ensure({ sessionKey: 'B', cwd: 'C:/b' })
+  await supervisor.ensure({ sessionKey: 'C', cwd: 'C:/c' })
+  await supervisor.ensure({ sessionKey: 'D', cwd: 'C:/d' })
+
+  // Session A emits an extension dialog request
+  r1.emit('event', {
+    type: 'extension_ui_request',
+    method: 'confirm',
+    id: 'dlg-1'
+  } as PiEvent)
+
+  // User responds to the dialog on session A
+  supervisor.respondUi('A', 'dlg-1', { confirmed: true })
+
+  // Session A was just interacted with, so its lastAccessed must now be NEWER than B, C, D.
+  // Now ensure session E (5th idle runtime, exceeds MAX_IDLE_RUNTIMES = 4)
+  await supervisor.ensure({ sessionKey: 'E', cwd: 'C:/e' })
+  const deadlineE = Date.now() + 500
+  while (Date.now() < deadlineE && r2.stops === 0) {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+
+  // In correct LRU order: B (oldest untouched) is evicted. A must NOT be evicted!
+  assert.equal(r1.stops, 0, 'touched runtime A via respondUi must NOT be evicted')
+  assert.equal(r2.stops, 1, 'unrefreshed runtime B must be evicted as least recently used')
+  assert.equal(r3.stops, 0)
+  assert.equal(r4.stops, 0)
+  assert.equal(r5.stops, 0)
+
+  await supervisor.stop()
+})
+
+test('concurrent in-flight ensure() calls are protected from LRU pruning during boot', async () => {
+  const count = 10
+  const runtimes: FakeRuntime[] = Array.from({ length: count }, () => new FakeRuntime())
+  const supervisor = supervisorOf(runtimes)
+
+  // Launch 10 concurrent ensure calls across distinct sessions
+  const promises = runtimes.map((_, i) =>
+    supervisor.ensure({ sessionKey: `session-${i}`, cwd: `C:/cwd-${i}` })
+  )
+
+  const results = await Promise.all(promises)
+  const failures = results.map((res, i) => ({ i, res })).filter((x) => !x.res.ok)
+
+  assert.equal(
+    failures.length,
+    0,
+    `Concurrent ensure() failed for ${failures.length} sessions! Failures: ${JSON.stringify(failures)}`
+  )
+
+  // Verify all 10 runtimes started
+  for (let i = 0; i < count; i++) {
+    assert.equal(runtimes[i].starts, 1, `session-${i} must have started exactly once`)
+  }
+
+  // After all boots have finished, verify idle cap is enforced
+  const deadline = Date.now() + 1000
+  while (Date.now() < deadline && runtimes.filter((r) => r.isRunning).length > MAX_IDLE_RUNTIMES) {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  const runningCount = runtimes.filter((r) => r.isRunning).length
+  assert.ok(
+    runningCount <= MAX_IDLE_RUNTIMES,
+    `Running idle runtimes (${runningCount}) must be <= MAX_IDLE_RUNTIMES (${MAX_IDLE_RUNTIMES})`
+  )
+
+  await supervisor.stop()
+})
+
+test('settled runtimes enforce the idle cap after releasing cross-process project locks', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-lru-release-'))
+  const runtimes = Array.from({ length: MAX_IDLE_RUNTIMES + 1 }, () => new FakeRuntime())
+  const supervisor = supervisorOf(runtimes, path.join(root, 'locks'))
+  t.after(async () => {
+    await supervisor.stop()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  for (let index = 0; index < runtimes.length; index += 1) {
+    const key = `active-${index}`
+    await supervisor.ensure({ sessionKey: key, cwd: path.join(root, `project-${index}`) })
+    await supervisor.request(key, 'prompt', { message: 'Work' })
+  }
+  assert.equal(runtimes.filter(runtime => runtime.isRunning).length, runtimes.length)
+  for (const runtime of runtimes) runtime.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+
+  const deadline = Date.now() + 2000
+  while (runtimes.filter(runtime => runtime.isRunning).length > MAX_IDLE_RUNTIMES && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(runtimes.filter(runtime => runtime.isRunning).length, MAX_IDLE_RUNTIMES)
 })

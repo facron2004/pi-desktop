@@ -85,11 +85,14 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
   const rowRefs = useRef(new Map<string, HTMLDivElement>())
   const flashSeq = useRef(0)
   const tipCursor = useRef(-1)
+  const loadSequence = useRef(0)
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current
     setState({ status: 'loading' })
     try {
       const key = await useAppStore.getState().ensureRuntime(activeSessionFile, 'session-tree')
+      if (sequence !== loadSequence.current) return
       const raw = await window.pi.runtime.request<unknown>(
         'get_tree',
         undefined,
@@ -97,6 +100,7 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
         { sourceAction: 'session-tree', uiSessionId: key },
         key
       )
+      if (sequence !== loadSequence.current) return
       const tree = normalizeTree(raw)
       setState({ status: 'ready', tree })
       // The folds the reader left last time come back by node id; a
@@ -105,12 +109,13 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
       setExpanded(new Set([...branchIds(tree)].filter((id) => !collapsed.has(id))))
       tipCursor.current = -1
     } catch {
-      setState({ status: 'error' })
+      if (sequence === loadSequence.current) setState({ status: 'error' })
     }
   }, [activeSessionFile])
 
   useEffect(() => {
     void load()
+    return () => { loadSequence.current += 1 }
   }, [load])
 
   const view = useMemo(

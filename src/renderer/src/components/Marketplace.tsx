@@ -6,17 +6,17 @@ import {
   Copy,
   Download,
   ExternalLink,
+  FileText,
   GitBranch,
-  GitFork,
   Loader2,
   Package,
+  Palette,
   Plus,
   RefreshCw,
   Search,
   Settings2,
   ShieldAlert,
   Sparkles,
-  Star,
   UserRound,
   X
 } from 'lucide-react'
@@ -27,12 +27,7 @@ import type {
   MarketplaceSnapshot,
   MarketplaceSort
 } from '@shared/marketplace'
-import {
-  filterMarketplaceEntries,
-  formatStarCount,
-  marketplaceCategories
-} from '@shared/marketplace'
-import { MARKETPLACE_SNAPSHOT } from '@shared/marketplace-data'
+import { formatDownloads } from '@shared/marketplace'
 import { formatRelativeTime } from '../lib/format'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
@@ -85,12 +80,33 @@ interface ToastState {
 }
 
 const SORT_OPTIONS: { value: MarketplaceSort; label: string }[] = [
-  { value: 'stars', label: 'Stars' },
+  { value: 'downloads', label: 'Most downloaded' },
   { value: 'updated', label: 'Recently updated' },
   { value: 'name', label: 'Name' }
 ]
 
-const MIN_STARS_OPTIONS = [0, 100, 300, 1000]
+const EMPTY_SNAPSHOT: MarketplaceSnapshot = {
+  generatedAt: new Date(0).toISOString(),
+  source: 'pi',
+  minStars: 0,
+  entries: []
+}
+
+const KIND_ICONS: Record<MarketplaceKind, typeof Package> = {
+  plugin: Package,
+  skill: Sparkles,
+  theme: Palette,
+  prompt: FileText
+}
+
+const KIND_LABELS: Record<MarketplaceKind, string> = {
+  plugin: 'Plugins',
+  skill: 'Skills',
+  theme: 'Themes',
+  prompt: 'Prompt templates'
+}
+
+const PAGE_SIZE = 50
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
@@ -245,8 +261,8 @@ function MarketplaceCard({
                 </span>
               ) : null}
             </div>
-            <span className="marketplace-card__repo" title={entry.repo}>
-              {entry.repo}
+            <span className="marketplace-card__repo" title={entry.repo || entry.author}>
+              {entry.repo || entry.author || ''}
             </span>
           </div>
         </div>
@@ -257,20 +273,37 @@ function MarketplaceCard({
       </p>
 
       <div className="marketplace-card__meta">
-        <span className="marketplace-card__stat marketplace-card__stars" title={t('Stars')}>
-          <Star size={12} />
-          {formatStarCount(entry.stars)}
-        </span>
-        <span className="marketplace-card__stat" title={t('Forks')}>
-          <GitFork size={12} />
-          {formatStarCount(entry.forks)}
-        </span>
-        {entry.language ? (
-          <span className="marketplace-card__stat" title={t('Programming language')}>
-            <span className="marketplace-card__dot" aria-hidden="true" />
-            {entry.language}
-          </span>
-        ) : null}
+        {entry.source === 'pi' ? (
+          <>
+            <span className="marketplace-card__stat marketplace-card__stars" title={t('Downloads per month')}>
+              <Download size={12} />
+              {formatDownloads(entry.downloads ?? 0)}
+            </span>
+            {entry.author ? (
+              <span className="marketplace-card__stat" title={t('Author')}>
+                <UserRound size={12} />
+                {entry.author}
+              </span>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <span className="marketplace-card__stat marketplace-card__stars" title={t('Stars')}>
+              <Package size={12} />
+              {entry.stars >= 1000 ? `${(entry.stars / 1000).toFixed(1)}k` : entry.stars}
+            </span>
+            <span className="marketplace-card__stat" title={t('Forks')}>
+              <GitBranch size={12} />
+              {entry.forks >= 1000 ? `${(entry.forks / 1000).toFixed(1)}k` : entry.forks}
+            </span>
+            {entry.language ? (
+              <span className="marketplace-card__stat" title={t('Programming language')}>
+                <span className="marketplace-card__dot" aria-hidden="true" />
+                {entry.language}
+              </span>
+            ) : null}
+          </>
+        )}
         {updated ? (
           <span className="marketplace-card__stat" title={t('Last updated')}>
             {updated}
@@ -279,7 +312,7 @@ function MarketplaceCard({
       </div>
 
       <div className="marketplace-card__badges">
-        <span className="settings-tag">{entry.category}</span>
+        {entry.category ? <span className="settings-tag">{entry.category}</span> : null}
         {tags.map((tag) => (
           <span className="settings-tag" key={tag}>
             {tag}
@@ -336,15 +369,27 @@ function MarketplaceCard({
           )}
           {installing ? t('Installing…') : installed ? t('Installed') : t('Install')}
         </button>
-        <button
-          type="button"
-          className="btn btn--sm marketplace-card__github"
-          title={t('Open the repository on GitHub')}
-          onClick={() => onOpenGithub(entry)}
-        >
-          <ExternalLink size={13} />
-          {t('GitHub')}
-        </button>
+        {entry.repo ? (
+          <button
+            type="button"
+            className="btn btn--sm marketplace-card__github"
+            title={t('Open the repository on GitHub')}
+            onClick={() => onOpenGithub(entry)}
+          >
+            <ExternalLink size={13} />
+            {t('GitHub')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn--sm marketplace-card__github"
+            title={t('Open the package page')}
+            onClick={() => onOpenGithub(entry)}
+          >
+            <ExternalLink size={13} />
+            {t('Details')}
+          </button>
+        )}
       </div>
     </article>
   )
@@ -353,16 +398,16 @@ function MarketplaceCard({
 export function Marketplace() {
   const t = useT()
   const language = useAppStore((state) => state.settings.language)
-  const [snapshot, setSnapshot] = useState<MarketplaceSnapshot>(MARKETPLACE_SNAPSHOT)
+  const [snapshot, setSnapshot] = useState<MarketplaceSnapshot>(EMPTY_SNAPSHOT)
   const [status, setStatus] = useState<MarketplaceStatus>('loading')
   const [error, setError] = useState('')
-  const [errorFromRefresh, setErrorFromRefresh] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [kind, setKind] = useState<MarketplaceKind>('plugin')
   const [query, setQuery] = useState('')
-  const [sort, setSort] = useState<MarketplaceSort>('stars')
-  const [minStars, setMinStars] = useState(0)
-  const [category, setCategory] = useState<string | null>(null)
+  const [sort, setSort] = useState<MarketplaceSort>('downloads')
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [installed, setInstalled] = useState<Record<string, boolean>>(readInstalledIds)
   const [serverInstalled, setServerInstalled] = useState<string[]>([])
@@ -373,46 +418,73 @@ export function Marketplace() {
   const [createOpen, setCreateOpen] = useState(false)
   const [createMode, setCreateMode] = useState<CreateMode>('custom')
   const [toast, setToast] = useState<ToastState | null>(null)
-  // A slow `list()` from the mount must not overwrite a newer `refresh()`.
+  // A slow page from the mount must not overwrite a newer search.
   const requestSeq = useRef(0)
 
-  const canInstall = typeof window.pi?.marketplace?.install === 'function'
-  const canRefresh = typeof window.pi?.marketplace?.refresh === 'function'
-  const hasFilters =
-    query.trim().length > 0 || minStars > 0 || category !== null || mineOnly
+  const catalog = window.pi?.marketplace?.piCatalog
+  const canInstall = typeof window.pi?.marketplace?.installNpm === 'function'
+  const canRefresh = typeof catalog === 'function'
+  const hasFilters = query.trim().length > 0 || mineOnly
 
   const showToast = useCallback((tone: ToastTone, title: string, note?: string) => {
     setToast({ id: Date.now(), tone, title, note })
   }, [])
 
-  const load = useCallback(async () => {
-    const seq = ++requestSeq.current
-    setStatus('loading')
-    setError('')
-    setErrorFromRefresh(false)
-    const list = window.pi?.marketplace?.list
-    if (typeof list !== 'function') {
-      // An older preload only lacks the bridge; the bundled snapshot is still a
-      // perfectly usable marketplace, so this is not an error state.
-      setSnapshot(MARKETPLACE_SNAPSHOT)
-      setStatus('ready')
-      return
-    }
-    try {
-      const next = await list()
-      if (seq !== requestSeq.current) return
-      setSnapshot(next)
-      setStatus('ready')
-    } catch (cause) {
-      if (seq !== requestSeq.current) return
-      setError(errorMessage(cause))
-      setStatus('error')
-    }
-  }, [t])
+  const loadPage = useCallback(
+    async (nextPage: number, append: boolean, force = false) => {
+      if (typeof catalog !== 'function') {
+        setError(t('The marketplace is not available in this build.'))
+        setStatus('error')
+        return false
+      }
+      const seq = ++requestSeq.current
+      if (append) setLoadingMore(true)
+      else {
+        setStatus('loading')
+        setError('')
+      }
+      try {
+        const result = await catalog({
+          query: query.trim() || undefined,
+          kind,
+          sort,
+          page: nextPage,
+          force: force || undefined
+        })
+        if (seq !== requestSeq.current) return
+        setSnapshot((previous) => ({
+          generatedAt: new Date().toISOString(),
+          source: 'pi',
+          minStars: 0,
+          entries: append ? [...previous.entries, ...result.entries] : result.entries,
+          total: result.total,
+          live: true
+        }))
+        setPage(nextPage)
+        setTotal(result.total)
+        setStatus('ready')
+      } catch (cause) {
+        if (seq !== requestSeq.current) return false
+        if (append) showToast('error', t('Could not load more packages'), truncateOutput(errorMessage(cause)))
+        else {
+          setError(errorMessage(cause))
+          setStatus('error')
+        }
+        return false
+      } finally {
+        if (append && seq === requestSeq.current) setLoadingMore(false)
+      }
+      return true
+    },
+    [catalog, kind, query, sort, showToast, t]
+  )
 
   useEffect(() => {
-    void load()
-  }, [load])
+    // Typing filters the server-side catalog; wait for a pause instead of
+    // asking for one page per keystroke.
+    const timer = window.setTimeout(() => void loadPage(1, false), query.trim() ? 300 : 0)
+    return () => window.clearTimeout(timer)
+  }, [loadPage, query])
 
   useEffect(() => {
     let cancelled = false
@@ -460,37 +532,25 @@ export function Marketplace() {
   }, [toast])
 
   const refresh = useCallback(async () => {
-    const refreshFn = window.pi?.marketplace?.refresh
-    if (typeof refreshFn !== 'function') {
+    if (typeof catalog !== 'function') {
       showToast('error', t('The marketplace is not available in this build.'))
       return
     }
-    const seq = ++requestSeq.current
     setRefreshing(true)
-    setError('')
-    setErrorFromRefresh(false)
     try {
-      const next = await refreshFn()
-      if (seq !== requestSeq.current) return
-      setSnapshot(next)
-      setStatus('ready')
-      showToast('success', t('Marketplace updated'))
-    } catch (cause) {
-      if (seq !== requestSeq.current) return
-      const message = errorMessage(cause)
-      setError(message)
-      setErrorFromRefresh(true)
-      showToast('error', t('Could not refresh the marketplace'), truncateOutput(message))
+      const ok = await loadPage(1, false, true)
+      if (ok) showToast('success', t('Marketplace updated'))
+      else showToast('error', t('Could not refresh the marketplace'))
     } finally {
-      // A newer `load()` may have invalidated this refresh; the spinner still
-      // has to stop, or the Refresh button stays disabled forever.
       setRefreshing(false)
     }
-  }, [showToast, t])
+  }, [catalog, loadPage, showToast, t])
 
   const install = useCallback(
     async (entry: MarketplaceEntry) => {
-      const installFn = window.pi?.marketplace?.install
+      // Official catalog entries install through `pi install npm:<package>`;
+      // the old GitHub lookup only knows the bundled snapshot.
+      const installFn = window.pi?.marketplace?.installNpm
       if (typeof installFn !== 'function') {
         setInstallErrors((prev) => ({
           ...prev,
@@ -506,7 +566,7 @@ export function Marketplace() {
         return next
       })
       try {
-        const result = await installFn(entry.id)
+        const result = await installFn(entry.npmPackage ?? entry.id)
         if (result.ok) {
           setInstalled((prev) => ({ ...prev, [entry.id]: true }))
           showToast('success', t('Install complete'), t('Restart Pi Desktop to load it.'))
@@ -560,7 +620,7 @@ export function Marketplace() {
     (entry: MarketplaceEntry) => {
       void window.pi.shell
         .openExternal(entry.url)
-        .catch(() => showToast('error', t('Could not open the GitHub page')))
+        .catch(() => showToast('error', t('Could not open the package page')))
     },
     [showToast, t]
   )
@@ -575,27 +635,12 @@ export function Marketplace() {
     [showToast, t]
   )
 
-  const counts = useMemo(() => {
-    let plugin = 0
-    let skill = 0
-    for (const entry of snapshot.entries) {
-      if (entry.kind === 'plugin') plugin += 1
-      else skill += 1
-    }
-    return { plugin, skill }
-  }, [snapshot.entries])
-
   const installedIds = useMemo(() => {
     const ids = new Set<string>()
     for (const id of Object.keys(installed)) ids.add(id.toLowerCase())
     for (const id of serverInstalled) ids.add(id.toLowerCase())
     return ids
   }, [installed, serverInstalled])
-
-  const categories = useMemo(
-    () => marketplaceCategories(snapshot.entries, kind),
-    [snapshot.entries, kind]
-  )
 
   const mineCount = useMemo(
     () =>
@@ -606,31 +651,23 @@ export function Marketplace() {
   )
 
   const visible = useMemo(() => {
-    const filtered = filterMarketplaceEntries(snapshot.entries, {
-      kind,
-      query,
-      minStars,
-      category,
-      sort
-    })
     return mineOnly
-      ? filtered.filter((entry) => installedIds.has(entry.id.toLowerCase()))
-      : filtered
-  }, [snapshot.entries, kind, query, minStars, category, sort, mineOnly, installedIds])
+      ? snapshot.entries.filter((entry) => installedIds.has(entry.id.toLowerCase()))
+      : snapshot.entries
+  }, [snapshot.entries, mineOnly, installedIds])
 
-  const kindTotal = kind === 'plugin' ? counts.plugin : counts.skill
-  const updatedLabel = relativeFromIso(snapshot.generatedAt, language)
-  const searchLabel = kind === 'plugin' ? t('Search plugins…') : t('Search skills…')
+  const kindTotal = total
+  const updatedLabel = snapshot.entries.length
+    ? relativeFromIso(snapshot.generatedAt, language)
+    : ''
+  const searchLabel = t('Search Pi packages…')
 
   const switchKind = (next: MarketplaceKind) => {
     setKind(next)
-    setCategory(null)
   }
 
   const clearFilters = () => {
     setQuery('')
-    setMinStars(0)
-    setCategory(null)
     setMineOnly(false)
   }
 
@@ -665,26 +702,21 @@ export function Marketplace() {
         <>
           <div className="marketplace-top">
             <div className="segmented marketplace-tabs" role="group" aria-label={t('Marketplace sections')}>
-              <button
-                type="button"
-                data-active={kind === 'plugin'}
-                aria-pressed={kind === 'plugin'}
-                onClick={() => switchKind('plugin')}
-              >
-                <Package size={13} />
-                {t('Plugins')}
-                <span className="marketplace-tab__count">{counts.plugin}</span>
-              </button>
-              <button
-                type="button"
-                data-active={kind === 'skill'}
-                aria-pressed={kind === 'skill'}
-                onClick={() => switchKind('skill')}
-              >
-                <Sparkles size={13} />
-                {t('Skills')}
-                <span className="marketplace-tab__count">{counts.skill}</span>
-              </button>
+              {(Object.keys(KIND_LABELS) as MarketplaceKind[]).map((value) => {
+                const Icon = KIND_ICONS[value]
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    data-active={kind === value}
+                    aria-pressed={kind === value}
+                    onClick={() => switchKind(value)}
+                  >
+                    <Icon size={13} />
+                    {t(KIND_LABELS[value])}
+                  </button>
+                )
+              })}
             </div>
             <div className="marketplace-top__actions">
               <Popover
@@ -745,9 +777,9 @@ export function Marketplace() {
           </div>
           <header className="marketplace-head">
         <div className="marketplace-head__intro">
-          <h2 className="marketplace-head__title">{t('Plugins & skills')}</h2>
+          <h2 className="marketplace-head__title">{t('Pi Package Catalog')}</h2>
           <p className="marketplace-head__desc">
-            {t('Browse community plugins and skills for Pi, then install them with one command.')}
+            {t('Every extension, skill, theme and prompt published to npm for Pi. Install one with a click.')}
           </p>
         </div>
         <div className="marketplace-head__actions">
@@ -818,25 +850,10 @@ export function Marketplace() {
               </button>
             ))}
           </div>
-
-          <label className="marketplace-min-stars">
-            <span>{t('Minimum stars')}</span>
-            <select
-              className="input settings-select marketplace-select"
-              value={minStars}
-              onChange={(event) => setMinStars(Number(event.target.value))}
-            >
-              {MIN_STARS_OPTIONS.map((value) => (
-                <option key={value} value={value}>
-                  {value === 0 ? t('All') : value >= 1000 ? '1k+' : `${value}+`}
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
       </div>
 
-      <div className="marketplace-categories" role="group" aria-label={t('Categories')}>
+      <div className="marketplace-categories" role="group" aria-label={t('Filters')}>
         <button
           type="button"
           className="pill marketplace-mine"
@@ -848,21 +865,6 @@ export function Marketplace() {
           {t('Mine')}
           {mineCount > 0 ? <span className="marketplace-mine__count">{mineCount}</span> : null}
         </button>
-        {categories.map((item) => {
-          const value = item === '全部' ? null : item
-          return (
-            <button
-              type="button"
-              className="pill"
-              key={item}
-              data-active={category === value}
-              aria-pressed={category === value}
-              onClick={() => setCategory(value)}
-            >
-              {item === '全部' ? t('All') : item}
-            </button>
-          )
-        })}
       </div>
 
       {error && !(status === 'error' && snapshot.entries.length === 0) ? (
@@ -872,7 +874,7 @@ export function Marketplace() {
           <button
             type="button"
             className="btn btn--sm"
-            onClick={() => void (errorFromRefresh ? refresh() : load())}
+            onClick={() => void loadPage(1, false)}
           >
             {t('Retry')}
           </button>
@@ -890,7 +892,7 @@ export function Marketplace() {
           <ShieldAlert size={20} />
           <strong>{t('Could not load the marketplace.')}</strong>
           <span>{truncateOutput(error, 240)}</span>
-          <button type="button" className="btn btn--sm" onClick={() => void load()}>
+          <button type="button" className="btn btn--sm" onClick={() => void loadPage(1, false)}>
             {t('Retry')}
           </button>
         </div>
@@ -901,9 +903,7 @@ export function Marketplace() {
             {mineOnly && mineCount === 0
               ? t('You have not installed any plugins or skills yet.')
               : kindTotal === 0
-                ? kind === 'plugin'
-                  ? t('No plugins are available yet.')
-                  : t('No skills are available yet.')
+                ? t('No packages are available in this section yet.')
                 : t('No entries match your filters.')}
           </strong>
           {kindTotal > 0 && !(mineOnly && mineCount === 0) ? (
@@ -935,6 +935,20 @@ export function Marketplace() {
           ))}
         </div>
       )}
+
+      {status === 'ready' && !mineOnly && visible.length > 0 && page * PAGE_SIZE < total ? (
+        <div className="marketplace-more">
+          <button
+            type="button"
+            className="btn btn--sm"
+            disabled={loadingMore}
+            onClick={() => void loadPage(page + 1, true)}
+          >
+            {loadingMore ? <Loader2 size={13} className="spin" /> : <ChevronDown size={13} />}
+            {loadingMore ? t('Loading…') : t('Load more')}
+          </button>
+        </div>
+      ) : null}
 
         </>
       )}

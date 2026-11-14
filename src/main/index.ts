@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { createHash } from 'node:crypto'
 import { appendFileSync, mkdirSync } from 'node:fs'
+import { readdir, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import * as pty from 'node-pty'
 import { bridgeRuntime, registerIpc, sendToWindow } from './ipc'
@@ -404,7 +405,26 @@ function applyTray(): void {
   })
 }
 
+async function cleanupOrphanedScratchFiles(): Promise<void> {
+  try {
+    const userData = app.getPath('userData')
+    const entries = await readdir(userData, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+      const name = entry.name
+      const isMjsScratch = name.startsWith('pi-desktop-') && name.endsWith('.mjs')
+      const isMdScratch = name.startsWith('pi-desktop-instructions-') && name.endsWith('.md')
+      if (isMjsScratch || isMdScratch) {
+        await unlink(path.join(userData, name)).catch(() => {})
+      }
+    }
+  } catch (error) {
+    console.error('[pi-desktop] scratch file cleanup warning:', error)
+  }
+}
+
 async function start(): Promise<void> {
+  await cleanupOrphanedScratchFiles()
   const settingsStore = new SettingsStore()
   settings = settingsStore
   configureExternalSessionRoots(() => {

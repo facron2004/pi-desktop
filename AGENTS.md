@@ -284,7 +284,11 @@ programmatic focus. One card exists at a time, so it has one fixed id
 the card is up.
 
 The card answers "when" and "where": `Created` is the moment the row joined the
-list, `Conversations` its count, `Path` the folder. A project has no start date
+list, `Conversations` its count, `Path` the project folder. The conversation
+row's `Path` is `SessionMeta.cwd` — the folder the agent runs in — and never
+`SessionMeta.file`, the JSONL under Pi's own `~/.pi/agent/sessions` storage; the
+latter answers "where is the transcript cached", which is not what the row is
+asked. A project has no start date
 of its own when it is known only from sessions, so `collectProjects` falls back
 to its oldest conversation; `Workspace.createdAt` is written when the folder is
 registered and stays absent for a folder registered before the field existed —
@@ -459,6 +463,24 @@ The title bar does not repeat any of it: it keeps the conversation's name and
 the app's actions. A project or branch chip in two places is two things to keep
 in sync, and the one in the header had no room to say what it was.
 
+**Subagents wear one badge beside that name.** `TitleSubagents` projects the
+active thread's `subagent` tool nodes through `lib/subagents.ts`
+(`subagentTasks`, `summarizeSubagents`, `subagentPreview`) — the same source the
+Subagents page reads. The pill appears only when the
+conversation actually delegated work and carries the number of child tasks, with
+a spinner while any are in flight. Its card lists each child's status, a capped
+one-line look at its live output or final answer, and duration/token/model
+metrics; the preview collapses whitespace so a long child answer cannot push the
+card open. Clicking a row uses `openSubagentTask` in `App.tsx`: it stores only a session key and a task id,
+then `SubagentPanel` reads the current thread to render `SubagentConversation`
+on the right panel — status and output keep updating while it is open. The
+card's footer opens the whole catalog instead. `tests/title-subagents.test.ts`
+guards the projection, `tests/ui-regressions.mjs` drives the two-click flow
+against real child processes, and `output/audit/titlebar-check.mjs` captures
+and measures the title bar's spacing. The badge is pulled into the title's own
+padding (one group, not two islands) and the dead air that used to sit between
+them is spent on the pill's interior instead.
+
 **The title bar must wear the same row the sidebar highlights.** The sidebar
 lists disk sessions *plus* live threads (`lib/live-sessions.ts`), because a chat
 Pi has not flushed to the session folder yet still has a first prompt. The
@@ -616,8 +638,9 @@ points it at `userData`, tests pass `null` to keep the old direct scan.
 
 ### Settings and shortcuts
 
-The settings dialog has no Plugins page: plugins, skills and MCP servers are
-managed on the Marketplace desk page (`ResourceManager`), and the project-trust
+The settings dialog has no Plugins page: **插件与技能 / Plugins & skills** is a desk
+page that reads Pi's own package catalog (`pi.dev/packages`) — see
+[docs/marketplace.md](docs/marketplace.md) — and the project-trust
 switch lives in General → Project safety. `Ctrl+,` opens the dialog. Its
 **Keyboard shortcuts** page and the `Ctrl+/` modal both render `ShortcutsList`
 from the single `SHORTCUTS` table in `lib/shortcuts.ts`, so a new chord needs
@@ -681,6 +704,37 @@ MCode's 640px default does not fit beside Pi's 280px task rail at the same
 window width. The comparison with the reference app is in
 [docs/mcode-tool-panel-alignment.md](docs/mcode-tool-panel-alignment.md).
 
+## Image generation
+
+`Image generation` is a tool-panel page, and `generate_image` is a Pi tool;
+both draw through the same local Magpie gateway, neither keeps a second copy
+of the picture.
+
+- The main process owns the HTTP call (`src/main/image-generation.ts`,
+  `image:generate`): it resolves the `magpie` provider from Pi's `models.json`
+  (`baseUrl` + `apiKey`, falling back to `http://127.0.0.1:3425/v1`), POSTs
+  `{ prompt, n, size, quality, response_format: 'b64_json' }` to
+  `/v1/images/generations`, and parses `{ data: [{ b64_json, mime_type }] }`.
+  Credentials never leave main and never appear in an error message. The
+  decoded bytes are written into the **current project** under
+  `output/generated/` — the output directory is resolved against the workspace
+  root and an absolute path or a `..` segment is rejected — so the picture
+  immediately shows up in the Images page and can be referenced with `@`.
+  Names are slugified from the prompt plus a timestamp and random suffix.
+- The page (`ImageGeneration.tsx`) keeps only metadata: the last twelve results
+  per project in localStorage, previews read through `fs:readImageDataUrl`,
+  and the model/size/quality choices persisted in `AppSettings`. Its Generate
+  button is disabled until a prompt exists; a link sends the reader to the
+  Images page through `pi:open-tool-page`.
+- The Pi tool is a generated extension (`src/main/pi/image-tool.ts`), wired
+  into the launch args in `runtime.ts` / `rpc-args.ts` like every other bundled
+  extension. It reads the same `models.json` **at runtime** inside the Pi
+  process rather than baking a key into the generated file, writes to
+  `<cwd>/output/generated/`, and returns the saved paths plus an inline
+  `image` content block so the picture appears in the transcript. The two
+  callers deliberately do not share an HTTP client: one lives in Electron
+  main, the other in a generated JS string inside a separate process.
+
 ## The task rail
 
 The rail beside the conversation answers four questions about the session on
@@ -694,11 +748,12 @@ Every part of it is a projection, not state:
 - the environment section reads `git` from the store: the branch is the
   subtitle under the title, the line counts sit on the right of the Changes
   row, and the other two rows open the commit dialog and the change graph;
-- background tasks are the subagent calls of the thread (`lib/subagents.ts`),
-  and the dot on the right of a row says how the task is going. Clicking a row
-  opens that task's `SubagentConversation` on the Subagents page. The shell
-  keeps only its session key and task id; the detail reads the current thread,
-  so status and output keep updating while it is open;
+- background tasks are the **in-flight tool calls** of the thread (`listBackgroundTasks` in
+  `lib/task-panel.ts`): a shell command, a search, a fetch, named by its tool
+  (`bash`, `grep`, `powershell`…) and its one-line object. Subagents are not listed
+  there — they have their own badge beside the title and their own page in the workspace
+  panel — and the section is live: a call enters while `running` and leaves when it
+  finishes;
 - progress is the newest todo list the agent sent with `desktop_todo`
   (`lib/plan.ts`), or the checklist of the newest assistant message that
   carries one (ignoring a list shorter than two entries) when the agent never
@@ -738,9 +793,10 @@ walks the project in the main process (`fs:search`), and it matches the path,
 not only the name — the separators are normalised, so `src/renderer` finds the
 folder on Windows as well.
 
-The Files tab has a Text mode backed by `fs:searchText`: the same walk and skip
-policy as `fs:search`, literal case-insensitive matching, binary and files over
-512 KB skipped, at most 3 hits per file and 200 in total. Preview offsets
+The Files page's full-text search is backed by `fs:searchText`: the same walk
+and skip policy as `fs:search`, literal case-insensitive matching, binary and
+files over 512 KB skipped, at most 3 hits per file and 200 in total. It opens
+from the empty preview pane, not from a tab beside the tree. Preview offsets
 (`matchStart`/`matchLength`) are relative to the one-line preview, not the file
 line; the viewer scrolls to `line`.
 
@@ -748,6 +804,51 @@ The sidebar's conversation search remembers the last eight queries that produced
 hit (`pi-desktop.session-search.history`) and shows them while the field is empty
 and focused; picking one just fills the field, which runs the normal debounced
 search. Queries with no hits are not remembered.
+
+### The project file tree
+
+The Files page's tree carries **two indexes**, arranged the way the reference
+editor arranges them: the filter field sits at the top, then an `All changes`
+heading, then two foldable rows — `Changed files` (with a dot while the working
+tree is dirty) and `All files`. Pressing a row selects and opens it; pressing
+the open one folds it away. The expanded body sits under both rows, so the two
+indexes always stay adjacent at the top. `Changed files` lists only the files
+git reports, grouped into a folder tree built from the status alone
+(`changedFileTree` in `lib/file-status.ts` — no directory walk, so it stays
+instant however large the project is). `All files` is the real project tree
+from `fs:list`, unchanged in shape from before: folders, sizes, the same
+navigation. A clean repository opens on `All files`; once the reader picks an
+index, a later git refresh does not move it.
+
+Both indexes use the same row vocabulary: a **file-type icon** instead of an
+extension spelled out — code brackets for source, braces for data, a picture
+for images, a terminal prompt for scripts, a lined page for prose — tinted per
+family from `lib/files.ts`'s tone, plus 27px rows and the change mark on the
+right. Only the changed index tints names — modified blue, added green, deleted
+struck through — because `All files` is for browsing, not reviewing. Folders in
+either index wear a small dot for the strongest change below them; files wear
+the framed glyph.
+
+The tree's show/hide control is a **folder button in the panel header**, not a
+control inside the tree: it sits in the panel strip's right corner next to
+maximize, stays there whether the tree is open or folded, and is tinted while
+the tree is showing. `App` owns `fileTreeOpen` and passes it down; `ToolPanel`'s
+`actions` slot is where page-specific header controls go.
+
+The marks come from `lib/file-status.ts`, a projection of the same `git` the
+task rail reads. `changeKind` folds git's two-letter porcelain codes onto one
+mark per file (`modified`, `added`, `deleted`, `renamed`, `conflicted`);
+`fileChangeIndex` keys them by the absolute path `fs:list` returns and walks
+each file's ancestors so a folded folder still shows its strongest change. A
+workspace that is a subdirectory of a larger repository only marks its own
+files. `tests/file-status.test.ts` covers the codes, the aggregation, the
+virtual tree and the subdirectory case; `tests/ui-regressions.mjs` checks the
+two indexes, the badge and the single name column per depth.
+
+The old `Files | Text` segmented control is **gone**. Full-text search is a
+wide-pane mode now: the empty preview offers *Search inside the project files*,
+and the results open over the preview (`TextSearch`), not in the 236px tree
+aside. The tree's own field only filters file names.
 
 `FileViewer` has its own in-file find (Ctrl+F only while the viewer is focused,
 so the conversation search keeps its key everywhere else), a line-jump box, a
@@ -959,7 +1060,7 @@ The delegation contract is part of the generated source, not a renderer concern:
   before the child starts, so ignored constraints cannot be reported as valid.
 - A running or queued task is stopped by the app, not by another tool, because
   the parent turn is blocked inside the tool call: the extension registers
-  `/desktop-subagent-cancel <toolCallId:index>` and the tree/rail row's stop
+  `/desktop-subagent-cancel <toolCallId:index>`; the subagent tree and the Subagents page row's stop
   button sends it through Pi's prompt channel. The id format is the one the UI
   already derives in `lib/subagents.ts`.
 - Named agent presets are Markdown + flat `name: value` frontmatter in

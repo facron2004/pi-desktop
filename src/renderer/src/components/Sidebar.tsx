@@ -139,6 +139,10 @@ export function Sidebar({
   const searchTriggerRef = useRef<HTMLButtonElement>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  const renamingRef = useRef(renaming)
+  renamingRef.current = renaming
+  const draftRef = useRef(draft)
+  draftRef.current = draft
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
   const [projectDraft, setProjectDraft] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
@@ -666,15 +670,71 @@ export function Sidebar({
     })
   }
 
-  const startRename = (file: string, current: string) => {
+  const startRename = useCallback((file: string, current: string) => {
     setRenaming(file)
     setDraft(current)
-  }
+  }, [])
 
-  const commitRename = (file: string) => {
+  const handleSelectSession = useCallback((session: ConversationRow) => {
+    const file = session.file
+    if (renamingRef.current === file) return
+    // The row on screen is the same conversation whether it is a draft
+    // or a file, so a draft row must not re-open on every click.
+    const state = useAppStore.getState()
+    const currentActive = state.activeSessionFile ?? state.draftId
+    if (file === currentActive) {
+      const cached = state.threads[file]
+      const canRetryHistory = session.onDisk === true &&
+        state.hydratingSessionFile !== file &&
+        needsSessionHydration(
+          session.messageCount,
+          cached?.version,
+          cached?.items.length ?? 0,
+          cached?.isStreaming ?? false
+        )
+      if (!canRetryHistory) return
+    }
+    // Opening a conversation only changes the view. The one that is
+    // running keeps its process.
+    void selectSession(session)
+  }, [selectSession])
+
+  const handleStartRename = useCallback((session: ConversationRow) => {
+    startRename(session.file, session.name || session.preview || '')
+  }, [startRename])
+
+  const handleCommitRename = useCallback((file: string) => {
     setRenaming(null)
-    void renameSessionFile(file, draft)
-  }
+    void renameSessionFile(file, draftRef.current)
+  }, [renameSessionFile])
+
+  const handleCancelRename = useCallback(() => {
+    setRenaming(null)
+  }, [])
+
+  const handleDeleteSession = useCallback((session: ConversationRow) => {
+    setPendingDelete(session)
+  }, [])
+
+  const handleArchiveSession = useCallback((file: string) => {
+    void archiveSession(file)
+  }, [archiveSession])
+
+  const handleStopSession = useCallback((file: string) => {
+    const state = useAppStore.getState()
+    if (file === state.activeSessionFile) void stop()
+    else void stopSession(file)
+  }, [stop, stopSession])
+
+  const handleTogglePinSession = useCallback((file: string) => {
+    void togglePin(file).then(() => {
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLButtonElement>(
+          `.session-item[data-session-file="${CSS.escape(file)}"] .session-item__main`
+        )?.focus()
+      })
+    })
+  }, [togglePin])
 
   const renderSessions = (items: ConversationRow[], showProject = false) =>
     items.map((session) => (
@@ -684,50 +744,17 @@ export function Sidebar({
         active={session.file === (activeSessionFile ?? draftId)}
         pinned={pinned.has(session.file)}
         renaming={renaming === session.file}
-        draft={draft}
+        draft={renaming === session.file ? draft : ''}
         project={showProject && session.cwd ? basename(session.cwd) : undefined}
-        onSelect={(file) => {
-          if (renaming === file) return
-          // The row on screen is the same conversation whether it is a draft
-          // or a file, so a draft row must not re-open on every click.
-          if (file === (activeSessionFile ?? draftId)) {
-            const state = useAppStore.getState()
-            const cached = state.threads[file]
-            const canRetryHistory = session.onDisk === true &&
-              state.hydratingSessionFile !== file &&
-              needsSessionHydration(
-                session.messageCount,
-                cached?.version,
-                cached?.items.length ?? 0,
-                cached?.isStreaming ?? false
-              )
-            if (!canRetryHistory) return
-          }
-          // Opening a conversation only changes the view. The one that is
-          // running keeps its process.
-          void selectSession(session)
-        }}
-        onStartRename={() =>
-          startRename(session.file, session.name || session.preview || '')
-        }
+        onSelect={handleSelectSession}
+        onStartRename={handleStartRename}
         onRenameDraft={setDraft}
-        onCommitRename={commitRename}
-        onCancelRename={() => setRenaming(null)}
-        onDelete={() => setPendingDelete(session)}
-        onArchive={() => void archiveSession(session.file)}
-        onStop={() => {
-          if (session.file === activeSessionFile) void stop()
-          else void stopSession(session.file)
-        }}
-        onTogglePin={() => {
-          void togglePin(session.file).then(() => {
-            requestAnimationFrame(() => {
-              document.querySelector<HTMLButtonElement>(
-                `.session-item[data-session-file="${CSS.escape(session.file)}"] .session-item__main`
-              )?.focus()
-            })
-          })
-        }}
+        onCommitRename={handleCommitRename}
+        onCancelRename={handleCancelRename}
+        onDelete={handleDeleteSession}
+        onArchive={handleArchiveSession}
+        onStop={handleStopSession}
+        onTogglePin={handleTogglePinSession}
       />
     ))
 
@@ -1604,15 +1631,15 @@ interface SessionRowProps {
   draft: string
   /** The project the conversation belongs to, when it is pinned. */
   project?: string
-  onSelect: (file: string) => void
-  onStartRename: () => void
+  onSelect: (session: ConversationRow) => void
+  onStartRename: (session: ConversationRow) => void
   onRenameDraft: (value: string) => void
   onCommitRename: (file: string) => void
   onCancelRename: () => void
-  onDelete: () => void
-  onArchive: () => void
-  onStop: () => void
-  onTogglePin: () => void
+  onDelete: (session: ConversationRow) => void
+  onArchive: (file: string) => void
+  onStop: (file: string) => void
+  onTogglePin: (file: string) => void
 }
 
 const SessionRow = memo(function SessionRow({
@@ -1646,7 +1673,7 @@ const SessionRow = memo(function SessionRow({
   }, [])
   const title = session.name || session.preview || t('Untitled session')
   // What the row cannot say in one line: when the conversation was started,
-  // where its file lives, and how it is doing right now.
+  // which project folder it belongs to, and how it is doing right now.
   const tipRows = useCallback((): SidebarTipRow[] => {
     const status =
       indicator === 'needs-input'
@@ -1660,13 +1687,16 @@ const SessionRow = memo(function SessionRow({
               : t('Idle')
     return [
       { label: t('Created'), value: formatDateTime(session.createdAt, language) || '—' },
-      { label: t('Path'), value: session.file, path: true },
+      // The folder the agent runs in, never the JSONL file Pi keeps under its
+      // own session storage: the path answers "where does this work live", not
+      // "where is the transcript cached".
+      { label: t('Path'), value: session.cwd || t('No project'), path: true },
       { label: t('Status'), value: status },
       // A conversation pinned out of its project is the only row whose project
       // is not obvious from its surroundings, so only that one names it.
       ...(project ? [{ label: t('Project'), value: project }] : [])
     ]
-  }, [indicator, language, project, running, session.createdAt, session.file, t])
+  }, [indicator, language, project, running, session.createdAt, session.cwd, t])
   return (
     <div
       className="session-item"
@@ -1704,7 +1734,7 @@ const SessionRow = memo(function SessionRow({
           ref={mainRef}
           type="button"
           className="session-item__main"
-          onClick={() => onSelect(session.file)}
+          onClick={() => onSelect(session)}
           // The card replaces the native tooltip, which could only carry the
           // name the row already shows.
           aria-describedby={tip.tip ? SIDEBAR_TIP_ID : undefined}
@@ -1775,7 +1805,7 @@ const SessionRow = memo(function SessionRow({
                     role="menuitem"
                     onClick={() => {
                       close()
-                      onTogglePin()
+                      onTogglePin(session.file)
                     }}
                   >
                     <Pin size={12} />
@@ -1789,7 +1819,7 @@ const SessionRow = memo(function SessionRow({
                     role="menuitem"
                     onClick={() => {
                       close()
-                      onStop()
+                      onStop(session.file)
                     }}
                   >
                     <Square size={12} />
@@ -1802,7 +1832,7 @@ const SessionRow = memo(function SessionRow({
                   role="menuitem"
                   onClick={() => {
                     close()
-                    onStartRename()
+                    onStartRename(session)
                   }}
                 >
                   <Pencil size={12} />
@@ -1815,7 +1845,7 @@ const SessionRow = memo(function SessionRow({
                     role="menuitem"
                     onClick={() => {
                       close()
-                      onArchive()
+                      onArchive(session.file)
                     }}
                   >
                     <Archive size={12} />
@@ -1829,7 +1859,7 @@ const SessionRow = memo(function SessionRow({
                     role="menuitem"
                     onClick={() => {
                       close()
-                      onDelete()
+                      onDelete(session)
                     }}
                   >
                     <Trash2 size={12} />

@@ -21,7 +21,7 @@ export function Switch({
       disabled={disabled}
       onClick={() => onChange(!checked)}
     >
-      <span className="switch__thumb" />
+      <span className="switch__thumb" aria-hidden="true" />
     </button>
   )
 }

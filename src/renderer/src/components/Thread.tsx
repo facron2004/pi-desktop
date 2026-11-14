@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, List, Search, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, Database, List, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
 import type { Turn } from '../lib/turns'
@@ -7,16 +7,16 @@ import { buildTurns, changedTurnsFrom, usageForTurn, userMetadataForTurns } from
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
-import { formatClock, formatCost, formatTokens } from '../lib/format'
+import { formatClock, formatCost, formatExactTokens, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
 import { pairForkTargets } from '../lib/thread'
 import { describeTool } from '../lib/tools'
 import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
-import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition } from '../lib/scroll-memory'
+import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition, scrollTopForTurnTop } from '../lib/scroll-memory'
 import { readSessionTiming, userTimingDuration } from '../lib/session-timing'
 import { readHistoryFirstVisibleTurn, readProcessOpen, writeHistoryFirstVisibleTurn, writeProcessOpen } from '../lib/view-state'
-import { keysFor, matchesShortcut } from '../lib/shortcuts'
+import { matchesAnyShortcut } from '../lib/shortcuts'
 import { SearchContext, useSearchQuery } from '../lib/search-context'
 import { NoticeMessage, UserMessage } from './MessageItem'
 import { ToolCard, BashCard } from './ToolCard'
@@ -44,6 +44,8 @@ type SessionTurn = Turn & { user: UserItem }
 /** How far from the bottom still counts as "following the output". */
 const FOLLOW_RANGE = 80
 const EDGE_RANGE = 16
+/** Where a chosen turn lands in the reading viewport. */
+type TurnJumpAlign = 'center' | 'top'
 const searchableChunksByTurn = new WeakMap<Turn, { root?: string; chunks: SearchableChunk[] }>()
 
 type IndexedSearchHit = SearchHit & { turnIndex: number }
@@ -240,7 +242,12 @@ export function Thread() {
   const activeSyncFrameRef = useRef(0)
   const [scrolledTurnId, setScrolledTurnId] = useState<string | null>(null)
   const [, setHistoryViewVersion] = useState(0)
-  const pendingTurnJumpRef = useRef<string | null>(null)
+  /**
+   * A jump that has to wait for the history fold to open. `align` decides what
+   * "reached the turn" means: a rail pick reads forward from its own prompt, so
+   * the prompt goes to the top; a search hit stays centred around the match.
+   */
+  const pendingTurnJumpRef = useRef<{ turnId: string; align: TurnJumpAlign } | null>(null)
   const { copied, copy } = useCopy()
 
   const [searchOpen, setSearchOpen] = useState(false)
@@ -589,7 +596,7 @@ export function Thread() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.querySelector('[aria-modal="true"]')) return
-      if (matchesShortcut(event, keysFor('search-conversation', shortcutBindings))) {
+      if (matchesAnyShortcut(event, 'search-conversation', shortcutBindings)) {
         event.preventDefault()
         setSearchOpen(true)
         requestAnimationFrame(() => searchInputRef.current?.focus())
@@ -618,26 +625,59 @@ export function Thread() {
     setQuery(dev.search)
   }, [])
 
+  /** A short highlight so the eye lands where the jump put it. */
+  const flashTurn = useCallback((node: HTMLElement) => {
+    node.classList.remove('turn--flash')
+    // Force a reflow so the animation can run again on the same turn.
+    void node.offsetWidth
+    node.classList.add('turn--flash')
+    window.setTimeout(() => node.classList.remove('turn--flash'), 1400)
+  }, [])
+
+  /**
+   * Put a turn where its reader asked for it. A rail pick reads forward from
+   * the prompt it picked, so the prompt becomes the top of the viewport; a
+   * search hit stays centred, because the match can sit anywhere in the turn.
+   */
+  const placeTurn = useCallback((node: HTMLElement, align: TurnJumpAlign) => {
+    const container = scrollRef.current
+    if (!container) return
+    if (align === 'center') {
+      node.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
+      return
+    }
+    const stickySearch = container.querySelector<HTMLElement>('.thread-search')
+    const turnTop =
+      node.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+    container.scrollTo({
+      top: scrollTopForTurnTop(container, turnTop, stickySearch?.offsetHeight ?? 0),
+      behavior: scrollBehavior()
+    })
+  }, [])
+
   const jumpToTurn = useCallback(
-    (turnId: string) => {
+    (turnId: string, align: TurnJumpAlign = 'center') => {
       const turnIndex = turnsRef.current.findIndex((turn) => turn.id === turnId)
       if (turnIndex < 0) return
       if (turnIndex < firstVisibleTurn) {
-        pendingTurnJumpRef.current = turnId
+        pendingTurnJumpRef.current = { turnId, align }
         expandHistory()
         return
       }
       const node = scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${turnId}"]`)
       if (!node) return
       stickRef.current = false
-      node.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
-      node.classList.remove('turn--flash')
-      // Force a reflow so the animation can run again on the same turn.
-      void node.offsetWidth
-      node.classList.add('turn--flash')
-      window.setTimeout(() => node.classList.remove('turn--flash'), 1400)
+      setAtBottom(false)
+      placeTurn(node, align)
+      flashTurn(node)
     },
-    [firstVisibleTurn, expandHistory]
+    [firstVisibleTurn, expandHistory, placeTurn, flashTurn]
+  )
+
+  /** A rail tick is a prompt, so its click reads from that prompt downward. */
+  const jumpToTurnTop = useCallback(
+    (turnId: string) => jumpToTurn(turnId, 'top'),
+    [jumpToTurn]
   )
 
   const jumpToHit = useCallback(
@@ -649,20 +689,16 @@ export function Thread() {
   )
 
   useLayoutEffect(() => {
-    const turnId = pendingTurnJumpRef.current
-    if (!turnId || firstVisibleTurn > 0) return
-    const node = scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${turnId}"]`)
+    const jump = pendingTurnJumpRef.current
+    if (!jump || firstVisibleTurn > 0) return
+    const node = scrollRef.current?.querySelector<HTMLElement>(`[data-turn="${jump.turnId}"]`)
     if (!node) return
     pendingTurnJumpRef.current = null
     stickRef.current = false
     setAtBottom(false)
-    node.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
-    node.classList.remove('turn--flash')
-    // Force a reflow so the animation can run again on the same turn.
-    void node.offsetWidth
-    node.classList.add('turn--flash')
-    window.setTimeout(() => node.classList.remove('turn--flash'), 1400)
-  }, [firstVisibleTurn, turns])
+    placeTurn(node, jump.align)
+    flashTurn(node)
+  }, [firstVisibleTurn, turns, placeTurn, flashTurn])
 
   const stepHit = useCallback(
     (delta: number) => {
@@ -697,7 +733,7 @@ export function Thread() {
       if (direction === -1 && firstVisibleTurn > 0) {
         const previous = turns[firstVisibleTurn - 1]
         if (previous) {
-          pendingTurnJumpRef.current = previous.id
+          pendingTurnJumpRef.current = { turnId: previous.id, align: 'top' }
           expandHistory()
         }
       }
@@ -716,12 +752,12 @@ export function Thread() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.querySelector('[aria-modal="true"]')) return
-      if (matchesShortcut(event, keysFor('previous-turn', shortcutBindings))) {
+      if (matchesAnyShortcut(event, 'previous-turn', shortcutBindings)) {
         event.preventDefault()
         jumpTurn(-1)
         return
       }
-      if (matchesShortcut(event, keysFor('next-turn', shortcutBindings))) {
+      if (matchesAnyShortcut(event, 'next-turn', shortcutBindings)) {
         event.preventDefault()
         jumpTurn(1)
       }
@@ -831,7 +867,7 @@ export function Thread() {
       node.classList.add('turn--flash')
       window.setTimeout(() => node.classList.remove('turn--flash'), 1600)
     } else if (turnId && hidden) {
-      pendingTurnJumpRef.current = turnId
+      pendingTurnJumpRef.current = { turnId, align: 'center' }
       expandHistory()
     }
     consumeJump()
@@ -876,7 +912,7 @@ export function Thread() {
         turns={sessionTurns}
         activeTurn={lastSessionTurn!}
         activeTurnId={activeTurnId}
-        onSelect={jumpToTurn}
+        onSelect={jumpToTurnTop}
       />
     ) : null}
     <div className="thread" ref={scrollRef}>
@@ -1348,14 +1384,14 @@ const ThreadTurnView = memo(function ThreadTurnView({
                       trigger="hover"
                       placement="top"
                       align="left"
-                      width={236}
+                      width={340}
                       className="usage-popover"
                       renderTrigger={({ toggle }) => (
                         <button
                           type="button"
                           className="assistant__usage"
                           onClick={toggle}
-                          aria-label={t('Usage details')}
+                          aria-label={t('Turn usage')}
                         >
                           {formatTokens(turnUsage.totalTokens)} {t('tokens')}
                         </button>
@@ -1364,48 +1400,75 @@ const ThreadTurnView = memo(function ThreadTurnView({
                       {() => {
                         const usage = turnUsage
                         const cost = usage?.cost?.total
+                        // Cache reads are measured against every prompt token:
+                        // fresh input, cache reads and cache writes — the same
+                        // base session-metrics.ts uses for the session reading.
+                        const hitBase =
+                          (usage?.input ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0)
+                        const cacheHit = hitBase > 0
+                          ? `${(((usage?.cacheRead ?? 0) / hitBase) * 100).toFixed(1)}%`
+                          : null
+                        const model = lastAssistant.model
+                          ? modelName(models, lastAssistant.model)
+                          : ''
                         return (
                           <div className="usage-popover__body">
-                            <div className="usage-popover__title">{t('Usage details')}</div>
-                            <div className="usage-popover__total">
-                              <span className="usage-popover__number">
-                                {formatTokens(usage?.totalTokens)}
-                              </span>
-                              <span className="usage-popover__unit">{t('Total tokens')}</span>
-                            </div>
-                            <div className="ctx__rows">
-                              <div className="ctx__row">
-                                <span>{t('Input')}</span>
-                                <span>{formatTokens(usage?.input)}</span>
-                              </div>
-                              <div className="ctx__row">
-                                <span>{t('Output')}</span>
-                                <span>{formatTokens(usage?.output)}</span>
-                              </div>
-                              <div className="ctx__row">
-                                <span>{t('Cache read')}</span>
-                                <span>{formatTokens(usage?.cacheRead)}</span>
-                              </div>
-                              {usage?.cacheWrite ? (
-                                <div className="ctx__row">
-                                  <span>{t('Cache write')}</span>
-                                  <span>{formatTokens(usage?.cacheWrite)}</span>
+                            <div className="usage-panel">
+                              <div className="usage-panel__rows" role="group" aria-label={t('Turn usage')}>
+                                <div className="usage-panel__row usage-panel__row--strong">
+                                  <span className="usage-panel__title">
+                                    <Database size={14} aria-hidden="true" />
+                                    {t('Turn usage')}
+                                  </span>
+                                  <span>
+                                    <strong>{usage?.totalTokens.toLocaleString() ?? '—'}</strong> tok
+                                  </span>
                                 </div>
-                              ) : null}
-                              {cost ? (
-                                <div className="ctx__row">
-                                  <span>{t('Cost')}</span>
-                                  <span>{formatCost(cost)}</span>
+                                {model ? (
+                                  <div className="usage-panel__row">
+                                    <span>{t('Provider / model')}</span>
+                                    <span className="usage-panel__route" title={model}>{model}</span>
+                                  </div>
+                                ) : null}
+                                {cacheHit ? (
+                                  <div className="usage-panel__row">
+                                    <span>{t('Cache hit')}</span>
+                                    <span>{cacheHit}</span>
+                                  </div>
+                                ) : null}
+                                <div className="usage-panel__row">
+                                  <span>{t('Uncached input')}</span>
+                                  <span>{formatExactTokens(usage?.input)}</span>
                                 </div>
-                              ) : incompleteCost ? (
-                                <div
-                                  className="ctx__row"
-                                  title={t('Not all model requests reported cost.')}
-                                >
-                                  <span>{t('Cost')}</span>
-                                  <span>—</span>
+                                <div className="usage-panel__row">
+                                  <span>{t('Cache read')}</span>
+                                  <span>{formatExactTokens(usage?.cacheRead)}</span>
                                 </div>
-                              ) : null}
+                                {usage?.cacheWrite ? (
+                                  <div className="usage-panel__row">
+                                    <span>{t('Cache write')}</span>
+                                    <span>{formatExactTokens(usage.cacheWrite)}</span>
+                                  </div>
+                                ) : null}
+                                <div className="usage-panel__row">
+                                  <span>{t('Output')}</span>
+                                  <span>{formatExactTokens(usage?.output)}</span>
+                                </div>
+                                {cost ? (
+                                  <div className="usage-panel__row">
+                                    <span>{t('Cost')}</span>
+                                    <span>{formatCost(cost)}</span>
+                                  </div>
+                                ) : incompleteCost ? (
+                                  <div
+                                    className="usage-panel__row"
+                                    title={t('Not all model requests reported cost.')}
+                                  >
+                                    <span>{t('Cost')}</span>
+                                    <span>—</span>
+                                  </div>
+                                ) : null}
+                              </div>
                             </div>
                           </div>
                         )

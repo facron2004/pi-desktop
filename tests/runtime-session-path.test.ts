@@ -3,7 +3,56 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
+import { ipcMain } from 'electron'
+import { registerIpc } from '../src/main/ipc'
+import type { IpcContext } from '../src/main/ipc'
 import { PiRuntime } from '../src/main/pi/runtime'
+
+test('runtime IPC blocks direct switch_session RPCs before they reach Pi', async () => {
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  const handleDescriptor = Object.getOwnPropertyDescriptor(ipcMain, 'handle')
+  const requests: { key: string; command: string; payload: Record<string, unknown> }[] = []
+  Object.defineProperty(ipcMain, 'handle', {
+    configurable: true,
+    value: (channel: string, listener: unknown) => {
+      handlers.set(channel, listener as (event: unknown, ...args: unknown[]) => unknown)
+    }
+  })
+
+  try {
+    registerIpc({
+      supervisor: {
+        request: async (key: string, command: string, payload: Record<string, unknown>) => {
+          requests.push({ key, command, payload })
+          return { success: true }
+        }
+      },
+      settings: { get: () => ({ workspaces: [] }) },
+      getWindow: () => null,
+      terminals: { create: () => ({}) },
+      memory: { promptFor: () => '' }
+    } as unknown as IpcContext)
+
+    const handler = handlers.get('runtime:request')
+    assert.ok(handler, 'runtime:request handler was registered')
+    await assert.rejects(
+      handler({}, 'switch_session', { sessionPath: 'C:/outside/session.jsonl' }, undefined, undefined, 'conversation'),
+      /runtime:start\/ensure/
+    )
+    assert.deepEqual(requests, [], 'a blocked switch_session must never reach the Pi supervisor')
+
+    for (const command of ['new_session', 'fork', 'clone']) {
+      await handler({}, command, {}, undefined, undefined, 'conversation')
+    }
+    assert.deepEqual(
+      requests.map(({ key, command, payload }) => ({ key, command, payload })),
+      ['new_session', 'fork', 'clone'].map((command) => ({ key: 'conversation', command, payload: {} }))
+    )
+  } finally {
+    if (handleDescriptor) Object.defineProperty(ipcMain, 'handle', handleDescriptor)
+    else delete (ipcMain as unknown as { handle?: unknown }).handle
+  }
+})
 
 test('runtime rejects a session file outside the session root before launch', async () => {
   const parent = mkdtempSync(path.join(tmpdir(), 'pi-runtime-session-path-'))

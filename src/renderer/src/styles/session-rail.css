@@ -42,6 +42,14 @@
   cursor: pointer;
 }
 
+/* The tick is 2px tall, so the row itself is the target: this keeps the
+   visible mark quiet while the pointer can still land on it without aiming. */
+.session-rail__marker::before {
+  content: '';
+  position: absolute;
+  inset: -1px -8px;
+}
+
 .session-rail__marker:focus-visible {
   outline: 2px solid var(--accent-line);
   outline-offset: 1px;

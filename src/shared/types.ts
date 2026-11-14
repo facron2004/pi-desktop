@@ -7,15 +7,21 @@ import type {
   CreateResourceInput,
   ManagedPackage,
   MarketplaceActionResult,
+  MarketplaceInstallProgress,
   MarketplaceInstallResult,
-  MarketplaceSnapshot
+  MarketplaceSnapshot,
+  PiCatalogPage,
+  PiCatalogQuery
 } from './marketplace'
 export type {
   CreateResourceInput,
   ManagedPackage,
   MarketplaceActionResult,
+  MarketplaceInstallProgress,
   MarketplaceInstallResult,
-  MarketplaceSnapshot
+  MarketplaceSnapshot,
+  PiCatalogPage,
+  PiCatalogQuery
 } from './marketplace'
 
 /** Maximum image payload shared by file picking, drops, paste and image writes. */
@@ -28,6 +34,52 @@ export const MAX_REMOTE_MESSAGE_CHARS = 100_000
 
 /** Maximum query length accepted by search inputs and main-process search handlers. */
 export const MAX_SEARCH_QUERY_LENGTH = 512
+
+/* ------------------------------------------------------------------ *
+ * Image generation
+ * ------------------------------------------------------------------ */
+
+/** Image models offered by the gateway's image generation endpoint. */
+export const IMAGE_MODELS = [
+  'codex/gpt-image-2',
+  'grok/grok-imagine-image',
+  'grok/grok-imagine-image-quality',
+  'workbuddy/hunyuan-image-alpha',
+  'antigravity/gemini-3.1-flash-image',
+  'minimax-code/MiniMax-Image',
+  'sensenova-token-plan/sensenova-u1.5-lite'
+] as const
+
+export const IMAGE_SIZES = ['1024x1024', '1536x1024', '1024x1536', '16:9', '9:16'] as const
+export const IMAGE_QUALITIES = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export const DEFAULT_IMAGE_SIZE = '1024x1024'
+export const DEFAULT_IMAGE_QUALITY = 'auto'
+export const DEFAULT_IMAGE_OUTPUT_DIR = 'output/generated'
+
+export interface ImageGenerationRequest {
+  prompt: string
+  /** Empty means the gateway's configured default image model. */
+  model?: string
+  size?: string
+  quality?: string
+  /** 1..4, clamped by the service. */
+  n?: number
+  /** Workspace-relative directory; never absolute and never containing '..'. */
+  outputDir?: string
+}
+
+export interface GeneratedImage {
+  /** Absolute path inside the workspace. */
+  path: string
+  name: string
+  mimeType: string
+  size: number
+  width?: number
+  height?: number
+  model?: string
+  prompt: string
+  createdAt: number
+}
 
 /* ------------------------------------------------------------------ *
  * Pi RPC protocol
@@ -63,6 +115,11 @@ export interface RuntimeRekey {
   to: string
   /** Startup replaced a file that had not been persisted, rather than forking it. */
   replace?: boolean
+}
+
+export interface RuntimeStderrPayload {
+  ownerId?: string
+  line: string
 }
 
 /* ------------------------------------------------------------------ *
@@ -778,10 +835,12 @@ export interface AppSettings {
   sendShortcut?: 'enter' | 'ctrlEnter'
   /**
    * Rebound app shortcuts, keyed by the id in `lib/shortcuts.ts`. A chord is
-   * the display names of its keys in canonical order (`['Ctrl','Shift','P']`);
-   * an id that is absent keeps the built-in chord.
+   * the display names of its keys in canonical order (`['Ctrl','Shift','P']`).
+   * A value holds either a legacy single chord (`string[]`), multiple chords
+   * (`string[][]`), or `[]` when explicitly unbound; an absent id keeps the
+   * built-in chord.
    */
-  shortcutBindings?: Record<string, string[]>
+  shortcutBindings?: Record<string, string[] | string[][]>
   /** Follow-up handling method: 'queue' or 'steer'. */
   followUpMode?: 'queue' | 'steer'
   /**
@@ -819,6 +878,12 @@ export interface AppSettings {
    * the switch existed.
    */
   trayPersistent?: boolean
+  /** Image generation model; empty follows the gateway default. */
+  imageModel?: string
+  imageSize?: string
+  imageQuality?: string
+  /** Workspace-relative folder for generated pictures. */
+  imageOutputDir?: string
 }
 
 export interface PiLaunchInfo {
@@ -835,6 +900,8 @@ export interface AppInfo {
   node: string
   platform: string
   isPackaged: boolean
+  /** This Windows copy was installed with NSIS and can update in place. */
+  appUpdateSupported?: boolean
   pi: PiLaunchInfo
   sessionRoot: string
   /**
@@ -861,6 +928,12 @@ export interface VersionItemStatus {
 export interface VersionCheckResult {
   app: VersionItemStatus
   piCli: VersionItemStatus
+}
+
+export interface AppUpdateProgress {
+  version: string
+  stage: 'downloading' | 'installing'
+  percent: number
 }
 
 /** Progress of the development Pi CLI upgrade while npm is running. */
@@ -1008,6 +1081,9 @@ export interface PiDesktopBridge {
     emojiFont(): Promise<Uint8Array | null>
     /** Check for updates for the application and Pi CLI. */
     checkUpdate(): Promise<VersionCheckResult>
+    /** Download a verified app release and restart through the Windows installer. */
+    installAppUpdate(version: string): Promise<UpgradeResult>
+    onAppUpdateProgress(handler: (progress: AppUpdateProgress) => void): () => void
     /** Upgrade the development Pi CLI; packaged builds use the bundled version. */
     upgradePiCli(): Promise<UpgradeResult>
     /** Progress of the running Pi CLI upgrade. */
@@ -1107,6 +1183,7 @@ export interface PiDesktopBridge {
     onEvent(handler: (event: RuntimeEvent) => void): () => void
     onStatus(handler: (status: RuntimeStatusEvent) => void): () => void
     onRekey(handler: (change: RuntimeRekey) => void): () => void
+    onStderr?(handler: (payload: RuntimeStderrPayload | string) => void): () => void
   }
   auth: {
     check(provider?: string): Promise<AuthStatus>
@@ -1120,14 +1197,23 @@ export interface PiDesktopBridge {
   marketplace: {
     /** Curated GitHub snapshot, with a cached refresh layered on top when one exists. */
     list(): Promise<MarketplaceSnapshot>
+    /** Query Pi's official package catalog (`pi.dev/packages`). */
+    piCatalog(query?: PiCatalogQuery): Promise<PiCatalogPage>
     /** Query GitHub for current star counts and merge them into the snapshot. */
     refresh(): Promise<MarketplaceSnapshot>
     /** Ids (`owner/repo`) of marketplace entries already installed in Pi. */
     installed(): Promise<string[]>
     /** Install one entry through `pi install`; `id` must exist in the snapshot. */
-    install(id: string): Promise<MarketplaceInstallResult>
+    install(id: string, runId?: string): Promise<MarketplaceInstallResult>
     /** Install an arbitrary npm package by name through `pi install npm:<name>`. */
-    installNpm(packageName: string): Promise<MarketplaceInstallResult>
+    installNpm(packageName: string, runId?: string): Promise<MarketplaceInstallResult>
+    /**
+     * Live output of the install that carries this `runId`.
+     *
+     * An install runs for as long as `pi install` needs; without these lines the
+     * dialog could only show a spinner that looks like a frozen window.
+     */
+    onInstallProgress(handler: (progress: MarketplaceInstallProgress) => void): () => void
     /** Installed packages that can be switched or removed. */
     managed(): Promise<ManagedPackage[]>
     setPackageEnabled(id: string, enabled: boolean): Promise<MarketplaceActionResult>
@@ -1135,7 +1221,7 @@ export interface PiDesktopBridge {
     /** Create a local plugin or skill scaffold under the Pi agent directory. */
     createResource(input: CreateResourceInput): Promise<MarketplaceActionResult>
     /** Import and install a GitHub repository as a Pi package. */
-    installGitRepository(repository: string): Promise<MarketplaceInstallResult>
+    installGitRepository(repository: string, runId?: string): Promise<MarketplaceInstallResult>
   }
   git: {
     /** Branch, ahead/behind and the working tree of the open workspace. */
@@ -1219,6 +1305,9 @@ export interface PiDesktopBridge {
     pathForFile(file: File): string
     /** A picture of the open project as a data URL, for the image viewer. */
     readImageDataUrl(file: string, maxBytes?: number): Promise<string | null>
+  },
+  images: {
+    generate(request: ImageGenerationRequest): Promise<GeneratedImage[]>
   }
 }
 

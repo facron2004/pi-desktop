@@ -4,7 +4,7 @@
  * The controls of the application are defined once, here. Everything else
  * may use them, but may not restate what a control is: three heights
  * (--ctl-sm, --ctl-md, --ctl-lg), five radii (--r-xs to --r-full) and one
- * focus ring.
+ * focus ring (the editable-field recipe lives in focus.css).
  * ------------------------------------------------------------------ */
 .icon-btn {
   display: grid;
@@ -198,15 +198,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   font-family: var(--font-ui);
 }
 
-.input:focus {
-  border-color: var(--focus-ring);
-}
-
-.input:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-
 .segmented {
   display: inline-flex;
   padding: var(--sp-1);
@@ -231,33 +222,55 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .switch {
+  display: inline-flex;
+  align-items: center;
   flex: 0 0 auto;
-  width: 36px;
-  height: 20px;
+  width: var(--switch-w);
+  height: var(--switch-h);
   padding: var(--sp-hair);
   border-radius: var(--r-full);
-  background: var(--bg-active);
-  border: 1px solid var(--border);
-transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  background: color-mix(in srgb, var(--text-tertiary) 30%, var(--surface-sunken));
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease);
 }
 
 .switch__thumb {
   display: block;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--text-muted);
-transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+  flex: 0 0 auto;
+  width: var(--switch-thumb-size);
+  height: var(--switch-thumb-size);
+  border-radius: var(--r-full);
+  background: var(--switch-thumb);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--dur-base) var(--ease), width var(--dur-fast) var(--ease);
+}
+
+.switch:enabled:hover {
+  background: color-mix(in srgb, var(--text-tertiary) 42%, var(--surface-sunken));
 }
 
 .switch[aria-checked='true'] {
-  background: var(--accent-soft);
-  border-color: var(--accent-line);
+  background: color-mix(in srgb, var(--accent) 88%, var(--surface-sunken));
+  border-color: transparent;
+}
+
+.switch[aria-checked='true']:enabled:hover {
+  background: var(--accent);
 }
 
 .switch[aria-checked='true'] .switch__thumb {
-  transform: translateX(16px);
-  background: var(--accent);
+  transform: translateX(calc(var(--switch-w) - var(--switch-h)));
+}
+
+/* Stretch toward the middle without changing the row or the outer inset. */
+.switch:enabled:active .switch__thumb {
+  width: calc(var(--switch-thumb-size) + var(--sp-1));
+}
+
+.switch[aria-checked='true']:enabled:active .switch__thumb {
+  transform: translateX(calc(var(--switch-w) - var(--switch-h) - var(--sp-1)));
 }
 
 .switch:disabled {

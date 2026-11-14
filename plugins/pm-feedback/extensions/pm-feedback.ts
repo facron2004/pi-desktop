@@ -43,7 +43,8 @@ function detectFormat(value: unknown, input: string): FeedbackFormat {
   const trimmed = input.trim()
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) return 'json'
   const firstLine = trimmed.split(/\r?\n/, 1)[0] ?? ''
-  if (firstLine.includes(',') || firstLine.includes('\t')) return 'csv'
+  // A recognized header produces no feedback rows; commas alone are common in prose.
+  if (firstLine.includes(',') && parseFeedback(firstLine, 'csv').length === 0) return 'csv'
   return 'lines'
 }
 

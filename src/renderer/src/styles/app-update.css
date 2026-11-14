@@ -1,0 +1,129 @@
+.modal.app-update-card {
+  width: min(460px, 100%);
+}
+
+.app-update-card:focus-visible {
+  outline: none;
+}
+
+.app-update-card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-4);
+  padding: var(--sp-6) var(--sp-6) var(--sp-4);
+}
+
+.app-update-card__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 40px;
+  height: 40px;
+  border-radius: var(--r-md);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.app-update-card__icon[data-state='current'] {
+  color: var(--status-success);
+  background: var(--status-success-soft);
+}
+
+.app-update-card__icon[data-state='error'] {
+  color: var(--status-danger);
+  background: var(--status-danger-soft);
+}
+
+.app-update-card__heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-update-card__heading h2 {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--text-large);
+  line-height: var(--leading-large);
+  font-weight: var(--weight-semibold);
+}
+
+.app-update-card__heading p,
+.app-update-card__note,
+.app-update-card__error {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+  color: var(--text-secondary);
+}
+
+.app-update-card__head > .icon-btn {
+  margin-top: calc(-1 * var(--sp-1));
+  margin-right: calc(-1 * var(--sp-2));
+}
+
+.app-update-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-6) var(--sp-6);
+}
+
+.app-update-card__versions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  color: var(--text-tertiary);
+}
+
+.app-update-card__versions > span {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.app-update-card__version-label {
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+}
+
+.app-update-card__versions strong {
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.app-update-card__error {
+  color: var(--status-danger);
+  overflow-wrap: anywhere;
+}
+
+.app-update-card__progress {
+  display: grid;
+  gap: var(--sp-3);
+  font-size: var(--text-assist);
+  color: var(--text-secondary);
+}
+
+.app-update-card__progress [role='progressbar'] {
+  height: var(--sp-1);
+  border-radius: var(--r-full);
+  overflow: hidden;
+  background: var(--border-subtle);
+}
+
+.app-update-card__progress [role='progressbar'] > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.app-update-card__foot {
+  flex-wrap: wrap;
+}

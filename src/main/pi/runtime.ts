@@ -27,6 +27,7 @@ import { taskModesExtension } from './task-modes'
 import { subagentExtension } from './subagent'
 import type { AgentPreset } from './agents'
 import { computerUseExtension } from './computer-use'
+import { imageToolExtension } from './image-tool'
 import { contextBreakdownExtension } from './context-breakdown'
 import { generationTimingExtension } from './generation-timing'
 import { mermaidPolicyExtension } from './mermaid'
@@ -166,6 +167,7 @@ export class PiRuntime extends EventEmitter {
     const providerFile = path.join(userData, `pi-desktop-providers-${scratchId}.mjs`)
     const subagentFile = path.join(userData, `pi-desktop-subagent-${scratchId}.mjs`)
     const computerFile = path.join(userData, `pi-desktop-computer-${scratchId}.mjs`)
+    const imageFile = path.join(userData, `pi-desktop-image-${scratchId}.mjs`)
     const contextBreakdownFile = path.join(userData, `pi-desktop-context-breakdown-${scratchId}.mjs`)
     const generationTimingFile = path.join(userData, `pi-desktop-generation-timing-${scratchId}.mjs`)
     const mermaidFile = path.join(userData, `pi-desktop-mermaid-${scratchId}.mjs`)
@@ -173,7 +175,7 @@ export class PiRuntime extends EventEmitter {
     const files: string[] = []
     try {
       mkdirSync(userData, { recursive: true })
-      files.push(permissionFile, subagentPermissionFile, modeFile, providerFile, subagentFile, computerFile, contextBreakdownFile, generationTimingFile, mermaidFile)
+      files.push(permissionFile, subagentPermissionFile, modeFile, providerFile, subagentFile, computerFile, imageFile, contextBreakdownFile, generationTimingFile, mermaidFile)
       writeFileSync(permissionFile, permissionExtension(permissionTitle), 'utf8')
       writeFileSync(subagentPermissionFile, permissionExtension(permissionTitle, false), 'utf8')
       // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
@@ -202,6 +204,7 @@ export class PiRuntime extends EventEmitter {
         'utf8'
       )
       writeFileSync(computerFile, computerUseExtension(), 'utf8')
+      writeFileSync(imageFile, imageToolExtension(), 'utf8')
       writeFileSync(contextBreakdownFile, contextBreakdownExtension(), 'utf8')
       writeFileSync(generationTimingFile, generationTimingExtension(), 'utf8')
       writeFileSync(mermaidFile, mermaidPolicyExtension(), 'utf8')
@@ -230,7 +233,8 @@ export class PiRuntime extends EventEmitter {
         computerFile,
         contextBreakdownFile,
         generationTimingFile,
-        mermaidFile
+        mermaidFile,
+        imageFile
       )
     ]
     const sessionDir = this.options.getSessionDir?.(options.cwd)?.trim()

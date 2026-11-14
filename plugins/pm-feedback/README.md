@@ -40,7 +40,7 @@ makes no network calls.
 
 Optional parameters:
 
-- `format`: `csv`, `json` or `lines`; auto-detected when omitted.
+- `format`: `csv`, `json` or `lines`; auto-detected when omitted. CSV inference requires a recognized header; pass `csv` explicitly for headerless exports so commas in plain feedback are preserved.
 - `themes`: custom taxonomy as `[{ name, keywords: [...] }]`; replaces the default one.
 - `language`: `zh-CN` (default) or `en`.
 

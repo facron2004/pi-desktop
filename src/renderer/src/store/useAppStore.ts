@@ -44,7 +44,8 @@ import { updateThreadSessionName } from '../lib/live-sessions'
 import { stripAnsi } from '../lib/ansi'
 import { collectProjects, type Project } from '../lib/projects'
 import { APP_COMMANDS, normalizeAppCommandInput } from '../lib/app-commands'
-import { describeCompactionFailure } from '../lib/compaction-error'
+import { COMPACTION_EXTENSION_MANAGED_MESSAGE, compactionOwnedByExtension, describeCompactionFailure } from '../lib/compaction-error'
+import { isMcpOrSkillChatter } from '../lib/extension-notices'
 import { hydrationStale, needsSessionHydration, scopeEvent, scopeStatus } from '../lib/session-scope'
 import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
 import { beginStream, finishStream, rekeyStreamState, resetStreamState } from '../lib/stream-events'
@@ -251,6 +252,13 @@ function draftMode(settings: AppSettings): AgentMode {
 function viewKeyOf(state: { activeSessionFile?: string; draftId?: string }): string {
   return state.activeSessionFile || state.draftId || ''
 }
+
+/**
+ * True when an installed extension has taken over context compaction.
+ *
+ * See `compactionOwnedByExtension` in `lib/compaction-error.ts`: the live
+ * process's command list says whether a native compact would be vetoed.
+ */
 
 function mintDraft(): string {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -534,6 +542,10 @@ let refreshStateRequestSequence = 0
 const refreshStateRequests = new Map<string, number>()
 let modelCatalogRequestSequence = 0
 let agentSettingSelectionInFlight = false
+/** Owners whose compact RPC is still running. Pi aborts the previous compaction
+ *  when a second `compact` command lands, so a double click used to cancel the
+ *  first run and report it as a failure. */
+const compactionInFlight = new Set<string>()
 let modelPreferenceSequence = 0
 let modelPreferenceValue: string | null | undefined
 let thinkingPreferenceSequence = 0
@@ -1155,7 +1167,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const thread = cached
       ? { ...cached, notice: undefined }
       : emptyThread(workspace?.path)
-    if (sessionFile) touchSessionLru(sessionFile)
+    if (sessionFile) {
+      deletedSessionKeys.delete(sessionFile)
+      deletedSessionKeys.delete(threadKey(sessionFile))
+      touchSessionLru(sessionFile)
+    }
     const activeKey = sessionFile ?? draftId!
     const threads = enforceSessionLru(
       { ...get().threads, [activeKey]: thread },
@@ -1264,6 +1280,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       thread.items.length,
       thread.isStreaming
     )
+    deletedSessionKeys.delete(session.file)
+    deletedSessionKeys.delete(threadKey(session.file))
     touchSessionLru(session.file)
     const threads = enforceSessionLru(
       { ...get().threads, [session.file]: thread },
@@ -1314,6 +1332,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async hydrateSession(file) {
+    deletedSessionKeys.delete(file)
+    deletedSessionKeys.delete(threadKey(file))
     const hydrate = window.pi.sessions.hydrate
     if (typeof hydrate !== 'function') {
       if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
@@ -2077,8 +2097,25 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async compact(instructions) {
     const owner = viewKeyOf(get())
+    // A second `compact` while one is running makes Pi abort the first one,
+    // which rejects it with "Compaction cancelled". Answer the second click
+    // instead of turning a double click into a failure banner.
+    if (get().run.compaction || compactionInFlight.has(owner)) {
+      get().showToast('Context compaction is already running', 'warning')
+      return false
+    }
+    compactionInFlight.add(owner)
     try {
       const key = await get().ensureRuntime(owner, 'compact')
+      // A live process lists the extension commands it registered. Read them
+      // before asking Pi to compact: an extension that owns context (Billion-
+      // Context) vetoes `session_before_compact`, so a native compact could
+      // only ever come back as "Compaction cancelled".
+      await get().refreshCommands(owner)
+      if (compactionOwnedByExtension(bindGet(get, owner)().commands)) {
+        get().showToast(COMPACTION_EXTENSION_MANAGED_MESSAGE, 'warning')
+        return false
+      }
       const payload: Record<string, unknown> = {}
       if (instructions?.trim()) payload.customInstructions = instructions.trim()
       // Pi may make multiple model calls while summarising a long session.
@@ -2105,11 +2142,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // thread-level banner, a benign answer is a toast.
       const failure = describeCompactionFailure(messageOf(error))
       if (failure.benign) get().showToast(failure.message, 'warning')
-      bindSet(set, get, owner)((state) => ({
-        ...(failure.benign ? {} : { error: failure.message }),
-        run: { ...state.run, compaction: undefined }
-      }))
+      bindSet(set, get, owner)((state) => {
+        // A benign answer (cancelled, nothing to compact) must also clear a
+        // compaction failure left over from an earlier attempt — otherwise the
+        // red banner stays above a run that has just said it is fine.
+        const staleCompactionError = /^Context compaction (?:failed|timed out)/.test(state.error ?? '')
+        return {
+          error: failure.benign
+            ? (staleCompactionError ? undefined : state.error)
+            : failure.message,
+          run: { ...state.run, compaction: undefined }
+        }
+      })
       return false
+    } finally {
+      compactionInFlight.delete(owner)
     }
   },
 
@@ -3233,12 +3280,24 @@ function threadFromPatch(base: SessionThread, patch: Partial<AppStore>): Session
   return next
 }
 
+/** Tracks deleted session keys to prevent late events from resurrecting them. */
+const deletedSessionKeys = new Set<string>()
+
 function bindGet(get: GetState, owner: string): GetState {
   return () => {
     const state = get()
     const key = threadKey(owner)
     const thread = state.threads[key]
-    if (!thread) return state
+    if (!thread) {
+      if (key && !deletedSessionKeys.has(key)) {
+        return {
+          ...state,
+          activeSessionFile: key.startsWith('draft:') ? undefined : key,
+          draftId: key.startsWith('draft:') ? key : undefined
+        }
+      }
+      return state
+    }
     return { ...state, ...projectThread(thread), activeSessionFile: key.startsWith('draft:') ? undefined : key, draftId: key.startsWith('draft:') ? key : undefined }
   }
 }
@@ -3248,7 +3307,7 @@ function bindSet(set: SetState, get: GetState, owner: string): SetState {
     const state = get()
     const key = threadKey(owner)
     const base = state.threads[key]
-    if (key && !base) return
+    if (key && !base && deletedSessionKeys.has(key)) return
     const thread = base ?? emptyThread(state.workspace?.path)
     const patch = typeof partial === 'function' ? partial({ ...state, ...projectThread(thread) }) : partial
     const next = threadFromPatch(thread, patch)
@@ -3483,13 +3542,43 @@ function drainPending(): void {
     if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(flushHandle)
     flushHandle = null
   }
-  const batches = [...pending.values()]
+  if (pending.size === 0) return
+  const entries = [...pending.entries()]
   pending.clear()
-  for (const batch of batches) {
-    batch.set((state) => ({
-      items: applyEventBatch(state.items, batch.events)
-    }))
-  }
+
+  useAppStore.setState((state) => {
+    const currentViewKey = viewKeyOf(state)
+    const currentViewCanonical = currentViewKey ? threadKey(currentViewKey) : ''
+    let nextThreads: Record<string, SessionThread> | undefined
+    let activeItemsPatch: { items: ThreadItem[] } | undefined
+
+    for (const [key, batch] of entries) {
+      if (batch.events.length === 0) continue
+      const base = (nextThreads ? nextThreads[key] : undefined) ?? state.threads[key]
+      if (key && !base && deletedSessionKeys.has(key)) continue
+      const thread = base ?? emptyThread(state.workspace?.path)
+      const nextItems = applyEventBatch(thread.items, batch.events)
+      const nextThread = threadFromPatch(thread, { items: nextItems })
+
+      if (!nextThreads) {
+        nextThreads = { ...state.threads }
+      }
+      if (key) {
+        nextThreads[key] = nextThread
+      }
+
+      if (!key || key === currentViewKey || (currentViewCanonical && threadKey(key) === currentViewCanonical)) {
+        activeItemsPatch = { items: nextItems }
+      }
+    }
+
+    if (!nextThreads && !activeItemsPatch) return state
+
+    return {
+      ...(activeItemsPatch ?? {}),
+      ...(nextThreads ? { threads: nextThreads } : {})
+    }
+  })
 }
 
 if (typeof document !== 'undefined') {
@@ -3500,6 +3589,13 @@ if (typeof document !== 'undefined') {
 
 function forgetDeletedThread(file: string): void {
   const keys = new Set([file, ...clearThreadAliasesForTarget(file)])
+  for (const key of keys) {
+    deletedSessionKeys.add(key)
+  }
+  if (deletedSessionKeys.size > 500) {
+    const toPrune = [...deletedSessionKeys].slice(0, 100)
+    for (const k of toPrune) deletedSessionKeys.delete(k)
+  }
   if (scheduledPrewarmKey && keys.has(scheduledPrewarmKey)) cancelScheduledPrewarm()
   for (const key of keys) {
     refreshStateRequests.delete(key)
@@ -4166,10 +4262,14 @@ function handleExtensionUi(
     case 'notify': {
       // Extension "info" is terminal chatter — startup banners such as
       // "Ponytail loaded: full" arrive on every cold start. Only a warning or
-      // an error is worth interrupting what the user is writing.
+      // an error is worth interrupting what the user is writing. MCP and skill
+      // plugins also publish their own startup state through this channel;
+      // those lines belong to the plugin, not the conversation, and are
+      // deliberately kept out of the composer's toast slot.
       const level = request.notifyType ?? 'info'
-      if (level === 'warning' || level === 'error') {
-        get().showToast(stripAnsi(request.message ?? ''), level)
+      const message = stripAnsi(request.message ?? '')
+      if ((level === 'warning' || level === 'error') && !isMcpOrSkillChatter(message)) {
+        get().showToast(message, level)
       }
       break
     }

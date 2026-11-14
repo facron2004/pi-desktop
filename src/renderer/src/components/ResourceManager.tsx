@@ -95,6 +95,47 @@ export function CreateResourceDialog({ onClose, onCreated, initialMode = 'github
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [pendingInstall, setPendingInstall] = useState<PendingInstall | null>(null)
+  // An install is a `pi install` process that can run for a minute. Without a
+  // line of its own output the dialog was a still picture with a 13px spinner,
+  // which reads as a frozen window; the main process relays the CLI's newest
+  // line here while it runs.
+  const [progressLine, setProgressLine] = useState('')
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  // What is being installed, copied when the run starts: the inputs stay visible
+  // during the install and must not rename a run that is already under way.
+  const [installingLabel, setInstallingLabel] = useState('')
+  const runIdRef = useRef('')
+
+  // Only the lines of this dialog's own install: a second window, or a card
+  // install started from the list, must not paint over this run.
+  useEffect(() => {
+    const subscribe = window.pi?.marketplace?.onInstallProgress
+    if (typeof subscribe !== 'function') return
+    return subscribe((progress) => {
+      if (!runIdRef.current || progress.runId !== runIdRef.current) return
+      setProgressLine(progress.line)
+    })
+  }, [])
+
+  // A second counter, so a long download still says the app is alive even when
+  // npm has been quiet for a while.
+  useEffect(() => {
+    if (!busy) {
+      setElapsedSeconds(0)
+      return
+    }
+    const started = Date.now()
+    setElapsedSeconds(0)
+    const timer = window.setInterval(
+      () => setElapsedSeconds(Math.round((Date.now() - started) / 1000)),
+      1000
+    )
+    return () => window.clearInterval(timer)
+  }, [busy])
+
+  useEffect(() => {
+    if (!busy) setProgressLine('')
+  }, [busy])
 
   const selectMode = (next: CreateMode) => {
     if (busy) return
@@ -186,20 +227,38 @@ export function CreateResourceDialog({ onClose, onCreated, initialMode = 'github
       setError(t('The marketplace is not available in this build.'))
       return
     }
+    // Mint the id before the call: the progress events that arrive while it
+    // runs are matched against this run only.
+    const runId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    runIdRef.current = runId
+    setInstallingLabel(target.value)
     setBusy(true)
     setError('')
     try {
-      const result = await installFn(target.value)
+      const result = await installFn(target.value, runId)
       if (result.ok) onCreated()
       else setError(failureText(result, t('Install failed')))
     } catch (cause) {
       setError(shortOutput(messageOf(cause)) || t('Install failed'))
     } finally {
+      runIdRef.current = ''
       setBusy(false)
     }
   }
 
   const busyLabel = mode === 'custom' ? t('Creating…') : t('Installing…')
+  // The dialog used to keep saying "Create plugin or skill" while it was
+  // installing a package, so the one line above the spinner described the
+  // wrong action. Install modes name what is being installed.
+  const title =
+    mode === 'npm'
+      ? t('Install an npm package')
+      : mode === 'github'
+        ? t('Install a GitHub repository')
+        : t('Create plugin or skill')
 
   return (
     <>
@@ -216,7 +275,7 @@ export function CreateResourceDialog({ onClose, onCreated, initialMode = 'github
         >
           <div className="modal__head">
             <h2 id="marketplace-create-title" className="modal__title">
-              {t('Create plugin or skill')}
+              {title}
             </h2>
             <button
               type="button"
@@ -268,6 +327,7 @@ export function CreateResourceDialog({ onClose, onCreated, initialMode = 'github
                   value={githubRepository}
                   autoFocus
                   spellCheck={false}
+                  disabled={busy}
                   placeholder={t('owner/repo or https://github.com/owner/repo')}
                   onChange={(event) => {
                     setGithubRepository(event.target.value)
@@ -283,6 +343,7 @@ export function CreateResourceDialog({ onClose, onCreated, initialMode = 'github
                   value={npmPackage}
                   autoFocus
                   spellCheck={false}
+                  disabled={busy}
                   placeholder={t('npm package name, e.g. pi-web-access')}
                   onChange={(event) => {
                     setNpmPackage(event.target.value)
@@ -345,6 +406,28 @@ export function CreateResourceDialog({ onClose, onCreated, initialMode = 'github
                 </label>
               </>
             )}
+
+            {busy ? (
+              <div className="marketplace-create__progress" role="status" aria-live="polite">
+                <Loader2 size={14} className="spin" aria-hidden="true" />
+                <div className="marketplace-create__progress-text">
+                  <span className="marketplace-create__progress-title">
+                    {mode === 'custom'
+                      ? t('Creating…')
+                      : t('Installing {name}…').replace('{name}', installingLabel)}
+                  </span>
+                  {mode === 'custom' ? null : (
+                    <span
+                      className="marketplace-create__progress-line"
+                      title={progressLine || undefined}
+                    >
+                      {progressLine || t('Waiting for the package manager…')}
+                    </span>
+                  )}
+                </div>
+                <span className="marketplace-create__progress-time">{elapsedSeconds}s</span>
+              </div>
+            ) : null}
 
             {error ? (
               <p className="marketplace-create__error" role="alert">

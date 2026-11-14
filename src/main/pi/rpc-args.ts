@@ -18,7 +18,8 @@ export function buildRpcArgs(
   computerFile?: string,
   contextBreakdownFile?: string,
   generationTimingFile?: string,
-  mermaidFile?: string
+  mermaidFile?: string,
+  imageFile?: string
 ): string[] {
   const args = ['--mode', 'rpc']
   if (providerFile) args.push('--extension', providerFile)
@@ -29,6 +30,7 @@ export function buildRpcArgs(
   if (contextBreakdownFile) args.push('--extension', contextBreakdownFile)
   if (generationTimingFile) args.push('--extension', generationTimingFile)
   if (mermaidFile) args.push('--extension', mermaidFile)
+  if (imageFile) args.push('--extension', imageFile)
   if (options.sessionFile) {
     args.push('--session', options.sessionFile)
   }

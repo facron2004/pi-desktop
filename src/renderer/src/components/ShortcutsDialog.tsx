@@ -13,7 +13,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
     <div className="modal-layer" onMouseDown={onClose}>
       <div
         ref={dialogRef}
-        className="modal modal--narrow"
+        className="modal shortcuts-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="shortcuts-title"

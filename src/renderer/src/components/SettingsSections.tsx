@@ -8,6 +8,7 @@ import {
   Copy,
   Download,
   RefreshCw,
+  RotateCcw,
   Search,
   Sparkles,
   X
@@ -32,6 +33,7 @@ import {
   normalizeFontScale
 } from '@shared/font-scale'
 import { useT } from '../lib/i18n'
+import { hasAnyCustomShortcut } from '../lib/shortcuts'
 import { useIsDark } from '../lib/theme'
 import { DEFAULT_THINKING_LEVELS } from '../lib/thinking'
 import { useAppStore } from '../store/useAppStore'
@@ -1907,18 +1909,31 @@ function ProjectSafetySettings() {
 
 /** The shortcut table as a settings page. `Ctrl+/` opens the same list in a
  *  modal; both render `ShortcutsList`, so they can never show two different
- *  tables. Only the settings page lets a chord be rebound. */
+ *  tables. Only the settings page lets chords be edited, added or removed. */
 export function ShortcutsSettings() {
   const t = useT()
+  const bindings = useAppStore((state) => state.settings.shortcutBindings)
+  const updateSettings = useAppStore((state) => state.updateSettings)
+  const hasCustom = hasAnyCustomShortcut(bindings)
+
   return (
-    <div className="settings-page">
-      <PageIntro
-        title={t('Keyboard shortcuts')}
-        description={t('All app shortcuts in one place. Click a key combination to change it.')}
-      />
-      <p className="shortcuts-hint">
-        {t('Backspace resets a shortcut to its default, Esc cancels the recording.')}
-      </p>
+    <div className="settings-page shortcuts-page">
+      <header className="shortcuts-page__head">
+        <div>
+          <h3>{t('Keyboard shortcuts')}</h3>
+          <p>{t('Keyboard shortcuts for quick navigation and control.')}</p>
+        </div>
+        {hasCustom ? (
+          <button
+            type="button"
+            className="shortcuts-reset-all"
+            onClick={() => void updateSettings({ shortcutBindings: {} })}
+          >
+            <RotateCcw size={13} />
+            <span>{t('Reset all')}</span>
+          </button>
+        ) : null}
+      </header>
       <ShortcutsList editable />
     </div>
   )
@@ -1929,19 +1944,17 @@ export function AboutSettings({
   checking,
   upgradingCli,
   piCliProgress,
-  openingReleasePage,
   onCheck,
   onUpgradeCli,
-  onOpenReleasePage
+  onShowUpdate
 }: {
   updateStatus: VersionCheckResult | null
   checking: boolean
   upgradingCli: boolean
   piCliProgress: PiCliUpgradeProgress | null
-  openingReleasePage: boolean
   onCheck: (silent?: boolean) => void
   onUpgradeCli: () => void
-  onOpenReleasePage: () => void
+  onShowUpdate: () => void
 }) {
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
@@ -1979,11 +1992,11 @@ export function AboutSettings({
                   <button
                     type="button"
                     className="btn btn--primary btn--sm"
-                    disabled={openingReleasePage || upgradingCli}
-                    onClick={() => void onOpenReleasePage()}
+                    disabled={checking || upgradingCli}
+                    onClick={onShowUpdate}
                   >
                     <Download size={12} />
-                    {openingReleasePage ? t('Opening...') : t('Open download page')}
+                    {t('View update')}
                   </button>
                 </>
               ) : null}
@@ -2005,7 +2018,7 @@ export function AboutSettings({
                   <button
                     type="button"
                     className="btn btn--primary btn--sm"
-                    disabled={upgradingCli || openingReleasePage}
+                    disabled={upgradingCli || checking}
                     onClick={() => void onUpgradeCli()}
                   >
                     <Download size={12} />
@@ -2038,7 +2051,7 @@ export function AboutSettings({
             <button
               type="button"
               className="btn btn--sm"
-              disabled={checking || upgradingCli || openingReleasePage}
+              disabled={checking || upgradingCli}
               onClick={() => void onCheck()}
             >
               <RefreshCw size={12} className={checking ? 'spin' : ''} />

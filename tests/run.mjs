@@ -35,6 +35,7 @@ const suites = [
   'run-state.test.ts',
   'projects.test.ts',
   'settings.test.ts',
+  'shortcuts.test.ts',
   'user-data.test.ts',
   'app-updates.test.ts',
   'pi-cli.test.ts',
@@ -49,6 +50,8 @@ const suites = [
   'computer-use.test.ts',
   'subagent.test.ts',
   'subagent-tree.test.ts',
+  'title-subagents.test.ts',
+  'file-status.test.ts',
   'fonts.test.ts',
   'font-scale.test.ts',
   'providers.test.ts',
@@ -84,8 +87,10 @@ const suites = [
   'git-branches.test.ts',
   'mcp.test.ts',
   'remote-access.test.ts',
+  'remote-session-state.test.ts',
   'fs-read.test.ts',
   'ipc-window.test.ts',
+  'ipc-stream-coalescing.test.ts',
   'screenshot-window.test.ts',
   'search-cancel.test.ts',
   'workspace-panel.test.ts',
@@ -95,8 +100,10 @@ const suites = [
   'renderer-utils.test.ts',
   'i18n.test.ts',
   'compaction-error.test.ts',
+  'extension-notices.test.ts',
   'highlight-cache.test.ts',
   'marketplace.test.ts',
+  'pi-catalog.test.ts',
   'memory.test.ts',
   'auto-title.test.ts',
   'branch-menu-worktree.test.ts',
@@ -111,7 +118,10 @@ const suites = [
   'pm-connectors.test.ts',
   'pm-feedback.test.ts',
   'pm-competitor.test.ts',
-  'pm-pricing.test.ts'
+  'pm-pricing.test.ts',
+  'image-generation.test.ts',
+  'image-tool.test.ts',
+  'multi-rpc-stress.test.ts'
 ]
 const debug = process.argv[2] === '--debug'
 
@@ -146,6 +156,7 @@ try {
       // way the app does.
       alias: {
         '@shared': path.resolve(here, '..', 'src', 'shared'),
+        '@renderer': path.resolve(here, '..', 'src', 'renderer', 'src'),
         electron: mockElectron
       }
     })

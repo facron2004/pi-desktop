@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { countChangedFiles } from '../src/renderer/src/lib/changes'
 import { diffableEdits } from '../src/renderer/src/lib/tool-renderers'
 import { filterModels, normalizeModelSearchText } from '../src/renderer/src/lib/model-search'
-import { formatTokens, formatUsageTokens } from '../src/renderer/src/lib/format'
+import { formatClock, formatExactTokens, formatTokens, formatUsageTokens } from '../src/renderer/src/lib/format'
 import { sortModelsByRecency } from '../src/renderer/src/lib/model-recency'
 import type { ModelInfo } from '../src/shared/types'
 import {
@@ -14,6 +14,15 @@ import {
 } from '../src/renderer/src/store/useAppStore'
 import type { SessionThread } from '../src/renderer/src/store/useAppStore'
 import type { ToolItem } from '../src/renderer/src/lib/thread'
+import { fileTone, languageOf } from '../src/renderer/src/lib/files'
+
+test('file tone and syntax lookup treat prototype property names as ordinary filenames', () => {
+  assert.equal(fileTone('constructor'), 'plain')
+  assert.equal(fileTone('file.constructor'), 'plain')
+  assert.equal(fileTone('file.__proto__'), 'plain')
+  assert.equal(languageOf('file.constructor'), '')
+  assert.equal(languageOf('file.__proto__'), '')
+})
 
 function mockTool(toolName: string, status: ToolItem['status'], path?: string, edits?: { oldText?: string; newText?: string }[]): ToolItem {
   return {
@@ -222,4 +231,41 @@ test('abbreviated token counts always use an uppercase K', () => {
   assert.equal(formatTokens(20_400), '20K')
   assert.equal(formatTokens(1_250_000), '1.3M')
   assert.equal(formatTokens(undefined), '—')
+})
+
+test('exact token counts keep their separators for a usage breakdown', () => {
+  assert.equal(formatExactTokens(4173), `${(4173).toLocaleString()} tok`)
+  assert.equal(formatExactTokens(4_354_048), `${(4_354_048).toLocaleString()} tok`)
+  assert.equal(formatExactTokens(0), '0 tok')
+  assert.equal(formatExactTokens(undefined), '—')
+  assert.equal(formatExactTokens(null), '—')
+})
+
+test('formatClock keeps today short and dates older messages', () => {
+  const now = new Date(2026, 10, 13, 20, 55)
+  const at = (day: number, hour = 10, minute = 46) => new Date(2026, 10, day, hour, minute).getTime()
+  const timeOnly = new Date(at(13)).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+
+  assert.equal(formatClock(undefined, now), '')
+  assert.equal(formatClock(at(13), now), timeOnly)
+
+  // "Today" is a calendar-day comparison, not a 24-hour one: a message from
+  // late yesterday still has to carry its date.
+  const lateYesterday = new Date(2026, 10, 12, 23, 59)
+  const yesterday = formatClock(lateYesterday.getTime(), now)
+  assert.notEqual(yesterday, timeOnly)
+  assert.ok(yesterday.includes('12'), `Expected a dated clock, got ${yesterday}`)
+  assert.ok(
+    yesterday.endsWith(
+      lateYesterday.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    ),
+    `Expected the time to survive, got ${yesterday}`
+  )
+
+  // Within the year the date stays compact; an older year is spelled out.
+  assert.ok(!formatClock(at(12), now).includes('2026'))
+  assert.ok(formatClock(new Date(2025, 10, 12, 10, 46).getTime(), now).includes('2025'))
 })

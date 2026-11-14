@@ -814,26 +814,35 @@ async function finalizeWorktree(worktree, defaultCwd) {
   const parentHead = await runGit(['rev-parse', 'HEAD'], defaultCwd);
   const hasChanges = status.ok && status.stdout.trim().length > 0;
   const hasCommits = childHead.ok && parentHead.ok && childHead.stdout.trim() !== parentHead.stdout.trim();
-  const kept = hasChanges || hasCommits || !status.ok || !childHead.ok;
+  const kept = hasChanges || hasCommits || !status.ok || !childHead.ok || !parentHead.ok;
   if (kept) {
     return {
       name: worktree.name,
       branch: worktree.branch,
       path: worktree.path,
       kept: true,
-      reason: hasChanges ? 'the child left uncommitted changes' : hasCommits ? 'the child created a commit' : 'git status could not be read'
+      reason: hasChanges ? 'the child left uncommitted changes' : hasCommits ? 'the child created a commit' : 'git status or commit history could not be read'
     };
   }
   const removed = await runGit(['worktree', 'remove', '--force', worktree.path], defaultCwd);
-  if (removed.ok) {
-    await runGit(['branch', '-D', worktree.branch], defaultCwd);
+  if (!removed.ok) {
+    return {
+      name: worktree.name,
+      branch: worktree.branch,
+      path: worktree.path,
+      kept: true,
+      reason: 'git worktree remove failed: ' + (removed.stderr.trim() || removed.message)
+    };
   }
+  const branchRemoved = await runGit(['branch', '-D', worktree.branch], defaultCwd);
   return {
     name: worktree.name,
     branch: worktree.branch,
     path: worktree.path,
     kept: false,
-    reason: 'the child produced no changes; the worktree and branch were cleaned up'
+    reason: branchRemoved.ok
+      ? 'the child produced no changes; the worktree and branch were cleaned up'
+      : 'the worktree was removed, but the branch could not be deleted: ' + (branchRemoved.stderr.trim() || branchRemoved.message)
   };
 }
 

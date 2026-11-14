@@ -766,10 +766,12 @@ export class RemoteAccessService {
         messages.length > MAX_REMOTE_MESSAGES ||
         safeMessages.length < recentMessages.length
       this.requireActiveSession(device.id, ref)
+      const sessionInfo = this.options.supervisor.sessionInfo(ref.file)
       this.sendJson(response, 200, {
         messages: safeMessages,
         truncated,
-        isRunning: this.isSessionRunning(ref.file)
+        isRunning: sessionInfo?.running ?? false,
+        waitingForDesktop: sessionInfo?.waitingForInput ?? false
       })
       return
     }

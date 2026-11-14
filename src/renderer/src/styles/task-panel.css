@@ -261,32 +261,43 @@
   outline-offset: -2px;
 }
 
-.task-panel__task-stop {
-  display: grid;
-  place-items: center;
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--r-sm);
-  color: var(--text-tertiary);
+/* The background list is read-only: an in-flight tool has no per-row action,
+   and hovering a row must not suggest one. */
+.task-panel__task-action--static {
+  cursor: default;
 }
 
-.task-panel__task-stop:hover {
-  background: var(--bg-hover);
-  color: var(--red);
+.task-panel__task-action--static:hover {
+  background: transparent;
 }
 
-.task-panel__task-stop:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
+/* The tool's own name first (`bash`, `grep`, `powershell`), then what it is
+   working on. The name is the stable column; the command/pattern ellipsizes. */
+.task-panel__task-tool {
+  flex: 0 0 auto;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
 }
 
-.task-panel__task-name {
+.task-panel__task-detail {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+}
+
+.task-panel__task-state {
+  flex: 0 0 auto;
+  padding-right: 8px;
+  color: var(--text-faint);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
 }
 
 /* The state leads the task name so the status is visible at a glance. */

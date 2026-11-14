@@ -58,7 +58,9 @@ keep their doors: the commit dialog and the history dialog.
 what the app already knows:
 
 - the environment section reads `git` from the store;
-- background tasks are the subagent calls of the thread (`lib/subagents.ts`);
+- background tasks are the in-flight tool calls of the thread (`listBackgroundTasks`
+  in `lib/task-panel.ts`), named by their tool (`bash`, `grep`, `powershell`…) and what
+  they are working on; subagents live in the title badge and the Subagents page, not here;
 - progress is the newest todo list the agent sent with `desktop_todo`
   (`lib/plan.ts`), falling back to the checklist of the newest assistant
   message that carries one;

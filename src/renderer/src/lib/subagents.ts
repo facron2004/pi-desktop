@@ -1,4 +1,9 @@
-import type { AgentMessage, SubagentTaskProgress, SubagentTaskStatus } from '@shared/types'
+import type {
+  AgentMessage,
+  ContentBlock,
+  SubagentTaskProgress,
+  SubagentTaskStatus
+} from '@shared/types'
 import type { ThreadItem, ToolItem } from './thread'
 
 export interface SubagentTreeTask extends Omit<SubagentTaskProgress, 'status'> {
@@ -98,4 +103,111 @@ export function subagentCalls(items: readonly ThreadItem[]): SubagentCall[] {
     })
   }
   return calls
+}
+
+/* ------------------------------------------------------------------ *
+ * The title badge's projection
+ *
+ * The badge beside the conversation title and the task rail read the very
+ * same tool nodes. Everything below is derived from `subagentCalls`, so a
+ * live progress update reaches the badge without a second store of state.
+ * ------------------------------------------------------------------ */
+
+const TERMINAL_STATUSES = new Set<SubagentTreeTask['status']>([
+  'completed', 'failed', 'aborted', 'timed_out'
+])
+
+/** Every child task of one conversation, in the order the calls appeared. */
+export function subagentTasks(items: readonly ThreadItem[]): SubagentTreeTask[] {
+  return subagentCalls(items).flatMap((call) => call.tasks)
+}
+
+/** Only a task that still occupies a worker slot is in flight. */
+export function isActiveSubagent(task: SubagentTreeTask): boolean {
+  return task.status === 'running' || task.status === 'queued'
+}
+
+export interface SubagentSummary {
+  total: number
+  active: number
+  finished: number
+}
+
+export function summarizeSubagents(tasks: readonly SubagentTreeTask[]): SubagentSummary {
+  let active = 0
+  let finished = 0
+  for (const task of tasks) {
+    if (isActiveSubagent(task)) active += 1
+    if (TERMINAL_STATUSES.has(task.status)) finished += 1
+  }
+  return { total: tasks.length, active, finished }
+}
+
+const PREVIEW_LIMIT = 240
+
+/** One line is all the badge's list has room for. */
+function clipPreview(value: string): string {
+  const flat = value.replace(/\s+/g, ' ').trim()
+  if (!flat) return ''
+  return flat.length > PREVIEW_LIMIT
+    ? `${flat.slice(0, PREVIEW_LIMIT - 1)}…`
+    : flat
+}
+
+function activityOf(task: SubagentTreeTask): string {
+  return [task.activity, task.toolName]
+    .filter((part): part is string => Boolean(part))
+    .join(' · ')
+}
+
+/**
+ * The last thing the child actually said. Thinking, tool calls and images are
+ * not its answer, and an older assistant message is not the newest one.
+ */
+function lastAssistantText(messages: readonly AgentMessage[] | undefined): string {
+  if (!messages) return ''
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message.role !== 'assistant') continue
+    const content = message.content
+    const text = typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content
+            .filter((block): block is Extract<ContentBlock, { type: 'text' }> =>
+              Boolean(block) && typeof block === 'object' && (block as ContentBlock).type === 'text')
+            .map((block) => block.text ?? '')
+            .join(' ')
+        : ''
+    if (text.trim()) return text
+  }
+  return ''
+}
+
+/**
+ * A short look at what a child is doing or produced, for the title badge.
+ *
+ * A live tail wins while it runs, a failure explains itself, and a finished
+ * child answers with its own last words. Nothing here invents content: an
+ * empty source simply falls through to the next one.
+ */
+export function subagentPreview(task: SubagentTreeTask): string {
+  const candidates: (string | undefined)[] = []
+  if (task.status === 'running') {
+    candidates.push(task.progressText, activityOf(task))
+  }
+  if (task.status === 'failed' || task.status === 'aborted' || task.status === 'timed_out') {
+    candidates.push(task.errorMessage)
+  }
+  candidates.push(
+    lastAssistantText(task.messages),
+    task.output,
+    activityOf(task),
+    task.progressText
+  )
+  for (const candidate of candidates) {
+    const preview = clipPreview(candidate ?? '')
+    if (preview) return preview
+  }
+  return ''
 }

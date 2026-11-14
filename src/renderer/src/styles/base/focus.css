@@ -1,0 +1,80 @@
+/* Editable fields have one inset edge. The root scope also wins over skins
+   loaded later with a settings or tool page, so focus cannot grow a second ring. */
+:root :is(
+  .input,
+  .appearance-select-native,
+  .branch-menu__create-input,
+  .color-picker__hex,
+  .commit__input,
+  .fv-find__input,
+  .fv-jump,
+  .goal-bar__input,
+  .image-gen__prompt,
+  .image-gen__field select,
+  .modal__editor,
+  .project-edit__input,
+  .project__rename-input,
+  .session-item__input
+):focus,
+:root :is(
+  .branch-menu__search,
+  .browser-bar__address,
+  .commit-detail__filter,
+  .composer,
+  .palette__search,
+  .project-icon-picker__search,
+  .project-menu__search,
+  .review__filter,
+  .scheduled-tasks__search-field,
+  .search-dialog__input,
+  .session-tree__filter,
+  .settings-search,
+  .shortcuts-search,
+  .terminal__filter,
+  .tree__search
+):focus-within,
+:root :is(.settings-icon-select, .settings-picker):is(:focus-visible, [aria-expanded='true']) {
+  border-color: transparent;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  box-shadow: none;
+}
+
+/* Borderless editors delegate focus to their frame; action buttons keep
+   their own keyboard mark, including the show-password and clear controls. */
+:root :is(
+  .branch-menu__search,
+  .browser-bar__address,
+  .commit-detail__filter,
+  .composer,
+  .palette__search,
+  .project-icon-picker__search,
+  .project-menu__search,
+  .review__filter,
+  .scheduled-tasks__search-field,
+  .search-dialog__input,
+  .session-tree__filter,
+  .settings-search,
+  .shortcuts-search,
+  .terminal__filter,
+  .tree__search
+) :is(input, textarea, [contenteditable='true']):focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/* Search bars built into a header retain their single underline. */
+:root :is(.font-menu__search, .launcher__search, .thread-search__bar):focus-within {
+  border-bottom-color: var(--focus-ring);
+  outline: none;
+  box-shadow: none;
+}
+
+/* Keep the composer's depth and shell-mode colour without an outer glow. */
+:root .composer:focus-within {
+  box-shadow: var(--shadow-sm);
+}
+
+:root .composer[data-shell='true']:focus-within {
+  outline-color: var(--violet);
+}

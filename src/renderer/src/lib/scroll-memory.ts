@@ -61,6 +61,30 @@ export function applyScroll(
   return { stick: isNearBottom({ ...node, scrollTop: top }, range), atBottom: false, top }
 }
 
+/** Breathing room between the reading viewport's top edge and a chosen prompt. */
+export const TURN_TOP_GUTTER = 12
+
+/**
+ * The scroll offset that puts a turn's own top edge at the top of the reading
+ * viewport.
+ *
+ * `turnTop` is the turn's offset inside the scroll content (rect relative to
+ * the container plus the current `scrollTop`). `inset` is whatever chrome
+ * already covers the top of the viewport — the sticky in-conversation search
+ * bar when it is open — so the prompt lands below it instead of under it. The
+ * offset is clamped like any other scroll target, which matters for the last
+ * turn: the transcript may not have enough content below it to reach the top.
+ */
+export function scrollTopForTurnTop(
+  node: ScrollMetrics,
+  turnTop: number,
+  inset = 0,
+  gutter = TURN_TOP_GUTTER
+): number {
+  const maxTop = Math.max(0, node.scrollHeight - node.clientHeight)
+  return Math.max(0, Math.min(turnTop - inset - gutter, maxTop))
+}
+
 /* ------------------------------------------------------------------ *
  * Process-wide conversation memories
  *

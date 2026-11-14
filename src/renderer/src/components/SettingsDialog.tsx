@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { PiCliUpgradeProgress, VersionCheckResult } from '@shared/types'
 import {
   Archive,
@@ -17,19 +17,20 @@ import {
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
-import {
-  AboutSettings,
-  AgentSettings,
-  AppearanceSettings,
-  GeneralSettings,
-  PersonalizationSettings,
-  ShortcutsSettings,
-  UsageSettings
-} from './SettingsSections'
-import { MemorySettings } from './MemorySettings'
-import { ArchivedSessionsSettings } from './ArchivedSessionsSettings'
-import { ModelsSettings } from './models/ModelsSettings'
-import { RemoteAccessSettings } from './RemoteAccessSettings'
+import { FeatureLoading } from './FeatureLoading'
+import { checkForAppUpdates, showAppUpdate } from '../lib/app-update'
+
+const AboutSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.AboutSettings })))
+const AgentSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.AgentSettings })))
+const AppearanceSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.AppearanceSettings })))
+const GeneralSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.GeneralSettings })))
+const PersonalizationSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.PersonalizationSettings })))
+const ShortcutsSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.ShortcutsSettings })))
+const UsageSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.UsageSettings })))
+const MemorySettings = lazy(() => import('./MemorySettings').then((m) => ({ default: m.MemorySettings })))
+const ArchivedSessionsSettings = lazy(() => import('./ArchivedSessionsSettings').then((m) => ({ default: m.ArchivedSessionsSettings })))
+const ModelsSettings = lazy(() => import('./models/ModelsSettings').then((m) => ({ default: m.ModelsSettings })))
+const RemoteAccessSettings = lazy(() => import('./RemoteAccessSettings').then((m) => ({ default: m.RemoteAccessSettings })))
 
 export type SettingsPage =
   | 'general'
@@ -123,7 +124,6 @@ export function SettingsDialog({
   const [checkingUpdates, setCheckingUpdates] = useState(false)
   const [upgradingCli, setUpgradingCli] = useState(false)
   const [piCliProgress, setPiCliProgress] = useState<PiCliUpgradeProgress | null>(null)
-  const [openingReleasePage, setOpeningReleasePage] = useState(false)
 
   useEffect(
     () =>
@@ -136,14 +136,10 @@ export function SettingsDialog({
   const handleCheck = async (silent = false) => {
     setCheckingUpdates(true)
     try {
-      const result = await window.pi.app.checkUpdate()
+      const result = await (silent ? window.pi.app.checkUpdate() : checkForAppUpdates())
       setUpdateStatus(result)
-      if (!silent && !result.app.hasUpdate && !result.piCli.hasUpdate) {
-        const failed = Boolean(result.app.error || result.piCli.error)
-        showToast(t(failed ? 'Check failed' : 'Up to date'), failed ? 'error' : undefined)
-      }
     } catch {
-      if (!silent) showToast(t('Check failed'), 'error')
+      // The shared result card owns errors from a manual check.
     } finally {
       setCheckingUpdates(false)
     }
@@ -168,23 +164,6 @@ export function SettingsDialog({
     } finally {
       setUpgradingCli(false)
       setPiCliProgress(null)
-    }
-  }
-
-  const handleOpenReleasePage = async () => {
-    setOpeningReleasePage(true)
-    try {
-      const res = await window.pi.app.openReleasePage()
-      if (res.success) {
-        showToast(t('Release page opened'))
-      } else {
-        showToast(res.error ? `${t('Upgrade failed')}: ${res.error}` : t('Upgrade failed'), 'error')
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      showToast(`${t('Upgrade failed')}: ${msg}`, 'error')
-    } finally {
-      setOpeningReleasePage(false)
     }
   }
 
@@ -229,33 +208,34 @@ export function SettingsDialog({
           </nav>
 
           <main className="settings-content">
-            {page === 'general' ? <GeneralSettings /> : null}
-            {page === 'agent' ? <AgentSettings /> : null}
-            {page === 'models' ? <ModelsSettings /> : null}
-            {page === 'appearance' ? <AppearanceSettings /> : null}
-            {page === 'usage' ? <UsageSettings /> : null}
-            {page === 'shortcuts' ? <ShortcutsSettings /> : null}
-            {page === 'personalization' ? (
-              <PersonalizationSettings
-                value={customInstructions}
-                onChange={setCustomInstructions}
-              />
-            ) : null}
-            {page === 'remote' ? <RemoteAccessSettings /> : null}
-            {page === 'memory' ? <MemorySettings /> : null}
-            {page === 'archived' ? <ArchivedSessionsSettings /> : null}
-            {page === 'about' ? (
-              <AboutSettings
-                updateStatus={updateStatus}
-                checking={checkingUpdates}
-                upgradingCli={upgradingCli}
-                piCliProgress={piCliProgress}
-                openingReleasePage={openingReleasePage}
-                onCheck={handleCheck}
-                onUpgradeCli={handleUpgradeCli}
-                onOpenReleasePage={handleOpenReleasePage}
-              />
-            ) : null}
+            <Suspense fallback={<FeatureLoading />}>
+              {page === 'general' ? <GeneralSettings /> : null}
+              {page === 'agent' ? <AgentSettings /> : null}
+              {page === 'models' ? <ModelsSettings /> : null}
+              {page === 'appearance' ? <AppearanceSettings /> : null}
+              {page === 'usage' ? <UsageSettings /> : null}
+              {page === 'shortcuts' ? <ShortcutsSettings /> : null}
+              {page === 'personalization' ? (
+                <PersonalizationSettings
+                  value={customInstructions}
+                  onChange={setCustomInstructions}
+                />
+              ) : null}
+              {page === 'remote' ? <RemoteAccessSettings /> : null}
+              {page === 'memory' ? <MemorySettings /> : null}
+              {page === 'archived' ? <ArchivedSessionsSettings /> : null}
+              {page === 'about' ? (
+                <AboutSettings
+                  updateStatus={updateStatus}
+                  checking={checkingUpdates}
+                  upgradingCli={upgradingCli}
+                  piCliProgress={piCliProgress}
+                  onCheck={handleCheck}
+                  onUpgradeCli={handleUpgradeCli}
+                  onShowUpdate={() => { if (updateStatus) showAppUpdate(updateStatus) }}
+                />
+              ) : null}
+            </Suspense>
           </main>
         </div>
 

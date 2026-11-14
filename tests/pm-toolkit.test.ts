@@ -87,6 +87,13 @@ test('sample size grows as the minimum detectable effect shrinks', () => {
   assert.ok(Math.abs(small.absoluteMde - 0.003) < 1e-12)
 })
 
+test('sample size rejects an impossible conversion target and preserves valid near-one baselines', () => {
+  assert.throws(() => sampleSizePerArm({ baseline: 0.9, relativeMde: 0.5 }), /100%/)
+  const result = sampleSizePerArm({ baseline: 0.9999999, relativeMde: 0.00000001 })
+  assert.ok(result.variant > result.baseline)
+  assert.ok(result.absoluteMde > 0)
+})
+
 test('two-proportion test detects a meaningful lift and returns an interval', () => {
   const result = twoProportionTest({
     controlVisitors: 1000,

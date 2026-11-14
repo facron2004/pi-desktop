@@ -169,6 +169,16 @@
   opacity: 0.45;
 }
 
+/* A desktop menu puts the chord on the right edge, in one quiet voice. */
+.app-menu__chord {
+  flex: 0 0 auto;
+  padding-left: var(--sp-5);
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
 /* ------------------------------------------------------------------ *
  * Sidebar
  * ------------------------------------------------------------------ */
@@ -3977,8 +3987,9 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
      line as the controls of the header it stands in. */
   top: calc(var(--titlebar-h) + var(--panel-head-rule));
   right: calc(var(--shell-inset) + var(--sp-5));
-  /* The band of the header the toggle stands in — the conversation's title bar
-     while the panel is away. */
+  /* A fixed band, tall enough for the tallest header it can stand in, with
+     the button centred once: open or closed, the icon must land on exactly
+     the same pixels, so the band never re-centres when the panel mounts. */
   height: var(--panel-head-h);
   display: flex;
   align-items: center;
@@ -3993,13 +4004,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .shell__panel-toggle .icon-btn {
   width: var(--toolpanel-tab-h);
   height: var(--toolpanel-tab-h);
-}
-
-/* With the panel up, the corner belongs to the panel's 46px header: the band
-   narrows to it so the toggle and the panel's `+` / maximize buttons share one
-   centre line instead of sitting two pixels apart. */
-.app:has(.tool-panel) .shell__panel-toggle {
-  height: var(--toolpanel-head-h);
 }
 
 .tool-panel__body {
@@ -5881,104 +5885,6 @@ transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast)
  * Switch
  * ------------------------------------------------------------------ */
 
-
-
-
-
-.shortcut-group + .shortcut-group {
-  margin-top: var(--sp-1);
-}
-
-.shortcuts-hint {
-  margin: 0 0 var(--sp-3);
-  color: var(--text-faint);
-  font-size: var(--text-2xs);
-  line-height: var(--leading-assist);
-}
-
-.shortcut-group__title {
-  font-size: var(--text-2xs);
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  margin: 0 0 var(--sp-2);
-}
-
-.shortcut {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-5);
-  padding: var(--sp-2) 0;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.shortcut:last-child {
-  border-bottom: none;
-}
-
-.shortcut__keys {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  flex: 0 0 auto;
-}
-
-.shortcut__control {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  flex: 0 0 auto;
-}
-
-.shortcut__keys--editable {
-  padding: var(--sp-1) var(--sp-2);
-  margin: calc(-1 * var(--sp-1)) calc(-1 * var(--sp-2));
-  border-radius: var(--r-sm);
-  transition: background var(--dur-fast) var(--ease);
-}
-
-.shortcut__keys--editable:hover {
-  background: var(--bg-hover);
-}
-
-.shortcut__keys--editable[data-recording='true'] {
-  background: var(--accent-soft);
-}
-
-.shortcut__recording {
-  color: var(--text-muted);
-  font-size: var(--text-2xs);
-  line-height: var(--leading-assist);
-  white-space: nowrap;
-}
-
-.shortcut__recording[data-error] {
-  color: var(--red);
-}
-
-.shortcut__reset {
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-}
-
-.shortcut__key {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-}
-
-.shortcut__key-separator,
-.shortcut__plus {
-  color: var(--text-faint);
-  font-size: var(--text-2xs);
-  line-height: 1;
-}
-
 /* A keycap is interface text, not code: the browser's own `kbd` is a serifed
    monospace that reads like a terminal manual. One recipe here, so the
    palette, the launcher and the shortcuts table draw the same key. */
@@ -6068,12 +5974,110 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 /* ------------------------------------------------------------------ *
  * File tree
+ *
+ * The reference is Codex's changed-files panel: a rounded filter field, one
+ * calm heading, and rows tall enough to breathe. A file is read by its
+ * extension tile first, its name second, and its change mark last — so the
+ * name column starts on the same pixel at every depth.
  * ------------------------------------------------------------------ */
 
 .tree {
-  padding: var(--sp-1) var(--sp-2) var(--sp-4);
-  font-size: var(--text-body);
+  /* File-change colours live here rather than in the global palette: they are
+     the tree's own vocabulary, and every theme maps them onto tokens it
+     already trusts. */
+  --file-modified: var(--project-icon-blue);
+  --file-added: var(--status-success);
+  --file-deleted: var(--status-danger);
+  --file-renamed: var(--violet);
+  --file-conflicted: var(--status-warning);
+  padding: var(--sp-2) var(--sp-2) var(--sp-5);
+  font-size: var(--text-xs);
   line-height: var(--leading-body);
+}
+
+/* The index list mirrors the reference app: one muted "All changes" heading,
+   then two foldable rows. Selecting a row both marks it and opens it; the
+   open row carries the tree underneath. */
+.tree__index-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-1);
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+}
+
+.tree__index {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.tree__index-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.tree__index-row:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tree__index-row[data-active='true'] {
+  background: var(--bg-hover);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.tree__index-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.tree__index-caret {
+  flex: 0 0 12px;
+  color: var(--text-faint);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.tree__index-caret[data-open='true'] {
+  transform: rotate(90deg);
+}
+
+.tree__index-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tree__index-dot {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--file-modified);
+}
+
+.tree__index-body {
+  min-width: 0;
+  padding: 2px 0 var(--sp-2) 0;
 }
 
 .tree__list {
@@ -6085,19 +6089,155 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .tree__item {
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: 5px;
   width: 100%;
-  min-height: 22px;
-  padding: 0 var(--sp-2) 0 0;
-  border-radius: var(--r-xs);
-  color: var(--text-muted);
+  min-height: 27px;
+  padding: 2px var(--sp-2) 2px 0;
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
   text-align: left;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .tree__item:hover {
   background: var(--bg-hover);
-  color: var(--text);
+  color: var(--text-primary);
+}
+
+/* A row holding work reads in its change colour, the way the reference app
+   tints a modified file blue and a new one green. */
+.tree__item[data-change='modified'] > .tree__name {
+  color: var(--file-modified);
+}
+
+.tree__item[data-change='added'] > .tree__name {
+  color: var(--file-added);
+}
+
+.tree__item[data-change='deleted'] > .tree__name {
+  color: var(--file-deleted);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--file-deleted) 55%, transparent);
+}
+
+.tree__item[data-change='renamed'] > .tree__name {
+  color: var(--file-renamed);
+}
+
+.tree__item[data-change='conflicted'] > .tree__name {
+  color: var(--file-conflicted);
+}
+
+.tree__item[data-kind='directory'] > .tree__name {
+  color: var(--text-primary);
+}
+
+.tree__caret {
+  flex: 0 0 12px;
+  color: var(--text-faint);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.tree__caret[data-open='true'] {
+  transform: rotate(90deg);
+}
+
+/* A file row keeps the caret's column empty so its tile lines up with the
+   folder glyph above it rather than drifting one step left. */
+.tree__caret-space {
+  flex: 0 0 12px;
+  width: 12px;
+}
+
+.tree__file-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 16px;
+  width: 16px;
+  color: var(--text-tertiary);
+}
+
+/* One hue per language family. A code file is blue, a script is amber, data
+   is green, styles are violet, and a picture is red — the same reading a
+   syntax-highlighted editor gives the same files. */
+.tree__file-icon[data-tone='ts'] {
+  color: var(--project-icon-blue);
+}
+
+.tree__file-icon[data-tone='js'] {
+  color: var(--status-warning);
+}
+
+.tree__file-icon[data-tone='json'] {
+  color: var(--status-success);
+}
+
+.tree__file-icon[data-tone='style'] {
+  color: var(--violet);
+}
+
+.tree__file-icon[data-tone='shell'] {
+  color: var(--status-success);
+}
+
+.tree__file-icon[data-tone='image'] {
+  color: var(--status-danger);
+}
+
+.tree__file-icon[data-tone='markdown'],
+.tree__file-icon[data-tone='plain'] {
+  color: var(--text-secondary);
+}
+
+.tree__change {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 14px;
+  margin-left: auto;
+  color: var(--text-faint);
+}
+
+.tree__change[data-kind='modified'] {
+  color: var(--file-modified);
+}
+
+.tree__change[data-kind='added'] {
+  color: var(--file-added);
+}
+
+.tree__change[data-kind='deleted'] {
+  color: var(--file-deleted);
+}
+
+.tree__change[data-kind='renamed'] {
+  color: var(--file-renamed);
+}
+
+.tree__change[data-kind='conflicted'] {
+  color: var(--file-conflicted);
+}
+
+.tree__folder-dot {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--file-modified);
+}
+
+.tree__folder-dot[data-kind='added'] {
+  background: var(--file-added);
+}
+
+.tree__folder-dot[data-kind='deleted'],
+.tree__folder-dot[data-kind='conflicted'] {
+  background: var(--file-deleted);
+}
+
+.tree__folder-dot[data-kind='renamed'] {
+  background: var(--file-renamed);
 }
 
 .tree__name {
@@ -6107,15 +6247,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   text-overflow: ellipsis;
 }
 
-.tree__size {
-  flex: 0 0 auto;
-  margin-left: auto;
-  padding-left: var(--sp-3);
-  font-size: var(--text-2xs);
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-}
-
 .tree__empty,
 .tree__loading {
   padding: var(--sp-hair) 0 var(--sp-1);
@@ -6123,22 +6254,39 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--text-faint);
 }
 
+.tree__empty--center {
+  padding: var(--sp-6) var(--sp-3);
+  text-align: center;
+  line-height: 1.6;
+}
+
+.tree__size {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: var(--sp-2);
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .tree__search {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   margin: 0 var(--sp-1) var(--sp-3);
-  padding: 0 var(--sp-1) 0 var(--sp-3);
-  height: 30px;
-  border-radius: var(--r-md);
-  border: 1px solid var(--border);
-  background: var(--bg-deep);
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  height: 32px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-canvas);
   color: var(--text-faint);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 
 .tree__search:focus-within {
-  border-color: var(--border-strong);
-  color: var(--text-muted);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  color: var(--text-secondary);
 }
 
 .tree__search input {
@@ -6165,7 +6313,13 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .tree__item--flat {
-  gap: var(--sp-3);
+  gap: var(--sp-2);
+}
+
+/* In the flat search list the folder column is what pushes right; the mark
+   follows it instead of competing for the same free space. */
+.tree__item--flat .tree__change {
+  margin-left: 0;
 }
 
 .tree__dir {
@@ -7889,6 +8043,17 @@ button:focus-visible,
   color: var(--text-primary);
 }
 
+/* A page action that is "on" — the Files page's tree toggle — reads as a
+   pressed control, the way the reference app tints its explorer button. */
+.tool-panel__action[data-active='true'] {
+  color: var(--accent);
+}
+
+.tool-panel__action[data-active='true']:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 /* MCode's maximize control makes the workspace panel the whole work area,
    leaving the project sidebar reachable. The app grid gives the fixed panel
    its space so the conversation does not keep a phantom third column. */
@@ -8153,7 +8318,7 @@ button:focus-visible,
 
 .file-workspace__tree {
   display: flex;
-  flex: 0 0 min(220px, 45%);
+  flex: 0 0 min(236px, 46%);
   flex-direction: column;
   min-height: 0;
   min-width: 0;
@@ -8163,58 +8328,6 @@ button:focus-visible,
 
 .file-workspace[data-tree='closed'] .file-workspace__tree {
   display: none;
-}
-
-.file-workspace__tree-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
-  flex: 0 0 auto;
-  padding: var(--sp-2);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.file-workspace__tree-head .segmented {
-  padding: var(--sp-hair);
-}
-
-.file-workspace__tree-head .segmented button {
-  padding: var(--sp-1) var(--sp-3);
-}
-
-.file-workspace__tree-close {
-  display: grid;
-  place-items: center;
-  width: var(--ctl-sm);
-  height: var(--ctl-sm);
-  border-radius: var(--r-sm);
-  color: var(--text-tertiary);
-}
-
-.file-workspace__tree-close:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-/* The tree's own header goes with it. This strip stays in that column so
-   hiding the tree never removes the only way to bring it back. */
-.file-workspace__tree-reveal {
-  display: flex;
-  flex: 0 0 32px;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: var(--sp-2);
-  border: none;
-  border-left: 1px solid var(--border-subtle);
-  background: var(--surface-chrome);
-  color: var(--text-tertiary);
-  cursor: pointer;
-}
-
-.file-workspace__tree-reveal:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
 }
 
 .file-workspace__tree-body {
@@ -8227,7 +8340,32 @@ button:focus-visible,
 /* The tree is already the files surface; a second scroll container would only
    add a nested scrollbar. */
 .file-workspace__tree-body .tree {
-  padding: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-5);
+}
+
+.file-workspace__text-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--sp-2);
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-2xs);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.file-workspace__text-search:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.file-workspace__text-search:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 /* The File changes page follows the same split: the diff is the page, and the

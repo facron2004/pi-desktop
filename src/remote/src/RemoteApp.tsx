@@ -12,6 +12,12 @@ import {
 } from '@shared/types'
 import { applyEvent, itemsFromMessages, type ThreadItem } from '@renderer/lib/thread'
 import { beginStream } from '@renderer/lib/stream-events'
+import {
+  beginRemoteSendRequest,
+  finishRemoteSendRequest,
+  restoreRemoteSessionItems,
+  type RemoteSendRequests
+} from './session-state'
 
 const TOKEN_KEY = 'pi-desktop.remote.token'
 
@@ -23,6 +29,7 @@ interface SessionDetail {
   messages: AgentMessage[]
   truncated: boolean
   isRunning: boolean
+  waitingForDesktop: boolean
 }
 
 async function api<T>(path: string, token?: string, init: RequestInit = {}): Promise<T> {
@@ -66,11 +73,22 @@ export function RemoteApp() {
   const [sessions, setSessions] = useState<RemoteSession[]>([])
   const [session, setSession] = useState<RemoteSession | null>(null)
   const [items, setItems] = useState<ThreadItem[]>([])
+  const transcriptItems = useRef(items)
+  transcriptItems.current = items
+  const replaceItems = useCallback((next: ThreadItem[]) => {
+    transcriptItems.current = next
+    setItems(next)
+  }, [])
+  const updateItems = useCallback((update: (current: ThreadItem[]) => ThreadItem[]) => {
+    replaceItems(update(transcriptItems.current))
+  }, [replaceItems])
   const [truncated, setTruncated] = useState(false)
   const [running, setRunning] = useState(false)
   const [waitingForDesktop, setWaitingForDesktop] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [sending, setSending] = useState(false)
+  const [sendingRequests, setSendingRequests] = useState<RemoteSendRequests>({})
+  const sendingRequestsRef = useRef<RemoteSendRequests>({})
+  const sendRequestSequence = useRef(0)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [streamConnected, setStreamConnected] = useState(false)
@@ -82,6 +100,10 @@ export function RemoteApp() {
   activeConversationKey.current = workspace && session
     ? JSON.stringify([workspace.id, session.id])
     : null
+  const activeSendKey = token && workspace && session
+    ? JSON.stringify([token, workspace.id, session.id])
+    : ''
+  const sending = Boolean(activeSendKey && sendingRequests[activeSendKey] !== undefined)
 
   const cancelNavigationLoad = useCallback(() => {
     navigationLoad.current?.abort()
@@ -106,11 +128,13 @@ export function RemoteApp() {
     setWorkspace(null)
     setSessions([])
     setSession(null)
-    setItems([])
+    replaceItems([])
+    sendingRequestsRef.current = {}
+    setSendingRequests({})
     setWaitingForDesktop(false)
     setLoading(false)
     setView('projects')
-  }, [cancelNavigationLoad])
+  }, [cancelNavigationLoad, replaceItems])
 
   const clearPairingForToken = useCallback((accessToken: string) => {
     if (activeToken.current === accessToken) clearPairing()
@@ -147,9 +171,10 @@ export function RemoteApp() {
         signal: controller.signal
       })
       if (controller.signal.aborted || activeToken.current !== accessToken) return
-      setItems(itemsFromMessages(result.messages))
+      replaceItems(itemsFromMessages(result.messages))
       setTruncated(result.truncated)
       setRunning(result.isRunning)
+      setWaitingForDesktop(result.waitingForDesktop)
       setError('')
     } catch (cause) {
       if (controller.signal.aborted || activeToken.current !== accessToken) return
@@ -161,7 +186,7 @@ export function RemoteApp() {
         setLoading(false)
       }
     }
-  }, [beginNavigationLoad, clearPairingForToken])
+  }, [beginNavigationLoad, clearPairingForToken, replaceItems])
 
   useEffect(() => () => cancelNavigationLoad(), [cancelNavigationLoad])
 
@@ -203,46 +228,51 @@ export function RemoteApp() {
 
     const consume = async () => {
       let connectedBefore = false
+      let snapshotGeneration = 0
+      const pendingReconnectEvents: PiEvent[] = []
 
-      const applyFrame = (frame: string) => {
+      const updateRuntimeState = (event: PiEvent) => {
+        if (event.type === 'agent_start') setRunning(true)
+        if (event.type === 'remote_waiting_for_desktop') setWaitingForDesktop(true)
+        if (event.type === 'tool_execution_start') setWaitingForDesktop(false)
+        if (event.type === 'agent_settled') {
+          setRunning(false)
+          setWaitingForDesktop(false)
+          if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+          refreshTimer = window.setTimeout(() => {
+            refreshTimer = undefined
+            if (isActive()) void loadSession(token, workspace, session)
+          }, 250)
+        }
+      }
+
+      const applyEventNow = (event: PiEvent) => {
+        updateRuntimeState(event)
+        updateItems((current) => applyEvent(current, event, { sessionKey: session.id }))
+      }
+
+      const applyFrame = (frame: string, bufferedEvents: PiEvent[] | null) => {
         if (!isActive()) return
         const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
           .map((line) => line.slice(5).trimStart()).join('\n')
         if (!data) return
         try {
-          const event = JSON.parse(data) as { type?: string }
-          if (event.type === 'agent_start') setRunning(true)
-          if (event.type === 'remote_waiting_for_desktop') setWaitingForDesktop(true)
-          if (event.type === 'tool_execution_start') setWaitingForDesktop(false)
-          if (event.type === 'agent_settled') {
-            setRunning(false)
-            setWaitingForDesktop(false)
-            if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
-            refreshTimer = window.setTimeout(() => {
-              refreshTimer = undefined
-              if (isActive()) void loadSession(token, workspace, session)
-            }, 250)
-          }
-          setItems((current) => applyEvent(current, event as PiEvent, { sessionKey: session.id }))
+          const event = JSON.parse(data) as PiEvent
+          if (bufferedEvents) bufferedEvents.push(event)
+          else applyEventNow(event)
         } catch {
           /* a malformed frame does not interrupt the remaining stream */
         }
       }
 
       while (!controller.signal.aborted) {
+        let reconnecting = false
+        let generation = 0
+        let bufferedEvents: PiEvent[] | null = null
+        let snapshotHandled = false
+        let snapshotController: AbortController | undefined
         try {
-          if (connectedBefore) {
-            const detailQuery = new URLSearchParams({ workspaceId: workspace.id, sessionId: session.id })
-            const snapshot = await api<SessionDetail>(`/api/session?${detailQuery}`, token, {
-              signal: controller.signal
-            })
-            if (!isActive()) break
-            if (!snapshot.isRunning) {
-              setItems(itemsFromMessages(snapshot.messages))
-              setRunning(false)
-              setWaitingForDesktop(false)
-            }
-          }
+          reconnecting = connectedBefore
           const response = await fetch(`/api/events?${query}`, {
             headers: { Authorization: `Bearer ${token}` },
             cache: 'no-store',
@@ -254,24 +284,81 @@ export function RemoteApp() {
           }
           if (!response.ok || !response.body) throw new Error('Live updates are unavailable.')
           connectedBefore = true
+          generation = ++snapshotGeneration
           setStreamConnected(true)
           setError('')
+          bufferedEvents = reconnecting ? pendingReconnectEvents.splice(0) : null
           const reader = response.body.getReader()
           const decoder = new TextDecoder()
           let buffer = ''
+
+          let snapshotTask: Promise<void> = Promise.resolve()
+          if (reconnecting) {
+            snapshotController = new AbortController()
+            const abortSnapshot = () => snapshotController?.abort()
+            controller.signal.addEventListener('abort', abortSnapshot, { once: true })
+            const detailQuery = new URLSearchParams({ workspaceId: workspace.id, sessionId: session.id })
+            snapshotTask = api<SessionDetail>(`/api/session?${detailQuery}`, token, {
+              signal: snapshotController.signal
+            }).then((snapshot) => {
+              if (!isActive() || generation !== snapshotGeneration) return
+              const events = bufferedEvents ?? []
+              const restored = restoreRemoteSessionItems(
+                snapshot.messages,
+                events,
+                session.id,
+                transcriptItems.current
+              )
+              replaceItems(restored)
+              setTruncated(snapshot.truncated)
+              setRunning(snapshot.isRunning)
+              setWaitingForDesktop(snapshot.waitingForDesktop)
+              for (const event of events) updateRuntimeState(event)
+              bufferedEvents = null
+              snapshotHandled = true
+            }).catch((cause: unknown) => {
+              if (!isActive() || generation !== snapshotGeneration) return
+              if ((cause as ApiError).status === 401) {
+                clearPairingForToken(token)
+                snapshotHandled = true
+                return
+              }
+              setError(cause instanceof Error ? cause.message : 'Could not restore the conversation.')
+              const events = bufferedEvents ?? []
+              bufferedEvents = null
+              for (const event of events) applyEventNow(event)
+              snapshotHandled = true
+            })
+            void snapshotTask.finally(() => {
+              controller.signal.removeEventListener('abort', abortSnapshot)
+            })
+          }
+
           while (!controller.signal.aborted) {
             const { value, done } = await reader.read()
             if (!isActive()) break
             buffer += decoder.decode(value, { stream: !done })
             let split = buffer.indexOf('\n\n')
             while (split >= 0) {
-              applyFrame(buffer.slice(0, split))
+              applyFrame(buffer.slice(0, split), bufferedEvents)
               buffer = buffer.slice(split + 2)
               split = buffer.indexOf('\n\n')
             }
             if (done) break
           }
+          if (reconnecting && !snapshotHandled && bufferedEvents) {
+            if (snapshotGeneration === generation) snapshotGeneration += 1
+            pendingReconnectEvents.push(...bufferedEvents)
+            bufferedEvents = null
+            snapshotController?.abort()
+          }
         } catch (cause) {
+          if (reconnecting && !snapshotHandled && bufferedEvents) {
+            if (snapshotGeneration === generation) snapshotGeneration += 1
+            pendingReconnectEvents.push(...bufferedEvents)
+            bufferedEvents = null
+            snapshotController?.abort()
+          }
           if (!isActive()) break
           if ((cause as ApiError).status === 401) {
             clearPairingForToken(token)
@@ -319,7 +406,7 @@ export function RemoteApp() {
     if (view === 'conversation') {
       setView('sessions')
       setSession(null)
-      setItems([])
+      replaceItems([])
       setWaitingForDesktop(false)
     } else if (view === 'sessions') {
       setView('projects')
@@ -357,7 +444,7 @@ export function RemoteApp() {
   const openSession = (selected: RemoteSession) => {
     if (!workspace) return
     setSession(selected)
-    setItems([])
+    replaceItems([])
     setWaitingForDesktop(false)
     setView('conversation')
     void loadSession(token, workspace, selected)
@@ -365,11 +452,16 @@ export function RemoteApp() {
 
   const send = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!workspace || !session || !message.trim() || sending) return
+    if (!workspace || !session || !message.trim()) return
     const conversationKey = JSON.stringify([workspace.id, session.id])
     const submittedMessage = message.trim()
     const requestToken = token
-    setSending(true)
+    const requestKey = JSON.stringify([requestToken, workspace.id, session.id])
+    if (sendingRequestsRef.current[requestKey] !== undefined) return
+    const requestId = ++sendRequestSequence.current
+    const startedRequests = beginRemoteSendRequest(sendingRequestsRef.current, requestKey, requestId)
+    sendingRequestsRef.current = startedRequests
+    setSendingRequests(startedRequests)
     setError('')
     try {
       await api('/api/message', token, {
@@ -386,7 +478,12 @@ export function RemoteApp() {
         setError(cause instanceof Error ? cause.message : 'Could not send the message.')
       }
     } finally {
-      setSending(false)
+      const current = sendingRequestsRef.current
+      const finishedRequests = finishRemoteSendRequest(current, requestKey, requestId)
+      if (finishedRequests !== current) {
+        sendingRequestsRef.current = finishedRequests
+        setSendingRequests(finishedRequests)
+      }
     }
   }
 

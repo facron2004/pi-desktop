@@ -20,6 +20,8 @@ const promptLog = path.join(scratch, 'prompts.jsonl')
 // the child really ran inside the worktree rather than the project root.
 writeFileSync(extensionFile, subagentExtension(), 'utf8')
 writeFileSync(fakeScript, `import { appendFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 const log = process.env.PI_FAKE_LOG;
 if (log) appendFileSync(log, JSON.stringify(process.argv.slice(2)) + '\\n');
@@ -29,6 +31,20 @@ const mode = process.env.PI_FAKE_MODE || 'ok';
 function emit(event) { process.stdout.write(JSON.stringify(event) + '\\n'); }
 if (mode === 'write') {
   writeFileSync(process.env.PI_FAKE_WRITE || 'made-by-child.txt', 'child work\\n', 'utf8');
+}
+function git(cwd, ...args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, stdio: 'pipe' }).trim();
+}
+if (mode === 'lock-worktree') git(cwd, 'worktree', 'lock', '--', cwd);
+if (mode === 'orphan-parent') {
+  writeFileSync('made-by-child.txt', 'child commit\\n', 'utf8');
+  git(cwd, 'add', 'made-by-child.txt');
+  git(cwd, 'commit', '-q', '-m', 'child work');
+  git(path.resolve(cwd, '../../..'), 'symbolic-ref', 'HEAD', 'refs/heads/unborn-parent');
+}
+if (mode === 'parent-uses-branch') {
+  const branch = git(cwd, 'branch', '--show-current');
+  git(path.resolve(cwd, '../../..'), 'symbolic-ref', 'HEAD', 'refs/heads/' + branch);
 }
 const decoder = new StringDecoder('utf8');
 let buffer = '';
@@ -150,6 +166,34 @@ test('a worktree task runs in its own directory and is cleaned up when the child
   // reports is relative to the repo, so resolve it before reading.
   const exclude = path.resolve(repo, git(repo, 'rev-parse', '--git-path', 'info/exclude'))
   assert.match(readFileSync(exclude, 'utf8'), /\/\.pi\/worktrees\//)
+})
+
+test('a locked worktree reports failed removal instead of claiming cleanup', async () => {
+  const repo = makeRepo('locked-repo')
+  const result = await runTask(repo, { task: 'Inspect the project', worktree: true }, 'lock-worktree')
+  const worktree = result.details!.results[0]!.worktree!
+  assert.equal(worktree.kept, true)
+  assert.ok(existsSync(worktree.path))
+  assert.match(worktree.reason, /worktree remove failed/i)
+})
+
+test('a missing parent HEAD never deletes a child commit', async () => {
+  const repo = makeRepo('unborn-parent-repo')
+  const result = await runTask(repo, { task: 'Create a commit', worktree: true }, 'orphan-parent')
+  const worktree = result.details!.results[0]!.worktree!
+  assert.equal(worktree.kept, true)
+  assert.ok(existsSync(worktree.path))
+  assert.equal(git(worktree.path, 'log', '-1', '--format=%s'), 'child work')
+})
+
+test('a branch removal failure is reported after the worktree itself is removed', async () => {
+  const repo = makeRepo('checked-out-branch-repo')
+  const result = await runTask(repo, { task: 'Inspect the project', worktree: true }, 'parent-uses-branch')
+  const worktree = result.details!.results[0]!.worktree!
+  assert.equal(worktree.kept, false)
+  assert.equal(existsSync(worktree.path), false)
+  assert.ok(git(repo, 'branch', '--list', worktree.branch))
+  assert.match(worktree.reason, /branch could not be deleted/i)
 })
 
 test('a worktree with child changes is kept and its branch is reported', async () => {

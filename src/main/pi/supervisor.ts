@@ -28,6 +28,7 @@ class SessionFileLockError extends Error {}
 
 /** How long an idle hot session keeps its process. Viewing it does not reset this. */
 const WARM_MS = 10 * 60 * 1000
+export const MAX_IDLE_RUNTIMES = 4
 const CWD_QUEUE_POLL_MS = 250
 const MAX_QUEUED_JOBS_PER_CWD = 64
 const MAX_QUEUED_JOBS_TOTAL = 256
@@ -126,6 +127,7 @@ interface RuntimeActivity {
   binding?: Promise<void>
   finalizing?: boolean
   stopping?: Promise<void>
+  lastAccessed: number
 }
 
 /**
@@ -161,6 +163,11 @@ export class SessionSupervisor extends EventEmitter {
   private readonly activity = new WeakMap<ManagedSessionRuntime, RuntimeActivity>()
   private shuttingDown = false
   private cliUpgradeInProgress = false
+  private accessClock = 0
+
+  private touchRuntime(activity: RuntimeActivity): void {
+    activity.lastAccessed = Date.now() * 1000 + (++this.accessClock % 1000)
+  }
 
   constructor(private readonly factory: SessionRuntimeFactory, cwdLockDirectory?: string) {
     super()
@@ -184,7 +191,7 @@ export class SessionSupervisor extends EventEmitter {
       this.queuedJobCount > 0 ||
       [...this.runtimes.values()].some((runtime) => {
         const activity = this.activity.get(runtime)
-        return activity?.running || activity?.writes
+        return activity?.running || activity?.writes || activity?.binding
       })
     ) return false
 
@@ -209,7 +216,13 @@ export class SessionSupervisor extends EventEmitter {
    * this after a run settles: a chat that only read and edited local files is
    * eligible, one that used MCP or computer use may not be.
    */
-  sessionInfo(key: string): { cwd: string; externalContext: boolean; running: boolean; pid?: number } | undefined {
+  sessionInfo(key: string): {
+    cwd: string
+    externalContext: boolean
+    running: boolean
+    waitingForInput: boolean
+    pid?: number
+  } | undefined {
     const id = this.canonical(key)
     const runtime = this.runtimes.get(id)
     if (!runtime) return undefined
@@ -219,6 +232,7 @@ export class SessionSupervisor extends EventEmitter {
       cwd: activity.cwd,
       externalContext: activity.externalContext,
       running: activity.running || activity.writes > 0,
+      waitingForInput: this.approvals.has(id),
       pid: runtime.pid
     }
   }
@@ -265,7 +279,12 @@ export class SessionSupervisor extends EventEmitter {
       await stopping
       return this.ensure(options)
     }
-    if (existing?.isRunning && existing.currentStatus.phase === 'ready') return { ok: true }
+    if (existing?.isRunning && existing.currentStatus.phase === 'ready') {
+      const activity = this.activity.get(existing)
+      if (activity) this.touchRuntime(activity)
+      this.pruneIdleRuntimes(id)
+      return { ok: true }
+    }
     const pending = this.starting.get(id)
     if (pending) return pending
     this.cancelledStarts.delete(id)
@@ -278,6 +297,7 @@ export class SessionSupervisor extends EventEmitter {
       this.starting.delete(id)
       this.startingCwds.delete(id)
       this.cancelledStarts.delete(id)
+      this.pruneIdleRuntimes(this.canonical(id))
     }
   }
 
@@ -297,6 +317,7 @@ export class SessionSupervisor extends EventEmitter {
     if (!runtime?.isRunning || !activity || activity.stopping) {
       throw new Error('Pi is not running for this conversation.')
     }
+    this.touchRuntime(activity)
     if (command === 'abort' || command === 'abort_retry') {
       this.dropQueued(id)
       this.approvals.delete(id)
@@ -400,6 +421,8 @@ export class SessionSupervisor extends EventEmitter {
     }
 
     if (runtime) {
+      const activity = this.activity.get(runtime)
+      if (activity) this.touchRuntime(activity)
       runtime.respondUi(id, response)
       if (targetKey && (!runtime.hasPendingUi || !runtime.hasPendingUi(id))) {
         this.approvals.delete(targetKey)
@@ -411,6 +434,8 @@ export class SessionSupervisor extends EventEmitter {
     const runtime = this.runtimes.get(this.canonical(file))
     let renamed = false
     if (runtime?.isRunning) {
+      const activity = this.activity.get(runtime)
+      if (activity) this.touchRuntime(activity)
       await runtime.request('set_session_name', { name }, 30_000, { sourceAction: 'session-rename' })
       renamed = true
     } else {
@@ -586,14 +611,17 @@ export class SessionSupervisor extends EventEmitter {
     if (!runtime) {
       runtime = this.factory()
       this.runtimes.set(id, runtime)
-      this.activity.set(runtime, {
+      const activity: RuntimeActivity = {
         ownerId: id,
         cwd: options.cwd,
         writes: 0,
         running: false,
         settlements: 0,
-        externalContext: false
-      })
+        externalContext: false,
+        lastAccessed: 0
+      }
+      this.touchRuntime(activity)
+      this.activity.set(runtime, activity)
       this.attach(runtime)
     }
     let started: { ok: boolean; error?: string }
@@ -629,7 +657,10 @@ export class SessionSupervisor extends EventEmitter {
       await this.releaseFile(id)
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
-    this.scheduleWarm(this.ownerOf(runtime) ?? id)
+    const owner = this.ownerOf(runtime) ?? id
+    const activity = this.activity.get(runtime)
+    if (activity) this.touchRuntime(activity)
+    this.scheduleWarm(owner)
     return { ok: true }
   }
 
@@ -694,6 +725,7 @@ export class SessionSupervisor extends EventEmitter {
     if (event.type === 'agent_settled') {
       activity.running = false
       activity.settlements += 1
+      this.touchRuntime(activity)
       this.approvals.delete(ownerId)
       this.releaseFromEvent(ownerId)
       this.scheduleWarm(ownerId)
@@ -812,7 +844,9 @@ export class SessionSupervisor extends EventEmitter {
   }
 
   private releaseFromEvent(key: string): void {
-    void this.release(key).catch((error) => {
+    void this.release(key).then(() => {
+      this.pruneIdleRuntimes(this.canonical(key))
+    }).catch((error) => {
       console.error('[pi-desktop] could not release project activity lock:', error)
     })
   }
@@ -1077,5 +1111,65 @@ export class SessionSupervisor extends EventEmitter {
     if (!timer) return
     clearTimeout(timer)
     this.warmTimers.delete(key)
+  }
+
+  private hasQueuedJobs(key: string): boolean {
+    const id = this.canonical(key)
+    for (const jobs of this.queued.values()) {
+      for (const job of jobs) {
+        if (this.canonical(job.key) === id) return true
+      }
+    }
+    return false
+  }
+
+  private isRuntimeIdle(id: string, runtime: ManagedSessionRuntime): boolean {
+    if (!runtime.isRunning) return false
+    const activity = this.activity.get(runtime)
+    if (!activity) return false
+    if (activity.running || activity.writes > 0 || activity.stopping || activity.finalizing || activity.binding) return false
+    const canon = this.canonical(id)
+    const owner = this.canonical(activity.ownerId)
+    if (this.gate.holds(canon) || this.gate.holds(owner)) return false
+    if (this.approvals.has(canon) || this.approvals.has(owner)) return false
+    if (this.hasQueuedJobs(canon) || this.hasQueuedJobs(owner)) return false
+    return true
+  }
+
+  private pruneIdleRuntimes(excludeId?: string): void {
+    if (this.shuttingDown || this.cliUpgradeInProgress) return
+    const idle: { id: string; lastAccessed: number }[] = []
+    const seenRuntimes = new Set<ManagedSessionRuntime>()
+
+    for (const [id, runtime] of this.runtimes) {
+      if (seenRuntimes.has(runtime)) continue
+      seenRuntimes.add(runtime)
+      if (this.isRuntimeIdle(id, runtime)) {
+        const activity = this.activity.get(runtime)
+        idle.push({
+          id,
+          lastAccessed: activity?.lastAccessed ?? 0
+        })
+      }
+    }
+
+    if (idle.length <= MAX_IDLE_RUNTIMES) return
+
+    idle.sort((a, b) => a.lastAccessed - b.lastAccessed)
+
+    const excess = idle.length - MAX_IDLE_RUNTIMES
+    let evicted = 0
+    for (const candidate of idle) {
+      if (evicted >= excess) break
+      if (excludeId && (candidate.id === excludeId || this.canonical(candidate.id) === this.canonical(excludeId))) {
+        continue
+      }
+      const canon = this.canonical(candidate.id)
+      if (this.starting.has(canon) || this.starting.has(candidate.id)) continue
+      evicted++
+      void this.stop(candidate.id).catch((error) => {
+        console.error('[pi-desktop] could not retire LRU idle Pi process:', error)
+      })
+    }
   }
 }

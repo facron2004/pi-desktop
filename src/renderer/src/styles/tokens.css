@@ -152,6 +152,8 @@
   --accent-glow: 0 0 0 3px rgba(76, 154, 255, 0.16);
   --accent-contrast: #080b11;
   --focus-ring: var(--accent);
+  /* The track carries the accent; the thumb stays light in either theme. */
+  --switch-thumb: #ffffff;
   /* Selection has its own token because it cannot come from --accent-soft:
      in the light theme the accent is near-black and a 14% wash of it lands
      on #ededed, which is invisible against white. A colour-mix keeps the
@@ -292,6 +294,9 @@
   --ctl-sm: 28px;
   --ctl-md: 32px;
   --ctl-lg: 36px;
+  --switch-w: 40px;
+  --switch-h: 24px;
+  --switch-thumb-size: 18px;
 
   /* ---- motion ------------------------------------------------------ */
   --dur-fast: 120ms;

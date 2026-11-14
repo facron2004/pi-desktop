@@ -179,6 +179,28 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     await openSubagentsPage()
     await store.getState().send('UI_TREE_PARENT delegate the two independent checks', [])
     await until(() => document.querySelectorAll('.subagent-tree__task').length === 2, 'Real child processes did not appear in the right panel', 45000)
+    // The same children also sit beside the conversation title: one badge
+    // counts them, its card shows each status, and a row opens that child's
+    // transcript in the panel that is already open here.
+    const titleBadge = await until(
+      () => document.querySelector('.title-subagents__trigger'),
+      'The title badge did not appear for a delegating conversation'
+    )
+    check(titleBadge.textContent?.includes('2'), 'The title badge did not count the child tasks')
+    titleBadge.click()
+    const badgeRows = await until(() => {
+      const nodes = document.querySelectorAll('.popover.title-subagents-popover .title-subagents__row')
+      return nodes.length === 2 ? nodes : null
+    }, 'The title badge did not list every child task')
+    check(
+      [...badgeRows].every((row) => row.querySelector('.title-subagents__state')?.textContent?.trim()),
+      'A title badge row did not show its status'
+    )
+    badgeRows[0].click()
+    await until(() => document.querySelector('.subagent-conversation'), 'A title badge row did not open the child conversation in the right panel')
+    document.querySelector('.subagent-conversation__back')?.click()
+    await until(() => document.querySelector('.subagent-tree'), 'The subagent catalog did not return after the title badge selection')
+    passed.push('the title badge counts subagents and opens a child conversation in the right panel')
     await store.getState().newChat()
     check(document.querySelectorAll('.subagent-tree__task').length === 2, 'Switching chats hid live child processes')
     await until(() => document.querySelectorAll('.subagent-tree__task[data-status="completed"]').length === 2, 'Real child completion did not reach the right panel', 45000)
@@ -571,6 +593,17 @@ async function checkRenderer(markerFile, nestedWorkspace) {
       details: { mode: 'parallel', results: [{ task: 'Run the gate', status: 'running' }] },
       timestamp: 9,
       order: 9
+    },
+    {
+      id: 'rail-bash',
+      kind: 'tool',
+      toolCallId: 'rail-bash',
+      toolName: 'bash',
+      args: { command: 'npm run build' },
+      status: 'running',
+      startedAt: Date.now(),
+      timestamp: 10,
+      order: 10
     }
   ]
   store.setState({
@@ -621,14 +654,23 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     'The repository environment rows changed'
   )
   store.setState({ git: gitBefore })
+  // Background tasks are the running tool calls — the subagent in the same
+  // thread must not appear here (it has its own badge and page), and an
+  // in-flight tool has no per-row stop control.
   check(document.querySelectorAll('.task-panel__task').length === 1, 'The background task row is missing')
-  const originalTaskRailCancel = store.getState().cancelSubagentTask
-  let taskRailCancelledId
-  store.setState({ cancelSubagentTask: async (taskId) => { taskRailCancelledId = taskId } })
-  const taskRailStop = await until(() => document.querySelector('.task-panel__task-stop'), 'The running task has no stop control in the task rail')
-  taskRailStop.click()
-  check(Boolean(taskRailCancelledId), 'The task rail stop control did not dispatch task cancellation')
-  store.setState({ cancelSubagentTask: originalTaskRailCancel })
+  check(
+    document.querySelector('.task-panel__task-tool')?.textContent === 'bash',
+    'The background task is not named by its tool'
+  )
+  check(
+    document.querySelector('.task-panel__task-detail')?.textContent?.includes('npm run build'),
+    'The background task did not show what it is doing'
+  )
+  check(!document.querySelector('.task-panel__task-stop'), 'A tool row grew a stop control it cannot honour')
+  check(
+    ![...document.querySelectorAll('.task-panel__task')].some((node) => node.textContent?.includes('Run the gate')),
+    'A subagent was listed as a background task'
+  )
   check(document.querySelectorAll('.task-panel__check').length === 3, 'The plan checklist is missing a step')
   check(document.querySelectorAll('.task-panel__check[data-done]').length === 2, 'A finished step is not marked as done')
   check(document.querySelectorAll('.task-panel__folder').length === 0, 'The deliverables still draw folder rows')
@@ -708,9 +750,13 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     panelToggle()?.click()
   }
   await until(() => document.querySelector('.tool-start'), 'The panel start page did not render')
-  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 6, 'The start page does not list every page')
+  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 7, 'The start page does not list every page')
   const filesCard = [...document.querySelectorAll('.tool-start .tool-menu__card')].find((node) => node.textContent?.includes('Files'))
   check(filesCard, 'The start page has no Files entry')
+  check(
+    [...document.querySelectorAll('.tool-start .tool-menu__card')].some((node) => node.textContent?.includes('Image generation')),
+    'The start page has no Image generation entry'
+  )
   filesCard.click()
   await until(() => document.querySelector('.file-workspace'), 'Files page did not render')
   const firstTab = document.querySelector('.tool-panel__tab-shell')
@@ -740,9 +786,17 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     `The corner controls are not one shape: ${JSON.stringify(cornerBoxes)}`
   )
   const cornerLines = cornerBoxes.map((box) => box.centre)
+  const panelLines = cornerLines.slice(0, 2)
+  // The shell toggle keeps the title bar's 52px band so it never moves when the
+  // panel mounts; the panel's own controls sit in its 46px header. Their
+  // centres differ by three pixels on purpose, but each family is aligned.
   check(
-    Math.max(...cornerLines) - Math.min(...cornerLines) <= 0.5,
-    `The corner controls are not on one line: ${JSON.stringify(cornerLines)}`
+    Math.max(...panelLines) - Math.min(...panelLines) <= 0.5,
+    `The panel corner controls are not on one line: ${JSON.stringify(cornerLines)}`
+  )
+  check(
+    Math.abs(cornerLines[2] - panelLines[0]) <= 3.5,
+    `The shell toggle drifted off its fixed band: ${JSON.stringify(cornerLines)}`
   )
   check(![...document.querySelectorAll('.tool-panel__tab')].some((node) => node.textContent?.trim() === 'Tools'), 'The old permanent Tools tab is still there')
   const workspaceFile = await until(() => [...document.querySelectorAll('.tree__item')].find((node) => node.textContent?.includes('note.txt')), 'Workspace file did not appear in the tree')
@@ -907,41 +961,12 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     activeSessionFile: undefined, draftId: 'draft:task-rail', items: railItems,
     threads: { ...state.threads, 'draft:task-rail': { ...baseThread, items: railItems } }
   }))
-  if (document.querySelector('.tool-panel')) {
-    document.querySelector('.shell__panel-toggle button').click()
-    await until(() => !document.querySelector('.tool-panel'), 'The workspace panel did not close')
-  }
-  const backgroundTask = await until(
-    () => document.querySelector('.task-panel__task button'),
-    'The background task row has no clickable control'
-  )
-  backgroundTask.click()
-  await until(() => document.querySelector('.subagent-conversation__identity')?.textContent === 'Run the gate', 'The background task did not open its child conversation')
-  check(document.querySelector('.subagent-conversation [role="status"]'), 'The running task did not show its waiting state')
-  check(store.getState().draftId === 'draft:task-rail', 'Opening a background task switched the parent conversation')
-  const completedRailItems = railItems.map((item) => item.id !== 'rail-sub' ? item : {
-    ...item, status: 'ok', details: { mode: 'parallel', results: [{
-      task: 'Run the gate', status: 'completed', output: 'Gate verified live',
-      messages: [
-        { role: 'user', content: 'Run the gate', timestamp: 9 },
-        { role: 'assistant', content: [{ type: 'text', text: 'Gate verified live' }], timestamp: 10 }
-      ]
-    }] }
-  })
-  store.setState((state) => ({
-    items: completedRailItems,
-    threads: { ...state.threads, 'draft:task-rail': { ...state.threads['draft:task-rail'], items: completedRailItems } }
-  }))
-  await until(() => document.querySelector('.subagent-conversation__assistant')?.textContent.includes('Gate verified live'), 'The open background task did not receive its latest output')
-  check(document.querySelector('.subagent-conversation__meta [data-status="completed"]'), 'The open task kept its old running state')
-  document.querySelector('.subagent-conversation__back').click()
-  await until(() => document.querySelector('.subagent-tree'), 'Back did not return to the subagent catalog')
-  backgroundTask.click()
-  await until(() => document.querySelector('.subagent-conversation__assistant')?.textContent.includes('Gate verified live'), 'The same background task could not be reopened')
-  check([...document.querySelectorAll('.tool-panel__tab')].filter((tab) => tab.textContent.includes('Subagents')).length === 1, 'Opening a task duplicated the Subagents page')
-  document.querySelector('.subagent-conversation__back').click()
-  await until(() => document.querySelector('.subagent-tree'), 'Back did not restore the catalog after reopening')
-  passed.push('background task rows open their live child conversation and can be reopened')
+  // The background list is a glance at what is running, not a door: the tool
+  // row carries no button and opening a child conversation lives on the
+  // Subagents page instead.
+  await until(() => document.querySelector('.task-panel__task'), 'The background task row did not come back')
+  check(!document.querySelector('.task-panel__task button'), 'A background tool row is clickable')
+  passed.push('background tasks are read-only running tool rows')
 
   await openToolPage('files', 'Files')
   const fileSearch = await until(
@@ -978,6 +1003,67 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     'The file tree did not reload when a previously expanded folder became the workspace root'
   )
   passed.push('the file tree reloads a folder when it becomes the active workspace root')
+
+  // The project tree uses the reference editor's row design: every file
+  // carries a type tile, every row is the same height, and a nested level
+  // keeps a single name column so the hierarchy reads as one ladder. The old
+  // Files/Text segmented control is replaced by the two file indexes.
+  check(
+    document.querySelectorAll('.file-workspace__tree-head .segmented').length === 0,
+    'The old Files/Text switcher is still present'
+  )
+  const treeTabs = [...document.querySelectorAll('.tree__index-row')].map((node) => node.textContent?.trim() ?? '')
+  check(treeTabs.some((label) => label.includes('Changed files')), 'The changed-files index is missing')
+  check(treeTabs.some((label) => label.includes('All files')), 'The all-files index is missing')
+  check(treeTabs.length === 2, `The tree has ${treeTabs.length} indexes, expected 2`)
+  const treeRows = [...document.querySelectorAll('.file-workspace .tree__item')]
+  check(treeRows.length > 0, 'The project tree rendered no rows')
+  const treeFileRow = treeRows.find((node) => node.dataset.kind === 'file')
+  check(treeFileRow, 'The project tree rendered no file row')
+  check(treeFileRow.querySelector('.tree__file-icon'), 'A file row lost its type icon')
+  check(
+    !treeFileRow.querySelector('.tree__badge'),
+    'The file row still wears a text badge instead of an icon'
+  )
+  const treeHeights = new Set(treeRows.map((node) => Math.round(node.getBoundingClientRect().height)))
+  check(treeHeights.size === 1, `The tree rows have different heights: ${[...treeHeights].join(', ')}`)
+  const nameColumns = new Set(
+    treeRows
+      .filter((node) => node.dataset.kind === 'file')
+      .map((node) => Math.round(node.querySelector('.tree__name').getBoundingClientRect().left))
+  )
+  check(nameColumns.size === 1, `File names sit on ${nameColumns.size} columns: ${[...nameColumns].join(', ')}`)
+  // The tree toggle lives in the panel header (a folder button), not in the
+  // tree's own filter row: it stays in the same corner either way.
+  const treeToggle = [...document.querySelectorAll('.tool-panel__action')].find(
+    (node) => node.getAttribute('aria-label') === 'Hide file tree' || node.getAttribute('aria-label') === 'Show file tree'
+  )
+  check(treeToggle, 'The panel header lost its file-tree toggle')
+  check(!document.querySelector('.tree__search-fold'), 'The old filter-row toggle is still present')
+  treeToggle.click()
+  await pause(120)
+  check(
+    document.querySelector('.file-workspace')?.dataset.tree === 'closed',
+    'The tree toggle did not fold the tree away'
+  )
+  const showTree = [...document.querySelectorAll('.tool-panel__action')].find(
+    (node) => node.getAttribute('aria-label') === 'Show file tree'
+  )
+  check(showTree, 'The panel header lost its way to bring the tree back')
+  showTree.click()
+  await until(
+    () => document.querySelector('.file-workspace')?.dataset.tree === 'open',
+    'The tree toggle did not bring the tree back'
+  )
+  // Full-text search moved off the tree header into the preview pane; the
+  // entry point must still exist now that the Files/Text switcher is gone.
+  const textSearchButton = document.querySelector('.file-workspace__text-search')
+  check(textSearchButton, 'The preview pane lost its full-text search entry')
+  textSearchButton.click()
+  await until(() => document.querySelector('.text-search'), 'Full-text search did not open in the preview pane')
+  document.querySelector('.text-search .icon-btn[title]')?.click()
+  await pause(120)
+  passed.push('the project tree wears type badges on evenly spaced rows, split by file index')
 
   // The usage caption is one evenly spaced, vertically centred line: all three
   // controls share a height and a centre line, and the ring no longer towers
@@ -1060,6 +1146,16 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     pathValue && pathValue.scrollWidth <= pathValue.clientWidth + 1,
     'The conversation card clips its path instead of wrapping it'
   )
+  // The path answers "where does this work live": the project folder. It must
+  // never be Pi's own session file under `~/.pi/agent/sessions`.
+  check(
+    pathValue && !/\.jsonl$/i.test(pathValue.textContent?.trim() ?? ''),
+    `The conversation card points at the transcript file: ${pathValue?.textContent}`
+  )
+  check(
+    pathValue && !/[\\/]\.pi[\\/]agent[\\/]sessions[\\/]/i.test(pathValue.textContent ?? ''),
+    `The conversation card points into Pi's cache: ${pathValue?.textContent}`
+  )
   hoveredMain.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
   await pause(200)
 
@@ -1081,6 +1177,14 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   hoveredProject.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
   await pause(200)
   passed.push('sidebar rows explain themselves in a card instead of a native tooltip')
+
+  // The image generation page is a real tool-panel page: it renders its form
+  // and guards the Generate button while the prompt is empty.
+  await openToolPage('imagegen', 'Image generation')
+  const imageGen = await until(() => document.querySelector('.image-gen'), 'Image generation page did not render')
+  check(imageGen.querySelector('.image-gen__prompt'), 'The image generation page has no prompt box')
+  check(imageGen.querySelector('.image-gen__generate')?.disabled, 'Generate was not guarded by an empty prompt')
+  passed.push('the image generation page renders a guarded prompt form')
 
   // Leave the environment section folded in the harness screenshot so the
   // collapsed state remains visible for visual review.
@@ -1120,7 +1224,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 22 : 21)
+  assert.equal(passed.length, process.platform === 'win32' ? 25 : 24)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

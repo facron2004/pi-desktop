@@ -4,13 +4,17 @@ import type {
   CreateResourceInput,
   ManagedPackage,
   MarketplaceActionResult,
+  MarketplaceInstallProgress,
   MarketplaceInstallResult,
-  MarketplaceSnapshot
+  MarketplaceSnapshot,
+  PiCatalogPage,
+  PiCatalogQuery
 } from '@shared/marketplace'
 import type {
   AggregatedUsageStats,
   AgentMessage,
   AppInfo,
+  AppUpdateProgress,
   AppSettings,
   AuthStatus,
   ExtensionUiResponse,
@@ -27,6 +31,8 @@ import type {
   GitPatch,
   GitStatus,
   GitWorktreeResult,
+  GeneratedImage,
+  ImageGenerationRequest,
   ImageListResult,
   McpConfig,
   MemoryGenerateOptions,
@@ -40,6 +46,7 @@ import type {
   RuntimeStartOptions,
   RuntimeEvent,
   RuntimeRekey,
+  RuntimeStderrPayload,
   RuntimeStatusEvent,
   RemoteAccessStatus,
   ScheduledTask,
@@ -88,6 +95,9 @@ const bridge: PiDesktopBridge = {
     getSystemFonts: (): Promise<string[]> => ipcRenderer.invoke('app:getSystemFonts'),
     emojiFont: (): Promise<Uint8Array | null> => ipcRenderer.invoke('app:emojiFont'),
     checkUpdate: (): Promise<VersionCheckResult> => ipcRenderer.invoke('app:checkUpdate'),
+    installAppUpdate: (version: string): Promise<UpgradeResult> => ipcRenderer.invoke('app:installUpdate', version),
+    onAppUpdateProgress: (handler: (progress: AppUpdateProgress) => void) =>
+      subscribe<AppUpdateProgress>('app:updateProgress', handler),
     upgradePiCli: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:upgradePiCli'),
     onPiCliUpgradeProgress: (handler: (progress: PiCliUpgradeProgress) => void) =>
       subscribe<PiCliUpgradeProgress>('app:piCliUpgradeProgress', handler),
@@ -180,11 +190,25 @@ const bridge: PiDesktopBridge = {
       sessionKey?: string
     ): Promise<T> =>
       ipcRenderer.invoke('runtime:request', command, payload ?? {}, timeoutMs, trace, sessionKey),
-    onEvent: (handler: (event: RuntimeEvent) => void) => subscribe<RuntimeEvent>('runtime:event', handler),
+    onEvent: (handler: (event: RuntimeEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: RuntimeEvent | RuntimeEvent[]) => {
+        if (Array.isArray(payload)) {
+          for (const item of payload) handler(item)
+        } else {
+          handler(payload)
+        }
+      }
+      ipcRenderer.on('runtime:event', listener)
+      return () => {
+        ipcRenderer.removeListener('runtime:event', listener)
+      }
+    },
     onStatus: (handler: (status: RuntimeStatusEvent) => void) =>
       subscribe<RuntimeStatusEvent>('runtime:status', handler),
     onRekey: (handler: (change: RuntimeRekey) => void) =>
       subscribe<RuntimeRekey>('runtime:rekey', handler),
+    onStderr: (handler: (payload: RuntimeStderrPayload | string) => void) =>
+      subscribe<RuntimeStderrPayload | string>('runtime:stderr', handler),
     respondUi: (id: string, response: ExtensionUiResponse, sessionKey?: string): Promise<void> =>
       ipcRenderer.invoke('runtime:respondUi', id, response, sessionKey)
   },
@@ -200,12 +224,16 @@ const bridge: PiDesktopBridge = {
   },
   marketplace: {
     list: (): Promise<MarketplaceSnapshot> => ipcRenderer.invoke('marketplace:list'),
+    piCatalog: (query?: PiCatalogQuery): Promise<PiCatalogPage> =>
+      ipcRenderer.invoke('marketplace:piCatalog', query),
     refresh: (): Promise<MarketplaceSnapshot> => ipcRenderer.invoke('marketplace:refresh'),
     installed: (): Promise<string[]> => ipcRenderer.invoke('marketplace:installed'),
-    install: (id: string): Promise<MarketplaceInstallResult> =>
-      ipcRenderer.invoke('marketplace:install', id),
-    installNpm: (packageName: string): Promise<MarketplaceInstallResult> =>
-      ipcRenderer.invoke('marketplace:installNpm', packageName),
+    install: (id: string, runId?: string): Promise<MarketplaceInstallResult> =>
+      ipcRenderer.invoke('marketplace:install', id, runId),
+    installNpm: (packageName: string, runId?: string): Promise<MarketplaceInstallResult> =>
+      ipcRenderer.invoke('marketplace:installNpm', packageName, runId),
+    onInstallProgress: (handler: (progress: MarketplaceInstallProgress) => void) =>
+      subscribe<MarketplaceInstallProgress>('marketplace:installProgress', handler),
     managed: (): Promise<ManagedPackage[]> => ipcRenderer.invoke('marketplace:managed'),
     setPackageEnabled: (id: string, enabled: boolean): Promise<MarketplaceActionResult> =>
       ipcRenderer.invoke('marketplace:setPackageEnabled', id, enabled),
@@ -213,8 +241,8 @@ const bridge: PiDesktopBridge = {
       ipcRenderer.invoke('marketplace:removePackage', id),
     createResource: (input: CreateResourceInput): Promise<MarketplaceActionResult> =>
       ipcRenderer.invoke('marketplace:createResource', input),
-    installGitRepository: (repository: string): Promise<MarketplaceInstallResult> =>
-      ipcRenderer.invoke('marketplace:installGitRepository', repository)
+    installGitRepository: (repository: string, runId?: string): Promise<MarketplaceInstallResult> =>
+      ipcRenderer.invoke('marketplace:installGitRepository', repository, runId)
   },
   git: {
     status: (): Promise<GitStatus> => ipcRenderer.invoke('git:status'),
@@ -286,6 +314,10 @@ const bridge: PiDesktopBridge = {
     },
     readImageDataUrl: (file: string, maxBytes?: number): Promise<string | null> =>
       ipcRenderer.invoke('fs:readImageDataUrl', file, maxBytes)
+  },
+  images: {
+    generate: (request: ImageGenerationRequest): Promise<GeneratedImage[]> =>
+      ipcRenderer.invoke('image:generate', request)
   }
 }
 

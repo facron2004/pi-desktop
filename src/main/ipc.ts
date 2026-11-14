@@ -6,6 +6,7 @@ import { lstat, open, opendir, realpath, stat, type FileHandle } from 'node:fs/p
 import path from 'node:path'
 import type {
   AppInfo,
+  AppUpdateProgress,
   AppSettings,
   ExtensionUiResponse,
   FileContent,
@@ -14,11 +15,13 @@ import type {
   FileSearchResult,
   FileSearchScope,
   GitCommitResult,
+  ImageGenerationRequest,
   ImageListResult,
   MemoryGenerateOptions,
   MemoryState,
   PickedFile,
   PiEvent,
+  PiCatalogQuery,
   PiCliUpgradeProgress,
   RuntimeEnsureOptions,
   RuntimeRekey,
@@ -34,11 +37,13 @@ import type {
   VersionItemStatus,
   Workspace
 } from '@shared/types'
+import { generateImages } from './image-generation'
 import {
   APP_RELEASE_PAGE_URL,
   checkAppVersion,
   isNewerVersion
 } from './app-updates'
+import { downloadAppInstaller, launchAppInstaller, supportsAppUpdate } from './app-update-installer'
 import { beginBundledPiCliMaintenance, checkAuth, killProcessTree, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
 import { spawn } from './pi/spawn'
@@ -60,6 +65,7 @@ import {
   removePackage,
   setPackageEnabled
 } from './marketplace'
+import { fetchPiCatalog } from './pi-catalog'
 import type { MemoryService } from './memory/service'
 import type { RemoteAccessService } from './remote-access'
 import { readEmojiFont } from './emoji-font'
@@ -949,6 +955,7 @@ export function registerIpc(context: IpcContext): void {
   const { supervisor, settings, getWindow, terminals } = context
   const workspaceMutations = new Map<string, Promise<unknown>>()
   let piCliUpgradeInFlight: Promise<UpgradeResult> | null = null
+  let appUpdateInFlight: Promise<UpgradeResult> | null = null
   const serializeWorkspaceMutation = <T>(targetPath: string, operation: () => T | Promise<T>): Promise<T> => {
     const key = workspacePathKey(targetPath)
     const previous = workspaceMutations.get(key) ?? Promise.resolve()
@@ -1000,6 +1007,7 @@ export function registerIpc(context: IpcContext): void {
       node: process.versions.node,
       platform: process.platform,
       isPackaged: app.isPackaged,
+      appUpdateSupported: supportsAppUpdate(app.isPackaged, process.platform, process.execPath),
       pi: {
         source: launch.source,
         command: launch.command || undefined,
@@ -1154,6 +1162,54 @@ export function registerIpc(context: IpcContext): void {
     return {
       app: appStatus,
       piCli: piCliStatus
+    }
+  })
+
+  ipcMain.handle('app:installUpdate', async (_event, version: unknown): Promise<UpgradeResult> => {
+    if (appUpdateInFlight) return appUpdateInFlight
+    const operation = (async (): Promise<UpgradeResult> => {
+      let finishMaintenance: (() => void) | undefined
+      let prepared = false
+      let restarting = false
+      try {
+        if (!supportsAppUpdate(app.isPackaged, process.platform, process.execPath)) {
+          throw new Error('Automatic updates are available in the Windows installer version.')
+        }
+        if (typeof version !== 'string' || version.length > 64 || !/^\d+\.\d+\.\d+$/.test(version) || !isNewerVersion(version, app.getVersion())) {
+          throw new Error('The requested app update is not a newer release.')
+        }
+        finishMaintenance = await beginBundledPiCliMaintenance()
+        prepared = await supervisor.prepareForCliUpgrade()
+        if (!prepared) throw new Error('Finish or stop active tasks before updating Pi Desktop.')
+        const onProgress = (progress: AppUpdateProgress): void => {
+          sendToWindow(getWindow(), 'app:updateProgress', progress)
+        }
+        const installer = await downloadAppInstaller(version, {
+          currentVersion: app.getVersion(),
+          arch: process.arch,
+          directory: path.join(app.getPath('userData'), 'updates'),
+          onProgress
+        })
+        onProgress({ version, stage: 'installing', percent: 100 })
+        await launchAppInstaller(installer)
+        restarting = true
+        // Return the IPC result before the normal shutdown path closes the window.
+        setImmediate(() => app.quit())
+        return { success: true, version }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      } finally {
+        if (!restarting) {
+          if (prepared) supervisor.finishCliUpgrade()
+          finishMaintenance?.()
+        }
+      }
+    })()
+    appUpdateInFlight = operation
+    try {
+      return await operation
+    } finally {
+      if (appUpdateInFlight === operation) appUpdateInFlight = null
     }
   })
 
@@ -1778,6 +1834,9 @@ export function registerIpc(context: IpcContext): void {
     if (target) shell.showItemInFolder(target)
   })
 
+  ipcMain.handle('image:generate', async (_event, request: ImageGenerationRequest) =>
+    generateImages(request, workspaceRoot(context)))
+
   /**
    * A picture pasted into the composer, written next to the conversation.
    *
@@ -1962,6 +2021,9 @@ export function registerIpc(context: IpcContext): void {
       trace?: unknown,
       sessionKey?: string
     ) => {
+      if (command === 'switch_session') {
+        throw new Error('Session switching must go through runtime:start/ensure')
+      }
       const hint = readTraceHint(trace)
       const key = typeof sessionKey === 'string' && sessionKey ? sessionKey : hint?.uiSessionId
       if (!key) throw new Error('Missing conversation id')
@@ -1996,6 +2058,12 @@ export function registerIpc(context: IpcContext): void {
   // The marketplace snapshot is bundled; refresh and install are the only
   // paths that touch the network or the Pi CLI.
   ipcMain.handle('marketplace:list', () => listMarketplace())
+  ipcMain.handle('marketplace:piCatalog', (_event, query: PiCatalogQuery | undefined) => {
+    if (query !== undefined && (typeof query !== 'object' || query === null)) {
+      throw new Error('Invalid package catalog query.')
+    }
+    return fetchPiCatalog(query ?? {})
+  })
   ipcMain.handle('marketplace:refresh', () => refreshMarketplace())
   ipcMain.handle('marketplace:installed', () =>
     listInstalledMarketplaceIds({ cwd: workspaceRoot(context) })
@@ -2003,31 +2071,34 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('marketplace:managed', () =>
     listManagedPackages({ cwd: workspaceRoot(context) })
   )
-  ipcMain.handle('marketplace:install', (_event, id: unknown) => {
+  ipcMain.handle('marketplace:install', (event, id: unknown, runId: unknown) => {
     if (typeof id !== 'string' || !id.trim()) {
       return { ok: false, output: 'Invalid marketplace entry id.' }
     }
     return installMarketplaceEntry(id, {
       cwd: workspaceRoot(context),
-      customPiPath: settings.get().piPath
+      customPiPath: settings.get().piPath,
+      onProgress: installProgressReporter(BrowserWindow.fromWebContents(event.sender), runId)
     })
   })
-  ipcMain.handle('marketplace:installNpm', (_event, packageName: unknown) => {
+  ipcMain.handle('marketplace:installNpm', (event, packageName: unknown, runId: unknown) => {
     if (typeof packageName !== 'string' || !packageName.trim()) {
       return { ok: false, output: 'Invalid npm package name.' }
     }
     return installNpmPackage(packageName, {
       cwd: workspaceRoot(context),
-      customPiPath: settings.get().piPath
+      customPiPath: settings.get().piPath,
+      onProgress: installProgressReporter(BrowserWindow.fromWebContents(event.sender), runId)
     })
   })
-  ipcMain.handle('marketplace:installGitRepository', (_event, repository: unknown) => {
+  ipcMain.handle('marketplace:installGitRepository', (event, repository: unknown, runId: unknown) => {
     if (typeof repository !== 'string' || !repository.trim()) {
       return { ok: false, output: 'Invalid GitHub repository.' }
     }
     return installGitRepository(repository, {
       cwd: workspaceRoot(context),
-      customPiPath: settings.get().piPath
+      customPiPath: settings.get().piPath,
+      onProgress: installProgressReporter(BrowserWindow.fromWebContents(event.sender), runId)
     })
   })
   ipcMain.handle('marketplace:createResource', (_event, input: unknown) => {
@@ -2104,13 +2175,208 @@ export function sendToWindow(window: BrowserWindow | null, channel: string, payl
   }
 }
 
+/** Longest progress line the dialog can show without wrapping into the buttons. */
+const INSTALL_PROGRESS_CHARS = 180
+/** How often one install may push a line to the renderer. */
+const INSTALL_PROGRESS_INTERVAL_MS = 100
+
+/**
+ * Relay one install's CLI output to the window that started it.
+ *
+ * `pi install` prints its own progress and can run for a minute, so the dialog
+ * shows the newest line — without it the wait was a bare spinner that read as a
+ * frozen window. A stdout chunk is not a line, and a package manager can print
+ * thousands of them, so the reporter keeps the tail after the last newline and
+ * flushes at most ten times a second. The tail survives between chunks, so a
+ * line split across two reads is still delivered whole.
+ */
+function installProgressReporter(
+  window: BrowserWindow | null,
+  runId: unknown
+): (chunk: string) => void {
+  // A renderer that sends no id gets no events: an install with no dialog
+  // listening would otherwise push lines nobody asked for.
+  if (typeof runId !== 'string' || !runId) return () => {}
+  let buffer = ''
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const flush = (): void => {
+    timer = null
+    const newline = buffer.lastIndexOf('\n')
+    // A chunk is not a line: npm prints "Installing X...\n" in one write and
+    // then goes quiet for half a minute. Take the last *complete* line, and
+    // keep the unterminated tail so a line split across two reads still arrives
+    // whole. Without the split, a chunk that ends with "\n" looked like an
+    // empty line and every message was dropped.
+    let candidate: string
+    if (newline >= 0) {
+      const complete = buffer.slice(0, newline)
+      const lineStart = complete.lastIndexOf('\n') + 1
+      candidate = complete.slice(lineStart)
+      buffer = buffer.slice(newline + 1)
+    } else {
+      candidate = buffer
+    }
+    const line = candidate.replace(/\s+/g, ' ').trim().slice(0, INSTALL_PROGRESS_CHARS)
+    if (!line) return
+    sendToWindow(window, 'marketplace:installProgress', { runId, line })
+  }
+  return (chunk: string): void => {
+    // Only the newest line matters; a long buffered run must not grow forever.
+    buffer = `${buffer}${chunk}`.slice(-4000)
+    if (timer) return
+    timer = setTimeout(flush, INSTALL_PROGRESS_INTERVAL_MS)
+  }
+}
+
+interface CoalescedEventEntry {
+  ownerId: string
+  event: PiEvent
+}
+
+/** Defensively clone stream events to prevent shared-object mutation */
+function cloneStreamEvent(event: PiEvent): PiEvent {
+  if (
+    event.type === 'message_update' &&
+    event.assistantMessageEvent &&
+    typeof event.assistantMessageEvent === 'object'
+  ) {
+    return {
+      ...event,
+      assistantMessageEvent: { ...(event.assistantMessageEvent as Record<string, unknown>) }
+    }
+  }
+  return { ...event }
+}
+
+function isCoalescableStreamEvent(event: PiEvent): boolean {
+  if (event.type === 'message_delta' || event.type === 'tool_execution_update') {
+    return true
+  }
+  if (event.type === 'message_update') {
+    const sub = (event as { assistantMessageEvent?: { type?: string } }).assistantMessageEvent?.type
+    if (sub === 'text_delta' || sub === 'thinking_delta' || sub === 'toolcall_delta') {
+      return true
+    }
+  }
+  return false
+}
+
+function coalesceStreamEvent(last: PiEvent, next: PiEvent): PiEvent | null {
+  if (last.type === 'message_delta' && next.type === 'message_delta') {
+    if (typeof last.delta === 'string' && typeof next.delta === 'string') {
+      return {
+        ...last,
+        delta: last.delta + next.delta
+      }
+    }
+  }
+  if (last.type === 'message_update' && next.type === 'message_update') {
+    const lastSub = last.assistantMessageEvent as Record<string, unknown> | undefined
+    const nextSub = next.assistantMessageEvent as Record<string, unknown> | undefined
+    if (
+      lastSub &&
+      nextSub &&
+      lastSub.type === nextSub.type &&
+      lastSub.contentIndex === nextSub.contentIndex &&
+      (lastSub.type === 'text_delta' || lastSub.type === 'thinking_delta' || lastSub.type === 'toolcall_delta') &&
+      typeof lastSub.delta === 'string' &&
+      typeof nextSub.delta === 'string'
+    ) {
+      return {
+        ...last,
+        assistantMessageEvent: {
+          ...lastSub,
+          delta: (lastSub.delta as string) + (nextSub.delta as string)
+        }
+      }
+    }
+  }
+  return null
+}
+
+function tryCoalesceEvent(entry: CoalescedEventEntry, next: PiEvent): boolean {
+  const coalesced = coalesceStreamEvent(entry.event, next)
+  if (coalesced) {
+    entry.event = coalesced
+    return true
+  }
+  return false
+}
+
 /** Forward runtime traffic to the renderer window. */
 export function bridgeRuntime(context: IpcContext): void {
   const { supervisor, settings, getWindow } = context
+  let pendingQueue: CoalescedEventEntry[] = []
+  let flushScheduled = false
+
+  const flushPending = (): void => {
+    flushScheduled = false
+    if (pendingQueue.length === 0) return
+    const batch = pendingQueue
+    pendingQueue = []
+    const window = getWindow()
+    if (!window || window.isDestroyed()) return
+    for (const item of batch) {
+      sendToWindow(window, 'runtime:event', item)
+    }
+  }
+
+  const queueEvent = (payload: { ownerId: string; event: PiEvent }): void => {
+    // If tool_execution_update, replace any earlier pending update for the same (ownerId, toolCallId)
+    if (payload.event.type === 'tool_execution_update' && payload.event.toolCallId) {
+      const existing = pendingQueue.find(
+        (item) =>
+          item.ownerId === payload.ownerId &&
+          item.event.type === 'tool_execution_update' &&
+          item.event.toolCallId === payload.event.toolCallId
+      )
+      if (existing) {
+        existing.event = cloneStreamEvent(payload.event)
+        return
+      }
+    }
+
+    // Try coalescing with the newest compatible item for this owner
+    for (let i = pendingQueue.length - 1; i >= 0; i--) {
+      const item = pendingQueue[i]
+      if (item.ownerId === payload.ownerId) {
+        if (tryCoalesceEvent(item, payload.event)) {
+          return
+        }
+        // Encountered the most recent event for this owner, but it is incompatible.
+        // Stop scanning to preserve intra-session chronological ordering.
+        break
+      }
+    }
+
+    pendingQueue.push({ ownerId: payload.ownerId, event: cloneStreamEvent(payload.event) })
+    if (!flushScheduled) {
+      flushScheduled = true
+      queueMicrotask(flushPending)
+    }
+  }
+
+  const initialWindow = getWindow()
+  if (initialWindow && !initialWindow.isDestroyed()) {
+    initialWindow.on('closed', () => {
+      pendingQueue = []
+      flushScheduled = false
+    })
+  }
+
   supervisor.on('event', (payload: { ownerId: string; event: PiEvent }) => {
+    const event = payload.event
+    if (isCoalescableStreamEvent(event)) {
+      queueEvent(payload)
+      return
+    }
+
+    // Structural/phase event or extension dialog approval:
+    // Flush pending coalesced deltas first so order is strictly maintained
+    flushPending()
+
     const window = getWindow()
     sendToWindow(window, 'runtime:event', payload)
-    const event = payload.event
 
     if (
       window &&
@@ -2133,18 +2399,18 @@ export function bridgeRuntime(context: IpcContext): void {
     }
   })
   supervisor.on('status', (payload: { ownerId: string; status: RuntimeStatus }) => {
+    flushPending()
     sendToWindow(getWindow(), 'runtime:status', payload)
   })
   supervisor.on('rekey', (payload: RuntimeRekey) => {
+    flushPending()
     sendToWindow(getWindow(), 'runtime:rekey', payload)
   })
   supervisor.on('rename', (payload: { file: string; name: string }) => {
-    // Renames happen in the main process (auto-title, cold sessions) and never
-    // reach the session index by themselves; the renderer has to re-read it.
     sendToWindow(getWindow(), 'sessions:changed', payload)
   })
   supervisor.on('stderr', (payload: { ownerId: string; line: string }) => {
-    sendToWindow(getWindow(), 'runtime:stderr', payload.line)
+    sendToWindow(getWindow(), 'runtime:stderr', { ownerId: payload.ownerId, line: payload.line })
   })
   context.memory.on('changed', (state: MemoryState) => {
     sendToWindow(getWindow(), 'memory:changed', state)

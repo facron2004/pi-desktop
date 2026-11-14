@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -7,6 +9,7 @@ import {
 import {
   Download,
   Ellipsis,
+  FolderTree,
   GitBranch,
   ListTodo,
   PanelRight,
@@ -22,27 +25,33 @@ import { Composer } from './components/Composer'
 import { Welcome } from './components/Welcome'
 import { SettingsDialog, type SettingsPage } from './components/SettingsDialog'
 import { AppMenuBar } from './components/AppMenuBar'
-import { InspectorPanel } from './components/InspectorPanel'
+import { AppUpdateDialog } from './components/AppUpdateDialog'
 import { BrowserView } from './components/BrowserView'
 import { ImageViewer } from './components/ImageViewer'
+import { ImageGeneration } from './components/ImageGeneration'
 import { TaskPanel } from './components/TaskPanel'
 import { SubagentPanel, type SubagentSelection } from './components/SubagentPanel'
+import { TitleSubagents } from './components/TitleSubagents'
 import { ToolPanel, type ToolPanelView } from './components/ToolPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
 import { Launcher, useLauncherActions } from './components/Launcher'
-import { TerminalPanel, type TerminalRunRequest } from './components/TerminalPanel'
+import type { TerminalRunRequest } from './components/TerminalPanel'
 import { GoalBar } from './components/GoalBar'
 import { SessionTreeDialog } from './components/SessionTreeDialog'
 import { McpDialog } from './components/McpDialog'
-import { ScheduledTasksDialog } from './components/ScheduledTasksDialog'
-import { Marketplace } from './components/Marketplace'
+import { FeatureLoading } from './components/FeatureLoading'
 import { EditProjectDialog } from './components/EditProjectDialog'
 import { Popover } from './components/Popover'
-import { keysFor, matchesShortcut, type ShortcutId } from './lib/shortcuts'
+import { matchesAnyShortcut, type ShortcutId } from './lib/shortcuts'
 import { activeConversationTitle } from './lib/live-sessions'
 import { openingLabel, useT } from './lib/i18n'
 import { dismissStartupScreen } from './lib/startup-screen'
+
+const InspectorPanel = lazy(() => import('./components/InspectorPanel').then((m) => ({ default: m.InspectorPanel })))
+const TerminalPanel = lazy(() => import('./components/TerminalPanel').then((m) => ({ default: m.TerminalPanel })))
+const ScheduledTasksDialog = lazy(() => import('./components/ScheduledTasksDialog').then((m) => ({ default: m.ScheduledTasksDialog })))
+const Marketplace = lazy(() => import('./components/Marketplace').then((m) => ({ default: m.Marketplace })))
 
 /** Matches the closing animation in global.css; the panel stays mounted that long. */
 const INSPECTOR_EXIT_MS = 200
@@ -75,13 +84,13 @@ export default function App() {
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const draftId = useAppStore((state) => state.draftId)
   const switchProject = useAppStore((state) => state.switchProject)
-  const run = useAppStore((state) => state.run)
+  const hasActiveRun = useAppStore((state) => state.run.phase !== 'idle')
+  const isCompacting = useAppStore((state) => Boolean(state.run.compaction))
   const transport = useAppStore((state) => state.transport)
   const cycleModel = useAppStore((state) => state.cycleModel)
   const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
   const compact = useAppStore((state) => state.compact)
   const showToast = useAppStore((state) => state.showToast)
-  const cancelSubagentTask = useAppStore((state) => state.cancelSubagentTask)
   const anySessionStreaming = useAppStore((state) =>
     Object.values(state.threads).some((thread) => thread.isStreaming)
   )
@@ -110,6 +119,9 @@ export default function App() {
   const [changesOpen, setChangesOpen] = useState(false)
   // Independent of Tools: a status card column beside the conversation.
   const [taskRailOpen, setTaskRailOpen] = useState(true)
+  // The Files page's tree aside. The panel header owns its toggle, so the
+  // control stays put whether the tree is open or folded away.
+  const [fileTreeOpen, setFileTreeOpen] = useState(true)
   // Keep the panel mounted for the closing animation; `changesOpen` alone
   // unmounts it on the same frame and the exit would never be seen.
   const [panelMounted, setPanelMounted] = useState(false)
@@ -247,6 +259,15 @@ export default function App() {
     setSettingsOpen(true)
   }, [])
   const openShortcuts = useCallback(() => setShortcutsOpen(true), [])
+  const openAbout = useCallback(() => openSettings('about'), [openSettings])
+  /**
+   * The conversation search belongs to `Thread`, which owns the query and the
+   * hits. The menu asks for it through the same keyboard door the chord uses,
+   * so there is still one implementation of "search this conversation".
+   */
+  const searchConversation = useCallback(() => {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))
+  }, [])
   /**
    * Open one tool of the side panel.
    *
@@ -262,6 +283,24 @@ export default function App() {
   }, [setDeskPage])
   const openChanges = useCallback(() => openInspector('changes'), [openInspector])
   const openFiles = useCallback(() => openInspector('files'), [openInspector])
+  /**
+   * One child's transcript, opened on the Subagents page of the side panel.
+   * The title badge and the task rail share this door, so neither keeps a
+   * second copy of the selection rules.
+   */
+  const openSubagentTask = useCallback((taskId: string) => {
+    setDeskPage(null)
+    setSubagentSelection({ sessionKey: activeSessionFile ?? draftId ?? '', taskId })
+    setPanelView('subagents')
+    setChangesOpen(true)
+  }, [activeSessionFile, draftId, setDeskPage])
+  /** The whole subagent catalog, without a child selected. */
+  const openSubagentPanel = useCallback(() => {
+    setDeskPage(null)
+    setSubagentSelection(null)
+    setPanelView('subagents')
+    setChangesOpen(true)
+  }, [setDeskPage])
   /** `Ctrl+\`` and the title bar: show the terminal, or close it if it is up. */
   const toggleTerminal = useCallback(() => {
     setDeskPage(null)
@@ -432,7 +471,7 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       const mod = event.ctrlKey || event.metaKey
       const matches = (id: ShortcutId) =>
-        matchesShortcut(event, keysFor(id, settings.shortcutBindings))
+        matchesAnyShortcut(event, id, settings.shortcutBindings)
       const launcherToggle = launcherOpen && matches('command-palette')
       if (document.querySelector('[aria-modal="true"]') && !launcherToggle) return
       // The palette has the keyboard while it is open — only the chord that
@@ -531,6 +570,17 @@ export default function App() {
       setChangesOpen(true)
     }
     window.addEventListener('pi:open-inspector', onOpenInspector)
+    // A tool-panel page can ask for a sibling page (the image generator sends
+    // the reader to the Images page without knowing the panel's state).
+    const onOpenToolPage = (event: Event) => {
+      const view = (event as CustomEvent<{ view?: ToolPanelView }>).detail?.view
+      if (!view || view === 'start') return
+      setDeskPage(null)
+      setPanelView(view)
+      setInspectorFile(null)
+      setChangesOpen(true)
+    }
+    window.addEventListener('pi:open-tool-page', onOpenToolPage)
     // The command palette and the shortcuts dialog can open the drawer too.
     // The command palette and the shortcuts dialog can open the terminal too.
     const onToggleTerminal = () => toggleTerminal()
@@ -563,6 +613,7 @@ export default function App() {
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
       window.removeEventListener('pi:rename-session', onRenameSession)
       window.removeEventListener('pi:open-inspector', onOpenInspector)
+      window.removeEventListener('pi:open-tool-page', onOpenToolPage)
       window.removeEventListener('pi:toggle-terminal', onToggleTerminal)
       window.removeEventListener('pi:terminal-run', onTerminalRun)
       window.removeEventListener('pi:open-session-tree', onOpenSessionTree)
@@ -621,17 +672,26 @@ export default function App() {
     >
       <AppMenuBar
         sidebarOpen={sidebarOpen}
+        taskRailOpen={taskRailOpen}
+        hasItems={hasItems}
+        canCompact={hasItems && status.phase === 'ready' && !isCompacting}
         onToggleSidebar={toggleSidebar}
+        onToggleTaskPanel={() => setTaskRailOpen((open) => !open)}
         onNewChat={() => void newChat()}
-        onOpenProject={() => openProjectDialog({ mode: 'create' })}
+        onNewProject={() => openProjectDialog({ mode: 'create' })}
+        onExportConversation={() => void exportSession()}
         onOpenChanges={openChanges}
         onOpenFiles={openFiles}
-        onCompact={() => void compact()}
-        canCompact={hasItems && status.phase === 'ready'}
+        onOpenBrowser={() => openInspector('browser')}
+        onOpenSubagents={openSubagentPanel}
         onToggleTerminal={toggleTerminal}
+        onOpenSessionTree={() => setSessionTreeOpen(true)}
+        onSearchConversation={searchConversation}
+        onCompact={() => void compact()}
         onOpenSettings={openSettings}
         onOpenShortcuts={openShortcuts}
         onOpenLauncher={() => setLauncherOpen(true)}
+        onOpenAbout={openAbout}
       />
 
       <Sidebar
@@ -689,6 +749,12 @@ export default function App() {
             ) : (
               <span className="titlebar__title" title={title}>{title}</span>
             )}
+            {/* A conversation that delegated work wears its subagents beside
+                the name. The badge is a projection of the active thread, so it
+                appears and disappears with the subagent calls themselves. */}
+            {!deskPage && hasItems ? (
+              <TitleSubagents onOpenTask={openSubagentTask} onOpenAll={openSubagentPanel} />
+            ) : null}
             {/* The project and the branch are not repeated here. SessionBar
                 already carries both — with a project menu that can switch and a
                 BranchMenu that can act — so a second copy in the header was two
@@ -778,11 +844,13 @@ export default function App() {
           <div className="main__body">
           {deskPage ? (
             <div className="desk-page">
-              {deskPage === 'marketplace' ? (
-                <Marketplace />
-              ) : (
-                <ScheduledTasksDialog />
-              )}
+              <Suspense fallback={<FeatureLoading />}>
+                {deskPage === 'marketplace' ? (
+                  <Marketplace />
+                ) : (
+                  <ScheduledTasksDialog />
+                )}
+              </Suspense>
             </div>
           ) : (
             <>
@@ -813,7 +881,7 @@ export default function App() {
                   <div className="retry" data-kind="transport" role="status">
                     <TriangleAlert size={13} />
                     <span className="retry__text">{t('Lost connection to Pi')}</span>
-                    {run.phase !== 'idle' ? (
+                    {hasActiveRun ? (
                       <span className="retry__note">{t('The run may still be going')}</span>
                     ) : null}
                   </div>
@@ -854,14 +922,7 @@ export default function App() {
               aria-label={t('Task status')}
             >
               <div className="task-rail__body">
-                <TaskPanel
-                  onOpenTask={(taskId) => {
-                    setSubagentSelection({ sessionKey: activeSessionFile ?? draftId ?? '', taskId })
-                    setPanelView('subagents')
-                    setChangesOpen(true)
-                  }}
-                  onCancelTask={(taskId) => void cancelSubagentTask(taskId)}
-                />
+                <TaskPanel />
               </div>
             </aside>
           ) : null}
@@ -898,33 +959,55 @@ export default function App() {
               setDraggedWidth(null)
               void updateSettings({ drawerWidth: width })
             }}
+            actions={
+              panelView === 'files' ? (
+                <button
+                  type="button"
+                  className="tool-panel__action"
+                  aria-label={fileTreeOpen ? t('Hide file tree') : t('Show file tree')}
+                  title={fileTreeOpen ? t('Hide file tree') : t('Show file tree')}
+                  aria-pressed={fileTreeOpen}
+                  data-active={fileTreeOpen || undefined}
+                  onClick={() => setFileTreeOpen((open) => !open)}
+                >
+                  <FolderTree size={18} />
+                </button>
+              ) : null
+            }
           >
-            {panelView === 'terminal' ? null : panelView === 'browser' ? (
-              <BrowserView />
-            ) : panelView === 'images' ? (
-              <ImageViewer />
-            ) : panelView === 'subagents' ? (
-              <SubagentPanel selected={subagentSelection} onSelectTask={setSubagentSelection} />
-            ) : panelView === 'files' || panelView === 'changes' ? (
-              <InspectorPanel
-                embedded
-                overlay={false}
-                initialTab={inspectorTab}
-                file={inspectorFile}
-                onOpenFile={setInspectorFile}
-                onClose={() => setChangesOpen(false)}
-              />
-            ) : null}
+            <Suspense fallback={<FeatureLoading />}>
+              {panelView === 'terminal' ? null : panelView === 'browser' ? (
+                <BrowserView />
+              ) : panelView === 'images' ? (
+                <ImageViewer />
+              ) : panelView === 'imagegen' ? (
+                <ImageGeneration />
+              ) : panelView === 'subagents' ? (
+                <SubagentPanel selected={subagentSelection} onSelectTask={setSubagentSelection} />
+              ) : panelView === 'files' || panelView === 'changes' ? (
+                <InspectorPanel
+                  embedded
+                  overlay={false}
+                  initialTab={inspectorTab}
+                  file={inspectorFile}
+                  onOpenFile={setInspectorFile}
+                  onClose={() => setChangesOpen(false)}
+                  fileTreeOpen={fileTreeOpen}
+                />
+              ) : null}
+            </Suspense>
             {terminalMounted ? (
               <div
                 className="tool-panel__terminal"
                 data-active={panelView === 'terminal' || undefined}
               >
-                <TerminalPanel
-                  embedded
-                  request={panelView === 'terminal' ? terminalRequest : null}
-                  onClose={() => setChangesOpen(false)}
-                />
+                <Suspense fallback={<FeatureLoading />}>
+                  <TerminalPanel
+                    embedded
+                    request={panelView === 'terminal' ? terminalRequest : null}
+                    onClose={() => setChangesOpen(false)}
+                  />
+                </Suspense>
               </div>
             ) : null}
           </ToolPanel>
@@ -978,6 +1061,7 @@ export default function App() {
         />
       ) : null}
       <ExtensionDialog />
+      <AppUpdateDialog />
     </div>
   )
 }

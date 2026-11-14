@@ -210,6 +210,14 @@ export function runPiCli(
     input?: string
     signal?: AbortSignal
     allowDuringMaintenance?: boolean
+    /**
+     * Called with each decoded chunk as it arrives, before the command ends.
+     *
+     * A long command — `pi install` is the one that matters — prints its own
+     * progress, and a caller that shows it can tell the reader the work is
+     * moving instead of leaving a spinner that looks stuck.
+     */
+    onOutput?: (chunk: string) => void
   } = {}
 ): Promise<CliResult> {
   if (options.signal?.aborted) {
@@ -296,10 +304,14 @@ export function runPiCli(
     )
 
     child.stdout?.on('data', (chunk: Buffer) => {
-      appendCliOutput(stdout, stdoutDecoder.write(chunk))
+      const text = stdoutDecoder.write(chunk)
+      appendCliOutput(stdout, text)
+      if (text) options.onOutput?.(text)
     })
     child.stderr?.on('data', (chunk: Buffer) => {
-      appendCliOutput(stderr, stderrDecoder.write(chunk))
+      const text = stderrDecoder.write(chunk)
+      appendCliOutput(stderr, text)
+      if (text) options.onOutput?.(text)
     })
     child.on('error', (error) => {
       if (settled) return

@@ -1,22 +1,25 @@
 /**
  * Marketplace domain types.
  *
- * A marketplace entry is one GitHub repository that publishes a Pi plugin or a
- * set of Pi skills. The bundled snapshot is curated at build time; a refresh
- * updates the live numbers from GitHub without losing the curated copy.
+ * An entry is one package published to Pi's official catalog (`pi.dev/packages`).
+ * The catalog lists packages published to npm; older snapshots could also come
+ * from a GitHub topic search, so the source is explicit on the snapshot.
  */
-export type MarketplaceKind = 'plugin' | 'skill'
+export type MarketplaceKind = 'plugin' | 'skill' | 'theme' | 'prompt'
 
-export type MarketplaceSort = 'stars' | 'updated' | 'name'
+export type MarketplaceSort = 'downloads' | 'stars' | 'updated' | 'name'
+
+export type MarketplaceEntrySource = 'pi' | 'github'
 
 export interface MarketplaceEntry {
-  /** `owner/repo`, unique inside a snapshot. */
+  /** The npm package name, unique inside a snapshot. */
   id: string
   kind: MarketplaceKind
-  /** Display name; normally the repository name. */
+  /** Display name; the npm package name. */
   name: string
-  /** `owner/repo` on GitHub. */
+  /** `owner/repo` on GitHub when the catalog links one. */
   repo: string
+  /** The catalog page for this package. */
   url: string
   description: string
   stars: number
@@ -24,7 +27,7 @@ export interface MarketplaceEntry {
   language: string | null
   topics: string[]
   license: string | null
-  /** ISO date of the last push, as reported by GitHub. */
+  /** ISO date of the last publish, as reported by the catalog. */
   updatedAt: string
   /**
    * How the entry is installed:
@@ -42,21 +45,62 @@ export interface MarketplaceEntry {
   category: string
   /** Short badges shown under the description. */
   tags: string[]
+  /** Where the entry came from. Absent means the bundled GitHub snapshot. */
+  source?: MarketplaceEntrySource
+  /** Monthly npm downloads, from Pi's catalog. */
+  downloads?: number
+  /** npm scope/author shown on the card. */
+  author?: string
+  /** Pi's own resource type (`extension`, `skill`, `theme`, `prompt`, `package`). */
+  packageType?: string
 }
 
 export interface MarketplaceSnapshot {
   generatedAt: string
-  source: 'github'
+  source: MarketplaceEntrySource
   minStars: number
   entries: MarketplaceEntry[]
-  /** True when the numbers come from a cached GitHub refresh rather than the bundle. */
+  /** True when the numbers come from a cached live refresh rather than a bundle. */
   live?: boolean
+  /** Everything the catalog matches, not only the page in `entries`. */
+  total?: number
+}
+
+/** One page of Pi's official package catalog. */
+export interface PiCatalogQuery {
+  query?: string
+  kind?: MarketplaceKind
+  sort?: MarketplaceSort
+  page?: number
+  /** Skip the in-memory page cache, so Refresh really re-reads the catalog. */
+  force?: boolean
+}
+
+export interface PiCatalogPage {
+  entries: MarketplaceEntry[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 export interface MarketplaceInstallResult {
   ok: boolean
   /** CLI output, trimmed for the dialog. */
   output: string
+}
+
+/**
+ * One live line from an install that is still running.
+ *
+ * A package install is a `pi install` process that can take a minute and
+ * prints its own progress; the dialog shows the newest line so a slow network
+ * does not read as a frozen app. `runId` is minted by the renderer, so a
+ * dialog ignores a line that belongs to another install.
+ */
+export interface MarketplaceInstallProgress {
+  runId: string
+  /** Newest line the CLI printed, already trimmed and shortened. */
+  line: string
 }
 
 /** One package entry from Pi's `packages` settings, shown in the management view. */
@@ -119,14 +163,16 @@ export function filterMarketplaceEntries(
     return haystack.includes(needle)
   })
 
-  const sort = filter.sort ?? 'stars'
+  const sort = filter.sort ?? 'downloads'
   return filtered.sort((a, b) => {
     if (sort === 'updated') {
       const delta = Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
       if (delta !== 0) return delta
     }
     if (sort === 'name') return collator.compare(a.name, b.name)
-    if (b.stars !== a.stars) return b.stars - a.stars
+    const left = sort === 'downloads' ? a.downloads ?? a.stars : a.stars
+    const right = sort === 'downloads' ? b.downloads ?? b.stars : b.stars
+    if (right !== left) return right - left
     return collator.compare(a.name, b.name)
   })
 }
@@ -145,4 +191,18 @@ export function formatStarCount(stars: number): string {
     return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}k`
   }
   return String(stars)
+}
+
+/** Monthly downloads as the catalog states them: 3.3M/mo, 173.7k/mo. */
+export function formatDownloads(downloads: number): string {
+  if (!Number.isFinite(downloads) || downloads <= 0) return '—'
+  if (downloads >= 1_000_000) {
+    const value = downloads / 1_000_000
+    return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}M/mo`
+  }
+  if (downloads >= 1_000) {
+    const value = downloads / 1_000
+    return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}k/mo`
+  }
+  return `${downloads}/mo`
 }

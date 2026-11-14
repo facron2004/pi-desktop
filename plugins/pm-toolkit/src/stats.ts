@@ -147,7 +147,8 @@ export function sampleSizePerArm(input: SampleSizeInput): SampleSizeResult {
   if (alpha <= 0 || alpha >= 1) throw new Error('alpha must be between 0 and 1.')
   if (power <= 0 || power >= 1) throw new Error('power must be between 0 and 1.')
   const twoSided = input.twoSided ?? true
-  const variant = Math.min(0.999999, input.baseline * (1 + input.relativeMde))
+  const variant = input.baseline * (1 + input.relativeMde)
+  if (variant > 1) throw new Error('baseline and relativeMde imply a conversion rate above 100%.')
   const absoluteMde = variant - input.baseline
   const pBar = (input.baseline + variant) / 2
   const zAlpha = inverseNormal(twoSided ? 1 - alpha / 2 : 1 - alpha)

@@ -4,6 +4,11 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { AppSettings, Workspace } from '@shared/types'
+import {
+  DEFAULT_IMAGE_OUTPUT_DIR,
+  DEFAULT_IMAGE_QUALITY,
+  DEFAULT_IMAGE_SIZE
+} from '@shared/types'
 import { normalizeFontScale } from '@shared/font-scale'
 import { forgetDefaultModel, rememberDefaultModel, rememberDefaultThinkingLevel } from './pi/retry-policy'
 import { properLockfile } from './proper-lockfile'
@@ -48,6 +53,43 @@ function normalizePathList(values: unknown): string[] {
     result.push(value)
   }
   return result
+}
+
+function normalizeShortcutChord(chord: unknown): string[] | undefined {
+  if (!Array.isArray(chord)) return undefined
+  const keys = chord.filter((key): key is string => typeof key === 'string' && key.length > 0)
+  return keys.length > 0 ? keys : undefined
+}
+
+function normalizeShortcutBindings(
+  bindings: unknown
+): Record<string, string[] | string[][]> | undefined {
+  if (!bindings || typeof bindings !== 'object' || Array.isArray(bindings)) return undefined
+  const result: Record<string, string[] | string[][]> = {}
+  for (const [id, raw] of Object.entries(bindings)) {
+    if (!id || !Array.isArray(raw)) continue
+    if (raw.length === 0) {
+      result[id] = []
+      continue
+    }
+    if (raw.every((item) => typeof item === 'string')) {
+      const chord = normalizeShortcutChord(raw)
+      if (chord) result[id] = chord
+      continue
+    }
+    const chords: string[][] = []
+    const seen = new Set<string>()
+    for (const item of raw) {
+      const chord = normalizeShortcutChord(item)
+      if (!chord) continue
+      const key = chord.join('+')
+      if (seen.has(key)) continue
+      seen.add(key)
+      chords.push(chord)
+    }
+    result[id] = chords.length === 1 ? chords[0] : chords
+  }
+  return Object.keys(result).length > 0 ? result : undefined
 }
 
 function normalizeExternalChatFolderHistory(paths: unknown, activeFolder: unknown): string[] {
@@ -260,7 +302,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   trayPersistent: false,
   memoriesEnabled: true,
   memoryGeneration: true,
-  memorySkipExternalContext: true
+  memorySkipExternalContext: true,
+  imageModel: '',
+  imageSize: DEFAULT_IMAGE_SIZE,
+  imageQuality: DEFAULT_IMAGE_QUALITY,
+  imageOutputDir: DEFAULT_IMAGE_OUTPUT_DIR
 }
 
 /** "Segoe UI" was the old explicit choice; MCode's system recipe is the same
@@ -450,7 +496,8 @@ export class SettingsStore {
       ),
       pinnedSessions: normalizePathList(saved.pinnedSessions),
       archivedSessions: normalizePathList(saved.archivedSessions),
-      hiddenProjects: normalizePathList(saved.hiddenProjects)
+      hiddenProjects: normalizePathList(saved.hiddenProjects),
+      shortcutBindings: normalizeShortcutBindings(saved.shortcutBindings)
     }
   }
 
@@ -586,6 +633,10 @@ export class SettingsStore {
       this.refreshFromDisk(true)
       const current = this.data
       const patch = patchFor(current)
+      const shortcutPatch = normalizeShortcutBindings(patch.shortcutBindings)
+      const resetShortcuts = patch.shortcutBindings !== null &&
+        typeof patch.shortcutBindings === 'object' && !Array.isArray(patch.shortcutBindings) &&
+        Object.keys(patch.shortcutBindings).length === 0
       const blockedWorkspaceIds = new Set([...this.removedWorkspaceIds, ...removedWorkspaceIds])
       const workspaces = patch.workspaces === undefined
         ? current.workspaces
@@ -650,12 +701,14 @@ export class SettingsStore {
         lastSessions: patch.lastSessions === undefined
           ? current.lastSessions
           : mergeRecord(baseline.lastSessions ?? {}, patch.lastSessions, current.lastSessions ?? {}),
-        shortcutBindings: patch.shortcutBindings === undefined
+        shortcutBindings: shortcutPatch === undefined && !resetShortcuts
           ? current.shortcutBindings
-          : mergeRecord(
-              baseline.shortcutBindings ?? {},
-              patch.shortcutBindings,
-              current.shortcutBindings ?? {}
+          : normalizeShortcutBindings(
+              mergeRecord(
+                baseline.shortcutBindings ?? {},
+                shortcutPatch ?? {},
+                current.shortcutBindings ?? {}
+              )
             )
       }
       this.write(next, projectTrustReviewed, blockedWorkspaceIds)

@@ -11,7 +11,9 @@ import {
   readScrollMemory,
   rememberScrollMemory,
   rememberScrollPosition,
+  scrollTopForTurnTop,
   SCROLL_FOLLOW_RANGE,
+  TURN_TOP_GUTTER,
   type ScrollMetrics
 } from '../src/renderer/src/lib/scroll-memory'
 
@@ -92,4 +94,22 @@ test('clearScrollMemory can drop one conversation or all of them', () => {
   assert.ok(readScrollMemory('b'))
   clearScrollMemory()
   assert.equal(readScrollMemory('b'), undefined)
+})
+
+test('scrollTopForTurnTop puts the prompt at the top of the viewport', () => {
+  // 1000px of content in a 300px viewport: a turn 420px down the transcript
+  // needs scrollTop 408 (420 - 12 gutter) to sit at the reading top.
+  assert.equal(scrollTopForTurnTop(metrics(1000, 0, 300), 420), 408)
+  assert.equal(TURN_TOP_GUTTER, 12)
+})
+
+test('scrollTopForTurnTop clears a sticky search bar above the prompt', () => {
+  assert.equal(scrollTopForTurnTop(metrics(1000, 0, 300), 420, 64), 344)
+})
+
+test('scrollTopForTurnTop stays inside the scrollable range', () => {
+  // The last turn cannot always reach the top: the transcript ends first.
+  assert.equal(scrollTopForTurnTop(metrics(1000, 0, 300), 950), 700)
+  // A turn above the current position still never scrolls negative.
+  assert.equal(scrollTopForTurnTop(metrics(1000, 0, 300), 4), 0)
 })

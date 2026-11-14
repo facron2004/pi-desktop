@@ -1,0 +1,288 @@
+/* ------------------------------------------------------------------ *
+ * Subagents beside the title
+ *
+ * A quiet pill next to the conversation name. It only exists when the
+ * conversation actually delegated work, and its card is a live projection
+ * of the same tool nodes the task rail and the Subagents page read.
+ * ------------------------------------------------------------------ */
+
+/* The badge belongs to the name, not to the wide row. The identity's 12px gap
+   plus the title's own 8px padding used to leave ~21px of dead air between the
+   two; pulling the badge back into that padding makes them read as one group
+   and leaves the room for air *inside* the badge instead. */
+.titlebar__identity > .popover-wrap:has(.title-subagents__trigger) {
+  margin-left: calc(-1 * var(--sp-3));
+}
+
+.title-subagents__trigger {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--sp-3);
+  height: 26px;
+  padding: 0 10px;
+  /* One container, not the old outlined pill with a second box inside it.
+     The border stays 1px in every state so hover and open never shift the
+     geometry; at rest the pill is as light as the title button next to it. */
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.title-subagents__trigger:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.title-subagents__trigger[data-open='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.title-subagents__trigger:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.title-subagents__trigger[data-running='true'] > svg {
+  color: var(--accent);
+}
+
+.title-subagents__count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 2px;
+  border-radius: var(--r-full);
+  /* No second chip: the pill is the one container, so the number reads as
+     part of the label rather than a badge pinned on top of another badge. */
+  color: var(--text-primary);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.title-subagents__trigger[data-running='true'] .title-subagents__count {
+  color: var(--accent);
+}
+
+/* The badge sits in the window's drag region; `no-drag` keeps its click. */
+@container conversation (max-width: 719px) {
+  .title-subagents__label {
+    display: none;
+  }
+}
+
+/* The card scrolls as one panel; its head and footer stay put. */
+.popover.title-subagents-popover {
+  padding: 0;
+}
+
+.title-subagents__panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.title-subagents__head,
+.title-subagents__all {
+  position: sticky;
+  z-index: 1;
+  background: var(--surface-glass);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+}
+
+.title-subagents__head {
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.title-subagents__head-title {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+}
+
+.title-subagents__head-meta {
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.title-subagents__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+}
+
+.title-subagents__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border-radius: var(--r-sm);
+  color: var(--text-primary);
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.title-subagents__row:hover {
+  background: var(--bg-hover);
+}
+
+.title-subagents__row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.title-subagents__status {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 18px;
+  color: var(--text-tertiary);
+}
+
+.title-subagents__status[data-status='running'] {
+  color: var(--accent);
+}
+
+.title-subagents__dot {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.title-subagents__dot[data-tone='success'] {
+  background: var(--status-success);
+}
+
+.title-subagents__dot[data-tone='danger'] {
+  background: var(--status-danger);
+}
+
+.title-subagents__body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.title-subagents__line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.title-subagents__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  line-height: 17px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.title-subagents__state {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  line-height: 17px;
+}
+
+.title-subagents__row[data-status='running'] .title-subagents__state {
+  color: var(--accent);
+}
+
+.title-subagents__row[data-status='failed'] .title-subagents__state,
+.title-subagents__row[data-status='timed_out'] .title-subagents__state {
+  color: var(--status-danger);
+}
+
+.title-subagents__preview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.title-subagents__metrics {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.title-subagents__model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.title-subagents__chevron {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.title-subagents__row:hover .title-subagents__chevron,
+.title-subagents__row:focus-visible .title-subagents__chevron {
+  opacity: 1;
+}
+
+.title-subagents__all {
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-align: left;
+}
+
+.title-subagents__all:hover {
+  color: var(--accent);
+}
+
+.title-subagents__all:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}

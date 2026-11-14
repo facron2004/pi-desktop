@@ -17,6 +17,7 @@ import {
   Minimize2,
   Plus,
   SquareTerminal,
+  WandSparkles,
   X
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
@@ -32,7 +33,7 @@ import { Popover } from './Popover'
  * The pages follow MCode's workspace panel: the header is a strip of
  * fixed-width page tabs, and `+` creates a new "start from here" tab.
  */
-export type ToolPanelView = 'files' | 'changes' | 'subagents' | 'terminal' | 'browser' | 'images' | 'start'
+export type ToolPanelView = 'files' | 'changes' | 'subagents' | 'terminal' | 'browser' | 'images' | 'imagegen' | 'start'
 
 interface ToolTab {
   id: string
@@ -51,7 +52,8 @@ const TABS: {
   { view: 'terminal', label: 'Terminal', description: 'Run commands in a real shell', icon: SquareTerminal, shortcut: 'Ctrl+`' },
   { view: 'changes', label: 'File changes', description: 'Review the files this conversation changed', icon: FileDiff },
   { view: 'subagents', label: 'Subagents', description: 'Subagent tasks and their status', icon: Bot },
-  { view: 'images', label: 'Images', description: 'Pictures in this project', icon: Images }
+  { view: 'images', label: 'Images', description: 'Pictures in this project', icon: Images },
+  { view: 'imagegen', label: 'Image generation', description: 'Generate images from a prompt', icon: WandSparkles }
 ]
 
 const TAB_BY_VIEW = new Map(TABS.map((entry) => [entry.view, entry]))
@@ -71,7 +73,8 @@ export function ToolPanel({
   onClose,
   width,
   onResize,
-  onResizeEnd
+  onResizeEnd,
+  actions
 }: {
   view: ToolPanelView
   onViewChange: (view: ToolPanelView) => void
@@ -83,6 +86,8 @@ export function ToolPanel({
   width: number
   onResize?: (width: number) => void
   onResizeEnd?: (width: number) => void
+  /** Page-specific controls that sit in the strip's right corner. */
+  actions?: ReactNode
 }) {
   const t = useT()
   const panelRef = useRef<HTMLElement>(null)
@@ -496,6 +501,7 @@ export function ToolPanel({
         >
           {maximized ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
         </button>
+        {actions}
       </div>
 
       <div className="tool-panel__body" data-view={activeTab?.view ?? 'start'}>

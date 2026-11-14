@@ -15,8 +15,6 @@ import {
   Globe,
   Images,
   MessageSquare,
-  PanelRightClose,
-  PanelRightOpen,
   Rows3,
   Search,
   X
@@ -63,7 +61,8 @@ export function InspectorPanel({
   onOpenFile,
   onResize,
   onResizeEnd,
-  embedded = false
+  embedded = false,
+  fileTreeOpen = true
 }: {
   onClose: () => void
   overlay: boolean
@@ -79,6 +78,8 @@ export function InspectorPanel({
    * the tabs, the close button and the resize edge are not drawn here.
    */
   embedded?: boolean
+  /** Whether the Files page shows its tree aside. The panel header owns the toggle. */
+  fileTreeOpen?: boolean
 }) {
   const panelRef = useRef<HTMLElement>(null)
   useDialogFocus(panelRef, onClose, overlay)
@@ -166,13 +167,13 @@ export function InspectorPanel({
     setSelectedChangePath(null)
     setChangeScope('auto')
   }, [activeSessionFile, workspace?.path])
-  // The Files tab browses the tree or searches inside the files. The tree stays
-  // mounted while the search is on, so its open folders survive a look.
-  const [filesMode, setFilesMode] = useState<'tree' | 'text'>('tree')
+  // Full-text search is a wide-pane mode, not a third tab in the tree: the
+  // tree's own two indexes are the navigation, and the search opens over the
+  // preview when the reader asks for it.
+  const [textSearchOpen, setTextSearchOpen] = useState(false)
   // MCode's Files page keeps the file tree in a right-hand sidebar beside the
   // preview, so reading a file does not replace the way back to the project.
-  // The tree can be folded away for a wide preview.
-  const [fileTreeOpen, setFileTreeOpen] = useState(true)
+  // The panel header owns the button that folds it away; App keeps the state.
 
   // The paths of the changed files, relative to the project, so the list
   // means the same thing to the user and to the agent.
@@ -414,73 +415,47 @@ export function InspectorPanel({
             opened while a file is on screen. */}
         <div className="drawer__stack">
           <div className="drawer__pane" data-active={tab === 'files'}>
-            {filesMode === 'text' ? (
-              <TextSearch
-                root={workspace?.path ?? ''}
-                onOpenFile={setOpenFile}
-                onClose={() => setFilesMode('tree')}
-              />
-            ) : (
-              <div className="file-workspace" data-tree={fileTreeOpen ? 'open' : 'closed'}>
-                <div className="file-workspace__main">
-                  {openFile ? (
-                    <FileViewer
-                      file={openFile.path}
-                      root={workspace?.path}
-                      line={openFile.line}
-                    />
-                  ) : (
-                    <div className="file-workspace__empty">
-                      <Files size={22} strokeWidth={1.5} />
-                      <p>{t('Select a file from the tree to preview it here.')}</p>
-                    </div>
-                  )}
-                </div>
-                {!fileTreeOpen ? (
-                  <button
-                    type="button"
-                    className="file-workspace__tree-reveal"
-                    aria-label={t('Show file tree')}
-                    title={t('Show file tree')}
-                    onClick={() => setFileTreeOpen(true)}
-                  >
-                    <PanelRightOpen size={15} />
-                  </button>
-                ) : null}
-                <aside className="file-workspace__tree">
-                  <div className="file-workspace__tree-head">
-                    <div className="segmented segmented--tight">
-                      <button
-                        data-active
-                        aria-pressed
-                        onClick={() => setFilesMode('tree')}
-                        title={t('Browse the project files')}
-                      >
-                        {t('Files')}
-                      </button>
-                      <button
-                        onClick={() => setFilesMode('text')}
-                        title={t('Search inside the project files')}
-                      >
-                        {t('Text')}
-                      </button>
-                    </div>
+            <div className="file-workspace" data-tree={fileTreeOpen ? 'open' : 'closed'}>
+              <div className="file-workspace__main">
+                {textSearchOpen ? (
+                  <TextSearch
+                    root={workspace?.path ?? ''}
+                    onOpenFile={(file) => {
+                      setTextSearchOpen(false)
+                      setOpenFile(file)
+                    }}
+                    onClose={() => setTextSearchOpen(false)}
+                  />
+                ) : openFile ? (
+                  <FileViewer
+                    file={openFile.path}
+                    root={workspace?.path}
+                    line={openFile.line}
+                  />
+                ) : (
+                  <div className="file-workspace__empty">
+                    <Files size={22} strokeWidth={1.5} />
+                    <p>{t('Select a file from the tree to preview it here.')}</p>
                     <button
                       type="button"
-                      className="file-workspace__tree-close"
-                      aria-label={t('Hide file tree')}
-                      title={t('Hide file tree')}
-                      onClick={() => setFileTreeOpen(false)}
+                      className="file-workspace__text-search"
+                      onClick={() => setTextSearchOpen(true)}
                     >
-                      <PanelRightClose size={15} />
+                      <Search size={13} aria-hidden="true" />
+                      {t('Search inside the project files')}
                     </button>
                   </div>
-                  <div className="file-workspace__tree-body">
-                    <FileTree root={workspace?.path ?? ''} onOpen={(path) => setOpenFile({ path })} />
-                  </div>
-                </aside>
+                )}
               </div>
-            )}
+              <aside className="file-workspace__tree">
+                <div className="file-workspace__tree-body">
+                  <FileTree
+                    root={workspace?.path ?? ''}
+                    onOpen={(path) => setOpenFile({ path })}
+                  />
+                </div>
+              </aside>
+            </div>
           </div>
 
           <div

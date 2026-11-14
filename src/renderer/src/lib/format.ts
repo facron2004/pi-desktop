@@ -6,6 +6,13 @@ export function formatTokens(value: number | undefined | null): string {
   if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`
   return String(value)
 }
+
+/** An exact count for a usage breakdown, e.g. "4,354,048 tok". */
+export function formatExactTokens(value: number | undefined | null): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${value.toLocaleString()} tok`
+    : '—'
+}
 /**
  * The usage page's measure: one decimal at every scale, so the readings in
  * the overview row line up as a column of digits.
@@ -24,12 +31,33 @@ export function formatCost(value: number | undefined | null): string {
   return `$${value.toFixed(2)}`
 }
 
-export function formatClock(timestamp: number | undefined): string {
+/**
+ * The clock beside a message. Today stays a short time; older messages carry
+ * their date, so reopening an old transcript cannot make it read as if it
+ * happened now. The year appears only once the message is from an earlier
+ * year, which keeps the common case short. `now` is injectable for tests so a
+ * calendar-day boundary does not depend on when the suite happens to run.
+ */
+export function formatClock(timestamp: number | undefined, now: Date = new Date()): string {
   if (!timestamp) return ''
-  return new Date(timestamp).toLocaleTimeString(undefined, {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return ''
+  const time = date.toLocaleTimeString(undefined, {
     hour: '2-digit',
     minute: '2-digit'
   })
+  const isToday =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  if (isToday) return time
+  const sameYear = date.getFullYear() === now.getFullYear()
+  const day = date.toLocaleDateString(undefined, {
+    ...(sameYear ? {} : { year: 'numeric' }),
+    month: 'short',
+    day: 'numeric'
+  })
+  return `${day} ${time}`
 }
 
 /**

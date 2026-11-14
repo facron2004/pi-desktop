@@ -1,7 +1,20 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { listDeliverables, summariseDiff } from '../src/renderer/src/lib/task-panel'
+import { listBackgroundTasks, listDeliverables, summariseDiff } from '../src/renderer/src/lib/task-panel'
 import type { GitStatus } from '../src/shared/types'
+import type { ToolItem } from '../src/renderer/src/lib/thread'
+
+function tool(overrides: Partial<ToolItem> & Pick<ToolItem, 'id' | 'toolName'>): ToolItem {
+  return {
+    kind: 'tool',
+    toolCallId: overrides.id,
+    args: {},
+    status: 'running',
+    timestamp: 1,
+    order: 1,
+    ...overrides
+  }
+}
 
 function repo(overrides: Partial<GitStatus> = {}): GitStatus {
   return {
@@ -101,4 +114,59 @@ test('git reported no line counts, so only the files are known', () => {
 test('a folder that is not a repository has no diff to summarise', () => {
   assert.equal(summariseDiff(repo({ isRepo: false })), null)
   assert.equal(summariseDiff(undefined), null)
+})
+
+test('background tasks are the running tool calls, named by their tool', () => {
+  const rows = listBackgroundTasks([
+    tool({ id: 'b1', toolName: 'bash', args: { command: 'npm run build' }, startedAt: 10 }),
+    tool({ id: 'g1', toolName: 'grep', args: { pattern: 'TODO' }, startedAt: 11 }),
+    tool({ id: 'p1', toolName: 'powershell', args: { command: 'Get-ChildItem' }, startedAt: 12 })
+  ])
+  assert.deepEqual(
+    rows.map((row) => row.toolName),
+    ['bash', 'grep', 'powershell']
+  )
+  assert.deepEqual(
+    rows.map((row) => row.label),
+    ['Bash', 'Grep', 'PowerShell']
+  )
+  assert.equal(rows[0].detail, 'npm run build')
+  assert.equal(rows[1].detail, 'TODO')
+})
+
+test('subagents are not background tasks, and finished calls are gone', () => {
+  const rows = listBackgroundTasks([
+    tool({ id: 's1', toolName: 'subagent', args: { tasks: [{ task: 'inspect' }] } }),
+    tool({ id: 'b1', toolName: 'bash', args: { command: 'sleep 1' }, status: 'ok' }),
+    tool({ id: 'b2', toolName: 'bash', args: { command: 'npm test' } })
+  ])
+  assert.deepEqual(
+    rows.map((row) => row.toolName),
+    ['bash']
+  )
+})
+
+test('an unknown tool still names its subject from the usual argument fields', () => {
+  const rows = listBackgroundTasks([
+    tool({ id: 'g1', toolName: 'glob', args: { pattern: '**/*.ts' } }),
+    tool({ id: 'c1', toolName: 'shell', args: { command: 'npm test' } }),
+    tool({ id: 'm1', toolName: 'mcp__server__fetch', args: { url: 'https://example.com' } })
+  ])
+  assert.deepEqual(
+    rows.map((row) => row.detail),
+    ['**/*.ts', 'npm test', 'https://example.com']
+  )
+})
+
+test('bookkeeping tools are not listed as background work', () => {
+  const rows = listBackgroundTasks([
+    tool({ id: 't1', toolName: 'todo', args: { items: [] } }),
+    tool({ id: 't2', toolName: 'desktop_todo', args: { items: [] } }),
+    tool({ id: 't3', toolName: 'exit_plan_mode', args: {} }),
+    tool({ id: 'b1', toolName: 'bash', args: { command: 'ls' } })
+  ])
+  assert.deepEqual(
+    rows.map((row) => row.toolName),
+    ['bash']
+  )
 })

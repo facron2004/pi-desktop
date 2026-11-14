@@ -1,14 +1,8 @@
 import { Database, Gauge } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
-import { formatDuration } from '../lib/format'
+import { formatDuration, formatExactTokens } from '../lib/format'
 import type { SessionMetrics } from '../lib/session-metrics'
-
-function formatExactTokens(value: number | null | undefined): string {
-  return typeof value === 'number' && Number.isFinite(value)
-    ? `${value.toLocaleString()} tok`
-    : '—'
-}
 
 /**
  * The popover behind the tokens and the cache hit rate: a compact total and

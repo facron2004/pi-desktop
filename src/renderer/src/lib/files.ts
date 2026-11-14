@@ -12,6 +12,7 @@ const BY_EXTENSION: Record<string, FileTone> = {
   cjs: 'js',
   json: 'json',
   jsonc: 'json',
+  tsbuildinfo: 'json',
   css: 'style',
   scss: 'style',
   sass: 'style',
@@ -47,11 +48,11 @@ const BY_NAME: Record<string, FileTone> = {
 
 export function fileTone(name: string): FileTone {
   const lower = name.toLowerCase()
-  const byName = BY_NAME[lower]
-  if (byName) return byName
+  if (Object.hasOwn(BY_NAME, lower)) return BY_NAME[lower]
   const dot = lower.lastIndexOf('.')
   if (dot === -1) return 'plain'
-  return BY_EXTENSION[lower.slice(dot + 1)] ?? 'plain'
+  const extension = lower.slice(dot + 1)
+  return Object.hasOwn(BY_EXTENSION, extension) ? BY_EXTENSION[extension] : 'plain'
 }
 
 /** The grammar a file is highlighted with, guessed from its name. */
@@ -103,5 +104,6 @@ export function languageOf(name: string): string {
   if (lower === 'dockerfile') return 'dockerfile'
   const dot = lower.lastIndexOf('.')
   if (dot === -1) return ''
-  return LANGUAGE_BY_EXTENSION[lower.slice(dot + 1)] ?? ''
+  const extension = lower.slice(dot + 1)
+  return Object.hasOwn(LANGUAGE_BY_EXTENSION, extension) ? LANGUAGE_BY_EXTENSION[extension] : ''
 }

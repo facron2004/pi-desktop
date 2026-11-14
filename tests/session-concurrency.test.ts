@@ -1,6 +1,7 @@
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { PiEvent, RpcTraceHint, RuntimeEnsureOptions, RuntimeStatus, SessionMeta } from '@shared/types'
+import { lastAssistantText } from '../src/renderer/src/lib/thread'
 
 type EventPayload = { ownerId: string; event: PiEvent }
 type RekeyPayload = { from: string; to: string; replace?: boolean }
@@ -33,7 +34,7 @@ const bridge = {
       }
     }
   },
-  sessions: { list: async () => [], hydrate: async () => [] },
+  sessions: { list: async () => [], hydrate: async () => [], remove: async (_file?: string) => true },
   git: { status: async () => ({ isRepo: false }) },
   runtime: {
     ensure: async (_options: RuntimeEnsureOptions) => ({ ok: true }),
@@ -53,10 +54,21 @@ const bridge = {
     }
   }
 }
+const docListeners = new Map<string, Set<() => void>>()
 Object.assign(globalThis, {
   document: {
     documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-    addEventListener: () => {}
+    addEventListener: (type: string, handler: () => void) => {
+      const set = docListeners.get(type) ?? new Set()
+      set.add(handler)
+      docListeners.set(type, set)
+    },
+    removeEventListener: (type: string, handler: () => void) => {
+      docListeners.get(type)?.delete(handler)
+    },
+    dispatchEvent: (type: string) => {
+      docListeners.get(type)?.forEach((fn) => fn())
+    }
   },
   window: { pi: bridge, location: { search: '' }, matchMedia: () => ({ matches: false }) }
 })
@@ -487,4 +499,377 @@ test('a conversation switch within the same project keeps an in-flight Git resul
   resolve({ isRepo: true, branch: 'branch-A' })
   await refreshing
   assert.equal(useAppStore.getState().git?.branch, 'branch-A')
+})
+
+test('coalesced drainPending flushes multi-session batches in one atomic store dispatch', async () => {
+  const frames: (() => void)[] = []
+  Object.assign(globalThis, {
+    requestAnimationFrame: (callback: () => void) => { frames.push(callback); return frames.length },
+    cancelAnimationFrame: () => {}
+  })
+
+  // Select active session A
+  await useAppStore.getState().selectSession(session('A.jsonl'))
+  emit({ ownerId: 'A.jsonl', event: { type: 'agent_start' } })
+
+  // Background session B is auto-initialized and starts
+  emit({ ownerId: 'B.jsonl', event: { type: 'agent_start' } })
+
+  // Queue message events for active session A
+  emit({ ownerId: 'A.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+  emit({ ownerId: 'A.jsonl', event: {
+    type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Hello from A' }
+  } })
+
+  // Queue message events for background session B
+  emit({ ownerId: 'B.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+  emit({ ownerId: 'B.jsonl', event: {
+    type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Hello from B' }
+  } })
+
+  // Now both batches are queued in pending.
+  // Count how many store state notifications fire during the rAF flush.
+  let updateCount = 0
+  const unsubscribe = useAppStore.subscribe(() => {
+    updateCount += 1
+  })
+
+  frames.forEach((frame) => frame())
+  unsubscribe()
+
+  // Must update store exactly once atomically, coalescing all session batches
+  assert.equal(updateCount, 1, 'all session batches must be flushed in a single atomic Zustand update')
+
+  // Active session view has A's items
+  const activeItems = useAppStore.getState().items
+  assert.ok(activeItems.length > 0)
+  assert.equal(useAppStore.getState().threads['A.jsonl'].items.length, activeItems.length)
+
+  // Background session B has B's items stored in its thread
+  const bItems = useAppStore.getState().threads['B.jsonl'].items
+  assert.ok(bItems.length > 0)
+
+  // Active view does not contain B's items
+  assert.notEqual(activeItems, bItems)
+})
+
+test('events for unvisited background sessions establish thread shell with running and unread status', async () => {
+  assert.equal(useAppStore.getState().threads['background-task.jsonl'], undefined)
+
+  // Incoming event for unvisited session initializes shell and sets streaming
+  emit({ ownerId: 'background-task.jsonl', event: { type: 'agent_start' } })
+  const thread = useAppStore.getState().threads['background-task.jsonl']
+  assert.ok(thread, 'thread shell must be created')
+  assert.equal(thread.isStreaming, true, 'background session must reflect running state')
+
+  // When settled in background, unread notice is set
+  emit({ ownerId: 'background-task.jsonl', event: { type: 'agent_settled', aborted: false } })
+  const settledThread = useAppStore.getState().threads['background-task.jsonl']
+  assert.equal(settledThread.isStreaming, false)
+  assert.equal(settledThread.notice, 'unread', 'background session must acquire unread notice')
+})
+
+test('deleted sessions are not resurrected by late background events', async () => {
+  await useAppStore.getState().selectSession(session('deleted-session.jsonl'))
+  assert.ok(useAppStore.getState().threads['deleted-session.jsonl'])
+
+  // Delete session
+  await useAppStore.getState().deleteSession('deleted-session.jsonl')
+  assert.equal(useAppStore.getState().threads['deleted-session.jsonl'], undefined)
+
+  // Late events from terminating child process arrive
+  emit({ ownerId: 'deleted-session.jsonl', event: { type: 'agent_start' } })
+  emit({ ownerId: 'deleted-session.jsonl', event: { type: 'agent_settled', aborted: true } })
+
+  // Thread must remain deleted and not resurrected
+  assert.equal(useAppStore.getState().threads['deleted-session.jsonl'], undefined, 'deleted session must not be resurrected')
+})
+
+test('high-concurrency streaming across 12+ concurrent sessions merges atomically without dropping deltas or corrupting items', async () => {
+  const frames: (() => void)[] = []
+  Object.assign(globalThis, {
+    requestAnimationFrame: (callback: () => void) => { frames.push(callback); return frames.length },
+    cancelAnimationFrame: () => {}
+  })
+
+  const sessionCount = 12
+  const sessionIds = Array.from({ length: sessionCount }, (_, i) => `concurrent-${i}.jsonl`)
+
+  // Select the first session as active
+  await useAppStore.getState().selectSession(session(sessionIds[0]))
+
+  // Start all sessions
+  for (const id of sessionIds) {
+    emit({ ownerId: id, event: { type: 'agent_start' } })
+    emit({ ownerId: id, event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+  }
+
+  // Interleave 20 text deltas across all 12 sessions in round-robin fashion (240 deltas total in one rAF frame)
+  const deltasPerSession = 20
+  for (let r = 0; r < deltasPerSession; r++) {
+    for (let s = 0; s < sessionCount; s++) {
+      const delta = `[S${s}#${r}]`
+      emit({
+        ownerId: sessionIds[s],
+        event: {
+          type: 'message_update',
+          assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta }
+        }
+      })
+    }
+  }
+
+  // Count store dispatches during the frame flush
+  let updateCount = 0
+  const unsubscribe = useAppStore.subscribe(() => {
+    updateCount += 1
+  })
+
+  // Flush frame
+  frames.forEach((frame) => frame())
+  frames.length = 0
+  unsubscribe()
+
+  // Must update store exactly once atomically for all 12 sessions
+  assert.equal(updateCount, 1, 'all 12 concurrent session batches must be flushed in a single atomic Zustand update')
+
+  // Verify active session projection
+  const activeItems = useAppStore.getState().items
+  assert.ok(activeItems.length > 0)
+  assert.equal(useAppStore.getState().threads[sessionIds[0]].items.length, activeItems.length)
+
+  // Verify text content across all 12 sessions
+  for (let s = 0; s < sessionCount; s++) {
+    const thread = useAppStore.getState().threads[sessionIds[s]]
+    assert.ok(thread, `thread ${sessionIds[s]} must exist`)
+    const expected = Array.from({ length: deltasPerSession }, (_, r) => `[S${s}#${r}]`).join('')
+    const actual = lastAssistantText(thread.items)
+    assert.equal(actual, expected, `Session ${sessionIds[s]} text must contain all concatenated deltas without drop or cross-session corruption`)
+  }
+
+  // Second frame: send 10 more deltas
+  for (let r = deltasPerSession; r < deltasPerSession + 10; r++) {
+    for (let s = 0; s < sessionCount; s++) {
+      const delta = `[S${s}#${r}]`
+      emit({
+        ownerId: sessionIds[s],
+        event: {
+          type: 'message_update',
+          assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta }
+        }
+      })
+    }
+  }
+
+  let secondUpdateCount = 0
+  const unsubscribe2 = useAppStore.subscribe(() => {
+    secondUpdateCount += 1
+  })
+  frames.forEach((frame) => frame())
+  frames.length = 0
+  unsubscribe2()
+
+  assert.equal(secondUpdateCount, 1, 'second frame must also flush all 12 sessions in a single atomic update')
+
+  for (let s = 0; s < sessionCount; s++) {
+    const thread = useAppStore.getState().threads[sessionIds[s]]
+    const expected = Array.from({ length: deltasPerSession + 10 }, (_, r) => `[S${s}#${r}]`).join('')
+    const actual = lastAssistantText(thread.items)
+    assert.equal(actual, expected, `Session ${sessionIds[s]} must preserve full 30-delta text across multiple frames`)
+  }
+
+  // Authoritative message_end completion
+  for (let s = 0; s < sessionCount; s++) {
+    const fullText = Array.from({ length: deltasPerSession + 10 }, (_, r) => `[S${s}#${r}]`).join('')
+    emit({
+      ownerId: sessionIds[s],
+      event: {
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: fullText }] }
+      }
+    })
+  }
+})
+
+test('active session projection updates top-level items while inactive background sessions do not pollute active items', async () => {
+  const frames: (() => void)[] = []
+  Object.assign(globalThis, {
+    requestAnimationFrame: (callback: () => void) => { frames.push(callback); return frames.length },
+    cancelAnimationFrame: () => {}
+  })
+
+  // Select Session A as active
+  await useAppStore.getState().selectSession(session('active-proj-A.jsonl'))
+  emit({ ownerId: 'active-proj-A.jsonl', event: { type: 'agent_start' } })
+  emit({ ownerId: 'active-proj-A.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+  emit({ ownerId: 'active-proj-A.jsonl', event: {
+    type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Active initial text' }
+  } })
+  frames.forEach((frame) => frame())
+  frames.length = 0
+
+  const initialActiveItems = useAppStore.getState().items
+  assert.equal(lastAssistantText(initialActiveItems), 'Active initial text')
+
+  // Now, ONLY background sessions B and C receive deltas. Active session A receives NOTHING.
+  emit({ ownerId: 'bg-proj-B.jsonl', event: { type: 'agent_start' } })
+  emit({ ownerId: 'bg-proj-B.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+  emit({ ownerId: 'bg-proj-B.jsonl', event: {
+    type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Background B delta' }
+  } })
+
+  emit({ ownerId: 'bg-proj-C.jsonl', event: { type: 'agent_start' } })
+  emit({ ownerId: 'bg-proj-C.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+  emit({ ownerId: 'bg-proj-C.jsonl', event: {
+    type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Background C delta' }
+  } })
+
+  // Flush background session batches
+  frames.forEach((frame) => frame())
+  frames.length = 0
+
+  // Top-level active items must remain strictly untouched (same reference)
+  assert.equal(useAppStore.getState().items, initialActiveItems, 'top-level items must not be re-allocated or modified when only background sessions stream')
+  assert.equal(lastAssistantText(useAppStore.getState().items), 'Active initial text')
+
+  // Background sessions must have their text updated in state.threads
+  assert.equal(lastAssistantText(useAppStore.getState().threads['bg-proj-B.jsonl'].items), 'Background B delta')
+  assert.equal(lastAssistantText(useAppStore.getState().threads['bg-proj-C.jsonl'].items), 'Background C delta')
+
+  // Now switch active view from A to B
+  await useAppStore.getState().selectSession(session('bg-proj-B.jsonl'))
+  assert.equal(lastAssistantText(useAppStore.getState().items), 'Background B delta')
+
+  // Now both A (now background) and B (now active) receive new deltas
+  emit({ ownerId: 'active-proj-A.jsonl', event: {
+    type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: ' + A background update' }
+  } })
+  emit({ ownerId: 'bg-proj-B.jsonl', event: {
+    type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: ' + B active update' }
+  } })
+
+  frames.forEach((frame) => frame())
+  frames.length = 0
+
+  // Top-level active items must now reflect B (the new active view)
+  assert.equal(lastAssistantText(useAppStore.getState().items), 'Background B delta + B active update')
+  // A's thread holds its update without polluting the active view
+  assert.equal(lastAssistantText(useAppStore.getState().threads['active-proj-A.jsonl'].items), 'Active initial text + A background update')
+})
+
+test('hiddenFlushTimer flushes queued deltas across multiple sessions when document visibility is hidden and rAF is paused', async () => {
+  // Mock document.visibilityState = 'hidden'
+  const originalVisibility = (globalThis as any).document?.visibilityState
+  Object.defineProperty(globalThis.document, 'visibilityState', {
+    value: 'hidden',
+    configurable: true,
+    writable: true
+  })
+
+  // rAF should not be called when window is hidden
+  let rafCalled = false
+  Object.assign(globalThis, {
+    requestAnimationFrame: () => {
+      rafCalled = true
+      return 1
+    },
+    cancelAnimationFrame: () => {}
+  })
+
+  try {
+    await useAppStore.getState().selectSession(session('hidden-active.jsonl'))
+    emit({ ownerId: 'hidden-active.jsonl', event: { type: 'agent_start' } })
+    emit({ ownerId: 'hidden-bg.jsonl', event: { type: 'agent_start' } })
+    emit({ ownerId: 'hidden-active.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+    emit({ ownerId: 'hidden-bg.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+
+    // Now emit high-frequency text deltas while window is hidden
+    emit({ ownerId: 'hidden-active.jsonl', event: {
+      type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Active hidden delta' }
+    } })
+    emit({ ownerId: 'hidden-bg.jsonl', event: {
+      type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Background hidden delta' }
+    } })
+
+    // Verify rAF was not called
+    assert.equal(rafCalled, false, 'requestAnimationFrame must not be scheduled when window is hidden')
+
+    // Before timer fires, pending text deltas are not yet applied to the store items
+    assert.equal(lastAssistantText(useAppStore.getState().items), '', 'assistant text should remain empty before hidden timer fires')
+    assert.equal(lastAssistantText(useAppStore.getState().threads['hidden-bg.jsonl'].items), '', 'background text should remain empty before hidden timer fires')
+
+    // Wait for HIDDEN_EVENT_FLUSH_MS (100ms) to fire
+    await new Promise((resolve) => setTimeout(resolve, 140))
+
+    // Now hiddenFlushTimer should have fired and drained pending items atomically
+    assert.equal(lastAssistantText(useAppStore.getState().items), 'Active hidden delta')
+    assert.equal(lastAssistantText(useAppStore.getState().threads['hidden-bg.jsonl'].items), 'Background hidden delta')
+
+    // Test early manual drain clearing hiddenFlushTimer
+    emit({ ownerId: 'hidden-active.jsonl', event: {
+      type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: ' + second delta' }
+    } })
+    // Explicit manual drain via tool_execution_start which flushes immediately
+    emit({ ownerId: 'hidden-active.jsonl', event: { type: 'tool_execution_start', toolCallId: 't1', toolName: 'test' } })
+
+    // The explicit tool_execution_start triggers immediate flush and cancels hiddenFlushTimer
+    assert.ok(lastAssistantText(useAppStore.getState().items).includes('second delta'))
+  } finally {
+    Object.defineProperty(globalThis.document, 'visibilityState', {
+      value: originalVisibility,
+      configurable: true,
+      writable: true
+    })
+  }
+})
+
+test('visibilitychange from hidden to visible immediately drains pending multi-session deltas without waiting for timer', async () => {
+  const originalVisibility = (globalThis as any).document?.visibilityState
+  Object.defineProperty(globalThis.document, 'visibilityState', {
+    value: 'hidden',
+    configurable: true,
+    writable: true
+  })
+  Object.assign(globalThis, {
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => {}
+  })
+
+  try {
+    await useAppStore.getState().selectSession(session('vis-active.jsonl'))
+    emit({ ownerId: 'vis-active.jsonl', event: { type: 'agent_start' } })
+    emit({ ownerId: 'vis-bg.jsonl', event: { type: 'agent_start' } })
+    emit({ ownerId: 'vis-active.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+    emit({ ownerId: 'vis-bg.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+
+    // Emit deltas while hidden
+    emit({ ownerId: 'vis-active.jsonl', event: {
+      type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Vis active delta' }
+    } })
+    emit({ ownerId: 'vis-bg.jsonl', event: {
+      type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Vis bg delta' }
+    } })
+
+    // Before visibility change, pending deltas are not applied
+    assert.equal(lastAssistantText(useAppStore.getState().items), '')
+    assert.equal(lastAssistantText(useAppStore.getState().threads['vis-bg.jsonl'].items), '')
+
+    // Window becomes visible again
+    Object.defineProperty(globalThis.document, 'visibilityState', {
+      value: 'visible',
+      configurable: true,
+      writable: true
+    })
+    ;(globalThis.document as any).dispatchEvent('visibilitychange')
+
+    // Must have drained immediately without waiting for 100ms timer
+    assert.equal(lastAssistantText(useAppStore.getState().items), 'Vis active delta', 'active items must be drained immediately on visibility change')
+    assert.equal(lastAssistantText(useAppStore.getState().threads['vis-bg.jsonl'].items), 'Vis bg delta', 'background items must be drained immediately on visibility change')
+  } finally {
+    Object.defineProperty(globalThis.document, 'visibilityState', {
+      value: originalVisibility,
+      configurable: true,
+      writable: true
+    })
+  }
 })

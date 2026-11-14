@@ -66,6 +66,8 @@ export interface MarketplaceCache {
 export interface MarketplaceInstallOptions {
   cwd?: string
   customPiPath?: string
+  /** Receives the CLI's output as it arrives, for a dialog that shows progress. */
+  onProgress?: (chunk: string) => void
 }
 
 export type MarketplaceInstallSource = 'npm' | 'git' | 'skills'
@@ -563,7 +565,9 @@ function managedPackageKind(
   name: string,
   matched: MarketplaceEntry | undefined
 ): ManagedPackage['kind'] {
-  if (matched) return matched.kind
+  if (matched) {
+    return matched.kind === 'skill' ? 'skill' : matched.kind === 'plugin' ? 'plugin' : 'package'
+  }
   if (/skill/i.test(`${source} ${name}`)) return 'skill'
   // An npm package outside the curated snapshot is still a package; a git
   // repository is treated as a plugin unless its name says skill.
@@ -953,7 +957,8 @@ export async function installGitRepository(
   const result = await runPiCli(['install', source], {
     cwd: options.cwd && options.cwd.trim() ? options.cwd : undefined,
     customPiPath: options.customPiPath,
-    timeoutMs: 180000
+    timeoutMs: 180000,
+    onOutput: options.onProgress
   })
   return {
     ok: result.code === 0,
@@ -1320,7 +1325,8 @@ export async function installNpmPackage(
   const result = await runPiCli(['install', `npm:${name}`], {
     cwd: options.cwd && options.cwd.trim() ? options.cwd : undefined,
     customPiPath: options.customPiPath,
-    timeoutMs: 180000
+    timeoutMs: 180000,
+    onOutput: options.onProgress
   })
   return {
     ok: result.code === 0,
@@ -1355,7 +1361,8 @@ export async function installMarketplaceEntry(
   const result = await runPiCli(['install', source], {
     cwd: options.cwd && options.cwd.trim() ? options.cwd : undefined,
     customPiPath: options.customPiPath,
-    timeoutMs: 180000
+    timeoutMs: 180000,
+    onOutput: options.onProgress
   })
   return {
     ok: result.code === 0,

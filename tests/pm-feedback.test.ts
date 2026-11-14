@@ -11,6 +11,31 @@ import {
   type ThemeRule
 } from '../plugins/pm-feedback/src/feedback'
 import { formatClusterResult, formatParsedItems } from '../plugins/pm-feedback/src/format'
+import registerPmFeedback from '../plugins/pm-feedback/extensions/pm-feedback'
+
+test('tool format detection preserves commas in feedback and recognizes CSV headers', async () => {
+  type Execute = (id: string, params: { action: string; input: string; format?: string }) => Promise<{
+    details: { format: string; items: FeedbackItem[] }
+  }>
+  let execute: Execute | undefined
+  registerPmFeedback({
+    registerTool(tool: { name: string; execute: Execute }) { if (tool.name === 'pm_feedback') execute = tool.execute },
+    registerCommand() {},
+    on() {}
+  } as unknown as Parameters<typeof registerPmFeedback>[0])
+  assert.ok(execute)
+
+  const plain = await execute('plain', { action: 'parse', input: 'Slow, crashes often.\nSetup is easy.' })
+  assert.equal(plain.details.format, 'lines')
+  assert.equal(plain.details.items[0].text, 'Slow, crashes often.')
+  const csv = await execute('csv', { action: 'parse', input: 'text,source\n"Slow, crashes often.",Support' })
+  assert.equal(csv.details.format, 'csv')
+  assert.equal(csv.details.items[0].text, 'Slow, crashes often.')
+  assert.equal(csv.details.items[0].source, 'Support')
+  const explicit = await execute('explicit', { action: 'parse', input: 'Slow,Support', format: 'csv' })
+  assert.equal(explicit.details.format, 'csv')
+  assert.equal(explicit.details.items[0].text, 'Slow')
+})
 
 test('CSV parser handles quoted commas, escaped quotes and newlines inside fields', () => {
   const csv = [

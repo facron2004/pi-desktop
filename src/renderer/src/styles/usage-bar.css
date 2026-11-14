@@ -147,6 +147,16 @@
   color: var(--text-faint);
 }
 
+/* A provider/model route can be long; keep it on one line and let the
+   tooltip carry the rest, so the row stays the same height as its siblings. */
+.usage-panel__route {
+  min-width: 0;
+  max-width: 66%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .usage-panel__none {
   color: var(--text-faint);
 }

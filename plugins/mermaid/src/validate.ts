@@ -247,7 +247,7 @@ function checkFlowchart(header: HeaderMatch, lines: string[], errors: MermaidVal
 }
 
 function checkSequence(header: HeaderMatch, lines: string[], errors: MermaidValidationError[]): void {
-  const hasMessage = lines.some((line) => /(?:-->>|->>)/.test(codePart(line)))
+  const hasMessage = lines.some((line) => /--?(?:>>?|x|\))/.test(codePart(line)))
   if (!hasMessage) {
     errors.push({
       line: header.line,
@@ -364,7 +364,8 @@ export function validateMermaid(source: string): MermaidValidationResult {
     return { ok: false, diagramType: 'unknown', errors, warnings }
   }
 
-  checkBrackets(lines, errors)
+  // Message bodies in sequence diagrams are plain text, including unmatched punctuation.
+  if (header.type !== 'sequence') checkBrackets(lines, errors)
 
   switch (header.type) {
     case 'flowchart':

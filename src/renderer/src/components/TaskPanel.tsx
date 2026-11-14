@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
-import { ChevronRight, FileDiff, GitBranch, GitCommitHorizontal, Square } from 'lucide-react'
+import { ChevronRight, FileDiff, GitBranch, GitCommitHorizontal } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { CommitDialog } from './CommitDialog'
 import { CommitHistoryDialog } from './CommitHistoryDialog'
@@ -8,24 +8,15 @@ import { useAppStore } from '../store/useAppStore'
 import { changedFilePaths } from '../lib/changes'
 import { relativePath, resolveAgainst } from '../lib/path'
 import { extractPlan } from '../lib/plan'
-import { subagentCalls, type SubagentTreeTask } from '../lib/subagents'
 import {
+  listBackgroundTasks,
   listDeliverables,
   summariseDiff,
+  type BackgroundTask,
   type Deliverable
 } from '../lib/task-panel'
 import { useT } from '../lib/i18n'
 import '../styles/task-panel.css'
-
-const STATUS_LABEL = {
-  proposed: 'Not run',
-  queued: 'Queued',
-  running: 'Running',
-  completed: 'Completed',
-  failed: 'Failed',
-  aborted: 'Stopped',
-  timed_out: 'Timed out'
-} as const
 
 /**
  * One section of the rail.
@@ -87,49 +78,28 @@ function TaskSection({
   )
 }
 
-/** The status leads the task label so it stays visible when the goal is long. */
-function BackgroundTaskRow({ task, onOpen, onCancel }: {
-  task: SubagentTreeTask
-  onOpen: (taskId: string) => void
-  onCancel?: (taskId: string) => void
-}) {
+/**
+ * One in-flight tool call.
+ *
+ * The row names the tool (`bash`, `grep`, `powershell`…) and what it is doing;
+ * the dot on the left is the only state there is, because the section only
+ * lists calls that are running. Clicking does nothing — the real body lives in
+ * the transcript card above, and the rail is a glance, not a second transcript.
+ */
+function BackgroundTaskRow({ task }: { task: BackgroundTask }) {
   const t = useT()
-  // The short label names the task; the full goal remains available as a tooltip.
-  const label = task.label || task.task
-  const tone =
-    task.status === 'failed' || task.status === 'aborted' || task.status === 'timed_out'
-      ? 'danger'
-      : task.status === 'completed'
-        ? 'success'
-        : task.status === 'running' || task.status === 'queued'
-          ? 'active'
-          : 'idle'
-  const stoppable = onCancel && (task.status === 'running' || task.status === 'queued')
-
   return (
-    <li className="task-panel__task" data-status={task.status}>
+    <li className="task-panel__task" data-status="running">
       <div className="task-panel__task-line">
-        <button
-          type="button"
-          className="task-panel__task-action"
-          title={task.task}
-          aria-label={`${t(STATUS_LABEL[task.status])}: ${label}`}
-          onClick={() => onOpen(task.id)}
+        <div
+          className="task-panel__task-action task-panel__task-action--static"
+          title={task.detail ? `${task.label} · ${task.detail}` : task.label}
         >
-          <span className="task-panel__dot" data-tone={tone} aria-hidden="true" />
-          <span className="task-panel__task-name">{label}</span>
-        </button>
-        {stoppable ? (
-          <button
-            type="button"
-            className="task-panel__task-stop"
-            title={t('Stop this subagent task')}
-            aria-label={t('Stop this subagent task')}
-            onClick={() => onCancel(task.id)}
-          >
-            <Square size={12} aria-hidden="true" />
-          </button>
-        ) : null}
+          <span className="task-panel__dot" data-tone="active" aria-hidden="true" />
+          <span className="task-panel__task-tool">{task.toolName}</span>
+          <span className="task-panel__task-detail">{task.detail}</span>
+        </div>
+        <span className="task-panel__task-state">{t('Running')}</span>
       </div>
     </li>
   )
@@ -169,10 +139,7 @@ function DeliverableRow({
  * Every part of it is a projection of the thread and the Git state, so the rail
  * keeps no state of its own at all.
  */
-export function TaskPanel({ onOpenTask, onCancelTask }: {
-  onOpenTask: (taskId: string) => void
-  onCancelTask?: (taskId: string) => void
-}) {
+export function TaskPanel() {
   const t = useT()
   const items = useAppStore((state) => state.items)
   const git = useAppStore((state) => state.git)
@@ -181,8 +148,8 @@ export function TaskPanel({ onOpenTask, onCancelTask }: {
 
   const plan = useMemo(() => extractPlan(items), [items])
   const backgroundTasks = useMemo(
-    () => subagentCalls(items).flatMap((call) => call.tasks),
-    [items]
+    () => listBackgroundTasks(items, workspacePath),
+    [items, workspacePath]
   )
   const deliverables = useMemo(() => {
     const files = changedFilePaths(items).map((change) => {
@@ -295,15 +262,13 @@ export function TaskPanel({ onOpenTask, onCancelTask }: {
         </TaskSection>
 
         {backgroundTasks.length > 0 ? (
-          <TaskSection title={t('Background tasks')}>
+          <TaskSection
+            title={t('Background tasks')}
+            meta={<span className="task-panel__count">{backgroundTasks.length}</span>}
+          >
             <ul className="task-panel__list">
               {backgroundTasks.map((task) => (
-                <BackgroundTaskRow
-                  key={task.id}
-                  task={task}
-                  onOpen={onOpenTask}
-                  onCancel={onCancelTask}
-                />
+                <BackgroundTaskRow key={task.id} task={task} />
               ))}
             </ul>
           </TaskSection>

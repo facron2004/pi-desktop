@@ -173,6 +173,12 @@ const GENERIC: ToolDescriptor = {
   plural: 'tool calls',
   tone: 'generic',
   summary: (args) => {
+    // An unknown tool still names its subject: the usual field is better than
+    // a bare list of argument names (`glob` reports a pattern, a shell an
+    // option command, a file tool a path).
+    const subject =
+      str(args.pattern) || str(args.command) || str(args.path) || str(args.query) || str(args.url)
+    if (subject) return brief(subject)
     const keys = Object.keys(args ?? {})
     return keys.length ? keys.join(', ') : ''
   }

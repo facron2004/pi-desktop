@@ -142,17 +142,20 @@
   color: var(--status-danger);
 }
 
-/* One quiet disclosure above the answer, without a full-width status strip. */
+/* One quiet disclosure above the answer, with a pale rule to set it off from
+   the reply. The rule follows the document measure, not the width of the label,
+   so it reads as a separator rather than an underline. */
 .run-outcome {
   display: flex;
   align-items: center;
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   min-height: var(--ctl-sm);
-  margin: 0 0 var(--sp-2);
-  padding: 0;
+  margin: 0 0 var(--sp-3);
+  padding: 0 0 var(--sp-2);
   border: 0;
+  border-bottom: 1px solid var(--border-subtle);
   border-radius: 0;
   background: none;
   color: var(--text-muted);
@@ -621,40 +624,10 @@
   outline-offset: 2px;
 }
 
+/* The turn's usage card uses the same compact rows as the composer's usage
+   panel, so the two readings never drift into two vocabularies. */
 .usage-popover__body {
-  padding: var(--sp-1) var(--sp-2) var(--sp-2);
-}
-
-.usage-popover__title {
-  padding: var(--sp-1) 0 var(--sp-2);
-  font-size: var(--text-assist);
-  line-height: var(--leading-assist);
-  font-weight: 600;
-  color: var(--text-faint);
-}
-
-/* The number the reader hovered for is the one thing the card says loudly. */
-.usage-popover__total {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
-  margin: var(--sp-1) 0 var(--sp-2);
-  padding-bottom: var(--sp-2);
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.usage-popover__number {
-  font-size: var(--text-large);
-  line-height: var(--leading-large);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-
-.usage-popover__unit {
-  font-size: var(--text-assist);
-  line-height: var(--leading-assist);
-  color: var(--text-muted);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
 }
 
 .assistant__details > summary {

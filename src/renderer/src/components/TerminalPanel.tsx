@@ -14,6 +14,8 @@ import { EarlyTerminalExits } from '../lib/terminal-startup'
 import { useAppStore } from '../store/useAppStore'
 import { useIsDark } from '../lib/theme'
 import { useT } from '../lib/i18n'
+import '@xterm/xterm/css/xterm.css'
+import '../styles/terminal.css'
 
 const MIN_TERMINAL_HEIGHT = 160
 /** The drawer may not swallow the conversation above it. */
