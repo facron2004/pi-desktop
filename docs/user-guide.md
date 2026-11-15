@@ -2,7 +2,7 @@
 
 [返回项目首页](../README.md) · [开发文档](development.md) · [更新日志](../CHANGELOG.md)
 
-本文对应 Pi Desktop v0.8.1。界面示例见 [浅色工作台](screenshots/workbench-light.png)、[深色工作台](screenshots/workbench-dark.png) 和 [外观设置](screenshots/appearance-settings.png)；示例截图保留自 v0.3.0。
+本文档原对应 Pi Desktop v0.8.1，界面示例截图已更新至 v0.11.2：[浅色工作台](screenshots/workbench-light.png)、[深色工作台](screenshots/workbench-dark.png)、[扩展市场](screenshots/extensions-marketplace.png) 与 [外观设置](screenshots/appearance-settings.png)。
 
 ## 安装与启动
 
