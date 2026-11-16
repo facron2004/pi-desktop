@@ -102,6 +102,8 @@ export function sessionMetrics(
   let lastTurnGenerationMs = 0
   let hasStreamingAssistant = false
   let transcriptModelMs = 0
+  let completedAssistantCount = 0
+  let completedAssistantDurationCount = 0
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
@@ -122,6 +124,12 @@ export function sessionMetrics(
         timedToolCalls += 1
       }
     } else if (item.kind === 'assistant') {
+      if (!item.streaming) {
+        completedAssistantCount += 1
+        if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
+          completedAssistantDurationCount += 1
+        }
+      }
       if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
         transcriptModelMs += item.durationMs
       }
@@ -187,54 +195,36 @@ export function sessionMetrics(
     : null
   // Pi's session statistics cover the full session. Keep model samples at that
   // same scope, including messages in other branches and outside a long tail.
+  //
+  // The transcript already carries Pi's own `durationMs` per assistant message,
+  // while the local record is an append-only journal. Adding the two would
+  // count every message twice after reopening a conversation — the 48-minute
+  // "model time" from a 24-minute session. Use the larger complete reading
+  // instead: the local journal can cover branches the visible transcript does
+  // not, and the transcript is the authority for the branch it does show.
   const modelEntries = Object.entries(timing?.modelDurationsMs ?? {})
     .filter(([, value]) => Number.isFinite(value) && value >= 0)
   const turnSamples = modelEntries.filter(([id]) => !id.startsWith('assistant:'))
   const messageSamples = modelEntries.filter(([id]) => id.startsWith('assistant:'))
-  const sampledMessageIds = new Set<string>()
-  const sampledTimestampOnlyMessages = new Set<number>()
-  const sampleTurnIds = new Set<string>()
-  for (const [id] of messageSamples) {
-    const identity = id.slice('assistant:'.length)
-    const separator = identity.indexOf(':')
-    const rawTimestamp = separator < 0 ? identity : identity.slice(0, separator)
-    const timestamp = Number(rawTimestamp)
-    if (Number.isFinite(timestamp)) {
-      if (separator < 0) sampledTimestampOnlyMessages.add(timestamp)
-      else sampledMessageIds.add(`${timestamp}:${identity.slice(separator + 1)}`)
-    }
-    if (separator >= 0) sampleTurnIds.add(identity.slice(separator + 1))
-  }
-  const hasUnmatchedTurnSamples = turnSamples.some(([id]) => !sampleTurnIds.has(id))
-  const modelSamples = turnSamples.length > 0 ? turnSamples : messageSamples
-  let measuredModelMs = modelSamples.reduce((sum, [, value]) => sum + value, 0)
-  let hasModelDuration = modelSamples.length > 0
-  // Older turn-keyed records cannot be tied back to a message after hydration.
-  // Only add transcript estimates when every turn sample has a stable message
-  // match; otherwise those estimates could count the same response twice.
-  if (!hasUnmatchedTurnSamples) {
-    for (const item of items) {
-      if (
-        item.kind === 'assistant' &&
-        !(typeof item.turnId === 'string' && sampledMessageIds.has(`${item.timestamp}:${item.turnId}`)) &&
-        !sampledTimestampOnlyMessages.has(item.timestamp) &&
-        typeof item.durationMs === 'number' &&
-        Number.isFinite(item.durationMs) &&
-        item.durationMs >= 0
-      ) {
-        measuredModelMs += item.durationMs
-        hasModelDuration = true
-      }
-    }
-  }
-  const liveModelTime = run.modelTurnStartedAt !== undefined
+  const measuredModelMs = (turnSamples.length > 0 ? turnSamples : messageSamples)
+    .reduce((sum, [, value]) => sum + value, 0)
+  const liveModelTime = run.modelTurnStartedAt !== undefined && !run.settled
     ? Math.max(0, monotonicNow() - run.modelTurnStartedAt)
     : 0
-  const modelTimeMs = hasModelDuration || liveModelTime > 0
-    ? measuredModelMs + liveModelTime
+  // A complete transcript is authoritative: every completed assistant message
+  // carries Pi's own duration, so an older local journal cannot inflate it.
+  // Only fall back to the journal when the visible transcript has gaps (for
+  // example a bounded tail or messages recorded before Pi emitted durations).
+  const completeTranscriptModel = completedAssistantCount > 0 &&
+    completedAssistantDurationCount === completedAssistantCount
+  const baseModelMs = completeTranscriptModel
+    ? transcriptModelMs
     : transcriptModelMs > 0
-      ? transcriptModelMs
-      : null
+      ? (measuredModelMs > 0 ? Math.max(measuredModelMs, transcriptModelMs) : transcriptModelMs)
+      : measuredModelMs
+  const modelTimeMs = baseModelMs > 0 || liveModelTime > 0
+    ? baseModelMs + liveModelTime
+    : null
   // Usage arrives when the message completes. Pair those tokens only with
   // completed messages' windows: a growing live denominator with a frozen
   // numerator makes the reading fall on every delta and jump on completion.

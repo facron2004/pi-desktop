@@ -56,6 +56,37 @@ interface QueuedWrite {
 
 class RpcRecordTooLargeError extends Error {}
 
+export type PreSendRpcErrorCode =
+  | 'closed'
+  | 'invalid-id'
+  | 'duplicate-id'
+  | 'pending-limit'
+  | 'full'
+  | 'too-large'
+  | 'serialize'
+
+/**
+ * Error raised when a command was rejected locally before any bytes were
+ * written to Pi's stdin. Callers must not treat the agent as running.
+ */
+export class PiRpcPreSendError extends Error {
+  readonly code: PreSendRpcErrorCode
+  readonly preSend = true
+
+  constructor(message: string, code: PreSendRpcErrorCode) {
+    super(message)
+    this.name = 'PiRpcPreSendError'
+    this.code = code
+  }
+}
+
+export function isPreSendRpcError(error: unknown): boolean {
+  return (
+    error instanceof PiRpcPreSendError ||
+    (typeof error === 'object' && error !== null && (error as { preSend?: unknown }).preSend === true)
+  )
+}
+
 function stderrTail(line: string): string {
   const bytes = Buffer.from(line, 'utf8')
   if (bytes.length <= MAX_RPC_STDERR_TAIL_BYTES) return line
@@ -151,6 +182,8 @@ function killProcessTree(child: ChildProcessWithoutNullStreams): Promise<void> {
  *  - an optional CR before the LF is stripped
  *  - stdout carries protocol records only, stderr carries diagnostics
  */
+const STDOUT_RECORDS_PER_TICK = 64
+
 export class PiRpcClient extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | null = null
   private readonly decoder = new StringDecoder('utf8')
@@ -159,6 +192,8 @@ export class PiRpcClient extends EventEmitter {
   private bufferedPage: Buffer | null = null
   private bufferedPageBytes = 0
   private discardingOversizedRecord = false
+  private stopPromise?: Promise<void>
+  private stdoutPauseTimer?: ReturnType<typeof setImmediate>
   private pending = new Map<string, Pending>()
   private sequence = 0
   private traceSequence = 0
@@ -204,7 +239,29 @@ export class PiRpcClient extends EventEmitter {
       cwd
     })
 
-    this.child.stdout.on('data', (chunk: Buffer) => this.consume(chunk))
+    let recordsThisTurn = 0
+    let resumeScheduled = false
+    const scheduleResume = (): void => {
+      if (resumeScheduled) return
+      resumeScheduled = true
+      this.stdoutPauseTimer = setImmediate(() => {
+        resumeScheduled = false
+        this.stdoutPauseTimer = undefined
+        recordsThisTurn = 0
+        if (!this.closed && this.child?.stdout && !this.child.stdout.destroyed) {
+          this.child.stdout.resume()
+        }
+      })
+    }
+
+    this.child.stdout.on('data', (chunk: Buffer) => {
+      recordsThisTurn += this.consume(chunk)
+      // Yield briefly after heavy bursts so IPC coalescing timers and UI stay responsive.
+      if (recordsThisTurn >= STDOUT_RECORDS_PER_TICK && this.child?.stdout && !this.child.stdout.destroyed) {
+        this.child.stdout.pause()
+        scheduleResume()
+      }
+    })
     this.child.stderr.on('data', (chunk: Buffer) => {
       const text = this.decoder.write(chunk)
       for (const line of text.split(/\r?\n/)) {
@@ -242,6 +299,10 @@ export class PiRpcClient extends EventEmitter {
     // close follows the final stdout bytes; exit can precede their delivery.
     this.child.on('close', (code, signal) => {
       const pid = this.child?.pid
+      if (this.stdoutPauseTimer) {
+        clearImmediate(this.stdoutPauseTimer)
+        this.stdoutPauseTimer = undefined
+      }
       this.closed = true
       this.child = null
       this.clearWriteQueue()
@@ -252,32 +313,45 @@ export class PiRpcClient extends EventEmitter {
 
   /** Stop the child: close stdin for an orderly shutdown, then force kill. */
   async stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise
     const child = this.child
     if (!child) return
     this.closed = true
+    if (this.stdoutPauseTimer) {
+      clearImmediate(this.stdoutPauseTimer)
+      this.stdoutPauseTimer = undefined
+    }
     this.clearWriteQueue()
     this.failAll(new Error('pi stopped'))
     if (child.exitCode !== null || child.signalCode !== null || !child.pid) {
       this.child = null
       return
     }
-    const exited = new Promise<void>((resolve) => {
-      let forcedKill: Promise<void> | undefined
-      const timer = setTimeout(() => {
-        forcedKill = killProcessTree(child)
-      }, 3000)
-      child.once('exit', () => {
-        clearTimeout(timer)
-        if (forcedKill) void forcedKill.then(resolve, resolve)
-        else resolve()
+    this.stopPromise = (async () => {
+      const exited = new Promise<void>((resolve) => {
+        let forcedKill: Promise<void> | undefined
+        const timer = setTimeout(() => {
+          forcedKill = killProcessTree(child)
+        }, 3000)
+        child.once('exit', () => {
+          clearTimeout(timer)
+          if (forcedKill) void forcedKill.then(resolve, resolve)
+          else resolve()
+        })
       })
+      try {
+        child.stdin.end()
+      } catch {
+        /* the pipe may already be gone */
+      }
+      if (child.stdout && !child.stdout.destroyed && child.stdout.isPaused()) {
+        child.stdout.resume()
+      }
+      await exited
+    })().finally(() => {
+      this.stopPromise = undefined
     })
-    try {
-      child.stdin.end()
-    } catch {
-      /* the pipe may already be gone */
-    }
-    await exited
+    await this.stopPromise
   }
 
   /**
@@ -288,20 +362,20 @@ export class PiRpcClient extends EventEmitter {
   request<T = unknown>(request: RpcRequest, timeoutMs = 30_000, meta?: RpcOutboundMeta): Promise<T> {
     if (!this.child || this.closed) {
       this.trace(request, meta, false)
-      return Promise.reject(new Error('pi process is not running'))
+      return Promise.reject(new PiRpcPreSendError('pi process is not running', 'closed'))
     }
     const id = request.id ?? `pi-${++this.sequence}`
     if (!id) {
       this.trace(request, meta, false)
-      return Promise.reject(new Error('Pi RPC request id must not be empty'))
+      return Promise.reject(new PiRpcPreSendError('Pi RPC request id must not be empty', 'invalid-id'))
     }
     if (this.pending.has(id)) {
       this.trace(request, meta, false)
-      return Promise.reject(new Error(`Duplicate Pi RPC request id "${id}"`))
+      return Promise.reject(new PiRpcPreSendError(`Duplicate Pi RPC request id "${id}"`, 'duplicate-id'))
     }
     if (this.pending.size >= MAX_RPC_PENDING_REQUESTS) {
       this.trace(request, meta, false)
-      return Promise.reject(new Error('Too many pending Pi RPC requests'))
+      return Promise.reject(new PiRpcPreSendError('Too many pending Pi RPC requests', 'pending-limit'))
     }
     return new Promise<T>((resolve, reject) => {
       const entry: Pending = { resolve: resolve as (v: unknown) => void, reject }
@@ -321,18 +395,20 @@ export class PiRpcClient extends EventEmitter {
         this.pending.delete(id)
         this.removeQueuedWrite(id)
         if (entry.timer) clearTimeout(entry.timer)
-        reject(error instanceof Error ? error : new Error(String(error)))
+        const message = error instanceof Error ? error.message : String(error)
+        reject(new PiRpcPreSendError(message, 'serialize'))
         return
       }
       if (result !== 'queued') {
         this.pending.delete(id)
         if (entry.timer) clearTimeout(entry.timer)
-        reject(new Error(
+        reject(new PiRpcPreSendError(
           result === 'full'
             ? 'Pi RPC write queue is full'
             : result === 'too-large'
               ? `Pi RPC record exceeds the ${MAX_RPC_QUEUED_WRITE_BYTES / 1024 / 1024} MB limit`
-              : 'pi process is not running'
+              : 'pi process is not running',
+          result
         ))
       }
     })
@@ -454,11 +530,12 @@ export class PiRpcClient extends EventEmitter {
     void this.stop()
   }
 
-  private consume(chunk: Buffer): void {
+  private consume(chunk: Buffer): number {
+    let parsedCount = 0
     let start = 0
     if (this.discardingOversizedRecord) {
       const newline = chunk.indexOf(LF)
-      if (newline === -1) return
+      if (newline === -1) return 0
       this.discardingOversizedRecord = false
       start = newline + 1
     }
@@ -487,6 +564,7 @@ export class PiRpcClient extends EventEmitter {
       }
       if (line.length > 0 && line[line.length - 1] === CR) line = line.subarray(0, line.length - 1)
       this.handleLine(line.toString('utf8'))
+      parsedCount += 1
       start = index + 1
       index = chunk.indexOf(LF, start)
     }
@@ -498,6 +576,7 @@ export class PiRpcClient extends EventEmitter {
         this.appendBuffered(tail)
       }
     }
+    return parsedCount
   }
 
   private appendBuffered(segment: Buffer): void {

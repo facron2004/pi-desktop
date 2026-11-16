@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { ComposerDraftFile } from '../lib/composer-files'
 import {
   CONTEXT_BREAKDOWN_STATUS_KEY,
   GENERATION_TIMING_STATUS_KEY,
@@ -15,11 +16,13 @@ import type {
   ForkTarget,
   GitCommitResult,
   GitStatus,
+  ImageContent,
   InspectorRequest,
   ModelInfo,
   PiCommand,
   PiEvent,
   PiState,
+  RuntimeQueueEvent,
   RuntimeStatus,
   SessionMeta,
   SessionSearchHit,
@@ -40,14 +43,19 @@ import {
   type ThreadItem
 } from '../lib/thread'
 import { basename, resolveAgainst, samePath } from '../lib/path'
-import { updateThreadSessionName } from '../lib/live-sessions'
+import {
+  activeConversationTitle,
+  listPendingUiSessions,
+  updateThreadSessionName,
+  type PendingUiSession
+} from '../lib/live-sessions'
 import { stripAnsi } from '../lib/ansi'
 import { collectProjects, type Project } from '../lib/projects'
 import { APP_COMMANDS, normalizeAppCommandInput } from '../lib/app-commands'
 import { COMPACTION_EXTENSION_MANAGED_MESSAGE, compactionOwnedByExtension, describeCompactionFailure } from '../lib/compaction-error'
 import { isMcpOrSkillChatter } from '../lib/extension-notices'
 import { hydrationStale, needsSessionHydration, scopeEvent, scopeStatus } from '../lib/session-scope'
-import { clearScrollMemory, migrateScrollMemory } from '../lib/scroll-memory'
+import { clearScrollMemory, migrateScrollMemory, rememberScrollPosition, scrollKeyOf } from '../lib/scroll-memory'
 import { beginStream, finishStream, rekeyStreamState, resetStreamState } from '../lib/stream-events'
 import { estimateContextBreakdown, parseRequestContextBreakdown } from '../lib/context-reading'
 import { recordModelUse } from '../lib/model-recency'
@@ -63,7 +71,29 @@ import {
   recordTtftDuration
 } from '../lib/session-timing'
 
+export { listPendingUiSessions, type PendingUiSession }
+
 export type QueueKind = 'steer' | 'followUp'
+
+export interface ComposerDraftImage extends ImageContent {
+  id: string
+  name: string
+  bytes: number
+  previewUrl?: string
+}
+
+export type { ComposerDraftFile } from '../lib/composer-files'
+
+export interface ComposerDraft {
+  text: string
+  images: ComposerDraftImage[]
+  /** Non-image files shown as attachment chips and sent as `@` references. */
+  files?: ComposerDraftFile[]
+  pastedRefs?: Record<string, string>
+  history?: string[]
+}
+
+export type CwdWaitState = Omit<RuntimeQueueEvent, 'ownerId' | 'queued'>
 
 /** A status line published by an extension through `setStatus`. */
 export interface UiStatusEntry {
@@ -152,6 +182,8 @@ export interface RunState {
   durationMs?: number
   /** True once the run finished on purpose (completed or aborted). */
   settled: boolean
+  /** True when the run hit an extension or retry error before settling. */
+  hadError?: boolean
   /** How the run ended, when it settled. `failed` means the last answer ended in error. */
   outcome?: 'completed' | 'aborted' | 'failed'
 }
@@ -173,6 +205,12 @@ export interface SessionThread {
   isStreaming: boolean
   transport: 'connected' | 'disconnected'
   uiRequest?: ExtensionUiRequest
+  /** FIFO blocking extension dialogs for this conversation (`uiRequest === uiRequests[0]`). */
+  uiRequests: ExtensionUiRequest[]
+  /** Stable client identity preserved across draft -> file promotion (`rekeyThread`), fresh on fork. */
+  clientKey: string
+  /** Set while queued behind another session holding an overlapping working directory. */
+  cwdWait?: CwdWaitState | null
   uiStatuses: UiStatusEntry[]
   uiWidgets: UiWidgetEntry[]
   uiTitle?: string
@@ -189,6 +227,8 @@ export interface SessionThread {
   thinkingLevels: string[]
   commands: PiCommand[]
   version: number
+  /** Monotonic counter bumped when a user prompt or inline command is submitted in this conversation. */
+  submitSeq?: number
   /**
    * What the last background run left behind: a failure, or an answer the
    * reader has not seen yet. It is cleared when the conversation is opened,
@@ -203,6 +243,9 @@ const THREAD_KEYS = [
   'isStreaming',
   'transport',
   'uiRequest',
+  'uiRequests',
+  'clientKey',
+  'cwdWait',
   'uiStatuses',
   'uiWidgets',
   'uiTitle',
@@ -218,15 +261,26 @@ const THREAD_KEYS = [
   'models',
   'thinkingLevels',
   'commands',
+  'submitSeq',
   'notice'
 ] as const
 
-function emptyThread(cwd?: string, agentMode: AgentMode = 'default'): SessionThread {
+function mintClientKey(): string {
+  return nextId('client')
+}
+
+function emptyThread(
+  cwd?: string,
+  agentMode: AgentMode = 'default',
+  clientKey = mintClientKey()
+): SessionThread {
   return {
     items: [],
     run: IDLE_RUN,
     isStreaming: false,
     transport: 'connected',
+    uiRequests: [],
+    clientKey,
     uiStatuses: [],
     uiWidgets: [],
     queue: { steering: [], followUp: [] },
@@ -236,6 +290,7 @@ function emptyThread(cwd?: string, agentMode: AgentMode = 'default'): SessionThr
     models: [],
     thinkingLevels: [],
     commands: APP_COMMANDS,
+    submitSeq: 0,
     version: 0
   }
 }
@@ -249,8 +304,23 @@ function draftMode(settings: AppSettings): AgentMode {
   return settings.defaultPlanMode === true ? 'plan' : 'default'
 }
 
-function viewKeyOf(state: { activeSessionFile?: string; draftId?: string }): string {
+export function draftKeyOf(state: { activeSessionFile?: string; draftId?: string }): string {
   return state.activeSessionFile || state.draftId || ''
+}
+
+function viewKeyOf(state: { activeSessionFile?: string; draftId?: string }): string {
+  return draftKeyOf(state)
+}
+
+function pinScrollToBottom(sessionKey: string | undefined): void {
+  const raw = sessionKey?.trim()
+  if (!raw) return
+  const snapshot = { top: Number.MAX_SAFE_INTEGER, atBottom: true }
+  rememberScrollPosition(scrollKeyOf(raw), snapshot)
+  const canonical = threadKey(raw)
+  if (canonical && canonical !== raw) {
+    rememberScrollPosition(scrollKeyOf(canonical), snapshot)
+  }
 }
 
 /**
@@ -296,10 +366,21 @@ export interface AppStore {
   items: ThreadItem[]
   /** Transcript and run of every conversation, keyed by file path or draft id. */
   threads: Record<string, SessionThread>
+  /** Per-session unsent composer text, attachments, pasted chunks, and input history. */
+  drafts: Record<string, ComposerDraft>
+  updateDraft: (
+    sessionKey: string,
+    updater: Partial<ComposerDraft> | ((prev: ComposerDraft) => ComposerDraft)
+  ) => void
+  clearDraft: (sessionKey: string) => void
   /** Conversation that has not been given a file yet. */
   draftId?: string
   queue: { steering: string[]; followUp: string[] }
   activeSessionFile?: string
+  /** Stable identity of the viewed conversation across draft -> file rekeying. */
+  clientKey: string
+  /** Queue metadata when the viewed session is waiting behind another session holding its cwd. */
+  cwdWait?: CwdWaitState | null
   /** The conversation column is showing the plugin/skill marketplace or scheduled tasks instead of the thread. */
   deskPage: 'marketplace' | 'scheduled' | null
   setDeskPage: (page: 'marketplace' | 'scheduled' | null) => void
@@ -307,7 +388,7 @@ export interface AppStore {
   hydratingSessionFile?: string
   /** User messages the active branch can be forked from. */
   forkTargets: ForkTarget[]
-  /** True while a fork is in flight, so the button cannot be pressed twice. */
+  /** True while a fork or an edit rewind is in flight, so the button cannot be pressed twice. */
   forking: boolean
   /**
    * The execution Pi is running, as far as the client can tell.
@@ -334,6 +415,8 @@ export interface AppStore {
   git?: GitStatus
   /** Bumped when the app asks the review panel to open its commit dialog. */
   commitRequest: number
+  /** Monotonic counter bumped when a user prompt or inline command is submitted in this conversation. */
+  submitSeq?: number
   /** A message the thread has been asked to scroll to and flash. */
   pendingJump?: PendingJump
   /**
@@ -344,6 +427,8 @@ export interface AppStore {
 
   /** A blocking extension dialog waiting for an answer. */
   uiRequest?: ExtensionUiRequest
+  /** FIFO queue of blocking dialogs for the viewed conversation (`uiRequest === uiRequests[0]`). */
+  uiRequests: ExtensionUiRequest[]
   uiStatuses: UiStatusEntry[]
   uiWidgets: UiWidgetEntry[]
   /** Title published by an extension through `setTitle`. */
@@ -448,14 +533,26 @@ export interface AppStore {
   dismissError: () => void
   showToast: (message: string, level?: 'info' | 'warning' | 'error') => void
   clearToast: () => void
-  respondUi: (response: ExtensionUiResponse) => Promise<void>
-  dismissUi: () => Promise<void>
+  respondUi: (
+    response: ExtensionUiResponse,
+    target?: { sessionKey?: string; requestId?: string }
+  ) => Promise<void>
+  dismissUi: (target?: { sessionKey?: string; requestId?: string }) => Promise<void>
   clearComposerText: () => void
   /** Append text to the composer and focus it. */
-  insertIntoComposer: (text: string, mode?: 'append' | 'replace') => void
+  insertIntoComposer: (text: string, mode?: 'append' | 'replace', sessionKey?: string) => void
   refreshForkTargets: (sessionKey?: string) => Promise<void>
   /** Start a new branch that keeps the history before `entryId`. */
   forkFrom: (entryId: string) => Promise<void>
+  /**
+   * Move this conversation back to before `entryId` in the same session file
+   * and put the original prompt back in the composer for editing.
+   */
+  editMessageFrom: (
+    entryId: string,
+    text?: string,
+    images?: { data: string; mimeType: string }[]
+  ) => Promise<void>
   /** Read the branch and the working tree of the open project. */
   refreshGit: () => Promise<void>
   /**
@@ -621,6 +718,35 @@ export function getSessionAccessLru(): readonly string[] {
   return sessionAccessLru
 }
 
+const hydrationInFlight = new Map<string, Promise<void>>()
+const inlineBashCounts = new Map<string, number>()
+const respondingUiIds = new Set<string>()
+
+function hasThreadWork(thread: SessionThread): boolean {
+  if (thread.items.length > 0) return true
+  if (thread.isStreaming) return true
+  if (thread.uiRequest || (thread.uiRequests && thread.uiRequests.length > 0)) return true
+  if (thread.queue.steering.length > 0 || thread.queue.followUp.length > 0) return true
+  return thread.run.phase !== 'idle' && !thread.run.settled
+}
+
+/** Remove abandoned empty `draft:` threads when switching views so they never accumulate in `threads`. */
+function pruneIdleDraftThreads(
+  threads: Record<string, SessionThread>,
+  keepKey?: string
+): Record<string, SessionThread> {
+  const canonicalKeep = keepKey ? threadKey(keepKey) : undefined
+  let next: Record<string, SessionThread> | undefined
+  for (const [key, thread] of Object.entries(threads)) {
+    if (!key.startsWith('draft:')) continue
+    if (key === keepKey || key === canonicalKeep) continue
+    if (hasThreadWork(thread)) continue
+    next ??= { ...threads }
+    delete next[key]
+  }
+  return next ?? threads
+}
+
 export function enforceSessionLru(
   threads: Record<string, SessionThread>,
   activeKey?: string,
@@ -637,7 +763,7 @@ export function enforceSessionLru(
     if (thread.isStreaming) continue
     if (thread.run.phase !== 'idle' && !thread.run.settled) continue
     if (thread.queue.steering.length > 0 || thread.queue.followUp.length > 0) continue
-    if (thread.uiRequest) continue
+    if (thread.uiRequest || (thread.uiRequests && thread.uiRequests.length > 0)) continue
     inactiveLoadedKeys.push(key)
   }
 
@@ -667,7 +793,9 @@ export function enforceSessionLru(
       }
       changed = true
     }
-    clearViewState(key)
+    // Keep `historyFirstVisibleTurn` across LRU item eviction so returning
+    // to an older conversation restores the reader's expanded history slice.
+    clearViewState(key, { preserveHistoryWindow: true })
     forgetSessionLru(key)
   }
 
@@ -758,7 +886,7 @@ function schedulePrewarm(sessionKey: string | undefined, messageCount: number): 
     if (!key) return
     const state = useAppStore.getState()
     if (viewKeyOf(state) !== key) return
-    if (state.threads[key]?.isStreaming) return
+    if (state.threads[key]?.isStreaming || state.threads[key]?.run.settled === false) return
     state.prewarmRuntime(key)
   }, PREWARM_DELAY_MS)
   // Node's timer object has unref; a browser's numeric handle does not. Tests
@@ -819,9 +947,70 @@ export const useAppStore = create<AppStore>((set, get) => ({
   commands: APP_COMMANDS,
   items: [],
   threads: {},
+  drafts: {},
+  updateDraft: (sessionKey, updater) => {
+    const key = threadKey(sessionKey.trim())
+    if (!key) return
+    set((state) => {
+      const previous = state.drafts[key] ?? { text: '', images: [] }
+      const nextDraft = typeof updater === 'function'
+        ? updater(previous)
+        : { ...previous, ...updater }
+      const empty =
+        !nextDraft.text &&
+        nextDraft.images.length === 0 &&
+        (nextDraft.files?.length ?? 0) === 0 &&
+        (!nextDraft.pastedRefs || Object.keys(nextDraft.pastedRefs).length === 0) &&
+        (!nextDraft.history || nextDraft.history.length === 0)
+      if (empty) {
+        if (!(key in state.drafts)) return state
+        const drafts = { ...state.drafts }
+        delete drafts[key]
+        return { drafts }
+      }
+      return {
+        drafts: {
+          ...state.drafts,
+          [key]: nextDraft
+        }
+      }
+    })
+  },
+  clearDraft: (sessionKey) => {
+    const key = threadKey(sessionKey.trim())
+    if (!key) return
+    set((state) => {
+      if (!(key in state.drafts)) return state
+      const drafts = { ...state.drafts }
+      delete drafts[key]
+      return { drafts }
+    })
+  },
   queue: { steering: [], followUp: [] },
+  clientKey: '',
+  submitSeq: 0,
+  uiRequests: [],
   deskPage: null,
-  setDeskPage: (deskPage) => set({ deskPage }),
+  setDeskPage: (deskPage) => {
+    set((state) => {
+      if (deskPage !== null) return { deskPage }
+      const key = viewKeyOf(state)
+      const current = key ? state.threads[key] : undefined
+      if (!current?.notice && !state.notice) return { deskPage: null }
+      return {
+        deskPage: null,
+        notice: undefined,
+        ...(current?.notice && key
+          ? {
+              threads: {
+                ...state.threads,
+                [key]: { ...current, notice: undefined }
+              }
+            }
+          : {})
+      }
+    })
+  },
   forkTargets: [],
   forking: false,
   commitRequest: 0,
@@ -959,15 +1148,37 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // StrictMode replays effects in development. bootstrapPromise above makes
       // this single startup transaction idempotent across that replay.
       unsubscribeRuntime?.()
-      const offEvent = window.pi.runtime.onEvent((payload) => {
+      const ingestRuntimeEvent = (payload: unknown): void => {
         const scoped = scopeEvent(payload, viewKeyOf(get()))
         if (!scoped) return
         handleEvent(bindSet(set, get, scoped.ownerId), bindGet(get, scoped.ownerId), scoped.event, get, scoped.ownerId, set)
+      }
+      const offEvent = window.pi.runtime.onEvent((payload) => {
+        if (Array.isArray(payload)) {
+          for (const item of payload) ingestRuntimeEvent(item)
+          return
+        }
+        ingestRuntimeEvent(payload)
       })
       const offRekey = window.pi.runtime.onRekey?.((change) => {
         if (prewarmOnlyRuntimes.delete(change.from)) prewarmOnlyRuntimes.add(change.to)
         if (retryArmed.delete(change.from)) retryArmed.add(change.to)
         rekeyThread(set, get, change.from, change.to, change.replace)
+      })
+      const offQueue = window.pi.runtime.onQueue?.((queueEvent) => {
+        const key = threadKey(queueEvent.ownerId)
+        if (!key) return
+        bindSet(set, get, key)({
+          cwdWait: queueEvent.queued
+            ? {
+                cwd: queueEvent.cwd,
+                position: queueEvent.position,
+                holderOwnerId: queueEvent.holderOwnerId,
+                holderCwd: queueEvent.holderCwd,
+                externalHolder: queueEvent.externalHolder
+              }
+            : undefined
+        })
       })
       const offStatus = window.pi.runtime.onStatus((incoming) => {
         const scoped = scopeStatus(incoming, viewKeyOf(get()))
@@ -1029,6 +1240,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       unsubscribeRuntime = () => {
         offEvent()
         offRekey?.()
+        offQueue?.()
         offStatus()
         offSessionsChanged?.()
       }
@@ -1165,16 +1377,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const draftId = sessionFile ? undefined : mintDraft()
     // Opening a conversation is what clears its mark: the reader has seen it.
     const thread = cached
-      ? { ...cached, notice: undefined }
-      : emptyThread(workspace?.path)
+      ? { ...cached, clientKey: cached.clientKey || mintClientKey(), notice: undefined }
+      : emptyThread(workspace?.path, draftMode(get().settings))
     if (sessionFile) {
       deletedSessionKeys.delete(sessionFile)
       deletedSessionKeys.delete(threadKey(sessionFile))
       touchSessionLru(sessionFile)
     }
     const activeKey = sessionFile ?? draftId!
+    const prunedThreads = pruneIdleDraftThreads(get().threads, activeKey)
     const threads = enforceSessionLru(
-      { ...get().threads, [activeKey]: thread },
+      { ...prunedThreads, [activeKey]: thread },
       activeKey
     )
     set({
@@ -1183,6 +1396,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       draftId,
       activeSessionFile: sessionFile,
       hydratingSessionFile,
+      deskPage: null,
       error: undefined,
       composerText: undefined,
       git: undefined,
@@ -1254,10 +1468,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async selectSession(session, sourceAction = 'sidebar-select') {
     void sourceAction
+    const targetFile = threadKey(session.file)
     const currentKey = viewKeyOf(get())
-    if (currentKey && currentKey !== session.file) touchSessionLru(currentKey)
+    if (currentKey && currentKey !== targetFile) touchSessionLru(currentKey)
     cancelScheduledPrewarm()
-    if (currentKey !== session.file) stopPrewarmOnlyRuntime(currentKey)
+    if (currentKey !== targetFile) stopPrewarmOnlyRuntime(currentKey)
     const workspace = get().workspace
     const changesProject = session.cwd
       ? !workspace || !samePath(session.cwd, workspace.path)
@@ -1266,14 +1481,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
     // Paint anything still queued for the conversation being left. Those
     // reducers name their own owner, so they cannot land in the new view.
     drainPending()
-    const cached = get().threads[session.file]
+    const cached = get().threads[targetFile]
     // Opening a conversation is what clears its mark: the reader has seen it.
-    const thread = cached ? { ...cached, notice: undefined } : emptyThread(session.cwd)
+    const thread = cached
+      ? { ...cached, clientKey: cached.clientKey || mintClientKey(), notice: undefined }
+      : emptyThread(session.cwd)
     // A conversation Pi has not written to disk yet is still keyed by its
     // draft id (or by the path Pi assigned before flushing). It is a
     // conversation, not a file, so the view follows its own key and nothing
     // here may read that key as a session file.
-    const live = session.file.startsWith('draft:')
+    const live = targetFile.startsWith('draft:')
     const shouldHydrate = !live && needsSessionHydration(
       session.messageCount,
       cached?.version,
@@ -1281,51 +1498,61 @@ export const useAppStore = create<AppStore>((set, get) => ({
       thread.isStreaming
     )
     deletedSessionKeys.delete(session.file)
-    deletedSessionKeys.delete(threadKey(session.file))
-    touchSessionLru(session.file)
+    deletedSessionKeys.delete(targetFile)
+    touchSessionLru(targetFile)
+    if (changesProject) pendingProjectPath = undefined
+    const prunedThreads = pruneIdleDraftThreads(get().threads, targetFile)
     const threads = enforceSessionLru(
-      { ...get().threads, [session.file]: thread },
-      session.file
+      { ...prunedThreads, [targetFile]: thread },
+      targetFile
     )
     set({
       threads,
-      draftId: live ? session.file : undefined,
-      activeSessionFile: live ? undefined : session.file,
-      hydratingSessionFile: shouldHydrate ? session.file : undefined,
+      draftId: live ? targetFile : undefined,
+      activeSessionFile: live ? undefined : targetFile,
+      hydratingSessionFile: shouldHydrate ? targetFile : undefined,
       deskPage: null,
       error: undefined,
+      composerText: undefined,
+      pendingJump: undefined,
+      ...(changesProject ? { git: undefined, pendingProject: undefined } : {}),
       ...projectThread(thread)
     })
-    schedulePrewarm(session.file, session.messageCount)
+    schedulePrewarm(targetFile, session.messageCount)
     try {
-      if (!session.cwd && (workspace || get().settings.activeWorkspaceId !== null)) {
-        const settings = await window.pi.settings.patch({ activeWorkspaceId: null })
-        if (epoch !== workspaceEpoch) return
-        set({ settings, workspace: undefined })
-      } else if (session.cwd && (!workspace || !samePath(session.cwd, workspace.path))) {
-        const known = get().settings.workspaces.find((item) => samePath(item.path, session.cwd))
-        const target: Workspace = known ?? {
-          id: `session-${session.id.slice(0, 8)}`,
-          path: session.cwd,
-          name: session.cwd.split(/[\\/]/).filter(Boolean).pop() ?? session.cwd,
-          lastOpenedAt: Date.now()
-        }
-        const settings = await window.pi.settings.patch({
-          ...(known ? {} : { workspaces: [...get().settings.workspaces, target] }),
-          activeWorkspaceId: target.id
-        })
-        if (epoch !== workspaceEpoch) return
-        set({ settings, workspace: target })
-        void get().refreshGit()
-      }
-      // There is no file to replay for a conversation that has none yet; its
-      // transcript is the live one the store already holds.
-      if (shouldHydrate) await get().hydrateSession(session.file)
+      const settingsPromise = !session.cwd && (workspace || get().settings.activeWorkspaceId !== null)
+        ? window.pi.settings.patch({ activeWorkspaceId: null }).then((settings) => {
+            if (epoch !== workspaceEpoch) return
+            set({ settings, workspace: undefined })
+          })
+        : session.cwd && (!workspace || !samePath(session.cwd, workspace.path))
+          ? (() => {
+              const known = get().settings.workspaces.find((item) => samePath(item.path, session.cwd))
+              const target: Workspace = known ?? {
+                id: `session-${session.id.slice(0, 8)}`,
+                path: session.cwd,
+                name: session.cwd.split(/[\\/]/).filter(Boolean).pop() ?? session.cwd,
+                lastOpenedAt: Date.now()
+              }
+              return window.pi.settings.patch({
+                ...(known ? {} : { workspaces: [...get().settings.workspaces, target] }),
+                activeWorkspaceId: target.id
+              }).then((settings) => {
+                if (epoch !== workspaceEpoch) return
+                set({ settings, workspace: target })
+                void get().refreshGit()
+              })
+            })()
+          : Promise.resolve()
+      // Start hydration in parallel with project settings persistence: reading
+      // the JSONL does not depend on `activeWorkspaceId`.
+      const hydratePromise = shouldHydrate ? get().hydrateSession(targetFile) : Promise.resolve()
+      await Promise.all([settingsPromise, hydratePromise])
     } catch (error) {
-      if ((get().activeSessionFile ?? get().draftId) === session.file) {
+      if ((get().activeSessionFile ?? get().draftId) === targetFile) {
         set({
           error: messageOf(error),
-          ...(get().hydratingSessionFile === session.file ? { hydratingSessionFile: undefined } : {})
+          ...(get().hydratingSessionFile === targetFile ? { hydratingSessionFile: undefined } : {})
         })
       }
     }
@@ -1333,48 +1560,79 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async hydrateSession(file) {
     deletedSessionKeys.delete(file)
-    deletedSessionKeys.delete(threadKey(file))
+    const canonical = threadKey(file)
+    deletedSessionKeys.delete(canonical)
+    const existingHydration = hydrationInFlight.get(canonical)
+    if (existingHydration) return existingHydration
+
     const hydrate = window.pi.sessions.hydrate
     if (typeof hydrate !== 'function') {
       if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
       return
     }
-    const versionAtStart = get().threads[file]?.version ?? 0
-    const streaming = get().threads[file]?.isStreaming ?? false
+    const threadAtStart = get().threads[file]
+    const versionAtStart = threadAtStart?.version ?? 0
+    const itemCountAtStart = threadAtStart?.items.length ?? 0
+    const streaming = threadAtStart?.isStreaming ?? false
     if (streaming) {
       if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
       return
     }
-    try {
-      const messages = await hydrate(file)
-      const current = get().threads[file]
-      if (!current) return
-      if (hydrationStale(versionAtStart, current.version, current.isStreaming)) {
-        // A version bump can come from a status/stats patch that says nothing
-        // about the transcript. Only a live transcript that already holds
-        // items outranks the disk read; with none, applying it is still right.
-        if (current.isStreaming || current.items.length > 0) return
+
+    const work = (async () => {
+      try {
+        const messages = await hydrate(file)
+        const current = get().threads[file]
+        if (!current) return
+        const stale = hydrationStale(versionAtStart, current.version, current.isStreaming)
+        // If the user submitted a prompt while an empty cache was hydrating,
+        // keep the live turn items at the tail and prepend the older disk history.
+        const shouldMergeLiveTail = stale && itemCountAtStart === 0 && current.items.length > 0
+        if (stale && !shouldMergeLiveTail && (current.isStreaming || current.items.length > 0)) {
+          return
+        }
+
+        const hydratedItems = itemsFromMessages(messages ?? [])
+        let nextItems = hydratedItems
+        if (shouldMergeLiveTail) {
+          const firstLive = current.items[0]
+          let prefixEnd = hydratedItems.length
+          if (firstLive?.kind === 'user') {
+            const liveText = firstLive.text.trim()
+            const lastItem = hydratedItems[hydratedItems.length - 1]
+            if (lastItem?.kind === 'user' && lastItem.text.trim() === liveText) {
+              prefixEnd = hydratedItems.length - 1
+            }
+          }
+          const prefix = prefixEnd < hydratedItems.length ? hydratedItems.slice(0, prefixEnd) : hydratedItems
+          nextItems = [...prefix, ...current.items]
+        }
+
+        const next: SessionThread = {
+          ...current,
+          items: nextItems,
+          contextBreakdown: current.contextBreakdown?.source === 'request'
+            ? current.contextBreakdown
+            : estimateContextBreakdown(messages ?? [], current.stats?.contextUsage?.tokens),
+          version: current.version + 1
+        }
+        const rawThreads = { ...get().threads, [file]: next }
+        const threads = enforceSessionLru(rawThreads, viewKeyOf(get()))
+        if (get().activeSessionFile === file) set({ threads, ...projectThread(next) })
+        else set({ threads })
+      } catch (error) {
+        // `openWorkspace` fires this read without awaiting it; a rejected read
+        // must surface on the conversation instead of becoming an unhandled
+        // rejection in the renderer.
+        if (get().activeSessionFile === file) set({ error: messageOf(error) })
+      } finally {
+        hydrationInFlight.delete(canonical)
+        if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
       }
-      const next: SessionThread = {
-        ...current,
-        items: itemsFromMessages(messages ?? []),
-        contextBreakdown: current.contextBreakdown?.source === 'request'
-          ? current.contextBreakdown
-          : estimateContextBreakdown(messages ?? [], current.stats?.contextUsage?.tokens),
-        version: current.version + 1
-      }
-      const rawThreads = { ...get().threads, [file]: next }
-      const threads = enforceSessionLru(rawThreads, viewKeyOf(get()))
-      if (get().activeSessionFile === file) set({ threads, ...projectThread(next) })
-      else set({ threads })
-    } catch (error) {
-      // `openWorkspace` fires this read without awaiting it; a rejected read
-      // must surface on the conversation instead of becoming an unhandled
-      // rejection in the renderer.
-      if (get().activeSessionFile === file) set({ error: messageOf(error) })
-    } finally {
-      if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
-    }
+    })()
+
+    hydrationInFlight.set(canonical, work)
+    return work
   },
 
   async renameSession(name: string) {
@@ -1470,15 +1728,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       const threads = { ...get().threads }
       delete threads[file]
+      const drafts = { ...get().drafts }
+      delete drafts[file]
+      delete drafts[threadKey(file)]
       forgetDeletedThread(file)
       const sessions = get().sessions.filter((entry) => entry.file !== file)
       if (get().activeSessionFile === file) {
         const draftId = mintDraft()
-        const thread = emptyThread(get().workspace?.path)
+        const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
         threads[draftId] = thread
-        set({ sessions, threads, draftId, activeSessionFile: undefined, hydratingSessionFile: undefined, ...projectThread(thread) })
+        set({
+          sessions,
+          threads,
+          drafts,
+          draftId,
+          activeSessionFile: undefined,
+          hydratingSessionFile: undefined,
+          error: undefined,
+          composerText: undefined,
+          pendingJump: undefined,
+          ...projectThread(thread)
+        })
       } else {
-        set({ sessions, threads })
+        set({ sessions, threads, drafts })
       }
       let preferenceCleanupError: string | undefined
       try {
@@ -1561,8 +1833,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     drainPending()
     const draftId = mintDraft()
     const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
+    const prunedThreads = pruneIdleDraftThreads(get().threads, draftId)
     const threads = enforceSessionLru(
-      { ...get().threads, [draftId]: thread },
+      { ...prunedThreads, [draftId]: thread },
       draftId
     )
     set({
@@ -1570,6 +1843,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       activeSessionFile: undefined,
       hydratingSessionFile: undefined,
       deskPage: null,
+      error: undefined,
+      composerText: undefined,
+      pendingJump: undefined,
       threads,
       stats: undefined,
       ...projectThread(thread),
@@ -1580,7 +1856,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async ensureRuntime(sessionKey = viewKeyOf(get()), sourceAction = 'ensure') {
     const key = threadKey(sessionKey)
     if (!key) throw new Error('Missing conversation id')
-    if (sourceAction !== 'composer-focus') {
+    const isPrewarm = sourceAction === 'composer-focus'
+    if (!isPrewarm) {
       prewarmOnlyRuntimes.delete(key)
       if (scheduledPrewarmKey === key) cancelScheduledPrewarm()
     }
@@ -1596,6 +1873,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // A resumed conversation restores its own model and reasoning from Pi.
       model: fresh ? state.settings.model : undefined,
       thinkingLevel: fresh ? state.settings.thinkingLevel : undefined,
+      ...(isPrewarm ? { prewarm: true } : {}),
       trace: { sourceAction, uiSessionId: key }
     })
     if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start')
@@ -1620,7 +1898,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (!key || typeof window.pi.runtime.ensure !== 'function') return
     // A run already owns the process; marking it speculative would let a view
     // change stop work that is still going.
-    if (get().threads[key]?.isStreaming) return
+    if (get().threads[key]?.isStreaming || get().threads[key]?.run.settled === false) return
     prewarmOnlyRuntimes.add(key)
     void get().ensureRuntime(key, 'composer-focus').catch(() => {
       // Keep the cold composer usable; an actual send retries and reports errors.
@@ -1674,7 +1952,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         draftId,
         threads: { ...get().threads, [draftId]: thread },
         activeSessionFile: undefined,
-        hydratingSessionFile: undefined
+        hydratingSessionFile: undefined,
+        ...projectThread(thread)
       })
       key = draftId
     }
@@ -1682,9 +1961,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const ownGet = bindGet(get, key)
     const payload: Record<string, unknown> = { message: trimmed, streamingBehavior: kind }
     if (images.length) payload.images = images
+    pinScrollToBottom(key)
     update((state) => ({
+      error: undefined,
       isStreaming: true,
-      run: state.run.settled ? { phase: 'queued', turns: 0, settled: false } : state.run
+      submitSeq: (state.submitSeq ?? 0) + 1,
+      run: state.run.settled ? { phase: 'queued', turns: 0, settled: false } : state.run,
+      status: { ...state.status, cwd: state.status.cwd ?? get().workspace?.path }
     }))
     try {
       await get().ensureRuntime(key, 'prompt-send')
@@ -1705,6 +1988,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // follow that answer rather than stay on the optimistic `queued`.
       if (result?.disposition === 'handled') {
         update((state) => ({
+          cwdWait: undefined,
           isStreaming: state.run.phase === 'queued' || state.run.phase === 'aborting' ? false : state.isStreaming,
           run: state.run.phase === 'queued' || (result.cancelled && state.run.phase === 'aborting') ? { ...state.run, phase: 'idle', settled: true } : state.run,
           items: result.cancelled ? state.items : applyEvent(state.items, {
@@ -1720,6 +2004,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const startedAt = Date.now()
         const startedMonotonicAt = monotonicNow()
         update((state) => ({
+          cwdWait: undefined,
           run:
             state.run.phase === 'queued'
               ? {
@@ -1734,6 +2019,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         // No run was opened and Pi did not say it queued the message, so the
         // optimistic phase must not be left standing.
         update((state) => ({
+          cwdWait: undefined,
           isStreaming: state.run.phase === 'queued' ? false : state.isStreaming,
           run: state.run.phase === 'queued' ? { ...state.run, phase: 'idle', settled: true } : state.run
         }))
@@ -1742,6 +2028,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // The prompt never reached Pi, so a run it was shown as queued for
       // must not stay open.
       update((state) => ({
+        cwdWait: undefined,
         error: state.run.phase === 'aborting' || state.run.outcome === 'aborted' ? state.error : messageOf(error),
         isStreaming: state.run.phase === 'queued' ? false : state.isStreaming,
         run: state.run.phase === 'queued' ? { ...state.run, phase: 'idle', settled: true } : state.run
@@ -1755,9 +2042,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const id = `inline-bash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
     // Events that were still waiting for a frame belong to the conversation
     // before this command; they must not land after it.
-    drainPending()
-    const owner = viewKeyOf(get())
+    let owner = viewKeyOf(get())
+    if (!owner) {
+      const draftId = mintDraft()
+      const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
+      set({
+        draftId,
+        threads: { ...get().threads, [draftId]: thread },
+        activeSessionFile: undefined,
+        hydratingSessionFile: undefined,
+        ...projectThread(thread)
+      })
+      owner = draftId
+    }
+    const ownerKey = threadKey(owner)
+    drainPending(ownerKey)
     const update = bindSet(set, get, owner)
+    const ownGet = bindGet(get, owner)
     const entry: ThreadItem = {
       id,
       kind: 'bash',
@@ -1767,40 +2068,130 @@ export const useAppStore = create<AppStore>((set, get) => ({
       timestamp: Date.now(),
       order: nextOrder()
     }
-    update((state) => ({ items: [...state.items, entry] }))
+    let startedBashRun = false
+    pinScrollToBottom(owner)
+    update((state) => {
+      if (state.run.settled) startedBashRun = true
+      return {
+        items: [...state.items, entry],
+        error: undefined,
+        isStreaming: true,
+        submitSeq: (state.submitSeq ?? 0) + 1,
+        run: state.run.settled ? { phase: 'queued', turns: 0, settled: false } : state.run,
+        status: { ...state.status, cwd: state.status.cwd ?? get().workspace?.path }
+      }
+    })
+    let countedKey: string | undefined
     try {
       const key = await get().ensureRuntime(owner, 'inline-bash')
+      if (ownGet().run.phase === 'aborting' || ownGet().run.outcome === 'aborted') {
+        if (startedBashRun && !ownGet().run.settled && !ownGet().run.runId) {
+          update((state) => ({
+            cwdWait: undefined,
+            isStreaming: false,
+            run: { ...state.run, phase: 'idle', settled: true, outcome: 'aborted' },
+            items: state.items.map((item) =>
+              item.kind === 'bash' && item.id === id
+                ? { ...item, output: item.output || 'Cancelled', exitCode: 130 }
+                : item
+            )
+          }))
+        } else {
+          update((state) => ({
+            items: state.items.map((item) =>
+              item.kind === 'bash' && item.id === id
+                ? { ...item, output: item.output || 'Cancelled', exitCode: 130 }
+                : item
+            )
+          }))
+        }
+        return
+      }
+      countedKey = threadKey(key)
+      inlineBashCounts.set(countedKey, (inlineBashCounts.get(countedKey) ?? 0) + 1)
+      if (startedBashRun && ownGet().run.phase === 'queued') {
+        update((state) =>
+          state.run.phase === 'queued' && !state.run.runId
+            ? {
+                run: {
+                  ...state.run,
+                  phase: 'working',
+                  startedAt: state.run.startedAt ?? Date.now(),
+                  startedMonotonicAt: state.run.startedMonotonicAt ?? monotonicNow(),
+                  phaseStartedAt: monotonicNow()
+                }
+              }
+            : {}
+        )
+      }
       const result = await tracedRpc<{
         output?: string
         exitCode?: number
         cancelled?: boolean
       }>(key, 'bash', { command: trimmed, id, excludeFromContext }, 600_000, 'inline-bash')
-      update((state) => ({
-        items: state.items.map((item) =>
-          item.kind === 'bash' && item.id === id
+      update((state) => {
+        const bashOnly = startedBashRun && !state.run.settled && !state.run.runId
+        return {
+          items: state.items.map((item) =>
+            item.kind === 'bash' && item.id === id
+              ? {
+                  ...item,
+                  output: typeof result?.output === 'string' ? result.output : item.output,
+                  exitCode: typeof result?.exitCode === 'number' ? result.exitCode : 0
+                }
+              : item
+          ),
+          ...(bashOnly
             ? {
-                ...item,
-                output: typeof result?.output === 'string' ? result.output : item.output,
-                exitCode: typeof result?.exitCode === 'number' ? result.exitCode : 0
+                cwdWait: undefined,
+                isStreaming: false,
+                run: {
+                  ...state.run,
+                  phase: 'idle',
+                  settled: true,
+                  ...(result?.cancelled ? { outcome: 'aborted' as const } : {})
+                }
               }
-            : item
-        )
-      }))
+            : {})
+        }
+      })
       void get().refreshState(threadKey(owner))
-      if (viewKeyOf(get()) === threadKey(owner)) void get().refreshGit()
+      if (gitBelongsToView(ownGet, get, threadKey(owner))) void get().refreshGit()
     } catch (error) {
       const message = messageOf(error)
-      update((state) => ({
-        items: state.items.map((item) =>
-          item.kind === 'bash' && item.id === id
+      update((state) => {
+        const bashOnly = startedBashRun && !state.run.settled && !state.run.runId
+        return {
+          items: state.items.map((item) =>
+            item.kind === 'bash' && item.id === id
+              ? {
+                  ...item,
+                  output: item.output ? `${item.output}\n${message}` : message,
+                  exitCode: 1
+                }
+              : item
+          ),
+          ...(bashOnly
             ? {
-                ...item,
-                output: item.output ? `${item.output}\n${message}` : message,
-                exitCode: 1
+                cwdWait: undefined,
+                isStreaming: false,
+                run: {
+                  ...state.run,
+                  phase: 'idle',
+                  settled: true,
+                  outcome: state.run.phase === 'aborting' ? ('aborted' as const) : ('failed' as const)
+                }
               }
-            : item
-        )
-      }))
+            : {})
+        }
+      })
+    } finally {
+      if (countedKey) {
+        const resolved = threadKey(countedKey)
+        const remaining = (inlineBashCounts.get(resolved) ?? 1) - 1
+        if (remaining <= 0) inlineBashCounts.delete(resolved)
+        else inlineBashCounts.set(resolved, remaining)
+      }
     }
   },
 
@@ -1828,6 +2219,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (launching) {
         await window.pi.runtime.stop(key)
         update((state) => ({
+          cwdWait: undefined,
           isStreaming: false,
           run: { ...state.run, phase: 'idle', settled: true, outcome: 'aborted' },
           status: { ...state.status, phase: 'ready' },
@@ -1847,8 +2239,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         .map((entry) => entry.trim())
         .filter(Boolean)
         .join('\n')
-      if (restored && threadKey(key) === viewKeyOf(get())) {
-        get().insertIntoComposer(restored)
+      if (restored) {
+        get().insertIntoComposer(restored, 'append', key)
+      }
+      if ((inlineBashCounts.get(threadKey(key)) ?? 0) > 0 && !ownGet().run.runId) {
+        void tracedRpc(threadKey(key), 'abort_bash', undefined, undefined, 'user-stop').catch(() => {})
       }
       await tracedRpc(threadKey(key), 'abort', undefined, undefined, 'user-stop')
     } catch (error) {
@@ -1882,13 +2277,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
         'clear-queue'
       )
       update({ queue: { steering: [], followUp: [] } })
-      if (restoreToEditor && viewKeyOf(get()) === threadKey(key)) {
+      if (restoreToEditor) {
         const restored = [...(removed?.steering ?? []), ...(removed?.followUp ?? [])]
           .map((entry) => entry.trim())
           .filter(Boolean)
           .join('\n')
         if (restored) {
-          get().insertIntoComposer(restored)
+          get().insertIntoComposer(restored, 'append', key)
         }
       }
     } catch (error) {
@@ -2428,7 +2823,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
               !appNames.has(command.name) &&
               command.name !== 'desktop-mode' &&
               command.name !== 'desktop-goal' &&
-              command.name !== 'desktop-computer'
+              command.name !== 'desktop-computer' &&
+              command.name !== 'desktop-rewind'
           )
         ]
       })
@@ -2631,66 +3027,112 @@ export const useAppStore = create<AppStore>((set, get) => ({
     )
   },
 
-  async respondUi(response) {
-    const request = get().uiRequest
-    if (!request) return
-    // Answering unblocks the agent, so the "waiting for you" phase is given
-    // back to whatever the run was doing before the dialog opened.
-    // Explicit session routing: route to originating sessionKey, preventing misrouting across views.
-    const key = request.sessionKey || viewKeyOf(get())
-    const currentView = viewKeyOf(get())
-    set((state) => {
-      const run =
-        state.run.phase === 'waiting_approval' ? { ...state.run, phase: 'working' as const } : state.run
-      const thread = key ? state.threads[key] : undefined
-      const isCurrentView = !key || key === currentView
-      return {
-        ...(isCurrentView ? { uiRequest: undefined, run } : { uiRequest: undefined }),
-        ...(thread
-          ? {
-              threads: {
-                ...state.threads,
-                [key]: {
-                  ...thread,
-                  uiRequest: undefined,
-                  run: thread.run.phase === 'waiting_approval' ? { ...thread.run, phase: 'working' as const } : thread.run,
-                  version: thread.version + 1
-                }
-              }
-            }
-          : {})
+  async respondUi(response, target) {
+    const state = get()
+    const viewKey = viewKeyOf(state)
+    const explicitKey = target?.sessionKey ? threadKey(target.sessionKey.trim()) : undefined
+    const lookupKey = explicitKey || (viewKey ? threadKey(viewKey) : '')
+    const thread = lookupKey ? state.threads[lookupKey] : undefined
+    const queue = pendingDialogsFor(thread, explicitKey ? undefined : state.uiRequest)
+    let request = target?.requestId
+      ? queue.find((entry) => entry.id === target.requestId)
+      : queue[0]
+    let resolvedKey = lookupKey
+    if (!request && target?.requestId) {
+      for (const [candidateKey, candidateThread] of Object.entries(state.threads)) {
+        const found = pendingDialogsFor(candidateThread).find((entry) => entry.id === target.requestId)
+        if (found) {
+          request = found
+          resolvedKey = threadKey(candidateKey)
+          break
+        }
       }
-    })
+    }
+    if (!request) return
+    const routeKey = threadKey(request.sessionKey || resolvedKey || '')
+    if (respondingUiIds.has(request.id)) return
+    respondingUiIds.add(request.id)
     try {
-      // Captured before the await. A view change while the reply is in
-      // flight must not deliver this approval to the other conversation.
-      await window.pi.runtime.respondUi(request.id, response, key)
+      // Send over RPC before popping so a failed IPC leaves the dialog intact
+      // for retry rather than silently leaving Pi waiting forever.
+      await window.pi.runtime.respondUi(request.id, response, routeKey || request.ownerId)
+      const ownerKey = routeKey || threadKey(viewKeyOf(get()))
+      if (ownerKey) {
+        bindSet(set, get, ownerKey)((current) => {
+          const remaining = pendingDialogsFor(get().threads[ownerKey], current.uiRequest).filter(
+            (entry) => entry.id !== request!.id
+          )
+          return {
+            uiRequests: remaining,
+            uiRequest: remaining[0],
+            run:
+              current.run.phase === 'waiting_approval'
+                ? { ...current.run, phase: phaseAfterDialog(current, remaining.length) }
+                : current.run
+          }
+        })
+      } else {
+        set((current) => ({
+          uiRequests: (current.uiRequests ?? []).filter((entry) => entry.id !== request!.id),
+          uiRequest: (current.uiRequests ?? []).filter((entry) => entry.id !== request!.id)[0],
+          run:
+            current.run.phase === 'waiting_approval'
+              ? { ...current.run, phase: phaseAfterDialog(current, 0) }
+              : current.run
+        }))
+      }
     } catch (error) {
       set({ error: messageOf(error) })
+    } finally {
+      respondingUiIds.delete(request.id)
     }
   },
 
-  async dismissUi() {
-    await get().respondUi({ cancelled: true })
+  async dismissUi(target) {
+    await get().respondUi({ cancelled: true }, target)
   },
 
   clearComposerText() {
     set({ composerText: undefined })
   },
 
-  insertIntoComposer(text, mode = 'append') {
+  insertIntoComposer(text, mode = 'append', sessionKey) {
     const trimmed = text.trim()
     if (!trimmed) return
     // A trailing space is kept when there is one, so the user can go on
     // typing right after the text that was put in.
     const addition = text.endsWith(' ') ? `${trimmed} ` : trimmed
-    set((state) => ({
-      composerInsert: {
-        text: addition,
-        seq: (state.composerInsert?.seq ?? 0) + 1,
-        mode
+    const rawTarget = (sessionKey ?? viewKeyOf(get())).trim()
+    const targetKey = rawTarget ? threadKey(rawTarget) : ''
+    const currentView = viewKeyOf(get())
+    const currentCanonical = currentView ? threadKey(currentView) : ''
+    const isViewed = !targetKey || targetKey === currentCanonical
+    set((state) => {
+      const nextDrafts = { ...state.drafts }
+      if (targetKey) {
+        const previous = nextDrafts[targetKey] ?? { text: '', images: [] }
+        const mergedText =
+          mode === 'replace' || !previous.text.trim()
+            ? addition
+            : `${previous.text.trimEnd()}\n${addition}`
+        nextDrafts[targetKey] = {
+          ...previous,
+          text: mergedText
+        }
       }
-    }))
+      return {
+        drafts: nextDrafts,
+        ...(isViewed
+          ? {
+              composerInsert: {
+                text: addition,
+                seq: (state.composerInsert?.seq ?? 0) + 1,
+                mode
+              }
+            }
+          : {})
+      }
+    })
   },
 
   async duplicateSession() {
@@ -2798,10 +3240,82 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // Pi forks *before* the message, so the prompt comes back as text for
       // the user to tweak and send again.
       const prompt = result?.text?.trim()
-      if (prompt && viewKeyOf(get()) === key) get().insertIntoComposer(prompt, 'replace')
+      if (prompt) get().insertIntoComposer(prompt, 'replace', key)
       get().showToast('Branched into a new conversation')
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
+    } finally {
+      set({ forking: false })
+    }
+  },
+
+  async editMessageFrom(entryId, text, images = []) {
+    if (get().forking) return
+    if (get().isStreaming || get().run.phase !== 'idle' || get().run.compaction) {
+      get().showToast('Wait for the current turn to finish before editing', 'warning')
+      return
+    }
+    const owner = viewKeyOf(get())
+    if (!owner || !/^[A-Za-z0-9_-]+$/.test(entryId)) {
+      get().showToast('This message cannot be edited', 'warning')
+      return
+    }
+    const target = get().forkTargets.find((item) => item.entryId === entryId)
+    const prompt = (text ?? target?.text ?? '').trim()
+    set({ forking: true })
+    try {
+      const key = threadKey(owner)
+      await get().ensureRuntime(owner, 'message-edit')
+      // A running Pi process keeps the extension set it started with. If this
+      // build added the rewind command after that process booted, restart it
+      // before sending the command so the id is not treated as a chat prompt.
+      const commandList = await tracedRpc<{ commands?: PiCommand[] }>(
+        key,
+        'get_commands',
+        undefined,
+        undefined,
+        'message-edit'
+      )
+      if (
+        !(commandList?.commands ?? []).some((command) => command.name === 'desktop-rewind') &&
+        typeof window.pi.runtime.stop === 'function'
+      ) {
+        await window.pi.runtime.stop(key)
+        await get().ensureRuntime(owner, 'message-edit-reload')
+      }
+      const result = await tracedRpc<{ cancelled?: boolean; disposition?: string }>(
+        key,
+        'prompt',
+        { message: `/desktop-rewind ${entryId}` },
+        60_000,
+        'message-edit'
+      )
+      if (result?.cancelled) {
+        get().showToast('Editing was cancelled', 'warning')
+        return
+      }
+      await get().refreshState(key)
+      await get().reloadMessages(key)
+      if (images.length > 0) {
+        const previous = get().drafts[key] ?? { text: '', images: [] }
+        get().updateDraft(key, {
+          ...previous,
+          images: images.map((image, index) => ({
+            type: 'image' as const,
+            data: image.data,
+            mimeType: image.mimeType,
+            id: `edited-${Date.now().toString(36)}-${index}`,
+            name: `image-${index + 1}`,
+            bytes: Math.ceil((image.data.length * 3) / 4)
+          }))
+        })
+      }
+      if (prompt) get().insertIntoComposer(prompt, 'replace', key)
+      get().showToast('Message recalled for editing')
+    } catch (error) {
+      const message = messageOf(error)
+      bindSet(set, get, owner)({ error: message })
+      get().showToast(message, 'error')
     } finally {
       set({ forking: false })
     }
@@ -3245,13 +3759,40 @@ export function applyAppearance(
   syncWindowChrome(dark)
 }
 
+function pendingDialogsFor(thread?: SessionThread, fallback?: ExtensionUiRequest): ExtensionUiRequest[] {
+  if (thread) {
+    if (thread.uiRequest === undefined) return []
+    return thread.uiRequests?.length ? thread.uiRequests : [thread.uiRequest]
+  }
+  return fallback ? [fallback] : []
+}
+
+function phaseAfterDialog(
+  state: { items: ThreadItem[]; run: RunState; retry?: RetryState },
+  remainingQueueLength: number
+): RunPhase {
+  if (state.run.phase === 'aborting') return 'aborting'
+  if (remainingQueueLength > 0) return 'waiting_approval'
+  if (state.run.settled) return 'idle'
+  if (state.retry) return 'retrying'
+  if (state.items.some((item) => item.kind === 'tool' && item.status === 'running')) return 'tool_running'
+  if (state.run.firstTokenAt !== undefined && state.run.messageGenerationStartedAt !== undefined) {
+    return 'generating'
+  }
+  return 'working'
+}
+
 function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEYS)[number]> {
+  const uiRequests = pendingDialogsFor(thread)
   return {
     items: thread.items,
     run: thread.run,
     isStreaming: thread.isStreaming,
     transport: thread.transport,
-    uiRequest: thread.uiRequest,
+    uiRequest: uiRequests[0],
+    uiRequests,
+    clientKey: thread.clientKey || '',
+    cwdWait: thread.cwdWait,
     uiStatuses: thread.uiStatuses,
     uiWidgets: thread.uiWidgets,
     uiTitle: thread.uiTitle,
@@ -3267,6 +3808,7 @@ function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEY
     models: thread.models ?? [],
     thinkingLevels: thread.thinkingLevels ?? [],
     commands: thread.commands ?? APP_COMMANDS,
+    submitSeq: thread.submitSeq ?? 0,
     notice: thread.notice
   }
 }
@@ -3289,16 +3831,24 @@ function bindGet(get: GetState, owner: string): GetState {
     const key = threadKey(owner)
     const thread = state.threads[key]
     if (!thread) {
-      if (key && !deletedSessionKeys.has(key)) {
+      const viewCanonical = viewKeyOf(state) ? threadKey(viewKeyOf(state)) : ''
+      if (key && (deletedSessionKeys.has(key) || key !== viewCanonical)) {
+        // Isolate uncreated/deleted background keys from the currently viewed session's state.
         return {
           ...state,
+          ...projectThread(emptyThread()),
           activeSessionFile: key.startsWith('draft:') ? undefined : key,
           draftId: key.startsWith('draft:') ? key : undefined
         }
       }
       return state
     }
-    return { ...state, ...projectThread(thread), activeSessionFile: key.startsWith('draft:') ? undefined : key, draftId: key.startsWith('draft:') ? key : undefined }
+    return {
+      ...state,
+      ...projectThread(thread),
+      activeSessionFile: key.startsWith('draft:') ? undefined : key,
+      draftId: key.startsWith('draft:') ? key : undefined
+    }
   }
 }
 
@@ -3312,8 +3862,13 @@ function bindSet(set: SetState, get: GetState, owner: string): SetState {
     const patch = typeof partial === 'function' ? partial({ ...state, ...projectThread(thread) }) : partial
     const next = threadFromPatch(thread, patch)
     const threads = { ...state.threads, ...(key ? { [key]: next } : {}) }
-    if (!key || key === viewKeyOf(state)) set({ ...patch, threads })
-    else set({ threads })
+    const viewKey = viewKeyOf(state)
+    const viewCanonical = viewKey ? threadKey(viewKey) : ''
+    if (!key || key === viewKey || (viewCanonical && key === viewCanonical)) {
+      set({ ...patch, threads })
+    } else {
+      set({ threads })
+    }
   }
 }
 
@@ -3324,44 +3879,85 @@ function rekeyThread(
   to: string,
   replace = false
 ): void {
-  drainPending()
   from = threadKey(from)
+  drainPending(from)
   if (from === to) return
-  const stateRefreshRequest = refreshStateRequests.get(from)
-  if (stateRefreshRequest !== undefined) {
-    const targetRequest = refreshStateRequests.get(to)
-    if (targetRequest === undefined || stateRefreshRequest > targetRequest) {
-      refreshStateRequests.set(to, stateRefreshRequest)
-    }
-    refreshStateRequests.delete(from)
-  }
-  rekeyStreamState(from, to)
-  migrateToolStarts(from, to)
-  // The reader's place belongs to the conversation, not to whether Pi has
-  // written it to disk yet; carry it across the draft→file rename.
-  migrateScrollMemory(from, to)
-  migrateViewState(from, to)
-  migrateSessionTiming(from, to)
-  const aliases = [...(threadAliasesByTarget.get(from) ?? [])]
-  for (const alias of aliases) {
-    migrateScrollMemory(alias, to)
-    migrateViewState(alias, to)
-  }
+  const shouldMove = replace || from.startsWith('draft:')
+  rekeyStreamState(from, to, shouldMove)
+
   const state = get()
   const thread = state.threads[from]
   const threads = { ...state.threads }
-  if (thread) {
-    if (replace || from.startsWith('draft:')) {
+  let nextDrafts: Record<string, ComposerDraft> | undefined
+
+  if (shouldMove) {
+    const stateRefreshRequest = refreshStateRequests.get(from)
+    if (stateRefreshRequest !== undefined) {
+      const targetRequest = refreshStateRequests.get(to)
+      if (targetRequest === undefined || stateRefreshRequest > targetRequest) {
+        refreshStateRequests.set(to, stateRefreshRequest)
+      }
+      refreshStateRequests.delete(from)
+    }
+    const bashCount = inlineBashCounts.get(from)
+    if (bashCount !== undefined) {
+      inlineBashCounts.set(to, (inlineBashCounts.get(to) ?? 0) + bashCount)
+      inlineBashCounts.delete(from)
+    }
+    migrateToolStarts(from, to)
+    // The reader's place belongs to the conversation, not to whether Pi has
+    // written it to disk yet; carry it across the draft→file rename.
+    migrateScrollMemory(from, to)
+    migrateViewState(from, to)
+    migrateSessionTiming(from, to)
+    const aliases = [...(threadAliasesByTarget.get(from) ?? [])]
+    for (const alias of aliases) {
+      migrateScrollMemory(alias, to)
+      migrateViewState(alias, to)
+    }
+    if (from in state.drafts) {
+      nextDrafts = { ...state.drafts }
+      const sourceDraft = nextDrafts[from]
+      delete nextDrafts[from]
+      if (
+        !nextDrafts[to] ||
+        (!nextDrafts[to].text &&
+          nextDrafts[to].images.length === 0 &&
+          (nextDrafts[to].files?.length ?? 0) === 0)
+      ) {
+        nextDrafts[to] = sourceDraft
+      }
+    }
+    if (thread) {
       delete threads[from]
       for (const alias of aliases) setThreadAlias(alias, to)
       setThreadAlias(from, to)
+      threads[to] = thread
     }
-    threads[to] = thread
+  } else if (thread) {
+    // A fork or clone branches a second conversation while leaving the original
+    // file intact on disk, so it gets its own fresh clientKey instead of moving
+    // or aliasing `from`'s view state, scroll memory, timing, or drafts.
+    threads[to] = {
+      ...thread,
+      clientKey: mintClientKey(),
+      notice: undefined,
+      uiRequests: pendingDialogsFor(thread)
+    }
   }
+
+  const targetThread = threads[to]
   const viewing = state.draftId === from || state.activeSessionFile === from
   set({
     threads,
-    ...(viewing ? { draftId: undefined, activeSessionFile: to } : {})
+    ...(nextDrafts ? { drafts: nextDrafts } : {}),
+    ...(viewing
+      ? {
+          draftId: undefined,
+          activeSessionFile: to,
+          ...(targetThread ? { clientKey: targetThread.clientKey } : {})
+        }
+      : {})
   })
 }
 
@@ -3369,16 +3965,25 @@ type SetState = (partial: Partial<AppStore> | ((state: AppStore) => Partial<AppS
 type GetState = () => AppStore
 
 function applyRuntimeStatus(set: SetState, status: RuntimeStatus): void {
-  set({ status })
-  if (status.phase === 'error' && status.error) set({ error: status.error })
+  if (status.phase === 'error') {
+    set({
+      status,
+      cwdWait: undefined,
+      transport: 'disconnected',
+      ...(status.error ? { error: status.error } : {})
+    })
+    return
+  }
   if (status.phase === 'ready' || status.phase === 'starting') {
     // A fresh process means a fresh event channel, whatever happened to
     // the previous one. "starting" is that handoff, not a dropped connection.
-    set({ transport: 'connected' })
-  } else if (status.phase === 'stopped' || status.phase === 'error') {
+    set({ status, transport: 'connected' })
+  } else if (status.phase === 'stopped') {
     // The Pi process is gone. That is a lost transport, not proof that
     // the run failed, so the run state is left for the events to settle.
-    set({ transport: 'disconnected' })
+    set({ status, transport: 'disconnected' })
+  } else {
+    set({ status })
   }
 }
 
@@ -3428,17 +4033,16 @@ function scheduleItems(
   flushImmediately = false
 ): void {
   const context = runContextOf(get)
+  const key = viewKeyOf(get())
   if (flushImmediately || typeof requestAnimationFrame !== 'function') {
-    drainPending()
+    drainPending(key)
     set((state) => ({ items: applyEvent(state.items, event, context) }))
     return
   }
-  const key = viewKeyOf(get())
   const batch = pending.get(key) ?? { set, events: [] }
-  const last = batch.events[batch.events.length - 1]
-  const merged = last ? mergeTextDelta(last.event, last.context, event, context) : null
-  if (merged) last.event = merged
-  else batch.events.push({ event, context })
+  if (!coalescePendingEvent(batch.events, event, context)) {
+    batch.events.push({ event, context })
+  }
   pending.set(key, batch)
   if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
     if (hiddenFlushTimer === null) {
@@ -3453,14 +4057,44 @@ function scheduleItems(
 }
 
 /**
- * Fold a run of adjacent text deltas into one record before reducing.
- *
- * A provider can emit dozens of tiny deltas in a single frame. They all land
- * in the same thread and block, so reducing each one separately copies the
- * whole `items` array dozens of times for a transcript that is painted once.
- * Keeping the last record and extending its delta gives the reducer the same
- * text with one pass. `text_end` remains authoritative, as before.
+ * Fold consecutive replaceable or additive deltas within one pending frame batch:
+ * - `message_update` (`text_delta`, `thinking_delta`, `toolcall_delta`) with identical
+ *   block `contentIndex` concatenate into one delta record.
+ * - `tool_execution_update` replaces any trailing `tool_execution_update` for the
+ *   same `toolCallId` (its `partialResult` is already the newest full snapshot).
  */
+function coalescePendingEvent(
+  events: { event: PiEvent; context: ReturnType<typeof runContextOf> }[],
+  nextEvent: PiEvent,
+  nextContext: ReturnType<typeof runContextOf>
+): boolean {
+  if (events.length === 0) return false
+  if (nextEvent.type === 'tool_execution_update') {
+    const nextToolId = typeof nextEvent.toolCallId === 'string' ? nextEvent.toolCallId : ''
+    if (!nextToolId) return false
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const candidate = events[index]
+      if (candidate.event.type !== 'tool_execution_update') break
+      if (
+        candidate.context.sessionKey === nextContext.sessionKey &&
+        candidate.context.runId === nextContext.runId &&
+        candidate.context.turnId === nextContext.turnId &&
+        candidate.event.toolCallId === nextToolId
+      ) {
+        candidate.event = nextEvent
+        candidate.context = nextContext
+        return true
+      }
+    }
+    return false
+  }
+  const last = events[events.length - 1]
+  const merged = mergeTextDelta(last.event, last.context, nextEvent, nextContext)
+  if (!merged) return false
+  last.event = merged
+  return true
+}
+
 function mergeTextDelta(
   previousEvent: PiEvent,
   previousContext: ReturnType<typeof runContextOf>,
@@ -3482,7 +4116,13 @@ function mergeTextDelta(
     | { type?: string; contentIndex?: number; delta?: string }
     | undefined
   if (!previous || !next || previous.type !== next.type) return null
-  if (previous.type !== 'text_delta' && previous.type !== 'thinking_delta') return null
+  if (
+    previous.type !== 'text_delta' &&
+    previous.type !== 'thinking_delta' &&
+    previous.type !== 'toolcall_delta'
+  ) {
+    return null
+  }
   // Without a content index there is no proof the two deltas belong to the
   // same block, so leave them separate rather than risk merging two blocks.
   if (previous.contentIndex === undefined || next.contentIndex === undefined) return null
@@ -3532,19 +4172,40 @@ function takeToolStart(sessionKey: string, toolCallId: string): number | undefin
   return startedAt
 }
 
-/** Apply every queued reducer now, in the order the events arrived. */
-function drainPending(): void {
-  if (hiddenFlushTimer !== null) {
-    clearTimeout(hiddenFlushTimer)
-    hiddenFlushTimer = null
+/** Apply queued frame batches (or just `onlyKey`'s batch when scoped to one session). */
+function drainPending(onlyKey?: string): void {
+  let entries: [string, { set: SetState; events: { event: PiEvent; context: ReturnType<typeof runContextOf> }[] }][]
+  if (onlyKey !== undefined) {
+    const batch = pending.get(onlyKey)
+    if (!batch) return
+    pending.delete(onlyKey)
+    entries = [[onlyKey, batch]]
+  } else {
+    if (pending.size === 0) {
+      if (hiddenFlushTimer !== null) {
+        clearTimeout(hiddenFlushTimer)
+        hiddenFlushTimer = null
+      }
+      if (flushHandle !== null) {
+        if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(flushHandle)
+        flushHandle = null
+      }
+      return
+    }
+    entries = [...pending.entries()]
+    pending.clear()
   }
-  if (flushHandle !== null) {
-    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(flushHandle)
-    flushHandle = null
+
+  if (pending.size === 0) {
+    if (hiddenFlushTimer !== null) {
+      clearTimeout(hiddenFlushTimer)
+      hiddenFlushTimer = null
+    }
+    if (flushHandle !== null) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(flushHandle)
+      flushHandle = null
+    }
   }
-  if (pending.size === 0) return
-  const entries = [...pending.entries()]
-  pending.clear()
 
   useAppStore.setState((state) => {
     const currentViewKey = viewKeyOf(state)
@@ -3558,6 +4219,7 @@ function drainPending(): void {
       if (key && !base && deletedSessionKeys.has(key)) continue
       const thread = base ?? emptyThread(state.workspace?.path)
       const nextItems = applyEventBatch(thread.items, batch.events)
+      if (nextItems === thread.items) continue
       const nextThread = threadFromPatch(thread, { items: nextItems })
 
       if (!nextThreads) {
@@ -3737,14 +4399,17 @@ function handleEvent(
       // Queued records still belong to the message that just ended. Applying
       // them before the identity reset below is what keeps a `message_end`
       // from being re-stamped with the next turn's message id.
-      drainPending()
-      beginStream(runContextOf(get).sessionKey)
+      const sessionKey = runContextOf(get).sessionKey
+      drainPending(sessionKey || (owner ? threadKey(owner) : undefined))
+      beginStream(sessionKey)
       // One run per prompt. A follow-up prompt that arrives while a run is
       // active does not open a second one: Pi folds it into the current run.
       const startedAt = Date.now()
       const startedMonotonicAt = monotonicNow()
       set((state) => ({
         isStreaming: true,
+        error: undefined,
+        cwdWait: undefined,
         // `stats` is only a snapshot from the last Pi read. Let the live
         // transcript drive the usage line until the settled refresh gets a
         // new snapshot; otherwise the old totals mask newer session events.
@@ -3761,7 +4426,8 @@ function handleEvent(
               startedAt,
               startedMonotonicAt,
               generationMs: 0,
-              settled: false
+              settled: false,
+              hadError: false
             }
           : {
               ...state.run,
@@ -3774,8 +4440,9 @@ function handleEvent(
       break
     }
     case 'turn_start': {
-      drainPending()
-      beginStream(runContextOf(get).sessionKey)
+      const sessionKey = runContextOf(get).sessionKey
+      drainPending(sessionKey || (owner ? threadKey(owner) : undefined))
+      beginStream(sessionKey)
       const modelTurnStartedAt = monotonicNow()
       set((state) => ({
         isStreaming: true,
@@ -3805,9 +4472,10 @@ function handleEvent(
       // The supervisor mints this when the process died before it could write
       // its own settle. The user did not stop that run, so it failed.
       const crashed = Boolean(event.crashed)
+      const settledKey = owner ? threadKey(owner) : ''
       // Anything still waiting for a frame is applied first: the final
       // state has to be the state the events actually produced.
-      drainPending()
+      drainPending(settledKey || runContextOf(get).sessionKey || undefined)
       finishStream(runContextOf(get).sessionKey)
       const state = get()
       const durationMs =
@@ -3820,14 +4488,15 @@ function handleEvent(
       // Settling without that event means the response was interrupted or
       // incomplete, so its wait time must not become a model-time sample.
       // Pi's own `agent_settled` carries only `aborted`; a failure is visible on
-      // the last assistant message instead. Do not print a success summary over
-      // an error notice.
+      // the last assistant message or recorded via mid-turn extension/retry errors.
       const lastAssistant = [...state.items]
         .reverse()
         .find((item) => item.kind === 'assistant')
       const failed =
         crashed ||
-        (!aborted && lastAssistant?.kind === 'assistant' && lastAssistant.stopReason === 'error')
+        (!aborted &&
+          (Boolean(state.run.hadError) ||
+            (lastAssistant?.kind === 'assistant' && lastAssistant.stopReason === 'error')))
       const recentUsers = [...state.items].reverse().filter((item) => item.kind === 'user')
       const runUser = recentUsers.find(
         (item) => item.kind === 'user' && item.runId === state.run.runId
@@ -3852,10 +4521,13 @@ function handleEvent(
       }
       // A mark means "there is something in this conversation the reader has
       // not looked at": a failure outranks an answer, and an answer that
-      // finished while the reader was elsewhere is unread. A conversation the
-      // reader is watching speaks for itself.
-      const settledKey = owner ? threadKey(owner) : ''
-      const viewed = settledKey ? settledKey === viewKeyOf(realGet ? realGet() : get()) : true
+      // finished while the reader was elsewhere (or while reading a desk page)
+      // is unread. A conversation the reader is watching speaks for itself.
+      const topState = realGet ? realGet() : get()
+      const currentViewKey = viewKeyOf(topState)
+      const viewed = settledKey
+        ? settledKey === (currentViewKey ? threadKey(currentViewKey) : '') && topState.deskPage === null
+        : true
       const notice: SessionNotice | undefined = viewed
         ? undefined
         : failed
@@ -3865,6 +4537,7 @@ function handleEvent(
             : 'unread'
       set({
         isStreaming: false,
+        cwdWait: undefined,
         items: aborted || crashed ? markAborted(state.items) : state.items,
         run: {
           ...state.run,
@@ -3873,6 +4546,7 @@ function handleEvent(
           messageGenerationStartedAt: undefined,
           modelTurnStartedAt: undefined,
           settled: true,
+          hadError: undefined,
           outcome: aborted ? 'aborted' : failed ? 'failed' : 'completed',
           durationMs
         },
@@ -3880,7 +4554,8 @@ function handleEvent(
         notice,
         ...(event.runtimeStopped ? { status: { ...state.status, phase: 'ready' as const }, transport: 'connected' as const } : {}),
         // Pi resolves a dialog on its own when its timeout expires. The
-        // client is not told, so the dialog is closed when the agent moves on.
+        // client is not told, so the dialog queue is cleared when the agent moves on.
+        uiRequests: [],
         uiRequest: state.uiRequest ? undefined : state.uiRequest
       })
       // A crashed run has no live process to read state from, and the reason
@@ -3904,7 +4579,7 @@ function handleEvent(
       void get().refreshSessions()
       // The agent just edited files, so the branch chip and the review panel
       // should hear about the new working tree.
-      if (!realGet || viewKeyOf(realGet()) === key) void get().refreshGit()
+      if (gitBelongsToView(get, realGet, owner)) void get().refreshGit()
       // The prompt of this turn is a new branch point. Refreshing here as
       // well as on `message_start` covers the case where Pi had not recorded
       // the message yet when the event arrived.
@@ -3973,13 +4648,21 @@ function handleEvent(
       }))
       break
     }
-    case 'auto_retry_end':
+    case 'auto_retry_end': {
       scheduleItems(set, get, event)
+      const retryFailed =
+        !Boolean(event.success) && String(event.finalError ?? '') !== 'Retry cancelled'
       set((state) => ({
         retry: undefined,
-        run: { ...state.run, phase: phaseFor(state, 'working'), settled: false }
+        run: {
+          ...state.run,
+          phase: phaseFor(state, 'working'),
+          settled: false,
+          ...(retryFailed ? { hadError: true } : {})
+        }
       }))
       break
+    }
     case 'message_start': {
       const role = (event as { message?: { role?: string } }).message?.role
       if (role === 'assistant') {
@@ -3996,10 +4679,12 @@ function handleEvent(
       if (role === 'user') {
         const startedAt = Date.now()
         const startedMonotonicAt = monotonicNow()
+        pinScrollToBottom(owner || viewKeyOf(get()))
         set((state) => ({
           // A prompt can start before `agent_start`; invalidate the same
           // cached snapshot here so transcript usage stays current.
           stats: undefined,
+          submitSeq: (state.submitSeq ?? 0) + 1,
           run:
             !state.run.runId || state.run.phase === 'idle' || state.run.settled
               ? // A prompt that started a run before the client saw `agent_start`
@@ -4024,7 +4709,7 @@ function handleEvent(
                 }
         }))
       }
-      scheduleItems(set, get, event)
+      scheduleItems(set, get, event, role === 'user')
       if (role === 'user') {
         // A new prompt is a new place the branch can be forked from.
         void get().refreshForkTargets(viewKeyOf(get()))
@@ -4063,18 +4748,23 @@ function handleEvent(
       } else if (event.type === 'compaction_end') {
         set((state) => ({ run: { ...state.run, compaction: undefined } }))
       }
+      if (event.type === 'extension_error') {
+        set((state) => ({
+          run: state.run.settled ? state.run : { ...state.run, hadError: true }
+        }))
+      }
       let eventForItems = event
       if (event.type === 'tool_execution_end') {
-        // Apply a queued start first so its monotonic clock can fill in when
-        // Pi omitted the duration on the completion event.
-        drainPending()
+        // Apply only this thread's queued start/updates first so its monotonic
+        // clock can fill in when Pi omitted duration on completion.
+        const timingKey = owner ? threadKey(owner) : viewKeyOf(get())
+        drainPending(timingKey || undefined)
         const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : undefined
         const existing = toolCallId
           ? get().items.find((item) => item.kind === 'tool' && item.toolCallId === toolCallId)
           : undefined
         const terminal = existing?.kind === 'tool' &&
           (existing.status === 'ok' || existing.status === 'error' || existing.status === 'aborted')
-        const timingKey = owner ? threadKey(owner) : viewKeyOf(get())
         const startedMonotonicAt = toolCallId ? takeToolStart(timingKey, toolCallId) : undefined
         if (!terminal && toolCallId) {
           const supplied = typeof event.durationMs === 'number' &&
@@ -4108,8 +4798,14 @@ function handleEvent(
       }
       // Capture the reducer's tool `startedAt` at event arrival; if the start
       // waited for a paint frame, a fast tool could finish before that clock
-      // was recorded.
-      scheduleItems(set, get, eventForItems, event.type === 'tool_execution_start')
+      // was recorded. Apply tool completions synchronously too so phase reading
+      // below inspects the settled tool list in a single pass.
+      scheduleItems(
+        set,
+        get,
+        eventForItems,
+        event.type === 'tool_execution_start' || event.type === 'tool_execution_end'
+      )
       // The run phase is exported from what the transcript actually holds:
       // a tool that started means one is running, and the run only goes back
       // to "the model is answering" when none is left.
@@ -4117,9 +4813,6 @@ function handleEvent(
         set((state) => ({ run: { ...state.run, phase: 'tool_running', settled: false } }))
       }
       if (event.type === 'tool_execution_end') {
-        // The batch has not been painted yet, so the check looks at what the
-        // reducer produced rather than at the items on screen.
-        drainPending()
         const still = get().items.some((item) => item.kind === 'tool' && item.status === 'running')
         set((state) => ({
           run: {
@@ -4220,7 +4913,7 @@ function handleEvent(
       break
     }
     case 'extension_ui_request': {
-      handleExtensionUi(set, get, event as unknown as ExtensionUiRequest, owner)
+      handleExtensionUi(set, get, event as unknown as ExtensionUiRequest, owner, realGet, realSet)
       break
     }
     default:
@@ -4231,14 +4924,17 @@ function handleEvent(
 /**
  * Apply one `extension_ui_request`.
  *
- * Dialog methods block the agent until an answer arrives, so they become a
- * modal in the renderer. The rest are fire-and-forget decorations.
+ * Dialog methods block the agent until an answer arrives, so they queue per
+ * conversation in FIFO order (`uiRequests`, with `uiRequest === uiRequests[0]`).
+ * The rest are fire-and-forget decorations or editor updates.
  */
 function handleExtensionUi(
   set: SetState,
   get: GetState,
   request: ExtensionUiRequest,
-  owner?: string
+  owner?: string,
+  realGet?: GetState,
+  realSet?: SetState
 ): void {
   const taggedRequest: ExtensionUiRequest = {
     ...request,
@@ -4250,13 +4946,21 @@ function handleExtensionUi(
     case 'confirm':
     case 'input':
     case 'editor': {
-      // A new request supersedes any dialog that is still open. The agent is
-      // blocked on the answer until it is given, so the run says so: this is
-      // the one real "waiting for the user" state the runtime exposes.
-      set((state) => ({
-        uiRequest: taggedRequest,
-        run: { ...state.run, phase: phaseFor(state, 'waiting_approval') }
-      }))
+      // Queue blocking dialogs FIFO per thread so concurrent prompts (for
+      // example from background sessions or sibling subagents) never drop.
+      set((state) => {
+        const existing = state.uiRequest
+          ? (state.uiRequests?.length ? state.uiRequests : [state.uiRequest])
+          : []
+        const nextQueue = existing.some((entry) => entry.id === taggedRequest.id)
+          ? existing
+          : [...existing, taggedRequest]
+        return {
+          uiRequests: nextQueue,
+          uiRequest: nextQueue[0],
+          run: { ...state.run, phase: phaseFor(state, 'waiting_approval') }
+        }
+      })
       break
     }
     case 'notify': {
@@ -4269,7 +4973,17 @@ function handleExtensionUi(
       const level = request.notifyType ?? 'info'
       const message = stripAnsi(request.message ?? '')
       if ((level === 'warning' || level === 'error') && !isMcpOrSkillChatter(message)) {
-        get().showToast(message, level)
+        const topState = realGet ? realGet() : get()
+        const viewKey = viewKeyOf(topState)
+        const canonicalOwner = owner ? threadKey(owner) : ''
+        const isBackground = Boolean(
+          canonicalOwner && canonicalOwner !== (viewKey ? threadKey(viewKey) : '')
+        )
+        const title = isBackground
+          ? activeConversationTitle(topState.sessions, topState.threads, canonicalOwner)
+          : ''
+        const attributed = title ? `[${title}] ${message}` : message
+        ;(realGet ?? get)().showToast(attributed, level)
       }
       break
     }
@@ -4292,14 +5006,25 @@ function handleExtensionUi(
         try { cancellation = JSON.parse(request.statusText ?? '') } catch { break }
         const requestId = cancellation?.requestId
         const state = get()
-        if (typeof requestId !== 'string' || state.uiRequest?.id !== requestId) break
+        const queue = state.uiRequest
+          ? (state.uiRequests?.length ? state.uiRequests : [state.uiRequest])
+          : []
+        if (typeof requestId !== 'string' || !queue.some((entry) => entry.id === requestId)) break
         const sessionKey = taggedRequest.sessionKey || viewKeyOf(state)
-        set((current) => ({
-          uiRequest: undefined,
-          run: current.run.phase === 'waiting_approval'
-            ? { ...current.run, phase: 'working' as const }
-            : current.run
-        }))
+        set((current) => {
+          const currentQueue = current.uiRequest
+            ? (current.uiRequests?.length ? current.uiRequests : [current.uiRequest])
+            : []
+          const remaining = currentQueue.filter((entry) => entry.id !== requestId)
+          return {
+            uiRequests: remaining,
+            uiRequest: remaining[0],
+            run:
+              current.run.phase === 'waiting_approval'
+                ? { ...current.run, phase: phaseAfterDialog(current, remaining.length) }
+                : current.run
+          }
+        })
         void window.pi.runtime.respondUi(requestId, { confirmed: false, cancelled: true }, sessionKey)
           .catch((error: unknown) => get().showToast(messageOf(error), 'error'))
         break
@@ -4352,7 +5077,27 @@ function handleExtensionUi(
       break
     }
     case 'set_editor_text': {
-      set({ composerText: request.text ?? '' })
+      const nextText = request.text ?? ''
+      const targetKey = taggedRequest.sessionKey
+        ? threadKey(taggedRequest.sessionKey)
+        : owner
+          ? threadKey(owner)
+          : ''
+      const topState = realGet ? realGet() : get()
+      const currentView = viewKeyOf(topState)
+      const isViewed = !realGet || !targetKey || targetKey === (currentView ? threadKey(currentView) : '')
+      if (targetKey && realSet) {
+        realSet((state) => {
+          const previous = state.drafts[targetKey] ?? { text: '', images: [] }
+          const nextDrafts = { ...state.drafts, [targetKey]: { ...previous, text: nextText } }
+          return {
+            drafts: nextDrafts,
+            ...(isViewed ? { composerText: nextText } : {})
+          }
+        })
+      } else if (isViewed) {
+        set({ composerText: nextText })
+      }
       break
     }
     default:

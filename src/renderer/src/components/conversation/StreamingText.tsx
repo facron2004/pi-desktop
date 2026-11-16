@@ -1,6 +1,7 @@
 import { memo, useMemo, useRef } from 'react'
 import {
   appendStreamingMarkdown,
+  splitSettledMarkdown,
   splitStreamingMarkdown,
   type StreamingMarkdownSplit
 } from '../../lib/streaming-markdown'
@@ -33,9 +34,13 @@ export const StreamingText = memo(function StreamingText({
   const previous = useRef<{ text: string; streaming: boolean; split: StreamingMarkdownSplit } | null>(null)
   const split = useMemo(() => {
     const cached = previous.current
-    const next = cached && streaming && cached.streaming && text.startsWith(cached.text)
-      ? appendStreamingMarkdown(cached.split, text.slice(cached.text.length))
-      : splitStreamingMarkdown(text)
+    const next = cached && text === cached.text
+      ? cached.split
+      : cached && cached.streaming && text.startsWith(cached.text)
+        ? appendStreamingMarkdown(cached.split, text.slice(cached.text.length))
+        : streaming
+          ? splitStreamingMarkdown(text)
+          : splitSettledMarkdown(text)
     previous.current = { text, streaming: Boolean(streaming), split: next }
     return next
   }, [text, streaming])

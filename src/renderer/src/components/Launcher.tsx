@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlertCircle,
   Bot,
   Copy,
   CopyPlus,
@@ -13,6 +14,8 @@ import {
   GitFork,
   Keyboard,
   ListChecks,
+  Loader2,
+  MessageSquare,
   MessageSquarePlus,
   Minimize2,
   Moon,
@@ -34,9 +37,11 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import { selectableModels } from '@shared/provider-models'
 import { FONT_SCALE_PRESETS, nearestFontStepIndex } from '@shared/font-scale'
-import { useAppStore } from '../store/useAppStore'
+import { draftKeyOf, useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
-import { samePath } from '../lib/path'
+import { liveConversationRows } from '../lib/live-sessions'
+import { basename, samePath } from '../lib/path'
+import { sessionIndicator, type SessionIndicator } from '../lib/session-indicator'
 import { formatPlatformShortcut, keysFor, type ShortcutId } from '../lib/shortcuts'
 import { COMMAND_SOURCE } from '../lib/command-source'
 import { transcriptOf } from '../lib/thread'
@@ -47,6 +52,10 @@ import { useDialogFocus } from '../hooks/useDialogFocus'
 export interface LauncherAction {
   id: string
   title: string
+  /** Preserve literal user-owned titles (conversations, projects) instead of running through i18n. */
+  literal?: boolean
+  /** Optional attention state shown on the row icon. */
+  indicator?: SessionIndicator
   /** The reason for the action, or the keys that trigger it. */
   hint?: string
   group: string
@@ -84,6 +93,7 @@ export interface LauncherShell {
  */
 export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const runAppCommand = useAppStore((state) => state.runAppCommand)
+  const selectSession = useAppStore((state) => state.selectSession)
   const switchProject = useAppStore((state) => state.switchProject)
   const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const cycleModel = useAppStore((state) => state.cycleModel)
@@ -95,9 +105,13 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const workspaces = useAppStore((state) => state.settings.workspaces)
   const hiddenProjects = useAppStore((state) => state.settings.hiddenProjects)
   const projectOrder = useAppStore((state) => state.settings.projectOrder)
+  const archivedSessions = useAppStore((state) => state.settings.archivedSessions)
   const sessions = useAppStore((state) => state.sessions)
+  const threads = useAppStore((state) => state.threads)
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
+  const activeKey = useAppStore((state) => draftKeyOf(state))
+  const t = useT()
   const hasMessages = useAppStore((state) => state.items.length > 0)
   const hasForkTarget = useAppStore((state) => state.forkTargets.length > 0)
   const hasAssistantAnswer = useAppStore((state) =>
@@ -389,6 +403,91 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     }
   ]
 
+  // Active & attention conversations (blocked on input, running, failed, unread)
+  // sit right at the top of the launcher so concurrent background work is one
+  // Ctrl/Cmd+Shift+P + Enter away; recent idle conversations appear below View.
+  const attentionRank: Record<SessionIndicator, number> = {
+    'needs-input': 4,
+    running: 3,
+    error: 2,
+    unread: 1,
+    idle: 0
+  }
+  const archived = new Set(archivedSessions ?? [])
+  const liveRows = liveConversationRows(sessions, threads, workspace?.path)
+  const seenSessions = new Set<string>()
+  const sessionEntries: Array<{
+    session: (typeof liveRows)[number]
+    indicator: SessionIndicator
+    rank: number
+  }> = []
+  for (const row of [
+    ...liveRows,
+    ...sessions.map((session) => ({ ...session, onDisk: true }))
+  ]) {
+    if (!row.file || row.file === activeKey || seenSessions.has(row.file)) continue
+    seenSessions.add(row.file)
+    const thread = threads[row.file]
+    const indicator = sessionIndicator({
+      isStreaming: Boolean(thread?.isStreaming),
+      notice: thread?.notice,
+      needsInput: Boolean(thread?.uiRequest || thread?.uiRequests?.length)
+    })
+    if (archived.has(row.file) && indicator === 'idle') continue
+    sessionEntries.push({
+      session: row,
+      indicator,
+      rank: attentionRank[indicator]
+    })
+  }
+  sessionEntries.sort(
+    (a, b) => b.rank - a.rank || b.session.updatedAt - a.session.updatedAt
+  )
+
+  const toSessionAction = (
+    entry: (typeof sessionEntries)[number],
+    group: string
+  ): LauncherAction => {
+    const { session, indicator } = entry
+    const folder = session.cwd ? basename(session.cwd) : t('Chats without a project')
+    const statusText =
+      indicator === 'needs-input'
+        ? t('Needs input')
+        : indicator === 'running'
+          ? t('Running')
+          : indicator === 'error'
+            ? t('The last run failed')
+            : indicator === 'unread'
+              ? t('Unread')
+              : ''
+    const icon: LucideIcon =
+      indicator === 'needs-input' || indicator === 'error'
+        ? AlertCircle
+        : indicator === 'running'
+          ? Loader2
+          : MessageSquare
+    return {
+      id: `session:${session.file}`,
+      title: session.name || session.preview || t('Untitled session'),
+      literal: true,
+      indicator: indicator !== 'idle' ? indicator : undefined,
+      hint: statusText ? `${statusText} · ${folder}` : folder,
+      group,
+      icon,
+      run: () => selectSession(session, 'launcher-session')
+    }
+  }
+
+  const attentionActions = sessionEntries
+    .filter((entry) => entry.rank > 0)
+    .map((entry) => toSessionAction(entry, 'Active conversations'))
+  const recentSessionActions = sessionEntries
+    .filter((entry) => entry.rank === 0)
+    .slice(0, 5)
+    .map((entry) => toSessionAction(entry, 'Recent conversations'))
+
+  actions.push(...recentSessionActions)
+
   // The projects come last, so the actions are what the user sees first.
   const projects = sortProjects(
     collectProjects(workspaces, sessions, hiddenProjects, projectOrder),
@@ -398,6 +497,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     actions.push({
       id: `project:${project.path}`,
       title: project.name,
+      literal: true,
       hint: project.path,
       group: 'Projects',
       icon: FolderOpen,
@@ -406,7 +506,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   }
 
   // Keep the palette focused on actions the open session can currently perform.
-  return actions.filter((action) => {
+  const filtered = actions.filter((action) => {
     if (action.id === 'branch') return hasMessages && hasForkTarget
     if (action.id === 'copy') return hasAssistantAnswer
     if (action.id === 'restart-runtime') return Boolean(workspace)
@@ -416,6 +516,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     }
     return !MESSAGE_ACTION_IDS.has(action.id) || hasMessages
   })
+  return attentionActions.length > 0 ? [...attentionActions, ...filtered] : filtered
 }
 
 /**
@@ -434,6 +535,17 @@ function scoreAction(action: LauncherAction, tokens: string[]): number | null {
     score += at === -1 ? 1 : 12 - Math.min(at, 11)
   }
   return score
+}
+
+export function LauncherDialog({
+  shell,
+  onClose
+}: {
+  shell: LauncherShell
+  onClose: () => void
+}) {
+  const actions = useLauncherActions(shell)
+  return <Launcher actions={actions} onClose={onClose} />
 }
 
 export function Launcher({
@@ -610,7 +722,11 @@ export function Launcher({
                   </div>
                   {group.items.map((entry) => {
                     const Icon = entry.action.icon
-                    const hasDescription = entry.action.group === 'Pi' || entry.action.group === 'Projects'
+                    const hasDescription =
+                      entry.action.group === 'Pi' ||
+                      entry.action.group === 'Projects' ||
+                      entry.action.group === 'Active conversations' ||
+                      entry.action.group === 'Recent conversations'
                     return (
                       <button
                         key={entry.action.id}
@@ -618,6 +734,7 @@ export function Launcher({
                         className="launcher__item"
                         data-active={entry.position === index}
                         data-kind={entry.action.group === 'Pi' ? 'command' : undefined}
+                        data-indicator={entry.action.indicator}
                         data-has-hint={Boolean(entry.action.hint)}
                         data-hint-kind={hasDescription ? 'description' : 'shortcut'}
                         role="option"
@@ -627,9 +744,14 @@ export function Launcher({
                         onClick={() => run(entry)}
                       >
                         <span className="palette__icon">
-                          <Icon size={12} />
+                          <Icon
+                            size={12}
+                            className={entry.action.indicator === 'running' ? 'spin' : undefined}
+                          />
                         </span>
-                        <span className="launcher__name">{t(entry.action.title)}</span>
+                        <span className="launcher__name">
+                          {entry.action.literal ? entry.action.title : t(entry.action.title)}
+                        </span>
                         <span className="launcher__hint">
                           {entry.action.hint
                             ? hasDescription

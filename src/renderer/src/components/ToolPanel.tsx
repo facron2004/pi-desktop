@@ -423,7 +423,7 @@ export function ToolPanel({
             title={t('New tab')}
             onClick={createNewTab}
           >
-            <Plus size={18} />
+            <Plus size={16} strokeWidth={1.7} />
           </button>
         </div>
         {overflowing ? (
@@ -441,7 +441,7 @@ export function ToolPanel({
                 aria-expanded={open}
                 onClick={toggle}
               >
-                <List size={18} />
+                <List size={16} strokeWidth={1.7} />
               </button>
             )}
           >
@@ -499,7 +499,7 @@ export function ToolPanel({
           aria-pressed={maximized}
           onClick={() => setMaximized((value) => !value)}
         >
-          {maximized ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+          {maximized ? <Minimize2 size={16} strokeWidth={1.7} /> : <Maximize2 size={16} strokeWidth={1.7} />}
         </button>
         {actions}
       </div>

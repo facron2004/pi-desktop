@@ -820,6 +820,7 @@ const zhCN: Record<string, string> = {
   'No plugins available': '没有可用的插件命令',
   'Attach an image': '附加图片',
   'Remove image': '移除图片',
+  'Remove file': '移除文件',
   'Browse commands': '浏览命令',
   'How the next message is delivered': '设置下一条消息的发送方式',
   'Deliver after the current tool calls finish': '当前工具调用完成后发送',
@@ -867,7 +868,6 @@ const zhCN: Record<string, string> = {
   'to move': '移动',
   'to run': '执行',
   'to dismiss': '关闭',
-  'Ask Pi about this code': '询问 Pi 关于此代码的问题',
   'Copy code': '复制代码',
   'Branch from here — a new conversation that keeps the earlier history': '从此处分支，新对话会保留之前的记录',
   'Copy your message': '复制你的消息',
@@ -1865,7 +1865,16 @@ const zhCN: Record<string, string> = {
   'Include Ctrl or Alt': '快捷键必须包含 Ctrl 或 Alt',
   'Already used by': '已被占用：',
   'Change shortcut': '修改快捷键',
-  'Reset to default': '恢复默认'
+  'Reset to default': '恢复默认',
+  'Conversations waiting for input': '等待输入的会话',
+  'Go to conversation': '前往该会话',
+  pending: '项待处理',
+  'sessions waiting': '个会话正在等待',
+  Switch: '切换',
+  'Waiting for another conversation in {folder}': '正在等待 {folder} 中的另一个会话',
+  'Waiting for another conversation in this folder…': '正在等待此文件夹中的另一个会话…',
+  'Waiting on {session} in {folder}': '正在等待 {folder} 中的「{session}」',
+  'Waiting on another window in {folder}': '正在等待 {folder} 中的另一个窗口'
 }
 
 export function translate(text: string, language: AppLanguage): string {

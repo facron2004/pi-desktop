@@ -11,7 +11,12 @@ servers, and the project-trust switch lives in General → Project safety.
 Every card can also be marked with the **我的 / Mine** filter. That set is not a
 separate flag: the page reads Pi's `packages` settings (agent and project
 `settings.json`) and checks the agent skills directory, then matches those
-sources back to catalog entries.
+sources back to catalog entries. The match does not depend on the bundled
+snapshot: a live catalog entry uses its npm package name as `id`, while the
+snapshot uses `owner/repo`, so the installed list carries the canonical source,
+npm name and repository path and the card accepts any of them. A package
+installed from the live catalog therefore shows **已安装 / Installed** even
+when it is not in the bundled snapshot.
 
 The top row also carries **创建** and **管理**. 创建 opens a dialog with three
 starting points: a GitHub repository, an npm package, or a locally scaffolded

@@ -27,7 +27,7 @@ import type {
   MarketplaceSnapshot,
   MarketplaceSort
 } from '@shared/marketplace'
-import { formatDownloads } from '@shared/marketplace'
+import { formatDownloads, marketplaceEntryKeys } from '@shared/marketplace'
 import { formatRelativeTime } from '../lib/format'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
@@ -122,6 +122,11 @@ function truncateOutput(output: string, limit = 180): string {
 function relativeFromIso(iso: string, language: AppLanguage): string {
   const timestamp = Date.parse(iso)
   return Number.isNaN(timestamp) ? '' : formatRelativeTime(timestamp, language)
+}
+
+/** True when any spelling of the entry is in the installed key set. */
+function isInstalledEntry(entry: MarketplaceEntry, installedIds: Set<string>): boolean {
+  return marketplaceEntryKeys(entry).some((id) => installedIds.has(id))
 }
 
 /** Installed ids are a view convenience, so they survive leaving the page. */
@@ -645,14 +650,14 @@ export function Marketplace() {
   const mineCount = useMemo(
     () =>
       snapshot.entries.filter(
-        (entry) => entry.kind === kind && installedIds.has(entry.id.toLowerCase())
+        (entry) => entry.kind === kind && isInstalledEntry(entry, installedIds)
       ).length,
     [snapshot.entries, kind, installedIds]
   )
 
   const visible = useMemo(() => {
     return mineOnly
-      ? snapshot.entries.filter((entry) => installedIds.has(entry.id.toLowerCase()))
+      ? snapshot.entries.filter((entry) => isInstalledEntry(entry, installedIds))
       : snapshot.entries
   }, [snapshot.entries, mineOnly, installedIds])
 
@@ -922,7 +927,7 @@ export function Marketplace() {
               key={entry.id}
               entry={entry}
               language={language}
-              installed={installedIds.has(entry.id.toLowerCase())}
+              installed={isInstalledEntry(entry, installedIds)}
               installing={installingId === entry.id}
               installBusy={installingId !== null}
               canInstall={canInstall}

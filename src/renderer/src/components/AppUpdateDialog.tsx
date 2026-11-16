@@ -7,11 +7,18 @@ import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
 import '../styles/app-update.css'
 
+function hasAnyStreamingThread(threads: Record<string, { isStreaming?: boolean }>): boolean {
+  for (const key in threads) {
+    if (threads[key]?.isStreaming) return true
+  }
+  return false
+}
+
 export function AppUpdateDialog() {
   const t = useT()
   const supported = useAppStore((state) => state.info?.appUpdateSupported !== false)
   const [notice, setNotice] = useState<AppUpdateNotice | null>(null)
-  const activeWork = useAppStore((state) => notice !== null && Object.values(state.threads).some((thread) => thread.isStreaming))
+  const activeWork = useAppStore((state) => notice !== null && hasAnyStreamingThread(state.threads))
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<AppUpdateProgress | null>(null)
   const [installError, setInstallError] = useState('')

@@ -2,8 +2,8 @@ import { app } from 'electron'
 import type { AgentMessage, AppSettings, MemoryScope, SessionMeta } from '@shared/types'
 import { runPiCli } from '../pi/cli'
 import {
+  getSessionMetaFromHandle,
   openSessionFile,
-  parseSession,
   readSessionConversation,
   type SessionConversationRead
 } from '../sessions'
@@ -113,7 +113,7 @@ export async function extractFromSession(
       }
     } else if (opened) {
       const stats = await opened.handle.stat()
-      meta = await parseSession(opened.target, { size: stats.size, mtimeMs: stats.mtimeMs }, opened.handle)
+      meta = await getSessionMetaFromHandle(opened.target, opened.handle, stats)
     }
     cwd = options.cwd ?? meta?.cwd
     if (!cwd) return { added: 0, skipped: 'Could not determine the conversation folder' }

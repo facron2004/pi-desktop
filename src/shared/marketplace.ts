@@ -66,6 +66,30 @@ export interface MarketplaceSnapshot {
   total?: number
 }
 
+/**
+ * Every identifier a catalog entry can be matched against an installed package
+ * by.
+ *
+ * The live catalog uses the npm package name as `id`; the bundled snapshot
+ * uses `owner/repo`. One package therefore answers to several spellings, and
+ * the installed list from the main process may carry any of them.
+ */
+export function marketplaceEntryKeys(
+  entry: Pick<MarketplaceEntry, 'id' | 'install' | 'npmPackage' | 'repo'>
+): string[] {
+  const keys = new Set<string>()
+  const add = (value: string | null | undefined): void => {
+    const trimmed = value?.trim().toLowerCase()
+    if (trimmed) keys.add(trimmed)
+  }
+  add(entry.id)
+  add(entry.install)
+  add(entry.npmPackage)
+  if (entry.npmPackage) add(`npm:${entry.npmPackage}`)
+  add(entry.repo)
+  return [...keys]
+}
+
 /** One page of Pi's official package catalog. */
 export interface PiCatalogQuery {
   query?: string

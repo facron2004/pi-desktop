@@ -22,6 +22,7 @@ import {
   pruneSessionSearchIndexFiles,
   readJsonlLines,
   readSessionConversation,
+  readSessionHeadMessages,
   readSessionMessages,
   resolveSessionFilePath,
   searchSessions
@@ -1702,4 +1703,123 @@ test('persistent search indexes prune oldest sidecars to honor byte and file lim
     clearSessionCache()
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+function writeCacheTestSession(file: string, cwd: string, pairs: Array<[string, string]>): void {
+  const lines = [JSON.stringify({ type: 'session', id: path.basename(file, '.jsonl'), version: 3, cwd })]
+  let parentId: string | null = null
+  let step = 0
+  for (const [userText, assistantText] of pairs) {
+    const userId = `u-${step}`
+    const asstId = `a-${step}`
+    lines.push(JSON.stringify({
+      type: 'message',
+      id: userId,
+      parentId,
+      message: { role: 'user', content: userText, timestamp: 1_000 + step * 2 }
+    }))
+    lines.push(JSON.stringify({
+      type: 'message',
+      id: asstId,
+      parentId: userId,
+      message: { role: 'assistant', content: assistantText, timestamp: 1_001 + step * 2 }
+    }))
+    parentId = asstId
+    step += 1
+  }
+  writeFileSync(file, `${lines.join('\n')}\n`)
+}
+
+test('parseSession does not evict entries in the 12-slot sessionMessagesCache', async (t) => {
+  clearSessionCache()
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-cache-decouple-'))
+  t.after(() => {
+    clearSessionCache()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  const files: string[] = []
+  for (let i = 0; i < 16; i += 1) {
+    const file = path.join(root, `session-${i}.jsonl`)
+    writeCacheTestSession(file, root, [[`question ${i}`, `answer ${i}`]])
+    files.push(file)
+  }
+
+  const warmRefs: unknown[] = []
+  for (let i = 0; i < 12; i += 1) {
+    warmRefs.push(await readSessionMessages(files[i]))
+  }
+  assert.strictEqual(await readSessionMessages(files[0]), warmRefs[0])
+
+  // Scanning extra sessions for metadata must NOT populate/evict sessionMessagesCache
+  for (let i = 12; i < 16; i += 1) {
+    const meta = await parseSession(files[i])
+    assert.ok(meta)
+  }
+  assert.strictEqual(
+    await readSessionMessages(files[0]),
+    warmRefs[0],
+    'metadata-only parseSession scans must not thrash live sessionMessagesCache'
+  )
+})
+
+test('getSessionMeta promotes cache hits in LRU order', async (t) => {
+  clearSessionCache()
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-meta-lru-'))
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  t.after(() => {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    clearSessionCache()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  const workspaceDir = path.join(root, encodeWorkspaceDir(root))
+  mkdirSync(workspaceDir, { recursive: true })
+  const files: string[] = []
+  for (let i = 0; i <= 2000; i += 1) {
+    const file = path.join(workspaceDir, `meta-${i}.jsonl`)
+    writeCacheTestSession(file, root, [[`q ${i}`, `a ${i}`]])
+    files.push(file)
+  }
+
+  // Fill exact cache cap (2000 entries: index 0 .. 1999)
+  const meta0 = await getSessionMeta(files[0], [root])
+  const meta1 = await getSessionMeta(files[1], [root])
+  for (let i = 2; i < 2000; i += 1) {
+    await getSessionMeta(files[i], [root])
+  }
+
+  // Access index 0 so it moves to MRU, leaving index 1 as the true LRU
+  assert.strictEqual(await getSessionMeta(files[0], [root]), meta0)
+
+  // Insert entry 2000 -> must evict index 1, keeping index 0
+  await getSessionMeta(files[2000], [root])
+  assert.strictEqual(await getSessionMeta(files[0], [root]), meta0, 'LRU-promoted entry must survive eviction')
+  assert.notStrictEqual(await getSessionMeta(files[1], [root]), meta1, 'untouched oldest entry must be evicted')
+})
+
+test('readSessionHeadMessages reads first exchange on large files and reuses warm sessionMessagesCache', async (t) => {
+  clearSessionCache()
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-head-msgs-'))
+  t.after(() => {
+    clearSessionCache()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  const file = path.join(root, 'multi-turn.jsonl')
+  writeCacheTestSession(file, root, [
+    ['First user prompt', 'First assistant response'],
+    ['Second user prompt', `Second assistant response ${'x'.repeat(2_200_000)}`]
+  ])
+
+  const head = await readSessionHeadMessages(file)
+  assert.equal(head.length, 2, 'large session stops reading after first user+assistant exchange')
+  assert.equal(head[0].content, 'First user prompt')
+  assert.equal(head[1].content, 'First assistant response')
+
+  const full = await readSessionMessages(file)
+  assert.equal(full.length, 4)
+  assert.strictEqual(await readSessionHeadMessages(file), full, 'warm cache hit returns cached full thread')
 })

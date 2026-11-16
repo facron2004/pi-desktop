@@ -1,4 +1,4 @@
-import type { SessionMeta } from '@shared/types'
+import type { ExtensionUiRequest, SessionMeta } from '@shared/types'
 import type { SessionThread } from '../store/useAppStore'
 import { normalisePathKey } from './path'
 import { changedThreadItemsFrom, type ThreadItem } from './thread'
@@ -97,9 +97,23 @@ function summarizeThread(items: ThreadItem[], previous?: LiveThreadSummary): Liv
 function hasWork(thread: SessionThread): boolean {
   if (thread.items.length > 0) return true
   if (thread.isStreaming) return true
+  if (thread.uiRequest || (thread.uiRequests && thread.uiRequests.length > 0)) return true
   if (thread.queue.steering.length > 0 || thread.queue.followUp.length > 0) return true
   return thread.run.phase !== 'idle' && !thread.run.settled
 }
+
+function sameList<T>(previous: readonly T[] | undefined, next: readonly T[]): boolean {
+  if (!previous || previous.length !== next.length) return false
+  for (let index = 0; index < next.length; index += 1) {
+    if (previous[index] !== next[index]) return false
+  }
+  return true
+}
+
+const EMPTY_ROWS: ConversationRow[] = []
+let lastLiveRows: ConversationRow[] = EMPTY_ROWS
+const EMPTY_PATHS: string[] = []
+let lastStreamingPaths: string[] = EMPTY_PATHS
 
 /**
  * The sidebar's list: the conversations on disk, plus the ones the store
@@ -201,7 +215,11 @@ export function liveConversationRows(
     if (!activeKeys.has(key)) liveRowCache.delete(key)
   }
 
-  return live.sort((a, b) => b.updatedAt - a.updatedAt)
+  live.sort((a, b) => b.updatedAt - a.updatedAt)
+  if (live.length === 0) return EMPTY_ROWS
+  if (sameList(lastLiveRows, live)) return lastLiveRows
+  lastLiveRows = live
+  return live
 }
 
 export function conversationRows(
@@ -222,16 +240,60 @@ export function streamingProjectPaths(
   workspacePath: string | undefined
 ): string[] {
   const byPath = sessionsByPath(sessions)
-  const paths: string[] = []
+  const seen = new Set<string>()
   for (const [file, thread] of Object.entries(threads)) {
     if (!thread.isStreaming) continue
     const cwd =
       thread.status.cwd ||
       byPath.get(normalisePathKey(file))?.cwd ||
-      (file === draftId ? workspacePath : undefined)
-    if (cwd) paths.push(normalisePathKey(cwd))
+      (file === draftId || file.startsWith('draft:') ? workspacePath : undefined)
+    if (cwd) seen.add(normalisePathKey(cwd))
   }
+  if (seen.size === 0) return EMPTY_PATHS
+  const paths = [...seen]
+  if (sameList(lastStreamingPaths, paths)) return lastStreamingPaths
+  lastStreamingPaths = paths
   return paths
+}
+
+export interface PendingUiSession {
+  sessionKey: string
+  request: ExtensionUiRequest
+  count: number
+  title?: string
+  cwd?: string
+}
+
+/** List every conversation currently blocked on one or more extension UI dialogs. */
+export function listPendingUiSessions(
+  threads: Readonly<Record<string, SessionThread>>,
+  sessions: readonly SessionMeta[] = []
+): PendingUiSession[] {
+  const byPath = sessionsByPath(sessions)
+  const pending: PendingUiSession[] = []
+  for (const [sessionKey, thread] of Object.entries(threads)) {
+    const queue = thread.uiRequests?.length
+      ? thread.uiRequests
+      : thread.uiRequest
+        ? [thread.uiRequest]
+        : []
+    if (queue.length === 0) continue
+    const disk = byPath.get(normalisePathKey(sessionKey))
+    const title =
+      disk?.name ||
+      disk?.preview ||
+      thread.piState?.sessionName ||
+      conversationPreview(thread) ||
+      undefined
+    pending.push({
+      sessionKey,
+      request: queue[0],
+      count: queue.length,
+      title,
+      cwd: disk?.cwd || thread.status.cwd
+    })
+  }
+  return pending
 }
 
 /**

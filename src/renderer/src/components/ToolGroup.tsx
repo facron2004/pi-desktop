@@ -111,7 +111,6 @@ export function ToolGroup({ items }: { items: ToolItem[] }) {
           </span>
           <span className="tool__name">{title}</span>
           <span className="tool__summary">{summary}</span>
-          {status === 'running' ? <span className="spinner" /> : null}
           <span className="tool__state" data-state={status}>
             {t(
               status === 'error'

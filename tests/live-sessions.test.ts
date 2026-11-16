@@ -4,9 +4,12 @@ import type { SessionMeta } from '@shared/types'
 import {
   activeConversationTitle,
   conversationRows,
+  liveConversationRows,
+  listPendingUiSessions,
   streamingProjectPaths,
   updateThreadSessionName
 } from '../src/renderer/src/lib/live-sessions'
+import { projectIndicator } from '../src/renderer/src/lib/session-indicator'
 import { applyEventBatch, type ThreadItem } from '../src/renderer/src/lib/thread'
 import type { SessionThread } from '../src/renderer/src/store/useAppStore'
 
@@ -17,6 +20,7 @@ function thread(patch: Partial<SessionThread> = {}): SessionThread {
     run: { phase: 'idle', turns: 0, settled: true },
     isStreaming: false,
     transport: 'connected',
+    uiRequests: [],
     uiStatuses: [],
     uiWidgets: [],
     queue: { steering: [], followUp: [] },
@@ -26,6 +30,7 @@ function thread(patch: Partial<SessionThread> = {}): SessionThread {
     models: [],
     thinkingLevels: [],
     commands: [],
+    clientKey: 'client-test',
     version: 0,
     ...patch
   }
@@ -336,4 +341,80 @@ test('a blank chat has no conversation title', () => {
   // The welcome screen may then fall back to the project name.
   assert.equal(activeConversationTitle([], { 'draft:blank': thread() }, 'draft:blank'), '')
   assert.equal(activeConversationTitle([], {}, undefined), '')
+})
+
+test('liveConversationRows and streamingProjectPaths return stable references when unchanged and deduplicate paths', () => {
+  const emptyRowsA = liveConversationRows([], {}, 'E:/work/demo')
+  const emptyRowsB = liveConversationRows([], {}, 'E:/work/demo')
+  assert.equal(emptyRowsA, emptyRowsB)
+
+  const emptyPathsA = streamingProjectPaths([], {}, undefined, 'E:/work/demo')
+  const emptyPathsB = streamingProjectPaths([], {}, undefined, 'E:/work/demo')
+  assert.equal(emptyPathsA, emptyPathsB)
+
+  const threads = {
+    'E:/work/demo/a.jsonl': thread({ isStreaming: true, run: { phase: 'working', turns: 1, settled: false, startedAt: 10 }, status: { phase: 'ready', cwd: 'E:\\work\\demo' } }),
+    'E:/work/demo/b.jsonl': thread({ isStreaming: true, run: { phase: 'working', turns: 1, settled: false, startedAt: 20 }, status: { phase: 'ready', cwd: 'e:/work/demo' } })
+  }
+  const rows1 = liveConversationRows([], threads, 'E:/work/demo')
+  const rows2 = liveConversationRows([], threads, 'E:/work/demo')
+  assert.equal(rows1, rows2)
+
+  const paths1 = streamingProjectPaths([], threads, undefined, 'E:/work/demo')
+  const paths2 = streamingProjectPaths([], threads, undefined, 'E:/work/demo')
+  assert.deepEqual(paths1, ['e:/work/demo'])
+  assert.equal(paths1, paths2)
+})
+
+test('listPendingUiSessions lists threads waiting on dialogs and counts queued requests', () => {
+  const req1 = { id: 'req-1', method: 'confirm', title: 'Confirm', message: 'Proceed?' } as any
+  const req2 = { id: 'req-2', method: 'input', title: 'Input', placeholder: 'Name' } as any
+  const threads = {
+    'E:/work/demo/a.jsonl': thread({
+      uiRequest: req1,
+      uiRequests: [req1, req2],
+      status: { phase: 'ready', cwd: 'E:/work/demo' }
+    }),
+    'E:/work/demo/b.jsonl': thread({
+      uiRequest: req2,
+      piState: { isStreaming: false, isCompacting: false, sessionName: 'Background task' }
+    }),
+    'E:/work/demo/idle.jsonl': thread()
+  }
+
+  const listed = listPendingUiSessions(threads, [{ ...onDisk('E:/work/demo/a.jsonl'), name: 'Session A' }])
+  assert.equal(listed.length, 2)
+  assert.deepEqual(listed[0], {
+    sessionKey: 'E:/work/demo/a.jsonl',
+    request: req1,
+    count: 2,
+    title: 'Session A',
+    cwd: 'E:/work/demo'
+  })
+  assert.deepEqual(listed[1], {
+    sessionKey: 'E:/work/demo/b.jsonl',
+    request: req2,
+    count: 1,
+    title: 'Background task',
+    cwd: undefined
+  })
+
+  // Draft with only a pending uiRequest still counts as live work
+  const withDialog = liveConversationRows([], { 'draft:ui': thread({ uiRequests: [req1], uiRequest: req1 }) }, 'E:/work/demo')
+  assert.equal(withDialog.some((row) => row.file === 'draft:ui'), true)
+})
+
+test('projectIndicator resolves highest-precedence mark across a collapsed project sessions', () => {
+  assert.equal(projectIndicator([]), 'idle')
+  assert.equal(projectIndicator([{ isStreaming: false }]), 'idle')
+  assert.equal(projectIndicator([{ isStreaming: false }, { isStreaming: true }]), 'running')
+  assert.equal(projectIndicator([{ isStreaming: true }, { isStreaming: false, notice: 'unread' }]), 'unread')
+  assert.equal(projectIndicator([{ isStreaming: false, notice: 'unread' }, { isStreaming: false, notice: 'error' }]), 'error')
+  assert.equal(
+    projectIndicator([
+      { isStreaming: false, notice: 'error' },
+      { isStreaming: true, needsInput: true }
+    ]),
+    'needs-input'
+  )
 })

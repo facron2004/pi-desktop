@@ -957,13 +957,10 @@ test('session IPC handlers reject files outside the Pi session root', async () =
   writeFileSync(outsideFile, sessionText.replace('visible session content', 'private file content'), 'utf8')
 
   const originalSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR
-  const originalTrashItem = shell.trashItem
   let renamedPath: string | undefined
-  let trashedPath: string | undefined
   const ensuredOptions: Record<string, unknown>[] = []
   try {
     process.env.PI_CODING_AGENT_SESSION_DIR = root
-    shell.trashItem = async (file: string) => { trashedPath = file }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const anyIpc = ipcMain as any
     anyIpc._reset()
@@ -994,9 +991,9 @@ test('session IPC handlers reject files outside the Pi session root', async () =
     assert.equal(await anyIpc._invoke('sessions:rename', {}, sessionFile, 'renamed'), true)
     assert.equal(renamedPath, sessionFile)
     assert.equal(await anyIpc._invoke('sessions:remove', {}, outsideFile), false)
-    assert.equal(trashedPath, undefined)
+    assert.equal(existsSync(outsideFile), true)
     assert.equal(await anyIpc._invoke('sessions:remove', {}, sessionFile), true)
-    assert.equal(trashedPath, sessionFile)
+    assert.equal(existsSync(sessionFile), false)
 
     assert.equal(
       (await anyIpc._invoke('runtime:ensure', {}, {
@@ -1057,7 +1054,6 @@ test('session IPC handlers reject files outside the Pi session root', async () =
   } finally {
     if (originalSessionDir === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
     else process.env.PI_CODING_AGENT_SESSION_DIR = originalSessionDir
-    shell.trashItem = originalTrashItem
     rmSync(parent, { recursive: true, force: true })
   }
 })

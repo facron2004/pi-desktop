@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { memo, useEffect, useState, type ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
 import type { ToolItem } from '../lib/thread'
 import { describeTool } from '../lib/tools'
@@ -22,7 +22,7 @@ import { useT } from '../lib/i18n'
  * fold stays a projection of `live` — nothing is remembered about the run —
  * so a reopened conversation folds exactly like the running one did.
  */
-export function ProcessTrail({
+export const ProcessTrail = memo(function ProcessTrail({
   tools,
   thoughts,
   searchText,
@@ -39,7 +39,7 @@ export function ProcessTrail({
   children: ReactNode
 }) {
   const t = useT()
-  const workspace = useAppStore((state) => state.workspace)
+  const workspacePath = useAppStore((state) => state.workspace?.path)
   const threadKey = useAppStore((state) => state.activeSessionFile ?? state.draftId ?? 'draft')
   /** On by default: a trace that is over folds, and only the reader opens it again. */
   const autoFold = useAppStore((state) => state.settings.autoFoldProcess !== false)
@@ -57,6 +57,12 @@ export function ProcessTrail({
   const [batchOpen, setBatchOpen] = useState<boolean | undefined>(() =>
     readToolOpen(threadKey, groupId)
   )
+  useEffect(() => {
+    setManualOpen(readProcessOpen(threadKey, processId))
+  }, [threadKey, processId])
+  useEffect(() => {
+    setBatchOpen(readToolOpen(threadKey, groupId))
+  }, [threadKey, groupId])
   // A live stretch with `toolCallSummary` on is one line as soon as it holds
   // a call, including a lone running command: the point of the setting is to
   // keep commands out of the flowing output. A stretch of pure thinking is
@@ -71,10 +77,11 @@ export function ProcessTrail({
   ]
     .filter(Boolean)
     .join(' · ')
-  const toolText = tools
-    .map((item) => `${item.toolName} ${describeTool(item.toolName).summary(item.args ?? {}, workspace?.path)}`)
-    .join('\n')
-  const searchMatch = Boolean(query) && `${searchText}\n${toolText}`.toLowerCase().includes(query)
+  const searchMatch = query
+    ? `${searchText}\n${tools.map((item) => `${item.toolName} ${describeTool(item.toolName).summary(item.args ?? {}, workspacePath)}`).join('\n')}`
+        .toLowerCase()
+        .includes(query)
+    : false
   /**
    * The whole fold rule.
    *
@@ -120,11 +127,10 @@ export function ProcessTrail({
         onClick={toggleOpen}
       >
         <span className="process__label">{title}</span>
-        {summarizing && activity.status === 'running' ? <span className="spinner" /> : null}
         {summary ? <span className="process__summary">{summary}</span> : null}
         <ChevronRight size={13} className="caret" data-open={open} />
       </button>
       {open ? <div className="process__body">{children}</div> : null}
     </div>
   )
-}
+})

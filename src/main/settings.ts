@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { AppSettings, Workspace } from '@shared/types'
@@ -394,12 +394,15 @@ export function parseWindowsUserSid(output: string): string | undefined {
   return undefined
 }
 
-/** Build the ordered ACL operations for the user-data root and its contents. */
-export function windowsUserDataAclCommands(
-  directory: string,
-  userSid: string,
-  hasChildren: boolean
-): string[][] {
+/**
+ * Build the ordered ACL operations for the user-data root.
+ *
+ * The root is the part that has to be right before anything is read: inheritance
+ * is cut and replaced with `(OI)(CI)` entries, so every file the app creates from
+ * now on is already restricted. Rewriting the ACL of every existing child is a
+ * migration, not a launch step — see `windowsUserDataChildAclCommands`.
+ */
+export function windowsUserDataAclCommands(directory: string, userSid: string): string[][] {
   const allowed = [
     `*${userSid}:(OI)(CI)F`,
     '*S-1-5-18:(OI)(CI)F',
@@ -408,9 +411,115 @@ export function windowsUserDataAclCommands(
   return [
     [directory, '/reset', '/Q', '/L'],
     [directory, '/inheritance:r', '/Q', '/L'],
-    [directory, '/grant:r', ...allowed, '/Q', '/L'],
-    ...(hasChildren ? [[path.win32.join(directory, '*'), '/reset', '/T', '/C', '/L', '/Q']] : [])
+    [directory, '/grant:r', ...allowed, '/Q', '/L']
   ]
+}
+
+/**
+ * The one-time pass that brings existing children under the root's ACL.
+ *
+ * `icacls /T` reads and rewrites the security descriptor of every entry, and the
+ * Chromium caches alone are tens of thousands of files: measured here at ~90 s
+ * just to enumerate them. Doing it on every launch held the window off screen for
+ * minutes, so it runs once per directory (marked by `ACL_CHILDREN_MARKER`) and in
+ * the background.
+ */
+export function windowsUserDataChildAclCommands(directory: string): string[][] {
+  return [[path.win32.join(directory, '*'), '/reset', '/T', '/C', '/L', '/Q']]
+}
+
+/** Names the completed child pass, so later launches skip it. */
+const ACL_CHILDREN_MARKER = '.acl-children-secured-v1'
+
+function aclChildrenSecured(directory: string, userSid: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path.join(directory, ACL_CHILDREN_MARKER), 'utf8'))
+    if (!parsed || typeof parsed !== 'object') return false
+    const record = parsed as { sid?: unknown; at?: unknown }
+    // A different account owning the folder means the pass has to run again.
+    return record.sid === userSid && typeof record.at === 'number'
+  } catch {
+    return false
+  }
+}
+
+function markAclChildrenSecured(directory: string, userSid: string): void {
+  try {
+    writeFileSync(
+      path.join(directory, ACL_CHILDREN_MARKER),
+      JSON.stringify({ sid: userSid, at: Date.now() }),
+      'utf8'
+    )
+  } catch {
+    /* The pass still ran; the next launch simply repeats it. */
+  }
+}
+
+function windowsUserSid(systemDirectory: string): string | undefined {
+  try {
+    const userOutput = execFileSync(
+      path.join(systemDirectory, 'whoami.exe'),
+      ['/user', '/fo', 'csv', '/nh'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }
+    )
+    return parseWindowsUserSid(userOutput)
+  } catch {
+    return undefined
+  }
+}
+
+/** Parse the account name from `whoami /user /fo csv /nh`. */
+export function parseWindowsUserName(output: string): string | undefined {
+  const match = /^\s*"([^"]+)"/.exec(output)
+  return match?.[1]?.trim() || undefined
+}
+
+/**
+ * Read the root directory's ACL without touching it.
+ *
+ * This is the fast path that keeps a normal launch in the milliseconds: the
+ * previous implementation applied `icacls /reset` and `/grant:r` on every start,
+ * and on a data folder with tens of thousands of Chromium cache files the
+ * inheritable-ACE propagation blocked the main process for a minute before the
+ * window could appear. Reading one directory's ACL is cheap; only a directory
+ * that is not already restricted pays for the write.
+ */
+function windowsUserDataAclAlreadySecured(
+  directory: string,
+  systemDirectory: string
+): boolean {
+  try {
+    const userOutput = execFileSync(
+      path.join(systemDirectory, 'whoami.exe'),
+      ['/user', '/fo', 'csv', '/nh'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }
+    )
+    const account = parseWindowsUserName(userOutput)
+    if (!account) return false
+    const acl = execFileSync(path.join(systemDirectory, 'icacls.exe'), [directory, '/L'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true
+    })
+    const entries = acl
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.includes(':(OI)') || line.includes(':(CI)'))
+    if (entries.length === 0) return false
+    const hasUser = entries.some((line) => line.toLowerCase().includes(account.toLowerCase()))
+    const hasInherited = entries.some((line) => line.includes('(I)'))
+    const allFull = entries.every((line) => line.includes('(OI)(CI)(F)'))
+    return hasUser && !hasInherited && allFull
+  } catch {
+    return false
+  }
+}
+
+/** True when this launch actually rewrote the root ACL. */
+let userDataAclChanged = false
+
+export function didUserDataAclChange(): boolean {
+  return userDataAclChanged
 }
 
 function secureWindowsUserDataDirectory(directory: string): boolean {
@@ -420,21 +529,19 @@ function secureWindowsUserDataDirectory(directory: string): boolean {
 
   try {
     const systemDirectory = path.join(systemRoot, 'System32')
+    if (windowsUserDataAclAlreadySecured(target, systemDirectory)) return true
     const icacls = path.join(systemDirectory, 'icacls.exe')
     const marker = path.join(target, '.acl-secured-v1')
-    const userOutput = execFileSync(path.join(systemDirectory, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true
-    })
-    const userSid = parseWindowsUserSid(userOutput)
+    const userSid = windowsUserSid(systemDirectory)
     if (!userSid) return false
 
-    const hasChildren = readdirSync(target).length > 0
-    const commands = windowsUserDataAclCommands(target, userSid, hasChildren)
-    for (const args of commands) {
+    // Only the root here: it is one directory, so this stays in the milliseconds
+    // on an empty or already-secured folder. The one-time child sweep handles
+    // pre-existing content after the window is up.
+    for (const args of windowsUserDataAclCommands(target, userSid)) {
       execFileSync(icacls, args, { stdio: 'ignore', windowsHide: true })
     }
+    userDataAclChanged = true
     try {
       if (/^[a-f\d]{64}$/i.test(readFileSync(marker, 'utf8').trim())) unlinkSync(marker)
     } catch {
@@ -447,6 +554,53 @@ function secureWindowsUserDataDirectory(directory: string): boolean {
 }
 
 /**
+ * Run the one-time child ACL pass without holding up the window.
+ *
+ * Two things make this safe for the UI. It is scheduled after start, so the
+ * first paint, the session list and the first Pi process are already up; and it
+ * runs `execFile` rather than `execFileSync`, because that pass takes a minute on
+ * a folder holding tens of thousands of cache files and a synchronous child
+ * would block the main process — which is exactly how the window ended up
+ * invisible for a minute with the app apparently not starting.
+ *
+ * Everything it does is idempotent, so an interrupted pass simply runs again on
+ * the next launch.
+ */
+export function scheduleUserDataAclSweep(directory: string, delayMs = 6_000): void {
+  if (process.platform !== 'win32') return
+  const target = path.resolve(directory)
+  const systemRoot = process.env.SystemRoot
+  if (!systemRoot) return
+  const timer = setTimeout(() => {
+    void runUserDataAclSweep(target, path.join(systemRoot, 'System32')).catch(() => {
+      /* A failed sweep is retried on the next launch. */
+    })
+  }, delayMs)
+  timer.unref?.()
+}
+
+function execFileAsync(file: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { windowsHide: true, timeout: 10 * 60_000 }, (error) => {
+      if (error) reject(error)
+      else resolve()
+    })
+  })
+}
+
+async function runUserDataAclSweep(target: string, systemDirectory: string): Promise<void> {
+  const userSid = windowsUserSid(systemDirectory)
+  if (!userSid) return
+  if (readdirSync(target).length === 0) return
+  if (aclChildrenSecured(target, userSid)) return
+  const icacls = path.join(systemDirectory, 'icacls.exe')
+  for (const args of windowsUserDataChildAclCommands(target)) {
+    await execFileAsync(icacls, args)
+  }
+  markAclChildrenSecured(target, userSid)
+}
+
+/**
  * Tiny JSON-file settings store in the Electron userData directory.
  * Writes are atomic (temp file + rename) so a crash cannot corrupt the file.
  */
@@ -455,6 +609,7 @@ export class SettingsStore {
   private data: AppSettings
   private projectTrustReviewed = false
   private fileVersion: string | undefined
+  private dirEnsured = false
   // Persisted with settings so other app processes share the same removals.
   private readonly removedWorkspaceIds = new Set<string>()
 
@@ -601,7 +756,10 @@ export class SettingsStore {
   }
 
   private withSettingsLock<T>(action: () => T): T {
-    mkdirSync(path.dirname(this.file), { recursive: true })
+    if (!this.dirEnsured) {
+      mkdirSync(path.dirname(this.file), { recursive: true })
+      this.dirEnsured = true
+    }
     let release: () => void
     for (let attempt = 0; ; attempt += 1) {
       try {
@@ -611,8 +769,16 @@ export class SettingsStore {
         const code = typeof error === 'object' && error !== null && 'code' in error
           ? String((error as { code?: unknown }).code)
           : undefined
+        if (code === 'ENOENT') {
+          this.dirEnsured = false
+          mkdirSync(path.dirname(this.file), { recursive: true })
+          this.dirEnsured = true
+          continue
+        }
         if (code !== 'ELOCKED' || attempt >= 49) throw error
-        Atomics.wait(settingsLockWait, 0, 0, 10)
+        // Progressive short backoff avoids a full 10ms stall on brief lock contention.
+        const waitMs = attempt < 3 ? 2 : attempt < 8 ? 5 : 10
+        Atomics.wait(settingsLockWait, 0, 0, waitMs)
       }
     }
     try {

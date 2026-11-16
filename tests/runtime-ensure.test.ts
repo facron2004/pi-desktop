@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -273,5 +273,149 @@ test('a packaged build cannot install the Pi CLI into its app directory', async 
     else delete (ipcMain as unknown as { handle?: unknown }).handle
     if (packagedDescriptor) Object.defineProperty(app, 'isPackaged', packagedDescriptor)
     else delete (app as unknown as { isPackaged?: unknown }).isPackaged
+  }
+})
+
+test('runtime ensure fast path skips file validation and memory prompt when isReadyMatch is true', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-runtime-fastpath-'))
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  const handleDescriptor = Object.getOwnPropertyDescriptor(ipcMain, 'handle')
+  const ensureCalls: RuntimeEnsureOptions[] = []
+  let promptForCalls = 0
+  let readyMatchCalls = 0
+
+  Object.defineProperty(ipcMain, 'handle', {
+    configurable: true,
+    value: (channel: string, listener: unknown) => {
+      handlers.set(channel, listener as (event: unknown, ...args: unknown[]) => unknown)
+    }
+  })
+
+  try {
+    const sessionFile = path.join(root, 'missing-on-disk-but-matched.jsonl')
+    registerIpc({
+      supervisor: {
+        has: () => true,
+        isReadyMatch: () => {
+          readyMatchCalls += 1
+          return true
+        },
+        ensure: async (options: RuntimeEnsureOptions) => {
+          ensureCalls.push(options)
+          return { ok: true }
+        }
+      },
+      settings: {
+        get: () => ({
+          activeWorkspaceId: 'workspace',
+          workspaces: [{ id: 'workspace', path: root }]
+        })
+      },
+      getWindow: () => null,
+      terminals: { create: () => ({}) },
+      memory: {
+        promptFor: () => {
+          promptForCalls += 1
+          return 'memory prompt'
+        }
+      }
+    } as unknown as IpcContext)
+
+    const handler = handlers.get('runtime:ensure')
+    assert.ok(handler)
+    const res = await handler({}, {
+      sessionKey: sessionFile,
+      cwd: root,
+      sessionFile,
+      prewarm: true
+    }) as { ok: boolean }
+
+    assert.equal(res.ok, true)
+    assert.equal(readyMatchCalls, 1)
+    assert.equal(promptForCalls, 0, 'fast path must not rebuild instructions/memory prompt')
+    assert.equal(ensureCalls.length, 1)
+    assert.equal(ensureCalls[0]?.prewarm, true)
+    assert.equal(ensureCalls[0]?.customInstructions, undefined)
+  } finally {
+    if (handleDescriptor) Object.defineProperty(ipcMain, 'handle', handleDescriptor)
+    else delete (ipcMain as unknown as { handle?: unknown }).handle
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('sessions:hydrate deduplicates concurrent reads and supersedes stale sender switches', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-hydrate-dedup-'))
+  const originalSessionRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  const handleDescriptor = Object.getOwnPropertyDescriptor(ipcMain, 'handle')
+
+  Object.defineProperty(ipcMain, 'handle', {
+    configurable: true,
+    value: (channel: string, listener: unknown) => {
+      handlers.set(channel, listener as (event: unknown, ...args: unknown[]) => unknown)
+    }
+  })
+
+  try {
+    process.env.PI_CODING_AGENT_SESSION_DIR = root
+    const makeSession = (name: string, count: number): string => {
+      const file = path.join(root, name)
+      const lines = [JSON.stringify({ type: 'session', id: name, version: 3, cwd: root })]
+      let parentId: string | null = null
+      for (let i = 0; i < count; i += 1) {
+        const id = `m-${i}`
+        lines.push(JSON.stringify({
+          type: 'message',
+          id,
+          parentId,
+          message: { role: i % 2 === 0 ? 'user' : 'assistant', content: `${name}-${i}`, timestamp: 1_000 + i }
+        }))
+        parentId = id
+      }
+      writeFileSync(file, `${lines.join('\n')}\n`)
+      return file
+    }
+
+    const fileA = makeSession('large-a.jsonl', 600)
+    const fileB = makeSession('small-b.jsonl', 4)
+
+    registerIpc({
+      supervisor: { has: () => false },
+      settings: {
+        get: () => ({
+          activeWorkspaceId: 'workspace',
+          workspaces: [{ id: 'workspace', path: root }]
+        })
+      },
+      getWindow: () => null,
+      terminals: { create: () => ({}) },
+      memory: { promptFor: () => '' }
+    } as unknown as IpcContext)
+
+    const hydrate = handlers.get('sessions:hydrate')
+    assert.ok(hydrate)
+
+    const senderA = { isDestroyed: () => false }
+    const [staleA, activeB] = await Promise.all([
+      hydrate({ sender: senderA }, fileA) as Promise<unknown[]>,
+      hydrate({ sender: senderA }, fileB) as Promise<unknown[]>
+    ])
+    assert.deepEqual(staleA, [], 'superseded hydration request for same sender returns []')
+    assert.equal(activeB.length, 4, 'newest hydration request completes normally')
+
+    const senderB = { isDestroyed: () => false }
+    const senderC = { isDestroyed: () => false }
+    const [resB, resC] = await Promise.all([
+      hydrate({ sender: senderB }, fileA) as Promise<unknown[]>,
+      hydrate({ sender: senderC }, fileA) as Promise<unknown[]>
+    ])
+    assert.equal(resB.length, 600)
+    assert.equal(resC.length, 600)
+  } finally {
+    if (originalSessionRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = originalSessionRoot
+    if (handleDescriptor) Object.defineProperty(ipcMain, 'handle', handleDescriptor)
+    else delete (ipcMain as unknown as { handle?: unknown }).handle
+    rmSync(root, { recursive: true, force: true })
   }
 })

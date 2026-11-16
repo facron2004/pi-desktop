@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, Database, List, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
@@ -186,7 +186,7 @@ function useCopy() {
   return { copied, copy }
 }
 
-export function Thread() {
+export const Thread = memo(function Thread() {
   const items = useAppStore((state) => state.items)
   const isStreaming = useAppStore((state) => state.isStreaming)
   const run = useAppStore((state) => state.run)
@@ -202,37 +202,55 @@ export function Thread() {
    * compaction is also work even though it does not stream an assistant reply.
    */
   const runOpen = isStreaming || Boolean(run.compaction) || (run.phase !== 'idle' && !run.settled)
-  const workspace = useAppStore((state) => state.workspace)
+  const isStreamingRef = useRef(isStreaming || runOpen)
+  isStreamingRef.current = isStreaming || runOpen
+  const workspacePath = useAppStore((state) => state.workspace?.path)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const historyLoading = useAppStore(
     (state) => Boolean(state.activeSessionFile && state.hydratingSessionFile === state.activeSessionFile)
   )
   const draftId = useAppStore((state) => state.draftId)
+  const clientKey = useAppStore((state) => {
+    const key = state.activeSessionFile || state.draftId
+    return (key && state.threads[key]?.clientKey) || key || state.clientKey || 'draft'
+  })
+  const cwdWait = useAppStore((state) => state.cwdWait)
   const models = useAppStore((state) => state.models)
   const forkTargets = useAppStore((state) => state.forkTargets)
-  const forkFrom = useAppStore((state) => state.forkFrom)
+  const editMessageFrom = useAppStore((state) => state.editMessageFrom)
   const t = useT()
   const forking = useAppStore((state) => state.forking)
   const error = useAppStore((state) => state.error)
   const dismissError = useAppStore((state) => state.dismissError)
+  const submitSeq = useAppStore((state) => state.submitSeq ?? 0)
   const shortcutBindings = useAppStore((state) => state.settings.shortcutBindings)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
   const previousItemsRef = useRef(items)
+  const previousSubmitSeqRef = useRef(submitSeq)
+  const previousRunOpenRef = useRef(runOpen)
+  const previousSettledRef = useRef(run.settled)
+  const previousErrorRef = useRef(error)
   // A conversation keeps its own reading position even before Pi has written
   // its first file: draft ids are unique, and a draft becomes a file path
   // when the runtime rekeys it.
   const sessionKey = scrollKeyOf(activeSessionFile ?? draftId)
+  const sessionKeyRef = useRef(sessionKey)
+  sessionKeyRef.current = sessionKey
   const runDurationsMs = useMemo(
     () => readSessionTiming(sessionKey).runDurationsMs,
     [sessionKey, items.length, run.durationMs]
   )
-  const previousScrollKeyRef = useRef(sessionKey)
+  const previousClientKeyRef = useRef(clientKey)
   /** A conversation switch that still has to place the viewport. */
   const pendingRestoreRef = useRef<string | null>(sessionKey)
-  if (previousScrollKeyRef.current !== sessionKey) {
-    previousScrollKeyRef.current = sessionKey
+  if (previousClientKeyRef.current !== clientKey) {
+    previousClientKeyRef.current = clientKey
     pendingRestoreRef.current = sessionKey
+    previousSubmitSeqRef.current = submitSeq
+    previousRunOpenRef.current = runOpen
+    previousSettledRef.current = run.settled
+    previousErrorRef.current = error
   }
   const [atBottom, setAtBottom] = useState(true)
   const [atTop, setAtTop] = useState(true)
@@ -253,6 +271,7 @@ export function Thread() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchResultsOpen, setSearchResultsOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const deferredSearchQuery = useDeferredValue(searchOpen ? query : '')
   const [hitIndex, setHitIndex] = useState(0)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const jumpHitIndexRef = useRef<number | null>(null)
@@ -304,21 +323,35 @@ export function Thread() {
     : undefined
   const liveRunSummaryAtTop = Boolean(
     !run.settled &&
-      run.startedAt !== undefined &&
+      (run.startedAt !== undefined ||
+        run.startedMonotonicAt !== undefined ||
+        run.phase !== 'idle' ||
+        Boolean(run.compaction)) &&
       sessionTurns.length > 0
   )
   const lastSessionTurnId = sessionTurns.at(-1)?.id ?? null
   const activeTurnId = atBottom ? lastSessionTurnId : scrolledTurnId
   const syncActiveTurn = useCallback((container: HTMLDivElement) => {
     const visibleTurns = container.querySelectorAll<HTMLElement>('[data-turn][data-session-turn]')
-    let activeTurn: HTMLElement | undefined
-    const threshold = container.getBoundingClientRect().top + 96
-    for (const turn of visibleTurns) {
-      if (!activeTurn) activeTurn = turn
-      if (turn.getBoundingClientRect().top <= threshold) activeTurn = turn
-      else break
+    if (visibleTurns.length === 0) {
+      setScrolledTurnId((previous) => (previous === null ? previous : null))
+      return
     }
-    setScrolledTurnId(activeTurn?.dataset.turn ?? null)
+    const threshold = container.getBoundingClientRect().top + 96
+    let low = 0
+    let high = visibleTurns.length - 1
+    let best = 0
+    while (low <= high) {
+      const mid = (low + high) >> 1
+      if (visibleTurns[mid].getBoundingClientRect().top <= threshold) {
+        best = mid
+        low = mid + 1
+      } else {
+        high = mid - 1
+      }
+    }
+    const next = visibleTurns[best]?.dataset.turn ?? null
+    setScrolledTurnId((previous) => (previous === next ? previous : next))
   }, [])
   const hiddenTurnCount = Math.max(0, turns.length - VISIBLE_RECENT_TURNS)
   const hiddenMessageCountRef = useRef<{
@@ -373,7 +406,7 @@ export function Thread() {
     ? userMetadata.userCount - visibleUserCount
     : 0
   const hasSearchQuery = searchOpen && Boolean(query.trim())
-  const searchRoot = workspace?.path
+  const searchRoot = workspacePath
   const latestSearchSourceRef = useRef<SearchSource>({
     turns,
     root: searchRoot,
@@ -450,7 +483,7 @@ export function Thread() {
       scheduledSearchContextRef.current = null
     }
   }, [])
-  const forkByUserId = useMemo(
+  const editEntryByUserId = useMemo(
     () => pairForkTargets(items, forkTargets),
     [sessionKey, turns.length, forkTargets]
   )
@@ -492,46 +525,69 @@ export function Thread() {
   useLayoutEffect(() => {
     const node = scrollRef.current
     if (!node) return
-    const itemsChanged = previousItemsRef.current !== items
+    const previousItems = previousItemsRef.current
+    const itemsChanged = previousItems !== items
     previousItemsRef.current = items
+    const submitChanged = previousSubmitSeqRef.current !== submitSeq
+    previousSubmitSeqRef.current = submitSeq
+    const runOpenChanged = previousRunOpenRef.current !== runOpen
+    previousRunOpenRef.current = runOpen
+    const settledChanged = previousSettledRef.current !== run.settled
+    previousSettledRef.current = run.settled
+    const errorChanged = previousErrorRef.current !== error && Boolean(error)
+    previousErrorRef.current = error
+
+    const lastItem = items[items.length - 1]
+    const previousLastItem = previousItems[previousItems.length - 1]
+    const newTailEntry =
+      itemsChanged &&
+      items.length > previousItems.length &&
+      previousItems.length > 0 &&
+      lastItem !== previousLastItem &&
+      (lastItem?.kind === 'user' || lastItem?.kind === 'bash')
+
+    if (submitChanged || newTailEntry) {
+      pendingRestoreRef.current = null
+      pendingTurnJumpRef.current = null
+      pendingJumpTargetRef.current = null
+      stickRef.current = true
+      setScrollDirection(null)
+    }
 
     // A conversation switch has priority over following the live edge: put
     // the reader back where they left that conversation, or at the bottom
     // when it is the first visit. If the transcript is still hydrating, the
     // restore waits for the first items instead of anchoring to an empty box.
-    const restoreKey = pendingRestoreRef.current
-    if (restoreKey) {
+    if (pendingRestoreRef.current) {
       setScrollDirection(null)
       if (items.length === 0) return
       pendingRestoreRef.current = null
-      const entry = readScrollMemory(restoreKey)
-      if (!entry && historyCollapsed) {
-        // A long replayed conversation opens at its tail, not halfway up a
-        // collapse control.
-        node.scrollTo({ top: 0, behavior: 'instant' })
-        const nearBottom = node.scrollHeight - node.clientHeight < FOLLOW_RANGE
-        stickRef.current = nearBottom
-        setAtBottom(node.scrollHeight - node.clientHeight <= EDGE_RANGE)
-        setAtTop(node.scrollTop <= EDGE_RANGE)
-        syncActiveTurn(node)
-        return
-      }
+      const entry = readScrollMemory(sessionKey)
       const restored = applyScroll(node, entry, FOLLOW_RANGE)
-      const distanceToBottom = node.scrollHeight - restored.top - node.clientHeight
+      node.scrollTo({ top: restored.top, behavior: 'instant' })
+      previousScrollTopRef.current = node.scrollTop
+      const distanceToBottom = node.scrollHeight - node.scrollTop - node.clientHeight
       stickRef.current = restored.stick
       setAtBottom(distanceToBottom <= EDGE_RANGE)
-      setAtTop(restored.top <= EDGE_RANGE)
-      node.scrollTo({ top: restored.top, behavior: 'instant' })
+      setAtTop(node.scrollTop <= EDGE_RANGE)
       syncActiveTurn(node)
       return
     }
 
-    if (!itemsChanged || !stickRef.current || items.length === 0) return
+    const shouldFollow =
+      stickRef.current &&
+      (itemsChanged || submitChanged || runOpenChanged || settledChanged || errorChanged) &&
+      (items.length > 0 || runOpen || Boolean(error))
+    if (!shouldFollow) return
     node.scrollTo({ top: node.scrollHeight, behavior: 'instant' })
+    previousScrollTopRef.current = node.scrollTop
+    setAtBottom(true)
+    setAtTop(node.scrollTop <= EDGE_RANGE)
+    rememberScrollMemory(sessionKey, node, FOLLOW_RANGE)
     // While following the live edge the active turn is the last one by
     // definition; measuring every visible turn on every streamed delta is
     // wasted layout work.
-  }, [items, historyCollapsed, sessionKey, syncActiveTurn])
+  }, [items, submitSeq, runOpen, run.settled, error, historyCollapsed, sessionKey, syncActiveTurn])
 
   // A reader who scrolls up is reading, not watching: the follow stops and
   // only a click brings it back. The window is generous enough that a
@@ -551,11 +607,12 @@ export function Thread() {
     const onScroll = () => {
       const distance = node.scrollHeight - node.scrollTop - node.clientHeight
       const previousScrollTop = previousScrollTopRef.current
+      const scrolledUp = previousScrollTop !== null && node.scrollTop < previousScrollTop
       if (previousScrollTop !== null && node.scrollTop !== previousScrollTop) {
-        setScrollDirection(node.scrollTop < previousScrollTop ? 'up' : 'down')
+        setScrollDirection(scrolledUp ? 'up' : 'down')
       }
       previousScrollTopRef.current = node.scrollTop
-      stickRef.current = distance < FOLLOW_RANGE
+      stickRef.current = distance < FOLLOW_RANGE || (stickRef.current && !scrolledUp)
       setAtBottom(distance <= EDGE_RANGE)
       setAtTop(node.scrollTop <= EDGE_RANGE)
       rememberScrollMemory(sessionKey, node, FOLLOW_RANGE)
@@ -576,15 +633,29 @@ export function Thread() {
   }, [sessionKey, syncActiveTurn])
 
   // The composer is a sibling, so growing it reduces the transcript's
-  // client height without a scroll event. A reader who is following must
-  // stay pinned to the newest row instead of being left behind the box.
+  // client height without a scroll event. Keep following when the viewport
+  // shrinks or while the stream is actively appending, never when a user
+  // expands a settled tool or process accordion.
   useEffect(() => {
     const node = scrollRef.current
     if (!node || typeof ResizeObserver === 'undefined') return
+    let previousClientHeight = node.clientHeight
     const observer = new ResizeObserver(() => {
-      if (stickRef.current) node.scrollTop = node.scrollHeight
-      setAtBottom(node.scrollHeight - node.scrollTop - node.clientHeight <= EDGE_RANGE)
-      setAtTop(node.scrollTop <= EDGE_RANGE)
+      const clientHeight = node.clientHeight
+      const shrank = clientHeight < previousClientHeight
+      const grew = clientHeight > previousClientHeight
+      previousClientHeight = clientHeight
+      if (stickRef.current && (shrank || isStreamingRef.current)) {
+        node.scrollTop = node.scrollHeight
+        previousScrollTopRef.current = node.scrollTop
+        rememberScrollMemory(sessionKeyRef.current, node, FOLLOW_RANGE)
+      } else if (stickRef.current && grew) {
+        previousScrollTopRef.current = node.scrollTop
+      }
+      const nextAtBottom = node.scrollHeight - node.scrollTop - clientHeight <= EDGE_RANGE
+      const nextAtTop = node.scrollTop <= EDGE_RANGE
+      setAtBottom((previous) => (previous === nextAtBottom ? previous : nextAtBottom))
+      setAtTop((previous) => (previous === nextAtTop ? previous : nextAtTop))
     })
     observer.observe(node)
     const content = node.querySelector('.thread__inner')
@@ -839,7 +910,7 @@ export function Thread() {
     // it is obvious why this turn was picked and the reader can walk the rest
     // of the hits from here.
     if (pendingJump.query.trim()) {
-      const localHits = findMatches(searchableChunks(turns, workspace?.path), pendingJump.query)
+      const localHits = findMatches(searchableChunks(turns, workspacePath), pendingJump.query)
       const targetHitIndex = target
         ? localHits.findIndex((hit) => hit.messageId === target.id)
         : -1
@@ -871,7 +942,7 @@ export function Thread() {
       expandHistory()
     }
     consumeJump()
-  }, [pendingJump, activeSessionFile, expandHistory, items, turns, firstVisibleTurn, workspace?.path, query, consumeJump, showToast])
+  }, [pendingJump, activeSessionFile, expandHistory, items, turns, firstVisibleTurn, workspacePath, query, consumeJump, showToast])
 
   useEffect(() => {
     const target = pendingJumpTargetRef.current
@@ -908,7 +979,7 @@ export function Thread() {
     <div className="thread-frame">
     {sessionTurns.length > 1 ? (
       <SessionRail
-        key={sessionKey}
+        key={clientKey}
         turns={sessionTurns}
         activeTurn={lastSessionTurn!}
         activeTurnId={activeTurnId}
@@ -1044,14 +1115,14 @@ export function Thread() {
             </button>
           </div>
         ) : null}
-        <SearchContext.Provider value={query}>
+        <SearchContext.Provider value={deferredSearchQuery}>
           {visibleTurns.map((turn, index) => {
             const turnIndex = firstVisibleTurn + index
             const userId = turn.user?.id
             const userOrdinal = turn.user ? visibleUserOrdinal++ : undefined
             const isLastTurn = turnIndex === turns.length - 1
             return (
-              <ErrorBoundary key={`${sessionKey}:${turn.id}`} scope="turn">
+              <ErrorBoundary key={`${clientKey}:${turn.id}`} scope="turn">
                 <ThreadTurnView
                   turn={turn}
                   threadKey={sessionKey}
@@ -1059,9 +1130,9 @@ export function Thread() {
                   t={t}
                   onCopy={copy}
                   userCopied={copied === userId}
-                  forkEntryId={userId ? forkByUserId.get(userId) : undefined}
-                  onFork={forkFrom}
-                  forking={Boolean(userId && forkByUserId.has(userId) && forking)}
+                  editEntryId={userId ? editEntryByUserId.get(userId) : undefined}
+                  onEdit={editMessageFrom}
+                  editing={Boolean(userId && editEntryByUserId.has(userId) && forking)}
                   run={run}
                   runDurationMs={
                     turn.user
@@ -1074,19 +1145,34 @@ export function Thread() {
                       : undefined
                   }
                   isLastTurn={isLastTurn}
+                  statusRow={
+                    isLastTurn && runOpen ? (
+                      <RunStatusRow
+                        run={run}
+                        transport={transport}
+                        retry={retry}
+                        onStopRetry={stop}
+                        activity={activity}
+                        cwdWait={cwdWait}
+                        showElapsed={!liveRunSummaryAtTop}
+                        hideRoutineStatus={liveRunSummaryAtTop}
+                      />
+                    ) : undefined
+                  }
                 />
               </ErrorBoundary>
             )
           })}
         </SearchContext.Provider>
 
-        {runOpen ? (
+        {visibleTurns.length === 0 && runOpen ? (
           <RunStatusRow
             run={run}
             transport={transport}
             retry={retry}
             onStopRetry={stop}
             activity={activity}
+            cwdWait={cwdWait}
             showElapsed={!liveRunSummaryAtTop}
             hideRoutineStatus={liveRunSummaryAtTop}
           />
@@ -1111,7 +1197,7 @@ export function Thread() {
       ) : null}
     </div>
   )
-}
+})
 
 interface ThreadTurnViewProps {
   turn: Turn
@@ -1120,13 +1206,14 @@ interface ThreadTurnViewProps {
   t: (text: string) => string
   onCopy: (id: string, text: string) => void
   userCopied: boolean
-  forkEntryId?: string
-  onFork: (entryId: string) => void
-  forking: boolean
+  editEntryId?: string
+  onEdit: (entryId: string, text: string, images: UserItem['images']) => void
+  editing: boolean
   run: RunState
   runDurationMs?: number
   /** The turn that is last in the conversation, where a run summary belongs. */
   isLastTurn: boolean
+  statusRow?: ReactNode
 }
 
 function sameReferences<T>(left: T[], right: T[]): boolean {
@@ -1173,7 +1260,7 @@ function equalThreadTurnViewProps(
   next: ThreadTurnViewProps
 ): boolean {
   if (previous.isLastTurn !== next.isLastTurn) return false
-  if (next.isLastTurn && previous.run !== next.run) return false
+  if (next.isLastTurn && (previous.run !== next.run || previous.statusRow !== next.statusRow)) return false
 
   return (
     sameTurnContent(previous.turn, next.turn) &&
@@ -1182,9 +1269,9 @@ function equalThreadTurnViewProps(
     previous.t === next.t &&
     previous.onCopy === next.onCopy &&
     previous.userCopied === next.userCopied &&
-    previous.forkEntryId === next.forkEntryId &&
-    previous.onFork === next.onFork &&
-    previous.forking === next.forking &&
+    previous.editEntryId === next.editEntryId &&
+    previous.onEdit === next.onEdit &&
+    previous.editing === next.editing &&
     previous.runDurationMs === next.runDurationMs
   )
 }
@@ -1196,24 +1283,30 @@ const ThreadTurnView = memo(function ThreadTurnView({
   t,
   onCopy,
   userCopied,
-  forkEntryId,
-  onFork,
-  forking,
+  editEntryId,
+  onEdit,
+  editing,
   run,
   runDurationMs,
-  isLastTurn
+  isLastTurn,
+  statusRow
 }: ThreadTurnViewProps) {
-  const toolMap = new Map(turn.tools.map((tool) => [tool.toolCallId, tool]))
-  const referenced = new Set<string>()
-  for (const assistant of turn.assistants) {
-    for (const block of assistant.blocks) {
-      if (block.type === 'toolCall') referenced.add(block.id)
-    }
-  }
+  const toolMap = useMemo(
+    () => new Map(turn.tools.map((tool) => [tool.toolCallId, tool])),
+    [turn.tools]
+  )
   // A tool the model called is already on screen through its assistant
   // block; a tool whose call was never seen (a resumed run) is drawn on its
   // own, at the position it was created in.
-  const orphanTools = turn.tools.filter((tool) => !referenced.has(tool.toolCallId))
+  const orphanTools = useMemo(() => {
+    const referenced = new Set<string>()
+    for (const assistant of turn.assistants) {
+      for (const block of assistant.blocks) {
+        if (block.type === 'toolCall') referenced.add(block.id)
+      }
+    }
+    return turn.tools.filter((tool) => !referenced.has(tool.toolCallId))
+  }, [turn.assistants, turn.tools])
   const lastAssistant = turn.assistants.at(-1)
   const turnUsage = usageForTurn(turn)
   const incompleteTokenUsage = turn.assistants.some((assistant) => !assistant.usage)
@@ -1221,7 +1314,10 @@ const ThreadTurnView = memo(function ThreadTurnView({
   const liveOutcome = Boolean(
     isLastTurn &&
       !run.settled &&
-      run.startedAt !== undefined
+      (run.startedAt !== undefined ||
+        run.startedMonotonicAt !== undefined ||
+        run.phase !== 'idle' ||
+        Boolean(run.compaction))
   )
   const recordedOutcome = lastAssistant?.stopReason === 'stop'
     ? 'completed'
@@ -1255,6 +1351,9 @@ const ThreadTurnView = memo(function ThreadTurnView({
   const autoFoldProcess = useAppStore((state) => state.settings.autoFoldProcess !== false)
   const processId = `turn-${turn.id}`
   const [manualProcessOpen, setManualProcessOpen] = useState(() => readProcessOpen(threadKey, processId))
+  useEffect(() => {
+    setManualProcessOpen(readProcessOpen(threadKey, processId))
+  }, [threadKey, processId])
   const query = useSearchQuery().trim().toLowerCase()
   const searchMatch = Boolean(query) && findMatches(searchableChunks([turn]), query, 1).length > 0
   const processOpen = searchMatch || (manualProcessOpen ?? !autoFoldProcess)
@@ -1294,9 +1393,9 @@ const ThreadTurnView = memo(function ThreadTurnView({
           item={turn.user}
           onCopy={onCopy}
           copied={userCopied ? turn.user.id : null}
-          forkEntryId={forkEntryId}
-          onFork={onFork}
-          forking={forking}
+          editEntryId={editEntryId}
+          onEdit={onEdit}
+          editing={editing}
         />
       ) : null}
 
@@ -1304,7 +1403,8 @@ const ThreadTurnView = memo(function ThreadTurnView({
       turn.tools.length > 0 ||
       turn.notices.length > 0 ||
       turn.bash.length > 0 ||
-      liveOutcome ? (
+      liveOutcome ||
+      Boolean(statusRow) ? (
         <div className="assistant">
           <div className="assistant__body">
             {outcome ? (
@@ -1371,6 +1471,8 @@ const ThreadTurnView = memo(function ThreadTurnView({
                 }
               />
             ) : null}
+
+            {statusRow}
 
             {replySettled &&
             lastAssistant &&

@@ -127,6 +127,30 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   )
   passed.push('the Pi mark uses the light and dark theme colours')
 
+  // App messages float below the title bar, not inside the composer: a
+  // confirmation must never push the box the user is typing in.
+  const composerBeforeToast = document.querySelector('.composer')?.getBoundingClientRect()
+  check(composerBeforeToast, 'The composer is missing while checking the app toast')
+  store.getState().showToast('Toast placement check')
+  const appToast = await until(() => document.querySelector('.app-toast'), 'The app toast did not render')
+  const appToastBox = appToast.getBoundingClientRect()
+  check(appToast.closest('.composer') === null, 'The app toast is rendered inside the composer')
+  check(appToastBox.width > 0 && appToastBox.height > 0, 'The app toast has no size')
+  check(appToastBox.top < composerBeforeToast.top, 'The app toast still sits over the composer area')
+  check(
+    appToastBox.top >= 0 && appToastBox.right <= innerWidth + 1,
+    'The app toast runs outside the window'
+  )
+  const composerAfterToast = document.querySelector('.composer').getBoundingClientRect()
+  check(
+    Math.abs(composerAfterToast.top - composerBeforeToast.top) <= 1 &&
+      Math.abs(composerAfterToast.height - composerBeforeToast.height) <= 1,
+    'The app toast moved the composer'
+  )
+  appToast.querySelector('.app-toast__close')?.click()
+  await until(() => !document.querySelector('.app-toast'), 'The app toast did not dismiss')
+  passed.push('app messages float below the title bar without moving the composer')
+
   // A page opens the way the panel does it: the `+` creates a new tab, and its
   // start page turns that tab into the chosen page. A page already open is only
   // focused, never added twice.
@@ -481,7 +505,11 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     () => document.querySelector('.tool--link[data-status="running"] .tool-link'),
     'A live command row did not render'
   )
-  check(commandRow.querySelector('.spinner'), 'The command row lost its running state')
+  check(!commandRow.querySelector('.spinner'), 'A running command row still renders a spinner instead of pulsing text')
+  check(
+    getComputedStyle(commandRow.querySelector('.tool-link__verb')).animationName === 'stream-running-pulse',
+    'The command row lost its running pulse state'
+  )
   check(!document.querySelector('.run-status'), 'A tool status repeated below the live output')
 
   showStream('draft:stream-replay', streamItems, { phase: 'idle', turns: 0, settled: true })
@@ -787,16 +815,16 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   )
   const cornerLines = cornerBoxes.map((box) => box.centre)
   const panelLines = cornerLines.slice(0, 2)
-  // The shell toggle keeps the title bar's 52px band so it never moves when the
-  // panel mounts; the panel's own controls sit in its 46px header. Their
-  // centres differ by three pixels on purpose, but each family is aligned.
+  // The panel's own controls sit in its 46px header. The shell toggle narrows
+  // its band with the panel, so all three share one centre line; when the panel
+  // is closed it keeps the title bar's 52px band instead.
   check(
     Math.max(...panelLines) - Math.min(...panelLines) <= 0.5,
     `The panel corner controls are not on one line: ${JSON.stringify(cornerLines)}`
   )
   check(
-    Math.abs(cornerLines[2] - panelLines[0]) <= 3.5,
-    `The shell toggle drifted off its fixed band: ${JSON.stringify(cornerLines)}`
+    Math.abs(cornerLines[2] - panelLines[0]) <= 0.6,
+    `The shell toggle is not on the panel header's centre line: ${JSON.stringify(cornerLines)}`
   )
   check(![...document.querySelectorAll('.tool-panel__tab')].some((node) => node.textContent?.trim() === 'Tools'), 'The old permanent Tools tab is still there')
   const workspaceFile = await until(() => [...document.querySelectorAll('.tree__item')].find((node) => node.textContent?.includes('note.txt')), 'Workspace file did not appear in the tree')
@@ -1224,7 +1252,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 25 : 24)
+  assert.equal(passed.length, process.platform === 'win32' ? 26 : 25)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

@@ -40,7 +40,18 @@ const MAX_AGENT_FILE_BYTES = 64 * 1024
 const MAX_AGENT_PROMPT_CHARS = 32 * 1024
 const MAX_AGENT_DESCRIPTION_CHARS = 500
 const MAX_AGENT_TOOLS = 32
+const AGENT_FILE_CACHE_LIMIT = 128
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+interface CachedAgentFile {
+  dev: bigint
+  ino: bigint
+  ctimeNs: bigint
+  mtimeNs: bigint
+  size: bigint
+  preset: AgentPreset | null
+}
+const agentFileCache = new Map<string, CachedAgentFile>()
 
 /**
  * Flat `key: value` frontmatter, not full YAML: the loader only accepts scalar
@@ -117,9 +128,37 @@ function readAgentDirectory(directory: string, workspaceRoot?: string): AgentPre
     if (byName.size >= MAX_AGENT_FILES_PER_DIR) break
     const file = path.join(directory, entry.name)
     try {
-      if (statSync(file).size > MAX_AGENT_FILE_BYTES) continue
+      const stat = statSync(file, { bigint: true })
+      if (stat.size > BigInt(MAX_AGENT_FILE_BYTES)) continue
       if (workspaceRoot && !resolvesInside(directory, file)) continue
-      const preset = parseAgentFile(readFileSync(file, 'utf8'))
+      const cached = agentFileCache.get(file)
+      let preset: AgentPreset | null
+      if (
+        cached &&
+        cached.dev === stat.dev &&
+        cached.ino === stat.ino &&
+        cached.ctimeNs === stat.ctimeNs &&
+        cached.mtimeNs === stat.mtimeNs &&
+        cached.size === stat.size
+      ) {
+        agentFileCache.delete(file)
+        agentFileCache.set(file, cached)
+        preset = cached.preset
+      } else {
+        preset = parseAgentFile(readFileSync(file, 'utf8'))
+        if (agentFileCache.size >= AGENT_FILE_CACHE_LIMIT) {
+          const oldest = agentFileCache.keys().next().value
+          if (oldest !== undefined) agentFileCache.delete(oldest)
+        }
+        agentFileCache.set(file, {
+          dev: stat.dev,
+          ino: stat.ino,
+          ctimeNs: stat.ctimeNs,
+          mtimeNs: stat.mtimeNs,
+          size: stat.size,
+          preset
+        })
+      }
       // First file in name order wins a duplicate, so the result is stable
       // across runs instead of depending on directory enumeration order.
       if (preset && !byName.has(preset.name)) byName.set(preset.name, preset)

@@ -287,7 +287,7 @@ test('abort auto-cancellation and approvals cleanup unblocks conversation', asyn
   assert.equal(a.hasPendingUi('dlg-abort-test'), false)
 })
 
-test('CwdGate release: aborting a session blocked on UI dialog unblocks workspace and Git lock', async () => {
+test('CwdGate release: same-cwd session runs concurrently while A waits on UI dialog, and aborting A unblocks Git lock', async () => {
   const a = new TestSessionRuntime()
   const b = new TestSessionRuntime()
   const supervisor = supervisorOf([a, b])
@@ -296,7 +296,7 @@ test('CwdGate release: aborting a session blocked on UI dialog unblocks workspac
   await supervisor.ensure({ sessionKey: 'A.jsonl', cwd: workspaceCwd, sessionFile: 'A.jsonl' })
   await supervisor.ensure({ sessionKey: 'B.jsonl', cwd: workspaceCwd, sessionFile: 'B.jsonl' })
 
-  // Session A starts a prompt (claims CwdGate write lock)
+  // Session A starts a prompt (claims shared CwdGate access)
   await supervisor.request('A.jsonl', 'prompt', { message: 'start work' })
 
   // Session A encounters a blocking dialog
@@ -308,32 +308,37 @@ test('CwdGate release: aborting a session blocked on UI dialog unblocks workspac
     message: 'Allow tool?'
   } as PiEvent)
 
-  // Attempting Git operation in this folder fails because Session A is working
+  // Attempting an exclusive Git operation in this folder fails while Session A is working
   await assert.rejects(
     supervisor.withCwdLock(workspaceCwd, async () => 'git status'),
     /A conversation is working in this folder/
   )
 
-  // Session B tries to prompt and gets queued behind Session A
+  // Session B prompts in the same cwd and executes immediately concurrently without blocking on Session A's dialog
   let bStarted = false
-  const queuedPrompt = supervisor.request('B.jsonl', 'prompt', { message: 'queued prompt' }).then(() => {
+  const concurrentPrompt = supervisor.request('B.jsonl', 'prompt', { message: 'concurrent prompt' }).then(() => {
     bStarted = true
   })
-  await Promise.resolve()
-  assert.equal(bStarted, false, 'Session B prompt must be queued while Session A is working')
+  await concurrentPrompt
+  assert.equal(bStarted, true, 'Session B prompt must execute concurrently without blocking on Session A dialog')
+  assert.equal(b.commands[0]?.command, 'prompt')
+  assert.equal(b.commands[0]?.payload.message, 'concurrent prompt')
+
+  // Session B completes and settles independently while Session A is still waiting on its dialog
+  b.emit('event', { type: 'agent_settled' } as PiEvent)
+  assert.equal(a.hasPendingUi('dlg-blocker'), true, 'Session A dialog must remain pending')
+
+  // Exclusive Git lock remains blocked by Session A until Session A aborts and settles
+  await assert.rejects(
+    supervisor.withCwdLock(workspaceCwd, async () => 'git status'),
+    /A conversation is working in this folder/
+  )
 
   // User aborts Session A
   await supervisor.request('A.jsonl', 'abort')
 
   // Session A settles
   a.emit('event', { type: 'agent_settled', aborted: true } as PiEvent)
-
-  // Now Session B's queued prompt unblocks and runs!
-  await queuedPrompt
-  assert.equal(bStarted, true, 'Session B prompt should unblock and run after Session A settles')
-
-  // Session B completes and settles
-  b.emit('event', { type: 'agent_settled' } as PiEvent)
 
   // Workspace Git lock is cleanly freed and subsequent operations succeed
   const gitResult = await supervisor.withCwdLock(workspaceCwd, async () => 'git ok')

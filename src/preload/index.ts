@@ -45,6 +45,7 @@ import type {
   RuntimeEnsureOptions,
   RuntimeStartOptions,
   RuntimeEvent,
+  RuntimeQueueEvent,
   RuntimeRekey,
   RuntimeStderrPayload,
   RuntimeStatusEvent,
@@ -209,6 +210,8 @@ const bridge: PiDesktopBridge = {
       subscribe<RuntimeRekey>('runtime:rekey', handler),
     onStderr: (handler: (payload: RuntimeStderrPayload | string) => void) =>
       subscribe<RuntimeStderrPayload | string>('runtime:stderr', handler),
+    onQueue: (handler: (event: RuntimeQueueEvent) => void) =>
+      subscribe<RuntimeQueueEvent>('runtime:queue', handler),
     respondUi: (id: string, response: ExtensionUiResponse, sessionKey?: string): Promise<void> =>
       ipcRenderer.invoke('runtime:respondUi', id, response, sessionKey)
   },

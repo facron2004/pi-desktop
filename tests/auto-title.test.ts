@@ -682,3 +682,48 @@ test('exhausted transcript retries clear per-session draft state', async (t) => 
   assert.equal(internals.readRetries.size, 0)
   assert.equal(internals.newDrafts.size, 0)
 })
+
+test('agent_start and dispose abort an active title CLI run and prevent renaming', async (t) => {
+  for (const trigger of ['agent_start', 'dispose'] as const) {
+    let seenSignal: AbortSignal | undefined
+    let runEntered!: () => void
+    const entered = new Promise<void>((resolve) => {
+      runEntered = resolve
+    })
+
+    const h = harness(t, {
+      deps: {
+        run: (args) => {
+          seenSignal = args.signal
+          runEntered()
+          return new Promise((resolve) => {
+            if (args.signal?.aborted) {
+              resolve({ code: null, stdout: '', stderr: '', aborted: true })
+              return
+            }
+            args.signal?.addEventListener(
+              'abort',
+              () => resolve({ code: null, stdout: '', stderr: '', aborted: true }),
+              { once: true }
+            )
+          })
+        }
+      }
+    })
+
+    h.host.settle(SESSION)
+    await entered
+    assert.ok(seenSignal, `${trigger}: run must receive an AbortSignal`)
+    assert.equal(seenSignal.aborted, false)
+
+    if (trigger === 'agent_start') {
+      h.host.start(SESSION)
+    } else {
+      h.service.dispose()
+    }
+
+    assert.equal(seenSignal.aborted, true, `${trigger}: must abort active title run immediately`)
+    await delay(30)
+    assert.equal(h.renamed.length, 0, `${trigger}: aborted title run must not rename session`)
+  }
+})

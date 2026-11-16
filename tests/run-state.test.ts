@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { AgentMessage, AppSettings, ModelInfo, PiEvent, PiState, RuntimeRekey, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
 import { forgetSessionTiming, readSessionTiming } from '../src/renderer/src/lib/session-timing'
+import { readScrollMemory, rememberScrollPosition } from '../src/renderer/src/lib/scroll-memory'
 import { sessionMetrics } from '../src/renderer/src/lib/session-metrics'
 import { GENERATION_TIMING_STATUS_KEY } from '../src/shared/types'
 
@@ -322,7 +323,7 @@ test('a model chosen while a resumed session is cold is applied when it starts',
   }
 })
 
-test('P01 — the queued phase follows what Pi says it did with the prompt', async () => {
+test('P01 鈥?the queued phase follows what Pi says it did with the prompt', async () => {
   startRun()
   // Pi reports `started`: the prompt is opening a run, so the optimistic
   // "queued" is already stale by the time the response arrives.
@@ -346,7 +347,7 @@ test('P01 — the queued phase follows what Pi says it did with the prompt', asy
   assert.equal(phase(), 'queued', 'a queued prompt stays queued')
 })
 
-test('P01b — a prompt Pi refuses does not leave a phantom queued run', async () => {
+test('P01b 鈥?a prompt Pi refuses does not leave a phantom queued run', async () => {
   startRun()
   promptResult = {}
   const original = useAppStore.getState().send
@@ -358,7 +359,7 @@ test('P01b — a prompt Pi refuses does not leave a phantom queued run', async (
   assert.equal(original, useAppStore.getState().send)
 })
 
-test('P02 — text deltas are the only thing that makes the run "generating"', () => {
+test('P02 鈥?text deltas are the only thing that makes the run "generating"', () => {
   startRun()
   emit({ type: 'agent_start' })
   assert.equal(phase(), 'working')
@@ -553,7 +554,7 @@ test('a tool timing sample follows its conversation when Pi rekeys a draft', () 
   }
 })
 
-test('P03 — an extension dialog is the one real "waiting for the user" state', () => {
+test('P03 鈥?an extension dialog is the one real "waiting for the user" state', () => {
   startRun()
   emit({ type: 'agent_start' })
   emit({
@@ -575,7 +576,7 @@ test('P03 — an extension dialog is the one real "waiting for the user" state',
   })
 })
 
-test('P04 — aborting outranks everything until the runtime settles', () => {
+test('P04 鈥?aborting outranks everything until the runtime settles', () => {
   startRun()
   emit({ type: 'agent_start' })
   emit({ type: 'agent_end' })
@@ -588,7 +589,7 @@ test('P04 — aborting outranks everything until the runtime settles', () => {
   assert.equal(useAppStore.getState().run.settled, true)
 })
 
-test('P04a — an error answer settles as failed, not completed', () => {
+test('P04a 鈥?an error answer settles as failed, not completed', () => {
   startRun()
   emit({ type: 'agent_start' })
   emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 1 } })
@@ -607,7 +608,7 @@ test('P04a — an error answer settles as failed, not completed', () => {
   assert.equal(useAppStore.getState().run.settled, true)
 })
 
-test('P04b — a process that died mid-run settles the run as failed', () => {
+test('P04b 鈥?a process that died mid-run settles the run as failed', () => {
   startRun()
   emit({ type: 'agent_start' })
   emit({
@@ -631,7 +632,7 @@ test('P04b — a process that died mid-run settles the run as failed', () => {
   )
 })
 
-test('P04c — stopping an already settled run leaves the phase idle', async () => {
+test('P04c 鈥?stopping an already settled run leaves the phase idle', async () => {
   startRun()
   emit({ type: 'agent_start' })
   emit({ type: 'agent_settled', aborted: false })
@@ -641,7 +642,7 @@ test('P04c — stopping an already settled run leaves the phase idle', async () 
   assert.equal(useAppStore.getState().run.settled, true)
 })
 
-test('P04d — generation time is summed per answer, not across a tool gap', () => {
+test('P04d 鈥?generation time is summed per answer, not across a tool gap', () => {
   const originalNow = Date.now
   const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
   let now = 1_000
@@ -874,7 +875,7 @@ test('run timing samples are validated, deduplicated and never replaced by rende
   }
 })
 
-test('P04e — a steer starts a fresh TPS window inside the same run', async () => {
+test('P04e 鈥?a steer starts a fresh TPS window inside the same run', async () => {
   const previous = useAppStore.getState()
   const originalNow = Date.now
   const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
@@ -989,7 +990,7 @@ test('TPS pairs completed message usage with its generation time across streamed
   }
 })
 
-test('P05 — a retry is reported as retrying, not as a finished run', () => {
+test('P05 鈥?a retry is reported as retrying, not as a finished run', () => {
   startRun()
   emit({ type: 'agent_start' })
   emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 100 })
@@ -1001,7 +1002,7 @@ test('P05 — a retry is reported as retrying, not as a finished run', () => {
   assert.equal(useAppStore.getState().retry, undefined)
 })
 
-test('P05a — a retry deadline survives view reads and clears when Pi starts the next attempt', () => {
+test('P05a 鈥?a retry deadline survives view reads and clears when Pi starts the next attempt', () => {
   for (const next of ['agent_start', 'turn_start']) {
     startRun()
     emit({ type: 'agent_start' })
@@ -1024,7 +1025,7 @@ test('P05a — a retry deadline survives view reads and clears when Pi starts th
   }
 })
 
-test('P05b — retry events cannot hide a stop or an approval request', async () => {
+test('P05b 鈥?retry events cannot hide a stop or an approval request', async () => {
   for (const priority of ['aborting', 'waiting_approval'] as const) {
     startRun()
     emit({ type: 'agent_start' })
@@ -1043,7 +1044,7 @@ test('P05b — retry events cannot hide a stop or an approval request', async ()
   }
 })
 
-test('P06 — a search hit switches the view and does not stop the running conversation', async () => {
+test('P06 鈥?a search hit switches the view and does not stop the running conversation', async () => {
   const previous = useAppStore.getState()
   let stops = 0
   let switches = 0
@@ -1296,13 +1297,20 @@ test('context stats skip the transcript fetch when a request breakdown is known'
     source: 'request' as const
   }
   try {
-    useAppStore.setState({ contextBreakdown: requestBreakdown, stats: undefined })
+    useAppStore.setState({
+      activeSessionFile: sessionKey,
+      draftId: undefined,
+      contextBreakdown: requestBreakdown,
+      stats: undefined
+    })
     await useAppStore.getState().readSessionStats(sessionKey)
     assert.ok(commands.includes('get_session_stats'), 'the live statistics are still read')
     assert.equal(commands.includes('get_messages'), false, 'the transcript is not copied again')
 
     commands.length = 0
     useAppStore.setState({
+      activeSessionFile: sessionKey,
+      draftId: undefined,
       contextBreakdown: { ...requestBreakdown, source: 'session' },
       stats: undefined
     })
@@ -1354,6 +1362,46 @@ test('an informational extension notification does not interrupt the composer', 
     })
     assert.equal(useAppStore.getState().toast, undefined)
   } finally {
+    useAppStore.setState(previous)
+  }
+})
+
+test('submitting a prompt or receiving a user message pins scroll memory to bottom and flushes immediately', async () => {
+  const previous = useAppStore.getState()
+  const originalRaf = (globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame
+  try {
+    await useAppStore.getState().newChat()
+    const key = useAppStore.getState().draftId!
+    const beforeSeq = useAppStore.getState().submitSeq ?? 0
+
+    rememberScrollPosition(key, { top: 120, atBottom: false })
+    assert.equal(readScrollMemory(key)?.atBottom, false)
+
+    await useAppStore.getState().send('Jump to latest', [])
+    const afterSendSeq = useAppStore.getState().submitSeq ?? 0
+    assert.ok(afterSendSeq > beforeSeq, 'send increments submitSeq')
+    assert.equal(readScrollMemory(key)?.atBottom, true, 'send resets scroll memory to follow bottom')
+
+    // Defer animation frames so we can verify user message_start flushes synchronously
+    const queuedFrames: (() => void)[] = []
+    ;(globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame = (cb: () => void) => {
+      queuedFrames.push(cb)
+      return queuedFrames.length
+    }
+    rememberScrollPosition(key, { top: 80, atBottom: false })
+    emit({
+      type: 'message_start',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Jump to latest' }],
+        timestamp: Date.now()
+      }
+    })
+    assert.equal(readScrollMemory(key)?.atBottom, true, 'user message_start pins scroll memory to bottom')
+    assert.ok((useAppStore.getState().submitSeq ?? 0) > afterSendSeq, 'user message_start increments submitSeq')
+    assert.equal(useAppStore.getState().items.at(-1)?.kind, 'user', 'user message_start flushes synchronously')
+  } finally {
+    ;(globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame = originalRaf
     useAppStore.setState(previous)
   }
 })

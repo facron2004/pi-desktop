@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { sessionMetrics } from '../lib/session-metrics'
 import { formatTokens } from '../lib/format'
@@ -18,7 +18,7 @@ import '../styles/usage-bar.css'
  *
  * Every value is derived by `lib/session-metrics.ts`; nothing here is stored.
  */
-export function UsageBar() {
+export const UsageBar = memo(function UsageBar() {
   // Text deltas do not change usage. Recompute on new items, completed
   // answers or run/stat changes instead of walking the transcript each frame.
   const itemCount = useAppStore((state) => state.items.length)
@@ -34,13 +34,15 @@ export function UsageBar() {
   const t = useT()
   const [, setTimingTick] = useState(0)
 
-  // Keep the live model-time reading moving without using token arrivals as
-  // a clock. Completion events still publish the final statistics immediately.
+  // Keep the live model-time reading moving only while this answer is really
+  // open. A stale start left on a settled/idle run must not turn into hours of
+  // "model time" on a reopened conversation.
+  const liveModelClock = run.modelTurnStartedAt !== undefined && !run.settled && run.phase !== 'idle'
   useEffect(() => {
-    if (run.modelTurnStartedAt === undefined) return
+    if (!liveModelClock) return
     const timer = window.setInterval(() => setTimingTick((tick) => tick + 1), 1000)
     return () => window.clearInterval(timer)
-  }, [run.modelTurnStartedAt])
+  }, [liveModelClock, run.modelTurnStartedAt])
 
   const metrics = useMemo(
     () => sessionMetrics(
@@ -49,11 +51,11 @@ export function UsageBar() {
       { ...run, modelTurnStartedAt: undefined },
       readSessionTiming(sessionKey)
     ),
-    [itemCount, lastCompletedAssistant, stats, run, sessionKey]
+    [itemCount, lastCompletedAssistant, stats, run.phase, run.settled, run.turns, run.durationMs, sessionKey]
   )
-  const liveModelTimeMs = run.modelTurnStartedAt === undefined
+  const liveModelTimeMs = !liveModelClock
     ? 0
-    : Math.max(0, monotonicNow() - run.modelTurnStartedAt)
+    : Math.max(0, monotonicNow() - run.modelTurnStartedAt!)
   const displayMetrics = liveModelTimeMs > 0
     ? { ...metrics, modelTimeMs: (metrics.modelTimeMs ?? 0) + liveModelTimeMs }
     : metrics
@@ -134,4 +136,4 @@ export function UsageBar() {
       <ContextRing />
     </div>
   )
-}
+})

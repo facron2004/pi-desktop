@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { ChevronRight, FileDiff, GitBranch, GitCommitHorizontal } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { CommitDialog } from './CommitDialog'
@@ -139,20 +140,24 @@ function DeliverableRow({
  * Every part of it is a projection of the thread and the Git state, so the rail
  * keeps no state of its own at all.
  */
-export function TaskPanel() {
+export const TaskPanel = memo(function TaskPanel() {
   const t = useT()
   const items = useAppStore((state) => state.items)
+  const toolItems = useAppStore(
+    useShallow((state) => state.items.filter((item) => item.kind === 'tool'))
+  )
   const git = useAppStore((state) => state.git)
   const workspacePath = useAppStore((state) => state.workspace?.path)
   const refreshGit = useAppStore((state) => state.refreshGit)
+  const deferredItems = useDeferredValue(items)
 
-  const plan = useMemo(() => extractPlan(items), [items])
+  const plan = useMemo(() => extractPlan(deferredItems), [deferredItems])
   const backgroundTasks = useMemo(
-    () => listBackgroundTasks(items, workspacePath),
-    [items, workspacePath]
+    () => listBackgroundTasks(toolItems, workspacePath),
+    [toolItems, workspacePath]
   )
   const deliverables = useMemo(() => {
-    const files = changedFilePaths(items).map((change) => {
+    const files = changedFilePaths(toolItems).map((change) => {
       const relative = relativePath(workspacePath ?? '', change.path).replace(/\\/g, '/')
       return {
         path: relative,
@@ -160,7 +165,7 @@ export function TaskPanel() {
       }
     })
     return listDeliverables(files)
-  }, [items, workspacePath])
+  }, [toolItems, workspacePath])
   const diff = useMemo(() => summariseDiff(git), [git])
 
   const [refreshing, setRefreshing] = useState(false)
@@ -317,4 +322,4 @@ export function TaskPanel() {
       {historyOpen ? <CommitHistoryDialog onClose={() => setHistoryOpen(false)} /> : null}
     </div>
   )
-}
+})

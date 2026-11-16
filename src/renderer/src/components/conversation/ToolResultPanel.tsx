@@ -61,8 +61,18 @@ export const ToolResultPanel = memo(function ToolResultPanel({
   const result = item.result ?? ''
   const truncated = result.length > RESULT_PREVIEW
   const visibleResult = truncated && !full ? result.slice(0, RESULT_PREVIEW) : result
-  const resultLines = useMemo(() => (open ? countLines(result) : 0), [open, result])
+  const visibleResultLines = useMemo(
+    () => (open && visibleResult ? countLines(visibleResult) : 0),
+    [open, visibleResult]
+  )
   const contentLines = useMemo(() => (open ? countLines(content) : 0), [open, content])
+  const shellCommand =
+    item.toolName === 'bash' || item.toolName === 'powershell' ? String(item.args?.command ?? '') : ''
+  const multilineShellCommand = shellCommand.includes('\n') ? shellCommand : ''
+  const shellCommandLines = useMemo(
+    () => (open && multilineShellCommand ? countLines(multilineShellCommand) : 0),
+    [open, multilineShellCommand]
+  )
 
   const fileName = basename(String(item.args?.path ?? ''))
   const language = languageOf(fileName)
@@ -111,14 +121,19 @@ export const ToolResultPanel = memo(function ToolResultPanel({
         )
       ) : null}
 
-      {item.toolName === 'bash' || item.toolName === 'powershell'
-        ? String(item.args?.command ?? '').includes('\n') && (
-            <pre className="tool__pre">{String(item.args?.command ?? '')}</pre>
-          )
-        : null}
+      {multilineShellCommand ? (
+        shellCommandLines > LOG_PAGE_LINES ? (
+          <LogOutput text={multilineShellCommand} />
+        ) : (
+          <CodeSnippet
+            code={multilineShellCommand}
+            language={item.toolName === 'powershell' ? 'powershell' : 'bash'}
+          />
+        )
+      ) : null}
 
       {visibleResult && item.status !== 'error' ? (
-        item.toolName === 'read' && resultLines <= LOG_PAGE_LINES ? (
+        item.toolName === 'read' && visibleResultLines <= LOG_PAGE_LINES ? (
           <CodeSnippet code={visibleResult} language={language} />
         ) : item.toolName === 'subagent' ? (
           <div className="tool__plan">

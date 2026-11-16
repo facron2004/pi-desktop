@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import { resolveSavedModel } from '@shared/provider-models'
 import { useAppStore } from '../store/useAppStore'
 import { contextReading } from '../lib/context-reading'
@@ -16,10 +16,20 @@ import { ContextPanel } from './ContextPanel'
  * from `lib/context-reading.ts`, so a conversation with no live process still
  * shows the transcript's estimate instead of an empty arc at 0%.
  */
-export function ContextRing() {
+export const ContextRing = memo(function ContextRing() {
   const showContextUsage = useAppStore((state) => state.settings.showContextUsage !== false)
   const stats = useAppStore((state) => state.stats)
-  const items = useAppStore((state) => state.items)
+  const itemCount = useAppStore((state) => state.items.length)
+  const lastAssistantUsage = useAppStore((state) => {
+    for (let index = state.items.length - 1; index >= 0; index -= 1) {
+      const item = state.items[index]
+      if (item.kind === 'assistant' && item.usage) return item.usage
+    }
+    return undefined
+  })
+  const lastCompletedAssistant = useAppStore((state) =>
+    state.items.findLast((item) => item.kind === 'assistant' && !item.streaming)
+  )
   const piState = useAppStore((state) => state.piState)
   const models = useAppStore((state) => state.models)
   const catalogModels = useAppStore((state) => state.catalogModels)
@@ -39,15 +49,19 @@ export function ContextRing() {
   const modelWindow = reportedWindow ? undefined : fallbackModel
 
   const liveModel = piState?.model
-  // With the reading switched off, the component still mounts on every
-  // streamed delta. Scanning the transcript for an arc that is not drawn is
-  // wasted work, so the memo answers with nothing instead.
+  // Recompute only when usage/completed-message/stat/model inputs change rather
+  // than re-scanning the transcript on every streamed text delta frame.
   const reading = useMemo(
     () =>
       showContextUsage
-        ? contextReading({ stats, items, model: liveModel, fallbackModel: modelWindow })
+        ? contextReading({
+            stats,
+            items: useAppStore.getState().items,
+            model: liveModel,
+            fallbackModel: modelWindow
+          })
         : null,
-    [showContextUsage, stats, items, liveModel, modelWindow]
+    [showContextUsage, stats, itemCount, lastAssistantUsage, lastCompletedAssistant, liveModel, modelWindow]
   )
 
   if (!showContextUsage || !reading) return null
@@ -104,4 +118,4 @@ export function ContextRing() {
       {() => <ContextPanel />}
     </Popover>
   )
-}
+})

@@ -776,3 +776,46 @@ test('the plan projection follows the newest todo tool list', () => {
   assert.equal(plan?.sourceId, 't3')
   assert.equal(plan?.entries[0]?.text, 'new step')
 })
+
+test('applyEventBatch detaches lookup indexes from the base array when growing', () => {
+  let base: ThreadItem[] = applyEvent([], userEvent('start'))
+  base = applyEvent(base, assistantStart())
+  base = applyEvent(
+    base,
+    update({
+      type: 'toolcall_end',
+      contentIndex: 0,
+      toolCall: { type: 'toolCall', id: 'call-base', name: 'read', arguments: { path: 'a.ts' } }
+    })
+  )
+
+  // Apply a batch that creates a new assistant message and a new tool call,
+  // growing the array beyond base.
+  const batched = applyEventBatch(base, [
+    { event: assistantEnd([{ type: 'text', text: 'done' }]) },
+    { event: assistantStart() },
+    {
+      event: update({
+        type: 'toolcall_end',
+        contentIndex: 0,
+        toolCall: { type: 'toolCall', id: 'call-batch', name: 'bash', arguments: { command: 'pwd' } }
+      })
+    }
+  ])
+
+  assert.equal(tools(batched).length, 2)
+  assert.equal(tools(base).length, 1)
+
+  // Updating the base array independently afterwards must not resolve tool IDs
+  // inserted only in the batched branch.
+  const updatedBase = applyEvent(base, {
+    type: 'tool_execution_end',
+    toolCallId: 'call-batch',
+    toolName: 'bash',
+    isError: false,
+    result: { content: [{ type: 'text', text: 'out' }] }
+  })
+  assert.equal(tools(updatedBase).some((item) => item.toolCallId === 'call-batch' && item.status === 'ok'), true)
+  const baseTool = tools(base).find((item) => item.toolCallId === 'call-base')
+  assert.equal(baseTool?.status, 'proposed')
+})

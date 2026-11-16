@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
@@ -7,12 +7,14 @@ import {
   filterMarketplaceEntries,
   formatStarCount,
   marketplaceCategories,
+  marketplaceEntryKeys,
   type MarketplaceEntry,
   type MarketplaceSnapshot
 } from '../src/shared/marketplace'
 import {
   installNpmPackage,
   installSourceKind,
+  listInstalledMarketplaceIds,
   mergeMarketplaceSnapshot,
   normaliseGitRepository,
   normaliseInstalledSource,
@@ -196,6 +198,65 @@ describe('normaliseInstalledSource', () => {
     assert.equal(normaliseInstalledSource('git:github.com/nicobailon/pi-web-access.git'), 'git:github.com/nicobailon/pi-web-access')
     assert.equal(normaliseInstalledSource('skills:github.com/badlogic/pi-skills'), 'skills:github.com/badlogic/pi-skills')
     assert.equal(normaliseInstalledSource('not-a-source'), null)
+  })
+})
+
+describe('marketplaceEntryKeys', () => {
+  it('matches the live npm id and the bundled repository spelling', () => {
+    const live = marketplaceEntryKeys({
+      id: 'pi-web-access',
+      install: 'npm:pi-web-access',
+      npmPackage: 'pi-web-access',
+      repo: 'nicobailon/pi-web-access'
+    })
+    assert.ok(live.includes('pi-web-access'))
+    assert.ok(live.includes('npm:pi-web-access'))
+    assert.ok(live.includes('nicobailon/pi-web-access'))
+
+    const bundled = marketplaceEntryKeys({
+      id: 'nicobailon/pi-web-access',
+      install: 'npm:pi-web-access',
+      npmPackage: 'pi-web-access',
+      repo: 'nicobailon/pi-web-access'
+    })
+    assert.ok(bundled.includes('nicobailon/pi-web-access'))
+    assert.ok(bundled.includes('pi-web-access'))
+  })
+})
+
+describe('listInstalledMarketplaceIds', () => {
+  it('reports user and project packages by npm name, including packages outside the snapshot', async () => {
+    const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), 'marketplace-installed-'))
+    const previousAgentDirectory = process.env.PI_CODING_AGENT_DIR
+    try {
+      const agentDirectory = path.join(temporaryDirectory, 'agent')
+      const workspace = path.join(temporaryDirectory, 'workspace')
+      mkdirSync(agentDirectory, { recursive: true })
+      mkdirSync(path.join(workspace, '.pi'), { recursive: true })
+      writeFileSync(
+        path.join(agentDirectory, 'settings.json'),
+        JSON.stringify({
+          packages: ['npm:pi-web-access', 'npm:billion-context-pi']
+        })
+      )
+      writeFileSync(
+        path.join(workspace, '.pi', 'settings.json'),
+        JSON.stringify({ packages: ['npm:pi-mcp-adapter'] })
+      )
+
+      process.env.PI_CODING_AGENT_DIR = agentDirectory
+      const keys = await listInstalledMarketplaceIds({ cwd: workspace })
+      assert.ok(keys.includes('npm:pi-web-access'))
+      assert.ok(keys.includes('pi-web-access'))
+      // The bundled snapshot still knows this package as `owner/repo`.
+      assert.ok(keys.includes('nicobailon/pi-web-access'))
+      assert.ok(keys.includes('billion-context-pi'))
+      assert.ok(keys.includes('pi-mcp-adapter'))
+    } finally {
+      if (previousAgentDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDirectory
+      rmSync(temporaryDirectory, { recursive: true, force: true })
+    }
   })
 })
 

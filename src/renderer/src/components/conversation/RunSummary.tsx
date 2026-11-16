@@ -40,21 +40,24 @@ export const RunSummary = memo(function RunSummary({
 }: RunSummaryProps) {
   const t = useT()
   const language = useAppStore((state) => state.settings.language ?? 'en')
-  const isRunning = !run.settled && (run.startedMonotonicAt !== undefined || run.startedAt !== undefined)
+  const hasStart = run.startedMonotonicAt !== undefined || run.startedAt !== undefined
+  const isRunning = !run.settled && (hasStart || run.phase !== 'idle' || Boolean(run.compaction))
   const readNow = run.startedMonotonicAt !== undefined ? monotonicNow : Date.now
   const [now, setNow] = useState(() => readNow())
   useEffect(() => {
     setNow(readNow())
-    if (!isRunning) return
+    if (!isRunning || !hasStart) return
     const timer = window.setInterval(() => setNow(readNow()), 1000)
     return () => window.clearInterval(timer)
-  }, [isRunning, readNow, run.startedAt, run.startedMonotonicAt])
+  }, [hasStart, isRunning, readNow, run.startedAt, run.startedMonotonicAt])
   if (!run.settled && !isRunning) return null
   const aborted = run.outcome === 'aborted'
   const failed = run.outcome === 'failed'
   const canFold = run.settled && foldable && !aborted && !failed
   const elapsedMs = isRunning
-    ? Math.max(0, now - (run.startedMonotonicAt ?? run.startedAt ?? now))
+    ? hasStart
+      ? Math.max(0, now - (run.startedMonotonicAt ?? run.startedAt ?? now))
+      : undefined
     : run.durationMs
   const duration =
     elapsedMs !== undefined && !aborted && !failed

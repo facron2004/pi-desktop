@@ -122,6 +122,16 @@ export interface RuntimeStderrPayload {
   line: string
 }
 
+export interface RuntimeQueueEvent {
+  ownerId: string
+  cwd: string
+  queued: boolean
+  position?: number
+  holderOwnerId?: string
+  holderCwd?: string
+  externalHolder?: boolean
+}
+
 /* ------------------------------------------------------------------ *
  * Content blocks / messages
  * ------------------------------------------------------------------ */
@@ -1184,6 +1194,7 @@ export interface PiDesktopBridge {
     onStatus(handler: (status: RuntimeStatusEvent) => void): () => void
     onRekey(handler: (change: RuntimeRekey) => void): () => void
     onStderr?(handler: (payload: RuntimeStderrPayload | string) => void): () => void
+    onQueue?(handler: (event: RuntimeQueueEvent) => void): () => void
   }
   auth: {
     check(provider?: string): Promise<AuthStatus>
@@ -1201,7 +1212,11 @@ export interface PiDesktopBridge {
     piCatalog(query?: PiCatalogQuery): Promise<PiCatalogPage>
     /** Query GitHub for current star counts and merge them into the snapshot. */
     refresh(): Promise<MarketplaceSnapshot>
-    /** Ids (`owner/repo`) of marketplace entries already installed in Pi. */
+    /**
+     * Match keys of packages already installed in Pi: every installed package's
+     * canonical source (`npm:<name>`, `git:github.com/<owner>/<repo>`), npm
+     * package name and `owner/repo` path. A catalog card matches any of them.
+     */
     installed(): Promise<string[]>
     /** Install one entry through `pi install`; `id` must exist in the snapshot. */
     install(id: string, runId?: string): Promise<MarketplaceInstallResult>
@@ -1411,6 +1426,8 @@ export interface RuntimeStartOptions {
 export interface RuntimeEnsureOptions extends RuntimeStartOptions {
   /** JSONL path, or `draft:…` until Pi has written a file. */
   sessionKey: string
+  /** True for speculative prewarms so active/used sessions take LRU priority over idle prewarms. */
+  prewarm?: boolean
 }
 
 export interface RuntimeStatus {

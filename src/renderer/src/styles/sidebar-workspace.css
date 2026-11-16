@@ -115,6 +115,47 @@
   pointer-events: auto;
 }
 
+/* Collapsed project mark lives inside the fixed action slot at rest and yields
+   to the action buttons on hover/focus so the project title never moves. */
+.project__indicator {
+  position: absolute;
+  right: var(--sp-2);
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--text-secondary);
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.project__indicator[data-indicator='unread']::before,
+.project__indicator[data-indicator='error']::before,
+.project__indicator[data-indicator='needs-input']::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+
+.project__indicator[data-indicator='error']::before {
+  background: var(--status-danger);
+}
+
+.project__indicator[data-indicator='needs-input']::before {
+  background: var(--status-warning);
+  box-shadow: 0 0 0 3px var(--status-warning-soft);
+}
+
+.project__row:hover .project__indicator,
+.project__row:focus-within .project__indicator,
+.project__actions:has([data-active='true']) .project__indicator {
+  opacity: 0;
+}
+
 /* The mark of a conversation hangs in the row's indent, out of the flow: a row
    with something to say must not slide its title right of a row with nothing to
    say. The dot and the spinner share this one slot, so switching between them

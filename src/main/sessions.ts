@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { constants, createReadStream, existsSync, readFileSync } from 'node:fs'
+import { constants, createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { appendFile, chmod, lstat, mkdir, open, readdir, realpath, rename, stat, unlink, type FileHandle } from 'node:fs/promises'
 import type { Stats } from 'node:fs'
 import { StringDecoder } from 'node:string_decoder'
@@ -431,21 +431,44 @@ function fileIdentity(stats: Pick<Stats, 'dev' | 'ino'>): string {
 }
 
 /** Where Pi stores session files. Mirrors the CLI precedence rules. */
+let cachedSessionRootSetting: { file: string; version: string; root: string } | undefined
+
+function settingsFileVersionKey(file: string): string {
+  try {
+    const s = statSync(file, { bigint: true, throwIfNoEntry: false })
+    return s ? `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}` : 'missing'
+  } catch {
+    return 'error'
+  }
+}
+
 export function resolveSessionRoot(customDir?: string): string {
   if (customDir && customDir.trim()) return path.resolve(customDir.trim())
   const fromEnv = process.env.PI_CODING_AGENT_SESSION_DIR
   if (fromEnv && fromEnv.trim()) return path.resolve(fromEnv.trim())
 
-  const settingsFile = path.join(homeDir(), '.pi', 'agent', 'settings.json')
+  const home = homeDir()
+  const settingsFile = path.join(home, '.pi', 'agent', 'settings.json')
+  const version = settingsFileVersionKey(settingsFile)
+  if (
+    cachedSessionRootSetting &&
+    cachedSessionRootSetting.file === settingsFile &&
+    cachedSessionRootSetting.version === version
+  ) {
+    return cachedSessionRootSetting.root
+  }
+
+  let root = path.join(home, '.pi', 'agent', 'sessions')
   try {
-    if (existsSync(settingsFile)) {
+    if (version !== 'missing' && existsSync(settingsFile)) {
       const raw = JSON.parse(readFileSync(settingsFile, 'utf8')) as { sessionDir?: string }
-      if (raw.sessionDir && raw.sessionDir.trim()) return path.resolve(raw.sessionDir.trim())
+      if (raw.sessionDir && raw.sessionDir.trim()) root = path.resolve(raw.sessionDir.trim())
     }
   } catch {
     /* fall through to the default location */
   }
-  return path.join(homeDir(), '.pi', 'agent', 'sessions')
+  cachedSessionRootSetting = { file: settingsFile, version, root }
+  return root
 }
 
 let configuredExternalSessionRoots: (() => readonly string[]) | undefined
@@ -457,18 +480,23 @@ export function configureExternalSessionRoots(getRoots: () => readonly string[])
 
 /** Current and previous custom chat folders plus Pi's configured root. */
 export function resolveSessionRoots(customDir?: string): string[] {
-  const roots = [
+  const rawRoots = [
     customDir?.trim(),
     ...(configuredExternalSessionRoots?.() ?? []),
     resolveSessionRoot()
-  ].filter((root): root is string => Boolean(root?.trim())).map((root) => resolveSessionRoot(root))
+  ]
   const seen = new Set<string>()
-  return roots.filter((root) => {
-    const key = process.platform === 'win32' ? path.resolve(root).toLowerCase() : path.resolve(root)
-    if (seen.has(key)) return false
+  const unique: string[] = []
+  for (const item of rawRoots) {
+    const trimmed = item?.trim()
+    if (!trimmed) continue
+    const resolved = path.resolve(trimmed)
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved
+    if (seen.has(key)) continue
     seen.add(key)
-    return true
-  })
+    unique.push(resolved)
+  }
+  return unique
 }
 
 const SESSION_FILE_FLAGS = constants.O_NONBLOCK === undefined
@@ -926,11 +954,17 @@ export function getSessionCacheSize(): number {
 }
 
 function recordInCache(key: string, entry: SessionCacheEntry): void {
-  if (sessionMetaCache.size >= MAX_CACHE_ENTRIES && !sessionMetaCache.has(key)) {
+  if (sessionMetaCache.has(key)) {
+    sessionMetaCache.delete(key)
+  } else if (sessionMetaCache.size >= MAX_CACHE_ENTRIES) {
     const oldestKey = sessionMetaCache.keys().next().value
     if (oldestKey) sessionMetaCache.delete(oldestKey)
   }
   sessionMetaCache.set(key, entry)
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
 }
 
 /**
@@ -962,6 +996,41 @@ async function withMetaParseSlot<T>(task: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Returns metadata for a session file from an already-verified open handle,
+ * reusing the incremental (identity, mtime, size) LRU cache when valid.
+ */
+export async function getSessionMetaFromHandle(
+  file: string,
+  handle: FileHandle,
+  knownStats?: Stats
+): Promise<SessionMeta | null> {
+  const key = canonicalSessionFile(file)
+  const s = knownStats ?? await handle.stat()
+  const identity = fileIdentity(s)
+  const cached = sessionMetaCache.get(key)
+  if (cached && cached.identity === identity && cached.mtime === s.mtimeMs && cached.size === s.size) {
+    sessionMetaCache.delete(key)
+    sessionMetaCache.set(key, cached)
+    return cached.meta
+  }
+
+  const meta = await withMetaParseSlot(() =>
+    parseSession(file, { size: s.size, mtimeMs: s.mtimeMs, identity }, handle, { cacheMessages: false })
+  )
+  if (meta) {
+    recordInCache(key, {
+      identity,
+      mtime: s.mtimeMs,
+      size: s.size,
+      meta
+    })
+  } else {
+    sessionMetaCache.delete(key)
+  }
+  return meta
+}
+
+/**
  * Returns metadata for a session file, reusing the incremental (mtime, size) cache
  * when valid and coalescing in-flight concurrent reads.
  */
@@ -982,11 +1051,13 @@ export async function getSessionMeta(file: string, sessionRoot?: string | readon
       const identity = fileIdentity(s)
       const cached = sessionMetaCache.get(key)
       if (cached && cached.identity === identity && cached.mtime === s.mtimeMs && cached.size === s.size) {
+        sessionMetaCache.delete(key)
+        sessionMetaCache.set(key, cached)
         return cached.meta
       }
 
       const meta = await withMetaParseSlot(() =>
-        parseSession(file, { size: s.size, mtimeMs: s.mtimeMs, identity }, opened?.handle)
+        parseSession(file, { size: s.size, mtimeMs: s.mtimeMs, identity }, opened?.handle, { cacheMessages: false })
       )
       if (meta) {
         recordInCache(key, {
@@ -1136,10 +1207,15 @@ export interface SessionConversationWindowRead extends SessionConversationRead {
   historyTruncated: boolean
 }
 
+export interface ReadSessionOptions {
+  shouldStop?: () => boolean
+}
+
 /** Active-branch messages plus Pi Desktop's persisted tool-source classification. */
 export async function readSessionConversation(
   file: string,
-  handle?: FileHandle
+  handle?: FileHandle,
+  options?: ReadSessionOptions
 ): Promise<SessionConversationWindowRead> {
   let fileStats: Stats
   try {
@@ -1178,7 +1254,16 @@ export async function readSessionConversation(
     ? fileStats.size - MAX_SESSION_BYTES
     : 0
   for await (const line of readJsonlLines(file, MAX_SESSION_BYTES, windowStart, windowStart > 0, handle)) {
+    if (options?.shouldStop?.()) {
+      return { messages: [], externalContext: false, contextChecked: false, historyTruncated: false }
+    }
     lines.push(line)
+    if (lines.length % 256 === 0) {
+      await yieldToEventLoop()
+      if (options?.shouldStop?.()) {
+        return { messages: [], externalContext: false, contextChecked: false, historyTruncated: false }
+      }
+    }
   }
   if (!lines.length && windowStart > 0) {
     // If one final record is larger than the tail window, the partial record
@@ -1197,7 +1282,16 @@ export async function readSessionConversation(
         startOffset > 0,
         handle
       )) {
+        if (options?.shouldStop?.()) {
+          return { messages: [], externalContext: false, contextChecked: false, historyTruncated: false }
+        }
         lines.push(line)
+        if (lines.length % 256 === 0) {
+          await yieldToEventLoop()
+          if (options?.shouldStop?.()) {
+            return { messages: [], externalContext: false, contextChecked: false, historyTruncated: false }
+          }
+        }
       }
     }
   }
@@ -1225,8 +1319,72 @@ export async function readSessionConversation(
   return { messages, externalContext, contextChecked, historyTruncated: windowStart > 0 }
 }
 
-export async function readSessionMessages(file: string, handle?: FileHandle): Promise<AgentMessage[]> {
-  return (await readSessionConversation(file, handle)).messages
+export async function readSessionMessages(
+  file: string,
+  handle?: FileHandle,
+  options?: ReadSessionOptions
+): Promise<AgentMessage[]> {
+  return (await readSessionConversation(file, handle, options)).messages
+}
+
+/**
+ * Read up to the head window (`MAX_META_HEAD_BYTES`) for auto-title generation,
+ * reusing `sessionMessagesCache` on cache hits without evicting live threads.
+ */
+export async function readSessionHeadMessages(file: string, handle?: FileHandle): Promise<AgentMessage[]> {
+  let fileStats: Stats
+  try {
+    fileStats = handle ? await handle.stat() : await stat(file)
+  } catch {
+    return []
+  }
+  const key = canonicalSessionFile(file)
+  const identity = fileIdentity(fileStats)
+  const cached = sessionMessagesCache.get(key)
+  if (
+    cached && cached.identity === identity &&
+    cached.mtime === fileStats.mtimeMs && cached.size === fileStats.size
+  ) {
+    return cached.messages
+  }
+
+  const lines: string[] = []
+  let sawUser = false
+  let sawAssistant = false
+  for await (const line of readJsonlLines(file, MAX_META_HEAD_BYTES, 0, false, handle)) {
+    lines.push(line)
+    if (lines.length % 256 === 0) await yieldToEventLoop()
+    // Once we have the header + first user + first assistant reply on a young
+    // file, stop early unless the file already fits easily in memory.
+    if (!sawAssistant && line.includes('"role"')) {
+      try {
+        const record = JSON.parse(line) as { type?: string; message?: { role?: string } }
+        if (record.type === 'message') {
+          if (record.message?.role === 'user') sawUser = true
+          else if (sawUser && record.message?.role === 'assistant') sawAssistant = true
+        }
+      } catch {
+        /* ignore malformed line */
+      }
+    }
+    if (sawUser && sawAssistant && fileStats.size > MAX_META_HEAD_BYTES) break
+  }
+  if (!lines.length) return []
+  const branch = activeBranch(lines)
+  const messages = messagesFromBranch(branch)
+  if (messages.length > 0) return messages
+  // If head lines didn't form a single connected leaf branch (e.g. truncated fork),
+  // extract linear message records cleanly.
+  const linear: AgentMessage[] = []
+  for (const raw of lines) {
+    try {
+      const parsed = JSON.parse(raw) as TreeEntry
+      if (parsed?.type === 'message' && parsed.message) linear.push(parsed.message)
+    } catch {
+      /* ignore malformed line */
+    }
+  }
+  return linear
 }
 
 /**
@@ -1383,7 +1541,8 @@ export async function parseLargeSessionMeta(
 export async function parseSession(
   file: string,
   fileStats?: SessionFileStats,
-  handle?: FileHandle
+  handle?: FileHandle,
+  options: { cacheMessages?: boolean } = {}
 ): Promise<SessionMeta | null> {
   let stats = fileStats
   if (!stats) {
@@ -1408,8 +1567,11 @@ export async function parseSession(
 
   let header: SessionHeader | null = null
   const entries: BaseEntry[] = []
+  let scannedLines = 0
 
   for await (const raw of readJsonlLines(file, MAX_SESSION_BYTES, 0, false, handle)) {
+    scannedLines += 1
+    if (scannedLines % 256 === 0) await yieldToEventLoop()
     const line = raw.trim()
     if (!line) continue
     let parsed: unknown
@@ -1455,20 +1617,24 @@ export async function parseSession(
     cursor = cursor.id ? byId.get(cursor.parentId ?? '') ?? null : null
   }
   branch.reverse()
-  if (stats.size <= MAX_CACHED_SESSION_MESSAGE_BYTES) {
-    const externalContext = hasExternalContext(branch)
-    const contextChecked = !hasExternalContextUnknown(branch) && (
-      hasExternalContextChecked(branch) || !hasLocalToolCall(branch)
-    )
-    cacheSessionMessages(
-      file,
-      stats,
-      messagesFromBranch(branch),
-      externalContext,
-      contextChecked
-    )
-  } else {
-    deleteCachedSessionMessages(canonicalSessionFile(file))
+  // Decouple background metadata scans (listSessions, startupScan) from
+  // evicting active conversations out of the 12-entry sessionMessagesCache.
+  if (options.cacheMessages === true) {
+    if (stats.size <= MAX_CACHED_SESSION_MESSAGE_BYTES) {
+      const externalContext = hasExternalContext(branch)
+      const contextChecked = !hasExternalContextUnknown(branch) && (
+        hasExternalContextChecked(branch) || !hasLocalToolCall(branch)
+      )
+      cacheSessionMessages(
+        file,
+        stats,
+        messagesFromBranch(branch),
+        externalContext,
+        contextChecked
+      )
+    } else {
+      deleteCachedSessionMessages(canonicalSessionFile(file))
+    }
   }
 
   let name: string | undefined

@@ -157,12 +157,22 @@ const threadItemsChanges = new WeakMap<ThreadItem[], ThreadItemsChange>()
 const threadItemIndexes = new WeakMap<ThreadItem[], ThreadItemIndexes>()
 const mutableThreadItemsDrafts = new WeakMap<ThreadItem[], MutableThreadItemsDraft>()
 
+function cloneIndexes(indexes: ThreadItemIndexes): ThreadItemIndexes {
+  return {
+    byId: new Map(indexes.byId),
+    byToolCallId: new Map(indexes.byToolCallId),
+    byMessageId: new Map(indexes.byMessageId)
+  }
+}
+
 function indexesFor(items: ThreadItem[]): ThreadItemIndexes {
   const cached = threadItemIndexes.get(items)
   if (cached) return cached
   const draft = mutableThreadItemsDrafts.get(items)
   if (draft) {
-    const indexes = indexesFor(draft.base)
+    // Give each batch its own copy of the lookup maps so appending items
+    // inside `applyEventBatch` never mutates `draft.base`'s index maps.
+    const indexes = cloneIndexes(indexesFor(draft.base))
     threadItemIndexes.set(items, indexes)
     return indexes
   }
@@ -219,14 +229,18 @@ function markThreadItemsChanged(
   changedIndex: number
 ): ThreadItem[] {
   threadItemsChanges.set(next, { base: new WeakRef(base), firstChangedIndex: changedIndex })
-  const indexes = indexesFor(base)
-  // Replacements and aborts keep ids stable. Only appends extend either index.
-  for (let index = base.length; index < next.length; index += 1) {
-    const item = next[index]
-    if (item) indexes.byId.set(item.id, index)
-    if (item?.kind === 'tool') indexes.byToolCallId.set(item.toolCallId, index)
-    if ((item?.kind === 'user' || item?.kind === 'assistant') && item.messageId) {
-      indexes.byMessageId.set(item.messageId, index)
+  const baseIndexes = indexesFor(base)
+  // Only clone index maps when items are appended; in-place item updates keep the same positions.
+  let indexes = baseIndexes
+  if (next.length > base.length) {
+    indexes = cloneIndexes(baseIndexes)
+    for (let index = base.length; index < next.length; index += 1) {
+      const item = next[index]
+      if (item) indexes.byId.set(item.id, index)
+      if (item?.kind === 'tool') indexes.byToolCallId.set(item.toolCallId, index)
+      if ((item?.kind === 'user' || item?.kind === 'assistant') && item.messageId) {
+        indexes.byMessageId.set(item.messageId, index)
+      }
     }
   }
   threadItemIndexes.set(next, indexes)
@@ -466,12 +480,16 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
   const items: ThreadItem[] = []
 
   // The arguments of a tool call live on the assistant message, not on the
-  // result. Collect them first so a resumed session still knows which file
-  // was edited and which command was run.
+  // result. Collect them once while parsing assistant blocks so replay avoids
+  // running `blocksFromContent` / `JSON.stringify` twice per message.
   const calls = new Map<string, { name: string; args: Record<string, unknown> }>()
-  for (const message of messages) {
+  const assistantBlocks: (AssistantBlock[] | undefined)[] = new Array(messages.length)
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
     if (message.role !== 'assistant') continue
-    for (const block of blocksFromContent(message.content)) {
+    const blocks = blocksFromContent(message.content)
+    assistantBlocks[index] = blocks
+    for (const block of blocks) {
       if (block.type !== 'toolCall') continue
       calls.set(block.id, { name: block.name, args: block.args ?? {} })
     }
@@ -480,7 +498,8 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
   /** Position of each tool node, so a later result updates it instead of adding one. */
   const toolNodes = new Map<string, number>()
 
-  for (const message of messages) {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
     switch (message.role) {
       case 'user': {
         items.push({
@@ -494,7 +513,7 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
         break
       }
       case 'assistant': {
-        const blocks = blocksFromContent(message.content)
+        const blocks = assistantBlocks[index] ?? blocksFromContent(message.content)
         const rawDuration = (message as unknown as { durationMs?: unknown }).durationMs
         items.push({
           id: nextId('assistant'),

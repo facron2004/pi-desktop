@@ -1,3 +1,5 @@
+import { languageForFilePath } from '@shared/file-languages'
+
 /** Visual grouping for file names, used to tint the tree and search results. */
 export type FileTone = 'ts' | 'js' | 'json' | 'style' | 'markdown' | 'shell' | 'image' | 'plain'
 
@@ -27,9 +29,17 @@ const BY_EXTENSION: Record<string, FileTone> = {
   sh: 'shell',
   bash: 'shell',
   zsh: 'shell',
+  fish: 'shell',
+  nu: 'shell',
+  awk: 'shell',
   ps1: 'shell',
+  psm1: 'shell',
+  psd1: 'shell',
+  ps1xml: 'shell',
   bat: 'shell',
   cmd: 'shell',
+  btm: 'shell',
+  reg: 'shell',
   png: 'image',
   jpg: 'image',
   jpeg: 'image',
@@ -41,7 +51,15 @@ const BY_EXTENSION: Record<string, FileTone> = {
 
 const BY_NAME: Record<string, FileTone> = {
   dockerfile: 'shell',
+  containerfile: 'shell',
   makefile: 'shell',
+  gnumakefile: 'shell',
+  '.env': 'shell',
+  '.bashrc': 'shell',
+  '.bash_profile': 'shell',
+  '.profile': 'shell',
+  '.zshrc': 'shell',
+  '.zprofile': 'shell',
   license: 'plain',
   readme: 'markdown'
 }
@@ -55,55 +73,7 @@ export function fileTone(name: string): FileTone {
   return Object.hasOwn(BY_EXTENSION, extension) ? BY_EXTENSION[extension] : 'plain'
 }
 
-/** The grammar a file is highlighted with, guessed from its name. */
-const LANGUAGE_BY_EXTENSION: Record<string, string> = {
-  ts: 'typescript',
-  tsx: 'tsx',
-  mts: 'typescript',
-  cts: 'typescript',
-  js: 'javascript',
-  jsx: 'jsx',
-  mjs: 'javascript',
-  cjs: 'javascript',
-  json: 'json',
-  jsonc: 'json',
-  md: 'markdown',
-  markdown: 'markdown',
-  mdx: 'markdown',
-  css: 'css',
-  scss: 'scss',
-  html: 'html',
-  vue: 'vue',
-  svelte: 'svelte',
-  xml: 'xml',
-  py: 'python',
-  rb: 'ruby',
-  go: 'go',
-  rs: 'rust',
-  java: 'java',
-  kt: 'kotlin',
-  swift: 'swift',
-  php: 'php',
-  cs: 'csharp',
-  sh: 'bash',
-  bash: 'bash',
-  zsh: 'bash',
-  ps1: 'powershell',
-  yml: 'yaml',
-  yaml: 'yaml',
-  toml: 'toml',
-  ini: 'ini',
-  sql: 'sql',
-  lua: 'lua',
-  dockerfile: 'dockerfile'
-}
-
 /** The grammar for a file, or an empty string when there is none. */
 export function languageOf(name: string): string {
-  const lower = name.toLowerCase()
-  if (lower === 'dockerfile') return 'dockerfile'
-  const dot = lower.lastIndexOf('.')
-  if (dot === -1) return ''
-  const extension = lower.slice(dot + 1)
-  return Object.hasOwn(LANGUAGE_BY_EXTENSION, extension) ? LANGUAGE_BY_EXTENSION[extension] : ''
+  return languageForFilePath(name)
 }

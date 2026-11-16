@@ -124,6 +124,43 @@ test('model time and average TTFT use locally recorded session samples', () => {
   assert.equal(metrics.averageTtftMs, 800)
 })
 
+test('a reopened conversation does not count its assistant durations twice', () => {
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 100 },
+    { ...assistant('a1', 100), timestamp: 1_000, durationMs: 1_000 },
+    { ...assistant('a2', 100), timestamp: 2_000, durationMs: 2_000 }
+  ]
+  const metrics = sessionMetrics(items, undefined, {}, {
+    modelDurationsMs: {
+      'turn-a': 1_000,
+      'assistant:1000:turn-a': 1_000,
+      'turn-b': 2_000,
+      'assistant:2000:turn-b': 2_000
+    },
+    ttftDurationsMs: {},
+    toolDurationsMs: {},
+    runDurationsMs: {},
+    generationWindowMs: {}
+  })
+  assert.equal(metrics.modelTimeMs, 3_000)
+})
+
+test('a complete transcript is not inflated by a stale local model journal', () => {
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 100 },
+    { ...assistant('a1', 100), timestamp: 1_000, durationMs: 1_000 },
+    { ...assistant('a2', 100), timestamp: 2_000, durationMs: 2_000 }
+  ]
+  const metrics = sessionMetrics(items, undefined, {}, {
+    modelDurationsMs: { 'turn-stale': 48 * 60 * 1_000 },
+    ttftDurationsMs: {},
+    toolDurationsMs: {},
+    runDurationsMs: {},
+    generationWindowMs: {}
+  })
+  assert.equal(metrics.modelTimeMs, 3_000)
+})
+
 test('a settled run keeps its measured TTFT when local storage did not record it', () => {
   const metrics = sessionMetrics([], undefined, {
     runId: 'run-current',
@@ -161,6 +198,11 @@ test('live model time uses a monotonic clock', () => {
   } finally {
     if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
   }
+})
+
+test('a settled run ignores a stale live model start', () => {
+  const metrics = sessionMetrics([], undefined, { modelTurnStartedAt: 1_000, settled: true })
+  assert.equal(metrics.modelTimeMs, null)
 })
 
 test('tool time uses persisted client timings when Pi did not save a duration', () => {

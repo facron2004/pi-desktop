@@ -10,12 +10,14 @@ import type {
   PiState,
   RpcTraceHint,
   RuntimeEnsureOptions,
+  RuntimeQueueEvent,
   RuntimeStartOptions,
   RuntimeStatus
 } from '@shared/types'
 import { appendSessionName } from '../sessions'
 import { isExternalToolName } from '../memory/policy'
-import { CwdGate, InterprocessCwdGate } from './cwd-gate'
+import { CwdGate, InterprocessCwdGate, type CwdClaimMode } from './cwd-gate'
+import { isPreSendRpcError } from './rpc-client'
 import { canonicalSessionFile } from './session-file'
 import { properLockfile } from '../proper-lockfile'
 
@@ -29,7 +31,8 @@ class SessionFileLockError extends Error {}
 /** How long an idle hot session keeps its process. Viewing it does not reset this. */
 const WARM_MS = 10 * 60 * 1000
 export const MAX_IDLE_RUNTIMES = 4
-const CWD_QUEUE_POLL_MS = 250
+const CWD_QUEUE_POLL_MIN_MS = 50
+const CWD_QUEUE_POLL_MAX_MS = 500
 const MAX_QUEUED_JOBS_PER_CWD = 64
 const MAX_QUEUED_JOBS_TOTAL = 256
 const MAX_QUEUED_PAYLOAD_BYTES_TOTAL = 32 * 1024 * 1024
@@ -124,6 +127,8 @@ interface RuntimeActivity {
   settlements: number
   /** The conversation used MCP, computer use, subagents or another outside tool. */
   externalContext: boolean
+  /** True while this runtime has only been speculatively prewarmed for viewing. */
+  prewarmOnly?: boolean
   binding?: Promise<void>
   finalizing?: boolean
   stopping?: Promise<void>
@@ -157,9 +162,10 @@ export class SessionSupervisor extends EventEmitter {
   private readonly approvals = new Set<string>()
   private readonly warmTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private queueDrainTimer?: ReturnType<typeof setTimeout>
-  private readonly releasingCwds = new Set<string>()
+  private queueDrainDelayMs = CWD_QUEUE_POLL_MIN_MS
+  private readonly releasingCwds = new Set<{ ownerId: string; cwd: string; mode: CwdClaimMode }>()
   private readonly stoppingCwds = new Map<string, number>()
-  private readonly releasingOwners = new Set<string>()
+  private readonly releasingOwners = new Map<string, number>()
   private readonly activity = new WeakMap<ManagedSessionRuntime, RuntimeActivity>()
   private shuttingDown = false
   private cliUpgradeInProgress = false
@@ -176,6 +182,29 @@ export class SessionSupervisor extends EventEmitter {
 
   has(key: string): boolean {
     return this.runtimes.get(this.canonical(key))?.isRunning ?? false
+  }
+
+  /** Fast check for whether a ready runtime already owns `(sessionKey, cwd, sessionFile)`. */
+  isReadyMatch(options: Pick<RuntimeEnsureOptions, 'sessionKey' | 'cwd' | 'sessionFile'>): boolean {
+    if (this.cliUpgradeInProgress || this.shuttingDown) return false
+    const requestedId = this.canonical(options.sessionKey)
+    const fileOwner = options.sessionFile
+      ? this.fileOwners.get(canonicalSessionFile(options.sessionFile))
+      : undefined
+    const ownerId = fileOwner ? this.canonical(fileOwner) : requestedId
+    const runtime = this.runtimes.get(ownerId)
+    const activity = runtime && this.activity.get(runtime)
+    if (!runtime?.isRunning || runtime.currentStatus.phase !== 'ready' || !activity || activity.stopping) {
+      return false
+    }
+    if (!sameWorkingDirectory(activity.cwd, options.cwd)) return false
+    if (options.sessionFile) {
+      const activeFile = runtime.currentStatus.sessionFile
+      if (!activeFile || canonicalSessionFile(activeFile) !== canonicalSessionFile(options.sessionFile)) {
+        return false
+      }
+    }
+    return true
   }
 
   runningKeys(): string[] {
@@ -237,11 +266,11 @@ export class SessionSupervisor extends EventEmitter {
     }
   }
 
-  /** Desktop Git writes share the same directory gate as agent turns. */
+  /** Desktop Git writes take an exclusive directory lock over agent runs. */
   async withCwdLock<T>(cwd: string, action: () => Promise<T>): Promise<T> {
     const key = `operation:${randomUUID()}`
     if (this.shuttingDown) throw new Error('Pi is shutting down.')
-    if (!this.claimCwd(cwd, key)) {
+    if (!this.claimCwd(cwd, key, 'exclusive')) {
       throw new Error('A conversation is working in this folder. Wait for it to finish before changing Git state.')
     }
     try {
@@ -254,7 +283,7 @@ export class SessionSupervisor extends EventEmitter {
   async ensure(options: RuntimeEnsureOptions): Promise<{ ok: boolean; error?: string }> {
     if (this.cliUpgradeInProgress) return { ok: false, error: 'The Pi CLI is updating. Try again when it finishes.' }
     if (this.shuttingDown) return { ok: false, error: 'Pi is shutting down.' }
-    if ([...this.stoppingCwds.keys()].some(root => this.gate.contains(root, options.cwd))) {
+    if (this.stoppingCwds.size > 0 && [...this.stoppingCwds.keys()].some(root => this.gate.contains(root, options.cwd))) {
       return { ok: false, error: 'Working folder is being closed.' }
     }
     const requestedId = this.canonical(options.sessionKey)
@@ -281,12 +310,35 @@ export class SessionSupervisor extends EventEmitter {
     }
     if (existing?.isRunning && existing.currentStatus.phase === 'ready') {
       const activity = this.activity.get(existing)
-      if (activity) this.touchRuntime(activity)
+      if (activity) {
+        if (!options.prewarm) {
+          activity.prewarmOnly = false
+          this.touchRuntime(activity)
+        } else if (activity.lastAccessed === 0) {
+          this.touchRuntime(activity)
+        }
+      }
       this.pruneIdleRuntimes(id)
       return { ok: true }
     }
     const pending = this.starting.get(id)
-    if (pending) return pending
+    if (pending) {
+      if (!options.prewarm) {
+        const startingRuntime = this.runtimes.get(id)
+        const startingActivity = startingRuntime && this.activity.get(startingRuntime)
+        if (startingActivity) startingActivity.prewarmOnly = false
+      }
+      const res = await pending
+      if (!options.prewarm) {
+        const settledRuntime = this.runtimes.get(this.canonical(id))
+        const settledActivity = settledRuntime && this.activity.get(settledRuntime)
+        if (settledActivity) {
+          settledActivity.prewarmOnly = false
+          this.touchRuntime(settledActivity)
+        }
+      }
+      return res
+    }
     this.cancelledStarts.delete(id)
     this.startingCwds.set(id, options.cwd)
     const init = this.boot(id, options)
@@ -318,6 +370,7 @@ export class SessionSupervisor extends EventEmitter {
       throw new Error('Pi is not running for this conversation.')
     }
     this.touchRuntime(activity)
+    activity.prewarmOnly = false
     if (command === 'abort' || command === 'abort_retry') {
       this.dropQueued(id)
       this.approvals.delete(id)
@@ -325,11 +378,11 @@ export class SessionSupervisor extends EventEmitter {
     if (command === 'abort_bash') this.dropQueued(id, 'bash')
     const removed = command === 'clear_queue' ? this.dropQueued(id, 'prompt') : []
     const writing = WRITE_COMMANDS.has(command)
+    const writeCwd = writing ? this.cwdOf(id) : undefined
     if (writing) {
       this.clearWarm(id)
-      const cwd = this.cwdOf(id)
-      if (cwd && !this.claimCwd(cwd, id)) {
-        return this.enqueue<T>({ key: id, cwd, command, payload, timeoutMs, trace, preflight })
+      if (writeCwd && !this.claimCwd(writeCwd, id, 'shared')) {
+        return this.enqueue<T>({ key: id, cwd: writeCwd, command, payload, timeoutMs, trace, preflight })
       }
       if (command === 'prompt') {
         const sessionFile = runtime.currentStatus.sessionFile
@@ -337,7 +390,7 @@ export class SessionSupervisor extends EventEmitter {
           try {
             await this.acquireSessionFileLock(sessionFile, id)
           } catch (error) {
-            await this.release(id, cwd)
+            await this.release(id, writeCwd)
             throw error
           }
         }
@@ -349,7 +402,7 @@ export class SessionSupervisor extends EventEmitter {
     } catch (error) {
       if (writing) {
         activity.writes -= 1
-        await this.release(this.ownerOf(runtime) ?? id)
+        await this.release(this.ownerOf(runtime) ?? id, writeCwd)
       }
       throw error
     }
@@ -389,15 +442,16 @@ export class SessionSupervisor extends EventEmitter {
       return result
     } catch (error) {
       // A failed write response does not prove Pi rejected or stopped the
-      // operation. Keep the directory reserved until Pi settles or exits.
-      if (writing && runtime.isRunning && activity.settlements === settlements) {
+      // operation, UNLESS the command was rejected locally before writing
+      // to Pi's stdin. Keep the directory reserved only when Pi may be running.
+      if (writing && runtime.isRunning && activity.settlements === settlements && !isPreSendRpcError(error)) {
         activity.running = true
       }
       throw error
     } finally {
       if (writing) {
         activity.writes -= 1
-        await this.release(this.ownerOf(runtime) ?? id)
+        await this.release(this.ownerOf(runtime) ?? id, writeCwd)
       }
     }
   }
@@ -422,7 +476,10 @@ export class SessionSupervisor extends EventEmitter {
 
     if (runtime) {
       const activity = this.activity.get(runtime)
-      if (activity) this.touchRuntime(activity)
+      if (activity) {
+        activity.prewarmOnly = false
+        this.touchRuntime(activity)
+      }
       runtime.respondUi(id, response)
       if (targetKey && (!runtime.hasPendingUi || !runtime.hasPendingUi(id))) {
         this.approvals.delete(targetKey)
@@ -431,11 +488,34 @@ export class SessionSupervisor extends EventEmitter {
   }
 
   async rename(file: string, name: string, handle?: FileHandle): Promise<boolean> {
-    const runtime = this.runtimes.get(this.canonical(file))
+    const resolveTargetId = (): string => {
+      const fileOwner = this.fileOwners.get(canonicalSessionFile(file))
+      return fileOwner ? this.canonical(fileOwner) : this.canonical(file)
+    }
+    let id = resolveTargetId()
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const pendingStart = this.starting.get(id)
+      if (pendingStart) {
+        await pendingStart.catch(() => {})
+        id = resolveTargetId()
+        continue
+      }
+      const existing = this.runtimes.get(id)
+      const pendingStop = existing && this.activity.get(existing)?.stopping
+      if (pendingStop) {
+        await pendingStop.catch(() => {})
+        id = resolveTargetId()
+        continue
+      }
+      break
+    }
+
+    const runtime = this.runtimes.get(id)
+    const activity = runtime && this.activity.get(runtime)
     let renamed = false
-    if (runtime?.isRunning) {
-      const activity = this.activity.get(runtime)
-      if (activity) this.touchRuntime(activity)
+    if (runtime?.isRunning && activity && !activity.stopping) {
+      activity.prewarmOnly = false
+      this.touchRuntime(activity)
       await runtime.request('set_session_name', { name }, 30_000, { sourceAction: 'session-rename' })
       renamed = true
     } else {
@@ -456,11 +536,18 @@ export class SessionSupervisor extends EventEmitter {
   async stop(key?: string): Promise<void> {
     if (!key) {
       this.shuttingDown = true
+      if (this.queueDrainTimer) {
+        clearTimeout(this.queueDrainTimer)
+        this.queueDrainTimer = undefined
+      }
       const pending = [...this.queued.values()].flat()
       this.queued.clear()
       this.queuedJobCount = 0
       this.queuedPayloadBytes = 0
-      for (const job of pending) job.reject(new Error('Pi is shutting down.'))
+      for (const job of pending) {
+        this.emit('queued', { ownerId: this.canonical(job.key), cwd: job.cwd, queued: false } satisfies RuntimeQueueEvent)
+        job.reject(new Error('Pi is shutting down.'))
+      }
       try {
         const stopping = [...this.runtimes.keys()].map(id => this.stop(id))
         const starting = [...this.starting.values()]
@@ -618,9 +705,9 @@ export class SessionSupervisor extends EventEmitter {
         running: false,
         settlements: 0,
         externalContext: false,
+        prewarmOnly: options.prewarm === true,
         lastAccessed: 0
       }
-      this.touchRuntime(activity)
       this.activity.set(runtime, activity)
       this.attach(runtime)
     }
@@ -750,6 +837,41 @@ export class SessionSupervisor extends EventEmitter {
     return runtime.request<T>(command, payload, timeoutMs, trace)
   }
 
+  private queueHolderInfo(
+    cwd: string,
+    mode: CwdClaimMode = 'shared',
+    excludeOwnerId?: string
+  ): Pick<RuntimeQueueEvent, 'holderOwnerId' | 'holderCwd' | 'externalHolder'> {
+    const key = CwdGate.key(cwd)
+    const local = this.gate.holderInfoResolved(key, mode, excludeOwnerId)
+    if (local) {
+      return { holderOwnerId: local.ownerId, holderCwd: local.cwd, externalHolder: false }
+    }
+    const ext = this.interprocessGate?.externalHolderResolved(key, mode)
+    if (ext) {
+      return { holderCwd: ext.cwd, externalHolder: true }
+    }
+    if (excludeOwnerId && (this.releasingOwners.get(excludeOwnerId) ?? 0) > 0) {
+      return { holderCwd: key, externalHolder: false }
+    }
+    return this.interprocessGate ? { externalHolder: true } : {}
+  }
+
+  private emitQueueWaitersUpdated(jobs: QueuedJob[]): void {
+    if (jobs.length === 0) return
+    for (let index = 0; index < jobs.length; index += 1) {
+      const job = jobs[index]!
+      const ownerId = this.canonical(job.key)
+      this.emit('queued', {
+        ownerId,
+        cwd: job.cwd,
+        queued: true,
+        position: index + 1,
+        ...this.queueHolderInfo(job.cwd, 'shared', ownerId)
+      } satisfies RuntimeQueueEvent)
+    }
+  }
+
   private enqueue<T>(job: Omit<QueuedJob, 'resolve' | 'reject' | 'payloadBytes'>): Promise<T> {
     const cwd = CwdGate.key(job.cwd)
     const list = this.queued.get(cwd) ?? []
@@ -772,7 +894,15 @@ export class SessionSupervisor extends EventEmitter {
     this.queued.set(cwd, list)
     this.queuedJobCount += 1
     this.queuedPayloadBytes += payloadBytes
-    this.emit('queued', { ownerId: job.key, cwd: job.cwd })
+    const ownerId = this.canonical(job.key)
+    this.emit('queued', {
+      ownerId,
+      cwd: job.cwd,
+      queued: true,
+      position: list.length,
+      ...this.queueHolderInfo(job.cwd, 'shared', ownerId)
+    } satisfies RuntimeQueueEvent)
+    this.queueDrainDelayMs = CWD_QUEUE_POLL_MIN_MS
     this.scheduleQueueDrain()
     return promise
   }
@@ -782,33 +912,62 @@ export class SessionSupervisor extends EventEmitter {
     const removed: QueuedJob[] = []
     for (const [cwd, jobs] of this.queued) {
       const kept: QueuedJob[] = []
+      let changed = false
       for (const job of jobs) {
-        if (this.canonical(job.key) === id && (!command || job.command === command)) {
+        const jobOwner = this.canonical(job.key)
+        if (jobOwner === id && (!command || job.command === command)) {
           removed.push(job)
+          changed = true
           this.queuedJobCount -= 1
           this.queuedPayloadBytes -= job.payloadBytes
+          this.emit('queued', { ownerId: jobOwner, cwd: job.cwd, queued: false } satisfies RuntimeQueueEvent)
           job.resolve({ disposition: 'handled', cancelled: true })
         } else kept.push(job)
       }
-      if (kept.length) this.queued.set(cwd, kept)
-      else this.queued.delete(cwd)
+      if (kept.length) {
+        this.queued.set(cwd, kept)
+        if (changed) this.emitQueueWaitersUpdated(kept)
+      } else {
+        this.queued.delete(cwd)
+      }
+    }
+    if (this.queued.size === 0 && this.queueDrainTimer) {
+      clearTimeout(this.queueDrainTimer)
+      this.queueDrainTimer = undefined
     }
     return removed
   }
 
-  private claimCwd(cwd: string, key: string): boolean {
+  private hasConflictingRelease(cwdKey: string, mode: CwdClaimMode): boolean {
+    for (const entry of this.releasingCwds) {
+      if (!CwdGate.overlaps(cwdKey, entry.cwd)) continue
+      if (mode === 'exclusive' || entry.mode === 'exclusive') return true
+    }
+    return false
+  }
+
+  private claimCwd(cwd: string, key: string, mode: CwdClaimMode = 'shared'): boolean {
     if (!cwd) return true
     const id = CwdGate.key(cwd)
     const ownerId = this.canonical(key)
-    if (this.releasingOwners.has(ownerId) || this.releasingCwds.has(id) || !this.gate.claim(cwd, ownerId)) return false
+    if (
+      (this.releasingOwners.get(ownerId) ?? 0) > 0 ||
+      this.hasConflictingRelease(id, mode)
+    ) {
+      return false
+    }
+    const previousMode = this.gate.modeFor(id, ownerId)
+    if (!this.gate.claimResolved(id, ownerId, mode)) return false
     if (!this.interprocessGate) return true
     try {
-      const acquired = this.interprocessGate.acquire(cwd, ownerId)
+      const acquired = this.interprocessGate.acquireResolved(id, ownerId, mode)
       if (acquired) return true
-      this.gate.releaseKey(id, ownerId)
+      if (previousMode) this.gate.setKeyMode(id, ownerId, previousMode)
+      else this.gate.releaseKey(id, ownerId)
       return false
     } catch (error) {
-      this.gate.releaseKey(id, ownerId)
+      if (previousMode) this.gate.setKeyMode(id, ownerId, previousMode)
+      else this.gate.releaseKey(id, ownerId)
       throw error
     }
   }
@@ -820,25 +979,32 @@ export class SessionSupervisor extends EventEmitter {
     if (activity && (activity.writes > 0 || activity.running || activity.stopping)) return
     const cwd = CwdGate.key(stoppedCwd ?? this.cwdOf(id) ?? '')
     if (!cwd || !this.gate.holds(id)) return
-    const heldCwds = this.gate.keysFor(id)
-    this.releasingOwners.add(id)
+    const heldEntries = this.gate.entriesFor(id)
+    const releaseTokens = heldEntries.map((entry) => ({ ownerId: id, cwd: entry.cwd, mode: entry.mode }))
+    this.releasingOwners.set(id, (this.releasingOwners.get(id) ?? 0) + 1)
     if (this.interprocessGate) {
-      for (const heldCwd of heldCwds) this.releasingCwds.add(heldCwd)
+      for (const token of releaseTokens) this.releasingCwds.add(token)
       try {
         await this.interprocessGate.releaseOwner(id)
       } finally {
-        this.releasingOwners.delete(id)
-        for (const heldCwd of heldCwds) this.releasingCwds.delete(heldCwd)
+        const count = this.releasingOwners.get(id) ?? 0
+        if (count <= 1) this.releasingOwners.delete(id)
+        else this.releasingOwners.set(id, count - 1)
+        for (const token of releaseTokens) this.releasingCwds.delete(token)
       }
     } else {
-      this.releasingOwners.delete(id)
+      const count = this.releasingOwners.get(id) ?? 0
+      if (count <= 1) this.releasingOwners.delete(id)
+      else this.releasingOwners.set(id, count - 1)
     }
+    if ((this.releasingOwners.get(id) ?? 0) > 0) return
     // A continuation or another writer may have become active while the
     // cross-process registry lock was being acquired. Keep the local gate
     // until that writer settles as well.
     if (activity && (activity.writes > 0 || activity.running || activity.stopping)) return
     this.gate.releaseOwner(id)
     if (this.shuttingDown) return
+    this.queueDrainDelayMs = CWD_QUEUE_POLL_MIN_MS
     this.drainQueued()
     if (runtime?.isRunning) this.scheduleWarm(id)
   }
@@ -851,28 +1017,52 @@ export class SessionSupervisor extends EventEmitter {
     })
   }
 
-  /** Start queued writes as soon as no overlapping working directory owns the gate. */
+  /** Start queued writes as soon as no exclusive working-directory lock blocks them. */
   private drainQueued(): void {
-    for (const [cwd, jobs] of this.queued) {
-      const next = jobs[0]
-      if (!next || !this.gate.claim(next.cwd, this.canonical(next.key))) continue
-      jobs.shift()
-      this.queuedJobCount -= 1
-      this.queuedPayloadBytes -= next.payloadBytes
+    if (this.shuttingDown || this.cliUpgradeInProgress) return
+    let dispatchedAny = false
+    for (const [cwd, jobs] of [...this.queued]) {
+      while (jobs.length > 0) {
+        const next = jobs[0]!
+        const owner = this.canonical(next.key)
+        const runtime = this.runtimes.get(owner)
+        const activity = runtime && this.activity.get(runtime)
+        if (!runtime?.isRunning || !activity || activity.stopping) {
+          jobs.shift()
+          this.queuedJobCount -= 1
+          this.queuedPayloadBytes -= next.payloadBytes
+          this.emit('queued', { ownerId: owner, cwd: next.cwd, queued: false } satisfies RuntimeQueueEvent)
+          next.reject(new Error('Pi is not running for this conversation.'))
+          continue
+        }
+        // Claim BOTH the local gate and the interprocess gate BEFORE dequeuing
+        // so cross-process contention preserves strict FIFO order without churn.
+        if (!this.claimCwd(next.cwd, owner, 'shared')) break
+        jobs.shift()
+        this.queuedJobCount -= 1
+        this.queuedPayloadBytes -= next.payloadBytes
+        dispatchedAny = true
+        this.emit('queued', { ownerId: owner, cwd: next.cwd, queued: false } satisfies RuntimeQueueEvent)
+        void this.request(next.key, next.command, next.payload, next.timeoutMs, next.trace, next.preflight)
+          .then(next.resolve, (error) => {
+            const currentRuntime = this.runtimes.get(owner)
+            const currentActivity = currentRuntime && this.activity.get(currentRuntime)
+            if (
+              !currentRuntime?.isRunning ||
+              !currentActivity ||
+              currentActivity.stopping ||
+              this.shuttingDown ||
+              this.cliUpgradeInProgress
+            ) {
+              void this.release(owner, next.cwd).catch(() => {})
+            }
+            next.reject(error)
+          })
+      }
       if (jobs.length === 0) this.queued.delete(cwd)
-      const owner = this.canonical(next.key)
-      void this.request(next.key, next.command, next.payload, next.timeoutMs, next.trace, next.preflight)
-        .then(next.resolve, (error) => {
-          // `request` rejects before it claims anything when the runtime is
-          // already gone; the reservation made above would then outlive the
-          // job and lock the whole project. While the runtime is still alive
-          // `request` owns the claim and its own release/drain path, and
-          // touching the gate here could free a lease the next job just took.
-          const runtime = this.runtimes.get(owner)
-          if (!runtime?.isRunning) void this.release(owner, next.cwd).catch(() => {})
-          next.reject(error)
-        })
+      else this.emitQueueWaitersUpdated(jobs)
     }
+    if (dispatchedAny) this.queueDrainDelayMs = CWD_QUEUE_POLL_MIN_MS
     this.scheduleQueueDrain()
   }
 
@@ -883,10 +1073,12 @@ export class SessionSupervisor extends EventEmitter {
       return
     }
     if (this.queueDrainTimer) return
+    const delay = this.queueDrainDelayMs
+    this.queueDrainDelayMs = Math.min(CWD_QUEUE_POLL_MAX_MS, delay * 2)
     this.queueDrainTimer = setTimeout(() => {
       this.queueDrainTimer = undefined
       this.drainQueued()
-    }, CWD_QUEUE_POLL_MS)
+    }, delay)
     this.queueDrainTimer.unref?.()
   }
 
@@ -1138,7 +1330,7 @@ export class SessionSupervisor extends EventEmitter {
 
   private pruneIdleRuntimes(excludeId?: string): void {
     if (this.shuttingDown || this.cliUpgradeInProgress) return
-    const idle: { id: string; lastAccessed: number }[] = []
+    const idle: { id: string; lastAccessed: number; prewarmOnly: boolean }[] = []
     const seenRuntimes = new Set<ManagedSessionRuntime>()
 
     for (const [id, runtime] of this.runtimes) {
@@ -1148,14 +1340,19 @@ export class SessionSupervisor extends EventEmitter {
         const activity = this.activity.get(runtime)
         idle.push({
           id,
-          lastAccessed: activity?.lastAccessed ?? 0
+          lastAccessed: activity?.lastAccessed ?? 0,
+          prewarmOnly: Boolean(activity?.prewarmOnly)
         })
       }
     }
 
     if (idle.length <= MAX_IDLE_RUNTIMES) return
 
-    idle.sort((a, b) => a.lastAccessed - b.lastAccessed)
+    // Evict speculative prewarmed idle runtimes before user-activated sessions.
+    idle.sort((a, b) => {
+      if (a.prewarmOnly !== b.prewarmOnly) return a.prewarmOnly ? -1 : 1
+      return a.lastAccessed - b.lastAccessed
+    })
 
     const excess = idle.length - MAX_IDLE_RUNTIMES
     let evicted = 0

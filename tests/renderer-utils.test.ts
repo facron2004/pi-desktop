@@ -14,14 +14,39 @@ import {
 } from '../src/renderer/src/store/useAppStore'
 import type { SessionThread } from '../src/renderer/src/store/useAppStore'
 import type { ToolItem } from '../src/renderer/src/lib/thread'
+import {
+  readHistoryFirstVisibleTurn,
+  readToolOpen,
+  writeHistoryFirstVisibleTurn,
+  writeToolOpen
+} from '../src/renderer/src/lib/view-state'
 import { fileTone, languageOf } from '../src/renderer/src/lib/files'
 
 test('file tone and syntax lookup treat prototype property names as ordinary filenames', () => {
   assert.equal(fileTone('constructor'), 'plain')
   assert.equal(fileTone('file.constructor'), 'plain')
   assert.equal(fileTone('file.__proto__'), 'plain')
+  assert.equal(languageOf('constructor'), '')
+  assert.equal(languageOf('toString'), '')
   assert.equal(languageOf('file.constructor'), '')
   assert.equal(languageOf('file.__proto__'), '')
+})
+
+test('file tone and language detection cover PowerShell modules, scripts, and dotfiles', () => {
+  assert.equal(fileTone('deploy.ps1'), 'shell')
+  assert.equal(fileTone('module.psm1'), 'shell')
+  assert.equal(fileTone('.env'), 'shell')
+  assert.equal(languageOf('deploy.ps1'), 'powershell')
+  assert.equal(languageOf('C:\\Scripts\\Build.PSM1'), 'powershell')
+  assert.equal(languageOf('manifest.psd1'), 'powershell')
+  assert.equal(languageOf('format.ps1xml'), 'powershell')
+  assert.equal(languageOf('run.bat'), 'bat')
+  assert.equal(languageOf('start.CMD'), 'bat')
+  assert.equal(languageOf('config.fish'), 'fish')
+  assert.equal(languageOf('env.nu'), 'nushell')
+  assert.equal(languageOf('Dockerfile.prod'), 'dockerfile')
+  assert.equal(languageOf('.env.local'), 'dotenv')
+  assert.equal(languageOf('src/Makefile'), 'makefile')
 })
 
 function mockTool(toolName: string, status: ToolItem['status'], path?: string, edits?: { oldText?: string; newText?: string }[]): ToolItem {
@@ -43,9 +68,11 @@ function mockThread(overrides: Partial<SessionThread> = {}): SessionThread {
     isStreaming: false,
     run: { phase: 'idle', turns: 0, settled: true },
     items: [{ id: 'item-1', kind: 'user', text: 'hi', images: [], timestamp: 1, order: 1 }],
+    uiRequests: [],
     queue: { steering: [], followUp: [] },
     forkTargets: [],
     forking: false,
+    clientKey: 'client-mock',
     version: 1,
     ...overrides
   }
@@ -155,6 +182,30 @@ test('enforceSessionLru protects streaming, queued, running, and draft sessions 
   // Stale session is evicted
   assert.equal(result['C:/sessions/stale.jsonl'].version, 0)
   assert.equal(result['C:/sessions/stale.jsonl'].items.length, 0)
+})
+
+test('enforceSessionLru preserves historyFirstVisibleTurn while clearing cached expansions and protects queued uiRequests', () => {
+  const evictedKey = 'C:/sessions/evicted-with-window.jsonl'
+  const queuedUiKey = 'C:/sessions/queued-ui.jsonl'
+  writeToolOpen(evictedKey, 'tool-1', true)
+  writeHistoryFirstVisibleTurn(evictedKey, 4)
+
+  const threads: Record<string, SessionThread> = {
+    [evictedKey]: mockThread(),
+    [queuedUiKey]: mockThread({
+      uiRequests: [{ id: 'req-2', method: 'input', title: 'Ask', placeholder: 'Answer' } as any]
+    })
+  }
+
+  const result = enforceSessionLru(threads, undefined, 0)
+
+  assert.equal(result[evictedKey].items.length, 0)
+  assert.equal(result[evictedKey].version, 0)
+  assert.equal(readToolOpen(evictedKey, 'tool-1'), undefined)
+  assert.equal(readHistoryFirstVisibleTurn(evictedKey), 4)
+
+  assert.equal(result[queuedUiKey].version, 1)
+  assert.equal(result[queuedUiKey].items.length, 1)
 })
 
 test('turn memoization logic ignores run changes for historical turns', () => {

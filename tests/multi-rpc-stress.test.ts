@@ -240,7 +240,59 @@ test('Multi-RPC Stress: Parallel multi-session streaming across independent work
   await supervisor.stop()
 })
 
-test('Multi-RPC Stress: CWD directory queue FIFO serialization enforces strict ordering across identical and nested workspaces', async () => {
+test('Multi-RPC Stress: Same-cwd and nested-cwd sessions execute and stream in parallel with isolated event routing', async () => {
+  const specs = [
+    { key: 'root-1', cwd: 'C:/repos/monorepo' },
+    { key: 'root-2', cwd: 'C:/repos/monorepo' },
+    { key: 'nested-core', cwd: 'C:/repos/monorepo/packages/core' },
+    { key: 'nested-web', cwd: 'C:/repos/monorepo/packages/web' },
+    { key: 'root-3', cwd: 'C:/repos/monorepo' },
+    { key: 'sibling-unrelated', cwd: 'C:/repos/independent-repo' }
+  ]
+  const runtimes = specs.map((spec) => new StressRuntime(spec.key))
+  const supervisor = supervisorOf(runtimes)
+
+  const queueEvents: { ownerId: string; queued: boolean }[] = []
+  const receivedEvents: { ownerId: string; type: string }[] = []
+  supervisor.on('queued', (event) => queueEvents.push({ ownerId: event.ownerId, queued: event.queued }))
+  supervisor.on('event', ({ ownerId, event }) => {
+    receivedEvents.push({ ownerId, type: event.type })
+  })
+
+  let peakConcurrency = 0
+  let currentConcurrency = 0
+  const streamPromises: Promise<unknown>[] = []
+  for (let i = 0; i < specs.length; i++) {
+    const spec = specs[i]
+    await supervisor.ensure({ sessionKey: spec.key, cwd: spec.cwd })
+    // Dispatch each prompt before ensuring the next runtime so active sessions stay protected from idle LRU pruning.
+    const p = supervisor.request(spec.key, 'prompt', { message: `Parallel ${spec.key}` }).then(async (res) => {
+      currentConcurrency++
+      peakConcurrency = Math.max(peakConcurrency, currentConcurrency)
+      await runtimes[i].simulateStream(6, 15)
+      currentConcurrency--
+      return res
+    })
+    streamPromises.push(p)
+  }
+  const dispositions = await Promise.all(streamPromises)
+
+  for (const res of dispositions) {
+    assert.deepEqual(res, { disposition: 'started' })
+  }
+  assert.equal(queueEvents.length, 0, 'Same-cwd and nested shared conversations must never queue behind each other')
+  assert.equal(peakConcurrency, specs.length, 'All 5 same/nested repo sessions and sibling must stream concurrently')
+  for (const spec of specs) {
+    const sessionEvents = receivedEvents.filter((e) => e.ownerId === spec.key)
+    assert.ok(sessionEvents.length >= 8, `Session ${spec.key} must receive all stream events`)
+    assert.equal(sessionEvents[0].type, 'agent_start')
+    assert.equal(sessionEvents[sessionEvents.length - 1].type, 'agent_settled')
+  }
+
+  await supervisor.stop()
+})
+
+test('Multi-RPC Stress: Exclusive withCwdLock serializes identical and nested directories and drains queued writers concurrently in FIFO-per-cwd order', async () => {
   const rRoot1 = new StressRuntime('root-1')
   const rRoot2 = new StressRuntime('root-2')
   const rNestedCore = new StressRuntime('nested-core')
@@ -250,116 +302,128 @@ test('Multi-RPC Stress: CWD directory queue FIFO serialization enforces strict o
 
   const supervisor = supervisorOf([rRoot1, rRoot2, rNestedCore, rNestedWeb, rRoot3, rSibling])
 
+  let releaseLock!: () => void
+  const lockPromise = supervisor.withCwdLock('C:/repos/monorepo', () => new Promise<void>((resolve) => {
+    releaseLock = resolve
+  }))
+
   const executionOrder: string[] = []
+  const queueStarted = new Set<string>()
+  supervisor.on('queued', (event) => {
+    if (event.queued) queueStarted.add(event.ownerId)
+  })
 
-  // Ensure root-1 and immediately claim CWD gate on C:/repos/monorepo
-  await supervisor.ensure({ sessionKey: 'root-1', cwd: 'C:/repos/monorepo' })
-  const pRoot1 = supervisor.request('root-1', 'prompt', { message: 'first' })
-  await pRoot1
-  assert.equal(supervisor.sessionInfo('root-1')?.running, true)
+  let pRoot1: Promise<void> = Promise.resolve()
+  let pRoot2: Promise<void> = Promise.resolve()
+  let pNestedCore: Promise<void> = Promise.resolve()
+  let pNestedWeb: Promise<void> = Promise.resolve()
+  let pRoot3: Promise<void> = Promise.resolve()
+  let pSibling: Promise<void> = Promise.resolve()
 
-  // Ensure root-2 and queue it
-  await supervisor.ensure({ sessionKey: 'root-2', cwd: 'C:/repos/monorepo' })
-  const pRoot2 = supervisor.request('root-2', 'prompt', { message: 'second' }).then(async () => {
-    executionOrder.push('root-2')
-    rRoot2.emit('event', { type: 'agent_start' } as PiEvent)
-    await new Promise((r) => setTimeout(r, 20))
+  try {
+    // Ensure and enqueue each session sequentially so queued waiters remain protected from idle LRU pruning.
+    await supervisor.ensure({ sessionKey: 'root-1', cwd: 'C:/repos/monorepo' })
+    pRoot1 = supervisor.request('root-1', 'prompt', { message: 'first' }).then(() => {
+      executionOrder.push('root-1')
+    })
+    await supervisor.ensure({ sessionKey: 'root-2', cwd: 'C:/repos/monorepo' })
+    pRoot2 = supervisor.request('root-2', 'prompt', { message: 'second' }).then(() => {
+      executionOrder.push('root-2')
+    })
+    await supervisor.ensure({ sessionKey: 'nested-core', cwd: 'C:/repos/monorepo/packages/core' })
+    pNestedCore = supervisor.request('nested-core', 'prompt', { message: 'third' }).then(() => {
+      executionOrder.push('nested-core')
+    })
+    await supervisor.ensure({ sessionKey: 'nested-web', cwd: 'C:/repos/monorepo/packages/web' })
+    pNestedWeb = supervisor.request('nested-web', 'prompt', { message: 'fourth' }).then(() => {
+      executionOrder.push('nested-web')
+    })
+    await supervisor.ensure({ sessionKey: 'root-3', cwd: 'C:/repos/monorepo' })
+    pRoot3 = supervisor.request('root-3', 'prompt', { message: 'fifth' }).then(() => {
+      executionOrder.push('root-3')
+    })
+
+    // Sibling on independent repository runs in parallel immediately!
+    await supervisor.ensure({ sessionKey: 'sibling-unrelated', cwd: 'C:/repos/independent-repo' })
+    let siblingExecuted = false
+    pSibling = supervisor.request('sibling-unrelated', 'prompt', { message: 'independent' }).then(async () => {
+      siblingExecuted = true
+      rSibling.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+    })
+
+    await pSibling
+    assert.equal(siblingExecuted, true, 'Sibling in unrelated workspace must execute without waiting for C:/repos/monorepo lock')
+    assert.equal(executionOrder.length, 0, 'Queued jobs for monorepo must still be waiting on exclusive withCwdLock')
+    assert.deepEqual(
+      [...queueStarted].sort(),
+      ['nested-core', 'nested-web', 'root-1', 'root-2', 'root-3']
+    )
+
+    // Release the exclusive lock: all 5 queued shared jobs must dispatch concurrently in one drain pass
+    releaseLock()
+    await lockPromise
+    await Promise.all([pRoot1, pRoot2, pNestedCore, pNestedWeb, pRoot3])
+
+    assert.deepEqual(
+      executionOrder,
+      ['root-1', 'root-2', 'root-3', 'nested-core', 'nested-web'],
+      'All queued shared writers must dispatch concurrently in FIFO-per-cwd order once the exclusive lock releases'
+    )
+    for (const key of ['root-1', 'root-2', 'root-3', 'nested-core', 'nested-web']) {
+      assert.equal(supervisor.sessionInfo(key)?.running, true, `${key} should be active concurrently before settling`)
+    }
+
+    rRoot1.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
     rRoot2.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
-  })
-
-  // Ensure nested-core and queue it
-  await supervisor.ensure({ sessionKey: 'nested-core', cwd: 'C:/repos/monorepo/packages/core' })
-  const pNestedCore = supervisor.request('nested-core', 'prompt', { message: 'third' }).then(async () => {
-    executionOrder.push('nested-core')
-    rNestedCore.emit('event', { type: 'agent_start' } as PiEvent)
-    await new Promise((r) => setTimeout(r, 20))
-    rNestedCore.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
-  })
-
-  // Ensure nested-web and queue it
-  await supervisor.ensure({ sessionKey: 'nested-web', cwd: 'C:/repos/monorepo/packages/web' })
-  const pNestedWeb = supervisor.request('nested-web', 'prompt', { message: 'fourth' }).then(async () => {
-    executionOrder.push('nested-web')
-    rNestedWeb.emit('event', { type: 'agent_start' } as PiEvent)
-    await new Promise((r) => setTimeout(r, 20))
-    rNestedWeb.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
-  })
-
-  // Ensure root-3 and queue it
-  await supervisor.ensure({ sessionKey: 'root-3', cwd: 'C:/repos/monorepo' })
-  const pRoot3 = supervisor.request('root-3', 'prompt', { message: 'fifth' }).then(async () => {
-    executionOrder.push('root-3')
-    rRoot3.emit('event', { type: 'agent_start' } as PiEvent)
-    await new Promise((r) => setTimeout(r, 20))
     rRoot3.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
-  })
-
-  // Sibling on independent repository runs in parallel immediately!
-  await supervisor.ensure({ sessionKey: 'sibling-unrelated', cwd: 'C:/repos/independent-repo' })
-  let siblingExecuted = false
-  const pSibling = supervisor.request('sibling-unrelated', 'prompt', { message: 'independent' }).then(async () => {
-    siblingExecuted = true
-    rSibling.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
-  })
-
-  await pSibling
-  assert.equal(siblingExecuted, true, 'Sibling in unrelated workspace must execute without waiting for C:/repos/monorepo')
-  assert.equal(executionOrder.length, 0, 'Queued jobs for monorepo must still be waiting')
-
-  // 4. Now settle Root-1 to trigger queue drain
-  executionOrder.push('root-1')
-  rRoot1.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
-
-  // Wait for all queued jobs to drain and finish
-  await Promise.all([pRoot2, pNestedCore, pNestedWeb, pRoot3])
-
-  // Verify strict FIFO serialization: root queue [root-1, root-2, root-3] followed by nested queues [nested-core, nested-web]
-  assert.deepEqual(
-    executionOrder,
-    ['root-1', 'root-2', 'root-3', 'nested-core', 'nested-web'],
-    'Directory queue must serialize overlapping parent and nested directories in strict FIFO order'
-  )
-
-  await supervisor.stop()
+    rNestedCore.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+    rNestedWeb.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+  } finally {
+    releaseLock()
+    await supervisor.stop()
+    await Promise.allSettled([lockPromise, pRoot1, pRoot2, pNestedCore, pNestedWeb, pRoot3, pSibling])
+  }
 })
 
 test('Multi-RPC Stress: CWD queue saturation backpressure rejects requests at capacity and recovers gracefully', async () => {
-  const activeRuntime = new StressRuntime('active-writer')
   const queuedRuntimes = Array.from({ length: 65 }, (_, i) => new StressRuntime(`queued-${i}`))
-  const supervisor = supervisorOf([activeRuntime, ...queuedRuntimes])
+  const supervisor = supervisorOf(queuedRuntimes)
 
-  await supervisor.ensure({ sessionKey: 'active-writer', cwd: 'C:/queue-burst-repo' })
-
-  // Active writer claims directory gate
-  await supervisor.request('active-writer', 'prompt', { message: 'Holding gate' })
+  let releaseLock!: () => void
+  const lockPromise = supervisor.withCwdLock('C:/queue-burst-repo', () => new Promise<void>((resolve) => {
+    releaseLock = resolve
+  }))
 
   // Fill directory queue up to MAX_QUEUED_JOBS_PER_CWD (64)
   const pendingJobs: Promise<unknown>[] = []
-  for (let i = 0; i < 64; i++) {
-    const key = `queued-${i}`
-    await supervisor.ensure({ sessionKey: key, cwd: 'C:/queue-burst-repo' })
-    const p = supervisor.request(key, 'prompt', { message: `Queued prompt ${i}` })
-    p.catch(() => {})
-    pendingJobs.push(p)
+  try {
+    for (let i = 0; i < 64; i++) {
+      const key = `queued-${i}`
+      await supervisor.ensure({ sessionKey: key, cwd: 'C:/queue-burst-repo' })
+      const p = supervisor.request(key, 'prompt', { message: `Queued prompt ${i}` })
+      p.catch(() => {})
+      pendingJobs.push(p)
+    }
+
+    // The 65th queued job must be rejected with backpressure error
+    const overflowKey = 'queued-64'
+    await supervisor.ensure({ sessionKey: overflowKey, cwd: 'C:/queue-burst-repo' })
+    await assert.rejects(
+      supervisor.request(overflowKey, 'prompt', { message: 'Overflow prompt' }),
+      /The working-folder queue is full/
+    )
+
+    // Verify clear_queue cancels queued prompts cleanly for a session
+    const cleared = await supervisor.request<{ steering: string[] }>('queued-10', 'clear_queue')
+    assert.ok(cleared, 'clear_queue should succeed')
+    const cancelledResult = await pendingJobs[10]
+    assert.deepEqual(cancelledResult, { disposition: 'handled', cancelled: true })
+  } finally {
+    // Stopping supervisor discharges queued jobs before the exclusive lock resolves
+    await supervisor.stop()
+    releaseLock()
+    await Promise.allSettled([lockPromise, ...pendingJobs])
   }
-
-  // The 65th queued job must be rejected with backpressure error
-  const overflowKey = 'queued-64'
-  await supervisor.ensure({ sessionKey: overflowKey, cwd: 'C:/queue-burst-repo' })
-  await assert.rejects(
-    supervisor.request(overflowKey, 'prompt', { message: 'Overflow prompt' }),
-    /The working-folder queue is full/
-  )
-
-  // Verify clear_queue cancels queued prompts cleanly for a session
-  const cleared = await supervisor.request<{ steering: string[] }>('queued-10', 'clear_queue')
-  assert.ok(cleared, 'clear_queue should succeed')
-  const cancelledResult = await pendingJobs[10]
-  assert.deepEqual(cancelledResult, { disposition: 'handled', cancelled: true })
-
-  // Stopping supervisor cleanly discharges remaining queued jobs
-  await supervisor.stop()
-  await Promise.allSettled(pendingJobs)
 })
 
 test('Multi-RPC Stress: Rapid Abort Storm during concurrent streaming settles cleanly without orphaned processes or leaked gates', async () => {
@@ -418,12 +482,12 @@ test('Multi-RPC Stress: Rapid Abort Storm during concurrent streaming settles cl
   await supervisor.stop()
 })
 
-test('Multi-RPC Stress: Unexpected child process termination mid-stream synthesizes agent_settled crash event and unblocks directory queue', async () => {
+test('Multi-RPC Stress: Unexpected child process termination mid-stream synthesizes agent_settled crash event without disrupting same-cwd peers', async () => {
   const rCrashA = new StressRuntime('crash-a')
-  const rWaitB = new StressRuntime('wait-b')
+  const rPeerB = new StressRuntime('peer-b')
   const rSiblingC = new StressRuntime('sibling-c')
 
-  const supervisor = supervisorOf([rCrashA, rWaitB, rSiblingC])
+  const supervisor = supervisorOf([rCrashA, rPeerB, rSiblingC])
 
   const settledEvents: { ownerId: string; crashed?: boolean; aborted?: boolean }[] = []
   supervisor.on('event', ({ ownerId, event }) => {
@@ -438,50 +502,59 @@ test('Multi-RPC Stress: Unexpected child process termination mid-stream synthesi
 
   // Ensure sessions
   await supervisor.ensure({ sessionKey: 'crash-a', cwd: 'C:/shared-crash-repo' })
-  await supervisor.ensure({ sessionKey: 'wait-b', cwd: 'C:/shared-crash-repo' })
+  await supervisor.ensure({ sessionKey: 'peer-b', cwd: 'C:/shared-crash-repo' })
   await supervisor.ensure({ sessionKey: 'sibling-c', cwd: 'C:/independent-repo' })
 
-  // 1. Crash-A starts writing and streaming
+  // 1. Crash-A and Peer-B both start writing and streaming concurrently in the same folder
   await supervisor.request('crash-a', 'prompt', { message: 'will crash' })
+  await supervisor.request('peer-b', 'prompt', { message: 'co-holder peer' })
   void rCrashA.simulateStream(30, 10)
-
-  // 2. Wait-B queues behind Crash-A for the same folder
-  let waitBDispatched = false
-  const pWaitB = supervisor.request('wait-b', 'prompt', { message: 'should run after crash' }).then(async () => {
-    waitBDispatched = true
-    rWaitB.emit('event', { type: 'agent_start' } as PiEvent)
-    await new Promise((r) => setTimeout(r, 20))
-    rWaitB.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+  let peerCompleted = false
+  const pPeerB = rPeerB.simulateStream(8, 12).then(() => {
+    peerCompleted = true
   })
 
-  // 3. Sibling-C starts and streams independently
+  // 2. Sibling-C starts and streams independently
   let siblingCompleted = false
   const pSiblingC = supervisor.request('sibling-c', 'prompt', { message: 'independent run' }).then(async () => {
     await rSiblingC.simulateStream(5, 10)
     siblingCompleted = true
   })
 
-  // Give streams a moment to become active
+  // Give streams a moment to become active and verify exclusive lock is blocked by shared co-holders
   await new Promise((r) => setTimeout(r, 25))
-  assert.equal(waitBDispatched, false, 'Wait-B must be waiting at directory gate')
+  assert.equal(supervisor.sessionInfo('peer-b')?.running, true, 'Peer-B must execute concurrently with Crash-A')
+  await assert.rejects(
+    supervisor.withCwdLock('C:/shared-crash-repo', async () => {}),
+    /Wait for it to finish/
+  )
 
-  // 4. Simulate unexpected process crash on Crash-A
+  // 3. Simulate unexpected process crash on Crash-A
   rCrashA.simulateCrash('Child terminated unexpectedly with exit code 1')
 
-  // 5. Verify synthesized crash settlement
+  // 4. Verify synthesized crash settlement while Peer-B continues unaffected
   await new Promise((r) => setTimeout(r, 30))
   const crashSettled = settledEvents.find((e) => e.ownerId === 'crash-a')
   assert.ok(crashSettled, 'Supervisor must synthesize agent_settled for crashed process')
   assert.equal(crashSettled.crashed, true, 'Synthesized settlement must carry crashed: true')
   assert.equal(crashSettled.aborted, false)
+  assert.equal(supervisor.sessionInfo('peer-b')?.running, true, 'Peer-B must stay running after Crash-A crashes')
+  await assert.rejects(
+    supervisor.withCwdLock('C:/shared-crash-repo', async () => {}),
+    /Wait for it to finish/,
+    'Exclusive lock must remain blocked while Peer-B still holds its shared lease'
+  )
 
-  // 6. Verify Wait-B is automatically unblocked and runs
-  await pWaitB
-  assert.equal(waitBDispatched, true, 'Wait-B must be dispatched after Crash-A crash released directory gate')
-
-  // 7. Verify Sibling-C completed normally without being disrupted by Crash-A
-  await pSiblingC
+  // 5. Verify Peer-B and Sibling-C complete normally and all shared leases release cleanly
+  await Promise.all([pPeerB, pSiblingC])
+  assert.equal(peerCompleted, true, 'Peer-B must complete unaffected')
   assert.equal(siblingCompleted, true, 'Sibling-C must complete unaffected')
+  await new Promise((r) => setTimeout(r, 10))
+  assert.equal(
+    await supervisor.withCwdLock('C:/shared-crash-repo', async () => 'acquired'),
+    'acquired',
+    'Exclusive lock must succeed once all shared holders settle or crash'
+  )
 
   await supervisor.stop()
 })
@@ -564,62 +637,77 @@ test('Multi-RPC Stress: LRU capacity eviction under complex active, gate-holding
   rDialog.simulateExtensionUi('approval-1', 'confirm')
   assert.equal(supervisor.sessionInfo('dialog-holder')?.waitingForInput, true)
 
-  // 3. Setup rGate & rQueued: rGate holds gate on C:/lru-shared, rQueued waits
+  // 3. Setup rGate (shared on C:/lru-shared) & rQueued (queued behind exclusive withCwdLock on C:/lru-locked)
   await supervisor.ensure({ sessionKey: 'gate-holder', cwd: 'C:/lru-shared' })
-  await supervisor.ensure({ sessionKey: 'queued-waiter', cwd: 'C:/lru-shared' })
+  await supervisor.ensure({ sessionKey: 'queued-waiter', cwd: 'C:/lru-locked' })
+  let releaseLruLock!: () => void
+  const lruLock = supervisor.withCwdLock('C:/lru-locked', () => new Promise<void>((resolve) => {
+    releaseLruLock = resolve
+  }))
   const pGate = supervisor.request('gate-holder', 'prompt', { message: 'holds gate' })
   const pQueued = supervisor.request('queued-waiter', 'prompt', { message: 'waits in queue' })
-
-  // 4. Boot 4 idle runtimes sequentially: idle-1, idle-2, idle-3, idle-4
-  await supervisor.ensure({ sessionKey: 'idle-1', cwd: 'C:/lru-idle-1' })
-  await supervisor.ensure({ sessionKey: 'idle-2', cwd: 'C:/lru-idle-2' })
-  await supervisor.ensure({ sessionKey: 'idle-3', cwd: 'C:/lru-idle-3' })
-  await supervisor.ensure({ sessionKey: 'idle-4', cwd: 'C:/lru-idle-4' })
-
-  // Verify none of the 8 runtimes have been stopped yet
-  assert.equal(rActive.stops, 0)
-  assert.equal(rDialog.stops, 0)
-  assert.equal(rGate.stops, 0)
-  assert.equal(rQueued.stops, 0)
-  assert.equal(rIdle1.stops, 0)
-  assert.equal(rIdle2.stops, 0)
-  assert.equal(rIdle3.stops, 0)
-  assert.equal(rIdle4.stops, 0)
-
-  // 5. Ensure 5th idle runtime: idle-5. This exceeds MAX_IDLE_RUNTIMES (4).
-  // Protected runtimes (active, dialog, gate, queued) must NEVER be evicted!
-  // Oldest idle runtime is idle-1 -> idle-1 must be evicted!
-  await supervisor.ensure({ sessionKey: 'idle-5', cwd: 'C:/lru-idle-5' })
-
-  assert.equal(rActive.stops, 0, 'Active running runtime must NOT be evicted')
-  assert.equal(rDialog.stops, 0, 'Dialog-holding runtime must NOT be evicted')
-  assert.equal(rGate.stops, 0, 'Gate-holding runtime must NOT be evicted')
-  assert.equal(rQueued.stops, 0, 'Queued runtime must NOT be evicted')
-  assert.equal(rIdle1.stops, 1, 'Oldest idle runtime idle-1 should be evicted')
-  assert.equal(rIdle2.stops, 0)
-  assert.equal(rIdle3.stops, 0)
-  assert.equal(rIdle4.stops, 0)
-  assert.equal(rIdle5.stops, 0)
-
-  // 6. Touch idle-2 via supervisor.ensure to refresh its LRU timestamp
-  await supervisor.ensure({ sessionKey: 'idle-2', cwd: 'C:/lru-idle-2' })
-
-  // 7. Ensure 6th idle runtime: idle-6
-  // Since idle-2 was touched, idle-3 is now the least recently used idle runtime!
-  await supervisor.ensure({ sessionKey: 'idle-6', cwd: 'C:/lru-idle-6' })
-
-  assert.equal(rIdle2.stops, 0, 'Touched idle runtime idle-2 must NOT be evicted')
-  assert.equal(rIdle3.stops, 1, 'Unrefreshed idle runtime idle-3 should be evicted')
-
-  // Clean up active states
-  rActive.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
-  supervisor.respondUi('dialog-holder', 'approval-1', { confirmed: true })
-  rGate.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
-  rQueued.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
   await pGate
-  await pQueued
+  assert.equal(
+    rQueued.commands.some((c) => c.command === 'prompt'),
+    false,
+    'queued-waiter must stay queued while C:/lru-locked is exclusively locked'
+  )
 
-  await supervisor.stop()
+  try {
+    // 4. Boot 4 idle runtimes sequentially: idle-1, idle-2, idle-3, idle-4
+    await supervisor.ensure({ sessionKey: 'idle-1', cwd: 'C:/lru-idle-1' })
+    await supervisor.ensure({ sessionKey: 'idle-2', cwd: 'C:/lru-idle-2' })
+    await supervisor.ensure({ sessionKey: 'idle-3', cwd: 'C:/lru-idle-3' })
+    await supervisor.ensure({ sessionKey: 'idle-4', cwd: 'C:/lru-idle-4' })
+
+    // Verify none of the 8 runtimes have been stopped yet
+    assert.equal(rActive.stops, 0)
+    assert.equal(rDialog.stops, 0)
+    assert.equal(rGate.stops, 0)
+    assert.equal(rQueued.stops, 0)
+    assert.equal(rIdle1.stops, 0)
+    assert.equal(rIdle2.stops, 0)
+    assert.equal(rIdle3.stops, 0)
+    assert.equal(rIdle4.stops, 0)
+
+    // 5. Ensure 5th idle runtime: idle-5. This exceeds MAX_IDLE_RUNTIMES (4).
+    // Protected runtimes (active, dialog, gate, queued) must NEVER be evicted!
+    // Oldest idle runtime is idle-1 -> idle-1 must be evicted!
+    await supervisor.ensure({ sessionKey: 'idle-5', cwd: 'C:/lru-idle-5' })
+
+    assert.equal(rActive.stops, 0, 'Active running runtime must NOT be evicted')
+    assert.equal(rDialog.stops, 0, 'Dialog-holding runtime must NOT be evicted')
+    assert.equal(rGate.stops, 0, 'Gate-holding runtime must NOT be evicted')
+    assert.equal(rQueued.stops, 0, 'Queued runtime must NOT be evicted')
+    assert.equal(rIdle1.stops, 1, 'Oldest idle runtime idle-1 should be evicted')
+    assert.equal(rIdle2.stops, 0)
+    assert.equal(rIdle3.stops, 0)
+    assert.equal(rIdle4.stops, 0)
+    assert.equal(rIdle5.stops, 0)
+
+    // 6. Touch idle-2 via supervisor.ensure to refresh its LRU timestamp
+    await supervisor.ensure({ sessionKey: 'idle-2', cwd: 'C:/lru-idle-2' })
+
+    // 7. Ensure 6th idle runtime: idle-6
+    // Since idle-2 was touched, idle-3 is now the least recently used idle runtime!
+    await supervisor.ensure({ sessionKey: 'idle-6', cwd: 'C:/lru-idle-6' })
+
+    assert.equal(rIdle2.stops, 0, 'Touched idle runtime idle-2 must NOT be evicted')
+    assert.equal(rIdle3.stops, 1, 'Unrefreshed idle runtime idle-3 should be evicted')
+
+    // Clean up active states
+    rActive.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+    supervisor.respondUi('dialog-holder', 'approval-1', { confirmed: true })
+    rGate.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+    releaseLruLock()
+    await lruLock
+    await pQueued
+    rQueued.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+  } finally {
+    releaseLruLock()
+    await Promise.allSettled([lruLock, pGate, pQueued])
+    await supervisor.stop()
+  }
 })
 
 test('Multi-RPC Stress: High-churn concurrent session bootstrapping and rapid recycling with interprocess locks', async (t) => {

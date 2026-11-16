@@ -130,6 +130,28 @@
   outline-offset: 2px;
 }
 
+.run-status__jump {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.run-status__jump:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.run-status__jump:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .notice.notice--retry[data-level] {
   padding: var(--sp-2) 0;
   border: 0;
@@ -353,7 +375,8 @@
   min-height: 22px;
   padding: 0 var(--sp-2) 0 0;
   border: 0;
-  border-radius: var(--r-sm);
+  border-bottom: 1px dotted transparent;
+  border-radius: 0;
   background: none;
   color: var(--text-tertiary);
   font: inherit;
@@ -363,9 +386,24 @@
   cursor: pointer;
 }
 
-.process__head:hover {
-  background: var(--bg-hover);
-  color: var(--text-secondary);
+.process__head:hover,
+.process__head:focus-visible,
+.process__head:active {
+  border-bottom-color: currentColor;
+  background: none;
+  color: var(--accent);
+}
+
+.process__head:hover .process__label,
+.process__head:hover .process__summary,
+.process__head:hover .caret,
+.process__head:focus-visible .process__label,
+.process__head:focus-visible .process__summary,
+.process__head:focus-visible .caret,
+.process__head:active .process__label,
+.process__head:active .process__summary,
+.process__head:active .caret {
+  color: var(--accent);
 }
 
 .process__head:focus-visible {
@@ -1174,9 +1212,74 @@
   max-width: var(--content-w);
 }
 
+/* Ongoing actions in the conversation stream pulse their text smoothly
+   instead of spinning an icon beside the row. */
+@keyframes stream-running-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.38;
+  }
+}
+
+.run-outcome[data-running='true'] {
+  color: var(--text-secondary);
+}
+
+.thinking[data-streaming='true'] .thinking__title,
+.thinking[data-streaming='true'] .thinking__duration {
+  color: var(--text-secondary);
+}
+
+.run-outcome[data-running='true'] .run-outcome__label,
+.thinking[data-streaming='true'] .thinking__title,
+.thinking[data-streaming='true'] .thinking__duration,
+.process[data-status='running'] .process__label,
+.process[data-status='running'] .process__summary,
+.tool--link[data-status='running'] .tool-link__verb,
+.tool--link[data-status='running'] .tool-link__target,
+.tool--link[data-status='running'] .tool-link__icon,
+.tool[data-status='running'] > .tool__head .tool__name,
+.tool[data-status='running'] > .tool__head .tool__summary,
+.tool[data-status='running'] > .tool__head .tool__icon,
+.tool[data-status='running'] > .tool__head .tool__state,
+.run-status[data-phase='queued'] .run-status__label,
+.run-status[data-phase='working'] .run-status__label,
+.run-status[data-phase='generating'] .run-status__label,
+.run-status[data-phase='retrying'] .run-status__label,
+.run-status[data-phase='aborting'] .run-status__label,
+.run-status[data-phase='tool_running'] .run-status__label,
+.run-status[data-phase='tool_running'] .run-status__activity-label,
+.run-status[data-compacting='true'] .run-status__label {
+  animation: stream-running-pulse 1.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .run-status__icon .spin,
-  .run-status__icon .pulse {
+  .run-status__icon .pulse,
+  .run-outcome[data-running='true'] .run-outcome__label,
+  .thinking[data-streaming='true'] .thinking__title,
+  .thinking[data-streaming='true'] .thinking__duration,
+  .process[data-status='running'] .process__label,
+  .process[data-status='running'] .process__summary,
+  .tool--link[data-status='running'] .tool-link__verb,
+  .tool--link[data-status='running'] .tool-link__target,
+  .tool--link[data-status='running'] .tool-link__icon,
+  .tool[data-status='running'] > .tool__head .tool__name,
+  .tool[data-status='running'] > .tool__head .tool__summary,
+  .tool[data-status='running'] > .tool__head .tool__icon,
+  .tool[data-status='running'] > .tool__head .tool__state,
+  .run-status[data-phase='queued'] .run-status__label,
+  .run-status[data-phase='working'] .run-status__label,
+  .run-status[data-phase='generating'] .run-status__label,
+  .run-status[data-phase='retrying'] .run-status__label,
+  .run-status[data-phase='aborting'] .run-status__label,
+  .run-status[data-phase='tool_running'] .run-status__label,
+  .run-status[data-phase='tool_running'] .run-status__activity-label,
+  .run-status[data-compacting='true'] .run-status__label {
     animation: none;
   }
 }

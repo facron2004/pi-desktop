@@ -15,6 +15,7 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { app } from 'electron'
+import { marketplaceEntryKeys } from '@shared/marketplace'
 import type {
   CreateResourceInput,
   ManagedPackage,
@@ -361,49 +362,80 @@ function hasInstalledSkillDirectory(agentDir: string, repo: string): boolean {
 }
 
 /**
- * Marketplace entry ids that Pi already has installed, read from the agent
+ * Every spelling one installed package can be recognized by.
+ *
+ * A live catalog entry's id is its npm package name, while a bundled snapshot
+ * entry uses `owner/repo`; the same package therefore answers to several
+ * names. Store the canonical install source, the npm package name and the
+ * GitHub path so a card can match whichever shape it renders.
+ */
+function addInstalledPackageKeys(keys: Set<string>, source: string): void {
+  const normalized = normaliseInstalledSource(source)
+  const npmName = npmNameFromSource(source)
+  if (normalized) keys.add(normalized.toLowerCase())
+  if (npmName) {
+    keys.add(npmName.toLowerCase())
+    keys.add(`npm:${npmName}`.toLowerCase())
+  }
+  const repo = normalized?.startsWith('git:github.com/')
+    ? normalized.slice('git:github.com/'.length)
+    : normalized?.startsWith('skills:github.com/')
+      ? normalized.slice('skills:github.com/'.length)
+      : null
+  if (repo) keys.add(repo.toLowerCase())
+}
+
+/** Every spelling a bundled entry can be matched by, npm name included. */
+function addMarketplaceEntryKeys(keys: Set<string>, entry: MarketplaceEntry): void {
+  for (const key of marketplaceEntryKeys(entry)) keys.add(key)
+}
+
+/**
+ * Identifiers of the packages Pi already has installed, read from the agent
  * settings and the optional project settings. `skills:` entries are also
  * detected from the clone in the agent's skills directory, because they never
  * appear in the `packages` list.
+ *
+ * The result is not limited to entries of the bundled snapshot: the page
+ * renders Pi's live catalog, where most installed packages never appear in
+ * that snapshot. It returns every match key instead of entry ids, so the
+ * renderer can recognize a package by its npm name, install source or repo.
  */
 export async function listInstalledMarketplaceIds(
   options: { cwd?: string; userDataDir?: string } = {}
 ): Promise<string[]> {
-  const snapshot = await listMarketplace(options.userDataDir)
   const agentDir = agentDirectory()
-  const installedSources = new Set<string>()
+  const installedSources: string[] = []
   const userSettings = readSettingsDocument(path.join(agentDir, 'settings.json'))
-  for (const source of packageSources(userSettings)) {
-    const normalized = normaliseInstalledSource(source)
-    if (normalized) installedSources.add(normalized.toLowerCase())
-  }
+  installedSources.push(...packageSources(userSettings))
   const cwd = options.cwd && options.cwd.trim() ? path.resolve(options.cwd.trim()) : undefined
   if (cwd) {
     const projectSettings = await readWorkspaceSettingsDocument(cwd, '.pi/settings.json')
-    for (const source of packageSources(projectSettings?.document ?? null)) {
-      const normalized = normaliseInstalledSource(source)
-      if (normalized) installedSources.add(normalized.toLowerCase())
+    installedSources.push(...packageSources(projectSettings?.document ?? null))
+  }
+
+  const keys = new Set<string>()
+  for (const source of installedSources) addInstalledPackageKeys(keys, source)
+
+  // Keep the bundled snapshot's own `owner/repo` ids too. A package installed
+  // by its npm name may still be known to older consumers by that id.
+  for (const entry of MARKETPLACE_SNAPSHOT.entries) {
+    if (marketplaceEntryKeys(entry).some((key) => keys.has(key))) {
+      addMarketplaceEntryKeys(keys, entry)
     }
   }
 
-  const ids: string[] = []
-  const seen = new Set<string>()
-  for (const entry of snapshot.entries) {
-    const key = entry.id.toLowerCase()
-    if (seen.has(key)) continue
-    const entrySource = normaliseInstalledSource(entry.install)
-    let installed = entrySource !== null && installedSources.has(entrySource.toLowerCase())
-    if (!installed && entry.kind === 'skill' && /^skills:github\.com\//i.test(entry.install.trim())) {
-      const slash = entry.repo.indexOf('/')
-      const repo = slash >= 0 ? entry.repo.slice(slash + 1) : ''
-      if (repo && isRepoSegment(repo)) installed = hasInstalledSkillDirectory(agentDir, repo)
-    }
-    if (installed) {
-      seen.add(key)
-      ids.push(entry.id)
+  // Plain skill collections have no `packages` entry; the clone itself is the
+  // only installation mark. They are part of the bundled snapshot.
+  for (const entry of MARKETPLACE_SNAPSHOT.entries) {
+    if (entry.kind !== 'skill' || !/^skills:github\.com\//i.test(entry.install.trim())) continue
+    const slash = entry.repo.indexOf('/')
+    const repo = slash >= 0 ? entry.repo.slice(slash + 1) : ''
+    if (repo && isRepoSegment(repo) && hasInstalledSkillDirectory(agentDir, repo)) {
+      addMarketplaceEntryKeys(keys, entry)
     }
   }
-  return ids
+  return [...keys]
 }
 
 /** The source string of one `packages` entry, or null when the entry is unusable. */

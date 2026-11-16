@@ -3,6 +3,8 @@ import { linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, sym
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
+import { languageForFilePath } from '../src/shared/file-languages'
+import { decodeBoundedTextBuffer } from '../src/main/text-decode'
 import {
   MAX_FILE_BYTES,
   listProjectImages,
@@ -357,5 +359,38 @@ test('workspace reads reject hard links to files outside the workspace', async (
     assert.equal(await openWorkspaceFile(workspace, 'alias.png'), null)
   } finally {
     rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+test('decodeBoundedTextBuffer and readBoundedFile decode UTF-16LE/BE and UTF-8 BOM scripts cleanly', async () => {
+  const script = '$name = "Pi Desktop"\r\nWrite-Host "你好 $name"\r\n'
+  const utf8Bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(script, 'utf8')])
+  const utf16Le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(script, 'utf16le')])
+  const utf16BePayload = Buffer.from(script, 'utf16le').swap16()
+  const utf16Be = Buffer.concat([Buffer.from([0xfe, 0xff]), utf16BePayload])
+
+  assert.equal(decodeBoundedTextBuffer(utf8Bom), script)
+  assert.equal(decodeBoundedTextBuffer(utf16Le), script)
+  assert.equal(decodeBoundedTextBuffer(utf16Be), script)
+  // Odd truncated UTF-16BE buffer must not throw on swap16
+  assert.equal(decodeBoundedTextBuffer(Buffer.concat([utf16Be, Buffer.from([0x00])])), script)
+
+  const temp = realpathSync(os.tmpdir())
+  const dir = mkdtempSync(path.join(temp, 'pi-desktop-bom-ps1-'))
+  try {
+    const leFile = path.join(dir, 'deploy-le.ps1')
+    const bomFile = path.join(dir, 'deploy-utf8bom.ps1')
+    writeFileSync(leFile, utf16Le)
+    writeFileSync(bomFile, utf8Bom)
+
+    const leResult = await readBoundedFile(leFile)
+    const bomResult = await readBoundedFile(bomFile)
+    assert.equal(leResult?.content, script)
+    assert.equal(bomResult?.content, script)
+    assert.equal(languageForFilePath('C:\\work\\deploy.psm1'), 'powershell')
+    assert.equal(languageForFilePath('Dockerfile.release'), 'dockerfile')
+    assert.equal(languageForFilePath('__proto__'), '')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

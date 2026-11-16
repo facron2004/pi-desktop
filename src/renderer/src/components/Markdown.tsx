@@ -2,9 +2,9 @@ import { createContext, useContext, isValidElement, memo, useEffect, useState, t
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Check, Code, Copy, Eye, FileCode2, MessageSquarePlus } from 'lucide-react'
+import { Check, Code, Copy, Eye, FileCode2 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
-import { highlightCode } from '../lib/highlight'
+import { highlightCode, readHighlightedCodeSync } from '../lib/highlight'
 import { resolveAgainst } from '../lib/path'
 import { useSearchQuery } from '../lib/search-context'
 import { useIsDark } from '../lib/theme'
@@ -18,15 +18,20 @@ import { ErrorBoundary } from './ErrorBoundary'
 const FILE_EXTS = new Set([
   'ts',
   'tsx',
+  'mts',
+  'cts',
   'js',
   'jsx',
   'mjs',
   'cjs',
   'json',
+  'jsonc',
+  'json5',
   'css',
   'scss',
   'less',
   'html',
+  'htm',
   'md',
   'mdx',
   'py',
@@ -34,20 +39,59 @@ const FILE_EXTS = new Set([
   'go',
   'java',
   'kt',
+  'kts',
   'c',
   'cpp',
+  'cc',
+  'cxx',
   'h',
   'hpp',
+  'hh',
+  'hxx',
   'cs',
   'rb',
   'php',
   'sh',
   'bash',
   'zsh',
+  'fish',
+  'nu',
+  'awk',
   'ps1',
+  'psm1',
+  'psd1',
+  'ps1xml',
+  'bat',
+  'cmd',
+  'btm',
+  'reg',
   'yml',
   'yaml',
   'toml',
+  'ini',
+  'conf',
+  'cfg',
+  'lua',
+  'pl',
+  'pm',
+  'r',
+  'scala',
+  'dart',
+  'zig',
+  'nix',
+  'ex',
+  'exs',
+  'tf',
+  'tfvars',
+  'hcl',
+  'proto',
+  'cmake',
+  'groovy',
+  'gradle',
+  'diff',
+  'patch',
+  'graphql',
+  'gql',
   'sql',
   'vue',
   'svelte',
@@ -119,6 +163,13 @@ function Marked({ children }: { children?: ReactNode }) {
  * A fenced block. Mermaid fences become a live diagram; every other language
  * keeps the existing syntax-highlighted CodeBlock behaviour untouched.
  */
+function flattenNodeText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(flattenNodeText).join('')
+  if (isValidElement<{ children?: ReactNode }>(node)) return flattenNodeText(node.props.children)
+  return ''
+}
+
 function PreBlock({ children: content }: { children?: ReactNode }) {
   const streaming = useContext(StreamingContext)
   const child = Array.isArray(content) ? content[0] : content
@@ -126,9 +177,10 @@ function PreBlock({ children: content }: { children?: ReactNode }) {
     // `pre` always wraps the `code` element in Markdown. Use the element's
     // own className to recover the fence language; comparing `child.type`
     // to the string 'code' fails because the renderer maps it to the custom
-    // component below.
-    const match = /language-([\w+-]+)/.exec(child.props.className ?? '')
-    const text = String(child.props.children ?? '').replace(/\n$/, '')
+    // component below. Keep dots, slashes and colons so tags like `deploy.ps1`
+    // or `scripts/run.ps1` pass intact to the grammar resolver.
+    const match = /(?:^|\s)language-([^\s]+)/.exec(child.props.className ?? '')
+    const text = flattenNodeText(child.props.children).replace(/\n$/, '')
     if (isMermaidLanguage(match?.[1])) {
       // One bad diagram must not take down the rest of the Markdown tree.
       return (
@@ -294,7 +346,6 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
   } | null>(null)
   const [copied, setCopied] = useState(false)
   const [preview, setPreview] = useState(false)
-  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const isDark = useIsDark()
   const t = useT()
 
@@ -306,7 +357,11 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
     ? `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;display:grid;place-items:center;background:transparent;font-family:system-ui,sans-serif;}svg{max-width:100%;max-height:280px;height:auto;}</style></head><body>${code}</body></html>`
     : code
 
+  const langKey = language ?? 'text'
+  const syncHtml = readHighlightedCodeSync(code, langKey, isDark)
+
   useEffect(() => {
+    if (readHighlightedCodeSync(code, langKey, isDark) !== null) return
     let cancelled = false
     let timer: number | undefined
 
@@ -314,9 +369,9 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
       // While actively streaming, debounce Shiki highlighting by 250ms to prevent
       // expensive regex tokenization on every single delta animation frame.
       timer = window.setTimeout(() => {
-        highlightCode(code, language ?? 'text', isDark)
+        highlightCode(code, langKey, isDark)
           .then((value) => {
-            if (!cancelled) setRendered({ code, language: language ?? 'text', isDark, html: value })
+            if (!cancelled) setRendered({ code, language: langKey, isDark, html: value })
           })
           .catch(() => {
             if (!cancelled) setRendered(null)
@@ -328,9 +383,9 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
       }
     }
 
-    highlightCode(code, language ?? 'text', isDark)
+    highlightCode(code, langKey, isDark)
       .then((value) => {
-        if (!cancelled) setRendered({ code, language: language ?? 'text', isDark, html: value })
+        if (!cancelled) setRendered({ code, language: langKey, isDark, html: value })
       })
       .catch(() => {
         if (!cancelled) setRendered(null)
@@ -338,13 +393,14 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
     return () => {
       cancelled = true
     }
-  }, [code, language, isDark, isStreaming])
+  }, [code, langKey, isDark, isStreaming])
   const html =
-    rendered?.code === code &&
-    rendered.language === (language ?? 'text') &&
+    syncHtml ??
+    (rendered?.code === code &&
+    rendered.language === langKey &&
     rendered.isDark === isDark
       ? rendered.html
-      : null
+      : null)
 
   const copy = async () => {
     try {
@@ -354,12 +410,6 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
     } catch {
       /* clipboard may be unavailable */
     }
-  }
-
-  // A fenced block with four backticks survives a snippet that contains a
-  // fence of its own.
-  const ask = () => {
-    insertIntoComposer(`\`\`\`\`${language ?? 'text'}\n${code}\n\`\`\`\``)
   }
 
   return (
@@ -378,13 +428,13 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
               {preview ? t('Code') : t('Preview')}
             </button>
           ) : null}
-          <button className="code-block__tool" onClick={ask} title={t('Ask Pi about this code')}>
-            <MessageSquarePlus size={11} />
-            {t('Ask Pi')}
-          </button>
-          <button className="code-block__tool" onClick={() => void copy()} title={t('Copy code')}>
+          <button
+            className="code-block__tool"
+            onClick={() => void copy()}
+            title={copied ? t('Copied') : t('Copy code')}
+            aria-label={copied ? t('Copied') : t('Copy code')}
+          >
             {copied ? <Check size={11} /> : <Copy size={11} />}
-            {copied ? t('Copied') : t('Copy')}
           </button>
         </span>
       </div>

@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { resolveSessionFilePath, resolveSessionRoots } from '../sessions'
 import {
@@ -22,7 +22,7 @@ import { resolvePiLaunch } from './locate'
 import { PiRpcClient } from './rpc-client'
 import { buildRpcArgs } from './rpc-args'
 import { canAutoApprove, parseToolApproval, permissionExtension } from './permissions'
-import { ensurePatientRetrySettings, rememberDefaultModel, rememberDefaultThinkingLevel } from './retry-policy'
+import { prepareLaunchAgentSettings } from './retry-policy'
 import { taskModesExtension } from './task-modes'
 import { subagentExtension } from './subagent'
 import type { AgentPreset } from './agents'
@@ -174,50 +174,53 @@ export class PiRuntime extends EventEmitter {
     const permissionTitle = `pi-desktop-permissions-${scratchId}`
     const files: string[] = []
     try {
-      mkdirSync(userData, { recursive: true })
+      await mkdir(userData, { recursive: true })
       files.push(permissionFile, subagentPermissionFile, modeFile, providerFile, subagentFile, computerFile, imageFile, contextBreakdownFile, generationTimingFile, mermaidFile)
-      writeFileSync(permissionFile, permissionExtension(permissionTitle), 'utf8')
-      writeFileSync(subagentPermissionFile, permissionExtension(permissionTitle, false), 'utf8')
       // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
       // is the one moment "a brand-new conversation starts in Plan Mode" is true.
       const defaultMode =
         !sessionFile && this.options.getDefaultPlanMode?.() === true ? 'plan' : 'default'
-      writeFileSync(
-        modeFile,
-        taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile),
-        'utf8'
-      )
-      writeFileSync(providerFile, providerControlsExtension(), 'utf8')
-      writeFileSync(
-        subagentFile,
-        subagentExtension(
-          this.options.getSubagentModel?.() ?? {},
-          subagentPermissionFile,
-          permissionTitle,
-          this.options.trustProject === true,
-          { command: launch.command, prefixArgs: launch.prefixArgs },
-          // Named agent presets are project data, not Settings, but they cross
-          // the same boundary: read here once per process, verified and bounded
-          // by the loader, so the generated extension never re-opens a file.
-          this.options.getAgentPresets?.(options.cwd) ?? []
-        ),
-        'utf8'
-      )
-      writeFileSync(computerFile, computerUseExtension(), 'utf8')
-      writeFileSync(imageFile, imageToolExtension(), 'utf8')
-      writeFileSync(contextBreakdownFile, contextBreakdownExtension(), 'utf8')
-      writeFileSync(generationTimingFile, generationTimingExtension(), 'utf8')
-      writeFileSync(mermaidFile, mermaidPolicyExtension(), 'utf8')
+      const staticSources = getStaticExtensionSources()
+      const writes: [string, string][] = [
+        [permissionFile, permissionExtension(permissionTitle)],
+        [subagentPermissionFile, permissionExtension(permissionTitle, false)],
+        [modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile)],
+        [providerFile, staticSources.provider],
+        [
+          subagentFile,
+          subagentExtension(
+            this.options.getSubagentModel?.() ?? {},
+            subagentPermissionFile,
+            permissionTitle,
+            this.options.trustProject === true,
+            { command: launch.command, prefixArgs: launch.prefixArgs },
+            // Named agent presets are project data, not Settings, but they cross
+            // the same boundary: read here once per process, verified and bounded
+            // by the loader, so the generated extension never re-opens a file.
+            this.options.getAgentPresets?.(options.cwd) ?? []
+          )
+        ],
+        [computerFile, staticSources.computer],
+        [imageFile, staticSources.image],
+        [contextBreakdownFile, staticSources.contextBreakdown],
+        [generationTimingFile, staticSources.generationTiming],
+        [mermaidFile, staticSources.mermaid]
+      ]
       if (options.customInstructions?.trim()) {
         files.push(customInstructionsFile)
-        writeFileSync(customInstructionsFile, options.customInstructions.trim(), 'utf8')
+        writes.push([customInstructionsFile, options.customInstructions.trim()])
       }
+      await Promise.all(writes.map(([filePath, content]) => writeFile(filePath, content, 'utf8')))
     } catch (error) {
-      this.deleteFiles(files)
+      await this.deleteFiles(files)
       if (generation !== this.generation) return { ok: false }
       const message = `Could not prepare runtime configuration: ${error instanceof Error ? error.message : String(error)}`
       this.setStatus({ phase: 'error', cwd: options.cwd, error: message })
       return { ok: false, error: message }
+    }
+    if (generation !== this.generation) {
+      await this.deleteFiles(files)
+      return { ok: false }
     }
 
     const args = [
@@ -243,15 +246,17 @@ export class PiRuntime extends EventEmitter {
     // A 429 has to outlast the provider's rate window. Pi reads the budget
     // once, when this process starts, so it has to be in place before launch.
     try {
-      ensurePatientRetrySettings()
-      // A launch with its own model ids (a scheduled task, for example) must
-      // not rewrite the app-wide default Pi falls back to.
-      if (options.rememberDefaults !== false) {
-        rememberDefaultModel(options.model)
-        rememberDefaultThinkingLevel(options.thinkingLevel)
-      }
+      await prepareLaunchAgentSettings({
+        model: options.model,
+        thinkingLevel: options.thinkingLevel,
+        rememberDefaults: options.rememberDefaults
+      })
     } catch {
       /* an unreadable settings file keeps Pi's own budget and model */
+    }
+    if (generation !== this.generation) {
+      await this.deleteFiles(files)
+      return { ok: false }
     }
 
     const traceOn = this.tracing
@@ -573,8 +578,11 @@ export class PiRuntime extends EventEmitter {
     const files = this.scratch.get(client)
     this.scratch.delete(client)
     await client.stop()
-    this.deleteFiles(files ?? [])
-    this.deleteFiles(LEGACY_RUNTIME_FILES.map((name) => path.join(app.getPath('userData'), name)))
+    await this.deleteFiles(files ?? [])
+    if (!legacyRuntimeFilesCleaned) {
+      legacyRuntimeFilesCleaned = true
+      await this.deleteFiles(LEGACY_RUNTIME_FILES.map((name) => path.join(app.getPath('userData'), name)))
+    }
   }
 
   private detach(client: PiRpcClient): void {
@@ -585,14 +593,15 @@ export class PiRuntime extends EventEmitter {
     client.removeAllListeners('exit')
   }
 
-  private deleteFiles(files: string[]): void {
-    for (const file of files) {
-      try {
-        if (existsSync(file)) unlinkSync(file)
-      } catch {
-        // The process may still be releasing the file. Nothing reads it again.
-      }
-    }
+  private async deleteFiles(files: string[]): Promise<void> {
+    if (files.length === 0) return
+    await Promise.all(
+      files.map((file) =>
+        unlink(file).catch(() => {
+          // The process may still be releasing the file, or it was already removed.
+        })
+      )
+    )
   }
 
   private setStatus(status: RuntimeStatus): void {
@@ -603,6 +612,18 @@ export class PiRuntime extends EventEmitter {
   private observe(state: unknown): void {
     const next = sessionObservation(state)
     if (next.sessionId || next.sessionFile || next.isStreaming !== undefined) this.observed = next
+    if (this.status.phase === 'ready' && state && typeof state === 'object') {
+      const record = state as { sessionFile?: unknown; sessionId?: unknown }
+      const hasFile = 'sessionFile' in record
+      const hasId = 'sessionId' in record
+      if (hasFile || hasId) {
+        const sessionFile = hasFile ? next.sessionFile : this.status.sessionFile
+        const sessionId = hasId ? next.sessionId : this.status.sessionId
+        if (sessionFile !== this.status.sessionFile || sessionId !== this.status.sessionId) {
+          this.status = { ...this.status, sessionFile, sessionId }
+        }
+      }
+    }
   }
 
   /** Identity attached to one outbound record. Caller frames only for session mutations. */
@@ -676,6 +697,31 @@ const LEGACY_RUNTIME_FILES = [
   'pi-desktop-providers.mjs',
   'pi-desktop-subagent.mjs'
 ]
+let legacyRuntimeFilesCleaned = false
+
+interface StaticExtensionSources {
+  provider: string
+  computer: string
+  image: string
+  contextBreakdown: string
+  generationTiming: string
+  mermaid: string
+}
+let staticExtensionSources: StaticExtensionSources | undefined
+
+function getStaticExtensionSources(): StaticExtensionSources {
+  if (!staticExtensionSources) {
+    staticExtensionSources = {
+      provider: providerControlsExtension(),
+      computer: computerUseExtension(),
+      image: imageToolExtension(),
+      contextBreakdown: contextBreakdownExtension(),
+      generationTiming: generationTimingExtension(),
+      mermaid: mermaidPolicyExtension()
+    }
+  }
+  return staticExtensionSources
+}
 
 function describeExit(stderr: string[], code: number | null, signal: string | null): string {
   const tail = stderr

@@ -40,9 +40,7 @@ export const CommandOutput = memo(function CommandOutput({ item }: { item: BashI
               {t('no context')}
             </span>
           ) : null}
-          {running ? (
-            <span className="spinner" />
-          ) : failed ? (
+          {failed ? (
             <span className="tool__status">
               {t('exit')} {item.exitCode}
             </span>

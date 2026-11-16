@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { properLockfile } from '../proper-lockfile'
@@ -176,4 +177,88 @@ export function forgetDefaultModel(file = agentSettingsPath()): void {
     delete current.defaultModel
     writeSettings(file, current)
   })
+}
+
+async function readSettingsAsync(file: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const raw = await readFile(file, 'utf8')
+    const parsed: unknown = JSON.parse(raw.replace(/^\uFEFF/, ''))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    return parsed as Record<string, unknown>
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT') {
+      return {}
+    }
+    return undefined
+  }
+}
+
+async function writeSettingsAsync(file: string, settings: Record<string, unknown>): Promise<void> {
+  const temporary = `${file}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    await rename(temporary, file)
+  } catch (error) {
+    try { await unlink(temporary) } catch { /* the temporary file may not exist */ }
+    throw error
+  }
+}
+
+function applyLaunchAgentSettings(
+  current: Record<string, unknown>,
+  options: { model?: string; thinkingLevel?: string; rememberDefaults?: boolean }
+): { settings: Record<string, unknown>; changed: boolean } {
+  const raised = raiseRetryBudget(current)
+  let changed = raised.changed
+  const next = raised.changed ? raised.settings : { ...current }
+  if (options.rememberDefaults !== false) {
+    const parsedModel = splitModelSpec(options.model)
+    if (
+      parsedModel &&
+      (next.defaultProvider !== parsedModel.provider || next.defaultModel !== parsedModel.model)
+    ) {
+      next.defaultProvider = parsedModel.provider
+      next.defaultModel = parsedModel.model
+      changed = true
+    }
+    const level = options.thinkingLevel?.trim().toLowerCase()
+    if (level && THINKING_LEVELS.has(level) && next.defaultThinkingLevel !== level) {
+      next.defaultThinkingLevel = level
+      changed = true
+    }
+  }
+  return { settings: next, changed }
+}
+
+/**
+ * Non-blocking launch preparation: checks retry floor + default model/thinking
+ * asynchronously without locking or Atomics.wait unless a write is actually needed,
+ * coalescing all three mutations into one async lock + atomic write.
+ */
+export async function prepareLaunchAgentSettings(
+  options: { model?: string; thinkingLevel?: string; rememberDefaults?: boolean },
+  file = agentSettingsPath()
+): Promise<void> {
+  const current = await readSettingsAsync(file)
+  if (!current) return
+  if (!applyLaunchAgentSettings(current, options).changed) return
+
+  await mkdir(path.dirname(file), { recursive: true })
+  const release = await properLockfile.lock(file, {
+    realpath: false,
+    retries: { retries: 10, minTimeout: 10, maxTimeout: 50 }
+  })
+  try {
+    const latest = await readSettingsAsync(file)
+    if (!latest) return
+    const next = applyLaunchAgentSettings(latest, options)
+    if (!next.changed) return
+    await writeSettingsAsync(file, next.settings)
+  } finally {
+    try {
+      await release()
+    } catch (error) {
+      console.error('[pi-desktop] could not release agent settings lock:', error)
+    }
+  }
 }

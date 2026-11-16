@@ -94,6 +94,11 @@ export function scrollTopForTurnTop(
  * module, keyed by the same conversation key the store uses.
  * ------------------------------------------------------------------ */
 
+/** The key the transcript uses for a conversation's scroll memory. */
+export function scrollKeyOf(sessionFile: string | undefined): string {
+  return sessionFile ?? 'draft'
+}
+
 const memories = new Map<string, ScrollMemoryEntry>()
 
 export function readScrollMemory(key: string): ScrollMemoryEntry | undefined {

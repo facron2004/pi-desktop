@@ -9,14 +9,28 @@ import {
   Wrench,
   X
 } from 'lucide-react'
-import { useAppStore, type QueueKind } from '../store/useAppStore'
+import {
+  draftKeyOf,
+  useAppStore,
+  type ComposerDraft,
+  type ComposerDraftFile,
+  type ComposerDraftImage,
+  type QueueKind
+} from '../store/useAppStore'
 import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { FileEntry, PiCommand } from '@shared/types'
 import { appCommandName } from '../lib/app-commands'
+import {
+  composerFileToken,
+  extractFilePathMentions,
+  makeComposerFile,
+  mergeComposerFiles
+} from '../lib/composer-files'
 import { filterCommands } from '../lib/commands'
 import { relativePath } from '../lib/path'
-import { openingLabel, useT } from '../lib/i18n'
+import { useT } from '../lib/i18n'
 import { CommandPalette } from './CommandPalette'
+import { FileIcon } from './FileIcon'
 import { FileMention } from './FileMention'
 import { ModelPicker } from './TopBar'
 import { ImageButton } from './Lightbox'
@@ -38,10 +52,26 @@ interface MentionMatch {
   cursor: number
 }
 
-interface ComposerImage {
-  data: string
-  mimeType: string
-  byteSize: number
+const EMPTY_IMAGES: ComposerDraftImage[] = []
+const EMPTY_FILES: ComposerDraftFile[] = []
+const EMPTY_HISTORY: string[] = []
+
+function makeDraftImage(
+  data: string,
+  mimeType: string,
+  bytes: number,
+  name = 'image'
+): ComposerDraftImage {
+  const id =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  return { id, type: 'image', name, bytes, data, mimeType }
+}
+
+function sumImageBytes(images: readonly ComposerDraftImage[]): number {
+  let total = 0
+  for (const image of images) total += image.bytes
+  return total
 }
 
 function imageByteLength(data: string): number {
@@ -81,6 +111,7 @@ export function Composer() {
   const aborting = useAppStore((state) => state.run.phase === 'aborting')
   const queue = useAppStore((state) => state.queue)
   const status = useAppStore((state) => state.status)
+  const cwdWait = useAppStore((state) => state.cwdWait)
   const prewarmRuntime = useAppStore((state) => state.prewarmRuntime)
   const workspace = useAppStore((state) => state.workspace)
   const agentMode = useAppStore((state) => state.agentMode)
@@ -88,6 +119,15 @@ export function Composer() {
   const commands = useAppStore((state) => state.commands)
   const refreshSkillCommands = useAppStore((state) => state.refreshSkillCommands)
   const language = useAppStore((state) => state.settings.language ?? 'en')
+  const draftKey = useAppStore((state) => draftKeyOf(state))
+  const clientKey = useAppStore((state) => {
+    const key = state.activeSessionFile || state.draftId
+    return (key && state.threads[key]?.clientKey) || key || state.clientKey || ''
+  })
+  const draftEntry = useAppStore(
+    useCallback((state) => (draftKey ? state.drafts[draftKey] : undefined), [draftKey])
+  )
+  const updateDraft = useAppStore((state) => state.updateDraft)
   const composerText = useAppStore((state) => state.composerText)
   const clearComposerText = useAppStore((state) => state.clearComposerText)
   const composerInsert = useAppStore((state) => state.composerInsert)
@@ -98,13 +138,114 @@ export function Composer() {
   const pasteMentions = useAppStore((state) => state.settings.pasteMentions === true)
   const hasDialogue = useAppStore((state) => state.items.length > 0)
   const t = useT()
-  const toast = useAppStore((state) => state.toast)
 
-  const [text, setText] = useState('')
-  const [images, setImages] = useState<ComposerImage[]>([])
-  const imageBytesRef = useRef(0)
-  const pendingFileAdds = useRef(0)
-  const [addingFiles, setAddingFiles] = useState(false)
+  // Used only on initial mount before bootstrap assigns a draftId or session file.
+  const [fallbackDraft, setFallbackDraft] = useState<ComposerDraft>({
+    text: '',
+    images: EMPTY_IMAGES
+  })
+  const fallbackDraftRef = useRef(fallbackDraft)
+  fallbackDraftRef.current = fallbackDraft
+
+  const draft = draftKey ? draftEntry : fallbackDraft
+  const text = draft?.text ?? ''
+  const images = draft?.images ?? EMPTY_IMAGES
+  const files = draft?.files ?? EMPTY_FILES
+  const history = draft?.history ?? EMPTY_HISTORY
+
+  const draftKeyRef = useRef(draftKey)
+  draftKeyRef.current = draftKey
+  const clientKeyRef = useRef(clientKey)
+  clientKeyRef.current = clientKey
+
+  const patchDraft = useCallback(
+    (targetKey: string, updater: (prev: ComposerDraft) => ComposerDraft) => {
+      if (targetKey) {
+        updateDraft(targetKey, updater)
+        return
+      }
+      setFallbackDraft((prev) => updater(prev))
+    },
+    [updateDraft]
+  )
+
+  const readTargetDraft = useCallback((targetKey: string): ComposerDraft => {
+    if (targetKey) return useAppStore.getState().drafts[targetKey] ?? { text: '', images: EMPTY_IMAGES }
+    return fallbackDraftRef.current
+  }, [])
+
+  const setText = useCallback(
+    (next: string | ((current: string) => string), targetKey = draftKeyRef.current) => {
+      patchDraft(targetKey, (prev) => ({
+        ...prev,
+        text: typeof next === 'function' ? next(prev.text) : next
+      }))
+    },
+    [patchDraft]
+  )
+
+  const setImages = useCallback(
+    (
+      next: ComposerDraftImage[] | ((current: ComposerDraftImage[]) => ComposerDraftImage[]),
+      targetKey = draftKeyRef.current
+    ) => {
+      patchDraft(targetKey, (prev) => ({
+        ...prev,
+        images: typeof next === 'function' ? next(prev.images) : next
+      }))
+    },
+    [patchDraft]
+  )
+
+  const setFiles = useCallback(
+    (
+      next: ComposerDraftFile[] | ((current: ComposerDraftFile[]) => ComposerDraftFile[]),
+      targetKey = draftKeyRef.current
+    ) => {
+      patchDraft(targetKey, (prev) => {
+        const current = prev.files ?? EMPTY_FILES
+        return {
+          ...prev,
+          files: typeof next === 'function' ? next(current) : next
+        }
+      })
+    },
+    [patchDraft]
+  )
+
+  /**
+   * Older drafts and hand-pasted absolute paths arrive as `@"C:/..."` lines in
+   * the textarea. Lift those into attachment chips the first time the draft is
+   * shown; a relative `@path` mention stays text because it is part of the
+   * message, not a file attachment.
+   */
+  useEffect(() => {
+    const extracted = extractFilePathMentions(text)
+    if (!extracted.files.length) return
+    setFiles((current) => mergeComposerFiles(current, extracted.files))
+    setText(extracted.text)
+  }, [text, setFiles, setText])
+
+  const pendingBytesByKeyRef = useRef<Map<string, number>>(new Map())
+  const pendingAddsByKeyRef = useRef<Map<string, number>>(new Map())
+  const [addingKeys, setAddingKeys] = useState<Record<string, number>>({})
+  const addingFiles = (addingKeys[draftKey] ?? 0) > 0
+
+  const bumpPendingAdds = useCallback((targetKey: string, delta: number) => {
+    const next = Math.max(0, (pendingAddsByKeyRef.current.get(targetKey) ?? 0) + delta)
+    if (next === 0) pendingAddsByKeyRef.current.delete(targetKey)
+    else pendingAddsByKeyRef.current.set(targetKey, next)
+    setAddingKeys((prev) => {
+      if (next === 0) {
+        if (!(targetKey in prev)) return prev
+        const copy = { ...prev }
+        delete copy[targetKey]
+        return copy
+      }
+      return { ...prev, [targetKey]: next }
+    })
+  }, [])
+
   // Delivery is a preference, not a per-message control in the composer:
   // configure it in Settings so this bar stays to send/stop and the model.
   const kind: QueueKind = defaultFollowUpMode === 'queue' ? 'followUp' : 'steer'
@@ -116,46 +257,64 @@ export function Composer() {
   const [mentionIndex, setMentionIndex] = useState(0)
   const [paletteIndex, setPaletteIndex] = useState(0)
 
-  const reserveImageBytes = useCallback((bytes: number): boolean => {
-    if (!Number.isSafeInteger(bytes) || bytes <= 0 || imageBytesRef.current + bytes > MAX_COMPOSER_IMAGE_BYTES) {
-      return false
-    }
-    imageBytesRef.current += bytes
-    return true
+  const reserveImageBytes = useCallback(
+    (bytes: number, targetKey = draftKeyRef.current): boolean => {
+      const committed = sumImageBytes(readTargetDraft(targetKey).images)
+      const pending = pendingBytesByKeyRef.current.get(targetKey) ?? 0
+      if (!Number.isSafeInteger(bytes) || bytes <= 0 || committed + pending + bytes > MAX_COMPOSER_IMAGE_BYTES) {
+        return false
+      }
+      pendingBytesByKeyRef.current.set(targetKey, pending + bytes)
+      return true
+    },
+    [readTargetDraft]
+  )
+
+  const releaseReservedBytes = useCallback((bytes: number, targetKey = draftKeyRef.current): void => {
+    const pending = Math.max(0, (pendingBytesByKeyRef.current.get(targetKey) ?? 0) - bytes)
+    if (pending === 0) pendingBytesByKeyRef.current.delete(targetKey)
+    else pendingBytesByKeyRef.current.set(targetKey, pending)
   }, [])
 
-  const releaseImageBytes = useCallback((bytes: number): void => {
-    imageBytesRef.current = Math.max(0, imageBytesRef.current - bytes)
+  const [historyNav, setHistoryNav] = useState<{ key: string; index: number }>({
+    key: '',
+    index: -1
+  })
+  const historyIndex = historyNav.key === draftKey ? historyNav.index : -1
+  const setHistoryIndex = useCallback((index: number) => {
+    setHistoryNav({ key: draftKeyRef.current, index })
   }, [])
-  const [history, setHistory] = useState<string[]>([])
-  const [historyIndex, setHistoryIndex] = useState(-1)
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const mentionListRef = useRef<HTMLDivElement>(null)
   // Enter repeats while it is held, and a double-click can land before React
-  // has cleared the draft. Either one used to send the same prompt again.
-  const submitLock = useRef(false)
+  // has cleared the draft. Track locks per conversation identity so a send in
+  // one session never blocks sending in another.
+  const sendingClientsRef = useRef<Set<string>>(new Set())
   // Where the caret goes after a mention has been spliced in. The text is
   // updated through the queue, so the position is only known inside the update.
   const mentionCaret = useRef<number | null>(null)
-  // The reference already inserted for a pasted picture, keyed by its
-  // clipboard signature, so the same picture pasted twice says it once.
-  const pastedRefs = useRef<Map<string, string>>(new Map())
 
-  const canCompose = status.phase === 'ready' || (status.phase === 'starting' && !isStreaming)
+  const canCompose = status.phase === 'ready' || status.phase === 'starting'
   const inputPrompt = canCompose
-    ? agentMode === 'plan'
-      ? t('Describe the task to plan…')
-      : workspace
-        ? t('Describe a task, or use @ to reference project files…')
-        : t('Describe a task…')
-    : status.phase === 'starting'
-      ? openingLabel(workspace, t)
-      : status.phase === 'error'
-        ? t('Pi unavailable')
-        : !workspace
-          ? t('Open a project folder to start')
-          : t('Pi stopped')
+    ? cwdWait
+      ? t('Waiting for another conversation in this folder…')
+      : agentMode === 'plan'
+        ? t('Describe the task to plan…')
+        : workspace
+          ? t('Describe a task, or use @ to reference project files…')
+          : t('Describe a task…')
+    : status.phase === 'error'
+      ? t('Pi unavailable')
+      : !workspace
+        ? t('Open a project folder to start')
+        : t('Pi stopped')
+
+  useEffect(() => {
+    setSlash(null)
+    setMention(null)
+    setPaletteIndex(0)
+  }, [draftKey])
 
   useEffect(() => {
     const focus = () => {
@@ -185,12 +344,17 @@ export function Composer() {
       setSlash(detectSlash(prefill, cursor))
       setMention(detectMention(prefill, cursor))
     })
-  }, [])
+  }, [setText])
 
   // An extension can prefill the editor through `set_editor_text`.
   useEffect(() => {
     if (composerText === undefined) return
-    setText(composerText)
+    const key = draftKeyRef.current
+    if (!key) {
+      setFallbackDraft((prev) => ({ ...prev, text: composerText }))
+    } else if (useAppStore.getState().drafts[key]?.text !== composerText) {
+      updateDraft(key, { text: composerText })
+    }
     clearComposerText()
     requestAnimationFrame(() => {
       const node = textareaRef.current
@@ -198,10 +362,11 @@ export function Composer() {
       const cursor = composerText.length
       node.focus()
       node.setSelectionRange(cursor, cursor)
+      node.scrollTop = node.scrollHeight
       setSlash(detectSlash(composerText, cursor))
       setMention(detectMention(composerText, cursor))
     })
-  }, [composerText, clearComposerText])
+  }, [composerText, clearComposerText, updateDraft])
 
   // A tool card can hand a command or a path back to the composer, and a
   // branch puts the original prompt back so it can be tweaked and sent again.
@@ -209,18 +374,21 @@ export function Composer() {
   useEffect(() => {
     if (!composerInsert || composerInsert.seq === insertSeq.current) return
     insertSeq.current = composerInsert.seq
-    const addition = composerInsert.text
-    const replace = composerInsert.mode === 'replace'
-    setText((current) => {
-      if (replace) return addition
-      return current.trim() ? `${current.trimEnd()}\n${addition}` : addition
-    })
+    if (!draftKeyRef.current) {
+      const addition = composerInsert.text
+      const replace = composerInsert.mode === 'replace'
+      setFallbackDraft((prev) => ({
+        ...prev,
+        text: replace ? addition : prev.text.trim() ? `${prev.text.trimEnd()}\n${addition}` : addition
+      }))
+    }
     requestAnimationFrame(() => {
       const node = textareaRef.current
       if (!node) return
       const cursor = node.value.length
       node.focus()
       node.setSelectionRange(cursor, cursor)
+      node.scrollTop = node.scrollHeight
     })
   }, [composerInsert])
 
@@ -253,13 +421,95 @@ export function Composer() {
     }
   }, [slashOpen, skillCommands.length, workspace?.path, refreshSkillCommands])
 
+  const textareaSizeRef = useRef<{
+    height: number
+    len: number
+    newlines: number
+    width: number
+    fontScale: number
+  }>({ height: 0, len: 0, newlines: 0, width: 0, fontScale })
+
   useEffect(() => {
     const node = textareaRef.current
     if (!node) return
+    if (!text) {
+      if (textareaSizeRef.current.height !== 0 || node.style.height) {
+        node.style.height = ''
+        node.style.overflowY = 'hidden'
+      }
+      textareaSizeRef.current = {
+        height: 0,
+        len: 0,
+        newlines: 0,
+        width: node.clientWidth,
+        fontScale
+      }
+      return
+    }
+    const prev = textareaSizeRef.current
+    const width = node.clientWidth
+    const caretAtEnd =
+      document.activeElement === node &&
+      node.selectionStart === text.length &&
+      node.selectionEnd === text.length
+    let newlines = 0
+    for (let i = 0; i < text.length; i += 1) {
+      if (text.charCodeAt(i) === 10) newlines += 1
+    }
+    // Single-character additions that keep line breaks can only grow: skip the
+    // collapsing `height = 'auto'` write so normal typing stays a single layout pass.
+    const canOnlyGrow =
+      prev.height > 0 &&
+      prev.width === width &&
+      prev.fontScale === fontScale &&
+      text.length === prev.len + 1 &&
+      newlines >= prev.newlines
+    if (canOnlyGrow) {
+      if (prev.height >= 240) {
+        if (caretAtEnd) node.scrollTop = node.scrollHeight
+        textareaSizeRef.current = {
+          height: prev.height,
+          len: text.length,
+          newlines,
+          width,
+          fontScale
+        }
+        return
+      }
+      const contentHeight = node.scrollHeight
+      const nextHeight = Math.min(contentHeight, 240)
+      if (nextHeight > prev.height) {
+        node.style.height = `${nextHeight}px`
+        node.style.overflowY = contentHeight > 240 ? 'auto' : 'hidden'
+      }
+      if (contentHeight > 240 && caretAtEnd) {
+        node.scrollTop = contentHeight
+      }
+      textareaSizeRef.current = {
+        height: Math.max(prev.height, nextHeight),
+        len: text.length,
+        newlines,
+        width,
+        fontScale
+      }
+      return
+    }
+    const previousScrollTop = node.scrollTop
     node.style.height = 'auto'
     const contentHeight = node.scrollHeight
-    node.style.height = `${Math.min(contentHeight, 240)}px`
+    const nextHeight = Math.min(contentHeight, 240)
+    node.style.height = `${nextHeight}px`
     node.style.overflowY = contentHeight > 240 ? 'auto' : 'hidden'
+    if (contentHeight > 240) {
+      node.scrollTop = caretAtEnd ? contentHeight : previousScrollTop
+    }
+    textareaSizeRef.current = {
+      height: nextHeight,
+      len: text.length,
+      newlines,
+      width,
+      fontScale
+    }
   }, [text, fontScale])
 
   useEffect(() => {
@@ -329,28 +579,33 @@ export function Composer() {
    * query never survives next to the new path. Without one the mention lands at
    * the caret, with a space in front when the text runs into it.
    */
-  const applyMention = useCallback((addition: string, at?: MentionMatch | null): void => {
-    setText((current) => {
-      const node = textareaRef.current
-      const cursor = node?.selectionStart ?? current.length
-      const active = at ?? detectMention(current, cursor)
-      const from = active ? active.start : cursor
-      const to = active ? active.cursor : cursor
-      const gap = active || from === 0 || /\s/.test(current[from - 1]) ? '' : ' '
-      mentionCaret.current = from + gap.length + addition.length
-      return `${current.slice(0, from)}${gap}${addition}${current.slice(to)}`
-    })
-    setMention(null)
-    requestAnimationFrame(() => {
-      const target = textareaRef.current
-      const wanted = mentionCaret.current
-      if (!target || wanted === null) return
-      mentionCaret.current = null
-      const position = Math.min(wanted, target.value.length)
-      target.focus()
-      target.setSelectionRange(position, position)
-    })
-  }, [])
+  const applyMention = useCallback(
+    (addition: string, at?: MentionMatch | null, targetKey = draftKeyRef.current): void => {
+      const activeAtApply = targetKey === draftKeyRef.current
+      setText((current) => {
+        const node = activeAtApply ? textareaRef.current : null
+        const cursor = node?.selectionStart ?? current.length
+        const active = at ?? detectMention(current, cursor)
+        const from = active ? active.start : cursor
+        const to = active ? active.cursor : cursor
+        const gap = active || from === 0 || /\s/.test(current[from - 1]) ? '' : ' '
+        if (activeAtApply) mentionCaret.current = from + gap.length + addition.length
+        return `${current.slice(0, from)}${gap}${addition}${current.slice(to)}`
+      }, targetKey)
+      if (!activeAtApply) return
+      setMention(null)
+      requestAnimationFrame(() => {
+        const target = textareaRef.current
+        const wanted = mentionCaret.current
+        if (!target || wanted === null) return
+        mentionCaret.current = null
+        const position = Math.min(wanted, target.value.length)
+        target.focus()
+        target.setSelectionRange(position, position)
+      })
+    },
+    [setText]
+  )
 
   /** The path of a file as the composer writes it: relative, with slashes. */
   const mentionToken = useCallback(
@@ -384,33 +639,39 @@ export function Composer() {
         target.setSelectionRange(position, position)
       })
     },
-    [slash, text, language]
+    [slash, text, language, setText]
   )
 
   const submit = useCallback(() => {
-    if (submitLock.current) return
-    if (pendingFileAdds.current > 0) return
-    if (!text.trim() && !images.length) return
+    const targetKey = draftKeyRef.current
+    const lockKey = clientKeyRef.current || targetKey || '__fallback__'
+    if (sendingClientsRef.current.has(lockKey)) return
+    if ((pendingAddsByKeyRef.current.get(targetKey) ?? 0) > 0) return
+    const currentDraft = readTargetDraft(targetKey)
+    if (!currentDraft.text.trim() && !currentDraft.images.length && !(currentDraft.files?.length ?? 0)) return
     // Hold the lock until Pi accepts the prompt. Releasing it when the box
     // clears lets a second Enter send the same draft again while the first
     // request is still starting.
-    submitLock.current = true
-    const draft = text
-    const shots = images.map(({ data, mimeType }) => ({ data, mimeType }))
+    sendingClientsRef.current.add(lockKey)
+    const fileReferences = (currentDraft.files ?? EMPTY_FILES).map(composerFileToken)
+    const visibleText = currentDraft.text
+    const draftText = [...fileReferences, visibleText].filter((part) => part.trim()).join('\n')
+    const shots = currentDraft.images.map(({ data, mimeType }) => ({ data, mimeType }))
     const delivery = kind
-    void send(draft, shots, delivery).finally(() => {
-      submitLock.current = false
+    void send(draftText, shots, delivery).finally(() => {
+      sendingClientsRef.current.delete(lockKey)
     })
-    setHistory((current) => [draft, ...current.filter((entry) => entry !== draft)].slice(0, 50))
+    patchDraft(targetKey, (prev) => ({
+      text: '',
+      images: EMPTY_IMAGES,
+      files: EMPTY_FILES,
+      pastedRefs: undefined,
+      history: [draftText, ...(prev.history ?? EMPTY_HISTORY).filter((entry) => entry !== draftText)].slice(0, 50)
+    }))
     setHistoryIndex(-1)
-    setText('')
-    setImages([])
-    imageBytesRef.current = 0
-    // The draft is gone, so the next picture pasted is a fresh reference.
-    pastedRefs.current.clear()
     closePalette()
     setMention(null)
-  }, [text, images, kind, send, closePalette])
+  }, [kind, send, closePalette, patchDraft, readTargetDraft, setHistoryIndex])
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
@@ -535,34 +796,39 @@ export function Composer() {
    * not take — a type outside its allowlist, a read-only folder — silently
    * stays the attachment it always was.
    */
-  const addPicturesInPlace = async (items: File[]): Promise<void> => {
+  const addPicturesInPlace = async (items: File[], targetKey: string): Promise<void> => {
     const mentions: string[] = []
-    const references: string[] = []
+    const attachments: ComposerDraftFile[] = []
     for (const file of items) {
       if (!file.type.startsWith('image/')) {
         const filePath = window.pi.fs.pathForFile(file)
-        if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+        if (filePath) attachments.push(makeComposerFile(filePath))
         continue
       }
-      if (file.size > MAX_IMAGE_DATA_BYTES || !reserveImageBytes(file.size)) {
+      if (file.size > MAX_IMAGE_DATA_BYTES || !reserveImageBytes(file.size, targetKey)) {
         const filePath = window.pi.fs.pathForFile(file)
-        if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+        if (filePath) attachments.push(makeComposerFile(filePath))
         continue
       }
       const base64 = await readBase64(file)
       if (!base64) {
-        releaseImageBytes(file.size)
+        releaseReservedBytes(file.size, targetKey)
         const filePath = window.pi.fs.pathForFile(file)
-        if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+        if (filePath) attachments.push(makeComposerFile(filePath))
         continue
       }
-      setImages((current) => [...current, { data: base64, mimeType: file.type, byteSize: file.size }])
+      releaseReservedBytes(file.size, targetKey)
+      setImages(
+        (current) => [...current, makeDraftImage(base64, file.type, file.size, file.name || 'image')],
+        targetKey
+      )
       // A clipboard picture keeps its name, size and stamp, so the same one
       // pasted twice is recognised before a second copy ever reaches the disk —
       // unless the composer no longer carries the name the first paste put in.
       const signature = `${file.name}|${file.size}|${file.type}|${file.lastModified}`
-      const earlier = pastedRefs.current.get(signature)
-      if (earlier && (textareaRef.current?.value ?? '').includes(earlier)) continue
+      const targetDraft = readTargetDraft(targetKey)
+      const earlier = targetDraft.pastedRefs?.[signature]
+      if (earlier && targetDraft.text.includes(earlier)) continue
       let saved: { path: string; root: string } | null = null
       try {
         saved = base64 ? await window.pi.fs.savePastedImage(base64, file.type) : null
@@ -571,94 +837,125 @@ export function Composer() {
       }
       if (!saved) continue
       const token = mentionToken(saved.root, saved.path)
-      pastedRefs.current.set(signature, token)
+      patchDraft(targetKey, (prev) => ({
+        ...prev,
+        pastedRefs: { ...(prev.pastedRefs ?? {}), [signature]: token }
+      }))
       mentions.push(token)
     }
-    // Anything that is not a picture keeps the reference it has always had.
-    if (references.length) useAppStore.getState().insertIntoComposer(references.join('\n'))
-    if (mentions.length) applyMention(`${mentions.join(' ')} `)
+    // Anything that is not a picture is a file attachment, shown by its icon
+    // and turned into a `@` token only when the message is sent.
+    if (attachments.length) {
+      setFiles((current) => mergeComposerFiles(current, attachments), targetKey)
+    }
+    if (mentions.length) applyMention(`${mentions.join(' ')} `, null, targetKey)
   }
 
   const addFiles = async (files: FileList | null): Promise<void> => {
     if (!files) return
-    pendingFileAdds.current += 1
-    setAddingFiles(true)
+    const targetKey = draftKeyRef.current
+    bumpPendingAdds(targetKey, 1)
     try {
       const items = Array.from(files)
       // The switch decides whether a pasted picture is also named in the text,
       // and a batch without a picture does not go near the text at all.
       if (pasteMentions && items.some((file) => file.type.startsWith('image/'))) {
-        await addPicturesInPlace(items)
+        await addPicturesInPlace(items, targetKey)
         return
       }
-      const references: string[] = []
+      const attachments: ComposerDraftFile[] = []
       for (const file of items) {
         if (file.type.startsWith('image/')) {
-          if (file.size > MAX_IMAGE_DATA_BYTES || !reserveImageBytes(file.size)) {
+          if (file.size > MAX_IMAGE_DATA_BYTES || !reserveImageBytes(file.size, targetKey)) {
             const filePath = window.pi.fs.pathForFile(file)
-            if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+            if (filePath) attachments.push(makeComposerFile(filePath))
             continue
           }
           const base64 = await readBase64(file)
+          releaseReservedBytes(file.size, targetKey)
           if (base64) {
-            setImages((current) => [...current, { data: base64, mimeType: file.type, byteSize: file.size }])
+            setImages(
+              (current) => [...current, makeDraftImage(base64, file.type, file.size, file.name || 'image')],
+              targetKey
+            )
           } else {
-            releaseImageBytes(file.size)
             const filePath = window.pi.fs.pathForFile(file)
-            if (filePath) references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+            if (filePath) attachments.push(makeComposerFile(filePath))
           }
           continue
         }
         const filePath = window.pi.fs.pathForFile(file)
         if (!filePath) continue
-        references.push('@' + JSON.stringify(filePath.replace(/\\/g, '/')))
+        attachments.push(makeComposerFile(filePath))
       }
-      if (references.length) useAppStore.getState().insertIntoComposer(references.join('\n'))
+      if (attachments.length) {
+        setFiles((current) => mergeComposerFiles(current, attachments), targetKey)
+      }
     } finally {
-      pendingFileAdds.current -= 1
-      setAddingFiles(pendingFileAdds.current > 0)
+      bumpPendingAdds(targetKey, -1)
     }
   }
 
   const pickFiles = useCallback(async () => {
-    pendingFileAdds.current += 1
-    setAddingFiles(true)
+    const targetKey = draftKeyRef.current
+    bumpPendingAdds(targetKey, 1)
     try {
-      const remainingImageBytes = Math.max(0, MAX_COMPOSER_IMAGE_BYTES - imageBytesRef.current)
+      const committedBytes = sumImageBytes(readTargetDraft(targetKey).images)
+      const pendingBytes = pendingBytesByKeyRef.current.get(targetKey) ?? 0
+      const remainingImageBytes = Math.max(0, MAX_COMPOSER_IMAGE_BYTES - committedBytes - pendingBytes)
       const picked = await window.pi.dialog.pickFiles(
         workspace?.path || status.cwd || undefined,
         remainingImageBytes
       )
-      const images: ComposerImage[] = []
-      const references: string[] = []
+      const pickedImages: ComposerDraftImage[] = []
+      const pickedFiles: ComposerDraftFile[] = []
       for (const item of picked) {
         if (item.kind === 'path') {
-          references.push('@' + JSON.stringify(item.path.replace(/\\/g, '/')))
+          pickedFiles.push(makeComposerFile(item.path))
           continue
         }
         const byteSize = imageByteLength(item.data)
-        if (!reserveImageBytes(byteSize)) {
-          if (item.path) references.push('@' + JSON.stringify(item.path.replace(/\\/g, '/')))
+        if (!reserveImageBytes(byteSize, targetKey)) {
+          if (item.path) pickedFiles.push(makeComposerFile(item.path))
           continue
         }
-        images.push({ data: item.data, mimeType: item.mimeType, byteSize })
+        releaseReservedBytes(byteSize, targetKey)
+        pickedImages.push(
+          makeDraftImage(
+            item.data,
+            item.mimeType,
+            byteSize,
+            item.path ? relativePath(workspace?.path ?? '', item.path) : 'image'
+          )
+        )
       }
-      if (images.length) setImages((current) => [...current, ...images])
-      if (references.length) useAppStore.getState().insertIntoComposer(references.join('\n'))
+      if (pickedImages.length) setImages((current) => [...current, ...pickedImages], targetKey)
+      if (pickedFiles.length) {
+        setFiles((current) => mergeComposerFiles(current, pickedFiles), targetKey)
+      }
     } catch {
       useAppStore.getState().showToast('Could not add files', 'error')
     } finally {
-      pendingFileAdds.current -= 1
-      setAddingFiles(pendingFileAdds.current > 0)
+      bumpPendingAdds(targetKey, -1)
     }
-  }, [workspace?.path, status.cwd, reserveImageBytes])
+  }, [
+    workspace?.path,
+    status.cwd,
+    bumpPendingAdds,
+    readTargetDraft,
+    reserveImageBytes,
+    releaseReservedBytes,
+    setImages,
+    setFiles
+  ])
 
   const insertMenuCommand = useCallback(
     (command: PiCommand) => {
-      const prefix = text.trimEnd()
+      const targetKey = draftKeyRef.current
+      const prefix = readTargetDraft(targetKey).text.trimEnd()
       const commandName = command.source === 'app' ? appCommandName(command.name, language) : command.name
       const next = `${prefix ? `${prefix}\n` : ''}/${commandName} `
-      setText(next)
+      setText(next, targetKey)
       setSlash(null)
       setMention(null)
       requestAnimationFrame(() => {
@@ -666,9 +963,10 @@ export function Composer() {
         if (!target) return
         target.focus()
         target.setSelectionRange(next.length, next.length)
+        target.scrollTop = target.scrollHeight
       })
     },
-    [text, language]
+    [language, readTargetDraft, setText]
   )
 
   const pendingQueue = [
@@ -722,14 +1020,8 @@ export function Composer() {
         <div
           className="composer"
           data-streaming={isStreaming}
-          data-has-content={Boolean(text.trim() || images.length > 0)}
+          data-has-content={Boolean(text.trim() || images.length > 0 || files.length > 0)}
         >
-          {toast ? (
-            <div className="composer__notice" data-level={toast.level}>
-              {t(toast.text)}
-            </div>
-          ) : null}
-
           {pendingQueue.length > 0 ? (
             <div className="composer__queue">
               {pendingQueue.map((entry, index) => (
@@ -747,7 +1039,7 @@ export function Composer() {
             <div className="composer__queue">
               <div className="composer__attachments">
                 {images.map((image, index) => (
-                  <span className="composer__attachment" key={index}>
+                  <span className="composer__attachment" key={image.id}>
                     <ImageButton
                       src={`data:${image.mimeType};base64,${image.data}`}
                       alt="attachment"
@@ -756,12 +1048,31 @@ export function Composer() {
                     <button
                       type="button"
                       className="composer__attachment-remove"
-                      onClick={() => {
-                        releaseImageBytes(image.byteSize)
-                        setImages((current) => current.filter((_, i) => i !== index))
-                      }}
+                      onClick={() => setImages((current) => current.filter((item) => item.id !== image.id))}
                       aria-label={`${t('Remove image')} ${index + 1}`}
                       title={`${t('Remove image')} ${index + 1}`}
+                    >
+                      <X size={10} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {files.length > 0 ? (
+            <div className="composer__queue">
+              <div className="composer__attachments composer__attachments--files">
+                {files.map((file) => (
+                  <span className="composer__file" key={file.id} title={file.path}>
+                    <FileIcon name={file.name} size={14} />
+                    <span className="composer__file-name">{file.name}</span>
+                    <button
+                      type="button"
+                      className="composer__file-remove"
+                      onClick={() => setFiles((current) => current.filter((item) => item.id !== file.id))}
+                      aria-label={`${t('Remove file')} ${file.name}`}
+                      title={`${t('Remove file')} ${file.name}`}
                     >
                       <X size={10} />
                     </button>
@@ -890,7 +1201,7 @@ export function Composer() {
                 type="button"
                 className="btn btn--primary composer__send"
                 onClick={submit}
-                disabled={!canCompose || addingFiles || (!text.trim() && !images.length)}
+                disabled={!canCompose || addingFiles || (!text.trim() && !images.length && !files.length)}
                 aria-busy={addingFiles || undefined}
                 aria-label={t('Send message')}
                 title={t('Send message')}

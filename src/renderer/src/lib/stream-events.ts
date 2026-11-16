@@ -301,15 +301,20 @@ export function resetStreamState(threadId?: string): void {
   else threadStates.delete(threadId)
 }
 
-/** Preserve event identity and ordering when a draft becomes a session file. */
-export function rekeyStreamState(from: string, to: string): void {
+/** Preserve event identity and ordering when a draft becomes a session file (or a fork inherits sequence). */
+export function rekeyStreamState(from: string, to: string, move = true): void {
   if (from === to) return
   const state = threadStates.get(from)
   if (!state) return
   const target = threadStates.get(to)
-  if (target) state.sequence = Math.max(state.sequence, target.sequence)
-  threadStates.set(to, state)
-  threadStates.delete(from)
+  if (move) {
+    if (target) state.sequence = Math.max(state.sequence, target.sequence)
+    threadStates.set(to, state)
+    threadStates.delete(from)
+    return
+  }
+  const cloned = stateFor(to)
+  cloned.sequence = Math.max(cloned.sequence, state.sequence)
 }
 
 /* ------------------------------------------------------------------ *

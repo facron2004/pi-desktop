@@ -12,6 +12,16 @@ import {
 export type TaskModeSeed = 'default' | 'plan'
 
 /**
+ * Tells the model to narrate each step in visible text before invoking tools.
+ *
+ * Raw `<thinking>` blocks are hidden in Pi Desktop (`ThinkingBlock` shows only
+ * that reasoning occurred), while `AssistantMessage` relies on short spoken
+ * commentary before tool batches to explain each step on the reading column.
+ */
+export const PROGRESS_COMMENTARY_GUIDELINE =
+  "Internal thinking is hidden from the user. Before calling tools—both at the start of a turn and before each new step after tool results—write a brief one-sentence progress note in plain text (in the user's language) explaining what you are about to do. Never run a chain of tool calls silently without visible text commentary."
+
+/**
  * Runs inside Pi so mode state, tool selection and goal continuation belong to the session.
  *
  * `computerUse` is the Settings switch at the moment this process starts.
@@ -38,6 +48,7 @@ export default function (pi) {
   const subagentTool = 'subagent';
   const computerTool = 'computer';
   const todoTool = 'desktop_todo';
+  const progressGuideline = ${JSON.stringify(PROGRESS_COMMENTARY_GUIDELINE)};
   const externalContextEntry = ${JSON.stringify(EXTERNAL_CONTEXT_ENTRY)};
   const externalContextCheckedEntry = ${JSON.stringify(EXTERNAL_CONTEXT_CHECKED_ENTRY)};
   const externalContextClassificationVersion = ${JSON.stringify(EXTERNAL_CONTEXT_CLASSIFICATION_VERSION)};
@@ -247,6 +258,17 @@ export default function (pi) {
     }
   });
 
+  pi.registerCommand('desktop-rewind', {
+    description: 'Move this conversation back to before a message so it can be edited',
+    handler: async (value, ctx) => {
+      const targetId = (value || '').trim();
+      if (!targetId) throw new Error('Usage: /desktop-rewind <entryId>');
+      if (!ctx.isIdle()) throw new Error('Wait for the current turn to finish before editing');
+      const result = await ctx.navigateTree(targetId, { summarize: false });
+      if (result.cancelled) throw new Error('Editing was cancelled');
+    }
+  });
+
   pi.registerCommand('plan', {
     description: 'Enter Plan Mode, or use /plan off to leave it',
     handler: async (value, ctx) => {
@@ -311,7 +333,11 @@ export default function (pi) {
     persist(ctx);
   });
 
-  pi.on('before_agent_start', () => {
+  pi.on('before_agent_start', (event) => {
+    const guidelines = event?.systemPromptOptions?.promptGuidelines;
+    if (Array.isArray(guidelines) && !guidelines.includes(progressGuideline)) {
+      guidelines.push(progressGuideline);
+    }
     if (mode === 'plan') return { message: {
       customType: 'desktop-plan-context', display: false,
       content: 'Plan Mode is active. Inspect files using the read-only tools, clarify requirements when necessary, and produce an actionable plan. Do not modify files or execute commands. When the plan is ready, call exit_plan_mode with the complete plan so the user can approve it.'
@@ -372,6 +398,7 @@ export default function (pi) {
   pi.registerTool({
     name: exitPlanTool, label: 'Exit plan mode',
     description: 'Submit the finished plan to the user for approval. The user may approve it, which leaves Plan Mode and begins implementation, or reject it so planning continues.',
+    promptGuidelines: [progressGuideline],
     parameters: Type.Object({ plan: Type.String({ minLength: 1 }) }),
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async execute(_id, input, _signal, _onUpdate, ctx) {
@@ -405,7 +432,8 @@ export default function (pi) {
     description: 'Replace the checklist of steps for the current task. Send the full list on every call: pending steps, at most one in_progress, completed only after the step is verified.',
     promptSnippet: 'Keep the checklist of the current task',
     promptGuidelines: [
-      'Use desktop_todo whenever a task takes more than two steps: send the whole list each time, keep at most one step in_progress, and mark a step completed only after it is verified. Update the list when the plan changes.'
+      'Use desktop_todo whenever a task takes more than two steps: send the whole list each time, keep at most one step in_progress, and mark a step completed only after it is verified. Update the list when the plan changes.',
+      progressGuideline
     ],
     parameters: Type.Object({
       items: Type.Array(Type.Object({

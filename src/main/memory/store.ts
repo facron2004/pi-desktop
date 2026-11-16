@@ -10,6 +10,7 @@ import {
 } from 'node:fs'
 import path from 'node:path'
 import type { MemoryEntry, MemoryKind, MemoryScope, MemoryState } from '@shared/types'
+import { canonicalSessionFile } from '../pi/session-file'
 import { properLockfile } from '../proper-lockfile'
 import { redactSecrets } from './redact'
 
@@ -133,13 +134,17 @@ function writeTextAtomic(file: string, value: string): void {
   }
 }
 
-function memoryLedgerFileVersion(file: string): string | undefined {
+function memoryFileVersion(file: string): string | undefined {
   try {
     const stats = statSync(file, { bigint: true })
     return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : undefined
   }
+}
+
+function cloneEntries(entries: MemoryEntry[]): MemoryEntry[] {
+  return entries.map((entry) => ({ ...entry }))
 }
 
 function cloneLedger(ledger: MemoryLedgerFile): MemoryLedgerFile {
@@ -342,6 +347,8 @@ export class MemoryStore {
   readonly rolloutDir: string
   private ledgerCache: MemoryLedgerFile | undefined
   private ledgerFileVersion: string | undefined
+  private entriesCache: MemoryEntry[] | undefined
+  private entriesFileVersion: string | undefined
 
   constructor(root: string) {
     this.root = path.resolve(root)
@@ -357,24 +364,38 @@ export class MemoryStore {
   }
 
   readEntries(): MemoryEntry[] {
+    const version = memoryFileVersion(this.entriesFile)
+    if (version !== undefined && version === this.entriesFileVersion && this.entriesCache) {
+      return cloneEntries(this.entriesCache)
+    }
     const file = readJson<MemoryFile>(this.entriesFile, { version: 1, updatedAt: 0, entries: [] })
-    if (!Array.isArray(file.entries)) return []
-    return file.entries
-      .filter(
-        (entry) =>
-          entry &&
-          typeof entry.id === 'string' &&
-          typeof entry.text === 'string' &&
-          (entry.scope === 'global' || entry.scope === 'project') &&
-          KIND_ORDER.includes(entry.kind)
-      )
-      .map((entry) => ({
-        ...entry,
-        text: redactSecrets(entry.text).slice(0, MAX_ENTRY_CHARS)
-      }))
+    const entries = !Array.isArray(file.entries)
+      ? []
+      : file.entries
+          .filter(
+            (entry) =>
+              entry &&
+              typeof entry.id === 'string' &&
+              typeof entry.text === 'string' &&
+              (entry.scope === 'global' || entry.scope === 'project') &&
+              KIND_ORDER.includes(entry.kind)
+          )
+          .map((entry) => ({
+            ...entry,
+            text: redactSecrets(entry.text).slice(0, MAX_ENTRY_CHARS)
+          }))
+    const afterReadVersion = memoryFileVersion(this.entriesFile)
+    if (version !== undefined && version === afterReadVersion) {
+      this.entriesCache = cloneEntries(entries)
+      this.entriesFileVersion = version
+    } else {
+      this.entriesCache = undefined
+      this.entriesFileVersion = undefined
+    }
+    return entries
   }
 
-  private writeEntries(entries: MemoryEntry[]): void {
+  private writeEntries(entries: MemoryEntry[]): MemoryEntry[] {
     this.ensure()
     const next = enforceCaps(entries)
     writeJsonAtomic(this.entriesFile, {
@@ -383,6 +404,9 @@ export class MemoryStore {
       entries: next
     } satisfies MemoryFile)
     writeTextAtomic(this.summaryFile, renderMemorySummary(next))
+    this.entriesCache = cloneEntries(next)
+    this.entriesFileVersion = memoryFileVersion(this.entriesFile)
+    return next
   }
 
   async merge(candidates: MemoryCandidate[]): Promise<MergeResult> {
@@ -422,8 +446,8 @@ export class MemoryStore {
       })
       added += 1
     }
-    this.writeEntries(entries)
-    return { added, total: this.readEntries().length }
+    const written = this.writeEntries(entries)
+    return { added, total: written.length }
   }
 
   async remove(id: string): Promise<void> {
@@ -441,6 +465,8 @@ export class MemoryStore {
       this.writeLedger({ version: 1, generation: generation + 1, sessions: {} })
       writeJsonAtomic(this.entriesFile, { version: 1, updatedAt: Date.now(), entries: [] } satisfies MemoryFile)
       writeTextAtomic(this.summaryFile, '')
+      this.entriesCache = []
+      this.entriesFileVersion = memoryFileVersion(this.entriesFile)
       rmSync(this.rolloutDir, { recursive: true, force: true })
       mkdirSync(this.rolloutDir, { recursive: true })
     })
@@ -455,7 +481,7 @@ export class MemoryStore {
   }
 
   readLedger(): MemoryLedgerFile {
-    const version = memoryLedgerFileVersion(this.ledgerFile)
+    const version = memoryFileVersion(this.ledgerFile)
     if (version !== undefined && version === this.ledgerFileVersion && this.ledgerCache) {
       return cloneLedger(this.ledgerCache)
     }
@@ -470,7 +496,7 @@ export class MemoryStore {
         ? recentLedgerSessions(sessions as Record<string, MemorySessionRecord>)
         : {}
     }
-    const afterReadVersion = memoryLedgerFileVersion(this.ledgerFile)
+    const afterReadVersion = memoryFileVersion(this.ledgerFile)
     if (version !== undefined && version === afterReadVersion) {
       this.ledgerCache = cloneLedger(ledger)
       this.ledgerFileVersion = version
@@ -494,7 +520,7 @@ export class MemoryStore {
     }
     writeJsonAtomic(this.ledgerFile, ledger)
     this.ledgerCache = cloneLedger(ledger)
-    this.ledgerFileVersion = memoryLedgerFileVersion(this.ledgerFile)
+    this.ledgerFileVersion = memoryFileVersion(this.ledgerFile)
   }
 
   /** True when this exact file revision has already been considered. */
@@ -503,9 +529,13 @@ export class MemoryStore {
     stats?: MemorySessionRevision,
     snapshotRecord?: MemorySessionRecord | null
   ): boolean {
-    const record = snapshotRecord === undefined
-      ? this.readLedger().sessions[file]
-      : snapshotRecord ?? undefined
+    let record: MemorySessionRecord | undefined
+    if (snapshotRecord !== undefined) {
+      record = snapshotRecord ?? undefined
+    } else {
+      const sessions = this.readLedger().sessions
+      record = sessions[canonicalSessionFile(file)] ?? sessions[file]
+    }
     if (!record) return false
     const current = stats ?? statSafe(file)
     if (!current) return false
@@ -522,12 +552,14 @@ export class MemoryStore {
     expectedGeneration?: number
   ): Promise<boolean> {
     if (!stats) return Promise.resolve(false)
+    const key = canonicalSessionFile(file)
     return this.withLock(() => {
       const ledger = this.readLedger()
       if (expectedGeneration !== undefined && ledger.generation !== expectedGeneration) return false
-      const previous = ledger.sessions[file]
+      const previous = ledger.sessions[key] ?? ledger.sessions[file]
+      if (key !== file && file in ledger.sessions) delete ledger.sessions[file]
       const attempts = skipped === 'error' ? (previous?.attempts ?? 0) + 1 : 0
-      ledger.sessions[file] = {
+      ledger.sessions[key] = {
         mtimeMs: stats.mtimeMs,
         size: stats.size,
         ...(stats.identity ? { identity: stats.identity } : {}),
@@ -542,7 +574,8 @@ export class MemoryStore {
   }
 
   sessionRecord(file: string): MemorySessionRecord | undefined {
-    return this.readLedger().sessions[file]
+    const sessions = this.readLedger().sessions
+    return sessions[canonicalSessionFile(file)] ?? sessions[file]
   }
 
   writeRolloutSummary(
@@ -616,7 +649,7 @@ export class MemoryStore {
     const updatedAt = latestUpdatedAt(entries)
     return {
       root: this.root,
-      summary: this.fullSummary(),
+      summary: renderMemorySummary(entries),
       entries,
       updatedAt,
       pending,

@@ -1,4 +1,4 @@
-import { isValidElement, type ReactNode } from 'react'
+import { isValidElement, memo, type ReactNode } from 'react'
 import type { ToolItem } from '../../lib/thread'
 import { replyStartOf, type Turn } from '../../lib/turns'
 import { AssistantImage, ThinkingBlock } from '../MessageItem'
@@ -29,7 +29,7 @@ type TurnSegment = { kind: 'node'; node: ReactNode } | { kind: 'process'; buffer
  * Tools stay grouped inside it until text, thinking or an image interrupts them,
  * even when they span several assistant messages.
  */
-export function AssistantMessage({
+export const AssistantMessage = memo(function AssistantMessage({
   turn,
   toolMap,
   liveTail,
@@ -181,4 +181,4 @@ export function AssistantMessage({
       })}
     </>
   )
-}
+})

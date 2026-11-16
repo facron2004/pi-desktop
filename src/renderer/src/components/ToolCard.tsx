@@ -92,12 +92,15 @@ export const ToolCard = memo(function ToolCard({
     } else setOpen(!open)
   }
   const [full, setFullState] = useState(() => readToolFull(threadKey, item.id))
+  useEffect(() => {
+    setFullState(readToolFull(threadKey, item.id))
+  }, [threadKey, item.id])
   const setFull = (value: boolean) => {
     setFullState(value)
     writeToolFull(threadKey, item.id, value)
   }
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
-  const workspace = useAppStore((state) => state.workspace)
+  const workspacePath = useAppStore((state) => state.workspace?.path)
   const t = useT()
 
   const summary = useMemo(() => summarizeTool(item), [item])
@@ -145,7 +148,7 @@ export const ToolCard = memo(function ToolCard({
       : item.toolName === 'read' || item.toolName === 'edit' || item.toolName === 'write'
         ? {
             label: 'Ask about this file',
-            text: relativePath(workspace?.path ?? '', String(item.args?.path ?? ''))
+            text: relativePath(workspacePath ?? '', String(item.args?.path ?? ''))
           }
         : null
 
@@ -202,7 +205,7 @@ export const ToolCard = memo(function ToolCard({
     )
   }
   const linkText = viewedFile
-    ? relativePath(workspace?.path ?? '', viewedFile) || summary.detail
+    ? relativePath(workspacePath ?? '', viewedFile) || summary.detail
     : summary.detail
 
   const details = (
@@ -253,7 +256,6 @@ export const ToolCard = memo(function ToolCard({
                 {linkText}
               </button>
             )}
-            {item.status === 'running' ? <span className="spinner" /> : null}
             {StateIcon ? (
               <StateIcon size={13} color={item.status === 'error' ? 'var(--status-danger)' : undefined} />
             ) : null}
@@ -284,9 +286,7 @@ export const ToolCard = memo(function ToolCard({
             <span className="tool__summary" title={summary.detail}>
               {summary.detail}
             </span>
-            {item.status === 'running' ? (
-              <span className="spinner" />
-            ) : StateIcon ? (
+            {StateIcon ? (
               <StateIcon size={13} color={item.status === 'error' ? 'var(--status-danger)' : undefined} />
             ) : null}
             {item.durationMs !== undefined ? (

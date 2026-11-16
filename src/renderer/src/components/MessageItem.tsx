@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import {
   Brain,
   Check,
@@ -16,21 +16,21 @@ import { Markdown } from './Markdown'
 import { ImageButton } from './Lightbox'
 import { useT } from '../lib/i18n'
 
-export function UserMessage({
+export const UserMessage = memo(function UserMessage({
   item,
   onCopy,
   copied,
-  forkEntryId,
-  onFork,
-  forking
+  editEntryId,
+  onEdit,
+  editing
 }: {
   item: UserItem
   onCopy: (id: string, text: string) => void
   copied: string | null
-  /** The Pi entry id this prompt can be forked from, when it can. */
-  forkEntryId?: string
-  onFork?: (entryId: string) => void
-  forking?: boolean
+  /** The Pi entry id this prompt can be rewound to, when it can. */
+  editEntryId?: string
+  onEdit?: (entryId: string, text: string, images: UserItem['images']) => void
+  editing?: boolean
 }) {
   const t = useT()
   return (
@@ -62,12 +62,12 @@ export function UserMessage({
           >
             {copied === item.id ? <Check size={14} /> : <Copy size={14} />}
           </button>
-          {forkEntryId && onFork ? (
+          {editEntryId && onEdit ? (
             <button
               type="button"
               className="ghost-btn ghost-btn--edit"
-              onClick={() => onFork(forkEntryId)}
-              disabled={forking}
+              onClick={() => onEdit(editEntryId, item.text, item.images)}
+              disabled={editing}
               title={t('Edit message')}
               aria-label={t('Edit message')}
             >
@@ -78,7 +78,7 @@ export function UserMessage({
       </div>
     </div>
   )
-}
+})
 
 /**
  * The assistant text moved to `conversation/StreamingText` so the document
@@ -93,7 +93,7 @@ export { StreamingText as AssistantText } from './conversation/StreamingText'
  * Some models answer with an image instead of text. It arrives as base64 in
  * the message, so it can be shown and written to disk without a round trip.
  */
-export function AssistantImage({ data, mimeType }: { data: string; mimeType: string }) {
+export const AssistantImage = memo(function AssistantImage({ data, mimeType }: { data: string; mimeType: string }) {
   const [saved, setSaved] = useState(false)
   const t = useT()
 
@@ -123,9 +123,9 @@ export function AssistantImage({ data, mimeType }: { data: string; mimeType: str
       </figcaption>
     </figure>
   )
-}
+})
 
-export function ThinkingBlock({
+export const ThinkingBlock = memo(function ThinkingBlock({
   text,
   streaming
 }: {
@@ -153,7 +153,7 @@ export function ThinkingBlock({
 
   if (!text.trim()) return null
   return (
-    <div className="thinking" data-open="false">
+    <div className="thinking" data-open="false" data-streaming={streaming ? 'true' : undefined}>
       {/* The model's raw reasoning is not conversation content. The row says
           that a thought happened and how long it took; it never prints the
           private chain of thought. */}
@@ -173,7 +173,7 @@ export function ThinkingBlock({
       </div>
     </div>
   )
-}
+})
 
 const NOTICE_ICONS = {
   info: Info,
@@ -182,7 +182,7 @@ const NOTICE_ICONS = {
   success: CircleCheck
 } as const
 
-export function NoticeMessage({ item }: { item: NoticeItem }) {
+export const NoticeMessage = memo(function NoticeMessage({ item }: { item: NoticeItem }) {
   const t = useT()
   const Icon = NOTICE_ICONS[item.level]
   return (
@@ -191,4 +191,4 @@ export function NoticeMessage({ item }: { item: NoticeItem }) {
       <span>{t(item.text)}</span>
     </div>
   )
-}
+})

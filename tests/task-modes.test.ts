@@ -1,7 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Type } from 'typebox'
-import { taskModesExtension, type TaskModeSeed } from '../src/main/pi/task-modes'
+import {
+  PROGRESS_COMMENTARY_GUIDELINE,
+  taskModesExtension,
+  type TaskModeSeed
+} from '../src/main/pi/task-modes'
 import {
   EXTERNAL_CONTEXT_CLASSIFICATION_VERSION,
   EXTERNAL_CONTEXT_CHECKED_ENTRY,
@@ -21,6 +25,10 @@ type GoalStatus = { text: string; status: 'active' | 'paused' | 'blocked' | 'com
 type Context = {
   isIdle: () => boolean
   sessionManager: { getBranch: () => Entry[] }
+  navigateTree: (
+    targetId: string,
+    options?: { summarize?: boolean }
+  ) => Promise<{ cancelled: boolean }>
   ui: {
     setStatus: (key: string, value: StatusValue) => void
     confirm: (title: string, message: string) => Promise<boolean | undefined>
@@ -30,6 +38,7 @@ type Handler = (event: Record<string, unknown>, ctx: Context) => unknown
 type ToolResult = { content: { type: string; text: string }[]; details?: unknown; isError?: boolean }
 type Tool = {
   name: string
+  promptGuidelines?: string[]
   execute: (
     id: string,
     input: Record<string, unknown>,
@@ -60,9 +69,14 @@ function fixture(entries: Entry[] = [], computerUse = false, defaultMode: TaskMo
   )
   const sent: string[] = []
   const confirms: { title: string; message: string }[] = []
+  const navigations: { targetId: string; options?: { summarize?: boolean } }[] = []
   const ctx: Context = {
     isIdle: () => idle,
     sessionManager: { getBranch: () => entries },
+    navigateTree: async (targetId, options) => {
+      navigations.push({ targetId, options })
+      return { cancelled: false }
+    },
     ui: {
       setStatus: (key, value) => { statuses.set(key, value) },
       confirm: async (title, message) => {
@@ -110,6 +124,7 @@ function fixture(entries: Entry[] = [], computerUse = false, defaultMode: TaskMo
     entries,
     sent,
     confirms,
+    navigations,
     active: () => active,
     mode: () => statuses.get('pi-desktop-mode'),
     goal: () => parseGoal(),
@@ -130,7 +145,8 @@ function fixture(entries: Entry[] = [], computerUse = false, defaultMode: TaskMo
     finish: (status: 'complete' | 'blocked') =>
       tools.get('desktop_goal_finish')!.execute('goal', { status, summary: 'Verified outcome' }, undefined, undefined, ctx),
     todo: (items: { text: string; status: string }[]) =>
-      tools.get('desktop_todo')!.execute('todo', { items }, undefined, undefined, ctx)
+      tools.get('desktop_todo')!.execute('todo', { items }, undefined, undefined, ctx),
+    toolGuidelines: (name: string) => tools.get(name)?.promptGuidelines ?? []
   }
 }
 
@@ -435,6 +451,13 @@ test('Computer Use is a setting: on in the normal loadout, off in Plan Mode, and
   assert.deepEqual(f.active(), [...f.base, 'desktop_todo', 'computer'])
 })
 
+test('the edit command rewinds the active branch instead of forking a conversation', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.command('desktop-rewind', 'entry-1')
+  assert.deepEqual(f.navigations, [{ targetId: 'entry-1', options: { summarize: false } }])
+})
+
 test('Subagent Mode adds the subagent tool and a delegation instruction', async () => {
   const f = fixture()
   f.emit('session_start')
@@ -576,4 +599,22 @@ test('A stop that goes directly to final settlement records the goal as blocked'
   f.emit('agent_settled', { aborted: true })
   assert.equal((f.entries.at(-1)!.data as { goal: { status: string } }).goal.status, 'blocked')
   assert.equal(f.emit('agent_before_settle', boundary), undefined)
+})
+
+test('every mode carries the visible step-commentary guideline without duplicating it', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  assert.ok(f.toolGuidelines('desktop_todo').includes(PROGRESS_COMMENTARY_GUIDELINE))
+  assert.ok(f.toolGuidelines('exit_plan_mode').includes(PROGRESS_COMMENTARY_GUIDELINE))
+
+  const promptGuidelines: string[] = []
+  assert.equal(f.emit('before_agent_start', { systemPromptOptions: { promptGuidelines } }), undefined)
+  assert.deepEqual(promptGuidelines, [PROGRESS_COMMENTARY_GUIDELINE])
+
+  await f.modeCommand('plan')
+  const planEvent = f.emit('before_agent_start', { systemPromptOptions: { promptGuidelines } }) as {
+    message: { customType: string }
+  }
+  assert.equal(planEvent.message.customType, 'desktop-plan-context')
+  assert.deepEqual(promptGuidelines, [PROGRESS_COMMENTARY_GUIDELINE])
 })

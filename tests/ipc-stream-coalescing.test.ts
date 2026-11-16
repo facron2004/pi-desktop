@@ -2,13 +2,21 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
 import { bridgeRuntime, type IpcContext } from '../src/main/ipc'
-import type { PiEvent } from '../src/shared/types'
+import type { PiEvent, RuntimeEvent, RuntimeQueueEvent } from '../src/shared/types'
 
 interface MockSentMessage {
   channel: string
   payload: any
   timestamp: number
 }
+
+function unwrapRuntimeEvents(sent: MockSentMessage[]): RuntimeEvent[] {
+  return sent
+    .filter((s) => s.channel === 'runtime:event')
+    .flatMap((s) => (Array.isArray(s.payload) ? s.payload : [s.payload]))
+}
+
+const flushBatch = () => new Promise<void>((resolve) => setTimeout(resolve, 35))
 
 class MockBrowserWindow extends EventEmitter {
   isDestroyedVal = false
@@ -77,31 +85,32 @@ test('IPC: multi-session interleaved streaming token coalescing across distinct 
     }
   }
 
-  // Await microtask flush
-  await new Promise((resolve) => setTimeout(resolve, 30))
+  // Await 8ms batch flush timer
+  await flushBatch()
 
-  const deliveries = window.sent.filter((s) => s.channel === 'runtime:event')
+  const rawDeliveries = window.sent.filter((s) => s.channel === 'runtime:event')
+  const deliveries = unwrapRuntimeEvents(window.sent)
 
-  // Under backward-scan coalescing, exactly 3 deliveries should occur (1 per session)
+  // Under per-owner coalescing, exactly 3 single-event deliveries should occur (1 per session)
   assert.equal(
-    deliveries.length,
+    rawDeliveries.length,
     3,
-    `Expected 3 coalesced deliveries for 3 sessions, got ${deliveries.length}`
+    `Expected 3 coalesced deliveries for 3 sessions, got ${rawDeliveries.length}`
   )
 
   for (const session of sessions) {
-    const delivery = deliveries.find((d) => d.payload.ownerId === session)
-    assert.ok(delivery, `Delivery for ${session} must be present`)
+    const event = deliveries.find((d) => d.ownerId === session)
+    assert.ok(event, `Delivery for ${session} must be present`)
     const expectedText = `${session}:T1 ${session}:T2 ${session}:T3`
     assert.equal(
-      delivery.payload.event.assistantMessageEvent.delta,
+      (event.event as any).assistantMessageEvent.delta,
       expectedText,
       `Text for ${session} should match concatenated tokens`
     )
   }
 })
 
-test('IPC: synchronous flush ahead of structural events guarantees zero event-order inversion', async () => {
+test('IPC: synchronous flush ahead of structural events guarantees zero event-order inversion and preserves other sessions', async () => {
   const window = new MockBrowserWindow()
   const supervisor = new EventEmitter()
   bridgeRuntime(createTestContext(window, supervisor))
@@ -122,7 +131,7 @@ test('IPC: synchronous flush ahead of structural events guarantees zero event-or
     } as PiEvent
   })
 
-  // Session A emits structural agent_settled immediately without awaiting microtask
+  // Session A emits structural agent_settled immediately without awaiting batch timer
   supervisor.emit('event', {
     ownerId: 'session-A',
     event: {
@@ -131,19 +140,31 @@ test('IPC: synchronous flush ahead of structural events guarantees zero event-or
     } as PiEvent
   })
 
-  await new Promise((resolve) => setTimeout(resolve, 30))
+  // Selective per-owner flush: Session A flushed synchronously; Session B stays buffered until timer
+  const syncEvents = unwrapRuntimeEvents(window.sent)
+  assert.deepEqual(
+    syncEvents.map((e) => `${e.ownerId}:${e.event.type}`),
+    ['session-A:message_update', 'session-A:agent_settled'],
+    'Only session-A deltas must flush synchronously ahead of session-A structural event'
+  )
 
-  const deliveries = window.sent.filter((s) => s.channel === 'runtime:event')
+  await flushBatch()
+
+  const deliveries = unwrapRuntimeEvents(window.sent)
 
   const settledIndex = deliveries.findIndex(
-    (d) => d.payload.ownerId === 'session-A' && d.payload.event.type === 'agent_settled'
+    (d) => d.ownerId === 'session-A' && d.event.type === 'agent_settled'
   )
   const aTextIndex = deliveries.findIndex(
-    (d) => d.payload.ownerId === 'session-A' && d.payload.event.type === 'message_update'
+    (d) => d.ownerId === 'session-A' && d.event.type === 'message_update'
+  )
+  const bTextIndex = deliveries.findIndex(
+    (d) => d.ownerId === 'session-B' && d.event.type === 'message_update'
   )
 
   assert.ok(aTextIndex >= 0, 'Session A text delta must be delivered')
   assert.ok(settledIndex >= 0, 'Session A agent_settled must be delivered')
+  assert.ok(bTextIndex > settledIndex, 'Session B delta should arrive later on batch timer')
   assert.ok(
     aTextIndex < settledIndex,
     `Text delta (index ${aTextIndex}) must precede agent_settled (index ${settledIndex})`
@@ -188,19 +209,19 @@ test('IPC: tool_execution_update replaces earlier snapshots in-place with multi-
     } as PiEvent
   })
 
-  await new Promise((resolve) => setTimeout(resolve, 30))
+  await flushBatch()
 
-  const deliveries = window.sent.filter(
-    (s) => s.channel === 'runtime:event' && s.payload.event.type === 'tool_execution_update'
+  const deliveries = unwrapRuntimeEvents(window.sent).filter(
+    (e) => e.event.type === 'tool_execution_update'
   )
 
   assert.equal(deliveries.length, 2, 'Earlier tool updates must be replaced in-place')
 
-  const aUpdate = deliveries.find((d) => d.payload.ownerId === 'session-A')
-  const bUpdate = deliveries.find((d) => d.payload.ownerId === 'session-B')
+  const aUpdate = deliveries.find((d) => d.ownerId === 'session-A')
+  const bUpdate = deliveries.find((d) => d.ownerId === 'session-B')
 
-  assert.equal(aUpdate?.payload.event.partialResult, 'A step 2 (final)')
-  assert.equal(bUpdate?.payload.event.partialResult, 'B step 2 (final)')
+  assert.equal((aUpdate?.event as any).partialResult, 'A step 2 (final)')
+  assert.equal((bUpdate?.event as any).partialResult, 'B step 2 (final)')
 })
 
 test('IPC: stream coalescing does not mutate input event objects in-place', async () => {
@@ -235,7 +256,7 @@ test('IPC: stream coalescing does not mutate input event objects in-place', asyn
     event: inputEvent2
   })
 
-  await new Promise((resolve) => setTimeout(resolve, 30))
+  await flushBatch()
 
   // The original objects passed in must not have been mutated
   const sub1 = (inputEvent1 as any).assistantMessageEvent
@@ -243,16 +264,16 @@ test('IPC: stream coalescing does not mutate input event objects in-place', asyn
   assert.equal(sub1.delta, 'Initial ', 'Original inputEvent1 must remain untouched')
   assert.equal(sub2.delta, 'Appended', 'Original inputEvent2 must remain untouched')
 
-  const deliveries = window.sent.filter((s) => s.channel === 'runtime:event')
+  const deliveries = unwrapRuntimeEvents(window.sent)
   assert.equal(deliveries.length, 1)
   assert.equal(
-    deliveries[0].payload.event.assistantMessageEvent.delta,
+    (deliveries[0].event as any).assistantMessageEvent.delta,
     'Initial Appended',
     'Delivered event must contain the coalesced text'
   )
 })
 
-test('IPC: intra-session transition separation strictly preserves ordering between thinking and text', async () => {
+test('IPC: intra-session transition separation strictly preserves ordering between thinking and text in a batch', async () => {
   const window = new MockBrowserWindow()
   const supervisor = new EventEmitter()
   bridgeRuntime(createTestContext(window, supervisor))
@@ -282,14 +303,113 @@ test('IPC: intra-session transition separation strictly preserves ordering betwe
     } as PiEvent
   })
 
-  await new Promise((resolve) => setTimeout(resolve, 30))
+  await flushBatch()
 
-  const deliveries = window.sent.filter(
-    (s) => s.channel === 'runtime:event' && s.payload.ownerId === 'session-transition'
+  const rawDeliveries = window.sent.filter((s) => s.channel === 'runtime:event')
+  assert.equal(rawDeliveries.length, 1, 'Incompatible items within one owner window arrive in one batch IPC')
+  assert.ok(Array.isArray(rawDeliveries[0].payload), 'Batch with >1 item is sent as RuntimeEvent[]')
+
+  const deliveries = unwrapRuntimeEvents(window.sent).filter(
+    (e) => e.ownerId === 'session-transition'
   )
 
   // Must not coalesce thinking_delta and text_delta together; must deliver both in strict order
   assert.equal(deliveries.length, 2, 'Incompatible event types for the same session must remain separate')
-  assert.equal(deliveries[0].payload.event.assistantMessageEvent.type, 'thinking_delta')
-  assert.equal(deliveries[1].payload.event.assistantMessageEvent.type, 'text_delta')
+  assert.equal((deliveries[0].event as any).assistantMessageEvent.type, 'thinking_delta')
+  assert.equal((deliveries[1].event as any).assistantMessageEvent.type, 'text_delta')
+})
+
+test('IPC: toolcall_delta coalesces per contentIndex without crossing incompatible indices', async () => {
+  const window = new MockBrowserWindow()
+  const supervisor = new EventEmitter()
+  bridgeRuntime(createTestContext(window, supervisor))
+
+  supervisor.emit('event', {
+    ownerId: 'sess-tc',
+    event: {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'toolcall_delta', contentIndex: 0, delta: '{"cmd":' }
+    } as PiEvent
+  })
+  supervisor.emit('event', {
+    ownerId: 'sess-tc',
+    event: {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'toolcall_delta', contentIndex: 0, delta: '"ls"}' }
+    } as PiEvent
+  })
+  supervisor.emit('event', {
+    ownerId: 'sess-tc',
+    event: {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'toolcall_delta', contentIndex: 1, delta: '{}' }
+    } as PiEvent
+  })
+
+  await flushBatch()
+
+  const events = unwrapRuntimeEvents(window.sent)
+  assert.equal(events.length, 2)
+  assert.equal((events[0].event as any).assistantMessageEvent.contentIndex, 0)
+  assert.equal((events[0].event as any).assistantMessageEvent.delta, '{"cmd":"ls"}')
+  assert.equal((events[1].event as any).assistantMessageEvent.contentIndex, 1)
+  assert.equal((events[1].event as any).assistantMessageEvent.delta, '{}')
+})
+
+test('IPC: runtime:queue events, batched runtime:stderr, and recreated window cleanup', async () => {
+  let currentWindow = new MockBrowserWindow()
+  const supervisor = new EventEmitter()
+  bridgeRuntime({
+    supervisor: supervisor as any,
+    settings: {
+      getCached: () => ({ desktopNotifications: false })
+    } as any,
+    getWindow: () => currentWindow as any,
+    terminals: {} as any,
+    memory: new EventEmitter() as any,
+    remote: {} as any,
+    remoteReady: Promise.resolve(),
+    scheduledTasks: new EventEmitter() as any
+  })
+
+  const queuePayload: RuntimeQueueEvent = {
+    ownerId: 'sess-2',
+    cwd: 'E:/repo',
+    queued: true,
+    position: 1,
+    holderOwnerId: 'sess-1',
+    externalHolder: false
+  }
+  supervisor.emit('queued', queuePayload)
+
+  supervisor.emit('stderr', { ownerId: 'sess-2', line: 'warn 1' })
+  supervisor.emit('stderr', { ownerId: 'sess-2', line: 'warn 2' })
+  supervisor.emit('rekey', { from: 'sess-2', to: 'E:/sessions/s2.jsonl', replace: true })
+
+  assert.deepEqual(
+    currentWindow.sent.map((m) => [m.channel, m.payload]),
+    [
+      ['runtime:queue', queuePayload],
+      ['runtime:stderr', { ownerId: 'sess-2', line: 'warn 1\nwarn 2' }],
+      ['runtime:rekey', { from: 'sess-2', to: 'E:/sessions/s2.jsonl', replace: true }]
+    ]
+  )
+
+  // Switch to a recreated window, buffer events, and close it before timer fires.
+  currentWindow.isDestroyedVal = true
+  const recreated = new MockBrowserWindow()
+  currentWindow = recreated
+
+  supervisor.emit('event', {
+    ownerId: 'sess-new',
+    event: {
+      type: 'message_delta',
+      delta: 'should drop on close'
+    } as PiEvent
+  })
+  recreated.emit('closed')
+  recreated.isDestroyedVal = true
+
+  await flushBatch()
+  assert.equal(recreated.sent.length, 0, 'Closed recreated window must drop pending buffered events')
 })

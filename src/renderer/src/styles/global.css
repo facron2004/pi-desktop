@@ -2883,6 +2883,87 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 /* ------------------------------------------------------------------ *
+ * App toast
+ *
+ * One transient message, floating below the title bar in the window's
+ * top-right corner. It is deliberately not part of the composer: a
+ * confirmation or a warning must never change the geometry of the box
+ * being written in.
+ * ------------------------------------------------------------------ */
+
+.app-toast {
+  position: fixed;
+  top: calc(var(--titlebar-h) + var(--sp-3));
+  right: var(--shell-inset);
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: max-content;
+  max-width: min(380px, calc(100vw - var(--sp-6) * 2));
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-md);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+  color: var(--text-secondary);
+  animation: app-toast-in var(--dur-base) var(--ease);
+}
+
+.app-toast__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.app-toast[data-level='warning'] .app-toast__mark {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.app-toast[data-level='error'] .app-toast__mark {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.app-toast__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.app-toast__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+}
+
+.app-toast__close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+@keyframes app-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Composer
  * ------------------------------------------------------------------ */
 
@@ -3261,6 +3342,56 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 .composer__attachment-remove:hover,
 .composer__attachment-remove:focus-visible {
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+/* A non-image attachment is a chip, not a path: icon first, then the basename
+   on one line. The full path lives in the title so a long absolute path cannot
+   push the composer wider than the window. */
+.composer__attachments--files {
+  gap: var(--sp-1, 4px);
+}
+
+.composer__file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 260px;
+  height: 26px;
+  padding: 0 5px 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.composer__file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__file-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.composer__file-remove:hover,
+.composer__file-remove:focus-visible {
   background: var(--bg-active);
   color: var(--text);
 }
@@ -3987,9 +4118,9 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
      line as the controls of the header it stands in. */
   top: calc(var(--titlebar-h) + var(--panel-head-rule));
   right: calc(var(--shell-inset) + var(--sp-5));
-  /* A fixed band, tall enough for the tallest header it can stand in, with
-     the button centred once: open or closed, the icon must land on exactly
-     the same pixels, so the band never re-centres when the panel mounts. */
+  /* The band matches the title bar while the panel is away. With the panel
+     up, the corner belongs to the panel's 46px header, so the band narrows
+     with it and the toggle shares the panel controls' centre line. */
   height: var(--panel-head-h);
   display: flex;
   align-items: center;
@@ -3999,6 +4130,10 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
      drag region. Without no-drag the OS swallows the click as a window drag
      and the button never fires. */
   -webkit-app-region: no-drag;
+}
+
+.app:has(.tool-panel) .shell__panel-toggle {
+  height: var(--toolpanel-head-h);
 }
 
 .shell__panel-toggle .icon-btn {
@@ -4572,20 +4707,31 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   background: var(--bg-hover);
 }
 
-.welcome .composer-wrap {
+.welcome:not(:has(.welcome__composer)) {
+  padding-bottom: var(--sp-4);
+}
+
+.welcome .composer-wrap,
+.app[data-empty='true'] .composer-wrap {
   width: 100%;
   padding: 0;
   background: none;
   text-align: left;
 }
 
+.app[data-empty='true'] .composer-wrap {
+  padding: 0 var(--sp-6) max(var(--sp-4), 6vh);
+}
+
 /* A new chat has no transcript above the box, so the hairline has nothing to
    separate and would only draw a rule across an empty page. */
-.welcome .composer-wrap::before {
+.welcome .composer-wrap::before,
+.app[data-empty='true'] .composer-wrap::before {
   display: none;
 }
 
-.welcome .composer-wrap .session-bar {
+.welcome .composer-wrap .session-bar,
+.app[data-empty='true'] .composer-wrap .session-bar {
   justify-content: flex-start;
 }
 
@@ -4698,12 +4844,15 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .md a {
-  color: inherit;
+  color: var(--accent);
   text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-bottom: 1px dotted transparent;
 }
 
-.md a:hover {
+.md a:hover,
+.md a:focus-visible,
+.md a:active {
+  color: var(--accent-hover);
   border-bottom-color: currentColor;
 }
 
@@ -4715,11 +4864,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .md code {
   font-family: var(--font-mono);
   font-size: var(--text-inline-code);
-  background: var(--bg-active);
-  padding: 1.5px var(--sp-2);
-  border-radius: var(--r-sm);
-  color: inherit;
-  border: 1px solid var(--border-soft);
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  color: var(--accent);
+  border: 0;
 }
 
 .md pre {
@@ -5746,6 +5895,113 @@ animation: fade var(--dur-fast) var(--ease);
 
 .modal--prompt {
   width: min(520px, 100%);
+}
+
+.modal__context {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 36px;
+  padding: var(--sp-2) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-canvas);
+  font-size: var(--text-xs);
+}
+
+.modal__context-session {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.modal__context-count {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+.modal__context-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--accent);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.modal__context-jump:hover {
+  background: var(--bg-hover);
+}
+
+.modal__switcher {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.modal__switcher::-webkit-scrollbar {
+  display: none;
+}
+
+.modal__switcher-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  max-width: 190px;
+  height: 26px;
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-full);
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.modal__switcher-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.modal__switcher-tab[data-active='true'] {
+  border-color: var(--border-strong);
+  background: var(--bg-active);
+  color: var(--text);
+}
+
+.modal__switcher-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal__switcher-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-full);
+  background: var(--status-warning-soft);
+  color: var(--status-warning);
+  font-size: var(--text-2xs);
+  font-weight: 600;
 }
 
 .modal__head--prompt {
@@ -6850,36 +7106,6 @@ transition: transform var(--dur-base) var(--ease);
   transform: rotate(90deg);
 }
 
-/* The app's own messages live in the top of the composer box, so they are
-   read where the eye already is and never cover what is being written. */
-.composer__notice {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--bg-panel);
-  font-size: var(--text-xs);
-  font-weight: 500;
-  color: var(--text-muted);
-animation: pop var(--dur-fast) var(--ease);
-}
-
-.composer__notice span {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.composer__notice[data-level='warning'] {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.composer__notice[data-level='error'] {
-  background: var(--red-soft);
-  color: var(--red);
-}
-
 /* ------------------------------------------------------------------ *
  * The renderer's crash screen.
  *
@@ -7028,7 +7254,7 @@ animation: pop var(--dur-fast) var(--ease);
   .modal,
   .modal-layer,
   .drawer,
-  .composer__notice,
+  .app-toast,
   .caret-blink,
   .status-strip__dot {
     animation: none !important;
@@ -7131,6 +7357,19 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   grid-column: 1;
   grid-row: 1;
   color: var(--text-secondary);
+}
+
+.launcher__item[data-indicator='needs-input'] .palette__icon {
+  color: var(--status-warning);
+}
+
+.launcher__item[data-indicator='error'] .palette__icon {
+  color: var(--status-danger);
+}
+
+.launcher__item[data-indicator='running'] .palette__icon,
+.launcher__item[data-indicator='unread'] .palette__icon {
+  color: var(--accent);
 }
 
 .launcher__name {
@@ -7324,8 +7563,16 @@ button:focus-visible,
     padding: 0 var(--sp-4) var(--sp-4);
   }
 
+  .app[data-empty='true'] .composer-wrap {
+    padding: 0 var(--sp-4) var(--sp-6);
+  }
+
   .welcome {
     padding: var(--sp-5);
+  }
+
+  .welcome:not(:has(.welcome__composer)) {
+    padding-bottom: var(--sp-3);
   }
 
   .welcome__inner {
@@ -7704,28 +7951,29 @@ button:focus-visible,
 .md-file-link {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
-  margin: 0 1px;
-  border-radius: var(--r-xs);
-  border: 1px solid var(--border);
-  background: var(--bg-raised);
-  color: var(--text-pure);
+  gap: 3px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px dotted transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--accent);
   font-family: var(--font-mono);
   font-size: 0.92em;
   line-height: 1.4;
   cursor: pointer;
   vertical-align: baseline;
   transition:
-    background var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
 }
 
-.md-file-link:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
-  color: var(--text-pure);
+.md-file-link:hover,
+.md-file-link:focus-visible,
+.md-file-link:active {
+  color: var(--accent-hover);
+  border-bottom-color: currentColor;
 }
 
 .code-block__tool[data-active='true'] {

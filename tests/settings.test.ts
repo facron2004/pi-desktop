@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
   parseWindowsUserSid,
+  parseWindowsUserName,
   secureUserDataDirectory,
   SettingsStore,
   windowsUserDataAclCommands,
+  windowsUserDataChildAclCommands,
   dedupeWorkspaces
 } from '../src/main/settings'
 import type { Workspace } from '../src/shared/types'
@@ -53,11 +55,16 @@ test('Windows user SID parsing uses the stable CSV SID field', () => {
     'S-1-5-21-123-456-789-1001'
   )
   assert.equal(parseWindowsUserSid('unexpected output'), undefined)
+  assert.equal(
+    parseWindowsUserName('"DOMAIN\\user,name","S-1-5-21-123-456-789-1001"\r\n'),
+    'DOMAIN\\user,name'
+  )
+  assert.equal(parseWindowsUserName('unexpected output'), undefined)
 })
 
-test('Windows user-data ACL plan secures existing content and future children', () => {
+test('Windows user-data ACL plan secures the root without walking its children', () => {
   const directory = 'C:\\Users\\user\\AppData\\Roaming\\Pi Desktop'
-  const commands = windowsUserDataAclCommands(directory, 'S-1-5-21-123-456-789-1001', true)
+  const commands = windowsUserDataAclCommands(directory, 'S-1-5-21-123-456-789-1001')
   assert.deepEqual(commands, [
     [directory, '/reset', '/Q', '/L'],
     [directory, '/inheritance:r', '/Q', '/L'],
@@ -69,10 +76,12 @@ test('Windows user-data ACL plan secures existing content and future children', 
       '*S-1-5-32-544:(OI)(CI)F',
       '/Q',
       '/L'
-    ],
+    ]
+  ])
+  // The recursive pass is its own one-time command, not part of every launch.
+  assert.deepEqual(windowsUserDataChildAclCommands(directory), [
     [path.win32.join(directory, '*'), '/reset', '/T', '/C', '/L', '/Q']
   ])
-  assert.equal(windowsUserDataAclCommands(directory, 'S-1-5-21-123-456-789-1001', false).length, 3)
 })
 
 test('project trust defaults off and legacy trust is re-enabled only after an explicit choice', () => {

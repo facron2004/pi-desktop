@@ -2,12 +2,18 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
 import { bridgeRuntime, type IpcContext } from '../src/main/ipc'
-import type { PiEvent } from '../src/shared/types'
+import type { PiEvent, RuntimeEvent } from '../src/shared/types'
 
 interface MockSentMessage {
   channel: string
   payload: any
   timestamp: number
+}
+
+function unwrapRuntimeEvents(sent: MockSentMessage[]): RuntimeEvent[] {
+  return sent
+    .filter((s) => s.channel === 'runtime:event')
+    .flatMap((s) => (Array.isArray(s.payload) ? s.payload : [s.payload]))
 }
 
 class MockBrowserWindow extends EventEmitter {
@@ -65,7 +71,7 @@ function createTestContext(window: MockBrowserWindow, supervisor: EventEmitter):
   }
 }
 
-const flushTicks = () => new Promise<void>((resolve) => setTimeout(resolve, 30))
+const flushTicks = () => new Promise<void>((resolve) => setTimeout(resolve, 35))
 
 // -----------------------------------------------------------------------------
 // STRESS TEST 1: Multi-Session Interleaved Flooding (4 sessions, 2,000+ tokens)
@@ -105,11 +111,12 @@ test('Adversarial Stress: 4 sessions round-robin interleaved (2,000 tokens) achi
 
   await flushTicks()
 
-  const deliveries = window.sent.filter((s) => s.channel === 'runtime:event')
+  const rawDeliveries = window.sent.filter((s) => s.channel === 'runtime:event')
+  const deliveries = unwrapRuntimeEvents(window.sent)
 
-  // Under backward-scan coalescing, exactly 4 deliveries should occur (1 per session)
-  const reductionRatio = ((2000 - deliveries.length) / 2000) * 100
-  console.log(`\n  -> Interleaved 2,000 deltas across 4 sessions. Deliveries: ${deliveries.length}`)
+  // Under per-owner coalescing, exactly 4 IPC deliveries should occur (1 per session)
+  const reductionRatio = ((2000 - rawDeliveries.length) / 2000) * 100
+  console.log(`\n  -> Interleaved 2,000 deltas across 4 sessions. Deliveries: ${rawDeliveries.length}`)
   console.log(`  -> Coalescing reduction ratio: ${reductionRatio.toFixed(2)}% (Target: >90%)`)
 
   assert.ok(
@@ -117,9 +124,9 @@ test('Adversarial Stress: 4 sessions round-robin interleaved (2,000 tokens) achi
     `Coalescing reduction must exceed 90%, achieved ${reductionRatio.toFixed(2)}%`
   )
   assert.equal(
-    deliveries.length,
+    rawDeliveries.length,
     4,
-    `Expected exactly 4 deliveries (1 per session), got ${deliveries.length}`
+    `Expected exactly 4 deliveries (1 per session), got ${rawDeliveries.length}`
   )
 
   // Verify intra-session chronological ordering and zero cross-talk
@@ -131,9 +138,9 @@ test('Adversarial Stress: 4 sessions round-robin interleaved (2,000 tokens) achi
   }
 
   for (const delivery of deliveries) {
-    const ownerId = delivery.payload.ownerId
+    const ownerId = delivery.ownerId
     assert.ok(sessions.includes(ownerId), `Unexpected ownerId: ${ownerId}`)
-    const delta = delivery.payload.event.assistantMessageEvent.delta
+    const delta = (delivery.event as any).assistantMessageEvent.delta
     reconstructedText[ownerId] += delta
   }
 
@@ -175,18 +182,19 @@ test('Adversarial Stress: 8 sessions round-robin interleaved (4,000 tokens) achi
 
   await flushTicks()
 
-  const deliveries = window.sent.filter((s) => s.channel === 'runtime:event')
-  const reductionRatio = ((4000 - deliveries.length) / 4000) * 100
-  console.log(`\n  -> Interleaved 4,000 deltas across 8 sessions. Deliveries: ${deliveries.length}`)
+  const rawDeliveries = window.sent.filter((s) => s.channel === 'runtime:event')
+  const deliveries = unwrapRuntimeEvents(window.sent)
+  const reductionRatio = ((4000 - rawDeliveries.length) / 4000) * 100
+  console.log(`\n  -> Interleaved 4,000 deltas across 8 sessions. Deliveries: ${rawDeliveries.length}`)
   console.log(`  -> Coalescing reduction ratio: ${reductionRatio.toFixed(2)}%`)
 
   assert.ok(reductionRatio >= 90)
-  assert.equal(deliveries.length, 8, `Expected exactly 8 deliveries (1 per session), got ${deliveries.length}`)
+  assert.equal(rawDeliveries.length, 8, `Expected exactly 8 deliveries (1 per session), got ${rawDeliveries.length}`)
 
   for (const s of sessions) {
-    const delivery = deliveries.find((d) => d.payload.ownerId === s)
+    const delivery = deliveries.find((d) => d.ownerId === s)
     assert.ok(delivery, `Delivery for ${s} must exist`)
-    assert.equal(delivery.payload.event.delta, expectedText[s])
+    assert.equal((delivery.event as any).delta, expectedText[s])
   }
 })
 
@@ -270,37 +278,37 @@ test('Adversarial Stress: Incompatible event sequence interleaved across session
 
   await flushTicks()
 
-  const deliveries = window.sent.filter((s) => s.channel === 'runtime:event')
+  const deliveries = unwrapRuntimeEvents(window.sent)
 
-  const s1Deliveries = deliveries.filter((d) => d.payload.ownerId === s1)
-  const s2Deliveries = deliveries.filter((d) => d.payload.ownerId === s2)
+  const s1Deliveries = deliveries.filter((d) => d.ownerId === s1)
+  const s2Deliveries = deliveries.filter((d) => d.ownerId === s2)
 
   // S2 should have 1 coalesced delivery: 's2_text1 s2_text2'
   assert.equal(s2Deliveries.length, 1, 'S2 text deltas must coalesce into 1 delivery')
-  assert.equal(s2Deliveries[0].payload.event.assistantMessageEvent.delta, 's2_text1 s2_text2')
+  assert.equal((s2Deliveries[0].event as any).assistantMessageEvent.delta, 's2_text1 s2_text2')
 
-  // S1 should have 4 separate deliveries in strict chronological order:
+  // S1 should have 4 separate events delivered in strict chronological order (batched in one RuntimeEvent[]):
   // 1. thinking_delta (idx 0): 'think_part1 think_part2'
   // 2. text_delta (idx 0): 'answer_part1 answer_part2'
   // 3. text_delta (idx 1): 'block2_text'
   // 4. thinking_delta (idx 1): 'block2_think'
   assert.equal(s1Deliveries.length, 4, `S1 must have 4 distinct phase blocks, got ${s1Deliveries.length}`)
 
-  assert.equal(s1Deliveries[0].payload.event.assistantMessageEvent.type, 'thinking_delta')
-  assert.equal(s1Deliveries[0].payload.event.assistantMessageEvent.contentIndex, 0)
-  assert.equal(s1Deliveries[0].payload.event.assistantMessageEvent.delta, 'think_part1 think_part2')
+  assert.equal((s1Deliveries[0].event as any).assistantMessageEvent.type, 'thinking_delta')
+  assert.equal((s1Deliveries[0].event as any).assistantMessageEvent.contentIndex, 0)
+  assert.equal((s1Deliveries[0].event as any).assistantMessageEvent.delta, 'think_part1 think_part2')
 
-  assert.equal(s1Deliveries[1].payload.event.assistantMessageEvent.type, 'text_delta')
-  assert.equal(s1Deliveries[1].payload.event.assistantMessageEvent.contentIndex, 0)
-  assert.equal(s1Deliveries[1].payload.event.assistantMessageEvent.delta, 'answer_part1 answer_part2')
+  assert.equal((s1Deliveries[1].event as any).assistantMessageEvent.type, 'text_delta')
+  assert.equal((s1Deliveries[1].event as any).assistantMessageEvent.contentIndex, 0)
+  assert.equal((s1Deliveries[1].event as any).assistantMessageEvent.delta, 'answer_part1 answer_part2')
 
-  assert.equal(s1Deliveries[2].payload.event.assistantMessageEvent.type, 'text_delta')
-  assert.equal(s1Deliveries[2].payload.event.assistantMessageEvent.contentIndex, 1)
-  assert.equal(s1Deliveries[2].payload.event.assistantMessageEvent.delta, 'block2_text')
+  assert.equal((s1Deliveries[2].event as any).assistantMessageEvent.type, 'text_delta')
+  assert.equal((s1Deliveries[2].event as any).assistantMessageEvent.contentIndex, 1)
+  assert.equal((s1Deliveries[2].event as any).assistantMessageEvent.delta, 'block2_text')
 
-  assert.equal(s1Deliveries[3].payload.event.assistantMessageEvent.type, 'thinking_delta')
-  assert.equal(s1Deliveries[3].payload.event.assistantMessageEvent.contentIndex, 1)
-  assert.equal(s1Deliveries[3].payload.event.assistantMessageEvent.delta, 'block2_think')
+  assert.equal((s1Deliveries[3].event as any).assistantMessageEvent.type, 'thinking_delta')
+  assert.equal((s1Deliveries[3].event as any).assistantMessageEvent.contentIndex, 1)
+  assert.equal((s1Deliveries[3].event as any).assistantMessageEvent.delta, 'block2_think')
 })
 
 // -----------------------------------------------------------------------------
@@ -337,7 +345,7 @@ test('Adversarial Stress: ALL 13 structural events + dialogs force immediate syn
       } as PiEvent
     })
 
-    // At this exact moment, before microtask ticks, queue has not flushed asynchronously.
+    // At this exact moment, before batch timer fires, queue has not flushed asynchronously.
     // Step 2: Synchronously emit the structural event!
     supervisor.emit('event', {
       ownerId: 'sess-sync',
@@ -345,23 +353,24 @@ test('Adversarial Stress: ALL 13 structural events + dialogs force immediate syn
     })
 
     // SYNCHRONOUS ASSERTION: The window must have ALREADY received BOTH messages immediately!
+    const events = unwrapRuntimeEvents(window.sent)
     assert.equal(
-      window.sent.length,
+      events.length,
       2,
-      `Structural event ${structEvent.type} must trigger synchronous flush immediately. Sent count: ${window.sent.length}`
+      `Structural event ${structEvent.type} must trigger synchronous flush immediately. Event count: ${events.length}`
     )
 
     // Preceding text delta must strictly precede the structural event
-    assert.equal(window.sent[0].payload.event.type, 'message_update')
-    assert.equal(window.sent[0].payload.event.assistantMessageEvent.delta, `Preceding text before ${structEvent.type}`)
-    assert.equal(window.sent[1].payload.event.type, structEvent.type)
+    assert.equal(events[0].event.type, 'message_update')
+    assert.equal((events[0].event as any).assistantMessageEvent.delta, `Preceding text before ${structEvent.type}`)
+    assert.equal(events[1].event.type, structEvent.type)
 
-    // Await microtask and verify NO duplicate deliveries occur
+    // Await batch timer and verify NO duplicate deliveries occur
     await flushTicks()
     assert.equal(
-      window.sent.length,
+      unwrapRuntimeEvents(window.sent).length,
       2,
-      `No duplicate flushes should occur after microtask tick for ${structEvent.type}`
+      `No duplicate flushes should occur after batch timer for ${structEvent.type}`
     )
   }
 })
@@ -391,7 +400,8 @@ test('Adversarial Stress: supervisor status and rekey force immediate synchronou
 
   assert.equal(window.sent.length, 2, 'Status must synchronously flush pending deltas')
   assert.equal(window.sent[0].channel, 'runtime:event')
-  assert.equal(window.sent[0].payload.event.delta, 'Delta before status')
+  const firstFlushed = Array.isArray(window.sent[0].payload) ? window.sent[0].payload : [window.sent[0].payload]
+  assert.equal(firstFlushed[0].event.delta, 'Delta before status')
   assert.equal(window.sent[1].channel, 'runtime:status')
 
   // Queue another delta
@@ -411,7 +421,8 @@ test('Adversarial Stress: supervisor status and rekey force immediate synchronou
 
   assert.equal(window.sent.length, 4, 'Rekey must synchronously flush pending deltas')
   assert.equal(window.sent[2].channel, 'runtime:event')
-  assert.equal(window.sent[2].payload.event.delta, 'Delta before rekey')
+  const secondFlushed = Array.isArray(window.sent[2].payload) ? window.sent[2].payload : [window.sent[2].payload]
+  assert.equal(secondFlushed[0].event.delta, 'Delta before rekey')
   assert.equal(window.sent[3].channel, 'runtime:rekey')
 })
 

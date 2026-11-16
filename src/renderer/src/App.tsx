@@ -3,6 +3,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState
 } from 'react'
@@ -13,8 +14,7 @@ import {
   GitBranch,
   ListTodo,
   PanelRight,
-  Pencil,
-  TriangleAlert
+  Pencil
 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { applyAppearance, useAppStore } from './store/useAppStore'
@@ -22,6 +22,7 @@ import { collectProjects, sortProjects } from './lib/projects'
 import { Sidebar } from './components/Sidebar'
 import { Thread } from './components/Thread'
 import { Composer } from './components/Composer'
+import { AppToast } from './components/AppToast'
 import { Welcome } from './components/Welcome'
 import { SettingsDialog, type SettingsPage } from './components/SettingsDialog'
 import { AppMenuBar } from './components/AppMenuBar'
@@ -35,7 +36,7 @@ import { TitleSubagents } from './components/TitleSubagents'
 import { ToolPanel, type ToolPanelView } from './components/ToolPanel'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { ExtensionDialog } from './components/ExtensionDialog'
-import { Launcher, useLauncherActions } from './components/Launcher'
+import { LauncherDialog, type LauncherShell } from './components/Launcher'
 import type { TerminalRunRequest } from './components/TerminalPanel'
 import { GoalBar } from './components/GoalBar'
 import { SessionTreeDialog } from './components/SessionTreeDialog'
@@ -45,7 +46,7 @@ import { EditProjectDialog } from './components/EditProjectDialog'
 import { Popover } from './components/Popover'
 import { matchesAnyShortcut, type ShortcutId } from './lib/shortcuts'
 import { activeConversationTitle } from './lib/live-sessions'
-import { openingLabel, useT } from './lib/i18n'
+import { useT } from './lib/i18n'
 import { dismissStartupScreen } from './lib/startup-screen'
 
 const InspectorPanel = lazy(() => import('./components/InspectorPanel').then((m) => ({ default: m.InspectorPanel })))
@@ -56,6 +57,13 @@ const Marketplace = lazy(() => import('./components/Marketplace').then((m) => ({
 /** Matches the closing animation in global.css; the panel stays mounted that long. */
 const INSPECTOR_EXIT_MS = 200
 const AUTOMATIC_UPDATE_INTERVAL_MS = 12 * 60 * 60 * 1000
+
+function hasAnyStreamingThread(threads: Record<string, { isStreaming: boolean }>): boolean {
+  for (const key in threads) {
+    if (threads[key].isStreaming) return true
+  }
+  return false
+}
 
 export default function App() {
   const bootstrap = useAppStore((state) => state.bootstrap)
@@ -78,22 +86,25 @@ export default function App() {
   const workspace = useAppStore((state) => state.workspace)
   const uiWidgets = useAppStore((state) => state.uiWidgets)
   const uiTitle = useAppStore((state) => state.uiTitle)
-  const settings = useAppStore((state) => state.settings)
+  const savedDrawerWidth = useAppStore((state) => state.settings.drawerWidth)
+  const savedSidebarWidth = useAppStore((state) => state.settings.sidebarWidth)
+  const automaticUpdates = useAppStore((state) => state.settings.automaticUpdates)
+  const language = useAppStore((state) => state.settings.language)
+  const shortcutBindings = useAppStore((state) => state.settings.shortcutBindings)
   const updateSettings = useAppStore((state) => state.updateSettings)
-  const sessions = useAppStore((state) => state.sessions)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const draftId = useAppStore((state) => state.draftId)
+  const clientKey = useAppStore((state) => {
+    const key = state.activeSessionFile || state.draftId
+    return (key && state.threads[key]?.clientKey) || key || state.clientKey || 'draft'
+  })
   const switchProject = useAppStore((state) => state.switchProject)
-  const hasActiveRun = useAppStore((state) => state.run.phase !== 'idle')
   const isCompacting = useAppStore((state) => Boolean(state.run.compaction))
-  const transport = useAppStore((state) => state.transport)
   const cycleModel = useAppStore((state) => state.cycleModel)
   const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
   const compact = useAppStore((state) => state.compact)
   const showToast = useAppStore((state) => state.showToast)
-  const anySessionStreaming = useAppStore((state) =>
-    Object.values(state.threads).some((thread) => thread.isStreaming)
-  )
+  const anySessionStreaming = useAppStore((state) => hasAnyStreamingThread(state.threads))
   const t = useT()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -144,9 +155,9 @@ export default function App() {
   // Null while the panel is being dragged; the stored width takes over again
   // once the drag ends.
   const [draggedWidth, setDraggedWidth] = useState<number | null>(null)
-  const drawerWidth = draggedWidth ?? settings.drawerWidth ?? 520
+  const drawerWidth = draggedWidth ?? savedDrawerWidth ?? 520
   const [draggedSidebar, setDraggedSidebar] = useState<number | null>(null)
-  const sidebarWidth = draggedSidebar ?? settings.sidebarWidth ?? 240
+  const sidebarWidth = draggedSidebar ?? savedSidebarWidth ?? 240
   const [windowWidth, setWindowWidth] = useState(
     typeof window !== 'undefined' ? window.innerWidth : 1280
   )
@@ -160,7 +171,7 @@ export default function App() {
   useEffect(() => {
     // Do not replace the built-in service while any conversation is using it.
     if (
-      settings.automaticUpdates !== true ||
+      automaticUpdates !== true ||
       info?.isPackaged !== false ||
       anySessionStreaming ||
       info?.pi.source !== 'bundled'
@@ -202,7 +213,7 @@ export default function App() {
       active = false
       window.clearInterval(interval)
     }
-  }, [anySessionStreaming, info?.pi.source, settings.automaticUpdates, showToast, t])
+  }, [anySessionStreaming, info?.pi.source, automaticUpdates, showToast, t])
 
   useEffect(() => {
     if (changesOpen) {
@@ -311,13 +322,34 @@ export default function App() {
     setPanelView('terminal')
     setChangesOpen(true)
   }, [changesOpen, panelView, setDeskPage])
-  const launcherActions = useLauncherActions({
-    sidebarOpen,
-    toggleSidebar,
-    openSettings,
-    openShortcuts,
-    openMarketplace: () => setDeskPage('marketplace')
-  })
+  const openGeneralSettings = useCallback(() => openSettings(), [openSettings])
+  const toggleMarketplace = useCallback(
+    () => setDeskPage(useAppStore.getState().deskPage === 'marketplace' ? null : 'marketplace'),
+    [setDeskPage]
+  )
+  const toggleScheduledTasks = useCallback(
+    () => setDeskPage(useAppStore.getState().deskPage === 'scheduled' ? null : 'scheduled'),
+    [setDeskPage]
+  )
+  const openMarketplace = useCallback(() => setDeskPage('marketplace'), [setDeskPage])
+  const closeLauncher = useCallback(() => setLauncherOpen(false), [])
+  const handleSidebarResizeEnd = useCallback(
+    (nextWidth: number) => {
+      setDraggedSidebar(null)
+      void updateSettings({ sidebarWidth: nextWidth })
+    },
+    [updateSettings]
+  )
+  const launcherShell = useMemo<LauncherShell>(
+    () => ({
+      sidebarOpen,
+      toggleSidebar,
+      openSettings,
+      openShortcuts,
+      openMarketplace
+    }),
+    [sidebarOpen, toggleSidebar, openSettings, openShortcuts, openMarketplace]
+  )
 
   // The sidebar lists disk sessions plus live threads, so a chat Pi has not
   // flushed yet still has a name there. The title bar must resolve the same
@@ -402,10 +434,10 @@ export default function App() {
 
   useEffect(() => {
     const root = document.documentElement
-    root.lang = settings.language
+    root.lang = language
     const platform = useAppStore.getState().info?.platform
     if (platform) root.dataset.platform = platform
-  }, [info, settings.language])
+  }, [info, language])
 
   // Development aid: open the changes drawer for screenshots.
   useEffect(() => {
@@ -471,7 +503,7 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       const mod = event.ctrlKey || event.metaKey
       const matches = (id: ShortcutId) =>
-        matchesAnyShortcut(event, id, settings.shortcutBindings)
+        matchesAnyShortcut(event, id, shortcutBindings)
       const launcherToggle = launcherOpen && matches('command-palette')
       if (document.querySelector('[aria-modal="true"]') && !launcherToggle) return
       // The palette has the keyboard while it is open — only the chord that
@@ -538,12 +570,13 @@ export default function App() {
       // `Ctrl+1` … `Ctrl+9` jump to the n-th project of the sidebar.
       if (mod && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
         const index = Number(event.key) - 1
+        const { sessions, settings: storeSettings } = useAppStore.getState()
         const projects = sortProjects(
           collectProjects(
-            settings.workspaces,
+            storeSettings.workspaces,
             sessions,
-            settings.hiddenProjects,
-            settings.projectOrder
+            storeSettings.hiddenProjects,
+            storeSettings.projectOrder
           )
         )
         const target = projects[index]
@@ -625,12 +658,7 @@ export default function App() {
     newChat,
     toggleSidebar,
     openSettings,
-    settings.workspaces,
-    settings.hiddenProjects,
-    settings.projectOrder,
-    settings.shortcutBindings,
-    sessions,
-    workspace?.path,
+    shortcutBindings,
     switchProject,
     launcherOpen,
     cycleModel,
@@ -695,21 +723,14 @@ export default function App() {
       />
 
       <Sidebar
-        onOpenSettings={() => openSettings()}
-        onOpenPlugins={() =>
-          setDeskPage(deskPage === 'marketplace' ? null : 'marketplace')
-        }
-        onOpenScheduledTasks={() =>
-          setDeskPage(deskPage === 'scheduled' ? null : 'scheduled')
-        }
+        onOpenSettings={openGeneralSettings}
+        onOpenPlugins={toggleMarketplace}
+        onOpenScheduledTasks={toggleScheduledTasks}
         focusSearchSignal={sidebarSearchSignal}
         width={sidebarWidth}
         open={sidebarOpen}
         onResize={setDraggedSidebar}
-        onResizeEnd={(width) => {
-          setDraggedSidebar(null)
-          void updateSettings({ sidebarWidth: width })
-        }}
+        onResizeEnd={handleSidebarResizeEnd}
       />
 
       <main className="main">
@@ -854,39 +875,7 @@ export default function App() {
             </div>
           ) : (
             <>
-              {!showThread ? (
-                <Welcome>
-                  <Composer />
-                </Welcome>
-              ) : (
-                <Thread />
-              )}
-
-              {/* A project switch keeps the previous transcript up. This is the
-                  handoff, not a failure — the connection was not lost. */}
-              {status.phase === 'starting' && hasItems ? (
-                <div className="retry-wrap">
-                  <div className="retry" data-kind="handoff" role="status">
-                    <span className="spinner" aria-hidden="true" />
-                    <span className="retry__text">{openingLabel(workspace, t)}</span>
-                  </div>
-                </div>
-              ) : null}
-
-              {/* The transport is not the run: Pi can still be working behind a
-                  broken channel, so this says what is known rather than declaring
-                  the run failed. "starting" is a switch in progress. */}
-              {transport === 'disconnected' && status.phase !== 'ready' && status.phase !== 'starting' ? (
-                <div className="retry-wrap">
-                  <div className="retry" data-kind="transport" role="status">
-                    <TriangleAlert size={13} />
-                    <span className="retry__text">{t('Lost connection to Pi')}</span>
-                    {hasActiveRun ? (
-                      <span className="retry__note">{t('The run may still be going')}</span>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
+              {!showThread ? <Welcome /> : <Thread />}
 
               {widgetsAbove.map((widget) => (
                 <div className="widget" key={widget.key}>
@@ -899,9 +888,9 @@ export default function App() {
                 </div>
               ))}
 
-              <GoalBar key={activeSessionFile ?? draftId ?? 'draft'} />
+              <GoalBar key={clientKey} />
 
-              {hasItems ? <Composer /> : null}
+              <Composer />
 
               {widgetsBelow.map((widget) => (
                 <div className="widget widget--below" key={widget.key}>
@@ -970,7 +959,7 @@ export default function App() {
                   data-active={fileTreeOpen || undefined}
                   onClick={() => setFileTreeOpen((open) => !open)}
                 >
-                  <FolderTree size={18} />
+                  <FolderTree size={16} strokeWidth={1.7} />
                 </button>
               ) : null
             }
@@ -1047,7 +1036,7 @@ export default function App() {
       ) : null}
       {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
       {launcherOpen ? (
-        <Launcher actions={launcherActions} onClose={() => setLauncherOpen(false)} />
+        <LauncherDialog shell={launcherShell} onClose={closeLauncher} />
       ) : null}
       {sessionTreeOpen ? (
         <SessionTreeDialog onClose={() => setSessionTreeOpen(false)} />
@@ -1062,6 +1051,7 @@ export default function App() {
       ) : null}
       <ExtensionDialog />
       <AppUpdateDialog />
+      <AppToast />
     </div>
   )
 }

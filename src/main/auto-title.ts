@@ -9,7 +9,7 @@ import type {
   SessionMeta
 } from '@shared/types'
 import { runPiCli } from './pi/cli'
-import { getSessionMeta, readSessionMessages } from './sessions'
+import { getSessionMeta, readSessionHeadMessages } from './sessions'
 import { redactSecrets } from './memory/redact'
 
 /**
@@ -42,6 +42,7 @@ export interface TitleRunArgs {
   model?: string
   customPiPath?: string
   timeoutMs: number
+  signal?: AbortSignal
 }
 
 export type TitleRunner = (
@@ -107,7 +108,8 @@ async function defaultRunner(args: TitleRunArgs): Promise<{
     cwd: args.cwd,
     customPiPath: args.customPiPath,
     input: args.prompt,
-    timeoutMs: args.timeoutMs
+    timeoutMs: args.timeoutMs,
+    signal: args.signal
   })
 }
 
@@ -338,6 +340,7 @@ export class AutoTitleService {
   private readonly readRetries = new Map<string, number>()
   /** One title attempt per conversation, after its first exchange is readable. */
   private readonly attempted = new Set<string>()
+  private readonly activeControllers = new Map<string, AbortController>()
   private queue: Promise<unknown> = Promise.resolve()
 
   constructor(getSettings: () => AppSettings, deps: AutoTitleDeps = {}) {
@@ -360,6 +363,8 @@ export class AutoTitleService {
     this.disposed = true
     for (const timer of this.timers.values()) clearTimeout(timer)
     this.timers.clear()
+    for (const controller of this.activeControllers.values()) controller.abort()
+    this.activeControllers.clear()
     this.waiting.clear()
     this.newDrafts.clear()
     this.inFlight.clear()
@@ -377,10 +382,11 @@ export class AutoTitleService {
     if (typeof ownerId !== 'string' || !ownerId || !event || typeof event.type !== 'string') return
 
     // A new turn means the transcript is not finished and the process owns the
-    // file; the next settle re-arms this conversation.
+    // file; abort any in-flight title run so it cannot race rename or stall the queue.
     if (event.type === 'agent_start') {
       if (ownerId.startsWith('draft:')) this.rememberNewDraft(ownerId)
       this.clearTimer(ownerId)
+      this.activeControllers.get(ownerId)?.abort()
       return
     }
     if (event.type !== 'agent_settled') return
@@ -547,6 +553,7 @@ export class AutoTitleService {
       await this.applyTitle(file, result.exchange)
     } finally {
       this.inFlight.delete(file)
+      this.activeControllers.delete(file)
     }
   }
 
@@ -559,7 +566,7 @@ export class AutoTitleService {
     | { kind: 'retry'; detail: string }
   > {
     const getMeta = this.deps.getMeta ?? getSessionMeta
-    const readMessages = this.deps.readMessages ?? readSessionMessages
+    const readMessages = this.deps.readMessages ?? readSessionHeadMessages
     try {
       const meta = await getMeta(file)
       // The user named it themselves, or another pass already did.
@@ -591,6 +598,9 @@ export class AutoTitleService {
     file: string,
     exchange: FirstExchange
   ): Promise<void> {
+    if (this.disposed || this.host?.sessionInfo?.(file)?.running) return
+    const controller = new AbortController()
+    this.activeControllers.set(file, controller)
     const settings = this.getSettings()
     const runner = this.deps.run ?? defaultRunner
     let failure: string | undefined
@@ -602,8 +612,10 @@ export class AutoTitleService {
         cwd: this.deps.userDataDir ?? app.getPath('userData'),
         model: settings.model?.trim() || undefined,
         customPiPath: settings.piPath,
-        timeoutMs: this.timeoutMs
+        timeoutMs: this.timeoutMs,
+        signal: controller.signal
       })
+      if (this.disposed || controller.signal.aborted) return
       if (result.code !== 0) {
         const detail = oneLine(result.stderr || result.stdout) || 'the title run failed'
         failure = clip(oneLine(redactSecrets(detail)), 160)
@@ -612,8 +624,11 @@ export class AutoTitleService {
         if (!title) failure = 'the model did not return a usable title'
       }
     } catch (error) {
+      if (this.disposed || controller.signal.aborted) return
       failure = clip(oneLine(redactSecrets(messageOf(error))), 160)
     }
+
+    if (this.disposed || controller.signal.aborted || this.host?.sessionInfo?.(file)?.running) return
 
     const usedFallback = title === null
     const finalTitle = title ?? fallbackTitle(exchange)
@@ -624,6 +639,7 @@ export class AutoTitleService {
       const getMeta = this.deps.getMeta ?? getSessionMeta
       const latest = await getMeta(file)
       if (latest?.name) return
+      if (this.disposed || controller.signal.aborted || this.host?.sessionInfo?.(file)?.running) return
       if (!(await this.rename(file, finalTitle))) {
         this.diagnostic(`skipped ${path.basename(file)}: the conversation did not take the new name`)
       } else if (usedFallback) {

@@ -89,7 +89,9 @@ export function ModelPicker() {
   const [configuredThinkingLevels, setConfiguredThinkingLevels] = useState<string[]>([])
   const [configuredLevelsLoading, setConfiguredLevelsLoading] = useState(false)
   const setModel = useAppStore((state) => state.setModel)
-  const starting = useAppStore((state) => state.status.phase === 'starting')
+  const starting = useAppStore(
+    (state) => state.status.phase === 'starting' && !state.cwdWait
+  )
   const models = useMemo(
     () => selectableModels(threadModels, catalogModels, disabledModelSpecs),
     [threadModels, catalogModels, disabledModelSpecs]

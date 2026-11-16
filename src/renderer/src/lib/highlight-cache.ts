@@ -1,9 +1,33 @@
-export const HIGHLIGHT_CACHE_LIMIT = 48
+export const HIGHLIGHT_CACHE_LIMIT = 128
 export const MAX_CACHED_HIGHLIGHT_CODE_UNITS = 32 * 1024
 
 export function highlightCacheKey(code: string, language: string, isDark: boolean): string | undefined {
   if (code.length > MAX_CACHED_HIGHLIGHT_CODE_UNITS) return undefined
   return `${isDark ? 'dark' : 'light'}\u0000${language}\u0000${code}`
+}
+
+/** Bounded LRU storing resolved HTML strings so remounted blocks paint synchronously. */
+export class ResolvedHighlightCache {
+  private readonly entries = new Map<string, string>()
+
+  get(key: string): string | undefined {
+    const value = this.entries.get(key)
+    if (value === undefined) return undefined
+    this.entries.delete(key)
+    this.entries.set(key, value)
+    return value
+  }
+
+  set(key: string, codeUnits: number, value: string): void {
+    if (codeUnits > MAX_CACHED_HIGHLIGHT_CODE_UNITS) return
+    this.entries.delete(key)
+    this.entries.set(key, value)
+    while (this.entries.size > HIGHLIGHT_CACHE_LIMIT) {
+      const oldest = this.entries.keys().next().value
+      if (oldest === undefined) break
+      this.entries.delete(oldest)
+    }
+  }
 }
 
 export class HighlightCache {

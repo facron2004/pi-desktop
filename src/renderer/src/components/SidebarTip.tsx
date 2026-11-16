@@ -80,7 +80,7 @@ if (typeof window !== 'undefined') {
 export function useHoverTip<T>(): {
   /** The row being described, or null when no card is showing. */
   tip: TipState<T> | null
-  enter: (payload: T) => (event: ReactMouseEvent<HTMLElement> | ReactFocusEvent<HTMLElement>) => void
+  enter: (payload: T | (() => T)) => (event: ReactMouseEvent<HTMLElement> | ReactFocusEvent<HTMLElement>) => void
   leave: () => void
 } {
   const [tip, setTip] = useState<TipState<T> | null>(null)
@@ -89,7 +89,7 @@ export function useHoverTip<T>(): {
   // The payload of the row the pointer is on right now. A ref, because the
   // delay timer must read it when it fires rather than capture the render it
   // was scheduled in.
-  const pending = useRef<T | null>(null)
+  const pending = useRef<T | (() => T) | null>(null)
   const showing = useRef(false)
   showing.current = tip !== null
 
@@ -116,7 +116,7 @@ export function useHoverTip<T>(): {
   )
 
   const enter = useCallback(
-    (payload: T) => (event: ReactMouseEvent<HTMLElement> | ReactFocusEvent<HTMLElement>) => {
+    (payload: T | (() => T)) => (event: ReactMouseEvent<HTMLElement> | ReactFocusEvent<HTMLElement>) => {
       stopClose()
       // A mouse click focuses the button too. The card must answer "what is
       // this row" for the keyboard, not pop up and stay up because someone
@@ -135,8 +135,10 @@ export function useHoverTip<T>(): {
       const delay = showing.current ? 0 : HOVER_DELAY
       openTimer.current = window.setTimeout(() => {
         openTimer.current = null
-        const next = pending.current
-        if (next !== null) setTip({ anchor, payload: next })
+        const source = pending.current
+        if (source === null) return
+        const next = typeof source === 'function' ? (source as () => T)() : source
+        setTip({ anchor, payload: next })
       }, delay)
     },
     [stopClose]

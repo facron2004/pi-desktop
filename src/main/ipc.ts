@@ -1,10 +1,13 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { languageForFilePath } from '@shared/file-languages'
 import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
+import { decodeBoundedTextBuffer } from './text-decode'
 import { randomUUID } from 'node:crypto'
 import { constants, mkdirSync, readFileSync, writeFileSync, type Dirent } from 'node:fs'
-import { lstat, open, opendir, realpath, stat, type FileHandle } from 'node:fs/promises'
+import { lstat, open, opendir, realpath, stat, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type {
+  AgentMessage,
   AppInfo,
   AppUpdateProgress,
   AppSettings,
@@ -24,6 +27,8 @@ import type {
   PiCatalogQuery,
   PiCliUpgradeProgress,
   RuntimeEnsureOptions,
+  RuntimeEvent,
+  RuntimeQueueEvent,
   RuntimeRekey,
   RuntimeStartOptions,
   RuntimeStatus,
@@ -209,7 +214,10 @@ export async function removeSessionFile(
           current.handle.stat({ bigint: true })
         ])
         if (before.dev !== after.dev || before.ino !== after.ino) return false
-        await shell.trashItem(current.target)
+        // Delete the verified file itself. `shell.trashItem` used to leave a
+        // copy in the OS Recycle Bin, which is not what "delete conversation"
+        // means here: Archive is the reversible hide, Delete is final.
+        await unlink(current.target)
         invalidateSessionCache(current.target)
         await forgetSessionSearchIndex(current.target)
         return true
@@ -265,7 +273,7 @@ export async function readBoundedHandle(
         totalRead += bytesRead
         onBytesRead?.(totalRead)
       }
-      content = buffer.subarray(0, totalRead).toString('utf8')
+      content = decodeBoundedTextBuffer(buffer.subarray(0, totalRead))
     }
     const after = await handle.stat({ bigint: true })
     const changedDuringRead =
@@ -298,6 +306,15 @@ const TEXT_PREVIEW_LEAD = 12
 /** The newest full-text search per window; a later query supersedes it. */
 let sessionSearchSequence = 0
 const latestSessionSearches = new WeakMap<object, number>()
+/** The newest conversation hydration per window plus shared in-flight reads per session file. */
+interface InflightHydration {
+  promise: Promise<AgentMessage[]>
+  supersededChecks: Set<() => boolean>
+  aborted: boolean
+}
+let sessionHydrationSequence = 0
+const latestHydrations = new WeakMap<object, number>()
+const inflightHydrations = new Map<string, InflightHydration>()
 /** The newest project path search per window and UI surface; a later query supersedes it. */
 let fileSearchSequence = 0
 const latestFileSearches = new WeakMap<object, Map<FileSearchScope | 'default', number>>()
@@ -347,43 +364,6 @@ const TREE_SKIP_DIRS = new Set([
   '.nuxt',
   'target'
 ])
-const LANGUAGE_BY_EXT: Record<string, string> = {
-  ts: 'typescript',
-  tsx: 'tsx',
-  js: 'javascript',
-  jsx: 'jsx',
-  mjs: 'javascript',
-  cjs: 'javascript',
-  json: 'json',
-  md: 'markdown',
-  markdown: 'markdown',
-  css: 'css',
-  scss: 'scss',
-  html: 'html',
-  py: 'python',
-  rb: 'ruby',
-  go: 'go',
-  rs: 'rust',
-  java: 'java',
-  kt: 'kotlin',
-  swift: 'swift',
-  php: 'php',
-  cs: 'csharp',
-  sh: 'bash',
-  bash: 'bash',
-  zsh: 'bash',
-  ps1: 'powershell',
-  yml: 'yaml',
-  yaml: 'yaml',
-  toml: 'toml',
-  ini: 'ini',
-  sql: 'sql',
-  lua: 'lua',
-  vue: 'vue',
-  svelte: 'svelte',
-  xml: 'xml',
-  dockerfile: 'dockerfile'
-}
 
 function projectlessPath(): string {
   return path.join(app.getPath('userData'), 'chats')
@@ -1404,14 +1384,62 @@ export function registerIpc(context: IpcContext): void {
     (await listSessions(cwd, settings.get().externalChatFolder)).map(withoutProjectFolder)
   )
 
-  ipcMain.handle('sessions:hydrate', async (_event, file: string) => {
+  ipcMain.handle('sessions:hydrate', async (event, file: string) => {
+    const sender = (event as { sender?: object } | undefined)?.sender
+    const token = sender ? (sessionHydrationSequence += 1) : 0
+    if (sender) latestHydrations.set(sender, token)
+    const isSuperseded = (): boolean => {
+      if (!sender) return false
+      const destroyed = (sender as { isDestroyed?: () => boolean }).isDestroyed?.() === true
+      return destroyed || latestHydrations.get(sender) !== token
+    }
+
     const opened = await openSessionFile(file, resolveSessionRoots(settings.get().externalChatFolder))
     if (!opened) return []
-    try {
-      return await readSessionMessages(opened.target, opened.handle)
-    } finally {
+    if (isSuperseded()) {
       await opened.handle.close().catch(() => {})
+      return []
     }
+
+    const cacheKey = canonicalSessionFile(opened.target)
+    const existing = inflightHydrations.get(cacheKey)
+    if (existing && !existing.aborted) {
+      await opened.handle.close().catch(() => {})
+      existing.supersededChecks.add(isSuperseded)
+      const messages = await existing.promise
+      return isSuperseded() ? [] : messages
+    }
+
+    const entry: InflightHydration = {
+      supersededChecks: new Set([isSuperseded]),
+      aborted: false,
+      promise: Promise.resolve([])
+    }
+    entry.promise = (async () => {
+      try {
+        return await readSessionMessages(opened.target, opened.handle, {
+          shouldStop: () => {
+            if (entry.aborted) return true
+            for (const check of entry.supersededChecks) {
+              if (!check()) return false
+            }
+            entry.aborted = true
+            if (inflightHydrations.get(cacheKey) === entry) {
+              inflightHydrations.delete(cacheKey)
+            }
+            return true
+          }
+        })
+      } finally {
+        if (inflightHydrations.get(cacheKey) === entry) {
+          inflightHydrations.delete(cacheKey)
+        }
+        await opened.handle.close().catch(() => {})
+      }
+    })()
+    inflightHydrations.set(cacheKey, entry)
+    const messages = await entry.promise
+    return isSuperseded() ? [] : messages
   })
 
   ipcMain.handle('sessions:rename', async (_event, file: string, name: string) => {
@@ -1601,13 +1629,12 @@ export function registerIpc(context: IpcContext): void {
     try {
       const result = await readBoundedHandle(opened.handle, MAX_FILE_BYTES)
       if (!result) return null
-      const ext = path.extname(opened.target).slice(1).toLowerCase()
       return {
         path: opened.target,
         content: result.content,
         truncated: result.truncated,
         size: result.size,
-        language: LANGUAGE_BY_EXT[ext] ?? 'text'
+        language: languageForFilePath(opened.target) || 'text'
       }
     } finally {
       await opened.handle.close().catch(() => {})
@@ -1824,7 +1851,7 @@ export function registerIpc(context: IpcContext): void {
     try {
       return await removeSessionFile(file, supervisor, resolveSessionRoots(settings.get().externalChatFolder))
     } catch (error) {
-      console.error('[pi-desktop] could not trash the session file:', error)
+      console.error('[pi-desktop] could not delete the session file:', error)
       return false
     }
   })
@@ -1950,6 +1977,23 @@ export function registerIpc(context: IpcContext): void {
     const cwd = resolvedCwd.cwd
     if (typeof options.sessionKey !== 'string' || !options.sessionKey) {
       return { ok: false, error: 'Missing conversation id' }
+    }
+    if (
+      (options.sessionFile === undefined ||
+        (typeof options.sessionFile === 'string' && options.sessionFile.length > 0)) &&
+      supervisor.isReadyMatch?.({
+        sessionKey: options.sessionKey,
+        cwd,
+        sessionFile: options.sessionFile
+      })
+    ) {
+      if (!runtimeCwdStillRegistered(context, resolvedCwd)) {
+        return { ok: false, error: 'Working folder is no longer an available workspace.' }
+      }
+      return supervisor.ensure({
+        ...options,
+        cwd
+      })
     }
     const sessionRoots = resolveSessionRoots(context.settings.get().externalChatFolder)
     const validated = await validateRuntimeSessionFile(options.sessionFile, cwd, sessionRoots)
@@ -2303,66 +2347,177 @@ function tryCoalesceEvent(entry: CoalescedEventEntry, next: PiEvent): boolean {
   return false
 }
 
+const DELTA_BATCH_MS = 8
+const MAX_PENDING_PER_OWNER = 64
+const STDERR_BATCH_MS = 16
+const MAX_STDERR_BATCH_LINES = 64
+
 /** Forward runtime traffic to the renderer window. */
 export function bridgeRuntime(context: IpcContext): void {
   const { supervisor, settings, getWindow } = context
-  let pendingQueue: CoalescedEventEntry[] = []
-  let flushScheduled = false
+  const pendingByOwner = new Map<string, CoalescedEventEntry[]>()
+  const pendingStderrByOwner = new Map<string, string[]>()
+  const hookedWindows = new WeakSet<BrowserWindow>()
+  let deltaTimer: ReturnType<typeof setTimeout> | null = null
+  let stderrTimer: ReturnType<typeof setTimeout> | null = null
 
-  const flushPending = (): void => {
-    flushScheduled = false
-    if (pendingQueue.length === 0) return
-    const batch = pendingQueue
-    pendingQueue = []
-    const window = getWindow()
-    if (!window || window.isDestroyed()) return
-    for (const item of batch) {
-      sendToWindow(window, 'runtime:event', item)
+  const clearPendingAll = (): void => {
+    if (deltaTimer) {
+      clearTimeout(deltaTimer)
+      deltaTimer = null
     }
+    if (stderrTimer) {
+      clearTimeout(stderrTimer)
+      stderrTimer = null
+    }
+    pendingByOwner.clear()
+    pendingStderrByOwner.clear()
+  }
+
+  const activeWindow = (): BrowserWindow | null => {
+    const window = getWindow()
+    if (!window || window.isDestroyed()) {
+      clearPendingAll()
+      return null
+    }
+    if (!hookedWindows.has(window)) {
+      hookedWindows.add(window)
+      window.on?.('closed', clearPendingAll)
+    }
+    return window
+  }
+
+  const sendOwnerBatch = (window: BrowserWindow, batch: CoalescedEventEntry[]): void => {
+    if (batch.length === 0) return
+    const payload: RuntimeEvent | RuntimeEvent[] = batch.length === 1 ? batch[0] : batch
+    sendToWindow(window, 'runtime:event', payload)
+  }
+
+  const flushOwner = (ownerId: string): void => {
+    const batch = pendingByOwner.get(ownerId)
+    if (!batch || batch.length === 0) return
+    pendingByOwner.delete(ownerId)
+    if (pendingByOwner.size === 0 && deltaTimer) {
+      clearTimeout(deltaTimer)
+      deltaTimer = null
+    }
+    const window = activeWindow()
+    if (!window) return
+    sendOwnerBatch(window, batch)
+  }
+
+  const flushAllOwners = (): void => {
+    if (deltaTimer) {
+      clearTimeout(deltaTimer)
+      deltaTimer = null
+    }
+    if (pendingByOwner.size === 0) return
+    const entries = Array.from(pendingByOwner.entries())
+    pendingByOwner.clear()
+    const window = activeWindow()
+    if (!window) return
+    for (const [, batch] of entries) {
+      sendOwnerBatch(window, batch)
+    }
+  }
+
+  const flushStderrOwner = (ownerId: string): void => {
+    const lines = pendingStderrByOwner.get(ownerId)
+    if (!lines || lines.length === 0) return
+    pendingStderrByOwner.delete(ownerId)
+    if (pendingStderrByOwner.size === 0 && stderrTimer) {
+      clearTimeout(stderrTimer)
+      stderrTimer = null
+    }
+    const window = activeWindow()
+    if (!window) return
+    sendToWindow(window, 'runtime:stderr', { ownerId, line: lines.join('\n') })
+  }
+
+  const flushAllStderr = (): void => {
+    if (stderrTimer) {
+      clearTimeout(stderrTimer)
+      stderrTimer = null
+    }
+    if (pendingStderrByOwner.size === 0) return
+    const entries = Array.from(pendingStderrByOwner.entries())
+    pendingStderrByOwner.clear()
+    const window = activeWindow()
+    if (!window) return
+    for (const [ownerId, lines] of entries) {
+      if (lines.length > 0) {
+        sendToWindow(window, 'runtime:stderr', { ownerId, line: lines.join('\n') })
+      }
+    }
+  }
+
+  const scheduleDeltaFlush = (): void => {
+    if (deltaTimer) return
+    deltaTimer = setTimeout(flushAllOwners, DELTA_BATCH_MS)
+    deltaTimer.unref?.()
+  }
+
+  const scheduleStderrFlush = (): void => {
+    if (stderrTimer) return
+    stderrTimer = setTimeout(flushAllStderr, STDERR_BATCH_MS)
+    stderrTimer.unref?.()
   }
 
   const queueEvent = (payload: { ownerId: string; event: PiEvent }): void => {
+    if (!activeWindow()) return
+    let ownerQueue = pendingByOwner.get(payload.ownerId)
+    if (!ownerQueue) {
+      ownerQueue = []
+      pendingByOwner.set(payload.ownerId, ownerQueue)
+    }
+
     // If tool_execution_update, replace any earlier pending update for the same (ownerId, toolCallId)
     if (payload.event.type === 'tool_execution_update' && payload.event.toolCallId) {
-      const existing = pendingQueue.find(
-        (item) =>
-          item.ownerId === payload.ownerId &&
+      for (let i = ownerQueue.length - 1; i >= 0; i--) {
+        const item = ownerQueue[i]
+        if (
           item.event.type === 'tool_execution_update' &&
           item.event.toolCallId === payload.event.toolCallId
-      )
-      if (existing) {
-        existing.event = cloneStreamEvent(payload.event)
-        return
-      }
-    }
-
-    // Try coalescing with the newest compatible item for this owner
-    for (let i = pendingQueue.length - 1; i >= 0; i--) {
-      const item = pendingQueue[i]
-      if (item.ownerId === payload.ownerId) {
-        if (tryCoalesceEvent(item, payload.event)) {
+        ) {
+          item.event = cloneStreamEvent(payload.event)
+          scheduleDeltaFlush()
           return
         }
-        // Encountered the most recent event for this owner, but it is incompatible.
-        // Stop scanning to preserve intra-session chronological ordering.
-        break
       }
     }
 
-    pendingQueue.push({ ownerId: payload.ownerId, event: cloneStreamEvent(payload.event) })
-    if (!flushScheduled) {
-      flushScheduled = true
-      queueMicrotask(flushPending)
+    const last = ownerQueue[ownerQueue.length - 1]
+    if (last && tryCoalesceEvent(last, payload.event)) {
+      scheduleDeltaFlush()
+      return
     }
+
+    if (ownerQueue.length >= MAX_PENDING_PER_OWNER) {
+      flushOwner(payload.ownerId)
+      ownerQueue = []
+      pendingByOwner.set(payload.ownerId, ownerQueue)
+    }
+
+    ownerQueue.push({ ownerId: payload.ownerId, event: cloneStreamEvent(payload.event) })
+    scheduleDeltaFlush()
   }
 
-  const initialWindow = getWindow()
-  if (initialWindow && !initialWindow.isDestroyed()) {
-    initialWindow.on('closed', () => {
-      pendingQueue = []
-      flushScheduled = false
-    })
+  const queueStderr = (payload: { ownerId: string; line: string }): void => {
+    if (!activeWindow()) return
+    let lines = pendingStderrByOwner.get(payload.ownerId)
+    if (!lines) {
+      lines = []
+      pendingStderrByOwner.set(payload.ownerId, lines)
+    }
+    lines.push(payload.line)
+    if (lines.length >= MAX_STDERR_BATCH_LINES) {
+      flushStderrOwner(payload.ownerId)
+      return
+    }
+    scheduleStderrFlush()
   }
+
+  activeWindow()
 
   supervisor.on('event', (payload: { ownerId: string; event: PiEvent }) => {
     const event = payload.event
@@ -2372,10 +2527,10 @@ export function bridgeRuntime(context: IpcContext): void {
     }
 
     // Structural/phase event or extension dialog approval:
-    // Flush pending coalesced deltas first so order is strictly maintained
-    flushPending()
+    // Flush only this owner's pending coalesced deltas first so intra-session order is strictly maintained
+    flushOwner(payload.ownerId)
 
-    const window = getWindow()
+    const window = activeWindow()
     sendToWindow(window, 'runtime:event', payload)
 
     if (
@@ -2399,23 +2554,28 @@ export function bridgeRuntime(context: IpcContext): void {
     }
   })
   supervisor.on('status', (payload: { ownerId: string; status: RuntimeStatus }) => {
-    flushPending()
-    sendToWindow(getWindow(), 'runtime:status', payload)
+    flushOwner(payload.ownerId)
+    sendToWindow(activeWindow(), 'runtime:status', payload)
   })
   supervisor.on('rekey', (payload: RuntimeRekey) => {
-    flushPending()
-    sendToWindow(getWindow(), 'runtime:rekey', payload)
+    flushOwner(payload.from)
+    if (payload.to !== payload.from) flushOwner(payload.to)
+    flushStderrOwner(payload.from)
+    sendToWindow(activeWindow(), 'runtime:rekey', payload)
+  })
+  supervisor.on('queued', (payload: RuntimeQueueEvent) => {
+    sendToWindow(activeWindow(), 'runtime:queue', payload)
   })
   supervisor.on('rename', (payload: { file: string; name: string }) => {
-    sendToWindow(getWindow(), 'sessions:changed', payload)
+    sendToWindow(activeWindow(), 'sessions:changed', payload)
   })
   supervisor.on('stderr', (payload: { ownerId: string; line: string }) => {
-    sendToWindow(getWindow(), 'runtime:stderr', { ownerId: payload.ownerId, line: payload.line })
+    queueStderr(payload)
   })
   context.memory.on('changed', (state: MemoryState) => {
-    sendToWindow(getWindow(), 'memory:changed', state)
+    sendToWindow(activeWindow(), 'memory:changed', state)
   })
   context.scheduledTasks.on('changed', (tasks: ScheduledTask[]) => {
-    sendToWindow(getWindow(), 'scheduled-tasks:changed', tasks)
+    sendToWindow(activeWindow(), 'scheduled-tasks:changed', tasks)
   })
 }

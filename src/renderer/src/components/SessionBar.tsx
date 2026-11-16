@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { memo, useMemo } from 'react'
 import { Check, FolderOpen, FolderSearch } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
@@ -19,10 +19,11 @@ import { Popover } from './Popover'
  * the project is already the one the window opened. The branch is the first
  * thing that needs it, so it appears with the first message.
  */
-export function SessionBar({ showProject }: { showProject: boolean }) {
+function SessionBarProjectPicker({ close }: { close: () => void }) {
   const workspace = useAppStore((state) => state.workspace)
-  const git = useAppStore((state) => state.git)
-  const settings = useAppStore((state) => state.settings)
+  const workspaces = useAppStore((state) => state.settings.workspaces)
+  const hiddenProjects = useAppStore((state) => state.settings.hiddenProjects)
+  const projectOrder = useAppStore((state) => state.settings.projectOrder)
   const sessions = useAppStore((state) => state.sessions)
   const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const switchProject = useAppStore((state) => state.switchProject)
@@ -32,16 +33,67 @@ export function SessionBar({ showProject }: { showProject: boolean }) {
   // rows rather than inventing a recent-use order of its own.
   const projects = useMemo(
     () => sortProjects(
-      collectProjects(
-        settings.workspaces,
-        sessions,
-        settings.hiddenProjects,
-        settings.projectOrder
-      ),
+      collectProjects(workspaces, sessions, hiddenProjects, projectOrder),
       workspace?.path
     ),
-    [settings.workspaces, settings.hiddenProjects, settings.projectOrder, sessions, workspace?.path]
+    [workspaces, hiddenProjects, projectOrder, sessions, workspace?.path]
   )
+
+  return (
+    <div className="session-bar__projects" role="group" aria-label={t('Projects')}>
+      <div className="popover__label">{t('Projects')}</div>
+      <div className="session-bar__project-list">
+        {projects.map((project) => {
+          const current = Boolean(workspace && samePath(workspace.path, project.path))
+          return (
+            <button
+              key={project.path}
+              type="button"
+              className="popover__item"
+              data-selected={current}
+              aria-pressed={current}
+              title={project.path}
+              onClick={() => {
+                close()
+                if (current) return
+                // Picking a project is deliberate, so it may replace the
+                // running one — the same door the launcher and Ctrl+1…9
+                // use.
+                void switchProject(project.path, { allowWhileRunning: true })
+              }}
+            >
+              <FolderOpen size={14} />
+              <span className="popover__item-text">{project.name}</span>
+              {current ? <Check size={13} className="session-bar__check" /> : null}
+            </button>
+          )
+        })}
+        {projects.length === 0 ? (
+          <div className="session-bar__empty">{t('No project selected yet.')}</div>
+        ) : null}
+      </div>
+      <div className="session-bar__foot">
+        <button
+          type="button"
+          className="popover__item"
+          onClick={() => {
+            close()
+            openProjectDialog({ mode: 'create' })
+          }}
+        >
+          <FolderSearch size={14} />
+          <span className="popover__item-text">{t('New project')}</span>
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export const SessionBar = memo(function SessionBar({ showProject }: { showProject: boolean }) {
+  const workspace = useAppStore((state) => state.workspace)
+  const gitIsRepo = useAppStore((state) => Boolean(state.git?.isRepo))
+  const gitFileCount = useAppStore((state) => state.git?.files.length ?? 0)
+  const t = useT()
 
   const openInspector = () =>
     window.dispatchEvent(new CustomEvent('pi:open-inspector', { detail: { tab: 'changes' } }))
@@ -71,54 +123,7 @@ export function SessionBar({ showProject }: { showProject: boolean }) {
             </button>
           )}
         >
-          {(close) => (
-            <div className="session-bar__projects" role="group" aria-label={t('Projects')}>
-              <div className="popover__label">{t('Projects')}</div>
-              <div className="session-bar__project-list">
-                {projects.map((project) => {
-                  const current = Boolean(workspace && samePath(workspace.path, project.path))
-                  return (
-                    <button
-                      key={project.path}
-                      type="button"
-                      className="popover__item"
-                      data-selected={current}
-                      aria-pressed={current}
-                      title={project.path}
-                      onClick={() => {
-                        close()
-                        if (current) return
-                        // Picking a project is deliberate, so it may replace the
-                        // running one 鈥?the same door the launcher and Ctrl+1鈥?
-                        // use.
-                        void switchProject(project.path, { allowWhileRunning: true })
-                      }}
-                    >
-                      <FolderOpen size={14} />
-                      <span className="popover__item-text">{project.name}</span>
-                      {current ? <Check size={13} className="session-bar__check" /> : null}
-                    </button>
-                  )
-                })}
-                {projects.length === 0 ? (
-                  <div className="session-bar__empty">{t('No project selected yet.')}</div>
-                ) : null}
-              </div>
-              <div className="session-bar__foot">
-                <button
-                  type="button"
-                  className="popover__item"
-                  onClick={() => {
-                    close()
-                    openProjectDialog({ mode: 'create' })
-                  }}
-                >
-                  <FolderSearch size={14} />
-                  <span className="popover__item-text">{t('New project')}</span>
-                </button>
-              </div>
-            </div>
-          )}
+          {(close) => <SessionBarProjectPicker close={close} />}
         </Popover>
       ) : null}
 
@@ -126,16 +131,16 @@ export function SessionBar({ showProject }: { showProject: boolean }) {
 
       <ContextRing />
 
-      {showProject && git?.isRepo && git.files.length > 0 ? (
+      {showProject && gitIsRepo && gitFileCount > 0 ? (
         <button
           type="button"
           className="session-bar__item session-bar__changes"
           title={t('Review the files Pi changed')}
           onClick={openInspector}
         >
-          {`${git.files.length} ${t('changed')}`}
+          {`${gitFileCount} ${t('changed')}`}
         </button>
       ) : null}
     </div>
   )
-}
+})

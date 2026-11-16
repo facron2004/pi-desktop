@@ -24,7 +24,7 @@ test('a rename in the main process is pushed to the session list', () => {
   // Hot renames publish on the runtime stream and cold ones only append to
   // the JSONL; neither re-reads the index on its own.
   assert.match(read('src/main/pi/supervisor.ts'), /this\.emit\('rename', \{ file, name \}\)/)
-  assert.match(read('src/main/ipc.ts'), /sendToWindow\(getWindow\(\), 'sessions:changed', payload\)/)
+  assert.match(read('src/main/ipc.ts'), /sendToWindow\(activeWindow\(\), 'sessions:changed', payload\)/)
   assert.match(read('src/preload/index.ts'), /subscribe<SessionNameChange>\('sessions:changed', handler\)/)
   const store = read('src/renderer/src/store/useAppStore.ts')
   assert.match(store, /window\.pi\.sessions\.onChanged/)

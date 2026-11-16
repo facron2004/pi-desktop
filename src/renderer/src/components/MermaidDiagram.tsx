@@ -5,6 +5,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
   type RefObject
 } from 'react'
@@ -58,6 +59,72 @@ const ZOOM_STEP = 1.2
 /** Keep in sync with the viewport's `--sp-4` horizontal padding. */
 const VIEWPORT_PADDING = 24
 const STREAMING_RENDER_DELAY = 300
+const MERMAID_CACHE_LIMIT = 48
+
+const mermaidCache = new Map<string, RenderedDiagram>()
+
+function mermaidCacheKey(code: string, isDark: boolean, themeRevision: number): string {
+  return `${isDark ? 1 : 0}:${themeRevision}\u0000${code}`
+}
+
+function readMermaidCache(code: string, isDark: boolean, themeRevision: number): RenderedDiagram | null {
+  if (!code) return null
+  const key = mermaidCacheKey(code, isDark, themeRevision)
+  const hit = mermaidCache.get(key)
+  if (!hit) return null
+  mermaidCache.delete(key)
+  mermaidCache.set(key, hit)
+  return hit
+}
+
+function writeMermaidCache(diagram: RenderedDiagram): void {
+  const key = mermaidCacheKey(diagram.code, diagram.isDark, diagram.themeRevision)
+  mermaidCache.delete(key)
+  mermaidCache.set(key, diagram)
+  while (mermaidCache.size > MERMAID_CACHE_LIMIT) {
+    const oldest = mermaidCache.keys().next().value
+    if (oldest === undefined) break
+    mermaidCache.delete(oldest)
+  }
+}
+
+let sharedThemeRevision = 0
+const themeListeners = new Set<() => void>()
+let sharedThemeObserver: MutationObserver | null = null
+let sharedThemeFrame = 0
+
+function subscribeThemeRevision(listener: () => void): () => void {
+  themeListeners.add(listener)
+  if (!sharedThemeObserver && typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
+    sharedThemeObserver = new MutationObserver(() => {
+      if (sharedThemeFrame) return
+      sharedThemeFrame = requestAnimationFrame(() => {
+        sharedThemeFrame = 0
+        sharedThemeRevision += 1
+        for (const fn of themeListeners) fn()
+      })
+    })
+    sharedThemeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'data-tone', 'style']
+    })
+  }
+  return () => {
+    themeListeners.delete(listener)
+    if (themeListeners.size === 0) {
+      sharedThemeObserver?.disconnect()
+      sharedThemeObserver = null
+      if (sharedThemeFrame) {
+        cancelAnimationFrame(sharedThemeFrame)
+        sharedThemeFrame = 0
+      }
+    }
+  }
+}
+
+function readThemeRevision(): number {
+  return sharedThemeRevision
+}
 
 function clampScale(value: number): number {
   return Math.min(MAX_SCALE, Math.max(MIN_SCALE, value))
@@ -552,39 +619,20 @@ export function MermaidDiagram({ code, streaming = false }: MermaidDiagramProps)
   const diagramType = detectMermaidDiagramType(normalized)
   const label = diagramType ? t(diagramType.label) : t('Diagram')
 
-  const [rendered, setRendered] = useState<RenderedDiagram | null>(null)
+  const themeRevision = useSyncExternalStore(subscribeThemeRevision, readThemeRevision, readThemeRevision)
+  const cached = normalized ? readMermaidCache(normalized, isDark, themeRevision) : null
+  const [rendered, setRendered] = useState<RenderedDiagram | null>(() => cached)
   const [error, setError] = useState<string | null>(null)
   const [rendering, setRendering] = useState(false)
   const [showSource, setShowSource] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [copied, setCopied] = useState(false)
-  const [themeRevision, setThemeRevision] = useState(0)
-  const lastGoodRef = useRef<RenderedDiagram | null>(null)
+  const lastGoodRef = useRef<RenderedDiagram | null>(cached)
+  if (cached) lastGoodRef.current = cached
+  const activeDiagram = cached ?? rendered
   const copyTimerRef = useRef<number | undefined>(undefined)
   const fullscreenRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
-
-  // `useIsDark` follows the theme switch. Accent and custom background changes
-  // are inline custom properties on the same element, so the diagram watches
-  // those attributes too and re-colours without a reload.
-  useEffect(() => {
-    let frame = 0
-    const observer = new MutationObserver(() => {
-      if (frame) return
-      frame = requestAnimationFrame(() => {
-        frame = 0
-        setThemeRevision((value) => value + 1)
-      })
-    })
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['data-theme', 'data-tone', 'style']
-    })
-    return () => {
-      observer.disconnect()
-      if (frame) cancelAnimationFrame(frame)
-    }
-  }, [])
 
   const closeFullscreen = useCallback(() => setFullscreen(false), [])
   useDialogFocus(fullscreenRef, closeFullscreen, { enabled: fullscreen, initialFocus: 'dialog' })
@@ -599,6 +647,14 @@ export function MermaidDiagram({ code, streaming = false }: MermaidDiagramProps)
     if (!normalized) {
       setRendering(false)
       setError(streaming ? null : formatMermaidError(new Error('The diagram is empty.')))
+      return
+    }
+    const cacheHit = readMermaidCache(normalized, isDark, themeRevision)
+    if (cacheHit) {
+      lastGoodRef.current = cacheHit
+      setRendered(cacheHit)
+      setRendering(false)
+      setError(null)
       return
     }
     if (
@@ -626,6 +682,7 @@ export function MermaidDiagram({ code, streaming = false }: MermaidDiagramProps)
               themeRevision,
               size: readMermaidSvgSize(result.svg)
             }
+            writeMermaidCache(next)
             lastGoodRef.current = next
             setRendered(next)
             setError(null)
@@ -662,9 +719,9 @@ export function MermaidDiagram({ code, streaming = false }: MermaidDiagramProps)
   }, [normalized])
 
   const downloadSvg = useCallback(() => {
-    if (!rendered || !lastGoodRef.current) return
+    if (!activeDiagram) return
     const background = readMermaidPalette(isDark).background
-    const svg = prepareMermaidSvgForDownload(rendered.svg, background)
+    const svg = prepareMermaidSvgForDownload(activeDiagram.svg, background)
     const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
@@ -674,7 +731,7 @@ export function MermaidDiagram({ code, streaming = false }: MermaidDiagramProps)
     anchor.click()
     anchor.remove()
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-  }, [diagramType?.id, isDark, rendered])
+  }, [activeDiagram, diagramType?.id, isDark])
 
   const toggleSource = useCallback(() => setShowSource((value) => !value), [])
   const toggleFullscreen = useCallback(() => setFullscreen((value) => !value), [])
@@ -700,8 +757,8 @@ export function MermaidDiagram({ code, streaming = false }: MermaidDiagramProps)
       >
         <DiagramSurface
           {...surfaceProps}
-          svg={rendered?.svg ?? null}
-          size={rendered?.size ?? null}
+          svg={activeDiagram?.svg ?? null}
+          size={activeDiagram?.size ?? null}
           error={error}
           rendering={rendering}
           fullscreen={false}
@@ -738,8 +795,8 @@ export function MermaidDiagram({ code, streaming = false }: MermaidDiagramProps)
                 </button>
                 <DiagramSurface
                   {...surfaceProps}
-                  svg={rendered?.svg ?? null}
-                  size={rendered?.size ?? null}
+                  svg={activeDiagram?.svg ?? null}
+                  size={activeDiagram?.size ?? null}
                   error={error}
                   rendering={rendering}
                   fullscreen

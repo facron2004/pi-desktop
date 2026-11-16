@@ -14,9 +14,9 @@
 
 </div>
 
-![Pi Desktop v0.11.2 浅色工作台](docs/screenshots/workbench-light.png)
+![Pi Desktop 浅色工作台](docs/screenshots/workbench-light.png)
 
-<p align="center"><sub>v0.11.2 实际应用截图（浅色三栏工作台、任务进度轨道、Mermaid 图表与代码改动摘要）；对话与项目内容为演示数据。</sub></p>
+<p align="center"><sub>实际应用截图（v0.11.2 构建；浅色三栏工作台、任务进度轨道、Mermaid 图表与代码改动摘要）；对话与项目内容为演示数据。</sub></p>
 
 ## 简介
 
@@ -42,30 +42,30 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 
 ### 深色工作台与文件变动审查
 
-![Pi Desktop v0.11.2 深色工作台与文件变动审查](docs/screenshots/workbench-dark.png)
+![Pi Desktop 深色工作台与文件变动审查](docs/screenshots/workbench-dark.png)
 
 ### 插件与技能市场（Pi 官方包目录）
 
-![Pi Desktop v0.11.2 扩展市场](docs/screenshots/extensions-marketplace.png)
+![Pi Desktop 扩展市场](docs/screenshots/extensions-marketplace.png)
 
 ### 外观设置
 
-![Pi Desktop v0.11.2 外观设置](docs/screenshots/appearance-settings.png)
+![Pi Desktop 外观设置](docs/screenshots/appearance-settings.png)
 
 </details>
 
 ## 下载与安装
 
-当前发布版本为 **v0.11.2**，内置 **Pi 1.5.2**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
+当前发布版本为 **v0.11.3**，内置 **Pi 1.5.2**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.2/Pi.Desktop-0.11.2-x64.exe) |
-| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.2/Pi.Desktop-0.11.2-arm64.exe) |
-| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.2/Pi.Desktop-0.11.2.exe) |
-| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.11.2/Pi.Desktop-0.11.2-portable-x64.zip) |
+| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.3/Pi.Desktop-0.11.3-x64.exe) |
+| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.3/Pi.Desktop-0.11.3-arm64.exe) |
+| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.3/Pi.Desktop-0.11.3.exe) |
+| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.11.3/Pi.Desktop-0.11.3-portable-x64.zip) |
 
-免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.11.2/SHA256SUMS.txt)，版本说明见 [v0.11.2 更新说明](docs/releases/v0.11.2.md)。
+免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.11.3/SHA256SUMS.txt)，版本说明见 [v0.11.3 更新说明](docs/releases/v0.11.3.md)。
 
 ## 快速上手
 

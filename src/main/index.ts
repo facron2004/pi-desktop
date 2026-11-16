@@ -16,7 +16,7 @@ import { SessionSupervisor } from './pi/supervisor'
 import { RemoteAccessService } from './remote-access'
 import { applyTaskbarIcon, windowIconImage } from './app-icon'
 import { scheduleCapture, scheduleWindowClose } from './screenshot'
-import { secureUserDataDirectory, SettingsStore } from './settings'
+import { didUserDataAclChange, secureUserDataDirectory, scheduleUserDataAclSweep, SettingsStore } from './settings'
 import { configureExternalSessionRoots, resolveSessionRoots } from './sessions'
 import { TerminalManager } from './terminal'
 import {
@@ -85,6 +85,8 @@ let remoteAccess: RemoteAccessService | null = null
 let remoteInitialization: Promise<void> | null = null
 let scheduledTaskService: ScheduledTaskService | null = null
 let startupFinished = false
+/** A second launch that arrived before the first window existed. */
+let revealPending = false
 
 app.on('web-contents-created', (_event, contents) => {
   contents.on('will-attach-webview', (event, webPreferences, params) => {
@@ -386,8 +388,20 @@ function revealMainWindow(): void {
   // A second launch that arrives while `start` is still building the window
   // must not create another one: the window already on its way will appear.
   // The same is true while the app is quitting — a new window there would be
-  // built only to be closed again.
-  if (!startupFinished || isQuitting()) return
+  // built only to be closed again. A launch that arrives in that window of time
+  // is remembered instead of dropped: a slow first start (Windows scanning a
+  // freshly installed build) is exactly when the reader clicks the icon again,
+  // and doing nothing there looks like the app refusing to open.
+  if (isQuitting()) return
+  if (!startupFinished) {
+    revealPending = true
+    return
+  }
+  revealNow()
+}
+
+function revealNow(): void {
+  revealPending = false
   if (!mainWindow || mainWindow.isDestroyed()) {
     if (!settings) return
     mainWindow = createWindow()
@@ -528,6 +542,10 @@ async function start(): Promise<void> {
 
   mainWindow = createWindow()
   applyTray()
+  // The child ACL pass is a migration, not a launch step: it touches tens of
+  // thousands of cached files, so it waits until the window is up and only runs
+  // when this launch actually rewrote the root ACL.
+  if (didUserDataAclChange()) scheduleUserDataAclSweep(app.getPath('userData'))
 
   const context = {
     supervisor,
@@ -557,6 +575,10 @@ async function start(): Promise<void> {
     }
   })
   startupFinished = true
+  // A launch that arrived while this one was still starting asked for the
+  // window; it is up now, so honour it instead of leaving it behind other
+  // windows.
+  if (revealPending) revealNow()
 }
 
 if (primaryInstance) {

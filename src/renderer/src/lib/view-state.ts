@@ -106,9 +106,22 @@ export function writeHistoryFirstVisibleTurn(threadId: string, firstVisibleTurn:
   prune(threadId, state)
 }
 
-/** Drop view preferences for a conversation that no longer exists. */
-export function clearViewState(threadId: string): void {
-  conversations.delete(threadId)
+/** Drop view preferences for a conversation, optionally keeping the reader's history window. */
+export function clearViewState(
+  threadId: string,
+  options?: { preserveHistoryWindow?: boolean }
+): void {
+  if (!options?.preserveHistoryWindow) {
+    conversations.delete(threadId)
+    return
+  }
+  const state = conversations.get(threadId)
+  if (!state) return
+  state.toolOpen.clear()
+  state.toolFull.clear()
+  state.fileOpen.clear()
+  state.processOpen.clear()
+  prune(threadId, state)
 }
 
 /** Carry a draft's open rows over when Pi writes it to a session file. */

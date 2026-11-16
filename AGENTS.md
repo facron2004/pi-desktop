@@ -192,6 +192,12 @@ never received a message. `get_fork_messages` reports the prompts of the active
 branch, in order, with the entry id to fork from; the thread pairs them with the
 messages on screen in `src/renderer/src/lib/thread.ts`.
 
+**Editing a user message is not a fork.** The pencil sends the bundled
+`desktop-rewind` extension command, which calls Pi's `ctx.navigateTree` on the
+message entry: the same session file moves its leaf to the message's parent and
+the prompt returns to the composer. `forkFrom` stays for the session-tree fork
+action only.
+
 A hot conversation is renamed with `set_session_name` on its own process. A cold
 one gets a single `session_info` line appended to its JSONL, and only when no
 process is writing that file. Naming never switches the conversation on screen.
@@ -229,16 +235,26 @@ only when the user submits it. A prewarmed process carries the speculative mark,
 so moving the view on stops it again. Drafts are never prewarmed: Pi writes a
 session file as soon as it starts, so a chat that was never written would leave
 an empty conversation on disk. `SessionSupervisor` holds one process per hot
-conversation, and the same JSONL never has two writers. A second prompt in the
-same working directory waits; it does not abort the one already running.
-The working-directory gate is shared across app processes. Parent and nested
-folders overlap; sibling folders remain independent.
+conversation, and the same JSONL never has two writers (`fileOwners` and the
+per-file lock keep every open session file single-writer). Separate
+conversations in the same working directory claim `'shared'` access and run
+concurrently; desktop Git writes take `'exclusive'` access via `withCwdLock`
+(blocking while any overlapping conversation is working, and queueing new
+prompts until the exclusive lock releases). The working-directory gate is shared
+across app processes. Parent and nested folders overlap; sibling folders remain
+independent.
 Switching projects is also only a view change. Closing or removing a workspace
 is what stops that folder's processes.
 
 The sidebar running mark reads `threads[file].isStreaming`. `stop()` aborts the
 conversation on screen, not whichever one happens to be running in the
 background.
+
+**Delete is final; Archive is the reversible action.** `removeSessionFile`
+unlinks the verified JSONL inside the session root while its mutation lock is
+held — it must not use `shell.trashItem`, because a deleted conversation must
+not leave a recoverable copy in the OS Recycle Bin. The confirmation body says
+the session file will be permanently deleted; keep that copy explicit.
 
 ### What a row says about itself
 
@@ -376,6 +392,12 @@ the box the button is the way to send (steer or queue), so the stop moves into
 the row under the box as `session-bar__stop`. Both call the same `stop()`; there
 is no second abort path.
 
+Transient app messages are a single floating `AppToast`, below the title bar in
+the window's top-right corner — never a strip inside the composer. `showToast`
+still owns the one message queue; the toast maps `info` to the success mark,
+carries a close button, and must not change the composer's geometry. A message
+about the app is not part of writing a message.
+
 ### The usage line under the composer
 
 `UsageBar` is one compact line **centred** under the input after a run, and it
@@ -388,7 +410,11 @@ uses the compact session statistics layout: turns and steps, model time, tool
 execution time, average TTFT and output speed. Unavailable readings say
 `Not measured yet`. Pi reports tool `durationMs` when available; the client
 measures tool start-to-end as a fallback. Model time sums client-observed
-`turn_start` to assistant-message completion intervals. Average TTFT measures
+`turn_start` to assistant-message completion intervals while a run is live.
+A reopened transcript uses Pi's per-message `durationMs`; the local samples
+cover branches outside the visible tail and are never added on top of the
+transcript — both describe the same messages, so taking both doubled the
+number (a real 24-minute session read 48 minutes). Average TTFT measures
 one model request, from just before the provider request to that request's
 first nonempty text delta; every new request starts a fresh clock, so tool
 execution and retry backoff cannot inflate it. `generation-timing.ts` measures
@@ -595,6 +621,18 @@ a start is a new chat. If no saved project can be restored, the start becomes a
 projectless chat and `activeWorkspaceId` is persisted as `null`; the welcome
 screen never falls back to a dead "open project folder" state.
 
+### Windows user-data ACLs
+
+`secureUserDataDirectory` runs before the settings file is read, so it must stay
+cheap. It **reads** the root directory's ACL (`icacls <dir> /L`) and only writes
+when the current account is missing, inheritance is still on, or the entries are
+not full control. Never put `icacls /reset` or `/grant:r` back on the
+unconditional launch path: on a profile holding ~30k Chromium cache files the
+inheritable-ACE propagation blocked the main process for 60–90 s, and the window
+did not appear until it finished — the app looked like it refused to start.
+Existing children are handled once, after the window is up, by the asynchronous
+`scheduleUserDataAclSweep`; it only runs when the root ACL actually changed.
+
 ### One-shot Pi CLI processes
 
 `runPiCli` (`src/main/pi/cli.ts`) launches the bundled CLI through
@@ -788,10 +826,13 @@ reference app is in [The task rail, aligned with MCode](docs/mcode-task-rail-ali
 ## Files in the composer
 
 `@` in the composer opens the list of files of the project; the list narrows as
-the name is typed and a picked file leaves its path in the message. The search
-walks the project in the main process (`fs:search`), and it matches the path,
-not only the name — the separators are normalised, so `src/renderer` finds the
-folder on Windows as well.
+the name is typed and a picked file leaves its path in the message. A non-image
+file added through the add menu, drag/drop or paste is an **attachment chip**
+(`lib/composer-files.ts`): the textarea shows its file icon and basename, and
+the `@"<absolute path>"` token is added only when the message is sent. Drafts
+written by older builds that already contain a standalone `@"C:/..."` line are
+lifted into the same chips on load. A typed `@relative/path` mention stays text,
+because it is part of the message rather than an attachment.
 
 The Files page's full-text search is backed by `fs:searchText`: the same walk
 and skip policy as `fs:search`, literal case-insensitive matching, binary and

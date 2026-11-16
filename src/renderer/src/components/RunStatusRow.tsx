@@ -1,19 +1,121 @@
-import { memo, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useState } from 'react'
 import {
   AlertTriangle,
   ArrowDown,
   Check,
-  CircleDot,
   Clock,
   Hand,
-  Loader,
   X
 } from 'lucide-react'
-import type { RetryState, RunState } from '../store/useAppStore'
+import type { SessionMeta } from '@shared/types'
+import {
+  useAppStore,
+  type CwdWaitState,
+  type RetryState,
+  type RunState,
+  type SessionThread
+} from '../store/useAppStore'
 import type { ToolActivity } from '../lib/activity'
 import { useT } from '../lib/i18n'
+import { activeConversationTitle } from '../lib/live-sessions'
+import { basename, normalisePathKey } from '../lib/path'
 import { isRateLimitError } from '../lib/provider-error'
 import { monotonicNow } from '../lib/session-timing'
+
+export function findSessionMeta(
+  sessionKey: string,
+  sessions: readonly SessionMeta[],
+  threads: Readonly<Record<string, SessionThread>>,
+  fallbackCwd?: string
+): SessionMeta | undefined {
+  const normalized = normalisePathKey(sessionKey)
+  const disk = sessions.find((s) => s.file === sessionKey || normalisePathKey(s.file) === normalized)
+  if (disk) return disk
+  const thread = threads[sessionKey]
+  if (!thread) return undefined
+  return {
+    id: thread.piState?.sessionId ?? sessionKey,
+    file: sessionKey,
+    cwd: thread.status.cwd ?? fallbackCwd ?? '',
+    createdAt: thread.run.startedAt || 0,
+    updatedAt: thread.run.startedAt || 0,
+    messageCount: thread.items.length,
+    preview: thread.piState?.sessionName ?? ''
+  }
+}
+
+export const CwdWaitDetail = memo(function CwdWaitDetail({
+  cwdWait
+}: {
+  cwdWait: CwdWaitState
+}) {
+  const t = useT()
+  const language = useAppStore((state) => state.settings.language ?? 'en')
+  const selectSession = useAppStore((state) => state.selectSession)
+  const isOperationHolder = Boolean(cwdWait.holderOwnerId?.startsWith('operation:'))
+  const holderKey = !cwdWait.externalHolder && !isOperationHolder ? cwdWait.holderOwnerId : undefined
+  const holderTitle = useAppStore(
+    useCallback(
+      (state) =>
+        holderKey
+          ? activeConversationTitle(state.sessions, state.threads, holderKey)
+          : undefined,
+      [holderKey]
+    )
+  )
+  const canJump = useAppStore(
+    useCallback(
+      (state) =>
+        Boolean(
+          holderKey &&
+            findSessionMeta(holderKey, state.sessions, state.threads, cwdWait.holderCwd || cwdWait.cwd)
+        ),
+      [holderKey, cwdWait.holderCwd, cwdWait.cwd]
+    )
+  )
+  const folder = basename(cwdWait.holderCwd || cwdWait.cwd) || cwdWait.cwd
+  const translatedOperation = t('Waiting for another operation in {folder}')
+  const operationTemplate =
+    language === 'zh-CN' && translatedOperation === 'Waiting for another operation in {folder}'
+      ? '正在等待 {folder} 中的另一项操作'
+      : translatedOperation
+  const text = cwdWait.externalHolder
+    ? t('Waiting on another window in {folder}').replace('{folder}', folder)
+    : isOperationHolder
+      ? operationTemplate.replace('{folder}', folder)
+      : holderTitle
+        ? t('Waiting on {session} in {folder}')
+            .replace('{session}', holderTitle)
+            .replace('{folder}', folder)
+        : t('Waiting for another conversation in {folder}').replace('{folder}', folder)
+
+  return (
+    <>
+      <span className="run-status__label" title={cwdWait.holderCwd || cwdWait.cwd}>
+        {text}
+        {cwdWait.position && cwdWait.position > 1 ? ` (#${cwdWait.position})` : ''}
+      </span>
+      {canJump && holderKey ? (
+        <button
+          type="button"
+          className="run-status__jump"
+          onClick={() => {
+            const state = useAppStore.getState()
+            const target = findSessionMeta(
+              holderKey,
+              state.sessions,
+              state.threads,
+              cwdWait.holderCwd || cwdWait.cwd
+            )
+            if (target) void selectSession(target, 'cwd-wait-jump')
+          }}
+        >
+          {t('Switch')}
+        </button>
+      ) : null}
+    </>
+  )
+})
 
 /**
  * The line that says what the agent is doing.
@@ -29,6 +131,7 @@ export const RunStatusRow = memo(function RunStatusRow({
   retry,
   onStopRetry,
   activity,
+  cwdWait,
   showElapsed = true,
   hideRoutineStatus = false
 }: {
@@ -38,6 +141,8 @@ export const RunStatusRow = memo(function RunStatusRow({
   onStopRetry?: () => void
   /** The tool call in flight, when there is one. */
   activity?: ToolActivity
+  /** Queue metadata while this session waits behind another in the same folder. */
+  cwdWait?: CwdWaitState | null
   /** Keep the timer here only when no live reply summary shows it above. */
   showElapsed?: boolean
   /** The turn already carries its live summary and tool rows. */
@@ -52,6 +157,14 @@ export const RunStatusRow = memo(function RunStatusRow({
     run.phase !== 'retrying'
       ? run.compaction
       : undefined
+  const waitingCwd = Boolean(
+    cwdWait &&
+      transport === 'connected' &&
+      !retry &&
+      !compacting &&
+      run.phase !== 'aborting' &&
+      run.phase !== 'waiting_approval'
+  )
   const label = compacting
     ? `Compacting context (${compacting.reason})…`
     : statusLabel(run, transport, Boolean(retry), Boolean(activity))
@@ -65,7 +178,11 @@ export const RunStatusRow = memo(function RunStatusRow({
   // their own state. Only an exceptional phase needs another visible notice.
   if (
     hideRoutineStatus &&
-    (run.phase === 'working' || run.phase === 'generating' || run.phase === 'tool_running') &&
+    !waitingCwd &&
+    (run.phase === 'queued' ||
+      run.phase === 'working' ||
+      run.phase === 'generating' ||
+      run.phase === 'tool_running') &&
     transport === 'connected' &&
     !retry &&
     !compacting
@@ -73,52 +190,63 @@ export const RunStatusRow = memo(function RunStatusRow({
     return null
   }
 
+  const effectivePhase = waitingCwd ? 'queued' : run.phase
+  const statusIcon = renderStatusIcon(
+    effectivePhase,
+    transport,
+    Boolean(retry),
+    Boolean(compacting)
+  )
+
   return (
     <div
       className="run-status"
-      data-phase={run.phase}
+      data-phase={effectivePhase}
       data-transport={transport}
       data-compacting={Boolean(compacting) || undefined}
       role="status"
     >
-      <span className="run-status__icon" aria-hidden="true">
-        <StatusIcon
-          phase={run.phase}
-          transport={transport}
-          retrying={Boolean(retry)}
-          compacting={Boolean(compacting)}
-        />
-      </span>
-      {/* While a tool is in flight its own label is the sentence: "Running a
-          tool" followed by "Running a command" said the same thing twice and
-          left the command squeezed into the leftover width. */}
-      {!waiting && activity && !compacting ? null : (
-        <span className="run-status__label" title={waiting ? retry.errorMessage : undefined}>
-          {t(waiting && isRateLimitError(retry.errorMessage) ? 'Rate limit reached' : label)}
-        </span>
-      )}
-      {waiting ? (
-        <>
-          <RetryProgress retry={retry} />
-          {onStopRetry ? (
-            <button className="run-status__stop" type="button" onClick={onStopRetry}>
-              {t('Stop retrying')}
-            </button>
-          ) : null}
-        </>
-      ) : compacting ? null : activity ? (
-        <span className="run-status__activity">
-          <span className="run-status__activity-label">{t(activity.label)}</span>
-          {/* A shell line stays behind the tool row's caret: printing
-              `cd … && grep …` here put the command under the answer as if it
-              were the newest output. The label already says what is running. */}
-          {activity.detail && activity.tone !== 'command' ? (
-            <span className="run-status__activity-detail" title={activity.detail}>
-              {activity.detail}
-            </span>
-          ) : null}
+      {statusIcon ? (
+        <span className="run-status__icon" aria-hidden="true">
+          {statusIcon}
         </span>
       ) : null}
+      {waitingCwd && cwdWait ? (
+        <CwdWaitDetail cwdWait={cwdWait} />
+      ) : (
+        <>
+          {/* While a tool is in flight its own label is the sentence: "Running a
+              tool" followed by "Running a command" said the same thing twice and
+              left the command squeezed into the leftover width. */}
+          {!waiting && activity && !compacting ? null : (
+            <span className="run-status__label" title={waiting ? retry.errorMessage : undefined}>
+              {t(waiting && isRateLimitError(retry.errorMessage) ? 'Rate limit reached' : label)}
+            </span>
+          )}
+          {waiting ? (
+            <>
+              <RetryProgress retry={retry} />
+              {onStopRetry ? (
+                <button className="run-status__stop" type="button" onClick={onStopRetry}>
+                  {t('Stop retrying')}
+                </button>
+              ) : null}
+            </>
+          ) : compacting ? null : activity ? (
+            <span className="run-status__activity">
+              <span className="run-status__activity-label">{t(activity.label)}</span>
+              {/* A shell line stays behind the tool row's caret: printing
+                  `cd … && grep …` here put the command under the answer as if it
+                  were the newest output. The label already says what is running. */}
+              {activity.detail && activity.tone !== 'command' ? (
+                <span className="run-status__activity-detail" title={activity.detail}>
+                  {activity.detail}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
+        </>
+      )}
       {showElapsed && running && elapsedStart !== undefined ? (
         <Elapsed since={elapsedStart} monotonic={elapsedSince !== undefined} />
       ) : null}
@@ -126,25 +254,19 @@ export const RunStatusRow = memo(function RunStatusRow({
   )
 })
 
-function StatusIcon({
-  phase,
-  transport,
-  retrying,
-  compacting
-}: {
-  phase: RunState['phase']
-  transport: 'connected' | 'disconnected'
-  retrying: boolean
+function renderStatusIcon(
+  phase: RunState['phase'],
+  transport: 'connected' | 'disconnected',
+  retrying: boolean,
   compacting: boolean
-}) {
+) {
   if (transport === 'disconnected') return <AlertTriangle size={13} />
   if (phase === 'aborting') return <X size={13} />
   if (phase === 'waiting_approval') return <Hand size={13} />
-  if (compacting || retrying || phase === 'retrying') return <Loader size={13} className="spin" />
+  if (compacting || retrying || phase === 'retrying') return null
   if (phase === 'queued') return <Clock size={13} />
-  if (phase === 'tool_running') return <CircleDot size={13} className="pulse" />
   if (phase === 'idle') return <Check size={13} />
-  return <Loader size={13} className="spin" />
+  return null
 }
 
 /** The words for a state, in one place so they cannot drift between views. */

@@ -219,3 +219,31 @@ export function splitStreamingMarkdown(text: string): StreamingMarkdownSplit {
   if (current) blocks.push(current)
   return { blocks, tail: text.slice(blockStart) }
 }
+
+const SETTLED_SPLIT_CACHE_LIMIT = 64
+const MAX_CACHED_SETTLED_MARKDOWN_CHARS = 256 * 1024
+const settledSplitCache = new Map<string, StreamingMarkdownSplit>()
+
+/**
+ * Reuse split block arrays across conversation switches for settled replies so
+ * remounting a thread does not re-scan long Markdown documents from scratch.
+ */
+export function splitSettledMarkdown(text: string): StreamingMarkdownSplit {
+  if (text.length < MIN_SPLIT_CHARS || text.length > MAX_CACHED_SETTLED_MARKDOWN_CHARS) {
+    return splitStreamingMarkdown(text)
+  }
+  const hit = settledSplitCache.get(text)
+  if (hit) {
+    settledSplitCache.delete(text)
+    settledSplitCache.set(text, hit)
+    return hit
+  }
+  const split = splitStreamingMarkdown(text)
+  settledSplitCache.set(text, split)
+  while (settledSplitCache.size > SETTLED_SPLIT_CACHE_LIMIT) {
+    const oldest = settledSplitCache.keys().next().value
+    if (oldest === undefined) break
+    settledSplitCache.delete(oldest)
+  }
+  return split
+}

@@ -26,11 +26,11 @@ import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
-import type { ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from '@shared/types'
+import type { AppLanguage, ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from '@shared/types'
 import { formatDateTime, formatRelativeTime } from '../lib/format'
 import { normalisePathKey, samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
-import { liveConversationRows, streamingProjectPaths, type ConversationRow } from '../lib/live-sessions'
+import { liveConversationRows, type ConversationRow } from '../lib/live-sessions'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Popover } from './Popover'
@@ -38,7 +38,13 @@ import { SidebarTip, SIDEBAR_TIP_ID, useHoverTip, type SidebarTipRow } from './S
 import { PiLogo } from './PiLogo'
 import { ProjectIconPicker } from './ProjectIconPicker'
 import { projectIconColor, projectIconEmoji } from '../lib/project-icons'
-import { sessionIndicator, isDotIndicator, type SessionIndicator } from '../lib/session-indicator'
+import {
+  projectIndicator,
+  sessionIndicator,
+  isDotIndicator,
+  type SessionIndicator,
+  type SessionIndicatorInput
+} from '../lib/session-indicator'
 import { needsSessionHydration } from '../lib/session-scope'
 import { useT } from '../lib/i18n'
 import {
@@ -57,6 +63,80 @@ const SESSION_PREVIEW_LIMIT = 5
 const INITIAL_CONVERSATION_SEARCH_RESULTS = 50
 const CONVERSATION_SEARCH_RESULTS_PAGE = 50
 
+interface AttentionSummary {
+  attentionKeys: Set<string>
+  projectIndicators: Map<string, SessionIndicator>
+}
+
+function buildAttentionSignature(
+  sessions: readonly SessionMeta[],
+  threads: Readonly<
+    Record<
+      string,
+      {
+        isStreaming: boolean
+        notice?: 'error' | 'unread'
+        uiRequest?: unknown
+        uiRequests?: readonly unknown[]
+        status: { cwd?: string }
+      }
+    >
+  >,
+  workspacePath: string | undefined
+): string {
+  const cwdByFile = new Map<string, string>()
+  for (const session of sessions) {
+    if (session.cwd) cwdByFile.set(normalisePathKey(session.file), session.cwd)
+  }
+  const rows: string[] = []
+  for (const [key, thread] of Object.entries(threads)) {
+    const needsInput = Boolean(thread.uiRequest || thread.uiRequests?.length)
+    const indicator = sessionIndicator({
+      isStreaming: thread.isStreaming,
+      notice: thread.notice,
+      needsInput
+    })
+    if (indicator === 'idle') continue
+    const cwd =
+      thread.status.cwd ||
+      cwdByFile.get(normalisePathKey(key)) ||
+      (key.startsWith('draft:') ? workspacePath : undefined)
+    const cwdKey = cwd ? normalisePathKey(cwd) : ''
+    rows.push(`${key}\u0000${indicator}\u0000${cwdKey}`)
+  }
+  if (rows.length === 0) return ''
+  rows.sort()
+  return rows.join('\u0001')
+}
+
+function parseAttentionSignature(signature: string): AttentionSummary {
+  const attentionKeys = new Set<string>()
+  const byCwd = new Map<string, SessionIndicatorInput[]>()
+  if (!signature) {
+    return { attentionKeys, projectIndicators: new Map() }
+  }
+  for (const row of signature.split('\u0001')) {
+    const [key, indicatorRaw, cwdKey] = row.split('\u0000')
+    if (!key) continue
+    attentionKeys.add(key)
+    if (!cwdKey) continue
+    const input: SessionIndicatorInput = {
+      isStreaming: indicatorRaw === 'running',
+      notice:
+        indicatorRaw === 'error' || indicatorRaw === 'unread' ? indicatorRaw : undefined,
+      needsInput: indicatorRaw === 'needs-input'
+    }
+    const list = byCwd.get(cwdKey)
+    if (list) list.push(input)
+    else byCwd.set(cwdKey, [input])
+  }
+  const projectIndicators = new Map<string, SessionIndicator>()
+  for (const [cwdKey, inputs] of byCwd) {
+    projectIndicators.set(cwdKey, projectIndicator(inputs))
+  }
+  return { attentionKeys, projectIndicators }
+}
+
 /** True when a conversation matches the filter of the sidebar. */
 function matches(session: SessionMeta, needle: string): boolean {
   if (!needle) return true
@@ -67,7 +147,7 @@ function matches(session: SessionMeta, needle: string): boolean {
   )
 }
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   onOpenSettings,
   onOpenPlugins,
   onOpenScheduledTasks,
@@ -90,24 +170,28 @@ export function Sidebar({
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const draftId = useAppStore((state) => state.draftId)
-  const status = useAppStore((state) => state.status)
+  const statusPhase = useAppStore((state) => state.status.phase)
   const liveRows = useAppStore(
     useShallow((state) =>
       liveConversationRows(state.sessions, state.threads, state.workspace?.path)
     )
   )
-  const settings = useAppStore((state) => state.settings)
-  // A folded project hides the running mark of its conversations. Track each
-  // running thread by its own working directory so drafts, pinned and archived
-  // conversations still mark their project.
-  const runningProjectPaths = useAppStore(
-    useShallow((state) =>
-      streamingProjectPaths(state.sessions, state.threads, state.draftId, state.workspace?.path)
-    )
+  const archivedSessions = useAppStore((state) => state.settings.archivedSessions)
+  const workspacesSetting = useAppStore((state) => state.settings.workspaces)
+  const hiddenProjects = useAppStore((state) => state.settings.hiddenProjects)
+  const projectOrder = useAppStore((state) => state.settings.projectOrder)
+  const pinnedSessionsSetting = useAppStore((state) => state.settings.pinnedSessions)
+  const language = useAppStore((state) => state.settings.language ?? 'en')
+  // A folded project hides the marks of its conversations, and an expanded
+  // project above 5 chats hides active/attention rows unless promoted. Track
+  // non-idle thread states via a compact string signature so streaming deltas
+  // never re-render the sidebar.
+  const attentionSignature = useAppStore((state) =>
+    buildAttentionSignature(state.sessions, state.threads, state.workspace?.path)
   )
   const archivedFiles = useMemo(
-    () => new Set(settings.archivedSessions ?? []),
-    [settings.archivedSessions]
+    () => new Set(archivedSessions ?? []),
+    [archivedSessions]
   )
   const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const pendingProject = useAppStore((state) => state.pendingProject)
@@ -153,7 +237,7 @@ export function Sidebar({
   const blurTimer = useRef<number | undefined>(undefined)
   const recentsRef = useRef<HTMLDivElement | null>(null)
   // One card serves the whole project list: only one row can be hovered.
-  const projectTip = useHoverTip<SidebarTipRow[]>()
+  const projectTip = useHoverTip<{ path: string; title: string; rows: SidebarTipRow[] }>()
 
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus()
@@ -327,30 +411,30 @@ export function Sidebar({
 
   const projects = useMemo(() => {
     const list = collectProjects(
-      settings.workspaces,
+      workspacesSetting,
       listed,
-      settings.hiddenProjects,
-      settings.projectOrder
+      hiddenProjects,
+      projectOrder
     )
     if (!needle) return list
     for (const project of list) {
       project.sessions = project.sessions.filter((session) => matches(session, needle))
     }
     return list
-  }, [settings.workspaces, settings.hiddenProjects, settings.projectOrder, listed, needle])
+  }, [workspacesSetting, hiddenProjects, projectOrder, listed, needle])
 
   // Folders first seen through a session become rows without being registered.
   // Give each one a place in the order now, so opening it later cannot move it
   // into the registered block.
   useEffect(() => {
-    const order = settings.projectOrder ?? []
+    const order = projectOrder ?? []
     if (projects.length === 0) return
     const known = new Set(order.map((path) => normalisePathKey(path)))
     const missing = projects
       .filter((project) => project.path && !known.has(normalisePathKey(project.path)))
       .map((project) => project.path)
     if (missing.length > 0) void updateSettings({ projectOrder: [...order, ...missing] })
-  }, [projects, settings.projectOrder, updateSettings])
+  }, [projects, projectOrder, updateSettings])
 
   const ordered = useMemo(() => sortProjects(projects), [projects])
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null)
@@ -380,13 +464,13 @@ export function Sidebar({
   }, [shown])
 
   const pinned = useMemo(
-    () => new Set(settings.pinnedSessions ?? []),
-    [settings.pinnedSessions]
+    () => new Set(pinnedSessionsSetting ?? []),
+    [pinnedSessionsSetting]
   )
 
-  const runningProjectKeys = useMemo(
-    () => new Set(runningProjectPaths),
-    [runningProjectPaths]
+  const { attentionKeys, projectIndicators } = useMemo(
+    () => parseAttentionSignature(attentionSignature),
+    [attentionSignature]
   )
 
   // Pinned conversations have their own group; every other conversation lives
@@ -413,13 +497,19 @@ export function Sidebar({
   )
 
   const projectSearchResults = useMemo(
-    () => shown.filter((project) => !searchNeedle || `${project.name}\n${project.path}`.toLowerCase().includes(searchNeedle)),
-    [shown, searchNeedle]
+    () => {
+      if (!searchOpen) return []
+      return shown.filter(
+        (project) => !searchNeedle || `${project.name}\n${project.path}`.toLowerCase().includes(searchNeedle)
+      )
+    },
+    [searchOpen, shown, searchNeedle]
   )
   const conversationSearchCount = conversationSearchWindow.needle === searchNeedle
     ? conversationSearchWindow.count
     : INITIAL_CONVERSATION_SEARCH_RESULTS
   const conversationSearchMatches = useMemo(() => {
+    if (!searchOpen) return []
     const results: ConversationRow[] = []
     let liveIndex = 0
     let diskIndex = 0
@@ -439,7 +529,7 @@ export function Sidebar({
     }
 
     return results
-  }, [liveRows, diskRows, archivedFiles, searchNeedle])
+  }, [searchOpen, liveRows, diskRows, archivedFiles, searchNeedle])
   const conversationSearchResults = conversationSearchMatches.slice(0, conversationSearchCount)
 
   const persistOrder = async (next: Project<ConversationRow>[]) => {
@@ -746,6 +836,7 @@ export function Sidebar({
         renaming={renaming === session.file}
         draft={renaming === session.file ? draft : ''}
         project={showProject && session.cwd ? basename(session.cwd) : undefined}
+        language={language}
         onSelect={handleSelectSession}
         onStartRename={handleStartRename}
         onRenameDraft={setDraft}
@@ -828,7 +919,7 @@ export function Sidebar({
           <span className="session-search__meta">
             <span className="session-search__project">{project || t('Unknown location')}</span>
             <span className="session-search__time">
-              {formatRelativeTime(hit.updatedAt, settings.language)}
+              {formatRelativeTime(hit.updatedAt, language)}
             </span>
           </span>
         </div>
@@ -886,7 +977,7 @@ export function Sidebar({
       <div className="sidebar__new-chat">
         <button
           className="btn-new-chat"
-          disabled={status.phase === 'error' || (!workspace && status.phase === 'stopped')}
+          disabled={!workspace && (statusPhase === 'error' || statusPhase === 'stopped')}
           onClick={() => void newChat()}
         >
           <span className="sidebar__compose-icon">
@@ -950,6 +1041,13 @@ export function Sidebar({
             <div className="sidebar__empty">{t('No project selected yet.')}</div>
           ) : (
             <div className="project-tree">
+              {projectTip.tip ? (
+                <SidebarTip
+                  anchor={projectTip.tip.anchor}
+                  title={projectTip.tip.payload.title}
+                  rows={projectTip.tip.payload.rows}
+                />
+              ) : null}
               {dropLineTop !== null ? (
                 <div
                   className="project-drop-line"
@@ -963,26 +1061,37 @@ export function Sidebar({
                 const active = Boolean(workspace && samePath(workspace.path, project.path))
                 const expanded = Boolean(needle) || !collapsedProjects.has(project.path)
                 const showAll = Boolean(needle) || expandedLists.has(project.path)
-                const visibleCount = showAll
-                  ? projectSessions.length
-                  : Math.max(
-                      SESSION_PREVIEW_LIMIT,
-                      projectSessions.findIndex((session) => session.file === activeSessionFile) + 1
-                    )
+                const activeKey = activeSessionFile ?? draftId
+                const visibleSessions = showAll || projectSessions.length <= SESSION_PREVIEW_LIMIT
+                  ? projectSessions
+                  : [
+                      ...projectSessions.slice(0, SESSION_PREVIEW_LIMIT),
+                      ...projectSessions
+                        .slice(SESSION_PREVIEW_LIMIT)
+                        .filter(
+                          (session) =>
+                            session.file === activeKey || attentionKeys.has(session.file)
+                        )
+                    ]
                 const iconTone = projectIconColor(project.iconColor)
                 const emoji = projectIconEmoji(project.icon)
-                const runningCollapsed =
-                  !expanded && runningProjectKeys.has(normalisePathKey(project.path))
-                // Built once per row: the card is the same for the pointer and
-                // for the keyboard.
-                const projectTipRows: SidebarTipRow[] = [
-                  {
-                    label: t('Created'),
-                    value: formatDateTime(project.createdAt, settings.language) || '—'
-                  },
-                  { label: t('Conversations'), value: String(projectSessions.length) },
-                  { label: t('Path'), value: project.path, path: true }
-                ]
+                const collapsedIndicator: SessionIndicator = !expanded
+                  ? (projectIndicators.get(normalisePathKey(project.path)) ?? 'idle')
+                  : 'idle'
+                const runningCollapsed = collapsedIndicator === 'running'
+                // Built only if hovered long enough to show the card.
+                const getProjectTip = () => ({
+                  path: project.path,
+                  title: project.name,
+                  rows: [
+                    {
+                      label: t('Created'),
+                      value: formatDateTime(project.createdAt, language) || '—'
+                    },
+                    { label: t('Conversations'), value: String(projectSessions.length) },
+                    { label: t('Path'), value: project.path, path: true }
+                  ]
+                })
                 return (
                   <div
                     className="project"
@@ -992,6 +1101,7 @@ export function Sidebar({
                     data-dragging={draggingPath != null && samePath(draggingPath, project.path)}
                     data-expanded={expanded}
                     data-running={runningCollapsed ? 'true' : undefined}
+                    data-indicator={collapsedIndicator !== 'idle' ? collapsedIndicator : undefined}
                     data-pending={
                       pendingProject?.path != null
                         ? samePath(pendingProject.path, project.path)
@@ -999,23 +1109,18 @@ export function Sidebar({
                     }
                   >
                     <div className="project__row">
-                      {projectTip.tip ? (
-                        <SidebarTip
-                          anchor={projectTip.tip.anchor}
-                          title={project.name}
-                          rows={projectTip.tip.payload}
-                        />
-                      ) : null}
                       <button
                         className="project__main"
                         type="button"
                         // The card carries what the row cannot: when the folder
                         // joined the list, how many conversations live in it,
                         // and where it is.
-                        aria-describedby={projectTip.tip ? SIDEBAR_TIP_ID : undefined}
-                        onMouseEnter={projectTip.enter(projectTipRows)}
+                        aria-describedby={
+                          projectTip.tip?.payload.path === project.path ? SIDEBAR_TIP_ID : undefined
+                        }
+                        onMouseEnter={projectTip.enter(getProjectTip)}
                         onMouseLeave={projectTip.leave}
-                        onFocus={projectTip.enter(projectTipRows)}
+                        onFocus={projectTip.enter(getProjectTip)}
                         onBlur={projectTip.leave}
                         aria-expanded={expanded}
                         onPointerDown={(event) => onProjectPointerDown(project, event)}
@@ -1125,6 +1230,35 @@ export function Sidebar({
                       ) : null}
 
                       <div className="project__actions">
+                        {collapsedIndicator !== 'idle' ? (
+                          <span
+                            className="project__indicator"
+                            data-indicator={collapsedIndicator}
+                            role="status"
+                            aria-label={
+                              collapsedIndicator === 'needs-input'
+                                ? t('Waiting for your answer')
+                                : collapsedIndicator === 'error'
+                                  ? t('The last run failed')
+                                  : collapsedIndicator === 'unread'
+                                    ? t('Unread')
+                                    : t('Running')
+                            }
+                            title={
+                              collapsedIndicator === 'needs-input'
+                                ? t('Waiting for your answer')
+                                : collapsedIndicator === 'error'
+                                  ? t('The last run failed')
+                                  : collapsedIndicator === 'unread'
+                                    ? t('Unread')
+                                    : t('Running')
+                            }
+                          >
+                            {collapsedIndicator === 'running' ? (
+                              <Loader2 size={12} strokeWidth={1.6} className="spin" aria-hidden="true" />
+                            ) : null}
+                          </span>
+                        ) : null}
                         <div className="project__buttons">
                           <Popover
                             placement="bottom"
@@ -1274,10 +1408,10 @@ export function Sidebar({
                     </div>
                     {expanded ? (
                       <div className="session-list">
-                        {renderSessions(projectSessions.slice(0, visibleCount))}
+                        {renderSessions(visibleSessions)}
                         {!needle &&
                         projectSessions.length > SESSION_PREVIEW_LIMIT &&
-                        (showAll || projectSessions.length > visibleCount) ? (
+                        (showAll || visibleSessions.length < projectSessions.length) ? (
                           <button
                             className="project__show-more"
                             aria-expanded={showAll}
@@ -1337,7 +1471,7 @@ export function Sidebar({
         <ConfirmDialog
           title={t('Remove project')}
           body={
-            settings.language === 'zh-CN'
+            language === 'zh-CN'
               ? `要从列表中移除“${pendingRemove.name}”吗？文件夹和已有对话都会保留，只是不再显示在项目列表里。`
               : `Remove “${pendingRemove.name}” from the list? The folder and its conversations stay on disk.`
           }
@@ -1355,9 +1489,9 @@ export function Sidebar({
         <ConfirmDialog
           title={t('Delete conversation')}
           body={
-            settings.language === 'zh-CN'
-              ? `“${pendingDelete.name || pendingDelete.preview || '未命名会话'}”将移至系统回收站。此操作无法在 Pi Desktop 中撤销。`
-              : `“${pendingDelete.name || pendingDelete.preview || 'Untitled session'}” will be moved to the system trash. This cannot be undone from inside Pi Desktop.`
+            language === 'zh-CN'
+              ? `“${pendingDelete.name || pendingDelete.preview || '未命名会话'}”的会话文件将被永久删除，无法恢复。`
+              : `The session file for “${pendingDelete.name || pendingDelete.preview || 'Untitled session'}” will be permanently deleted. This cannot be undone.`
           }
           confirmLabel={t('Delete')}
           tone="danger"
@@ -1562,9 +1696,10 @@ export function Sidebar({
                       <span className="search-dialog__result-meta">
                         {session.cwd ? basename(session.cwd) : t('Chats without a project')}
                         {' · '}
-                        {formatRelativeTime(session.updatedAt, settings.language)}
+                        {formatRelativeTime(session.updatedAt, language)}
                       </span>
                     </span>
+                    <SearchResultIndicator sessionKey={session.file} />
                   </button>
                 ))}
                 {conversationSearchResults.length < conversationSearchMatches.length ? (
@@ -1618,7 +1753,7 @@ export function Sidebar({
     ) : null}
     </>
   )
-}
+})
 
 interface SessionRowProps {
   session: ConversationRow
@@ -1631,6 +1766,7 @@ interface SessionRowProps {
   draft: string
   /** The project the conversation belongs to, when it is pinned. */
   project?: string
+  language: AppLanguage
   onSelect: (session: ConversationRow) => void
   onStartRename: (session: ConversationRow) => void
   onRenameDraft: (value: string) => void
@@ -1651,6 +1787,7 @@ const SessionRow = memo(function SessionRow({
   renaming,
   draft,
   project,
+  language,
   onSelect,
   onStartRename,
   onRenameDraft,
@@ -1663,7 +1800,6 @@ const SessionRow = memo(function SessionRow({
 }: SessionRowProps) {
   const t = useT()
   const mainRef = useRef<HTMLButtonElement>(null)
-  const language = useAppStore((state) => state.settings.language ?? 'en')
   const tip = useHoverTip<SidebarTipRow[]>()
   const focusMenuItem = useCallback((button: HTMLButtonElement | null) => {
     if (!button) return
@@ -1738,9 +1874,9 @@ const SessionRow = memo(function SessionRow({
           // The card replaces the native tooltip, which could only carry the
           // name the row already shows.
           aria-describedby={tip.tip ? SIDEBAR_TIP_ID : undefined}
-          onMouseEnter={tip.enter(tipRows())}
+          onMouseEnter={tip.enter(tipRows)}
           onMouseLeave={tip.leave}
-          onFocus={tip.enter(tipRows())}
+          onFocus={tip.enter(tipRows)}
           onBlur={tip.leave}
           aria-current={active ? 'page' : undefined}
           aria-busy={running ? true : undefined}
@@ -1882,6 +2018,7 @@ const SessionRowItem = memo(function SessionRowItem({
   renaming,
   draft,
   project,
+  language,
   onSelect,
   onStartRename,
   onRenameDraft,
@@ -1892,15 +2029,23 @@ const SessionRowItem = memo(function SessionRowItem({
   onStop,
   onTogglePin
 }: Omit<SessionRowProps, 'running' | 'indicator'>) {
-  const isStreaming = useAppStore(
-    useCallback((state) => Boolean(state.threads[session.file]?.isStreaming), [session.file])
+  const indicatorKey = useAppStore(
+    useCallback(
+      (state) => {
+        const thread = state.threads[session.file]
+        if (!thread) return '0||0'
+        const streaming = thread.isStreaming ? '1' : '0'
+        const notice = thread.notice ?? ''
+        const needsInput = thread.uiRequest || thread.uiRequests?.length ? '1' : '0'
+        return `${streaming}|${notice}|${needsInput}`
+      },
+      [session.file]
+    )
   )
-  const notice = useAppStore(
-    useCallback((state) => state.threads[session.file]?.notice, [session.file])
-  )
-  const needsInput = useAppStore(
-    useCallback((state) => Boolean(state.threads[session.file]?.uiRequest), [session.file])
-  )
+  const [streamingFlag, noticeRaw, needsInputFlag] = indicatorKey.split('|')
+  const isStreaming = streamingFlag === '1'
+  const notice = noticeRaw === 'error' || noticeRaw === 'unread' ? noticeRaw : undefined
+  const needsInput = needsInputFlag === '1'
   const indicator = sessionIndicator({
     isStreaming,
     notice,
@@ -1917,6 +2062,7 @@ const SessionRowItem = memo(function SessionRowItem({
       renaming={renaming}
       draft={draft}
       project={project}
+      language={language}
       onSelect={onSelect}
       onStartRename={onStartRename}
       onRenameDraft={onRenameDraft}
@@ -1926,6 +2072,54 @@ const SessionRowItem = memo(function SessionRowItem({
       onArchive={onArchive}
       onStop={onStop}
       onTogglePin={onTogglePin}
+    />
+  )
+})
+
+const SearchResultIndicator = memo(function SearchResultIndicator({
+  sessionKey
+}: {
+  sessionKey: string
+}) {
+  const t = useT()
+  const indicator = useAppStore(
+    useCallback(
+      (state) => {
+        const thread = state.threads[sessionKey]
+        if (!thread) return 'idle' as SessionIndicator
+        return sessionIndicator({
+          isStreaming: thread.isStreaming,
+          notice: thread.notice,
+          needsInput: Boolean(thread.uiRequest || thread.uiRequests?.length)
+        })
+      },
+      [sessionKey]
+    )
+  )
+  if (indicator === 'idle') return null
+  if (indicator === 'needs-input') {
+    return (
+      <span
+        className="session-item__badge search-dialog__badge"
+        aria-label={t('Waiting for your answer')}
+      >
+        {t('Needs input')}
+      </span>
+    )
+  }
+  if (indicator === 'running') {
+    return (
+      <span className="search-dialog__status" role="status" aria-label={t('Running')}>
+        <Loader2 size={12} strokeWidth={1.6} className="spin" aria-hidden="true" />
+      </span>
+    )
+  }
+  return (
+    <span
+      className="search-dialog__dot"
+      data-tone={indicator}
+      role="status"
+      aria-label={indicator === 'error' ? t('The last run failed') : t('Unread')}
     />
   )
 })

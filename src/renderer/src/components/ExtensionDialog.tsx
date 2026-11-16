@@ -1,9 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, MessageSquareText, TriangleAlert } from 'lucide-react'
-import { useAppStore } from '../store/useAppStore'
+import { ArrowUpRight, Check, MessageSquareText, TriangleAlert } from 'lucide-react'
+import { draftKeyOf, useAppStore, type SessionThread } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
+import { activeConversationTitle, listPendingUiSessions } from '../lib/live-sessions'
+import { basename } from '../lib/path'
 import { Markdown } from './Markdown'
+import { findSessionMeta } from './RunStatusRow'
+
+function pendingUiSignature(threads: Readonly<Record<string, SessionThread>>): string {
+  let sig = ''
+  for (const key in threads) {
+    const thread = threads[key]
+    const count = thread.uiRequests?.length || (thread.uiRequest ? 1 : 0)
+    if (count > 0) sig += `${key}:${thread.uiRequests?.[0]?.id ?? thread.uiRequest?.id ?? ''}:${count}|`
+  }
+  return sig
+}
 
 /**
  * Modal for the blocking half of Pi's extension UI sub-protocol.
@@ -12,10 +25,43 @@ import { Markdown } from './Markdown'
  * answers, so the dialog stays open until a response is on its way.
  */
 export function ExtensionDialog() {
-  const request = useAppStore((state) => state.uiRequest)
+  const activeUiRequest = useAppStore((state) => state.uiRequest)
+  const activeKey = useAppStore((state) => draftKeyOf(state))
+  const pendingSig = useAppStore((state) => pendingUiSignature(state.threads))
   const respondUi = useAppStore((state) => state.respondUi)
   const dismissUi = useAppStore((state) => state.dismissUi)
+  const selectSession = useAppStore((state) => state.selectSession)
+  const activeTitle = useAppStore((state) =>
+    activeConversationTitle(state.sessions, state.threads, state.activeSessionFile ?? state.draftId)
+  )
   const t = useT()
+
+  const pendingSessions = useMemo(() => {
+    if (!pendingSig) return []
+    const state = useAppStore.getState()
+    return listPendingUiSessions(state.threads, state.sessions)
+  }, [pendingSig])
+
+  const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null)
+  const activeSessionPending = activeKey
+    ? pendingSessions.find((entry) => entry.sessionKey === activeKey)
+    : undefined
+  const selectedPending =
+    (selectedSessionKey
+      ? pendingSessions.find((entry) => entry.sessionKey === selectedSessionKey)
+      : undefined) ??
+    activeSessionPending ??
+    pendingSessions[0]
+
+  // Only show the modal when the active conversation is blocked (or while
+  // cycling inside an already-open modal across pending sessions).
+  const request = activeUiRequest
+    ? (selectedPending?.request ?? activeUiRequest)
+    : undefined
+  const targetSessionKey = selectedPending?.sessionKey || activeKey
+  const targetPendingCount =
+    selectedPending?.count ?? (activeUiRequest ? 1 : 0)
+  const totalPendingCount = pendingSessions.reduce((sum, entry) => sum + entry.count, 0)
 
   const [value, setValue] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
@@ -24,7 +70,22 @@ export function ExtensionDialog() {
   const optionsRef = useRef<HTMLDivElement>(null)
   const declineRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
-  useDialogFocus(dialogRef, () => void dismissUi(), Boolean(request))
+
+  const uiTarget = targetSessionKey
+    ? { sessionKey: targetSessionKey, requestId: request?.id }
+    : request?.id
+      ? { requestId: request.id }
+      : undefined
+
+  useDialogFocus(dialogRef, () => void dismissUi(uiTarget), Boolean(request))
+
+  useEffect(() => {
+    if (!activeUiRequest) {
+      setSelectedSessionKey(null)
+    } else if (selectedSessionKey && !pendingSessions.some((entry) => entry.sessionKey === selectedSessionKey)) {
+      setSelectedSessionKey(null)
+    }
+  }, [activeUiRequest, selectedSessionKey, pendingSessions])
 
   useEffect(() => {
     if (!request) return
@@ -43,7 +104,7 @@ export function ExtensionDialog() {
       }
       inputRef.current?.focus()
     })
-  }, [request])
+  }, [request?.id, request?.method, request?.prefill, request?.options])
 
   // Pi resolves the request on its own once the timeout expires, so the
   // countdown has to run in the client too.
@@ -60,7 +121,7 @@ export function ExtensionDialog() {
     tick()
     const timer = window.setInterval(tick, 500)
     return () => window.clearInterval(timer)
-  }, [request])
+  }, [request?.id, request?.timeout])
 
   const timeoutNote = useMemo(() => {
     if (!request?.timeout) return null
@@ -68,7 +129,7 @@ export function ExtensionDialog() {
     return remaining > 0
       ? `${t('Pi resolves this on its own in')} ${remaining} ${t('seconds')}`
       : t('Pi is resolving this on its own')
-  }, [request, remaining, t])
+  }, [request?.timeout, remaining, t])
 
   if (!request) return null
 
@@ -77,29 +138,95 @@ export function ExtensionDialog() {
   // the plan twice to remember which one leaves Plan Mode.
   const planReview = request.method === 'confirm' && request.title === 'Approve this plan?'
   const selectedIndex = (request.options ?? []).indexOf(selected ?? '')
+  const originLabel =
+    selectedPending?.title ||
+    (targetSessionKey === activeKey ? activeTitle : undefined) ||
+    (selectedPending?.cwd ? basename(selectedPending.cwd) : undefined) ||
+    (request.approval?.cwd ? basename(request.approval.cwd) : undefined) ||
+    t('Untitled session')
+  const isOtherSession = Boolean(targetSessionKey && targetSessionKey !== activeKey)
+
+  const jumpToSession = () => {
+    if (!targetSessionKey) return
+    const state = useAppStore.getState()
+    const meta = findSessionMeta(
+      targetSessionKey,
+      state.sessions,
+      state.threads,
+      selectedPending?.cwd ?? request.approval?.cwd
+    )
+    if (meta) void selectSession(meta, 'extension-dialog-jump')
+  }
 
   const submit = () => {
     if (request.method === 'select') {
-      if (selected) void respondUi({ value: selected })
+      if (selected) void respondUi({ value: selected }, uiTarget)
       return
     }
     if (request.method === 'confirm') {
-      void respondUi({ confirmed: true })
+      void respondUi({ confirmed: true }, uiTarget)
       return
     }
-    void respondUi({ value })
+    void respondUi({ value }, uiTarget)
   }
 
   return (
-    <div className="modal-layer" onMouseDown={() => void dismissUi()}>
+    <div className="modal-layer">
       <div
         ref={dialogRef}
         className="modal modal--prompt"
         role="dialog"
         aria-modal="true"
         aria-labelledby="extension-dialog-title"
-        onMouseDown={(event) => event.stopPropagation()}
       >
+        <div className="modal__context">
+          <span className="modal__context-session" title={selectedPending?.cwd || originLabel}>
+            {originLabel}
+          </span>
+          {totalPendingCount > 1 || targetPendingCount > 1 ? (
+            <span className="modal__context-count">
+              {pendingSessions.length > 1
+                ? `${pendingSessions.length} ${t('sessions waiting')}`
+                : `${targetPendingCount} ${t('pending')}`}
+            </span>
+          ) : null}
+          {isOtherSession ? (
+            <button
+              type="button"
+              className="modal__context-jump"
+              onClick={jumpToSession}
+            >
+              <span>{t('Go to conversation')}</span>
+              <ArrowUpRight size={12} />
+            </button>
+          ) : null}
+        </div>
+        {pendingSessions.length > 1 ? (
+          <div className="modal__switcher" role="tablist" aria-label={t('Conversations waiting for input')}>
+            {pendingSessions.map((entry) => {
+              const label =
+                entry.title ||
+                (entry.cwd ? basename(entry.cwd) : '') ||
+                t('Untitled session')
+              const active = entry.sessionKey === targetSessionKey
+              return (
+                <button
+                  key={entry.sessionKey}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  className="modal__switcher-tab"
+                  data-active={active}
+                  title={entry.cwd ? `${label} · ${entry.cwd}` : label}
+                  onClick={() => setSelectedSessionKey(entry.sessionKey)}
+                >
+                  <span className="modal__switcher-name">{label}</span>
+                  {entry.count > 1 ? <span className="modal__switcher-badge">{entry.count}</span> : null}
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
         <header className="modal__head modal__head--prompt">
           <span className="modal__icon" data-kind={request.method}>
             {request.method === 'confirm' ? (
@@ -183,7 +310,7 @@ export function ExtensionDialog() {
                 className="modal__option"
                 data-active={selected === option}
                 onClick={() => setSelected(option)}
-                onDoubleClick={() => void respondUi({ value: option })}
+                onDoubleClick={() => void respondUi({ value: option }, uiTarget)}
               >
                 <span className="modal__option-mark">
                   {selected === option ? <Check size={11} /> : null}
@@ -228,7 +355,7 @@ export function ExtensionDialog() {
 
         <footer className="modal__foot">
           <span className="modal__note">{timeoutNote ?? ''}</span>
-          <button className="btn" onClick={() => void dismissUi()}>
+          <button className="btn" onClick={() => void dismissUi(uiTarget)}>
             {t('Cancel')}
           </button>
           {request.method === 'confirm' ? (
@@ -236,7 +363,7 @@ export function ExtensionDialog() {
               <button
                 ref={declineRef}
                 className="btn"
-                onClick={() => void respondUi({ confirmed: false })}
+                onClick={() => void respondUi({ confirmed: false }, uiTarget)}
               >
                 {t(planReview ? 'Keep planning' : request.approval ? 'Deny' : 'No')}
               </button>

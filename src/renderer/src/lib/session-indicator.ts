@@ -43,7 +43,37 @@ export function sessionIndicator(input: SessionIndicatorInput): SessionIndicator
   return 'idle'
 }
 
+export { listPendingUiSessions, type PendingUiSession } from './live-sessions'
+
 /** True when the mark is a dot the reader has to notice. */
 export function isDotIndicator(indicator: SessionIndicator): boolean {
   return indicator === 'error' || indicator === 'unread'
+}
+
+const INDICATOR_RANK: Record<SessionIndicator, number> = {
+  idle: 0,
+  running: 1,
+  unread: 2,
+  error: 3,
+  'needs-input': 4
+}
+
+/**
+ * Highest-precedence mark across a collapsed project's sessions.
+ *
+ * Uses the same precedence as individual rows (`needs-input > error > unread > running > idle`).
+ */
+export function projectIndicator(inputs: readonly SessionIndicatorInput[]): SessionIndicator {
+  let highest: SessionIndicator = 'idle'
+  let highestRank = 0
+  for (const input of inputs) {
+    const indicator = sessionIndicator(input)
+    if (indicator === 'needs-input') return 'needs-input'
+    const rank = INDICATOR_RANK[indicator]
+    if (rank > highestRank) {
+      highest = indicator
+      highestRank = rank
+    }
+  }
+  return highest
 }

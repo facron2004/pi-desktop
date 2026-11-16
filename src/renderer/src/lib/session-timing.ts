@@ -437,12 +437,36 @@ export function forgetSessionTiming(sessionKey: string | undefined): void {
   }
 }
 
+function hasTimingSamples(record: SessionTimingRecord | undefined): boolean {
+  if (!record) return false
+  return Boolean(
+    Object.keys(record.modelDurationsMs).length ||
+      Object.keys(record.ttftDurationsMs).length ||
+      Object.keys(record.toolDurationsMs).length ||
+      Object.keys(record.runDurationsMs).length ||
+      Object.keys(record.generationWindowMs).length
+  )
+}
+
 export function migrateSessionTiming(from: string, to: string): void {
   if (!from || !to || from === to) return
   const store = storage()
   if (!store) return
   try {
     const sourceKey = storageKey(from)
+    // Brand-new drafts rarely record timing samples before promotion; avoid a
+    // full `localStorage.key()` enumeration when there is nothing to move.
+    const cachedSource = memoryRecords.get(from)
+    if (
+      !hasTimingSamples(cachedSource) &&
+      store.getItem(sourceKey) === null &&
+      store.getItem(journalCountKey(sourceKey)) === null &&
+      store.getItem(journalSampleKey(sourceKey, 0)) === null
+    ) {
+      memoryRecords.delete(from)
+      memoryVersions.delete(from)
+      return
+    }
     const targetKey = storageKey(to)
     const source = readSessionTiming(from)
     const target = readSessionTiming(to)
@@ -453,13 +477,7 @@ export function migrateSessionTiming(from: string, to: string): void {
       runDurationsMs: { ...source.runDurationsMs, ...target.runDurationsMs },
       generationWindowMs: { ...source.generationWindowMs, ...target.generationWindowMs }
     }
-    if (
-      Object.keys(merged.modelDurationsMs).length ||
-      Object.keys(merged.ttftDurationsMs).length ||
-      Object.keys(merged.toolDurationsMs).length ||
-      Object.keys(merged.runDurationsMs).length ||
-      Object.keys(merged.generationWindowMs).length
-    ) {
+    if (hasTimingSamples(merged)) {
       writeRecord(store, targetKey, merged)
       removeSampleRecords(store, targetKey)
       rememberRecord(to, merged, MODEL_TIMING_VERSION)

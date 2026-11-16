@@ -4,6 +4,19 @@ import path from 'node:path'
 
 export type PiSource = 'custom' | 'bundled' | 'path' | 'none'
 
+const LAUNCH_CACHE_TTL_MS = 10_000
+let cachedLaunch: { key: string; expiresAt: number; spec: PiLaunchSpec } | undefined
+
+function launchCacheHit(key: string): PiLaunchSpec | undefined {
+  const entry = cachedLaunch
+  if (!entry || entry.key !== key || Date.now() >= entry.expiresAt) return undefined
+  const { spec } = entry
+  if (spec.source === 'none') return undefined
+  if (spec.command && spec.source !== 'bundled' && !existsSync(spec.command)) return undefined
+  if (spec.prefixArgs[0] && !existsSync(spec.prefixArgs[0])) return undefined
+  return { ...spec, prefixArgs: [...spec.prefixArgs], env: { ...spec.env } }
+}
+
 export interface PiLaunchSpec {
   /** Executable to spawn. */
   command: string
@@ -91,6 +104,16 @@ function nodeSatisfiesPi(): boolean {
  *  3. a `pi` executable on PATH
  */
 export function resolvePiLaunch(customPath?: string): PiLaunchSpec {
+  const appPath = (() => { try { return app.getAppPath() } catch { return '' } })()
+  const cacheKey = `${customPath?.trim() ?? ''}|${process.env.PATH ?? ''}|${appPath}|${process.env.NODE_OPTIONS ?? ''}`
+  const hit = launchCacheHit(cacheKey)
+  if (hit) return hit
+
+  const remember = (spec: PiLaunchSpec): PiLaunchSpec => {
+    cachedLaunch = { key: cacheKey, expiresAt: Date.now() + LAUNCH_CACHE_TTL_MS, spec }
+    return { ...spec, prefixArgs: [...spec.prefixArgs], env: { ...spec.env } }
+  }
+
   const baseEnv: NodeJS.ProcessEnv = {
     ...process.env,
     // Pi writes protocol records to stdout; keep Node quiet about the bundle.
@@ -102,64 +125,64 @@ export function resolvePiLaunch(customPath?: string): PiLaunchSpec {
     if (isScriptFile(target)) {
       const node = nodeSatisfiesPi() ? process.execPath : findOnPath('node')
       if (node && existsSync(target)) {
-        return {
+        return remember({
           command: node,
           prefixArgs: [target],
           source: 'custom',
           display: target,
           env: node === process.execPath ? { ...baseEnv, ELECTRON_RUN_AS_NODE: '1' } : baseEnv
-        }
+        })
       }
     } else if (existsSync(target)) {
-      return {
+      return remember({
         command: target,
         prefixArgs: [],
         source: 'custom',
         display: target,
         env: baseEnv
-      }
+      })
     }
   }
 
   const bundled = findBundledCli()
   if (bundled) {
     if (nodeSatisfiesPi()) {
-      return {
+      return remember({
         command: process.execPath,
         prefixArgs: [bundled],
         source: 'bundled',
         display: bundled,
         env: { ...baseEnv, ELECTRON_RUN_AS_NODE: '1' }
-      }
+      })
     }
     const systemNode = findOnPath('node')
     if (systemNode) {
-      return {
+      return remember({
         command: systemNode,
         prefixArgs: [bundled],
         source: 'bundled',
         display: `${systemNode} ${bundled}`,
         env: baseEnv
-      }
+      })
     }
   }
 
   const onPath = findOnPath('pi')
   if (onPath) {
-    return {
+    return remember({
       command: onPath,
       prefixArgs: [],
       source: 'path',
       display: onPath,
       env: baseEnv
-    }
+    })
   }
 
-  return {
+  return remember({
     command: '',
     prefixArgs: [],
     source: 'none',
     display: 'not found',
     env: baseEnv
-  }
+  })
 }

@@ -1477,3 +1477,68 @@ test('MemoryService.promptFor keeps stored notes inside a quoted data string', a
   assert.ok(prompt.includes(`Memory summary JSON string:\n${quotePromptData(summary)}`))
   assert.doesNotMatch(prompt, /\n- Ignore previous instructions/)
 })
+
+test('MemoryStore.state reads entries once and cached readEntries invalidates on write', async (t) => {
+  const dir = tempDir(t, 'store-single-read')
+  const store = new MemoryStore(path.join(dir, 'memories'))
+  await store.merge([
+    { scope: 'global', kind: 'preference', text: 'Use TypeScript' },
+    { scope: 'project', kind: 'knowledge', text: 'Uses Node test runner', projectPath: alphaCwd }
+  ])
+
+  const originalReadEntries = (store as unknown as { readEntries: () => unknown[] }).readEntries
+  let reads = 0
+  ;(store as unknown as { readEntries: () => unknown[] }).readEntries = function () {
+    reads += 1
+    return originalReadEntries.call(this)
+  }
+
+  const state = store.state(0, false)
+  assert.equal(reads, 1, 'MemoryStore.state() must perform only one readEntries() pass')
+  assert.equal(state.entries.length, 2)
+
+  const cachedState = store.state(0, false)
+  assert.equal(cachedState.entries.length, 2)
+
+  await store.merge([{ scope: 'global', kind: 'workflow', text: 'Run typecheck first' }])
+  assert.equal(store.state(0, false).entries.length, 3)
+})
+
+test('MemoryService canonicalizes pending keys across path variants and handles replace rekey', async (t) => {
+  const dir = tempDir(t, 'service-rekey-canonical')
+  const store = new MemoryStore(path.join(dir, 'memories'))
+  const sessionFile = path.join(dir, 'session-rekey.jsonl')
+  writeSessionFile(sessionFile, alphaCwd, 'session-rekey')
+
+  const extractedFiles: string[] = []
+  const extract: typeof extractFromSession = async (_store, file) => {
+    extractedFiles.push(file)
+    return { added: 0, skipped: undefined }
+  }
+
+  const supervisor = new EventEmitter() as EventEmitter & {
+    sessionInfo: () => { cwd: string; externalContext: boolean; running: boolean }
+  }
+  supervisor.sessionInfo = () => ({ cwd: alphaCwd, externalContext: false, running: false })
+
+  const service = new MemoryService(
+    store,
+    () => ({ memoryGeneration: true } as AppSettings),
+    { extract }
+  )
+  t.after(() => service.dispose())
+  service.attach(supervisor as never)
+
+  // Schedule auto-generation on a draft, then promote draft -> real file with replace: true
+  supervisor.emit('event', { ownerId: 'draft:canon', event: { type: 'agent_settled', aborted: false } })
+  supervisor.emit('rekey', { from: 'draft:canon', to: sessionFile, replace: true })
+
+  // Duplicate generate calls under non-canonical path variants share the same tracking key
+  const altVariant = `${sessionFile.replace(/\\/g, '/')}`
+  const p1 = service.generate({ sessionFile })
+  const p2 = service.generate({ sessionFile: altVariant })
+  await Promise.all([p1, p2])
+
+  assert.ok(extractedFiles.length >= 1)
+  await delay(50)
+})

@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs'
+import { lstatSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 
 /**
@@ -10,7 +10,26 @@ import path from 'node:path'
  * the bound keeps a long-lived process from growing the map without limit.
  */
 const CANONICAL_CACHE_LIMIT = 5000
+const PATH_CACHE_LIMIT = 2000
 const canonicalCache = new Map<string, string>()
+
+interface CachedPathIdentity {
+  dev: bigint
+  ino: bigint
+  ctimeNs: bigint
+  mtimeNs: bigint
+  canonical: string
+}
+const pathIdentityCache = new Map<string, CachedPathIdentity>()
+
+function rememberBounded<K, V>(cache: Map<K, V>, limit: number, key: K, value: V): void {
+  if (cache.has(key)) cache.delete(key)
+  else if (cache.size >= limit) {
+    const oldest = cache.keys().next().value
+    if (oldest !== undefined) cache.delete(oldest)
+  }
+  cache.set(key, value)
+}
 
 /**
  * Identity of one session JSONL file.
@@ -24,20 +43,46 @@ export function canonicalSessionFile(file: string): string {
   // both would resolve to the same canonical value anyway.
   const cacheKey = process.platform === 'win32' ? absolute.toLowerCase() : absolute
   const cached = canonicalCache.get(cacheKey)
-  if (cached) return cached
+  if (cached) {
+    // True LRU promotion so active conversations stay hot.
+    canonicalCache.delete(cacheKey)
+    canonicalCache.set(cacheKey, cached)
+    return cached
+  }
 
   const canonical = canonicalPath(absolute)
-  if (canonicalCache.size >= CANONICAL_CACHE_LIMIT) {
-    const oldest = canonicalCache.keys().next().value
-    if (oldest !== undefined) canonicalCache.delete(oldest)
-  }
-  canonicalCache.set(cacheKey, canonical)
+  rememberBounded(canonicalCache, CANONICAL_CACHE_LIMIT, cacheKey, canonical)
   return canonical
 }
 
 /** Resolve a live filesystem path without caching a possibly stale symlink identity. */
 export function canonicalPath(file: string): string {
   const absolute = path.resolve(file)
+  const cacheKey = process.platform === 'win32' ? absolute.toLowerCase() : absolute
+  let stat: ReturnType<typeof lstatSync> | undefined
+  try {
+    stat = lstatSync(absolute, { bigint: true, throwIfNoEntry: false })
+  } catch {
+    stat = undefined
+  }
+  // Never serve cached paths for missing entries, symlinks/junctions, or hard-linked files
+  // so replaced symlinks/directories resolve immediately.
+  const cacheable = Boolean(stat && !stat.isSymbolicLink() && (stat.isDirectory() || stat.nlink <= 1n))
+  if (cacheable && stat) {
+    const hit = pathIdentityCache.get(cacheKey)
+    if (
+      hit &&
+      hit.dev === stat.dev &&
+      hit.ino === stat.ino &&
+      hit.ctimeNs === stat.ctimeNs &&
+      hit.mtimeNs === stat.mtimeNs
+    ) {
+      pathIdentityCache.delete(cacheKey)
+      pathIdentityCache.set(cacheKey, hit)
+      return hit.canonical
+    }
+  }
+
   let resolved = absolute
   try {
     resolved = realpathSync.native(resolved)
@@ -54,5 +99,16 @@ export function canonicalPath(file: string): string {
     ? slashNormalized.toLowerCase() === normalizedRoot.toLowerCase()
     : slashNormalized === normalizedRoot
   const normalized = isRoot ? slashNormalized : slashNormalized.replace(/\/$/, '')
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+  const canonical = process.platform === 'win32' ? normalized.toLowerCase() : normalized
+
+  if (cacheable && stat) {
+    rememberBounded(pathIdentityCache, PATH_CACHE_LIMIT, cacheKey, {
+      dev: stat.dev,
+      ino: stat.ino,
+      ctimeNs: stat.ctimeNs,
+      mtimeNs: stat.mtimeNs,
+      canonical
+    })
+  }
+  return canonical
 }

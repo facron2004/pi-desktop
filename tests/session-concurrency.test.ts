@@ -1,20 +1,40 @@
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { PiEvent, RpcTraceHint, RuntimeEnsureOptions, RuntimeStatus, SessionMeta } from '@shared/types'
+import {
+  SUBAGENT_EDITOR_CANCEL_STATUS_KEY,
+  type ExtensionUiResponse,
+  type PiEvent,
+  type RpcTraceHint,
+  type RuntimeEnsureOptions,
+  type RuntimeQueueEvent,
+  type RuntimeStatus,
+  type SessionMeta
+} from '@shared/types'
 import { lastAssistantText } from '../src/renderer/src/lib/thread'
+import {
+  listPendingUiSessions,
+  liveConversationRows,
+  streamingProjectPaths
+} from '../src/renderer/src/lib/live-sessions'
+import { projectIndicator, sessionIndicator } from '../src/renderer/src/lib/session-indicator'
 
 type EventPayload = { ownerId: string; event: PiEvent }
 type RekeyPayload = { from: string; to: string; replace?: boolean }
 const eventListeners = new Set<(payload: EventPayload) => void>()
 const rekeyListeners = new Set<(change: RekeyPayload) => void>()
 const statusListeners = new Set<(payload: { ownerId: string; status: RuntimeStatus }) => void>()
+const queueListeners = new Set<(payload: RuntimeQueueEvent) => void>()
 const emit = (payload: EventPayload) => eventListeners.forEach(handler => handler(payload))
 const rekey = (change: RekeyPayload) => rekeyListeners.forEach(handler => handler(change))
+const emitQueue = (payload: RuntimeQueueEvent) => queueListeners.forEach(handler => handler(payload))
 function subscribe<T>(listeners: Set<T>, handler: T): () => void {
   listeners.add(handler)
   return () => { listeners.delete(handler) }
 }
 const calls: { command: string; key?: string; payload?: Record<string, unknown> }[] = []
+const ensureCalls: RuntimeEnsureOptions[] = []
+const respondUiCalls: { requestId: string; response: ExtensionUiResponse; key?: string }[] = []
+let customRespondUi: ((requestId: string, response: ExtensionUiResponse, key?: string) => Promise<void>) | undefined
 const stopped: string[] = []
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
 const bridge = {
@@ -37,13 +57,21 @@ const bridge = {
   sessions: { list: async () => [], hydrate: async () => [], remove: async (_file?: string) => true },
   git: { status: async () => ({ isRepo: false }) },
   runtime: {
-    ensure: async (_options: RuntimeEnsureOptions) => ({ ok: true }),
+    ensure: async (options: RuntimeEnsureOptions) => {
+      ensureCalls.push(options)
+      return { ok: true }
+    },
     has: async (_key: string) => true,
     stop: async (_key?: string) => {},
     stopCwd: async (cwd: string) => { stopped.push(cwd) },
     onEvent: (handler: (payload: EventPayload) => void) => subscribe(eventListeners, handler),
     onRekey: (handler: (change: RekeyPayload) => void) => subscribe(rekeyListeners, handler),
     onStatus: (handler: (payload: { ownerId: string; status: RuntimeStatus }) => void) => subscribe(statusListeners, handler),
+    onQueue: (handler: (payload: RuntimeQueueEvent) => void) => subscribe(queueListeners, handler),
+    respondUi: async (requestId: string, response: ExtensionUiResponse, key?: string) => {
+      respondUiCalls.push({ requestId, response, key })
+      if (customRespondUi) await customRespondUi(requestId, response, key)
+    },
     request: async (
       command: string, payload?: Record<string, unknown>, _timeout?: number, _trace?: RpcTraceHint, key?: string
     ): Promise<unknown> => {
@@ -72,20 +100,25 @@ Object.assign(globalThis, {
   },
   window: { pi: bridge, location: { search: '' }, matchMedia: () => ({ matches: false }) }
 })
-const { useAppStore } = await import('../src/renderer/src/store/useAppStore')
+const { useAppStore, draftKeyOf } = await import('../src/renderer/src/store/useAppStore')
 await useAppStore.getState().bootstrap()
 const initial = useAppStore.getState()
 const originalRequest = bridge.runtime.request
 const originalEnsure = bridge.runtime.ensure
 const originalStop = bridge.runtime.stop
+const originalHydrate = bridge.sessions.hydrate
 const originalGitStatus = bridge.git.status
 afterEach(async () => {
   await tick()
   bridge.runtime.request = originalRequest
   bridge.runtime.ensure = originalEnsure
   bridge.runtime.stop = originalStop
+  bridge.sessions.hydrate = originalHydrate
   bridge.git.status = originalGitStatus
+  customRespondUi = undefined
   calls.length = 0
+  ensureCalls.length = 0
+  respondUiCalls.length = 0
   stopped.length = 0
   useAppStore.setState(initial, true)
   Reflect.deleteProperty(globalThis, 'requestAnimationFrame')
@@ -872,4 +905,569 @@ test('visibilitychange from hidden to visible immediately drains pending multi-s
       writable: true
     })
   }
+})
+
+test('per-session drafts stay isolated across switches and migrate on draft promotion preserving clientKey', async () => {
+  await useAppStore.getState().selectSession(session('draft-a.jsonl'))
+  useAppStore.getState().updateDraft('draft-a.jsonl', {
+    text: 'unsent A',
+    images: [{ id: 'img-a', data: 'Zm9v', mimeType: 'image/png' }]
+  })
+
+  await useAppStore.getState().selectSession(session('draft-b.jsonl'))
+  assert.equal(useAppStore.getState().drafts['draft-a.jsonl']?.text, 'unsent A')
+  useAppStore.getState().updateDraft('draft-b.jsonl', { text: 'unsent B' })
+
+  assert.equal(useAppStore.getState().drafts['draft-a.jsonl']?.images.length, 1)
+  assert.equal(useAppStore.getState().drafts['draft-b.jsonl']?.text, 'unsent B')
+
+  await useAppStore.getState().newChat()
+  const draftKey = draftKeyOf(useAppStore.getState())
+  assert.ok(draftKey.startsWith('draft:'))
+  const draftClientKey = useAppStore.getState().clientKey
+  useAppStore.getState().updateDraft(draftKey, { text: 'follow-up draft' })
+
+  rekey({ from: draftKey, to: 'promoted-session.jsonl', replace: true })
+  const promoted = useAppStore.getState()
+  assert.equal(promoted.activeSessionFile, 'promoted-session.jsonl')
+  assert.equal(promoted.clientKey, draftClientKey)
+  assert.equal(promoted.drafts[draftKey], undefined)
+  assert.equal(promoted.drafts['promoted-session.jsonl']?.text, 'follow-up draft')
+
+  // Rekeying must not overwrite an existing image-only draft on the target key.
+  await useAppStore.getState().newChat()
+  const draftKey2 = draftKeyOf(useAppStore.getState())
+  useAppStore.getState().updateDraft(draftKey2, { text: 'incoming text' })
+  useAppStore.getState().updateDraft('img-target.jsonl', {
+    text: '',
+    images: [{ id: 'img-only', data: 'YmFy', mimeType: 'image/png' }]
+  })
+  rekey({ from: draftKey2, to: 'img-target.jsonl', replace: true })
+  assert.equal(useAppStore.getState().drafts['img-target.jsonl']?.text, '')
+  assert.equal(useAppStore.getState().drafts['img-target.jsonl']?.images.length, 1)
+})
+
+test('set_editor_text routes background edits to drafts without overwriting active composerText', async () => {
+  await useAppStore.getState().selectSession(session('editor-fg.jsonl'))
+  useAppStore.getState().updateDraft('editor-fg.jsonl', { text: 'fg draft' })
+
+  emit({
+    ownerId: 'editor-bg.jsonl',
+    event: { type: 'extension_ui_request', id: 'ed-1', method: 'set_editor_text', text: 'bg text' }
+  })
+
+  assert.equal(useAppStore.getState().composerText, undefined)
+  assert.equal(useAppStore.getState().drafts['editor-fg.jsonl']?.text, 'fg draft')
+  assert.equal(useAppStore.getState().drafts['editor-bg.jsonl']?.text, 'bg text')
+
+  emit({
+    ownerId: 'editor-fg.jsonl',
+    event: { type: 'extension_ui_request', id: 'ed-2', method: 'set_editor_text', text: 'fg override' }
+  })
+
+  assert.equal(useAppStore.getState().composerText, 'fg override')
+  assert.equal(useAppStore.getState().drafts['editor-fg.jsonl']?.text, 'fg override')
+})
+
+test('concurrent extension uiRequests queue FIFO per thread, respond IPC-first with double-submit guard, and restore run phase', async () => {
+  await useAppStore.getState().selectSession(session('ui-a.jsonl'))
+  emit({ ownerId: 'ui-a.jsonl', event: { type: 'agent_start' } })
+  emit({ ownerId: 'ui-a.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+  emit({
+    ownerId: 'ui-a.jsonl',
+    event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Working...' } }
+  })
+  assert.equal(useAppStore.getState().run.phase, 'generating')
+
+  emit({ ownerId: 'ui-a.jsonl', event: { type: 'extension_ui_request', id: 'req-1', method: 'confirm', title: 'First', message: 'One?' } })
+  emit({ ownerId: 'ui-a.jsonl', event: { type: 'extension_ui_request', id: 'req-2', method: 'input', title: 'Second', placeholder: 'Two' } })
+
+  assert.equal(useAppStore.getState().uiRequests.length, 2)
+  assert.equal(useAppStore.getState().uiRequest?.id, 'req-1')
+  assert.equal(useAppStore.getState().run.phase, 'waiting_approval')
+
+  await useAppStore.getState().selectSession(session('ui-b.jsonl'))
+  assert.equal(useAppStore.getState().uiRequests.length, 0)
+  assert.equal(useAppStore.getState().threads['ui-a.jsonl'].uiRequests.length, 2)
+
+  // Deferred IPC response: ensures queue pops only after IPC resolves and duplicate clicks are ignored.
+  let resolveRpc!: () => void
+  let rejectNext = false
+  customRespondUi = () =>
+    new Promise<void>((resolve, reject) => {
+      if (rejectNext) {
+        reject(new Error('IPC down'))
+        return
+      }
+      resolveRpc = resolve
+    })
+
+  const firstAttempt = useAppStore.getState().respondUi({ confirmed: true }, { sessionKey: 'ui-a.jsonl', requestId: 'req-1' })
+  const duplicateAttempt = useAppStore.getState().respondUi({ confirmed: true }, { sessionKey: 'ui-a.jsonl', requestId: 'req-1' })
+  assert.equal(respondUiCalls.length, 1)
+  assert.equal(useAppStore.getState().threads['ui-a.jsonl'].uiRequests[0]?.id, 'req-1')
+
+  resolveRpc()
+  await Promise.all([firstAttempt, duplicateAttempt])
+
+  assert.equal(useAppStore.getState().threads['ui-a.jsonl'].uiRequests.length, 1)
+  assert.equal(useAppStore.getState().threads['ui-a.jsonl'].uiRequests[0]?.id, 'req-2')
+  assert.equal(useAppStore.getState().threads['ui-a.jsonl'].run.phase, 'waiting_approval')
+
+  // If IPC rejects on req-2, keep req-2 intact so user can retry cleanly.
+  rejectNext = true
+  await useAppStore.getState().respondUi({ value: 'retry' }, { sessionKey: 'ui-a.jsonl', requestId: 'req-2' })
+  assert.equal(useAppStore.getState().threads['ui-a.jsonl'].uiRequests.length, 1)
+  assert.equal(useAppStore.getState().error, 'IPC down')
+  rejectNext = false
+  customRespondUi = undefined
+
+  // Cancelling a queued editor dialog via reserved status key dismisses it and restores 'generating'.
+  emit({
+    ownerId: 'ui-a.jsonl',
+    event: {
+      type: 'extension_ui_request',
+      id: 'cancel-1',
+      method: 'setStatus',
+      statusKey: SUBAGENT_EDITOR_CANCEL_STATUS_KEY,
+      statusText: JSON.stringify({ requestId: 'req-2' })
+    }
+  })
+
+  assert.equal(useAppStore.getState().threads['ui-a.jsonl'].uiRequests.length, 0)
+  assert.equal(useAppStore.getState().threads['ui-a.jsonl'].uiRequest, undefined)
+  assert.equal(useAppStore.getState().threads['ui-a.jsonl'].run.phase, 'generating')
+  const lastCall = respondUiCalls[respondUiCalls.length - 1]
+  assert.equal(lastCall?.requestId, 'req-2')
+  assert.deepEqual(lastCall?.response, { confirmed: false, cancelled: true })
+})
+
+test('background warning/error notifications attribute their conversation title', async () => {
+  await useAppStore.getState().selectSession(session('notify-fg.jsonl'))
+  useAppStore.setState((state) => ({
+    sessions: [
+      ...state.sessions,
+      { ...session('notify-bg.jsonl'), name: 'Deploy Pipeline' }
+    ]
+  }))
+
+  emit({
+    ownerId: 'notify-bg.jsonl',
+    event: { type: 'extension_ui_request', id: 'n-1', method: 'notify', notifyType: 'warning', message: 'Token expiring' }
+  })
+  assert.equal(useAppStore.getState().toast?.text, '[Deploy Pipeline] Token expiring')
+
+  emit({
+    ownerId: 'notify-fg.jsonl',
+    event: { type: 'extension_ui_request', id: 'n-2', method: 'notify', notifyType: 'error', message: 'Local failure' }
+  })
+  assert.equal(useAppStore.getState().toast?.text, 'Local failure')
+  useAppStore.getState().clearToast()
+})
+
+test('fork rekey clones non-draft threads with a fresh clientKey while keeping the parent intact', async () => {
+  await useAppStore.getState().selectSession(session('fork-parent.jsonl'))
+  emit({ ownerId: 'fork-parent.jsonl', event: { type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'parent msg' }], timestamp: 1 } } })
+  const parentClientKey = useAppStore.getState().clientKey
+
+  rekey({ from: 'fork-parent.jsonl', to: 'fork-child.jsonl', replace: false })
+  const after = useAppStore.getState()
+
+  assert.ok(after.threads['fork-parent.jsonl'])
+  assert.equal(after.threads['fork-parent.jsonl'].items.length, 1)
+  assert.equal(after.threads['fork-parent.jsonl'].clientKey, parentClientKey)
+
+  assert.ok(after.threads['fork-child.jsonl'])
+  assert.equal(after.threads['fork-child.jsonl'].items.length, 1)
+  assert.notEqual(after.threads['fork-child.jsonl'].clientKey, parentClientKey)
+  assert.equal(after.activeSessionFile, 'fork-child.jsonl')
+})
+
+test('runtime.onQueue updates and clears per-thread cwdWait state', async () => {
+  await useAppStore.getState().selectSession(session('cwd-a.jsonl'))
+  emitQueue({ ownerId: 'cwd-a.jsonl', queued: true, position: 2, holderOwnerId: 'cwd-b.jsonl', cwd: 'E:/repo' })
+
+  assert.deepEqual(useAppStore.getState().cwdWait, {
+    position: 2,
+    holderOwnerId: 'cwd-b.jsonl',
+    holderCwd: undefined,
+    externalHolder: undefined,
+    cwd: 'E:/repo'
+  })
+  assert.deepEqual(useAppStore.getState().threads['cwd-a.jsonl'].cwdWait, {
+    position: 2,
+    holderOwnerId: 'cwd-b.jsonl',
+    holderCwd: undefined,
+    externalHolder: undefined,
+    cwd: 'E:/repo'
+  })
+
+  emit({ ownerId: 'cwd-a.jsonl', event: { type: 'agent_start' } })
+  assert.equal(useAppStore.getState().cwdWait, undefined)
+  assert.equal(useAppStore.getState().threads['cwd-a.jsonl'].cwdWait, undefined)
+})
+
+test('hydrateSession deduplicates concurrent loads and preserves live prompt items appended mid-hydration', async () => {
+  let hydrateCalls = 0
+  let resolveHydrate!: (msgs: any[]) => void
+  bridge.sessions.hydrate = async () => {
+    hydrateCalls += 1
+    return await new Promise<any[]>((resolve) => {
+      resolveHydrate = resolve
+    })
+  }
+
+  const p1 = useAppStore.getState().selectSession(session('hyd.jsonl'))
+  const p2 = useAppStore.getState().hydrateSession('hyd.jsonl')
+  assert.equal(hydrateCalls, 1)
+
+  // User prompt lands live while disk hydration is still in flight.
+  emit({
+    ownerId: 'hyd.jsonl',
+    event: { type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'live tail' }], timestamp: 200 } }
+  })
+
+  resolveHydrate([
+    { role: 'user', content: [{ type: 'text', text: 'historical prompt' }], timestamp: 100 },
+    { role: 'assistant', content: [{ type: 'text', text: 'historical answer' }], timestamp: 150 }
+  ])
+  await Promise.all([p1, p2])
+
+  const items = useAppStore.getState().threads['hyd.jsonl'].items
+  assert.equal(items.length, 3)
+  assert.equal(items[0]?.kind === 'user' ? items[0].text : '', 'historical prompt')
+  assert.equal(items[1]?.kind, 'assistant')
+  assert.equal(lastAssistantText([items[1]]), 'historical answer')
+  assert.equal(items[2]?.kind === 'user' ? items[2].text : '', 'live tail')
+})
+
+test('deskPage unread mark, hadError settlement, idle draft pruning, prewarm flag, and per-owner drainPending', async () => {
+  // 1. Settling active session while deskPage is open marks unread; returning clears notice.
+  await useAppStore.getState().selectSession(session('desk.jsonl'))
+  useAppStore.getState().setDeskPage('marketplace')
+  emit({ ownerId: 'desk.jsonl', event: { type: 'agent_start' } })
+  emit({ ownerId: 'desk.jsonl', event: { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'ready' }] } } })
+  emit({ ownerId: 'desk.jsonl', event: { type: 'agent_settled', aborted: false } })
+  assert.equal(useAppStore.getState().threads['desk.jsonl'].notice, 'unread')
+  useAppStore.getState().setDeskPage(null)
+  assert.equal(useAppStore.getState().threads['desk.jsonl'].notice, undefined)
+
+  // 2. Extension error sets hadError and settles run as failed.
+  emit({ ownerId: 'desk.jsonl', event: { type: 'agent_start' } })
+  emit({ ownerId: 'desk.jsonl', event: { type: 'extension_error', extensionPath: 'ext.ts', event: 'turn_start', error: 'Upstream failure' } })
+  emit({ ownerId: 'desk.jsonl', event: { type: 'agent_settled', aborted: false } })
+  assert.equal(useAppStore.getState().threads['desk.jsonl'].run.outcome, 'failed')
+
+  // 3. Switching away from an untouched empty draft prunes it.
+  await useAppStore.getState().newChat()
+  const firstDraft = draftKeyOf(useAppStore.getState())
+  await useAppStore.getState().newChat()
+  const secondDraft = draftKeyOf(useAppStore.getState())
+  assert.equal(useAppStore.getState().threads[firstDraft], undefined)
+  assert.ok(useAppStore.getState().threads[secondDraft])
+
+  // 4. prewarmRuntime sends prewarm: true.
+  useAppStore.getState().prewarmRuntime('cold-disk.jsonl')
+  await tick()
+  assert.equal(ensureCalls.some((opt) => opt.sessionKey === 'cold-disk.jsonl' && opt.prewarm === true), true)
+
+  // 5. Draining pending updates for owner A leaves owner B pending until next frame.
+  let scheduledFrame: (() => void) | undefined
+  Object.assign(globalThis, {
+    requestAnimationFrame: (cb: () => void) => {
+      scheduledFrame = cb
+      return 1
+    },
+    cancelAnimationFrame: () => {}
+  })
+  await useAppStore.getState().selectSession(session('drain-a.jsonl'))
+  emit({ ownerId: 'drain-a.jsonl', event: { type: 'agent_start' } })
+  emit({ ownerId: 'drain-b.jsonl', event: { type: 'agent_start' } })
+  emit({ ownerId: 'drain-a.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+  emit({ ownerId: 'drain-b.jsonl', event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+
+  emit({
+    ownerId: 'drain-a.jsonl',
+    event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'alpha' } }
+  })
+  emit({
+    ownerId: 'drain-b.jsonl',
+    event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'beta' } }
+  })
+
+  // Settling drain-a drains ONLY drain-a; drain-b stays queued until rAF fires.
+  emit({
+    ownerId: 'drain-a.jsonl',
+    event: { type: 'agent_settled', aborted: false }
+  })
+  assert.equal(lastAssistantText(useAppStore.getState().threads['drain-a.jsonl'].items), 'alpha')
+  assert.equal(lastAssistantText(useAppStore.getState().threads['drain-b.jsonl'].items), '')
+
+  scheduledFrame?.()
+  assert.equal(lastAssistantText(useAppStore.getState().threads['drain-b.jsonl'].items), 'beta')
+})
+
+test('multiple concurrent draft and saved conversations in the same project stay isolated across boots, rekeys, switches, and attention states', async () => {
+  const projectPath = 'E:/same-project'
+  const ws = { id: 'ws-same', path: projectPath, name: 'same-project', lastOpenedAt: 1 }
+  useAppStore.setState({
+    workspace: ws,
+    settings: { ...initial.settings, workspaces: [ws], activeWorkspaceId: ws.id }
+  })
+
+  // Hold ensure per sessionKey so both drafts are concurrently mid-boot.
+  const ensureGates = new Map<string, (value: { ok: boolean }) => void>()
+  bridge.runtime.ensure = (options) => {
+    ensureCalls.push(options)
+    return new Promise((resolve) => {
+      ensureGates.set(options.sessionKey, resolve)
+    })
+  }
+
+  // 1. Create Draft A and start sending before its runtime finishes booting.
+  await useAppStore.getState().newChat()
+  const draftA = useAppStore.getState().draftId!
+  assert.ok(draftA.startsWith('draft:'))
+  const sendA = useAppStore.getState().send('Prompt for conversation A', [])
+
+  // Pre-await state must mark Draft A as active work with project cwd so New chat cannot prune it.
+  const midBootA = useAppStore.getState().threads[draftA]
+  assert.ok(midBootA)
+  assert.equal(midBootA.isStreaming, true)
+  assert.equal(midBootA.run.settled, false)
+  assert.equal(midBootA.status.cwd, projectPath)
+
+  // 2. Immediately create Draft B in the same project while Draft A is still booting.
+  await useAppStore.getState().newChat()
+  const draftB = useAppStore.getState().draftId!
+  assert.ok(draftB.startsWith('draft:'))
+  assert.notEqual(draftB, draftA)
+  assert.ok(useAppStore.getState().threads[draftA], 'starting Draft B must not prune mid-boot Draft A')
+  const sendB = useAppStore.getState().send('Prompt for conversation B', [])
+
+  // Both Draft A and Draft B appear in liveConversationRows for the same workspace before any JSONL exists.
+  const stateMidBoot = useAppStore.getState()
+  const rowsMidBoot = liveConversationRows(stateMidBoot.sessions, stateMidBoot.threads, projectPath)
+  assert.deepEqual(rowsMidBoot.map((r) => r.file).sort(), [draftA, draftB].sort())
+  assert.equal(rowsMidBoot.every((r) => r.cwd === projectPath && r.onDisk === false), true)
+  assert.deepEqual(
+    streamingProjectPaths(stateMidBoot.sessions, stateMidBoot.threads, stateMidBoot.draftId, projectPath),
+    ['e:/same-project']
+  )
+
+  // Resolve both boots concurrently and verify both prompt RPCs dispatch independently.
+  ensureGates.get(draftA)?.({ ok: true })
+  ensureGates.get(draftB)?.({ ok: true })
+  await Promise.all([sendA, sendB])
+
+  assert.equal(calls.filter((c) => c.command === 'prompt' && c.key === draftA).length, 1)
+  assert.equal(calls.filter((c) => c.command === 'prompt' && c.key === draftB).length, 1)
+  assert.equal(useAppStore.getState().threads[draftA].run.phase, 'working')
+  assert.equal(useAppStore.getState().threads[draftB].run.phase, 'working')
+  const clientKeyA = useAppStore.getState().threads[draftA].clientKey
+  const clientKeyB = useAppStore.getState().threads[draftB].clientKey
+  assert.notEqual(clientKeyA, clientKeyB)
+
+  // 3. Stream deltas into both drafts concurrently, then rekey Draft A to .jsonl while viewing Draft B.
+  emit({ ownerId: draftA, event: { type: 'agent_start' } })
+  emit({ ownerId: draftB, event: { type: 'agent_start' } })
+  emit({ ownerId: draftA, event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+  emit({ ownerId: draftB, event: { type: 'message_start', message: { role: 'assistant', content: [] } } })
+  emit({ ownerId: draftA, event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Reply A' } } })
+  emit({ ownerId: draftB, event: { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Reply B' } } })
+
+  const fileA = `${projectPath}/conv-a.jsonl`
+  const fileB = `${projectPath}/conv-b.jsonl`
+  rekey({ from: draftA, to: fileA })
+
+  const afterRekeyA = useAppStore.getState()
+  assert.equal(afterRekeyA.draftId, draftB, 'rekeying background Draft A must keep Draft B on screen')
+  assert.equal(afterRekeyA.activeSessionFile, undefined)
+  assert.equal(afterRekeyA.threads[draftA], undefined)
+  assert.ok(afterRekeyA.threads[fileA])
+  assert.equal(afterRekeyA.threads[fileA].clientKey, clientKeyA)
+  assert.equal(afterRekeyA.threads[fileA].isStreaming, true)
+  assert.equal(lastAssistantText(afterRekeyA.threads[fileA].items), 'Reply A')
+  assert.equal(lastAssistantText(afterRekeyA.threads[draftB].items), 'Reply B')
+
+  // Switching to fileA and back to draftB never aborts or stops either running conversation.
+  bridge.runtime.ensure = originalEnsure
+  let stopCalls = 0
+  bridge.runtime.stop = async () => { stopCalls += 1 }
+  await useAppStore.getState().selectSession({ ...session(fileA), cwd: projectPath })
+  assert.equal(useAppStore.getState().activeSessionFile, fileA)
+  assert.equal(lastAssistantText(useAppStore.getState().items), 'Reply A')
+  useAppStore.getState().prewarmRuntime(fileA)
+  await tick()
+  assert.equal(
+    ensureCalls.some((opt) => opt.sessionKey === fileA && opt.prewarm === true),
+    false,
+    'must not prewarm an already-streaming conversation'
+  )
+
+  // Rekey Draft B to fileB while viewing fileA.
+  rekey({ from: draftB, to: fileB })
+  assert.equal(useAppStore.getState().activeSessionFile, fileA)
+  assert.equal(useAppStore.getState().threads[draftB], undefined)
+  assert.equal(useAppStore.getState().threads[fileB]?.clientKey, clientKeyB)
+  assert.equal(lastAssistantText(useAppStore.getState().threads[fileB].items), 'Reply B')
+  assert.equal(stopCalls, 0)
+  assert.equal(calls.some((c) => c.command === 'abort'), false)
+
+  // Selecting a stale draftB key right after rekey opens fileB cleanly without spawning a ghost draft.
+  await useAppStore.getState().selectSession({ ...session(draftB), cwd: projectPath })
+  assert.equal(useAppStore.getState().activeSessionFile, fileB)
+  assert.equal(useAppStore.getState().draftId, undefined)
+  assert.equal(useAppStore.getState().threads[draftB], undefined)
+  assert.equal(lastAssistantText(useAppStore.getState().items), 'Reply B')
+
+  // 4. Concurrent attention indicators in the same project: needs-input > error > unread > running.
+  emit({
+    ownerId: fileB,
+    event: { type: 'extension_ui_request', id: 'dlg-b', method: 'confirm', title: 'Approve', message: 'Run tool?' }
+  })
+  const pending = listPendingUiSessions(useAppStore.getState().threads, useAppStore.getState().sessions)
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0]?.sessionKey, fileB)
+  assert.equal(pending[0]?.cwd, projectPath)
+
+  const indicators1 = [fileA, fileB].map((k) => {
+    const t = useAppStore.getState().threads[k]
+    return { isStreaming: t.isStreaming, notice: t.notice, needsInput: Boolean(t.uiRequest || t.uiRequests?.length) }
+  })
+  assert.equal(sessionIndicator(indicators1[0]), 'running')
+  assert.equal(sessionIndicator(indicators1[1]), 'needs-input')
+  assert.equal(projectIndicator(indicators1), 'needs-input')
+
+  // Answer fileB's dialog, move view to a fresh chat, then settle fileA with error and fileB normally.
+  await useAppStore.getState().respondUi({ confirmed: true }, { sessionKey: fileB, requestId: 'dlg-b' })
+  await useAppStore.getState().newChat()
+  emit({ ownerId: fileA, event: { type: 'extension_error', extensionPath: 'ext.ts', event: 'turn_start', error: 'Boom' } })
+  emit({ ownerId: fileA, event: { type: 'agent_settled', aborted: false } })
+  emit({ ownerId: fileB, event: { type: 'agent_settled', aborted: false } })
+
+  const tA = useAppStore.getState().threads[fileA]
+  const tB = useAppStore.getState().threads[fileB]
+  assert.equal(tA.notice, 'error')
+  assert.equal(tB.notice, 'unread')
+  assert.equal(
+    projectIndicator([
+      { isStreaming: tA.isStreaming, notice: tA.notice, needsInput: false },
+      { isStreaming: tB.isStreaming, notice: tB.notice, needsInput: false }
+    ]),
+    'error'
+  )
+})
+
+test('concurrent inline bash across drafts in the same project and operation cwdWait detail stay isolated', async () => {
+  const projectPath = 'E:/bash-project'
+  const ws = { id: 'ws-bash', path: projectPath, name: 'bash-project', lastOpenedAt: 1 }
+  useAppStore.setState({
+    workspace: ws,
+    settings: { ...initial.settings, workspaces: [ws], activeWorkspaceId: ws.id }
+  })
+
+  const ensureGates = new Map<string, (value: { ok: boolean }) => void>()
+  bridge.runtime.ensure = (options) => {
+    ensureCalls.push(options)
+    return new Promise((resolve) => {
+      ensureGates.set(options.sessionKey, resolve)
+    })
+  }
+
+  const bashGates = new Map<string, (value: { output?: string; exitCode?: number; cancelled?: boolean }) => void>()
+  bridge.runtime.request = async (command, payload, timeout, trace, key) => {
+    if (command === 'bash') {
+      calls.push({ command, key, payload })
+      return new Promise((resolve) => {
+        if (key) bashGates.set(key, resolve)
+      })
+    }
+    return originalRequest(command, payload, timeout, trace, key)
+  }
+
+  // Start inline bash on Draft A before ensure resolves.
+  await useAppStore.getState().newChat()
+  const draftA = useAppStore.getState().draftId!
+  const runA = useAppStore.getState().runInlineBash('echo A')
+
+  const midBootA = useAppStore.getState().threads[draftA]
+  assert.ok(midBootA)
+  assert.equal(midBootA.isStreaming, true)
+  assert.equal(midBootA.run.settled, false)
+  assert.equal(midBootA.status.cwd, projectPath)
+
+  // Creating Draft B mid-boot keeps Draft A alive and allows concurrent inline bash.
+  await useAppStore.getState().newChat()
+  const draftB = useAppStore.getState().draftId!
+  assert.notEqual(draftB, draftA)
+  assert.ok(useAppStore.getState().threads[draftA], 'Draft A running inline bash must not be pruned')
+  const runB = useAppStore.getState().runInlineBash('echo B')
+
+  // Background drafts running in the active workspace contribute to streamingProjectPaths.
+  assert.deepEqual(
+    streamingProjectPaths(
+      [],
+      {
+        [draftA]: { ...useAppStore.getState().threads[draftA]!, status: { phase: 'ready' } },
+        [draftB]: useAppStore.getState().threads[draftB]!
+      },
+      'draft:other',
+      projectPath
+    ),
+    ['e:/bash-project']
+  )
+
+  ensureGates.get(draftA)?.({ ok: true })
+  ensureGates.get(draftB)?.({ ok: true })
+  await tick()
+
+  assert.equal(bashGates.size, 2, 'both inline bash commands must dispatch concurrently')
+  assert.equal(calls.filter((c) => c.command === 'bash' && c.key === draftA).length, 1)
+  assert.equal(calls.filter((c) => c.command === 'bash' && c.key === draftB).length, 1)
+
+  // Settling Draft A leaves Draft B still running.
+  bashGates.get(draftA)?.({ output: 'out A', exitCode: 0 })
+  await runA
+  assert.equal(useAppStore.getState().threads[draftA].isStreaming, false)
+  assert.equal(useAppStore.getState().threads[draftA].run.settled, true)
+  assert.equal(useAppStore.getState().threads[draftB].isStreaming, true)
+  assert.equal(useAppStore.getState().threads[draftB].run.settled, false)
+
+  // Stopping Draft B dispatches abort_bash and abort cleanly.
+  await useAppStore.getState().stop()
+  assert.equal(calls.some((c) => c.command === 'abort_bash' && c.key === draftB), true)
+  assert.equal(calls.some((c) => c.command === 'abort' && c.key === draftB), true)
+  bashGates.get(draftB)?.({ output: '', exitCode: 130, cancelled: true })
+  await runB
+  assert.equal(useAppStore.getState().threads[draftB].isStreaming, false)
+  assert.equal(useAppStore.getState().threads[draftB].run.settled, true)
+  assert.equal(useAppStore.getState().threads[draftB].run.outcome, 'aborted')
+
+  // Exclusive operation lock records operation:* holder metadata and clears on queue release.
+  emitQueue({
+    ownerId: draftB,
+    queued: true,
+    position: 1,
+    holderOwnerId: 'operation:deadbeef',
+    holderCwd: projectPath,
+    cwd: projectPath
+  })
+  assert.deepEqual(useAppStore.getState().threads[draftB].cwdWait, {
+    position: 1,
+    holderOwnerId: 'operation:deadbeef',
+    holderCwd: projectPath,
+    externalHolder: undefined,
+    cwd: projectPath
+  })
+  assert.deepEqual(useAppStore.getState().cwdWait, {
+    position: 1,
+    holderOwnerId: 'operation:deadbeef',
+    holderCwd: projectPath,
+    externalHolder: undefined,
+    cwd: projectPath
+  })
+  emitQueue({ ownerId: draftB, queued: false, cwd: projectPath })
+  assert.equal(useAppStore.getState().threads[draftB].cwdWait, undefined)
+  assert.equal(useAppStore.getState().cwdWait, undefined)
 })

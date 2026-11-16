@@ -43,9 +43,10 @@ export class MemoryService extends EventEmitter {
   private readonly deps: MemoryServiceDeps
   private readonly delayMs: number
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Canonical session key -> latest file path (preserves test/session display path). */
+  private readonly pending = new Map<string, string>()
   private readonly activeExtractions = new Map<string, Set<MemoryAttempt>>()
   private startupTimer?: ReturnType<typeof setTimeout>
-  private readonly pending = new Set<string>()
   private queue: Promise<unknown> = Promise.resolve()
   private running = 0
   private lastError?: string
@@ -77,6 +78,7 @@ export class MemoryService extends EventEmitter {
   attach(supervisor: SessionSupervisor): void {
     this.supervisor = supervisor
     supervisor.on('event', this.handleRuntimeEvent)
+    supervisor.on('rekey', this.handleRuntimeRekey)
   }
 
   /**
@@ -134,25 +136,36 @@ export class MemoryService extends EventEmitter {
     this.schedule(ownerId, info?.cwd)
   }
 
+  private handleRuntimeRekey = (payload: { from: string; to: string; replace?: boolean }): void => {
+    if (this.disposed) return
+    const fromKey = canonicalSessionFile(payload.from)
+    const toKey = canonicalSessionFile(payload.to)
+    if (fromKey !== toKey && payload.replace) {
+      this.cancelScheduled(payload.from)
+    }
+  }
+
   private schedule(file: string, cwd?: string): void {
-    const existing = this.timers.get(file)
+    const key = canonicalSessionFile(file)
+    const existing = this.timers.get(key)
     if (existing) clearTimeout(existing)
-    this.pending.add(file)
+    this.pending.set(key, file)
     this.emitChanged()
     const timer = setTimeout(() => {
-      this.timers.delete(file)
+      this.timers.delete(key)
       void this.run(file, cwd, false)
     }, this.delayMs)
     timer.unref?.()
-    this.timers.set(file, timer)
+    this.timers.set(key, timer)
   }
 
   private cancelScheduled(file: string): void {
-    const timer = this.timers.get(file)
+    const key = canonicalSessionFile(file)
+    const timer = this.timers.get(key)
     if (!timer) return
     clearTimeout(timer)
-    this.timers.delete(file)
-    this.pending.delete(file)
+    this.timers.delete(key)
+    this.pending.delete(key)
     this.emitChanged()
   }
 
@@ -171,21 +184,22 @@ export class MemoryService extends EventEmitter {
     manual: boolean,
     lifecycleVersion = this.lifecycleVersion
   ): Promise<MemoryGenerateResult> {
+    const key = canonicalSessionFile(file)
     if (this.disposed) return { ok: false, added: 0, error: 'Memory service is shutting down' }
     if (lifecycleVersion !== this.lifecycleVersion) return { ok: true, added: 0, skipped: 'Memory was cleared' }
     if (!manual && this.getSettings().memoryGeneration === false) {
-      this.pending.delete(file)
+      this.pending.delete(key)
       this.emitChanged()
       return { ok: true, added: 0, skipped: 'Memory generation is off' }
     }
     const stats = statSafe(file)
     if (!stats) {
-      this.pending.delete(file)
+      this.pending.delete(key)
       this.emitChanged()
       return { ok: false, added: 0, skipped: 'Conversation file is gone' }
     }
     if (this.supervisor?.sessionInfo(file)?.running) {
-      this.pending.delete(file)
+      this.pending.delete(key)
       this.emitChanged()
       return { ok: true, added: 0, skipped: 'Conversation is still running' }
     }
@@ -193,12 +207,12 @@ export class MemoryService extends EventEmitter {
       this.getSettings().memorySkipExternalContext !== false &&
       this.supervisor?.sessionInfo(file)?.externalContext
     ) {
-      this.pending.delete(file)
+      this.pending.delete(key)
       this.emitChanged()
       return { ok: true, added: 0, skipped: 'External-context conversation' }
     }
     if (!manual && this.store.wasProcessed(file, stats)) {
-      this.pending.delete(file)
+      this.pending.delete(key)
       this.emitChanged()
       return { ok: true, added: 0, skipped: 'Already learned' }
     }
@@ -208,7 +222,6 @@ export class MemoryService extends EventEmitter {
       automatic: !manual,
       controller: new AbortController()
     }
-    const key = canonicalSessionFile(file)
     const attempts = this.activeExtractions.get(key) ?? new Set<MemoryAttempt>()
     attempts.add(attempt)
     this.activeExtractions.set(key, attempts)
@@ -221,14 +234,14 @@ export class MemoryService extends EventEmitter {
         if (attempt.cancelled || (attempt.automatic && this.getSettings().memoryGeneration === false)) {
           attempt.cancelled = true
           attempt.controller.abort()
-          this.pending.delete(file)
+          this.pending.delete(key)
           this.emitChanged()
           return { ok: true, added: 0, skipped: 'Conversation changed during memory generation' }
         }
         // A new turn can start between the timer and this queued task. Never
         // read a transcript that is being written.
         if (this.supervisor?.sessionInfo(file)?.running) {
-          this.pending.delete(file)
+          this.pending.delete(key)
           this.emitChanged()
           return { ok: true, added: 0, skipped: 'Conversation is still running' }
         }
@@ -236,11 +249,11 @@ export class MemoryService extends EventEmitter {
           this.getSettings().memorySkipExternalContext !== false &&
           this.supervisor?.sessionInfo(file)?.externalContext
         ) {
-          this.pending.delete(file)
+          this.pending.delete(key)
           this.emitChanged()
           return { ok: true, added: 0, skipped: 'External-context conversation' }
         }
-        this.pending.delete(file)
+        this.pending.delete(key)
         const sourceStats = statSafe(file)
         if (!sourceStats) {
           this.emitChanged()
@@ -382,7 +395,7 @@ export class MemoryService extends EventEmitter {
     // history. Most unprocessed sessions need no additional filesystem stat.
     for (const session of listed) {
       if (session.messageCount < 2 || session.file.startsWith('draft:')) continue
-      const record = ledger.sessions[session.file]
+      const record = ledger.sessions[canonicalSessionFile(session.file)] ?? ledger.sessions[session.file]
       if (
         record &&
         !(record.skipped === 'error' && (record.attempts ?? 0) < 3) &&
@@ -473,6 +486,7 @@ export class MemoryService extends EventEmitter {
     this.cancelScheduledWork()
     this.cancelExtractions()
     this.supervisor?.off('event', this.handleRuntimeEvent)
+    this.supervisor?.off('rekey', this.handleRuntimeRekey)
   }
 
   /** Stop automatic transcript extraction after the user turns learning off. */

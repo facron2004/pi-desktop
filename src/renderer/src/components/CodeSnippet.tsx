@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from 'react'
-import { highlightCode } from '../lib/highlight'
+import { highlightCode, readHighlightedCodeSync } from '../lib/highlight'
 import { useIsDark } from '../lib/theme'
 
 /**
@@ -26,6 +26,10 @@ export function CodeSnippet({
   onReady?: () => void
 }) {
   const isDark = useIsDark()
+  const langKey = language?.trim() || ''
+  const shouldHighlight = Boolean(code && langKey && langKey.toLowerCase() !== 'text')
+  const syncHtml = shouldHighlight ? readHighlightedCodeSync(code, langKey, isDark) : null
+
   // The rendered code belongs to the text it was made from, so a new text
   // never shows the highlighting of the old one.
   const [rendered, setRendered] = useState<{
@@ -35,19 +39,20 @@ export function CodeSnippet({
     html: string
   } | null>(null)
   const html =
-    rendered &&
+    syncHtml ??
+    (rendered &&
     rendered.code === code &&
-    rendered.language === (language ?? '') &&
+    rendered.language === langKey &&
     rendered.isDark === isDark
       ? rendered.html
-      : null
+      : null)
 
   useEffect(() => {
-    if (!code || !language) return
+    if (!shouldHighlight || readHighlightedCodeSync(code, langKey, isDark) !== null) return
     let cancelled = false
-    highlightCode(code, language, isDark)
+    highlightCode(code, langKey, isDark)
       .then((markup) => {
-        if (!cancelled) setRendered({ code, language: language ?? '', isDark, html: markup })
+        if (!cancelled) setRendered({ code, language: langKey, isDark, html: markup })
       })
       .catch(() => {
         if (!cancelled) setRendered(null)
@@ -55,7 +60,7 @@ export function CodeSnippet({
     return () => {
       cancelled = true
     }
-  }, [code, language, isDark])
+  }, [code, langKey, isDark, shouldHighlight])
 
   useLayoutEffect(() => {
     onReady?.()

@@ -4,6 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import { openingLabel, useT } from '../lib/i18n'
 import { ProjectSelector } from './ProjectSelector'
 import { PiLogo } from './PiLogo'
+import { CwdWaitDetail } from './RunStatusRow'
 
 /**
  * A new chat: project & branch selectors above the composer.
@@ -12,10 +13,11 @@ import { PiLogo } from './PiLogo'
  * no usable project is a projectless chat, so the composer is always here to
  * type into; picking a project is an option, not a prerequisite.
  */
-export function Welcome({ children }: { children: ReactNode }) {
+export function Welcome({ children }: { children?: ReactNode }) {
   const workspace = useAppStore((state) => state.workspace)
   const noProject = useAppStore((state) => state.settings.activeWorkspaceId == null)
   const status = useAppStore((state) => state.status.phase)
+  const cwdWait = useAppStore((state) => state.cwdWait)
   const error = useAppStore((state) => state.error)
   const dismissError = useAppStore((state) => state.dismissError)
   const t = useT()
@@ -27,7 +29,12 @@ export function Welcome({ children }: { children: ReactNode }) {
   return (
     <div className="welcome">
       <div className="welcome__inner">
-        {status === 'starting' ? (
+        {cwdWait ? (
+          <div className="welcome__pending" role="status">
+            <span className="spinner" />
+            <CwdWaitDetail cwdWait={cwdWait} />
+          </div>
+        ) : status === 'starting' ? (
           <div className="welcome__pending" role="status">
             <span className="spinner" />
             <span>{openingLabel(workspace, t)}</span>
@@ -72,7 +79,7 @@ export function Welcome({ children }: { children: ReactNode }) {
           </div>
         </div>
 
-        <div className="welcome__composer">{children}</div>
+        {children ? <div className="welcome__composer">{children}</div> : null}
       </div>
     </div>
   )
