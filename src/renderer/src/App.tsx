@@ -23,6 +23,7 @@ import { Sidebar } from './components/Sidebar'
 import { Thread } from './components/Thread'
 import { Composer } from './components/Composer'
 import { AppToast } from './components/AppToast'
+import { HoverTip } from './components/HoverTip'
 import { Welcome } from './components/Welcome'
 import { SettingsDialog, type SettingsPage } from './components/SettingsDialog'
 import { AppMenuBar } from './components/AppMenuBar'
@@ -1051,6 +1052,7 @@ export default function App() {
       ) : null}
       <ExtensionDialog />
       <AppUpdateDialog />
+      <HoverTip />
       <AppToast />
     </div>
   )

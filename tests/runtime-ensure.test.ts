@@ -395,22 +395,24 @@ test('sessions:hydrate deduplicates concurrent reads and supersedes stale sender
     const hydrate = handlers.get('sessions:hydrate')
     assert.ok(hydrate)
 
+    type Hydration = { messages: unknown[]; historyTruncated: boolean }
     const senderA = { isDestroyed: () => false }
     const [staleA, activeB] = await Promise.all([
-      hydrate({ sender: senderA }, fileA) as Promise<unknown[]>,
-      hydrate({ sender: senderA }, fileB) as Promise<unknown[]>
+      hydrate({ sender: senderA }, fileA) as Promise<Hydration>,
+      hydrate({ sender: senderA }, fileB) as Promise<Hydration>
     ])
-    assert.deepEqual(staleA, [], 'superseded hydration request for same sender returns []')
-    assert.equal(activeB.length, 4, 'newest hydration request completes normally')
+    assert.deepEqual(staleA, { messages: [], historyTruncated: false }, 'superseded hydration returns an empty structured result')
+    assert.equal(activeB.messages.length, 4, 'newest hydration request completes normally')
+    assert.equal(activeB.historyTruncated, false)
 
     const senderB = { isDestroyed: () => false }
     const senderC = { isDestroyed: () => false }
     const [resB, resC] = await Promise.all([
-      hydrate({ sender: senderB }, fileA) as Promise<unknown[]>,
-      hydrate({ sender: senderC }, fileA) as Promise<unknown[]>
+      hydrate({ sender: senderB }, fileA) as Promise<Hydration>,
+      hydrate({ sender: senderC }, fileA) as Promise<Hydration>
     ])
-    assert.equal(resB.length, 600)
-    assert.equal(resC.length, 600)
+    assert.equal(resB.messages.length, 600)
+    assert.equal(resC.messages.length, 600)
   } finally {
     if (originalSessionRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
     else process.env.PI_CODING_AGENT_SESSION_DIR = originalSessionRoot

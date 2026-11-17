@@ -76,7 +76,11 @@ function displayRows(rows: DiffRow[], opened: ReadonlySet<string>): DiffRow[] {
   const out: DiffRow[] = []
   for (const row of rows) {
     out.push(row)
-    if (row.kind === 'gap' && opened.has(row.key)) out.push(...row.hidden)
+    // Not `push(...row.hidden)`: a fold can stand for a hundred thousand rows
+    // and that many spread arguments throws instead of appending.
+    if (row.kind === 'gap' && opened.has(row.key)) {
+      for (const hidden of row.hidden) out.push(hidden)
+    }
   }
   return out
 }
@@ -127,7 +131,9 @@ function patchRows(rows: DiffRow[], opened: ReadonlySet<string>): ContentRow[] {
   if (first === -1) return []
 
   const out: ContentRow[] = []
-  for (let index = first; index <= last; index += 1) out.push(...segments[index].lines)
+  for (let index = first; index <= last; index += 1) {
+    for (const line of segments[index].lines) out.push(line)
+  }
   return out
 }
 
@@ -254,7 +260,16 @@ export function DiffView({
   }, [expandAll, opened, gapKeys])
 
   const hasContent = useMemo(() => folded.some((rows) => rows.length > 0), [folded])
-  if (!hasContent) return null
+  // A block is degraded when aligning the two sides would have cost more than
+  // the pane may spend. Say so instead of painting an empty diff: "no rows"
+  // must never read as "no changes".
+  const degraded = useMemo(() => diffs.some((block) => block.degraded === true), [diffs])
+  const degradedNote = degraded ? (
+    <div className="diff__note">
+      {t('This file has too many changed lines to compare line by line.')}
+    </div>
+  ) : null
+  if (!hasContent) return degradedNote
 
   const toggle = (key: string) => {
     if (expandAll !== undefined) {
@@ -403,6 +418,7 @@ export function DiffView({
   if (mode === 'split') {
     return (
       <>
+        {degradedNote}
         <div className="diff diff--split">
           {folded.map((rows, blockIndex) => (
             <div className={blockClassName(blockIndex)} key={blockKey(rows, blockIndex)}>
@@ -443,6 +459,7 @@ export function DiffView({
 
   return (
     <>
+      {degradedNote}
       <div className="diff">
         {folded.map((rows, blockIndex) => (
           <div className={blockClassName(blockIndex)} key={blockKey(rows, blockIndex)}>

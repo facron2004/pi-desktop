@@ -1,4 +1,4 @@
-import type { ThreadItem } from './thread'
+import type { ThreadItem, ToolItem } from './thread'
 import { buildDiff, type DiffBlock } from './diff-fold'
 
 export interface FileChange {
@@ -71,7 +71,28 @@ export function changedFilePaths(items: ThreadItem[]): ChangedFilePath[] {
  *
  * Derived from the tool calls in the thread, so the session file on disk stays
  * the single source of truth.
+ *
+ * A line diff is the expensive part, and the reducer replaces a tool node
+ * instead of mutating it (`patchTool`), so a node's diffs are built once and
+ * kept under the node itself. The Changes panel calls this on every `items`
+ * update — every animation frame while the agent streams — and rebuilding
+ * every historical diff there froze the window for seconds. An unchanged node
+ * now costs a WeakMap lookup, and a node whose arguments changed is a new
+ * object, so its entry is rebuilt automatically.
  */
+const editDiffs = new WeakMap<ToolItem, FileChange['diffs']>()
+
+function diffsOfEdit(item: ToolItem): FileChange['diffs'] {
+  const cached = editDiffs.get(item)
+  if (cached) return cached
+  const edits = (item.args.edits as { oldText?: string; newText?: string }[] | undefined) ?? []
+  const built = edits
+    .map((edit) => buildDiff(edit?.oldText ?? '', edit?.newText ?? ''))
+    .filter((block) => block.rows.length > 0)
+  editDiffs.set(item, built)
+  return built
+}
+
 export function collectChanges(items: ThreadItem[]): FileChange[] {
   const changes = new Map<string, FileChange>()
 
@@ -83,12 +104,7 @@ export function collectChanges(items: ThreadItem[]): FileChange[] {
     if (!path) continue
 
     const existing = changes.get(path)
-    const diffs =
-      item.toolName === 'edit'
-        ? ((item.args.edits as { oldText?: string; newText?: string }[] | undefined) ?? [])
-            .map((edit) => buildDiff(edit?.oldText ?? '', edit?.newText ?? ''))
-            .filter((block) => block.rows.length > 0)
-        : []
+    const diffs = item.toolName === 'edit' ? diffsOfEdit(item) : []
 
     const content =
       item.toolName === 'write' && typeof item.args.content === 'string'
@@ -99,7 +115,9 @@ export function collectChanges(items: ThreadItem[]): FileChange[] {
       path,
       kind: item.toolName,
       edits: (existing?.edits ?? 0) + 1,
-      diffs: existing ? [...existing.diffs, ...diffs] : diffs,
+      // The cached array belongs to the node; the change gets its own list so
+      // no caller can grow the cache by mutating it.
+      diffs: existing ? [...existing.diffs, ...diffs] : [...diffs],
       content,
       at: existing?.at ?? item.timestamp
     })

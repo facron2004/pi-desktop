@@ -484,6 +484,44 @@ export function parseWindowsUserName(output: string): string | undefined {
  * window could appear. Reading one directory's ACL is cheap; only a directory
  * that is not already restricted pays for the write.
  */
+export function windowsUserDataAclSecure(acl: string, account: string, userSid: string, directory?: string): boolean {
+  const userPrincipals = new Set([account, userSid, `*${userSid}`].map((value) => value.toLowerCase()))
+  const allowedPrincipals = new Set([
+    ...userPrincipals,
+    'nt authority\\system',
+    'system',
+    's-1-5-18',
+    '*s-1-5-18',
+    'builtin\\administrators',
+    'administrators',
+    's-1-5-32-544',
+    '*s-1-5-32-544'
+  ])
+  const output = directory && acl.slice(0, directory.length).toLowerCase() === directory.toLowerCase()
+    ? acl.slice(directory.length)
+    : acl
+  const entries = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.includes(':(OI)') || line.includes(':(CI)'))
+  if (entries.length === 0) return false
+
+  let hasUser = false
+  for (const entry of entries) {
+    const separator = entry.indexOf(':')
+    if (separator <= 0) return false
+    const principal = entry.slice(0, separator).trim().toLowerCase()
+    const permissions = entry.slice(separator + 1)
+    // An allowlist is the security boundary: Full control for an additional
+    // account is not a secured directory, even when the current user is present.
+    if (!allowedPrincipals.has(principal)) return false
+    if (permissions.includes('(I)') || !permissions.includes('(OI)(CI)(F)')) return false
+    if (/\((?:DENY|N)\)/i.test(permissions)) return false
+    if (userPrincipals.has(principal)) hasUser = true
+  }
+  return hasUser
+}
+
 function windowsUserDataAclAlreadySecured(
   directory: string,
   systemDirectory: string
@@ -495,21 +533,14 @@ function windowsUserDataAclAlreadySecured(
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }
     )
     const account = parseWindowsUserName(userOutput)
-    if (!account) return false
+    const userSid = parseWindowsUserSid(userOutput)
+    if (!account || !userSid) return false
     const acl = execFileSync(path.join(systemDirectory, 'icacls.exe'), [directory, '/L'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true
     })
-    const entries = acl
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.includes(':(OI)') || line.includes(':(CI)'))
-    if (entries.length === 0) return false
-    const hasUser = entries.some((line) => line.toLowerCase().includes(account.toLowerCase()))
-    const hasInherited = entries.some((line) => line.includes('(I)'))
-    const allFull = entries.every((line) => line.includes('(OI)(CI)(F)'))
-    return hasUser && !hasInherited && allFull
+    return windowsUserDataAclSecure(acl, account, userSid, directory)
   } catch {
     return false
   }

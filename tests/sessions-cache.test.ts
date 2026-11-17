@@ -1094,7 +1094,9 @@ test('an oversized session stays visible and opens on its newest window', async 
     assert.equal(meta.messageCount, 3)
     assert.equal(meta.updatedAt, Date.parse('2026-11-01T00:00:05.000Z'))
 
-    const messages = await readSessionMessages(file)
+    const conversation = await readSessionConversation(file)
+    assert.equal(conversation.historyTruncated, true, 'the hydration contract preserves the bounded-tail signal')
+    const messages = conversation.messages
     assert.deepEqual(
       messages.map((message) => message.content),
       ['recent answer', 'recent prompt'],

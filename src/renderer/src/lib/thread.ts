@@ -47,6 +47,15 @@ export interface UserItem {
   threadId?: string
   /** Sequence of that event, monotonic per thread. */
   sequence?: number
+  /**
+   * A prompt the reader sent that Pi has not echoed back yet.
+   *
+   * It can be waiting for the working-folder lock in the main process, so the
+   * composer is already empty while the message is still on its way. The
+   * bubble keeps the prompt visible instead of letting it vanish into a status
+   * line until `message_start` returns it.
+   */
+  pending?: boolean
 }
 
 export interface AssistantItem {
@@ -208,6 +217,39 @@ function hasMessageId(items: ThreadItem[], messageId: string): boolean {
   const index = indexesFor(items).byMessageId.get(messageId)
   const item = index === undefined ? undefined : items[index]
   return (item?.kind === 'user' || item?.kind === 'assistant') && item.messageId === messageId
+}
+
+/**
+ * The newest optimistic prompt Pi has not acknowledged yet.
+ *
+ * Matching on text (not id) is deliberate: the prompt that left the composer
+ * has no Pi identity until its `message_start` comes back, and a steer typed
+ * on top of a queued prompt must claim the right bubble.
+ */
+function findPendingUser(items: ThreadItem[], text: string): UserItem | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (item?.kind === 'user' && item.pending && item.text === text) return item
+  }
+  return undefined
+}
+
+/**
+ * Drop optimistic prompts the reader cancelled before Pi accepted them.
+ *
+ * A prompt waiting on the working-folder lock never reaches Pi, so no
+ * `message_start` will ever replace it. Stop and clear-queue restore its text
+ * to the composer, and the bubble goes with it. Without an id every pending
+ * prompt of the thread is dropped, which is what a stop of the whole run does.
+ */
+export function clearPendingPrompts(items: ThreadItem[], id?: string): ThreadItem[] {
+  let changed = false
+  const next = items.filter((item) => {
+    const match = item.kind === 'user' && item.pending === true && (id === undefined || item.id === id)
+    if (match) changed = true
+    return !match
+  })
+  return changed ? next : items
 }
 
 function changeDraftItem(items: ThreadItem[], index: number, item: ThreadItem): ThreadItem[] {
@@ -390,6 +432,37 @@ function assistantForMessage(
   }
   const legacy = lastStreamingAssistant(items)
   return legacy?.messageId === undefined ? legacy : undefined
+}
+
+/**
+ * The bubble an unmatched assistant completion belongs to.
+ *
+ * The adapter names the open message with a client-minted id. That identity
+ * lives beside the transcript, so a thread that is re-keyed in the middle of
+ * an answer (a draft becoming its session file) keeps its items but loses the
+ * name: every later delta and the final `message_end` then arrive under an id
+ * no bubble carries, and the answer stays "streaming" with no usage forever —
+ * the tokens and cache figures under the composer stay at zero while the turn
+ * and step counts (which never need the answer) keep climbing.
+ *
+ * A completion whose id matches nothing is still the end of the one answer Pi
+ * was streaming. It may only close a bubble that carries the same message
+ * timestamp — `message_start` and `message_end` describe the same message
+ * object, so the stamp is the one identity that survives the move — and a
+ * completion that carries no timestamp may not close anything. A late
+ * duplicate of an older answer therefore can never land on a newer bubble.
+ */
+function streamingAssistantForCompletion(
+  items: ThreadItem[],
+  timestamp: number | undefined
+): AssistantItem | undefined {
+  if (timestamp === undefined) return undefined
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (item.kind !== 'assistant' || !item.streaming) continue
+    if (item.timestamp === timestamp) return item
+  }
+  return undefined
 }
 
 function replaceItem(items: ThreadItem[], id: string, next: ThreadItem): ThreadItem[] {
@@ -705,10 +778,27 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
         return items
       }
       if (message.role === 'user') {
+        const text = textOf(message.content)
+        // Pi has taken a prompt that was still waiting: the optimistic bubble
+        // becomes the record instead of a second copy appearing beside it.
+        const pending = findPendingUser(items, text)
+        if (pending) {
+          return replaceItem(items, pending.id, {
+            ...pending,
+            text,
+            images: imagesOf(message.content),
+            timestamp: message.timestamp ?? pending.timestamp,
+            pending: undefined,
+            messageId: event.messageId,
+            runId: event.runId,
+            turnId: event.turnId,
+            ...identityOf(event)
+          })
+        }
         return appendThreadItem(items, {
           id: nextId('user'),
           kind: 'user',
-          text: textOf(message.content),
+          text,
           images: imagesOf(message.content),
           timestamp: message.timestamp ?? Date.now(),
           order: nextOrder(),
@@ -902,7 +992,9 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       const message = event.message
       if (!message) return items
       if (message.role === 'assistant') {
-        const assistant = assistantForMessage(items, event.messageId, false)
+        const assistant =
+          assistantForMessage(items, event.messageId, false) ??
+          streamingAssistantForCompletion(items, message.timestamp)
         if (!assistant) return items
         const rawDuration = (message as unknown as { durationMs?: unknown }).durationMs
         const next: AssistantItem = {

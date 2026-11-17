@@ -486,11 +486,20 @@ export class AutoTitleService {
       return
     }
     this.clearTimer(file)
+    // A zero settle delay means "now": queue the read instead of arming a timer
+    // nobody awaits. `enqueue` chains on a promise, so this still runs off the
+    // caller's stack.
+    if (delayMs <= 0) {
+      this.enqueue(file)
+      return
+    }
     const timer = setTimeout(() => {
       this.timers.delete(file)
       this.enqueue(file)
     }, delayMs)
-    timer.unref?.()
+    // Not unref'd: a settle that has been scheduled is work this service still
+    // intends to do, and `dispose` clears it. An unref'd settle timer let a
+    // bare process exit before the title was ever attempted.
     this.timers.set(file, timer)
   }
 

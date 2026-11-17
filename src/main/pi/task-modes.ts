@@ -340,7 +340,7 @@ export default function (pi) {
     }
     if (mode === 'plan') return { message: {
       customType: 'desktop-plan-context', display: false,
-      content: 'Plan Mode is active. Inspect files using the read-only tools, clarify requirements when necessary, and produce an actionable plan. Do not modify files or execute commands. When the plan is ready, call exit_plan_mode with the complete plan so the user can approve it.'
+      content: 'Plan Mode is active. Inspect files using the read-only tools and clarify requirements when necessary. Before asking for approval, write the complete implementation plan in your visible assistant response as a Markdown document with a goal, ordered checkbox steps, affected files or areas, verification, and risks. Do not modify files or execute commands while planning. After showing the Markdown plan, call exit_plan_mode with the same complete plan for the user to review. Wait for explicit approval before leaving Plan Mode or implementing anything. If the user keeps planning, ask what to change and revise the Markdown plan.'
     } };
     if (mode === 'goal' && goal?.status === 'active') return { message: {
       customType: 'desktop-goal-context', display: false,
@@ -397,20 +397,20 @@ export default function (pi) {
 
   pi.registerTool({
     name: exitPlanTool, label: 'Exit plan mode',
-    description: 'Submit the finished plan to the user for approval. The user may approve it, which leaves Plan Mode and begins implementation, or reject it so planning continues.',
+    description: 'Submit the same complete Markdown plan already shown in the visible assistant response for human review. The user can keep planning or explicitly execute it; only execution approval leaves Plan Mode and begins implementation.',
     promptGuidelines: [progressGuideline],
     parameters: Type.Object({ plan: Type.String({ minLength: 1 }) }),
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async execute(_id, input, _signal, _onUpdate, ctx) {
       if (mode !== 'plan') throw new Error('exit_plan_mode is only available in Plan Mode');
-      const approved = await ctx.ui.confirm('Approve this plan?', input.plan);
+      const approved = await ctx.ui.confirm('Plan ready to review', input.plan);
       if (!approved) {
-        return { content: [{ type: 'text', text: 'Plan not approved. Keep planning and ask the user what to change.' }], details: { approved: false } };
+        return { content: [{ type: 'text', text: 'The user chose to keep planning. Ask what they would like changed, update the visible Markdown plan, and submit the revised plan for review.' }], details: { approved: false } };
       }
       mode = 'default';
       applyTools();
       persist(ctx);
-      return { content: [{ type: 'text', text: 'Plan approved. Implement it now.' }], details: { approved: true } };
+      return { content: [{ type: 'text', text: 'The user approved this plan. Start implementation now, following the reviewed plan.' }], details: { approved: true } };
     }
   });
 

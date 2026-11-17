@@ -1,6 +1,7 @@
 import { memo, useMemo } from 'react'
-import { Check, FolderOpen, FolderSearch } from 'lucide-react'
-import { useAppStore } from '../store/useAppStore'
+import { Check, FolderOpen, FolderSearch, Square } from 'lucide-react'
+import { draftKeyOf, useAppStore } from '../store/useAppStore'
+import { composerDraftHasContent } from '../lib/composer-drafts'
 import { collectProjects, sortProjects } from '../lib/projects'
 import { samePath } from '../lib/path'
 import { useT } from '../lib/i18n'
@@ -93,6 +94,10 @@ export const SessionBar = memo(function SessionBar({ showProject }: { showProjec
   const workspace = useAppStore((state) => state.workspace)
   const gitIsRepo = useAppStore((state) => Boolean(state.git?.isRepo))
   const gitFileCount = useAppStore((state) => state.git?.files.length ?? 0)
+  const isStreaming = useAppStore((state) => state.isStreaming)
+  const hasDraft = useAppStore((state) => composerDraftHasContent(state.drafts[draftKeyOf(state)]))
+  const aborting = useAppStore((state) => state.run.phase === 'aborting')
+  const stop = useAppStore((state) => state.stop)
   const t = useT()
 
   const openInspector = () =>
@@ -139,6 +144,21 @@ export const SessionBar = memo(function SessionBar({ showProject }: { showProjec
           onClick={openInspector}
         >
           {`${gitFileCount} ${t('changed')}`}
+        </button>
+      ) : null}
+
+      {isStreaming && hasDraft ? (
+        <button
+          type="button"
+          className="session-bar__stop"
+          data-aborting={aborting || undefined}
+          disabled={aborting}
+          onClick={() => void stop()}
+          aria-label={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
+          title={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
+        >
+          <Square size={10} fill="currentColor" strokeWidth={0} />
+          <span>{aborting ? t('Stopping…') : t('Stop')}</span>
         </button>
       ) : null}
     </div>

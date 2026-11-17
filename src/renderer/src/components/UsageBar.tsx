@@ -22,6 +22,7 @@ export const UsageBar = memo(function UsageBar() {
   // Text deltas do not change usage. Recompute on new items, completed
   // answers or run/stat changes instead of walking the transcript each frame.
   const itemCount = useAppStore((state) => state.items.length)
+  const historyTruncated = useAppStore((state) => state.historyTruncated === true)
   const lastCompletedAssistant = useAppStore((state) =>
     state.items.findLast((item) => item.kind === 'assistant' && !item.streaming)
   )
@@ -49,9 +50,10 @@ export const UsageBar = memo(function UsageBar() {
       useAppStore.getState().items,
       stats,
       { ...run, modelTurnStartedAt: undefined },
-      readSessionTiming(sessionKey)
+      readSessionTiming(sessionKey),
+      { historyTruncated }
     ),
-    [itemCount, lastCompletedAssistant, stats, run.phase, run.settled, run.turns, run.durationMs, sessionKey]
+    [itemCount, lastCompletedAssistant, stats, run.phase, run.settled, run.turns, run.durationMs, sessionKey, historyTruncated]
   )
   const liveModelTimeMs = !liveModelClock
     ? 0

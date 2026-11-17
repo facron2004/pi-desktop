@@ -984,8 +984,10 @@ test('session IPC handlers reject files outside the Pi session root', async () =
       terminals: { create: () => {} } as any
     })
 
-    assert.deepEqual(await anyIpc._invoke('sessions:hydrate', {}, outsideFile), [])
-    assert.equal((await anyIpc._invoke('sessions:hydrate', {}, sessionFile))[0]?.content, 'visible session content')
+    assert.deepEqual(await anyIpc._invoke('sessions:hydrate', {}, outsideFile), { messages: [], historyTruncated: false })
+    const hydrated = await anyIpc._invoke('sessions:hydrate', {}, sessionFile)
+    assert.equal(hydrated.historyTruncated, false)
+    assert.equal(hydrated.messages[0]?.content, 'visible session content')
     assert.equal(await anyIpc._invoke('sessions:rename', {}, outsideFile, 'private'), false)
     assert.equal(renamedPath, undefined)
     assert.equal(await anyIpc._invoke('sessions:rename', {}, sessionFile, 'renamed'), true)

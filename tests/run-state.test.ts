@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { AgentMessage, AppSettings, ModelInfo, PiEvent, PiState, RuntimeRekey, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
+import type { AgentMessage, AppSettings, ModelInfo, PiEvent, PiState, RuntimeRekey, RuntimeStartOptions, RuntimeStatus, SessionHydrationResult } from '@shared/types'
 import { forgetSessionTiming, readSessionTiming } from '../src/renderer/src/lib/session-timing'
 import { readScrollMemory, rememberScrollPosition } from '../src/renderer/src/lib/scroll-memory'
 import { sessionMetrics } from '../src/renderer/src/lib/session-metrics'
@@ -130,7 +130,7 @@ const phase = () => useAppStore.getState().run.phase
 test('a selected disk conversation retries hydration when its cache has no items', async () => {
   const previous = useAppStore.getState()
   const sessions = bridge.sessions as unknown as {
-    hydrate?: (file: string) => Promise<AgentMessage[]>
+    hydrate?: (file: string) => Promise<SessionHydrationResult>
   }
   const originalHydrate = sessions.hydrate
   const file = 'C:/tmp/retry-empty-history.jsonl'
@@ -160,7 +160,10 @@ test('a selected disk conversation retries hydration when its cache has no items
     })
     sessions.hydrate = async () => {
       hydrateCalls += 1
-      return [{ role: 'user', content: 'Existing prompt', timestamp: 1 } as AgentMessage]
+      return {
+        messages: [{ role: 'user', content: 'Existing prompt', timestamp: 1 } as AgentMessage],
+        historyTruncated: false
+      }
     }
 
     await useAppStore.getState().selectSession(session)
@@ -640,6 +643,43 @@ test('P04c 鈥?stopping an already settled run leaves the phase idle', async () 
   await useAppStore.getState().stop()
   assert.equal(phase(), 'idle', 'an idle Pi emits no settle, so stop must not wait for one')
   assert.equal(useAppStore.getState().run.settled, true)
+})
+
+test('a prompt stopped before Pi opens its run cannot strand the conversation on aborting', async () => {
+  const previous = useAppStore.getState()
+  const originalRequest = bridge.runtime.request
+  const calls: string[] = []
+  try {
+    await useAppStore.getState().newChat()
+    const key = useAppStore.getState().draftId!
+    // What `send` leaves behind while Pi is still booting: an optimistic run
+    // with no `runId`, then a stop that Pi answers without an `agent_settled`
+    // because no run was ever open.
+    const queued = { phase: 'queued' as const, turns: 0, settled: false }
+    useAppStore.setState((state) => ({
+      isStreaming: true,
+      run: queued,
+      threads: { ...state.threads, [key]: { ...state.threads[key], run: queued, isStreaming: true } }
+    }))
+    bridge.runtime.request = (command: string) => {
+      calls.push(command)
+      return ok({})
+    }
+    await useAppStore.getState().stopSession(key)
+    assert.equal(useAppStore.getState().run.phase, 'aborting', 'the stop is in flight')
+    assert.equal(calls.includes('abort'), true)
+
+    await useAppStore.getState().send('hello', [], 'steer')
+    const after = useAppStore.getState()
+    assert.equal(calls.includes('prompt'), false, 'the stopped prompt is not sent')
+    assert.equal(after.run.phase, 'idle', 'no settle can follow, so the phase must clear here')
+    assert.equal(after.run.settled, true)
+    assert.equal(after.run.outcome, 'aborted')
+    assert.equal(after.isStreaming, false, 'the stop button must not become a permanent refusal')
+  } finally {
+    bridge.runtime.request = originalRequest
+    useAppStore.setState(previous)
+  }
 })
 
 test('P04d 鈥?generation time is summed per answer, not across a tool gap', () => {

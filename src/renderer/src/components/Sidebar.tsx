@@ -1910,6 +1910,17 @@ const SessionRow = memo(function SessionRow({
       ) : null}
       {!renaming ? (
         <div className="session-item__actions">
+          {running ? (
+            <button
+              type="button"
+              className="session-item__stop"
+              aria-label={t('Stop the run')}
+              title={t('Stop the run')}
+              onClick={() => onStop(session.file)}
+            >
+              <Square size={9} strokeWidth={2.4} fill="currentColor" />
+            </button>
+          ) : null}
           <Popover
             align="right"
             width={208}

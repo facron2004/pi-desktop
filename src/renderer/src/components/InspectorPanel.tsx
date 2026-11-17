@@ -322,6 +322,24 @@ export function InspectorPanel({
     [onResize, onResizeEnd]
   )
 
+  const handleResizeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!onResize || event.nativeEvent.isComposing) return
+    const current = panelRef.current?.getBoundingClientRect().width ?? widthRef.current
+    const step = event.shiftKey ? 48 : 16
+    let next: number | undefined
+    // The divider is on the panel's left edge: moving it left makes the panel wider.
+    if (event.key === 'ArrowLeft') next = current + step
+    else if (event.key === 'ArrowRight') next = current - step
+    else if (event.key === 'Home') next = MIN_WIDTH
+    else if (event.key === 'End') next = MAX_WIDTH
+    if (next === undefined) return
+    event.preventDefault()
+    const clamped = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.round(next)))
+    widthRef.current = clamped
+    onResize(clamped)
+    onResizeEnd?.(clamped)
+  }
+
   return (
     <>
       <aside
@@ -338,6 +356,11 @@ export function InspectorPanel({
             role="separator"
             aria-orientation="vertical"
             aria-label={t('Resize the panel')}
+            aria-valuemin={MIN_WIDTH}
+            aria-valuemax={MAX_WIDTH}
+            aria-valuenow={Math.round(panelRef.current?.getBoundingClientRect().width ?? widthRef.current ?? 420)}
+            tabIndex={0}
+            onKeyDown={handleResizeKeyDown}
             onPointerDown={startResize}
           />
         )}

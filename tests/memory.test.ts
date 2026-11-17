@@ -1390,6 +1390,11 @@ test('a new turn cancels in-flight memory extraction without marking the new rev
     settleDelayMs: 0
   })
   t.after(() => service.dispose())
+  // The settle timer is unref'd on purpose (a background extraction must not
+  // keep the app alive), so nothing but this interval would hold the loop open
+  // while the test waits for the extraction it scheduled.
+  const keepAlive = setInterval(() => {}, 1_000)
+  t.after(() => clearInterval(keepAlive))
   service.attach(supervisor as never)
 
   let sawGenerating = false

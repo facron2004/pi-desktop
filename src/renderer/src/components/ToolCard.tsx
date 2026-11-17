@@ -22,6 +22,7 @@ import { formatDuration } from '../lib/format'
 import { buildDiff } from '../lib/diff-fold'
 import { formatDiff } from '../lib/diff-text'
 import { relativePath } from '../lib/path'
+import { subagentCalls, type SubagentTreeTask } from '../lib/subagents'
 import { useAppStore } from '../store/useAppStore'
 import { readToolFull, readToolOpen, writeToolFull, writeToolOpen } from '../lib/view-state'
 import { CopyButton } from './conversation/CopyButton'
@@ -101,6 +102,7 @@ export const ToolCard = memo(function ToolCard({
   }
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const workspacePath = useAppStore((state) => state.workspace?.path)
+  const language = useAppStore((state) => state.settings.language ?? 'en')
   const t = useT()
 
   const summary = useMemo(() => summarizeTool(item), [item])
@@ -189,6 +191,64 @@ export const ToolCard = memo(function ToolCard({
           : item.status === 'running'
             ? 'running'
             : 'ok'
+  const commandTool = item.toolName === 'bash' || item.toolName === 'powershell'
+  const fileAction = item.toolName === 'read' || item.toolName === 'edit' || item.toolName === 'write'
+  const subagentTasks = presentation === 'link' && item.toolName === 'subagent'
+    ? subagentCalls([item])[0]?.tasks ?? []
+    : []
+  const taskNames = subagentTasks.map((task) => shortTaskName(task.label || task.task))
+  const taskNamesTitle = subagentTasks.map((task) => task.label || task.task).join('\n')
+  const linkVerb = commandTool
+    ? t(
+        state === 'running'
+          ? 'Running command'
+          : state === 'error'
+            ? 'Command failed'
+            : state === 'aborted'
+              ? 'Command stopped'
+              : state === 'proposed'
+                ? 'Command not run'
+                : 'Ran command'
+      )
+    : item.toolName === 'read'
+      ? t(
+          state === 'running'
+            ? 'Reading file'
+            : state === 'error'
+              ? 'File read failed'
+              : state === 'aborted'
+                ? 'File read stopped'
+                : state === 'proposed'
+                  ? 'File read not run'
+                  : 'Read file'
+        )
+      : item.toolName === 'edit'
+        ? t(
+            state === 'running'
+              ? 'Editing file'
+              : state === 'error'
+                ? 'File edit failed'
+                : state === 'aborted'
+                  ? 'File edit stopped'
+                  : state === 'proposed'
+                    ? 'File edit not run'
+                    : 'Edited file'
+          )
+        : item.toolName === 'write'
+          ? t(
+              state === 'running'
+                ? 'Writing file'
+                : state === 'error'
+                  ? 'File write failed'
+                  : state === 'aborted'
+                    ? 'File write stopped'
+                    : state === 'proposed'
+                      ? 'File write not run'
+                      : 'Wrote file'
+            )
+          : subagentTasks.length > 0
+            ? joinTaskNames(taskNames, language)
+            : t(summary.label)
   const StateIcon =
     item.status === 'error'
       ? CircleAlert
@@ -204,9 +264,13 @@ export const ToolCard = memo(function ToolCard({
       })
     )
   }
-  const linkText = viewedFile
-    ? relativePath(workspacePath ?? '', viewedFile) || summary.detail
-    : summary.detail
+  const linkText = commandTool
+    ? summary.detail
+    : subagentTasks.length > 0
+      ? t(subagentStatusPhrase(subagentTasks))
+      : viewedFile
+        ? relativePath(workspacePath ?? '', viewedFile) || summary.detail
+        : summary.detail
 
   const details = (
     <ToolResultPanel
@@ -235,9 +299,9 @@ export const ToolCard = memo(function ToolCard({
               <span className="tool-link__icon">
                 <Icon size={12} strokeWidth={2.2} />
               </span>
-              <span className="tool-link__verb">{t(summary.label)}</span>
+              <span className="tool-link__verb">{linkVerb}</span>
             </button>
-            {viewedFile ? (
+            {linkText ? viewedFile && !subagentTasks.length && !commandTool ? (
               <button
                 type="button"
                 className="tool-link__target"
@@ -250,16 +314,23 @@ export const ToolCard = memo(function ToolCard({
               <button
                 type="button"
                 className="tool-link__target"
-                title={linkText}
+                data-monospace={subagentTasks.length ? 'false' : undefined}
+                title={
+                  subagentTasks.length
+                    ? taskNamesTitle
+                    : commandTool
+                      ? String(item.args?.command ?? linkText)
+                      : linkText
+                }
                 onClick={toggleOpen}
               >
                 {linkText}
               </button>
-            )}
+            ) : null}
             {StateIcon ? (
               <StateIcon size={13} color={item.status === 'error' ? 'var(--status-danger)' : undefined} />
             ) : null}
-            {item.status === 'proposed' || item.status === 'error' || item.status === 'aborted' ? (
+            {!commandTool && !fileAction && !subagentTasks.length && (item.status === 'proposed' || item.status === 'error' || item.status === 'aborted') ? (
               <span className="tool-link__state" data-state={state}>
                 {t(stateLabel(item.status))}
               </span>
@@ -347,6 +418,39 @@ export const ToolCard = memo(function ToolCard({
     </ErrorBoundary>
   )
 })
+
+function shortTaskName(value: string): string {
+  const firstLine = value.trim().split(/\r?\n/, 1)[0] || 'Subagent'
+  return firstLine.length > 48 ? `${firstLine.slice(0, 47)}…` : firstLine
+}
+
+function joinTaskNames(names: string[], language: string): string {
+  const visible = names.length > 3
+    ? [...names.slice(0, 2), language === 'zh-CN' ? `+${names.length - 2}` : `+${names.length - 2} more`]
+    : names
+  const joined = language === 'zh-CN'
+    ? visible.join('、')
+    : visible.length < 2
+      ? visible[0] ?? ''
+      : visible.length === 2
+        ? `${visible[0]} and ${visible[1]}`
+        : `${visible.slice(0, -1).join(', ')}, and ${visible.at(-1)}`
+  return joined.length > 88 ? `${joined.slice(0, 87)}…` : joined
+}
+
+function subagentStatusPhrase(tasks: SubagentTreeTask[]): string {
+  if (tasks.every((task) => task.status === 'proposed')) return 'Not run'
+  if (tasks.some((task) => task.status === 'running')) {
+    return tasks.some((task) => task.status === 'completed') ? 'Still working' : 'Started working'
+  }
+  if (tasks.some((task) => task.status === 'queued')) return 'Queued'
+  if (tasks.some((task) => task.status === 'failed' || task.status === 'timed_out')) return 'Finished with errors'
+  if (tasks.some((task) => task.status === 'completed') && tasks.some((task) => task.status === 'aborted')) {
+    return 'Partially stopped'
+  }
+  if (tasks.every((task) => task.status === 'aborted')) return 'Stopped'
+  return 'Finished'
+}
 
 /** The word for a tool status, in one place. */
 function stateLabel(status: ToolItem['status']): string {

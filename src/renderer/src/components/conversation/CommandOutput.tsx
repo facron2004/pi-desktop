@@ -1,6 +1,7 @@
 import { memo, useState } from 'react'
-import { ChevronRight, CornerDownLeft, Play, SquareTerminal } from 'lucide-react'
+import { ChevronRight, CircleAlert, CornerDownLeft, Play, SquareTerminal } from 'lucide-react'
 import type { BashItem } from '../../lib/thread'
+import { commandSummary } from '../../lib/tools'
 import { useAppStore } from '../../store/useAppStore'
 import { useT } from '../../lib/i18n'
 import { CopyButton } from './CopyButton'
@@ -23,69 +24,79 @@ export const CommandOutput = memo(function CommandOutput({ item }: { item: BashI
   const status = failed ? 'error' : running ? 'running' : 'ok'
   const open = manualOpen ?? failed
   const toggleOpen = () => setManualOpen(!open)
+  const Icon = failed ? CircleAlert : SquareTerminal
 
   return (
-    <div className="tool" data-tone="command" data-status={status}>
-      <div className="tool__head">
-        <button className="tool__head-main" aria-expanded={open} onClick={toggleOpen}>
-          <span className="tool__icon">
-            <SquareTerminal size={12} strokeWidth={2.2} />
+    <div className="tool tool--link" data-tone="command" data-status={status}>
+      <div className="tool-link">
+        <button
+          type="button"
+          className="tool-link__toggle"
+          aria-expanded={open}
+          onClick={toggleOpen}
+        >
+          <ChevronRight size={13} className="caret" data-open={open} />
+          <span className="tool-link__icon">
+            <Icon size={12} strokeWidth={2.2} />
           </span>
-          <span className="tool__name">{item.excludeFromContext ? '!!bash' : 'bash'}</span>
-          <span className="tool__summary" title={item.command || undefined}>
-            {item.command || t('running…')}
-          </span>
-          {item.excludeFromContext ? (
-            <span className="tool__status" title={t('Excluded from model context')}>
-              {t('no context')}
-            </span>
-          ) : null}
-          {failed ? (
-            <span className="tool__status">
-              {t('exit')} {item.exitCode}
-            </span>
-          ) : null}
-          <span className="tool__state" data-state={status}>
-            {t(failed ? 'Failed' : running ? 'Running' : 'Completed')}
+          <span className="tool-link__verb">
+            {t(failed ? 'Command failed' : running ? 'Running command' : 'Ran command')}
           </span>
         </button>
         {item.command ? (
-          <>
-            <button
-              className="tool__reuse-icon"
-              title={t('Reuse this command')}
-              aria-label={t('Reuse this command')}
-              onClick={() =>
-                insertIntoComposer(
-                  item.excludeFromContext ? `!!${item.command}` : `!${item.command}`
-                )
-              }
-            >
-              <CornerDownLeft size={12} />
-            </button>
-            <button
-              className="tool__reuse-icon"
-              title={t('Run in terminal')}
-              aria-label={t('Run in terminal')}
-              onClick={() => runInTerminal(item.command)}
-            >
-              <Play size={12} />
-            </button>
-          </>
+          <button
+            type="button"
+            className="tool-link__target"
+            title={item.command}
+            onClick={toggleOpen}
+          >
+            {commandSummary(item.command)}
+          </button>
         ) : null}
-        <CopyButton text={item.output} label="Copy the output" />
-        <button
-          className="tool__caret"
-          onClick={toggleOpen}
-          aria-label={open ? t('Collapse') : t('Expand')}
-          aria-expanded={open}
-        >
-          <ChevronRight size={13} className="caret" data-open={open} />
-        </button>
+        {item.excludeFromContext ? (
+          <span className="tool-link__state" title={t('Excluded from model context')}>
+            {t('no context')}
+          </span>
+        ) : null}
+        {failed && item.exitCode !== undefined ? (
+          <span className="tool-link__state" data-state="error">
+            {t('exit')} {item.exitCode}
+          </span>
+        ) : null}
       </div>
 
       {open ? (
         <div className="tool__body">
+          {item.command ? <pre className="tool__pre">{item.command}</pre> : null}
+          {item.command || item.output ? (
+            <div className="tool__command-actions">
+              {item.command ? (
+                <>
+                  <button
+                    className="tool__reuse-icon"
+                    title={t('Reuse this command')}
+                    aria-label={t('Reuse this command')}
+                    onClick={() =>
+                      insertIntoComposer(
+                        item.excludeFromContext ? `!!${item.command}` : `!${item.command}`
+                      )
+                    }
+                  >
+                    <CornerDownLeft size={12} />
+                  </button>
+                  <button
+                    className="tool__reuse-icon"
+                    title={t('Run in terminal')}
+                    aria-label={t('Run in terminal')}
+                    onClick={() => runInTerminal(item.command)}
+                  >
+                    <Play size={12} />
+                  </button>
+                </>
+              ) : null}
+              <CopyButton text={item.output} label="Copy the output" />
+            </div>
+          ) : null}
           {item.output ? (
             <LogOutput text={item.output} className={failed ? 'tool__error' : undefined} />
           ) : (

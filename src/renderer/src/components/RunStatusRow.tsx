@@ -16,6 +16,7 @@ import {
   type SessionThread
 } from '../store/useAppStore'
 import type { ToolActivity } from '../lib/activity'
+import { formatDuration } from '../lib/format'
 import { useT } from '../lib/i18n'
 import { activeConversationTitle } from '../lib/live-sessions'
 import { basename, normalisePathKey } from '../lib/path'
@@ -44,6 +45,22 @@ export function findSessionMeta(
   }
 }
 
+/** Milliseconds a run has been going, ticking once a second while it is live. */
+function useElapsedSeconds(since: number | undefined): number {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    if (since === undefined) {
+      setElapsed(0)
+      return
+    }
+    const read = () => setElapsed(Math.max(0, Date.now() - since))
+    read()
+    const timer = window.setInterval(read, 1000)
+    return () => window.clearInterval(timer)
+  }, [since])
+  return elapsed
+}
+
 export const CwdWaitDetail = memo(function CwdWaitDetail({
   cwdWait
 }: {
@@ -63,6 +80,15 @@ export const CwdWaitDetail = memo(function CwdWaitDetail({
       [holderKey]
     )
   )
+  // How long the conversation ahead has been working: a queue position alone
+  // cannot tell the reader whether to wait or to stop that run.
+  const holderStartedAt = useAppStore(
+    useCallback(
+      (state) => (holderKey ? state.threads[holderKey]?.run.startedAt : undefined),
+      [holderKey]
+    )
+  )
+  const holderElapsed = useElapsedSeconds(holderStartedAt)
   const canJump = useAppStore(
     useCallback(
       (state) =>
@@ -94,6 +120,12 @@ export const CwdWaitDetail = memo(function CwdWaitDetail({
       <span className="run-status__label" title={cwdWait.holderCwd || cwdWait.cwd}>
         {text}
         {cwdWait.position && cwdWait.position > 1 ? ` (#${cwdWait.position})` : ''}
+        {holderElapsed > 0 ? (
+          <span className="run-status__holder-time">
+            {' · '}
+            {t('Running for {time}').replace('{time}', formatDuration(holderElapsed))}
+          </span>
+        ) : null}
       </span>
       {canJump && holderKey ? (
         <button

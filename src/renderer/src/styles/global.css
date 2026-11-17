@@ -904,7 +904,34 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 .session-item__actions {
   display: inline-flex;
-  flex: 0 0 24px;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+
+/* The stop control of a running row, beside the "more" menu: stopping a
+   background conversation should not take two clicks while three of them run. */
+.session-item__stop {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: var(--r-sm);
+  color: var(--sidebar-muted);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.session-item__stop:hover {
+  background: var(--bg-active);
+  color: var(--sidebar-text);
+}
+
+.session-item:hover .session-item__stop,
+.session-item:focus-within .session-item__stop {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .session-item__more {
@@ -1708,6 +1735,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--text-faint);
 }
 
+/* A menu row is an action, not muted chrome. --text (#242424 in light) is
+   the softened body ink and still reads grey on a white menu; --text-pure
+   is #000 there, and the same near-white as body text in the dark theme.
+   Hover only adds the background. The chord, the sub line and danger rows
+   keep their own colours. */
 .popover__item {
   display: flex;
   align-items: center;
@@ -1717,7 +1749,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   padding: 0 var(--sp-3);
   border-radius: var(--r-sm);
   font-size: var(--text-body);
-  color: var(--text-muted);
+  color: var(--text-pure);
   text-align: left;
   line-height: var(--leading-body);
   white-space: nowrap;
@@ -1728,7 +1760,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 .popover__item:hover {
   background: var(--bg-hover);
-  color: var(--text);
+  color: var(--text-pure);
 }
 
 .popover__item svg {
@@ -2112,16 +2144,21 @@ transition: background var(--dur-fast) var(--ease);
 .user-msg {
   display: flex;
   justify-content: flex-end;
-  margin-bottom: var(--sp-2);
+  margin-bottom: 0;
 }
 
 .user-msg__content {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   min-width: 0;
   max-width: min(760px, 85%);
   gap: 2px;
+}
+
+.user-msg + .assistant {
+  margin-top: var(--sp-3);
 }
 
 .user-msg__bubble {
@@ -2155,12 +2192,14 @@ transition: background var(--dur-fast) var(--ease);
 }
 
 .user-msg__actions {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
   display: flex;
   justify-content: flex-end;
   align-items: center;
   gap: var(--sp-2);
-  min-height: 20px;
-  margin-top: 2px;
+  min-height: 0;
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--dur-fast) var(--ease);
@@ -2171,6 +2210,45 @@ transition: background var(--dur-fast) var(--ease);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   margin-right: var(--sp-1);
+}
+
+/* A prompt still on its way to Pi says so without waiting for a hover: the
+   composer is already empty, and this bubble is the only proof it was sent. */
+.user-msg[data-pending='true'] .user-msg__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.user-msg[data-pending='true'] .user-msg__bubble {
+  opacity: 0.78;
+}
+
+.user-msg__pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: var(--sp-1);
+  font-size: var(--text-2xs);
+  color: var(--amber);
+}
+
+.user-msg__pending::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: user-msg-pending-pulse 1.4s var(--ease) infinite;
+}
+
+@keyframes user-msg-pending-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .user-msg__actions .ghost-btn {
@@ -2728,6 +2806,14 @@ transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--
 
 /* Collapsed context */
 
+/* Why a diff pane has no rows: aligning the file would have cost too much. */
+.diff__note {
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--status-warning, var(--text-faint));
+  font-size: var(--text-small);
+}
+
 /* A file that was edited more than once has one diff per edit. */
 .diff__block + .diff__block {
   margin-top: var(--sp-3);
@@ -2893,7 +2979,10 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 .app-toast {
   position: fixed;
-  top: calc(var(--titlebar-h) + var(--sp-3));
+  /* Below the title bar's panel control band: the corner toggle and the
+     panel's own maximize/restore buttons share that 46px strip, so placing a
+     floating notice inside it would intercept their pointer targets. */
+  top: calc(var(--titlebar-h) + var(--toolpanel-head-h) + var(--sp-2));
   right: var(--shell-inset);
   z-index: var(--z-overlay);
   display: flex;
@@ -2938,6 +3027,25 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.app-toast__open {
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  text-decoration: underline dotted transparent;
+  text-underline-offset: 2px;
+}
+
+.app-toast__open:hover,
+.app-toast__open:focus-visible {
+  color: var(--text-primary);
+  text-decoration-color: currentColor;
 }
 
 .app-toast__close {
@@ -3214,9 +3322,10 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .composer:focus-within {
-  border-color: var(--accent-line);
+  border-color: var(--border);
   background: var(--surface-raised);
-  box-shadow: var(--accent-glow), var(--shadow-sm);
+  box-shadow: var(--shadow-sm);
+  outline: none;
 }
 
 :root[data-theme='light'] .composer:focus-within {
@@ -3415,6 +3524,61 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--text-faint);
   font-size: var(--text-composer-placeholder);
   line-height: var(--leading-composer-placeholder);
+}
+
+/* The command chip lives inside the input, on the input's own first line:
+   [icon /command] argument… — the way the reference app reads it, not a
+   separate row floating above the box. */
+.composer__input-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: 0 var(--sp-4);
+}
+
+.composer__input-row .composer__input {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+.composer__input--command {
+  padding: var(--sp-4) 0 var(--sp-2);
+}
+
+.composer__command {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  max-width: 100%;
+  margin: 10px 0 0;
+  padding: 3px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  background: var(--surface-chrome);
+  color: var(--text-muted);
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.composer__command[data-selected='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-line);
+  color: var(--text);
+}
+
+.composer__command code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* The shared mono stack starts with the app's CJK face: a bare Latin mono
+     list falls through to a serif CJK fallback for command names like /计划. */
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
 }
 
 .composer__bar {
@@ -4118,10 +4282,14 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
      line as the controls of the header it stands in. */
   top: calc(var(--titlebar-h) + var(--panel-head-rule));
   right: calc(var(--shell-inset) + var(--sp-5));
-  /* The band matches the title bar while the panel is away. With the panel
-     up, the corner belongs to the panel's 46px header, so the band narrows
-     with it and the toggle shares the panel controls' centre line. */
-  height: var(--panel-head-h);
+  /* One fixed band matching the panel strip's own height, so the icon centres
+     on the same line as the strip's maximize and page-action buttons. The band
+     must never narrow to the panel's 46px header when the panel is up: the
+     icon is centred, so shrinking the band re-centres it 3px higher on open
+     and drops it back when the panel unmounts at the end of the close
+     animation. Open, closing or closed, the button lands on exactly the same
+     pixels as the buttons beside it. */
+  height: var(--toolpanel-head-h);
   display: flex;
   align-items: center;
   /* Over the docked panel and over the floating one, under any popover. */
@@ -4130,10 +4298,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
      drag region. Without no-drag the OS swallows the click as a window drag
      and the button never fires. */
   -webkit-app-region: no-drag;
-}
-
-.app:has(.tool-panel) .shell__panel-toggle {
-  height: var(--toolpanel-head-h);
 }
 
 .shell__panel-toggle .icon-btn {
@@ -4598,6 +4762,14 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   font-size: var(--text-2xs);
   white-space: nowrap;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+/* The stop link under the box is the same action as the round button on an
+   empty composer; a draft moves the round button back to Send. */
+.composer__stop-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px var(--sp-2) 0;
 }
 
 .session-bar__stop:hover {
@@ -5897,6 +6069,11 @@ animation: fade var(--dur-fast) var(--ease);
   width: min(520px, 100%);
 }
 
+.modal--plan-review {
+  width: min(780px, 100%);
+  max-height: min(90vh, 960px);
+}
+
 .modal__context {
   display: flex;
   align-items: center;
@@ -6051,10 +6228,17 @@ animation: fade var(--dur-fast) var(--ease);
 }
 
 .modal__plan {
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: min(48vh, 420px);
   overflow: auto;
-  padding: 0 var(--sp-4) var(--sp-4);
+  padding: var(--sp-5) var(--sp-6);
+  border-top: 1px solid var(--border-soft);
   font-size: var(--text-sm);
+}
+
+.modal--plan-review .modal__plan {
+  max-height: min(64vh, 680px);
 }
 
 .modal__options {
@@ -7857,12 +8041,19 @@ button:focus-visible,
 /* Hover-only actions remain visible and easier to tap on touch surfaces. */
 @media (hover: none) {
   .session-item__actions {
-    flex-basis: 30px;
+    flex-basis: auto;
   }
 
   .session-item__more {
     width: 30px;
     height: 30px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .session-item__stop {
+    width: 26px;
+    height: 26px;
     opacity: 1;
     pointer-events: auto;
   }
@@ -8135,6 +8326,10 @@ button:focus-visible,
 .tool-panel {
   border-left: 1px solid var(--border-default);
   background: var(--surface-canvas);
+  /* The panel floats over the title bar when it is maximized or overlay, and
+     that bar is a window drag region. Without this hole the OS swallows every
+     click in the strip — the maximize/restore button included — as a drag. */
+  -webkit-app-region: no-drag;
 }
 
 .tool-panel__tabs {

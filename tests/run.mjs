@@ -103,6 +103,7 @@ const suites = [
   'extension-notices.test.ts',
   'highlight-cache.test.ts',
   'highlight-languages.test.ts',
+  'hover-tip.test.ts',
   'marketplace.test.ts',
   'pi-catalog.test.ts',
   'composer-files.test.ts',

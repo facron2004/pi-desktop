@@ -6,6 +6,7 @@ import { COMMAND_SOURCE } from '../lib/command-source'
 import { useT } from '../lib/i18n'
 
 interface CommandPaletteProps {
+  id?: string
   commands: PiCommand[]
   query: string
   activeIndex: number
@@ -16,6 +17,7 @@ interface CommandPaletteProps {
 }
 
 export function CommandPalette({
+  id,
   commands,
   query,
   activeIndex,
@@ -33,7 +35,7 @@ export function CommandPalette({
   }, [activeIndex])
 
   return (
-    <div className="palette" ref={listRef} role="listbox" aria-label={t('Commands')} aria-busy={loading}>
+    <div className="palette" ref={listRef} id={id} role="listbox" aria-label={t('Commands')} aria-busy={loading}>
       <div className="palette__head">
         <CommandIcon size={12} />
         <span>
@@ -74,6 +76,7 @@ export function CommandPalette({
             return (
               <button
                 key={`${command.source}-${command.name}`}
+                id={id ? `${id}-option-${index}` : undefined}
                 className="palette__item"
                 role="option"
                 aria-selected={index === activeIndex}

@@ -79,11 +79,36 @@ function round(value: number, digits = 1): number {
   return Math.round(value * factor) / factor
 }
 
+/**
+ * Model-time samples for answers in the newest turn.
+ *
+ * Each sample is stored twice: once under the turn id, and once as
+ * `assistant:<message time>:<turn id>`. Only the stamped copies are used
+ * here, so the turn-id copy is not added again. Samples from earlier turns
+ * are left out; they belong to a different output.
+ */
+function newestTurnModelWindowMs(
+  durations: Record<string, number> | undefined,
+  lastUserTimestamp: number | undefined
+): number {
+  if (!durations || lastUserTimestamp === undefined) return 0
+  let sum = 0
+  for (const [id, value] of Object.entries(durations)) {
+    const match = /^assistant:(\d+)(?::|$)/.exec(id)
+    if (!match) continue
+    const stamp = Number(match[1])
+    if (!Number.isFinite(stamp) || stamp < lastUserTimestamp) continue
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) sum += value
+  }
+  return sum
+}
+
 export function sessionMetrics(
   items: readonly ThreadItem[],
   stats: SessionStats | undefined,
   run: RunTiming,
-  timing?: SessionTimingRecord
+  timing?: SessionTimingRecord,
+  options: { historyTruncated?: boolean } = {}
 ): SessionMetrics {
   let input = 0
   let output = 0
@@ -151,8 +176,14 @@ export function sessionMetrics(
     cacheWrite += item.usage.cacheWrite
     total += item.usage.totalTokens
     // Only the newest turn's output belongs to the generation window that the
-    // run's timing fields describe.
-    if (index > lastUserIndex && !item.streaming) lastTurnOutput += item.usage.output
+    // run's timing fields describe. A message with no usage must not poison
+    // the sum: `undefined` would make it NaN and the speed would stay blank.
+    if (index > lastUserIndex && !item.streaming) {
+      const produced = item.usage?.output
+      if (typeof produced === 'number' && Number.isFinite(produced) && produced > 0) {
+        lastTurnOutput += produced
+      }
+    }
   }
 
   // A live `get_session_stats` wins over the visible transcript, which is
@@ -215,8 +246,8 @@ export function sessionMetrics(
   // carries Pi's own duration, so an older local journal cannot inflate it.
   // Only fall back to the journal when the visible transcript has gaps (for
   // example a bounded tail or messages recorded before Pi emitted durations).
-  const completeTranscriptModel = completedAssistantCount > 0 &&
-    completedAssistantDurationCount === completedAssistantCount
+  const completeTranscriptModel = options.historyTruncated !== true &&
+    completedAssistantCount > 0 && completedAssistantDurationCount === completedAssistantCount
   const baseModelMs = completeTranscriptModel
     ? transcriptModelMs
     : transcriptModelMs > 0
@@ -249,15 +280,41 @@ export function sessionMetrics(
   // message carries the duration Pi spent generating it, so summing those is
   // the same per-answer window the live path records — tool gaps excluded.
   const transcriptWindowMs = lastTurnGenerationMs
-  const windowMs = measuredWindowMs !== undefined
+  // `generationMs: 0` is the value a run starts with, not a measurement. A
+  // window that never closed must not hide the durations Pi already wrote on
+  // the completed answers, or the usage line shows "—" after a real run.
+  const measuredWindow = measuredWindowMs !== undefined && measuredWindowMs > 0
     ? measuredWindowMs
+    : undefined
+  const windowMs = measuredWindow !== undefined
+    ? measuredWindow
     : legacyWindowMs > 0
       ? legacyWindowMs
       : restoredWindowMs !== undefined && restoredWindowMs > 0
         ? restoredWindowMs
         : transcriptWindowMs
+  const turnOutput = lastTurnOutput > 0
+    ? lastTurnOutput
+    : !hasStreamingAssistant && turnCount <= 1 && hasStatsTokens && statsTokens!.output > 0
+      ? statsTokens!.output
+      : 0
+  // One turn: the model-time total is that turn's generation, even when the
+  // live window was left at 0 and only the timing journal still has it.
+  // A later turn is the same shape when Pi wrote no `durationMs` and the
+  // generation window was not closed: the journal still has one sample per
+  // answer, stamped with the assistant message time.
+  const sampledWindowMs = !hasStreamingAssistant && windowMs <= 0
+    ? newestTurnModelWindowMs(timing?.modelDurationsMs, lastUserTimestamp)
+    : 0
+  const speedWindowMs = windowMs > 0
+    ? windowMs
+    : sampledWindowMs > 0
+      ? sampledWindowMs
+      : !hasStreamingAssistant && turnCount <= 1 && (modelTimeMs ?? 0) > 0
+        ? modelTimeMs!
+        : 0
   const tps =
-    windowMs > 0 && lastTurnOutput > 0 ? round(lastTurnOutput / (windowMs / 1000)) : null
+    speedWindowMs > 0 && turnOutput > 0 ? round(turnOutput / (speedWindowMs / 1000)) : null
 
   // Kept apart from the token totals above: the children are their own Pi
   // processes, so their usage is neither in the parent's statistics nor in

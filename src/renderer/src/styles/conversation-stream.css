@@ -60,6 +60,11 @@
   color: var(--text-secondary);
 }
 
+.run-status__holder-time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .run-status__activity {
   display: inline-flex;
   align-items: baseline;
@@ -239,7 +244,7 @@
   color: var(--status-warning);
 }
 
-.run-outcome[data-outcome='failed'] {
+.run-outcome[data-outcome='failed']:not([data-has-duration='true']) {
   color: var(--status-danger);
 }
 
@@ -365,6 +370,8 @@
   gap: 0;
 }
 
+/* A fold toggle, not a link: the caret and the accent ink already say it can
+   be opened, and a dotted rule under the row read as an underline in prose. */
 .process__head {
   display: flex;
   align-items: center;
@@ -375,7 +382,6 @@
   min-height: 22px;
   padding: 0 var(--sp-2) 0 0;
   border: 0;
-  border-bottom: 1px dotted transparent;
   border-radius: 0;
   background: none;
   color: var(--text-tertiary);
@@ -389,7 +395,6 @@
 .process__head:hover,
 .process__head:focus-visible,
 .process__head:active {
-  border-bottom-color: currentColor;
   background: none;
   color: var(--accent);
 }
@@ -461,7 +466,14 @@
   overflow: visible;
 }
 
-.tool--link:hover {
+/* The row carries no surface of its own, not even under the pointer: the
+   hover surface is a card's affordance, and this row is a link. The selector
+   has to outrank `.tool:hover` in global.css — that file is bundled after
+   this one, and on equal specificity the later rule wins, so the row used to
+   paint a gray band across the whole column as soon as the pointer touched
+   it. The label and the target still lift on hover, so the row stays
+   readable as the clickable thing it is. */
+.tool.tool--link:hover {
   background: transparent;
 }
 
@@ -477,7 +489,8 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   min-height: var(--tool-row-h);
   padding: 0;
   color: var(--text-tertiary);
@@ -497,10 +510,14 @@
 }
 
 .tool-link__verb {
+  min-width: 0;
+  overflow: hidden;
   font-size: var(--text-small);
   font-weight: var(--weight-ui);
   line-height: var(--leading-small);
   color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool-link__target {
@@ -524,6 +541,22 @@
   color: var(--text-pure);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.tool-link__target[data-monospace='false'] {
+  font-family: var(--font-ui);
+}
+
+.tool__command-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2) var(--sp-1);
+}
+
+.tool__command-actions .tool__reuse-icon {
+  margin-left: 0;
+  opacity: 1;
 }
 
 .tool-link__time {
@@ -970,8 +1003,15 @@
   background: var(--surface-canvas);
 }
 
-.file-change__preview-name {
+.file-change__preview-id {
+  display: flex;
+  min-width: 0;
   flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-change__preview-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -980,6 +1020,23 @@
   font-size: var(--text-xs);
   font-weight: 500;
   color: var(--text);
+}
+
+/* The name is the file in the project. The path under it is the whole location,
+   so the preview does not borrow the OS tooltip to say where the file is. */
+.file-change__preview-name[data-full='true'] {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.file-change__preview-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .file-change__preview-code {
@@ -1234,7 +1291,6 @@
   color: var(--text-secondary);
 }
 
-.run-outcome[data-running='true'] .run-outcome__label,
 .thinking[data-streaming='true'] .thinking__title,
 .thinking[data-streaming='true'] .thinking__duration,
 .process[data-status='running'] .process__label,
@@ -1260,7 +1316,6 @@
 @media (prefers-reduced-motion: reduce) {
   .run-status__icon .spin,
   .run-status__icon .pulse,
-  .run-outcome[data-running='true'] .run-outcome__label,
   .thinking[data-streaming='true'] .thinking__title,
   .thinking[data-streaming='true'] .thinking__duration,
   .process[data-status='running'] .process__label,

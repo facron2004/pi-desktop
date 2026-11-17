@@ -53,7 +53,7 @@ export const APP_COMMANDS: PiCommand[] = [
   },
   {
     name: 'plan',
-    description: 'Enter Plan Mode — explore read-only, then approve the plan',
+    description: 'Enter Plan Mode — explore read-only, review a Markdown plan, then execute it',
     source: 'app',
     takesArgument: true
   },

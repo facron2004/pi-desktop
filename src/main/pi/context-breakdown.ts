@@ -97,10 +97,17 @@ export default function registerContextBreakdown(pi) {
       const conversationMessages = parts.hasMessages
         ? total === null ? estimate(parts.messages) : Math.max(0, total - knownRows)
         : null;
+      // The reading this split belongs to. The panel may show a newer one, so
+      // the rows travel with the number they add up to instead of claiming to
+      // be that number themselves.
+      const describedTotal = total ?? (
+        (systemPrompt ?? 0) + (toolDefinitions ?? 0) + (conversationMessages ?? 0)
+      );
       ctx.ui.setStatus(STATUS_KEY, JSON.stringify({
         systemPrompt,
         toolDefinitions,
-        conversationMessages
+        conversationMessages,
+        total: describedTotal
       }));
     } catch (error) {
       console.error("[pi-desktop] context breakdown could not be read:", error);

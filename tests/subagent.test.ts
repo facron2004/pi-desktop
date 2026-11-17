@@ -1,6 +1,7 @@
 import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { subagentExtension } from '../src/main/pi/subagent'
@@ -305,11 +306,60 @@ const agents = [
 const agentsExtensionFile = path.join(dir, 'subagent-extension-agents.mjs')
 writeFileSync(agentsExtensionFile, subagentExtension({}, '', '', false, { command: 'pi', prefixArgs: [] }, agents), 'utf8')
 
-after(() => {
-  if (existsSync(childPidFile)) {
-    try { process.kill(Number(readFileSync(childPidFile, 'utf8')), 'SIGKILL') } catch {}
+after(async () => {
+  const pids = new Set<number>()
+  const rememberPid = (value: number): void => {
+    if (Number.isInteger(value) && value > 0) pids.add(value)
   }
-  rmSync(dir, { recursive: true, force: true })
+  if (existsSync(childPidFile)) {
+    try { rememberPid(Number(readFileSync(childPidFile, 'utf8'))) } catch {}
+  }
+  // Slow fake processes leave a PID-named marker. On a force kill the exit
+  // handler cannot remove it, so use it only as test-owned process evidence.
+  for (const activeDirectory of [path.join(dir, 'active-subagents'), path.join(dir, 'active-concurrency')]) {
+    try {
+      for (const entry of readdirSync(activeDirectory)) rememberPid(Number(entry))
+    } catch {}
+  }
+  const running = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'EPERM'
+    }
+  }
+  for (const pid of pids) {
+    if (!running(pid)) continue
+    try { process.kill(pid, 'SIGKILL') } catch {}
+  }
+  const exitDeadline = Date.now() + 3_000
+  while ([...pids].some(running) && Date.now() < exitDeadline) await delay(25)
+
+  // Never recursively walk the junction used by the workspace-escape test.
+  const outsideLink = path.join(dir, 'outside-project-link')
+  try {
+    if (lstatSync(outsideLink).isSymbolicLink()) unlinkSync(outsideLink)
+  } catch {}
+
+  // Windows can report ENOTEMPTY/EBUSY while a child is closing its last file.
+  // Verify a quiet interval too: a late child must not recreate a directory
+  // after rmSync has already returned. Every retry is bounded and test-local.
+  let lastError: unknown
+  const cleanupDeadline = Date.now() + 5_000
+  while (Date.now() < cleanupDeadline) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      lastError = undefined
+    } catch (error) {
+      lastError = error
+    }
+    await delay(50)
+    if (!existsSync(dir)) return
+    await delay(25)
+  }
+  if (lastError) throw lastError
+  assert.equal(existsSync(dir), false, 'subagent tests must not leave their temporary directory behind')
 })
 
 async function loadFactory(

@@ -14,13 +14,13 @@
   .modal__editor,
   .project-edit__input,
   .project__rename-input,
-  .session-item__input
+  .session-item__input,
+  .titlebar__rename
 ):focus,
 :root :is(
   .branch-menu__search,
   .browser-bar__address,
   .commit-detail__filter,
-  .composer,
   .palette__search,
   .project-icon-picker__search,
   .project-menu__search,
@@ -70,11 +70,16 @@
   box-shadow: none;
 }
 
-/* Keep the composer's depth and shell-mode colour without an outer glow. */
+/* Clicking into the composer is not an accent moment. The caret is the
+   active mark; the frame keeps its own hairline instead of the focus colour. */
 :root .composer:focus-within {
+  border-color: var(--border);
+  outline: none;
   box-shadow: var(--shadow-sm);
 }
 
 :root .composer[data-shell='true']:focus-within {
-  outline-color: var(--violet);
+  border-color: transparent;
+  outline: 2px solid var(--violet);
+  outline-offset: -2px;
 }

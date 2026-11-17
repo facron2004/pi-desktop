@@ -311,7 +311,12 @@ export class ProviderStore {
     const previous = Object.hasOwn(providers, id) ? record(providers[id]) : undefined
     if (previous && input.revision !== revision(previous)) throw new Error('Provider configuration changed. Reload it before saving.')
     const models = validateModels(input.models, input.selectedModel)
-    const key = this.key({ ...connection, id: input.id })
+    // A Pi credential command is opaque to this editor. An empty key field means
+    // "keep it"; resolving it here would both reject ordinary connection/model
+    // edits and risk confusing a command with a literal user-entered key.
+    const keepCredentialCommand = !input.apiKey?.trim() &&
+      typeof previous?.apiKey === 'string' && previous.apiKey.startsWith('!')
+    const key = keepCredentialCommand ? '' : this.key({ ...connection, id: input.id })
     // Read the sidecar before either file changes. A corrupt catalog must not
     // truncate models.json and then fail while parking the disabled models.
     const desktopDocument = readObject(this.desktopFile)

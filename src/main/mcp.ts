@@ -212,8 +212,14 @@ export function sanitizeUrl(rawUrl?: string): string | undefined {
   }
 }
 
-const SENSITIVE_FLAG_REGEX =
-  /^--?(?:[a-z0-9_.-]*-)?(?:token|secret|key|api[-_]?key|password|passwd|pwd|auth|credential|credentials)$/i
+const SENSITIVE_FLAG_SOURCE = String.raw`--?(?:[a-z0-9_.-]*-)?(?:token|secret|key|api[-_]?key|password|passwd|pwd|auth|credential|credentials)`
+const SENSITIVE_FLAG_REGEX = new RegExp(`^${SENSITIVE_FLAG_SOURCE}$`, 'i')
+// The value can be quoted or contain escaped whitespace. Matching those forms
+// explicitly avoids both leaking a quoted secret and splitting it into pieces.
+const SENSITIVE_FLAG_SPACE_VALUE_REGEX = new RegExp(
+  String.raw`(^|\s)(${SENSITIVE_FLAG_SOURCE})(\s+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:\\.|[^\s])+)`,
+  'gi'
+)
 
 const SENSITIVE_KEY_VALUE_REGEX =
   /^(--?[a-z0-9_.-]*(?:token|secret|key|api[-_]?key|password|passwd|pwd|auth|credential|credentials)[a-z0-9_.-]*=)(.+)$/i
@@ -266,6 +272,7 @@ export function sanitizeCommand(rawCommand?: unknown): string | undefined {
     /(--?[a-z0-9_.-]*(?:token|secret|key|api[-_]?key|password|passwd|pwd|auth|credential|credentials)[a-z0-9_.-]*=)[^\s"']+/gi,
     '$1***'
   )
+  sanitized = sanitized.replace(SENSITIVE_FLAG_SPACE_VALUE_REGEX, '$1$2$3***')
   sanitized = sanitized.replace(/((?:pwd|password)=)[^;'"\s]*/gi, '$1***')
   return sanitized
 }
@@ -323,9 +330,13 @@ function describe(
  * The files can contain credentials in `env` and `headers`; only the names of
  * those keys leave this module, never the values.
  */
-export function readMcpConfig(workspacePath: string, trusted: boolean): McpConfig {
-  const userPath = path.join(os.homedir(), '.pi', 'agent', 'mcp.json')
-  const projectPath = workspacePath ? path.join(workspacePath, '.pi', 'mcp.json') : ''
+export function readMcpConfig(
+  workspacePath: string,
+  trusted: boolean,
+  paths?: { userPath: string; projectPath: string }
+): McpConfig {
+  const userPath = paths?.userPath ?? path.join(os.homedir(), '.pi', 'agent', 'mcp.json')
+  const projectPath = paths?.projectPath ?? (workspacePath ? path.join(workspacePath, '.pi', 'mcp.json') : '')
   const user = readConfigFile(userPath)
   const projectExists = Boolean(projectPath) && existsSync(projectPath)
   const project: ParsedFile = projectExists

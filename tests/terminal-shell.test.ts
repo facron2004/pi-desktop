@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import type { IPty } from 'node-pty'
+import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty'
 import { resolveShellSpec } from '../src/main/shell'
 import { assertTerminalWorkingDirectory } from '../src/main/terminal-path'
 import { TerminalManager } from '../src/main/terminal'
@@ -140,4 +140,58 @@ test('disposing terminal sessions kills their PTYs and ignores late output', () 
 
   assert.equal(kills, 1)
   assert.deepEqual(outputs, [])
+})
+
+function disposablePty(): IPty {
+  return {
+    pid: 123,
+    onData() { return { dispose() {} } },
+    onExit() { return { dispose() {} } },
+    write() {},
+    resize() {},
+    clear() {},
+    kill() {},
+    pause() {},
+    resume() {}
+  } as unknown as IPty
+}
+
+test('Windows retries only a ConPTY launch failure once with Winpty', () => {
+  const attempts: Array<boolean | undefined> = []
+  const manager = new TerminalManager(
+    () => undefined,
+    (_file, _args, options: IPtyForkOptions | IWindowsPtyForkOptions) => {
+      attempts.push('useConpty' in options ? options.useConpty : undefined)
+      if (attempts.length === 1) throw new Error('Cannot launch conpty')
+      return disposablePty()
+    },
+    'win32'
+  )
+
+  const session = manager.create({ cols: 80, rows: 24, cwd: process.cwd(), shell: 'cmd' })
+  assert.ok(session.id)
+  assert.deepEqual(attempts, [undefined, false])
+  manager.disposeAll()
+})
+
+test('terminal startup does not retry other errors or non-Windows platforms', () => {
+  for (const { platform, message } of [
+    { platform: 'win32' as const, message: 'spawn cmd.exe ENOENT' },
+    { platform: 'linux' as const, message: 'Cannot launch conpty' }
+  ]) {
+    let attempts = 0
+    const manager = new TerminalManager(
+      () => undefined,
+      () => {
+        attempts += 1
+        throw new Error(message)
+      },
+      platform
+    )
+    assert.throws(
+      () => manager.create({ cols: 80, rows: 24, cwd: process.cwd(), shell: 'cmd' }),
+      new Error(message)
+    )
+    assert.equal(attempts, 1)
+  }
 })

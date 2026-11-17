@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -9,6 +10,7 @@ import {
   secureUserDataDirectory,
   SettingsStore,
   windowsUserDataAclCommands,
+  windowsUserDataAclSecure,
   windowsUserDataChildAclCommands,
   dedupeWorkspaces
 } from '../src/main/settings'
@@ -82,6 +84,55 @@ test('Windows user-data ACL plan secures the root without walking its children',
   assert.deepEqual(windowsUserDataChildAclCommands(directory), [
     [path.win32.join(directory, '*'), '/reset', '/T', '/C', '/L', '/Q']
   ])
+})
+
+test('Windows ACL validation allowlists exact principals instead of substring matches', () => {
+  const account = 'DOMAIN\\user'
+  const sid = 'S-1-5-21-123-456-789-1001'
+  const secured = [
+    'C:\\data',
+    '    DOMAIN\\user:(OI)(CI)(F)',
+    '    NT AUTHORITY\\SYSTEM:(OI)(CI)(F)',
+    '    BUILTIN\\Administrators:(OI)(CI)(F)'
+  ].join('\r\n')
+  assert.equal(windowsUserDataAclSecure(secured, account, sid), true)
+  assert.equal(windowsUserDataAclSecure(`${secured}\r\n    Everyone:(OI)(CI)(F)`, account, sid), false)
+  assert.equal(windowsUserDataAclSecure(`${secured}\r\n    DOMAIN\\user-other:(OI)(CI)(F)`, account, sid), false)
+  assert.equal(windowsUserDataAclSecure(`${secured}\r\n    DOMAIN\\other:(OI)(CI)(RX)`, account, sid), false)
+  assert.equal(windowsUserDataAclSecure(secured.replace('DOMAIN\\user', 'DOMAIN\\user-other'), account, sid), false)
+  assert.equal(windowsUserDataAclSecure(secured.replace('(OI)(CI)(F)', '(I)(OI)(CI)(F)'), account, sid), false)
+})
+
+test('Windows user-data ACL repair removes an extra Everyone full-control ACE', () => {
+  if (process.platform !== 'win32') return
+  const directory = mkdtempSync(path.join(tmpdir(), 'pi-user-data-acl-extra-principal-'))
+  try {
+    const identity = execFileSync('whoami', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' })
+    const account = parseWindowsUserName(identity)
+    const sid = parseWindowsUserSid(identity)
+    assert.ok(account)
+    assert.ok(sid)
+    execFileSync('icacls', [directory, '/inheritance:r', '/Q', '/L'])
+    execFileSync('icacls', [
+      directory,
+      '/grant:r',
+      `*${sid}:(OI)(CI)F`,
+      '*S-1-5-18:(OI)(CI)F',
+      '*S-1-5-32-544:(OI)(CI)F',
+      '*S-1-1-0:(OI)(CI)F',
+      '/Q',
+      '/L'
+    ])
+    const before = execFileSync('icacls', [directory, '/L'], { encoding: 'utf8' })
+    assert.equal(windowsUserDataAclSecure(before, account, sid, directory), false)
+
+    assert.equal(secureUserDataDirectory(directory), true, 'the unsafe root ACL should be repaired')
+    const after = execFileSync('icacls', [directory, '/L'], { encoding: 'utf8' })
+    assert.equal(windowsUserDataAclSecure(after, account, sid, directory), true, `unexpected repaired ACL:\n${after}`)
+    assert.doesNotMatch(after, /Everyone:\(OI\)\(CI\)\(F\)/i)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('project trust defaults off and legacy trust is re-enabled only after an explicit choice', () => {

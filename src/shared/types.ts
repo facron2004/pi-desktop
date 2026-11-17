@@ -294,6 +294,14 @@ export interface ContextBreakdown {
   toolDefinitions: number | null
   conversationMessages: number | null
   source: 'request' | 'session'
+  /**
+   * What these rows describe: Pi's context reading at the moment the split was
+   * taken. It is not necessarily what the ring shows now — the panel opened
+   * later, or the conversation was compacted or continued since — so the rows
+   * are proportions of this number and have to be rescaled to the reading on
+   * screen before they are printed.
+   */
+  total?: number | null
 }
 
 export const CONTEXT_BREAKDOWN_STATUS_KEY = 'pi-desktop-context-breakdown'
@@ -417,6 +425,12 @@ export interface SessionMeta {
   updatedAt: number
   messageCount: number
   model?: string
+}
+
+export interface SessionHydrationResult {
+  messages: AgentMessage[]
+  /** True when messages are only the bounded tail of a larger session file. */
+  historyTruncated: boolean
 }
 
 /** A conversation renamed in the main process, pushed so the UI can re-read it. */
@@ -1100,6 +1114,12 @@ export interface PiDesktopBridge {
     onPiCliUpgradeProgress(handler: (progress: PiCliUpgradeProgress) => void): () => void
     /** Open the latest Pi Desktop release page for a manual update. */
     openReleasePage(): Promise<UpgradeResult>
+    /**
+     * The reader clicked a desktop notification. The event names the
+     * conversation that raised it, so the window can open that one instead of
+     * whichever was last on screen.
+     */
+    onNotificationOpen(handler: (payload: { sessionKey: string }) => void): () => void
   }
   dialog: {
     pickDirectory(defaultPath?: string): Promise<string | null>
@@ -1149,8 +1169,8 @@ export interface PiDesktopBridge {
     list(cwd?: string): Promise<SessionMeta[]>
     /** Move a session file to the OS trash. Returns false when it fails. */
     remove(file: string): Promise<boolean>
-    /** Active-branch messages from disk. Does not start Pi. */
-    hydrate(file: string): Promise<AgentMessage[]>
+    /** Active-branch messages and whether disk history was bounded. Does not start Pi. */
+    hydrate(file: string): Promise<SessionHydrationResult>
     /** Name a conversation. A hot one is renamed in its own process. */
     rename(file: string, name: string): Promise<boolean>
     /** Search the text of every conversation on disk. */

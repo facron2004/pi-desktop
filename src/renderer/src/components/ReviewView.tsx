@@ -600,7 +600,9 @@ function splitHunks(rows: DiffRow[], context = CONTEXT_LINES): DiffBlock[] {
     const { start, end } = groups[group]
     const blockRows: DiffRow[] = []
     if (start > cursor) blockRows.push(hiddenGap(rows.slice(cursor, start), `hunk:${group}:before`))
-    blockRows.push(...rows.slice(start, end + 1))
+    // One loop rather than `push(...rows.slice())`: a hunk of a large file can
+    // hold more rows than a spread call accepts.
+    for (let index = start; index <= end; index += 1) blockRows.push(rows[index])
     if (group === groups.length - 1 && end < rows.length - 1) {
       blockRows.push(hiddenGap(rows.slice(end + 1), `hunk:${group}:after`))
     }
@@ -640,7 +642,10 @@ function ReviewFileDetail({
 
   const blocks = useMemo(() => {
     if (!state || state.status !== 'ready' || state.diff.binary) return []
-    return splitHunks(buildWorkingTreeDiff(state.diff.oldText, state.diff.newText, file.added, file.removed).rows)
+    const block = buildWorkingTreeDiff(state.diff.oldText, state.diff.newText, file.added, file.removed)
+    // A degraded block has no rows to split; it travels as one block so the
+    // diff pane can say why it is empty.
+    return block.degraded ? [block] : splitHunks(block.rows)
   }, [state, file.added, file.removed])
 
   return (

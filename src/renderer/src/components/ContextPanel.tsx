@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { resolveSavedModel } from '@shared/provider-models'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
-import { contextReading } from '../lib/context-reading'
+import { contextReading, alignBreakdown } from '../lib/context-reading'
 
 /**
  * The session panel behind the context ring.
@@ -81,6 +81,29 @@ export function ContextPanel() {
 
   const clamped = current.percent === null ? 0 : Math.max(0, Math.min(100, current.percent))
 
+  // The split was taken at one moment and the reading is the newest one. Printed
+  // as stored, the three rows added up to a number the header never showed, so
+  // the shares are applied to the reading on screen — the rows and the headline
+  // then describe the same window.
+  const breakdown = useMemo(
+    () => alignBreakdown(contextBreakdown, current.tokens),
+    [contextBreakdown, current.tokens]
+  )
+  const rescaled = Boolean(
+    breakdown &&
+      contextBreakdown &&
+      (breakdown.systemPrompt !== contextBreakdown.systemPrompt ||
+        breakdown.toolDefinitions !== contextBreakdown.toolDefinitions ||
+        breakdown.conversationMessages !== contextBreakdown.conversationMessages)
+  )
+  const breakdownHint = rescaled
+    ? t('Category shares applied to the reading above; each value is approximate.')
+    : t(
+        contextBreakdown?.source === 'request'
+          ? 'Estimated from the provider request; category values are approximate.'
+          : 'Estimated from the saved session; category values are approximate.'
+      )
+
   return (
     <div className="ctx">
       <div className="ctx__overview">
@@ -107,25 +130,23 @@ export function ContextPanel() {
           className="ctx__breakdown"
           role="group"
           aria-label={t('Context breakdown')}
-          title={t(contextBreakdown?.source === 'request'
-            ? 'Estimated from the provider request; category values are approximate.'
-            : 'Estimated from the saved session; category values are approximate.')}
+          title={breakdownHint}
         >
           <div className="ctx__breakdown-row">
             <span className="ctx__swatch" data-kind="system" aria-hidden="true" />
             <span>{t('System prompt')}</span>
-            <span className="ctx__breakdown-value">{formatBreakdownTokens(contextBreakdown?.systemPrompt)}</span>
+            <span className="ctx__breakdown-value">{formatBreakdownTokens(breakdown?.systemPrompt)}</span>
           </div>
           <div className="ctx__breakdown-row">
             <span className="ctx__swatch" data-kind="tools" aria-hidden="true" />
             <span>{t('Tool definitions')}</span>
-            <span className="ctx__breakdown-value">{formatBreakdownTokens(contextBreakdown?.toolDefinitions)}</span>
+            <span className="ctx__breakdown-value">{formatBreakdownTokens(breakdown?.toolDefinitions)}</span>
           </div>
           <div className="ctx__breakdown-row">
             <span className="ctx__swatch" data-kind="messages" aria-hidden="true" />
             <span>{t('Conversation messages')}</span>
             <span className="ctx__breakdown-value">
-              {formatBreakdownTokens(contextBreakdown?.conversationMessages)}
+              {formatBreakdownTokens(breakdown?.conversationMessages)}
             </span>
           </div>
         </div>

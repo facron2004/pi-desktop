@@ -148,8 +148,16 @@ export function FileChangePreview({ change }: { change: FileChange }) {
   return (
     <>
       <div className="file-change__preview-head">
-        <span className="file-change__preview-name" title={change.path}>
-          {shownPath}
+        <span className="file-change__preview-id">
+          <span
+            className="file-change__preview-name"
+            data-full={change.path === shownPath ? 'true' : undefined}
+          >
+            {shownPath}
+          </span>
+          {change.path !== shownPath ? (
+            <span className="file-change__preview-path">{change.path}</span>
+          ) : null}
         </span>
         <span className="file-change__stats">
           {stats.added > 0 ? <span className="file-changes__add">+{stats.added}</span> : null}

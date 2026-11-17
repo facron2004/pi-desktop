@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { buildWorkingTreeDiff, diffStats, foldDiff, type DiffRow } from '../src/renderer/src/lib/diff-fold'
+import {
+  buildDiff,
+  buildWorkingTreeDiff,
+  diffStats,
+  foldDiff,
+  type DiffRow
+} from '../src/renderer/src/lib/diff-fold'
 
 test('working-tree diff ignores CRLF conversion when it matches Git counts', () => {
   const oldText = 'one\ntwo\nthree\n'
@@ -29,4 +35,52 @@ test('folding a hunk does not duplicate short context between gaps and changes',
     foldDiff(rows).filter((row) => row.kind === 'ctx').map((row) => row.text),
     ['line 2', 'line 3', 'line 4', 'line 6', 'line 7', 'line 8']
   )
+})
+
+test('a diff that would take too long degrades instead of blocking the renderer', () => {
+  // Two halves with nothing in common: the Myers diff has no common prefix or
+  // suffix to trim, so this is the shape that costs seconds at realistic sizes.
+  const oldText = Array.from({ length: 4_000 }, (_, index) => `before ${index}`).join('\n')
+  const newText = Array.from({ length: 4_000 }, (_, index) => `after ${3_999 - index}`).join('\n')
+  const block = buildDiff(oldText, newText, 5)
+  assert.equal(block.degraded, true)
+  assert.deepEqual(block.rows, [])
+})
+
+test('a degrading diff is not retried with CRLF normalization', () => {
+  const oldText = Array.from({ length: 4_000 }, (_, index) => `before ${index}`).join('\n')
+  const newText = Array.from({ length: 4_000 }, (_, index) => `after ${3_999 - index}`).join('\n')
+  // Git's counts can never be matched here; a second attempt would only spend
+  // another budget for the same answer.
+  const block = buildWorkingTreeDiff(oldText, newText, 0, 0, 5)
+  assert.equal(block.degraded, true)
+  assert.deepEqual(block.rows, [])
+})
+
+test('a large file with one change still aligns quickly', () => {
+  const lines = Array.from({ length: 20_000 }, (_, index) => `line ${index}`)
+  const changed = [...lines]
+  changed[10_000] = 'changed'
+  const started = Date.now()
+  const block = buildDiff(lines.join('\n'), changed.join('\n'))
+  assert.equal(block.degraded, undefined)
+  assert.deepEqual(diffStats(block), { added: 1, removed: 1 })
+  // The common prefix and suffix are trimmed, so this is far from the budget.
+  assert.ok(Date.now() - started < 900)
+})
+
+test('a normal-sized file still aligns line by line', () => {
+  const block = buildDiff('one\ntwo\nthree\n', 'one\nchanged\nthree\n')
+  assert.equal(block.degraded, undefined)
+  assert.deepEqual(diffStats(block), { added: 1, removed: 1 })
+})
+
+test('a fold standing for a huge unchanged run does not overflow the stack', () => {
+  const context = (line: number): DiffRow => ({ kind: 'ctx', oldLine: line, newLine: line, text: `line ${line}` })
+  const rows: DiffRow[] = Array.from({ length: 200_000 }, (_, index) => context(index + 1))
+  rows.push({ kind: 'add', oldLine: null, newLine: 200_001, text: 'new' })
+  const folded = foldDiff(rows, 3)
+  assert.equal(folded[0]?.kind, 'gap')
+  assert.equal(folded[0]?.kind === 'gap' ? folded[0].hidden.length : 0, 199_997)
+  assert.deepEqual(folded.slice(1).map((row) => row.kind), ['ctx', 'ctx', 'ctx', 'add'])
 })

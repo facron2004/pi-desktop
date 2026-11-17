@@ -57,6 +57,10 @@ const TABS: {
 ]
 
 const TAB_BY_VIEW = new Map(TABS.map((entry) => [entry.view, entry]))
+const TOOL_PANEL_TABPANEL_ID = 'tool-panel-tabpanel'
+const MIN_PANEL_WIDTH = 360
+const MAX_PANEL_WIDTH = 760
+const toolTabDomId = (id: string) => `tool-panel-tab-${id}`
 
 interface TabContextMenu {
   tab: ToolTab
@@ -288,13 +292,46 @@ export function ToolPanel({
     setTabs(next)
   }
 
-  const openContextMenu = (event: React.MouseEvent, tab: ToolTab) => {
-    event.preventDefault()
+  const openContextMenuAt = (tab: ToolTab, x: number, y: number) => {
     setMenu({
       tab,
-      x: Math.min(Math.max(8, event.clientX), Math.max(8, window.innerWidth - 224 - 8)),
-      y: Math.min(Math.max(8, event.clientY), Math.max(8, window.innerHeight - 220 - 8))
+      x: Math.min(Math.max(8, x), Math.max(8, window.innerWidth - 224 - 8)),
+      y: Math.min(Math.max(8, y), Math.max(8, window.innerHeight - 220 - 8))
     })
+  }
+
+  const openContextMenu = (event: React.MouseEvent, tab: ToolTab) => {
+    event.preventDefault()
+    openContextMenuAt(tab, event.clientX, event.clientY)
+  }
+
+  const focusTab = (tab: ToolTab) => {
+    requestAnimationFrame(() => document.getElementById(toolTabDomId(tab.id))?.focus())
+  }
+
+  const selectAndFocusTab = (tab: ToolTab) => {
+    selectTab(tab)
+    focusTab(tab)
+  }
+
+  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, tab: ToolTab) => {
+    if (event.nativeEvent.isComposing) return
+    if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') {
+      event.preventDefault()
+      const rect = event.currentTarget.getBoundingClientRect()
+      openContextMenuAt(tab, rect.left, rect.bottom + 4)
+      return
+    }
+    const index = tabs.findIndex((entry) => entry.id === tab.id)
+    let nextIndex: number | undefined
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length
+    else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length
+    else if (event.key === 'Home') nextIndex = 0
+    else if (event.key === 'End') nextIndex = tabs.length - 1
+    if (nextIndex === undefined) return
+    event.preventDefault()
+    const next = tabs[nextIndex]
+    if (next) selectAndFocusTab(next)
   }
 
   const widthRef = useRef(width)
@@ -310,7 +347,7 @@ export function ToolPanel({
 
       const move = (moveEvent: PointerEvent) => {
         // Dragging left handle: moving left increases width
-        const nextWidth = Math.max(360, Math.min(760, startWidth - (moveEvent.clientX - startX)))
+        const nextWidth = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, startWidth - (moveEvent.clientX - startX)))
         widthRef.current = nextWidth
         onResize(nextWidth)
       }
@@ -335,6 +372,23 @@ export function ToolPanel({
     },
     [onResize, onResizeEnd, width]
   )
+
+  const handleResizeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!onResize || event.nativeEvent.isComposing) return
+    const step = event.shiftKey ? 48 : 16
+    let next: number | undefined
+    // The divider is on the panel's left edge: moving it left makes the panel wider.
+    if (event.key === 'ArrowLeft') next = width + step
+    else if (event.key === 'ArrowRight') next = width - step
+    else if (event.key === 'Home') next = MIN_PANEL_WIDTH
+    else if (event.key === 'End') next = MAX_PANEL_WIDTH
+    if (next === undefined) return
+    event.preventDefault()
+    const clamped = Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, Math.round(next)))
+    onResize(clamped)
+    onResizeEnd?.(clamped)
+  }
+
   const activeTab = tabs.find((tab) => tab.id === active) ?? null
 
   return (
@@ -353,6 +407,11 @@ export function ToolPanel({
           role="separator"
           aria-orientation="vertical"
           aria-label={t('Resize the panel')}
+          aria-valuemin={MIN_PANEL_WIDTH}
+          aria-valuemax={MAX_PANEL_WIDTH}
+          aria-valuenow={Math.round(width)}
+          tabIndex={0}
+          onKeyDown={handleResizeKeyDown}
           onPointerDown={startResize}
         />
       ) : null}
@@ -391,12 +450,16 @@ export function ToolPanel({
               >
                 <button
                   type="button"
+                  id={toolTabDomId(tab.id)}
                   role="tab"
                   aria-selected={tab.id === active}
+                  aria-controls={TOOL_PANEL_TABPANEL_ID}
+                  tabIndex={tab.id === active ? 0 : -1}
                   className="tool-panel__tab"
                   data-active={tab.id === active || undefined}
                   title={t(meta?.description ?? 'New tab')}
                   onClick={() => selectTab(tab)}
+                  onKeyDown={(event) => handleTabKeyDown(event, tab)}
                 >
                   <Icon size={18} strokeWidth={1.7} />
                   <span className="tool-panel__tab-label">{t(meta?.label ?? 'New tab')}</span>
@@ -504,7 +567,13 @@ export function ToolPanel({
         {actions}
       </div>
 
-      <div className="tool-panel__body" data-view={activeTab?.view ?? 'start'}>
+      <div
+        className="tool-panel__body"
+        id={TOOL_PANEL_TABPANEL_ID}
+        role="tabpanel"
+        aria-labelledby={activeTab ? toolTabDomId(activeTab.id) : undefined}
+        data-view={activeTab?.view ?? 'start'}
+      >
         <ErrorBoundary scope="tool panel">
           {activeTab?.view == null ? (
             <>
@@ -523,10 +592,29 @@ export function ToolPanel({
               aria-label={t('Tab actions')}
               style={{ left: menu.x, top: menu.y }}
               onPointerDown={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  setMenu(null)
+                  if (activeTab) focusTab(activeTab)
+                  return
+                }
+                if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+                const items = Array.from(
+                  event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)')
+                )
+                if (items.length === 0) return
+                event.preventDefault()
+                const index = items.indexOf(document.activeElement as HTMLElement)
+                const direction = event.key === 'ArrowDown' ? 1 : -1
+                items[(index + direction + items.length) % items.length]?.focus()
+              }}
             >
               <button
                 type="button"
                 role="menuitem"
+                autoFocus
                 className="tool-tab-menu__item"
                 onClick={() => closeTab(menu.tab)}
               >

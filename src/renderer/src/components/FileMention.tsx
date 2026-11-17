@@ -11,6 +11,7 @@ import { useT } from '../lib/i18n'
  * two never fight over the same place.
  */
 export function FileMention({
+  id,
   files,
   root,
   activeIndex,
@@ -18,6 +19,7 @@ export function FileMention({
   onSelect,
   listRef
 }: {
+  id?: string
   files: FileEntry[]
   root?: string
   activeIndex: number
@@ -27,7 +29,7 @@ export function FileMention({
 }) {
   const t = useT()
   return (
-    <div className="mention" role="listbox" aria-label={t('Files')}>
+    <div className="mention" id={id} role="listbox" aria-label={t('Files')}>
       <div className="mention__head">
         <FileIcon size={12} />
         <span>
@@ -48,6 +50,7 @@ export function FileMention({
             return (
               <button
                 key={file.path}
+                id={id ? `${id}-option-${index}` : undefined}
                 className="mention__item"
                 role="option"
                 aria-selected={index === activeIndex}

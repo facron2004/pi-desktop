@@ -11,7 +11,7 @@ type AddMenuPage = 'actions' | 'skills' | 'plugins' | 'diagrams'
 
 const MODES = [
   { value: 'goal', label: 'Goal Mode', icon: Target, description: 'Continue until the goal is complete or blocked' },
-  { value: 'plan', label: 'Plan Mode', icon: ListChecks, description: 'Explore and plan without changing files' },
+  { value: 'plan', label: 'Plan Mode', icon: ListChecks, description: 'Create a Markdown plan and review it before execution' },
   { value: 'subagent', label: 'Subagent Mode', icon: Bot, description: 'Delegate self-contained work to isolated subagents' },
   { value: 'plugin', label: 'Plugin Mode', icon: Wrench, description: 'Build or modify a Pi extension' }
 ] as const

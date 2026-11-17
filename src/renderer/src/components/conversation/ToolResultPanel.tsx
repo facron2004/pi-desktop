@@ -68,10 +68,9 @@ export const ToolResultPanel = memo(function ToolResultPanel({
   const contentLines = useMemo(() => (open ? countLines(content) : 0), [open, content])
   const shellCommand =
     item.toolName === 'bash' || item.toolName === 'powershell' ? String(item.args?.command ?? '') : ''
-  const multilineShellCommand = shellCommand.includes('\n') ? shellCommand : ''
   const shellCommandLines = useMemo(
-    () => (open && multilineShellCommand ? countLines(multilineShellCommand) : 0),
-    [open, multilineShellCommand]
+    () => (open && shellCommand ? countLines(shellCommand) : 0),
+    [open, shellCommand]
   )
 
   const fileName = basename(String(item.args?.path ?? ''))
@@ -121,12 +120,12 @@ export const ToolResultPanel = memo(function ToolResultPanel({
         )
       ) : null}
 
-      {multilineShellCommand ? (
+      {shellCommand ? (
         shellCommandLines > LOG_PAGE_LINES ? (
-          <LogOutput text={multilineShellCommand} />
+          <LogOutput text={shellCommand} />
         ) : (
           <CodeSnippet
-            code={multilineShellCommand}
+            code={shellCommand}
             language={item.toolName === 'powershell' ? 'powershell' : 'bash'}
           />
         )
@@ -152,7 +151,7 @@ export const ToolResultPanel = memo(function ToolResultPanel({
         </button>
       ) : null}
 
-      {!diffs.length && !visibleResult && !content && !plan && !shot ? (
+      {!diffs.length && !visibleResult && !content && !plan && !shot && !shellCommand ? (
         <pre className="tool__pre">{JSON.stringify(item.args ?? {}, null, 2)}</pre>
       ) : null}
     </div>

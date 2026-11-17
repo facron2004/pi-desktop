@@ -8,6 +8,7 @@ import {
   type MouseEvent as ReactMouseEvent
 } from 'react'
 import { createPortal } from 'react-dom'
+import { windowShellBottom } from '../lib/hover-tip'
 import '../styles/sidebar-tip.css'
 
 /**
@@ -186,6 +187,7 @@ export function SidebarTip({ anchor, title, rows }: SidebarTipProps) {
       const rect = anchor.getBoundingClientRect()
       const edge = 12
       const gap = 10
+      const topInset = Math.max(edge, windowShellBottom())
       const width = panel.offsetWidth
       const height = panel.offsetHeight
       // The reading side of a left-hand sidebar is its right; flip only when
@@ -195,7 +197,7 @@ export function SidebarTip({ anchor, title, rows }: SidebarTipProps) {
         left = Math.max(edge, rect.left - gap - width)
       }
       const top = Math.max(
-        edge,
+        topInset,
         Math.min(rect.top + rect.height / 2 - height / 2, innerHeight - edge - height)
       )
       setPosition({ left, top })

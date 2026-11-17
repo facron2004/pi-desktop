@@ -161,6 +161,22 @@ test('a complete transcript is not inflated by a stale local model journal', () 
   assert.equal(metrics.modelTimeMs, 3_000)
 })
 
+test('a truncated transcript includes hidden model time from the local journal', () => {
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 100 },
+    { ...assistant('a1', 100), timestamp: 1_000, durationMs: 1_000 }
+  ]
+  const timing = {
+    modelDurationsMs: { 'turn-visible': 1_000, 'turn-hidden': 5_000 },
+    ttftDurationsMs: {},
+    toolDurationsMs: {},
+    runDurationsMs: {},
+    generationWindowMs: {}
+  }
+  assert.equal(sessionMetrics(items, undefined, {}, timing, { historyTruncated: true }).modelTimeMs, 6_000)
+  assert.equal(sessionMetrics(items, undefined, {}, timing, { historyTruncated: false }).modelTimeMs, 1_000)
+})
+
 test('a settled run keeps its measured TTFT when local storage did not record it', () => {
   const metrics = sessionMetrics([], undefined, {
     runId: 'run-current',
@@ -365,6 +381,54 @@ test('reopened conversations do not infer TTFT from message timestamps', () => {
   assert.equal(metrics.ttftMs, null)
   assert.equal(metrics.tps, 80, '400 output tokens over two 2s/3s answer windows')
   assert.equal(metrics.modelTimeMs, 5_000, 'sum of both assistant generation durations')
+})
+
+test('a zero generation window does not hide TPS from answer durations', () => {
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 1_000 },
+    { ...assistant('a1', 400), timestamp: 1_500, durationMs: 5_000 }
+  ]
+  const metrics = sessionMetrics(items, undefined, { generationMs: 0 })
+  assert.equal(metrics.tps, 80, '400 output tokens over the 5s Pi recorded on the answer')
+})
+
+test('a later message without usage does not wipe the newest turn\'s TPS', () => {
+  const bare: AssistantItem = {
+    id: 'a-bare',
+    kind: 'assistant',
+    blocks: [{ type: 'text', text: 'done' }],
+    streaming: false,
+    timestamp: 3,
+    order: 3
+  }
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 1_000 },
+    { ...assistant('a1', 120), timestamp: 1_500, durationMs: 2_000 },
+    bare
+  ]
+  assert.equal(sessionMetrics(items, undefined, { generationMs: 0 }).tps, 60)
+})
+
+test('TPS uses the newest turn\'s model samples when no generation window was closed', () => {
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 1_000 },
+    assistant('a1', 1000),
+    { ...user('u2'), timestamp: 5_000 },
+    assistant('a2', 120)
+  ]
+  const metrics = sessionMetrics(items, undefined, { generationMs: 0 }, {
+    modelDurationsMs: {
+      'turn-old': 9_000,
+      'assistant:1500:turn-old': 9_000,
+      'turn-new': 2_000,
+      'assistant:6000:turn-new': 2_000
+    },
+    ttftDurationsMs: {},
+    toolDurationsMs: {},
+    runDurationsMs: {},
+    generationWindowMs: {}
+  })
+  assert.equal(metrics.tps, 60, '120 output tokens over the newest answer\'s 2s model sample')
 })
 
 test('reopened conversations leave TPS unmeasured when assistant durations are missing', () => {

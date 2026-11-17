@@ -148,6 +148,39 @@ test('the editor can read a saved key back without saving it onto the profile or
   assert.equal(store.savedKey('../secret'), '')
 })
 
+test('non-credential edits preserve a Pi credential command without resolving it', t => {
+  const root = directory(t)
+  const store = new ProviderStore(root)
+  const credentialCommand = '!printf dummy-test-credential'
+  writeFileSync(store.file, JSON.stringify({ providers: { cmd: {
+    name: 'Command credential',
+    api: 'openai-completions',
+    baseUrl: 'https://example.com/v1',
+    apiKey: credentialCommand,
+    models: [{ id: 'm', contextWindow: 64000 }]
+  } } }))
+  const current = store.list().find(provider => provider.id === 'cmd')!
+  assert.equal(current.external, false, 'command credentials must not lock the whole provider editor')
+  assert.equal(current.apiKey, undefined)
+
+  store.save({
+    id: 'cmd',
+    revision: current.revision,
+    name: 'Command credential',
+    api: current.api,
+    baseUrl: 'https://new-endpoint.example/v1',
+    apiKey: undefined,
+    models: [{ id: 'm', contextWindow: 32000 }],
+    selectedModel: 'm'
+  })
+
+  const saved = JSON.parse(readFileSync(store.file, 'utf8')).providers.cmd
+  assert.equal(saved.apiKey, credentialCommand)
+  assert.equal(saved.baseUrl, 'https://new-endpoint.example/v1')
+  assert.equal(saved.models[0].contextWindow, 32000)
+  assert.equal(store.savedKey('cmd'), '', 'the editor never resolves or displays the command output')
+})
+
 test('literal API keys are escaped for Pi without evaluating commands or environment interpolation', t => {
   const store = new ProviderStore(directory(t))
   const key = '!not-a-command$LITERAL'

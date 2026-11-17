@@ -151,6 +151,14 @@ registry is `lib/tool-renderers.ts`; an unknown tool still gets a card,
 because an MCP server or a project extension is a normal outcome, not a
 reason to drop a call from the stream.
 
+A row in the stream is a link, not a card, so it carries no surface of its
+own: the pointer must not paint a gray band across the column. The hover
+surface belongs to a card. `styles/global.css` is bundled after
+`styles/conversation-stream.css`, so the rule that keeps the row
+transparent has to outrank `.tool:hover` on specificity — it is
+`.tool.tool--link:hover`, not `.tool--link:hover`, or the later rule wins
+and the row paints a band the moment the pointer touches it.
+
 The stream's leaf components live in `components/conversation/`:
 `AssistantMessage` owns process segmentation, `StreamingText` owns the reply
 document, `ToolResultPanel`/`CommandOutput`/`LogOutput` own expandable output,
@@ -392,6 +400,13 @@ the box the button is the way to send (steer or queue), so the stop moves into
 the row under the box as `session-bar__stop`. Both call the same `stop()`; there
 is no second abort path.
 
+The model is a per-conversation choice: picking a model in a session sends
+`set_model` to that process and never writes the app default — only a draft
+chooses the default for the conversation it is about to create. A cold session
+reads its own persisted model from the sessions list (`SessionMeta.model`),
+so the chip follows the conversation, not whatever another conversation
+picked last.
+
 Transient app messages are a single floating `AppToast`, below the title bar in
 the window's top-right corner — never a strip inside the composer. `showToast`
 still owns the one message queue; the toast maps `info` to the success mark,
@@ -465,7 +480,11 @@ outrank the saved model, or a stale window renders an impossible percentage.
 
 Token totals and the hit rate come from `get_session_stats`, with the visible
 transcript as a fallback; the hit rate counts cache reads against every prompt
-token — fresh input, cache reads and cache writes. Pi reports no generation
+token — fresh input, cache reads and cache writes. A run start drops the old
+snapshot so the transcript can drive the line, and every finished answer or
+tool result re-reads Pi's statistics (throttled per conversation by
+`refreshLiveStats`) — the readings must move during a long tool-heavy turn,
+not jump only at `agent_settled`. Pi reports no generation
 timing, so `run` mints `firstTokenAt` on the first nonempty content delta of
 each model request and starts each answer's generation window at its first
 block of any kind — text, thinking or a tool call — summing the window into
@@ -722,7 +741,14 @@ all-pages menu and horizontal scroll. `Maximize2` makes the panel the whole
 work area while leaving the project sidebar reachable — and it maximizes at the
 panel's own level (`--z-drawer`), never above it: the shell's corner toggle and
 the panel's own menus must stay clickable, or the maximized state covers the
-only ways out of it. `Escape` leaves the maximized state, and never steals the
+only ways out of it. Staying clickable takes two rules, and z-index alone was
+only the first: the maximized (and overlay) panel floats **over the title bar,
+which is a `-webkit-app-region: drag` row**, so `.tool-panel` itself must carry
+`no-drag` or the OS swallows every strip click — restore included — as a window
+drag. And the shell's corner toggle centres in the same 46px band as the
+strip's own buttons (`--toolpanel-head-h`), not the 52px title bar, so the
+restore, page-action and panel-toggle icons share one line. `Escape` leaves
+the maximized state, and never steals the
 key from an open dialog, menu or lightbox. There is no permanent
 "Tools" tab: closing the last page closes the panel. Reopening it starts from a
 centered "start from here" card list (`ToolPanel`).
@@ -986,14 +1012,17 @@ empty path means a sibling folder. The branch chip in the session bar is
 `BranchMenu`; a worktree row switches the app to that folder (the store registers
 it as a workspace).
 
-The branch menu keeps a **visible worktree button** of its own, beside
-"Create and checkout branch". It opens an inline form that adds a worktree on a
-new branch and switches the app to it; a "Worktrees" section lists the other
-checkouts, and each non-current row can be removed after a confirmation. Do
-**not** fold this action into the branch-creation form as a checkbox: it was
-removed twice that way (v0.3.0 and the "refine the branch menu" commit), and a
-hidden toggle leaves no obvious way to ask for an isolated checkout.
-`tests/branch-menu-worktree.test.ts` guards the button.
+The branch menu keeps a **visible worktree checkbox** of its own, beside
+"Create and checkout branch". Checking it only arms the next session. The
+worktree is created when an empty conversation sends its first prompt — a new
+branch named from the current one (`main` → `main-wt`, then `main-wt-2`), an
+empty path so the folder is a sibling, then a switch into that checkout.
+A conversation that already has a prompt does not gain a worktree on a later
+send. There is no branch or path form. Do **not** fold this row into the
+branch-creation form: it was hidden there twice (v0.3.0 and the "refine the
+branch menu" commit). A "Worktrees" section lists the other checkouts, and
+each non-current row can be removed after a confirmation.
+`tests/branch-menu-worktree.test.ts` guards the checkbox.
 
 ## MCP
 

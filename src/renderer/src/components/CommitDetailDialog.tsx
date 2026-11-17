@@ -423,7 +423,7 @@ export function CommitDetailDialog({ hash, onClose }: { hash: string; onClose: (
                                 {t('The file is too large to show in full.')}
                               </div>
                             ) : (
-                              <DiffView diffs={[buildDiff(diff.oldText, diff.newText)]} />
+                              <CommitFileDiff diff={diff} />
                             )}
                           </div>
                         ) : null}
@@ -456,4 +456,16 @@ function statusKind(status: string): 'add' | 'del' | 'edit' | 'rename' {
   if (status === 'D') return 'del'
   if (status === 'R' || status === 'C') return 'rename'
   return 'edit'
+}
+
+/**
+ * The rows of one commit file, built once for the text that was read.
+ *
+ * The dialog re-renders on every keystroke of its filter, and a commit file's
+ * two sides never change while the dialog stays on the same commit — rebuilding
+ * a large file's line diff per render would stall the filter's typing instead.
+ */
+function CommitFileDiff({ diff }: { diff: GitCommitFileDiff }) {
+  const built = useMemo(() => [buildDiff(diff.oldText, diff.newText)], [diff.oldText, diff.newText])
+  return <DiffView diffs={built} />
 }

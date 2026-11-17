@@ -31,7 +31,8 @@ import { windowIconImage } from './app-icon'
 export function showDesktopNotification(
   mainWindow: BrowserWindow,
   title: string,
-  body: string
+  body: string,
+  onActivate?: () => void
 ): void {
   if (mainWindow.isDestroyed() || !Notification.isSupported()) return
 
@@ -47,6 +48,7 @@ export function showDesktopNotification(
     if (mainWindow.isMinimized()) mainWindow.restore()
     if (!mainWindow.isVisible()) mainWindow.show()
     mainWindow.focus()
+    onActivate?.()
   })
   notification.on('failed', (_event, error) => {
     console.error('[pi-desktop] could not show system notification:', error)

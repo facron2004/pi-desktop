@@ -1,0 +1,55 @@
+/* The bubble that replaces the OS `title` tooltip.
+   One surface with the other floating layers: glass, a hairline, the floating
+   radius. It never takes the pointer, so it cannot steal the click it describes. */
+
+.hover-tip {
+  position: fixed;
+  z-index: calc(var(--z-overlay) + 2);
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-glass);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-primary);
+  font-size: var(--text-assist);
+  font-weight: var(--font-weight-ui);
+  line-height: var(--leading-assist);
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.hover-tip[data-placed='true'] {
+  animation: hover-tip-in var(--dur-fast) var(--ease);
+}
+
+.hover-tip[data-wrap='true'] {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* A path answers "where", so it wraps at separators instead of being clipped
+   to one OS-tooltip line. */
+.hover-tip[data-mono='true'] {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-block);
+  line-height: 1.45;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+@keyframes hover-tip-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hover-tip[data-placed='true'] {
+    animation: none;
+  }
+}

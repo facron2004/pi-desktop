@@ -12,7 +12,7 @@ import type {
 } from '@shared/marketplace'
 import type {
   AggregatedUsageStats,
-  AgentMessage,
+  SessionHydrationResult,
   AppInfo,
   AppUpdateProgress,
   AppSettings,
@@ -102,7 +102,9 @@ const bridge: PiDesktopBridge = {
     upgradePiCli: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:upgradePiCli'),
     onPiCliUpgradeProgress: (handler: (progress: PiCliUpgradeProgress) => void) =>
       subscribe<PiCliUpgradeProgress>('app:piCliUpgradeProgress', handler),
-    openReleasePage: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:openReleasePage')
+    openReleasePage: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:openReleasePage'),
+    onNotificationOpen: (handler: (payload: { sessionKey: string }) => void) =>
+      subscribe<{ sessionKey: string }>('notification:open', handler)
   },
   dialog: {
     pickDirectory: (defaultPath?: string): Promise<string | null> =>
@@ -154,7 +156,7 @@ const bridge: PiDesktopBridge = {
   sessions: {
     list: (cwd?: string): Promise<SessionMeta[]> => ipcRenderer.invoke('sessions:list', cwd),
     remove: (file: string): Promise<boolean> => ipcRenderer.invoke('sessions:remove', file),
-    hydrate: (file: string): Promise<AgentMessage[]> => ipcRenderer.invoke('sessions:hydrate', file),
+    hydrate: (file: string): Promise<SessionHydrationResult> => ipcRenderer.invoke('sessions:hydrate', file),
     rename: (file: string, name: string): Promise<boolean> =>
       ipcRenderer.invoke('sessions:rename', file, name),
     search: (query: string, limit?: number): Promise<SessionSearchHit[]> =>

@@ -155,6 +155,10 @@ export class MemoryService extends EventEmitter {
       this.timers.delete(key)
       void this.run(file, cwd, false)
     }, this.delayMs)
+    // Unref'd on purpose: a pending extraction is background work, and it must
+    // not keep the app alive after the user quit. Anything that *waits* for this
+    // timer (a test, for example) has to hold the event loop itself, or Node
+    // resolves the loop and cancels the wait.
     timer.unref?.()
     this.timers.set(key, timer)
   }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   Bot,
@@ -13,13 +13,15 @@ import {
   draftKeyOf,
   useAppStore,
   type ComposerDraft,
+  type ComposerDraftCommand,
   type ComposerDraftFile,
   type ComposerDraftImage,
   type QueueKind
 } from '../store/useAppStore'
 import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
-import type { FileEntry, PiCommand } from '@shared/types'
+import type { AppLanguage, FileEntry, PiCommand } from '@shared/types'
 import { appCommandName } from '../lib/app-commands'
+import { COMMAND_SOURCE } from '../lib/command-source'
 import {
   composerFileToken,
   extractFilePathMentions,
@@ -82,10 +84,30 @@ function imageByteLength(data: string): number {
 /** Detect a `/command` token that ends at the caret. */
 function detectSlash(text: string, cursor: number): SlashMatch | null {
   const before = text.slice(0, cursor)
-  const match = before.match(/(?:^|\s)\/([\p{L}\p{N}_:.-]*)$/u)
+  const match = before.match(/^\s*\/([\p{L}\p{N}_:.-]*)$/u)
   if (!match) return null
   const query = match[1]
-  return { query, start: cursor - query.length - 1, cursor }
+  return { query, start: before.indexOf('/'), cursor }
+}
+
+function findCommand(commands: PiCommand[], token: string, language: AppLanguage): PiCommand | undefined {
+  const normalized = token.toLocaleLowerCase()
+  return commands.find((command) => {
+    const localized = command.source === 'app' ? appCommandName(command.name, language) : command.name
+    return command.name.toLocaleLowerCase() === normalized || localized.toLocaleLowerCase() === normalized
+  })
+}
+
+function recognizeCommandInput(
+  text: string,
+  commands: PiCommand[],
+  language: AppLanguage
+): { command: ComposerDraftCommand; argument: string } | undefined {
+  const match = /^\s*\/([^\s/]+)(?:\s+([\s\S]*))?$/u.exec(text)
+  if (!match) return undefined
+  const command = findCommand(commands, match[1], language)
+  if (!command) return undefined
+  return { command: { name: command.name, source: command.source }, argument: match[2] ?? '' }
 }
 
 /**
@@ -149,6 +171,7 @@ export function Composer() {
 
   const draft = draftKey ? draftEntry : fallbackDraft
   const text = draft?.text ?? ''
+  const command = draft?.command
   const images = draft?.images ?? EMPTY_IMAGES
   const files = draft?.files ?? EMPTY_FILES
   const history = draft?.history ?? EMPTY_HISTORY
@@ -256,6 +279,15 @@ export function Composer() {
   const [mentionFiles, setMentionFiles] = useState<FileEntry[]>([])
   const [mentionIndex, setMentionIndex] = useState(0)
   const [paletteIndex, setPaletteIndex] = useState(0)
+  const [commandSelected, setCommandSelected] = useState(false)
+
+  const commandName = command
+    ? command.source === 'app'
+      ? `/${appCommandName(command.name, language)}`
+      : `/${command.name}`
+    : ''
+  const commandMeta = command ? COMMAND_SOURCE[command.source] : undefined
+  const CommandIcon = commandMeta?.Icon
 
   const reserveImageBytes = useCallback(
     (bytes: number, targetKey = draftKeyRef.current): boolean => {
@@ -286,6 +318,9 @@ export function Composer() {
   }, [])
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const composerA11yId = useId().replace(/[^a-zA-Z0-9_-]/g, '')
+  const commandListId = `${composerA11yId}-command-list`
+  const mentionListId = `${composerA11yId}-mention-list`
   const mentionListRef = useRef<HTMLDivElement>(null)
   // Enter repeats while it is held, and a double-click can land before React
   // has cleared the draft. Track locks per conversation identity so a send in
@@ -296,24 +331,28 @@ export function Composer() {
   const mentionCaret = useRef<number | null>(null)
 
   const canCompose = status.phase === 'ready' || status.phase === 'starting'
-  const inputPrompt = canCompose
-    ? cwdWait
-      ? t('Waiting for another conversation in this folder…')
-      : agentMode === 'plan'
-        ? t('Describe the task to plan…')
-        : workspace
-          ? t('Describe a task, or use @ to reference project files…')
-          : t('Describe a task…')
-    : status.phase === 'error'
-      ? t('Pi unavailable')
-      : !workspace
-        ? t('Open a project folder to start')
-        : t('Pi stopped')
+  const hasContent = Boolean(command || text.trim() || images.length > 0 || files.length > 0)
+  const inputPrompt = command
+    ? t('Add command arguments…')
+    : canCompose
+      ? cwdWait
+        ? t('Waiting for another conversation in this folder…')
+        : agentMode === 'plan'
+          ? t('Describe the task to plan…')
+          : workspace
+            ? t('Describe a task, or use @ to reference project files…')
+            : t('Describe a task…')
+      : status.phase === 'error'
+        ? t('Pi unavailable')
+        : !workspace
+          ? t('Open a project folder to start')
+          : t('Pi stopped')
 
   useEffect(() => {
     setSlash(null)
     setMention(null)
     setPaletteIndex(0)
+    setCommandSelected(false)
   }, [draftKey])
 
   useEffect(() => {
@@ -428,24 +467,32 @@ export function Composer() {
     width: number
     fontScale: number
   }>({ height: 0, len: 0, newlines: 0, width: 0, fontScale })
+  const [textareaLayoutVersion, setTextareaLayoutVersion] = useState(0)
+
+  useEffect(() => {
+    const node = textareaRef.current
+    if (!node || typeof ResizeObserver === 'undefined') return
+    let width = node.clientWidth
+    let frame = 0
+    const observer = new ResizeObserver(() => {
+      const nextWidth = node.clientWidth
+      if (nextWidth === width) return
+      width = nextWidth
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        setTextareaLayoutVersion((version) => version + 1)
+      })
+    })
+    observer.observe(node)
+    return () => {
+      cancelAnimationFrame(frame)
+      observer.disconnect()
+    }
+  }, [])
 
   useEffect(() => {
     const node = textareaRef.current
     if (!node) return
-    if (!text) {
-      if (textareaSizeRef.current.height !== 0 || node.style.height) {
-        node.style.height = ''
-        node.style.overflowY = 'hidden'
-      }
-      textareaSizeRef.current = {
-        height: 0,
-        len: 0,
-        newlines: 0,
-        width: node.clientWidth,
-        fontScale
-      }
-      return
-    }
     const prev = textareaSizeRef.current
     const width = node.clientWidth
     const caretAtEnd =
@@ -510,7 +557,7 @@ export function Composer() {
       width,
       fontScale
     }
-  }, [text, fontScale])
+  }, [text, fontScale, inputPrompt, textareaLayoutVersion])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -625,21 +672,27 @@ export function Composer() {
   const insertCommand = useCallback(
     (command: PiCommand) => {
       if (!slash) return
+      const targetKey = draftKeyRef.current
+      const currentText = readTargetDraft(targetKey).text
       const node = textareaRef.current
       const cursor = node?.selectionStart ?? slash.cursor
-      const commandName = command.source === 'app' ? appCommandName(command.name, language) : command.name
-      const next = `${text.slice(0, slash.start)}/${commandName} ${text.slice(cursor)}`
-      setText(next)
-      setSlash(null)
+      const suffix = currentText.slice(cursor).replace(/^\s/, '')
+      patchDraft(targetKey, (prev) => ({
+        ...prev,
+        command: { name: command.name, source: command.source },
+        text: suffix
+      }))
+      setCommandSelected(false)
+      setMention(null)
       requestAnimationFrame(() => {
         const target = textareaRef.current
         if (!target) return
-        const position = slash.start + commandName.length + 2
         target.focus()
-        target.setSelectionRange(position, position)
+        target.setSelectionRange(0, 0)
       })
+      setSlash(null)
     },
-    [slash, text, language, setText]
+    [slash, readTargetDraft, patchDraft]
   )
 
   const submit = useCallback(() => {
@@ -648,14 +701,26 @@ export function Composer() {
     if (sendingClientsRef.current.has(lockKey)) return
     if ((pendingAddsByKeyRef.current.get(targetKey) ?? 0) > 0) return
     const currentDraft = readTargetDraft(targetKey)
-    if (!currentDraft.text.trim() && !currentDraft.images.length && !(currentDraft.files?.length ?? 0)) return
+    if (!currentDraft.text.trim() && !currentDraft.command && !currentDraft.images.length && !(currentDraft.files?.length ?? 0)) return
+    const loneSlash = /^\/([^\s/]+)$/.exec(currentDraft.text.trim())
+    if (!currentDraft.command && currentDraft.text.trim() === '/') {
+      useAppStore.getState().showToast(t('Choose a slash command before sending'), 'warning')
+      return
+    }
+    if (loneSlash && !findCommand(commands, loneSlash[1], language)) {
+      useAppStore.getState().showToast(t('No command matches this slash command'), 'warning')
+      return
+    }
     // Hold the lock until Pi accepts the prompt. Releasing it when the box
     // clears lets a second Enter send the same draft again while the first
     // request is still starting.
     sendingClientsRef.current.add(lockKey)
     const fileReferences = (currentDraft.files ?? EMPTY_FILES).map(composerFileToken)
     const visibleText = currentDraft.text
-    const draftText = [...fileReferences, visibleText].filter((part) => part.trim()).join('\n')
+    const body = [...fileReferences, visibleText].filter((part) => part.trim()).join('\n')
+    const draftText = currentDraft.command
+      ? `/${currentDraft.command.name}${body ? ` ${body}` : ''}`
+      : body
     const shots = currentDraft.images.map(({ data, mimeType }) => ({ data, mimeType }))
     const delivery = kind
     void send(draftText, shots, delivery).finally(() => {
@@ -663,15 +728,17 @@ export function Composer() {
     })
     patchDraft(targetKey, (prev) => ({
       text: '',
+      command: undefined,
       images: EMPTY_IMAGES,
       files: EMPTY_FILES,
       pastedRefs: undefined,
       history: [draftText, ...(prev.history ?? EMPTY_HISTORY).filter((entry) => entry !== draftText)].slice(0, 50)
     }))
     setHistoryIndex(-1)
+    setCommandSelected(false)
     closePalette()
     setMention(null)
-  }, [kind, send, closePalette, patchDraft, readTargetDraft, setHistoryIndex])
+  }, [kind, send, commands, language, t, closePalette, patchDraft, readTargetDraft, setHistoryIndex])
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
@@ -728,6 +795,33 @@ export function Composer() {
         closePalette()
         return
       }
+    }
+
+    if (
+      slash &&
+      matching.length === 0 &&
+      event.key === 'Enter' &&
+      (!event.shiftKey || event.ctrlKey || event.metaKey)
+    ) {
+      event.preventDefault()
+      return
+    }
+
+    if (command && event.key === 'Backspace') {
+      const input = event.currentTarget
+      if (input.selectionStart === 0 && input.selectionEnd === 0) {
+        event.preventDefault()
+        if (commandSelected) {
+          patchDraft(draftKeyRef.current, (prev) => ({ ...prev, command: undefined }))
+          setCommandSelected(false)
+          setSlash(null)
+        } else {
+          setCommandSelected(true)
+        }
+        return
+      }
+    } else if (commandSelected) {
+      setCommandSelected(false)
     }
 
     const isEnter = event.key === 'Enter'
@@ -952,7 +1046,25 @@ export function Composer() {
   const insertMenuCommand = useCallback(
     (command: PiCommand) => {
       const targetKey = draftKeyRef.current
-      const prefix = readTargetDraft(targetKey).text.trimEnd()
+      const currentDraft = readTargetDraft(targetKey)
+      if (!currentDraft.text.trim()) {
+        patchDraft(targetKey, (prev) => ({
+          ...prev,
+          command: { name: command.name, source: command.source },
+          text: ''
+        }))
+        setCommandSelected(false)
+        setSlash(null)
+        setMention(null)
+        requestAnimationFrame(() => {
+          const target = textareaRef.current
+          if (!target) return
+          target.focus()
+          target.setSelectionRange(0, 0)
+        })
+        return
+      }
+      const prefix = currentDraft.text.trimEnd()
       const commandName = command.source === 'app' ? appCommandName(command.name, language) : command.name
       const next = `${prefix ? `${prefix}\n` : ''}/${commandName} `
       setText(next, targetKey)
@@ -966,8 +1078,17 @@ export function Composer() {
         target.scrollTop = target.scrollHeight
       })
     },
-    [language, readTargetDraft, setText]
+    [language, readTargetDraft, patchDraft, setText]
   )
+
+  const commandListOpen = Boolean(slash && !mention)
+  const mentionListOpen = Boolean(mention)
+  const activeListId = commandListOpen ? commandListId : mentionListOpen ? mentionListId : undefined
+  const activeOptionId = commandListOpen && matching.length > 0
+    ? `${commandListId}-option-${paletteIndex}`
+    : mentionListOpen && mentionFiles.length > 0
+      ? `${mentionListId}-option-${mentionIndex}`
+      : undefined
 
   const pendingQueue = [
     ...queue.steering.map((value) => ({ kind: 'steer' as const, text: value })),
@@ -979,6 +1100,7 @@ export function Composer() {
       <div className="composer-stack">
         {slash && !mention ? (
           <CommandPalette
+            id={commandListId}
             commands={matching}
             query={slash.query}
             activeIndex={paletteIndex}
@@ -991,6 +1113,7 @@ export function Composer() {
 
         {mention ? (
           <FileMention
+            id={mentionListId}
             listRef={mentionListRef}
             files={mentionFiles}
             root={workspace?.path}
@@ -1020,7 +1143,7 @@ export function Composer() {
         <div
           className="composer"
           data-streaming={isStreaming}
-          data-has-content={Boolean(text.trim() || images.length > 0 || files.length > 0)}
+          data-has-content={hasContent}
         >
           {pendingQueue.length > 0 ? (
             <div className="composer__queue">
@@ -1082,30 +1205,73 @@ export function Composer() {
             </div>
           ) : null}
 
-          <textarea
+          <div className="composer__input-row">
+            {command && CommandIcon ? (
+              <span
+                className="composer__command"
+                data-selected={commandSelected}
+                role="group"
+                aria-label={`${t('Command')}: ${commandName}`}
+                title={t('Press Backspace twice to remove')}
+              >
+                <CommandIcon size={13} aria-hidden="true" />
+                <code>{commandName}</code>
+              </span>
+            ) : null}
+
+            <textarea
             ref={textareaRef}
-            className="composer__input"
+            className={command ? 'composer__input composer__input--command' : 'composer__input'}
             rows={1}
             value={text}
             disabled={!canCompose}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-haspopup="listbox"
+            aria-expanded={commandListOpen || mentionListOpen}
+            aria-controls={activeListId}
+            aria-activedescendant={activeOptionId}
             aria-label={inputPrompt}
             placeholder={inputPrompt}
             onFocus={() => prewarmRuntime()}
             onChange={(event) => {
               const value = event.target.value
               const cursor = event.target.selectionStart ?? value.length
+              const recognized = command ? undefined : recognizeCommandInput(value, commands, language)
+              if (recognized) {
+                const argumentStart = value.length - recognized.argument.length
+                const argumentCursor = Math.max(0, Math.min(recognized.argument.length, cursor - argumentStart))
+                patchDraft(draftKeyRef.current, (prev) => ({
+                  ...prev,
+                  command: recognized.command,
+                  text: recognized.argument
+                }))
+                setCommandSelected(false)
+                setSlash(null)
+                setMention(detectMention(recognized.argument, argumentCursor))
+                setPaletteIndex(0)
+                requestAnimationFrame(() => {
+                  const target = textareaRef.current
+                  if (!target) return
+                  target.setSelectionRange(argumentCursor, argumentCursor)
+                })
+                return
+              }
               setText(value)
-              setSlash(detectSlash(value, cursor))
+              setCommandSelected(false)
+              setSlash(command ? null : detectSlash(value, cursor))
               setMention(detectMention(value, cursor))
               setPaletteIndex(0)
             }}
             onKeyDown={onKeyDown}
             onClick={(event) => {
+              setCommandSelected(false)
               const cursor = event.currentTarget.selectionStart ?? text.length
-              setSlash(detectSlash(text, cursor))
+              setSlash(command ? null : detectSlash(text, cursor))
               setMention(detectMention(text, cursor))
             }}
             onBlur={() => {
+              setCommandSelected(false)
               // Let a click on a list item land before the list disappears.
               window.setTimeout(() => {
                 setSlash(null)
@@ -1132,6 +1298,7 @@ export function Composer() {
               void addFiles(event.dataTransfer?.files ?? null)
             }}
           />
+          </div>
 
           <div className="composer__bar" data-streaming={isStreaming} data-ready={canCompose}>
             <AddMenu
@@ -1184,7 +1351,7 @@ export function Composer() {
                 anything but `ready` is what made the model control vanish. */}
             <ModelPicker />
 
-            {isStreaming ? (
+            {isStreaming && !hasContent ? (
               <button
                 type="button"
                 className="btn composer__send composer__send--stop"
@@ -1201,7 +1368,7 @@ export function Composer() {
                 type="button"
                 className="btn btn--primary composer__send"
                 onClick={submit}
-                disabled={!canCompose || addingFiles || (!text.trim() && !images.length && !files.length)}
+                disabled={!canCompose || addingFiles || !hasContent}
                 aria-busy={addingFiles || undefined}
                 aria-label={t('Send message')}
                 title={t('Send message')}
@@ -1211,6 +1378,22 @@ export function Composer() {
             )}
           </div>
         </div>
+        {isStreaming && hasContent ? (
+          <div className="composer__stop-row">
+            <button
+              type="button"
+              className="session-bar__stop"
+              data-aborting={aborting || undefined}
+              disabled={aborting}
+              onClick={() => void stop()}
+              aria-label={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
+              title={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
+            >
+              <Square size={10} fill="currentColor" strokeWidth={0} />
+              {aborting ? t('Stopping…') : t('Stop')}
+            </button>
+          </div>
+        ) : null}
         <UsageBar />
       </div>
     </div>

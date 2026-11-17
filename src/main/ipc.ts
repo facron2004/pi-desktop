@@ -7,7 +7,7 @@ import { constants, mkdirSync, readFileSync, writeFileSync, type Dirent } from '
 import { lstat, open, opendir, realpath, stat, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type {
-  AgentMessage,
+  SessionHydrationResult,
   AppInfo,
   AppUpdateProgress,
   AppSettings,
@@ -111,7 +111,7 @@ import {
   listSessions,
   openSessionFile,
   pathsEqual,
-  readSessionMessages,
+  readSessionConversation,
   resolveSessionRoot,
   resolveSessionRoots,
   resolveSessionFilePath,
@@ -308,7 +308,7 @@ let sessionSearchSequence = 0
 const latestSessionSearches = new WeakMap<object, number>()
 /** The newest conversation hydration per window plus shared in-flight reads per session file. */
 interface InflightHydration {
-  promise: Promise<AgentMessage[]>
+  promise: Promise<SessionHydrationResult>
   supersededChecks: Set<() => boolean>
   aborted: boolean
 }
@@ -1384,7 +1384,8 @@ export function registerIpc(context: IpcContext): void {
     (await listSessions(cwd, settings.get().externalChatFolder)).map(withoutProjectFolder)
   )
 
-  ipcMain.handle('sessions:hydrate', async (event, file: string) => {
+  ipcMain.handle('sessions:hydrate', async (event, file: string): Promise<SessionHydrationResult> => {
+    const empty = (): SessionHydrationResult => ({ messages: [], historyTruncated: false })
     const sender = (event as { sender?: object } | undefined)?.sender
     const token = sender ? (sessionHydrationSequence += 1) : 0
     if (sender) latestHydrations.set(sender, token)
@@ -1395,10 +1396,10 @@ export function registerIpc(context: IpcContext): void {
     }
 
     const opened = await openSessionFile(file, resolveSessionRoots(settings.get().externalChatFolder))
-    if (!opened) return []
+    if (!opened) return empty()
     if (isSuperseded()) {
       await opened.handle.close().catch(() => {})
-      return []
+      return empty()
     }
 
     const cacheKey = canonicalSessionFile(opened.target)
@@ -1406,18 +1407,18 @@ export function registerIpc(context: IpcContext): void {
     if (existing && !existing.aborted) {
       await opened.handle.close().catch(() => {})
       existing.supersededChecks.add(isSuperseded)
-      const messages = await existing.promise
-      return isSuperseded() ? [] : messages
+      const result = await existing.promise
+      return isSuperseded() ? empty() : result
     }
 
     const entry: InflightHydration = {
       supersededChecks: new Set([isSuperseded]),
       aborted: false,
-      promise: Promise.resolve([])
+      promise: Promise.resolve(empty())
     }
     entry.promise = (async () => {
       try {
-        return await readSessionMessages(opened.target, opened.handle, {
+        const result = await readSessionConversation(opened.target, opened.handle, {
           shouldStop: () => {
             if (entry.aborted) return true
             for (const check of entry.supersededChecks) {
@@ -1430,6 +1431,7 @@ export function registerIpc(context: IpcContext): void {
             return true
           }
         })
+        return { messages: result.messages, historyTruncated: result.historyTruncated }
       } finally {
         if (inflightHydrations.get(cacheKey) === entry) {
           inflightHydrations.delete(cacheKey)
@@ -1438,8 +1440,8 @@ export function registerIpc(context: IpcContext): void {
       }
     })()
     inflightHydrations.set(cacheKey, entry)
-    const messages = await entry.promise
-    return isSuperseded() ? [] : messages
+    const result = await entry.promise
+    return isSuperseded() ? empty() : result
   })
 
   ipcMain.handle('sessions:rename', async (_event, file: string, name: string) => {
@@ -2519,6 +2521,25 @@ export function bridgeRuntime(context: IpcContext): void {
 
   activeWindow()
 
+  /**
+   * The conversation a desktop notification is about.
+   *
+   * A toast that only says "finished" is indistinguishable from the next one
+   * when several runs overlap; the name is what tells the reader which window
+   * to come back to. The name is read through the same metadata cache the
+   * sidebar uses, so a settle costs one incremental read at most.
+   */
+  const describeNotificationSession = async (ownerId: string): Promise<string> => {
+    if (!ownerId || ownerId.startsWith('draft:')) return ''
+    try {
+      const meta = await getSessionMeta(ownerId, resolveSessionRoots(settings.get().externalChatFolder))
+      const name = (meta?.name || meta?.preview || '').replace(/\s+/g, ' ').trim()
+      return name.length > 60 ? `${name.slice(0, 59)}…` : name
+    } catch {
+      return ''
+    }
+  }
+
   supervisor.on('event', (payload: { ownerId: string; event: PiEvent }) => {
     const event = payload.event
     if (isCoalescableStreamEvent(event)) {
@@ -2540,16 +2561,32 @@ export function bridgeRuntime(context: IpcContext): void {
       settings.getCached().desktopNotifications !== false
     ) {
       let body: string | null = null
+      let heading: string | null = null
       if (event.type === 'agent_settled') {
-        body = 'Pi finished a conversation.'
+        // A run the reader stopped, or a retired process, is not news.
+        if (!event.aborted && !event.runtimeStopped) {
+          body = 'Run finished'
+          heading = 'Run finished'
+        }
       } else if (
         event.type === 'extension_ui_request' &&
         ['select', 'confirm', 'input', 'editor'].includes(String(event.method ?? ''))
       ) {
-        body = String(event.title ?? event.message ?? 'Pi needs your input.')
+        const ask = String(event.title ?? event.message ?? '').trim()
+        body = ask ? `Needs your input: ${ask}` : 'Needs your input'
+        heading = ask || 'Needs your input'
       }
       if (body) {
-        showDesktopNotification(window, 'Pi Desktop', body)
+        const sessionKey = payload.ownerId
+        const message = body
+        void describeNotificationSession(sessionKey).then((name) => {
+          if (window.isDestroyed()) return
+          // The conversation is the heading, so overlapping runs stay
+          // distinguishable; the body keeps the event that happened.
+          showDesktopNotification(window, name || heading!, message, () => {
+            sendToWindow(window, 'notification:open', { sessionKey })
+          })
+        })
       }
     }
   })

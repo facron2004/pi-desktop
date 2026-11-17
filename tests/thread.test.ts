@@ -219,6 +219,82 @@ test('message_end makes the message authoritative and stops the stream', () => {
   assert.equal(texts(items), 'final')
 })
 
+test('a completion whose message identity moved still lands its usage', () => {
+  // A draft becomes its session file mid-answer: the items move to the new
+  // key, but the adapter's open-message name does not follow. `message_end`
+  // then names a message no bubble carries. The answer must still finish —
+  // otherwise it stays "streaming" with no usage for the life of the thread,
+  // and the usage line under the composer reads zero during every later turn.
+  const draft = { sessionKey: 'draft:one', runId: 'run-1', turnId: 'turn-1' }
+  const file = {
+    sessionKey: 'C:/sessions/2026-11-16T12-00-00-000Z_0000.jsonl',
+    runId: 'run-1',
+    turnId: 'turn-1'
+  }
+  const usage = { input: 100, output: 10, cacheRead: 500, cacheWrite: 0, totalTokens: 610 }
+
+  let items: ThreadItem[] = applyEvents([], [assistantStart()], draft)
+  items = applyEvents(
+    items,
+    [
+      update({ type: 'text_start', contentIndex: 0 }),
+      update({ type: 'text_delta', contentIndex: 0, delta: 'partial' })
+    ],
+    draft
+  )
+  // The adapter state is not carried across the re-key.
+  items = applyEvent(items, {
+    type: 'message_end',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'final answer' }],
+      usage,
+      stopReason: 'stop',
+      timestamp: 2
+    }
+  } as PiEvent, file)
+
+  const assistant = items.find((item) => item.kind === 'assistant')
+  assert.ok(assistant && assistant.kind === 'assistant')
+  assert.equal(assistant.streaming, false, 'the answer finished')
+  assert.equal(assistant.usage?.totalTokens, 610, 'the completion carried its usage')
+  assert.equal(texts(items), 'final answer', 'the authoritative content replaced the deltas')
+})
+
+test('a late duplicate completion never lands on a newer answer', () => {
+  // The adapter names the open message, so a duplicate record sent while a
+  // newer answer streams is matched to that newer answer by the adapter
+  // itself; the timestamp fallback must not add a second path. Build the
+  // duplicate without an adapter identity and give it the old answer's stamp.
+  let items: ThreadItem[] = applyEvents([], [assistantStart()])
+  items = applyEvents(items, [assistantEnd([{ type: 'text', text: 'first' }], { timestamp: 2 })])
+  items = applyEvents(items, [
+    { type: 'message_start', message: { role: 'assistant', content: [], timestamp: 9 } }
+  ])
+  const open = items.filter((item): item is AssistantItem => item.kind === 'assistant')[1]
+  // Strip the id the adapter would have stamped, as a replay of an older
+  // record that never went through this run's `message_start` does.
+  items = items.map((item) =>
+    item.kind === 'assistant' && item.id === open.id ? { ...item, messageId: 'foreign-id' } : item
+  )
+
+  items = applyEvent(items, {
+    type: 'message_end',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'first' }],
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 },
+      stopReason: 'stop',
+      timestamp: 2
+    }
+  } as PiEvent)
+
+  const live = items.filter((item): item is AssistantItem => item.kind === 'assistant')
+  assert.equal(live.length, 2)
+  assert.equal(live[1].streaming, true, 'the newer answer is still open')
+  assert.equal(live[1].usage, undefined, 'the old usage did not move onto it')
+})
+
 /* ------------------------------------------------------------------ *
  * T03/T04/T05 — the life of one tool call
  * ------------------------------------------------------------------ */

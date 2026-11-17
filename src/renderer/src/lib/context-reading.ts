@@ -138,13 +138,15 @@ export function estimateContextBreakdown(
     ? reportedContextTokens
     : newestUsageTokens
   if (totalTokens === null || totalTokens === undefined) {
+    const conversation = messages.some((message) => message.role !== 'system')
+      ? conversationTokens
+      : null
     return {
       systemPrompt: promptTokens,
       toolDefinitions: toolTokens,
-      conversationMessages: messages.some((message) => message.role !== 'system')
-        ? conversationTokens
-        : null,
-      source: 'session'
+      conversationMessages: conversation,
+      source: 'session',
+      total: (promptTokens ?? 0) + (toolTokens ?? 0) + (conversation ?? 0)
     }
   }
 
@@ -159,7 +161,52 @@ export function estimateContextBreakdown(
     conversationMessages: messages.some((message) => message.role !== 'system')
       ? Math.max(0, totalTokens - knownRows)
       : null,
-    source: 'session'
+    source: 'session',
+    total: totalTokens
+  }
+}
+
+/**
+ * Print the rows against the reading on screen.
+ *
+ * The split is a snapshot of one moment — the provider request that carried
+ * it, or the read that built it — while the headline comes from the newest
+ * statistics. A panel that prints both without reconciling them shows rows
+ * that add up to a number the header never mentions. The proportions are the
+ * part that is worth keeping, so they are applied to the current reading and
+ * the conversation row absorbs the rounding.
+ */
+export function alignBreakdown(
+  breakdown: ContextBreakdown | undefined,
+  readingTokens: number | null
+): ContextBreakdown | undefined {
+  if (!breakdown || readingTokens === null || !Number.isFinite(readingTokens) || readingTokens <= 0) {
+    return breakdown
+  }
+  const system = breakdown.systemPrompt
+  const tools = breakdown.toolDefinitions
+  const conversation = breakdown.conversationMessages
+  // Without a conversation row there is nothing to hold the reading: the split
+  // describes only the prompt scaffolding, and stretching it would claim the
+  // whole window is system and tools.
+  if (conversation === null || conversation === undefined) return breakdown
+  const sum = (system ?? 0) + (tools ?? 0) + conversation
+  if (sum <= 0) return breakdown
+  if (Math.abs(sum - readingTokens) <= Math.max(1, readingTokens * 0.005)) {
+    return { ...breakdown, total: readingTokens }
+  }
+  const scale = readingTokens / sum
+  const scaledSystem = system === null ? null : Math.round(system * scale)
+  const scaledTools = tools === null ? null : Math.round(tools * scale)
+  return {
+    systemPrompt: scaledSystem,
+    toolDefinitions: scaledTools,
+    conversationMessages: Math.max(
+      0,
+      Math.round(readingTokens - (scaledSystem ?? 0) - (scaledTools ?? 0))
+    ),
+    source: breakdown.source,
+    total: readingTokens
   }
 }
 
@@ -174,11 +221,15 @@ export function parseRequestContextBreakdown(value: string | undefined): Context
       !validCount(parsed.toolDefinitions) ||
       !validCount(parsed.conversationMessages)
     ) return null
+    const reportedTotal = typeof parsed.total === 'number' && Number.isFinite(parsed.total) && parsed.total > 0
+      ? parsed.total
+      : null
     return {
       systemPrompt: parsed.systemPrompt,
       toolDefinitions: parsed.toolDefinitions,
       conversationMessages: parsed.conversationMessages,
-      source: 'request'
+      source: 'request',
+      total: reportedTotal
     }
   } catch {
     return null

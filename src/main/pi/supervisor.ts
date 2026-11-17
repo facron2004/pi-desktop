@@ -1079,7 +1079,9 @@ export class SessionSupervisor extends EventEmitter {
       this.queueDrainTimer = undefined
       this.drainQueued()
     }, delay)
-    this.queueDrainTimer.unref?.()
+    // Deliberately not unref'd: this timer only exists while a request is
+    // queued, and that caller is awaiting the request's promise. An unref'd
+    // poll would let a bare process exit with the queued command unresolved.
   }
 
   private async rebindFromState(id: string): Promise<string | undefined> {

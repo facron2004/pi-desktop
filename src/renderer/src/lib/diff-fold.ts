@@ -6,6 +6,21 @@ export const CONTEXT_LINES = 3
 /** A collapsed run has to hide at least this many lines to be worth a click. */
 const MIN_GAP_LINES = 3
 
+/**
+ * How much line diffing one file may cost before the pane gives up.
+ *
+ * jsdiff aligns lines with a Myers diff: its cost grows with the number of
+ * edits, so two halves of a wholly rewritten file are the worst case —
+ * measured at about 8 s for 8 000 lines each, and it grows quadratically from
+ * there. `git:fileDiff` caps each side at 512 KB, which is still tens of
+ * thousands of short lines, and this runs in the renderer: a file a formatter
+ * or a script rewrote would lock the window (the conversation included) until
+ * the diff finished. A time budget is the right shape for that — a large file
+ * with a few changes still aligns in milliseconds because the common prefix
+ * and suffix are trimmed, so only the genuinely expensive pairs give up.
+ */
+export const DIFF_TIME_BUDGET_MS = 1_000
+
 export type DiffRow =
   | {
       kind: 'add' | 'del' | 'ctx'
@@ -26,11 +41,28 @@ export type DiffRow =
 
 export interface DiffBlock {
   rows: DiffRow[]
+  /**
+   * The two sides were too expensive to align, so `rows` is empty and the pane
+   * says so. Only ever set with `rows: []` — never claim a change that was not
+   * computed, and never build a hunk patch out of a placeholder.
+   */
+  degraded?: boolean
 }
 
-/** Build a line diff for a single edit pair. */
-export function buildDiff(oldText: string, newText: string): DiffBlock {
-  const parts = diffLines(oldText, newText)
+/**
+ * Build a line diff for a single edit pair.
+ *
+ * `budgetMs` is the wall-clock limit for the alignment; a test can shrink it to
+ * exercise the degraded path without building a file large enough to time out
+ * on a fast machine.
+ */
+export function buildDiff(
+  oldText: string,
+  newText: string,
+  budgetMs = DIFF_TIME_BUDGET_MS
+): DiffBlock {
+  const parts = diffLines(oldText, newText, { timeout: budgetMs })
+  if (!parts) return { rows: [], degraded: true }
   const rows: DiffRow[] = []
   let oldLine = 1
   let newLine = 1
@@ -61,17 +93,20 @@ export function buildWorkingTreeDiff(
   oldText: string,
   newText: string,
   added: number | undefined,
-  removed: number | undefined
+  removed: number | undefined,
+  budgetMs = DIFF_TIME_BUDGET_MS
 ): DiffBlock {
-  const direct = buildDiff(oldText, newText)
-  if (added === undefined || removed === undefined) return direct
+  const direct = buildDiff(oldText, newText, budgetMs)
+  if (direct.degraded || added === undefined || removed === undefined) return direct
   const matches = (block: DiffBlock) => {
     const counts = diffStats(block)
     return counts.added === added && counts.removed === removed
   }
   if (matches(direct)) return direct
-  const normalized = buildDiff(oldText.replace(/\r\n/g, '\n'), newText.replace(/\r\n/g, '\n'))
-  return matches(normalized) ? normalized : direct
+  // The first attempt already spent most of the budget the reader tolerates;
+  // a second one is only worth it while the text still has a chance to align.
+  const normalized = buildDiff(oldText.replace(/\r\n/g, '\n'), newText.replace(/\r\n/g, '\n'), budgetMs)
+  return !normalized.degraded && matches(normalized) ? normalized : direct
 }
 
 function gapRow(hidden: DiffRow[], key: string): DiffRow {
@@ -84,6 +119,17 @@ function gapRow(hidden: DiffRow[], key: string): DiffRow {
     hidden,
     key
   }
+}
+
+/**
+ * Append one array onto another without `push(...items)`.
+ *
+ * A file can carry a hundred thousand rows under the preview cap, and spreading
+ * that many arguments throws `RangeError: Maximum call stack size exceeded`
+ * (measured at ~125 000) instead of appending them.
+ */
+function append<T>(target: T[], items: T[]): void {
+  for (const item of items) target.push(item)
 }
 
 /**
@@ -130,14 +176,14 @@ export function foldDiff(rows: DiffRow[], context = CONTEXT_LINES, scope = '0'):
       tail = run.slice(run.length - tailKeep)
     }
 
-    out.push(...head)
+    append(out, head)
     if (hidden.length >= MIN_GAP_LINES) {
       out.push(gapRow(hidden, `${scope}:${gap}`))
       gap += 1
     } else {
-      out.push(...hidden)
+      append(out, hidden)
     }
-    out.push(...tail)
+    append(out, tail)
 
     index = end
   }

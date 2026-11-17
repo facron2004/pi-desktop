@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import type { ComposerDraftFile } from '../lib/composer-files'
 import {
   CONTEXT_BREAKDOWN_STATUS_KEY,
   GENERATION_TIMING_STATUS_KEY,
@@ -16,7 +15,6 @@ import type {
   ForkTarget,
   GitCommitResult,
   GitStatus,
-  ImageContent,
   InspectorRequest,
   ModelInfo,
   PiCommand,
@@ -35,12 +33,14 @@ import type { SessionNotice } from '../lib/session-indicator'
 import {
   applyEventBatch,
   applyEvent,
+  clearPendingPrompts,
   itemsFromMessages,
   lastAssistantText,
   markAborted,
   nextId,
   nextOrder,
-  type ThreadItem
+  type ThreadItem,
+  type UserItem
 } from '../lib/thread'
 import { basename, resolveAgainst, samePath } from '../lib/path'
 import {
@@ -50,6 +50,7 @@ import {
   type PendingUiSession
 } from '../lib/live-sessions'
 import { stripAnsi } from '../lib/ansi'
+import { translate } from '../lib/i18n'
 import { collectProjects, type Project } from '../lib/projects'
 import { APP_COMMANDS, normalizeAppCommandInput } from '../lib/app-commands'
 import { COMPACTION_EXTENSION_MANAGED_MESSAGE, compactionOwnedByExtension, describeCompactionFailure } from '../lib/compaction-error'
@@ -70,28 +71,23 @@ import {
   recordToolDuration,
   recordTtftDuration
 } from '../lib/session-timing'
+import { conversationStarted, nextWorktreeBranch } from '../lib/worktree-name'
+import {
+  forgetLastDraftKey,
+  loadComposerDrafts,
+  saveComposerDrafts
+} from '../lib/composer-drafts'
+import type { ComposerDraft } from '../lib/composer-drafts'
 
 export { listPendingUiSessions, type PendingUiSession }
-
-export type QueueKind = 'steer' | 'followUp'
-
-export interface ComposerDraftImage extends ImageContent {
-  id: string
-  name: string
-  bytes: number
-  previewUrl?: string
-}
-
+export type {
+  ComposerDraft,
+  ComposerDraftCommand,
+  ComposerDraftImage
+} from '../lib/composer-drafts'
 export type { ComposerDraftFile } from '../lib/composer-files'
 
-export interface ComposerDraft {
-  text: string
-  images: ComposerDraftImage[]
-  /** Non-image files shown as attachment chips and sent as `@` references. */
-  files?: ComposerDraftFile[]
-  pastedRefs?: Record<string, string>
-  history?: string[]
-}
+export type QueueKind = 'steer' | 'followUp'
 
 export type CwdWaitState = Omit<RuntimeQueueEvent, 'ownerId' | 'queued'>
 
@@ -201,6 +197,8 @@ export interface RetryState {
 /** One conversation's transcript and run, kept even when it is not on screen. */
 export interface SessionThread {
   items: ThreadItem[]
+  /** The visible transcript is a bounded tail, not the complete session history. */
+  historyTruncated?: boolean
   run: RunState
   isStreaming: boolean
   transport: 'connected' | 'disconnected'
@@ -239,6 +237,7 @@ export interface SessionThread {
 
 const THREAD_KEYS = [
   'items',
+  'historyTruncated',
   'run',
   'isStreaming',
   'transport',
@@ -276,6 +275,7 @@ function emptyThread(
 ): SessionThread {
   return {
     items: [],
+    historyTruncated: false,
     run: IDLE_RUN,
     isStreaming: false,
     transport: 'connected',
@@ -312,6 +312,45 @@ function viewKeyOf(state: { activeSessionFile?: string; draftId?: string }): str
   return draftKeyOf(state)
 }
 
+/**
+ * The model the active conversation runs on.
+ *
+ * The live process's choice wins. A cold conversation reads its own persisted
+ * model — Pi records every `model_change` in the session file and the sessions
+ * list carries the last one — so a conversation keeps the model it last used
+ * instead of following whatever the app default currently is. A draft has no
+ * model of its own yet and shows the app default.
+ */
+function currentConversationModel(
+  state: {
+    activeSessionFile?: string
+    sessions: SessionMeta[]
+    piState?: { model?: ModelInfo }
+    settings: { model?: string; provider?: string }
+  },
+  models: ModelInfo[]
+): ModelInfo | undefined {
+  const live = state.piState?.model
+  if (live?.id && live.provider) return live
+  const key = state.activeSessionFile
+  const spec = key ? state.sessions.find((entry) => entry.file === key)?.model : undefined
+  return resolveSavedModel(spec ?? state.settings.model, state.settings.provider, models)
+}
+
+/** Record a conversation's model choice in the sessions list immediately, so
+ * the picker keeps showing it before the watcher re-reads the session file. */
+function rememberSessionModel(
+  set: (partial: Partial<AppStore> | ((state: AppStore) => Partial<AppStore>)) => void,
+  key: string,
+  spec: string
+): void {
+  set((state) => ({
+    sessions: state.sessions.map((entry) =>
+      entry.file === key && entry.model !== spec ? { ...entry, model: spec } : entry
+    )
+  }))
+}
+
 function pinScrollToBottom(sessionKey: string | undefined): void {
   const raw = sessionKey?.trim()
   if (!raw) return
@@ -333,6 +372,54 @@ function pinScrollToBottom(sessionKey: string | undefined): void {
 function mintDraft(): string {
   const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   return `draft:${id}`
+}
+
+function draftWorkspaceKey(workspace: Workspace | undefined): string {
+  return workspace?.id ?? 'projectless'
+}
+
+let draftPersistenceWarning: 'text-only' | 'failed' | undefined
+
+function writeDraftSnapshot(
+  state: AppStore,
+  snapshot: { drafts: Record<string, ComposerDraft>; lastDraftKeys: Record<string, string> }
+): void {
+  const result = saveComposerDrafts(snapshot)
+  if (result === 'saved') {
+    draftPersistenceWarning = undefined
+    return
+  }
+  if (draftPersistenceWarning === result) return
+  draftPersistenceWarning = result
+  const zh = state.settings.language === 'zh-CN'
+  const message = result === 'text-only'
+    ? zh
+      ? '草稿图片过大，重启后只能恢复文字和文件引用。'
+      : 'Draft images are too large to restore after restart; text and file references were saved.'
+    : zh
+      ? '草稿无法保存，重启后可能无法恢复。'
+      : 'This draft could not be saved for restart recovery.'
+  // Some callers are inside a Zustand updater; publish the notice after that
+  // state transition rather than nesting another store write in it.
+  queueMicrotask(() => state.showToast(message, 'warning'))
+}
+
+function persistDraftSnapshot(
+  state: AppStore,
+  drafts: Record<string, ComposerDraft>,
+  lastDraftKey?: string | null
+): void {
+  const saved = loadComposerDrafts()
+  const lastDraftKeys = { ...saved.lastDraftKeys }
+  const workspaceKey = draftWorkspaceKey(state.workspace)
+  if (lastDraftKey === null) delete lastDraftKeys[workspaceKey]
+  else if (lastDraftKey) lastDraftKeys[workspaceKey] = lastDraftKey
+  writeDraftSnapshot(state, { drafts, lastDraftKeys })
+}
+
+function persistPromotedDraft(state: AppStore, from: string, drafts: Record<string, ComposerDraft>): void {
+  const saved = loadComposerDrafts()
+  writeDraftSnapshot(state, forgetLastDraftKey({ ...saved, drafts }, from))
 }
 
 export interface AppStore {
@@ -364,6 +451,8 @@ export interface AppStore {
   stats?: SessionStats
   contextBreakdown?: ContextBreakdown
   items: ThreadItem[]
+  /** True when the active transcript was hydrated from a bounded disk tail. */
+  historyTruncated?: boolean
   /** Transcript and run of every conversation, keyed by file path or draft id. */
   threads: Record<string, SessionThread>
   /** Per-session unsent composer text, attachments, pasted chunks, and input history. */
@@ -410,7 +499,7 @@ export interface AppStore {
   error?: string
   /** The mark of the conversation on screen; the sidebar reads the threads. */
   notice?: SessionNotice
-  toast?: { text: string; level: 'info' | 'warning' | 'error' }
+  toast?: { text: string; level: 'info' | 'warning' | 'error'; sessionKey?: string }
   /** Branch and working tree of the open project, when it is a git repo. */
   git?: GitStatus
   /** Bumped when the app asks the review panel to open its commit dialog. */
@@ -424,6 +513,12 @@ export interface AppStore {
    * ended for it: the switch happens once `agent_settled` arrives.
    */
   pendingProject?: { path: string | null; name: string }
+  /**
+   * The branch-menu checkbox. Checking it does not create a worktree; the
+   * folder is created when the next empty conversation sends its first prompt.
+   */
+  pendingWorktree: boolean
+  setPendingWorktree: (armed: boolean) => void
 
   /** A blocking extension dialog waiting for an answer. */
   uiRequest?: ExtensionUiRequest
@@ -517,6 +612,16 @@ export interface AppStore {
    * this never starts one — so the caller can fall back to the transcript.
    */
   readSessionStats: (sessionKey?: string) => Promise<SessionStats | undefined>
+  /**
+   * Keep the visible statistics moving while a run is live.
+   *
+   * `agent_start` drops the last snapshot so the transcript can drive the
+   * usage line; Pi becomes the authority again as soon as an answer lands.
+   * This reads only `get_session_stats`, throttled per conversation, so a
+   * long tool-heavy run does not wait for `agent_settled` to show its totals.
+   * It never starts a process.
+   */
+  refreshLiveStats: (sessionKey?: string) => void
   refreshInfo: () => Promise<void>
   /** Remember the conversation that is open in the current project. */
   rememberSession: (file: string) => Promise<void>
@@ -531,7 +636,7 @@ export interface AppStore {
   /** Pin a conversation to the top of the sidebar, or unpin it. */
   togglePin: (file: string) => Promise<void>
   dismissError: () => void
-  showToast: (message: string, level?: 'info' | 'warning' | 'error') => void
+  showToast: (message: string, level?: 'info' | 'warning' | 'error', sessionKey?: string) => void
   clearToast: () => void
   respondUi: (
     response: ExtensionUiResponse,
@@ -637,6 +742,21 @@ let sessionListRequest = 0
 /** Prevent older Pi state reads from overwriting a newer snapshot per thread. */
 let refreshStateRequestSequence = 0
 const refreshStateRequests = new Map<string, number>()
+/**
+ * One live `get_session_stats` per conversation at a time, and the earliest
+ * moment the next one may start. A tool-heavy turn ends a message every few
+ * seconds; asking Pi after each of them is enough to keep the usage line and
+ * the context ring moving without flooding the RPC pipe.
+ */
+const LIVE_STATS_INTERVAL_MS = 1_500
+const liveStatsAt = new Map<string, number>()
+const liveStatsInFlight = new Map<string, Promise<void>>()
+/**
+ * A run's start invalidates a read that was already in flight: it describes
+ * the session before this run's first token, and letting it land would mask
+ * the fresh transcript numbers with the previous totals.
+ */
+const liveStatsEpoch = new Map<string, number>()
 let modelCatalogRequestSequence = 0
 let agentSettingSelectionInFlight = false
 /** Owners whose compact RPC is still running. Pi aborts the previous compaction
@@ -721,6 +841,49 @@ export function getSessionAccessLru(): readonly string[] {
 const hydrationInFlight = new Map<string, Promise<void>>()
 const inlineBashCounts = new Map<string, number>()
 const respondingUiIds = new Set<string>()
+
+/**
+ * Prompts the reader submitted that the main process has not handed to Pi yet.
+ *
+ * The supervisor answers `prompt` only once the working folder is free, so a
+ * message can sit inside the desktop while the composer is already empty. A
+ * `queued` event from the supervisor is the proof that this happened, and is
+ * the moment its bubble is revealed; a prompt that Pi takes directly never
+ * needs one.
+ */
+const queuedPromptDrafts = new Map<string, UserItem[]>()
+
+function rememberQueuedPrompt(sessionKey: string, prompt: UserItem): void {
+  const key = threadKey(sessionKey)
+  const list = queuedPromptDrafts.get(key)
+  if (list) list.push(prompt)
+  else queuedPromptDrafts.set(key, [prompt])
+}
+
+function forgetQueuedPrompt(sessionKey: string, id: string): void {
+  const key = threadKey(sessionKey)
+  const list = queuedPromptDrafts.get(key)
+  if (!list) return
+  const next = list.filter((entry) => entry.id !== id)
+  if (next.length > 0) queuedPromptDrafts.set(key, next)
+  else queuedPromptDrafts.delete(key)
+}
+
+function takeQueuedPrompts(sessionKey: string): UserItem[] {
+  const key = threadKey(sessionKey)
+  const list = queuedPromptDrafts.get(key)
+  if (!list || list.length === 0) return []
+  queuedPromptDrafts.delete(key)
+  return list
+}
+
+function migrateQueuedPrompts(from: string, to: string): void {
+  const list = queuedPromptDrafts.get(from)
+  if (!list) return
+  queuedPromptDrafts.delete(from)
+  const existing = queuedPromptDrafts.get(to)
+  queuedPromptDrafts.set(to, existing ? [...existing, ...list] : list)
+}
 
 function hasThreadWork(thread: SessionThread): boolean {
   if (thread.items.length > 0) return true
@@ -934,6 +1097,43 @@ function tracedRpc<T>(
 
 const skillCommandRequests = new Map<string, Promise<void>>()
 
+/**
+ * The armed worktree checkbox becomes a folder only when a session starts.
+ *
+ * A conversation that already has a prompt keeps its current checkout. The
+ * first prompt of an empty one is the start: create the sibling worktree,
+ * switch to it, then let `send` continue in that folder.
+ */
+async function createWorktreeForSessionStart(get: GetState): Promise<boolean> {
+  const state = get()
+  if (!state.git?.isRepo) {
+    state.setPendingWorktree(false)
+    return true
+  }
+  state.setPendingWorktree(false)
+  try {
+    const listed = await window.pi.git.branches()
+    const taken = [
+      ...(listed?.branches ?? []).map((branch) => branch.name),
+      ...(listed?.worktrees ?? []).flatMap((worktree) => (worktree.branch ? [worktree.branch] : []))
+    ]
+    const name = nextWorktreeBranch(listed?.current ?? state.git.branch, taken)
+    const result = await window.pi.git.addWorktree('', name, true)
+    if (!result.ok || !result.path) {
+      get().setPendingWorktree(true)
+      get().showToast(result.error ?? 'Could not add the worktree', 'error')
+      return false
+    }
+    get().showToast(`Worktree created at ${result.path}`)
+    await get().switchProject(result.path, { allowWhileRunning: true })
+    return true
+  } catch {
+    get().setPendingWorktree(true)
+    get().showToast('Could not add the worktree', 'error')
+    return false
+  }
+}
+
 export const useAppStore = create<AppStore>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   sessions: [],
@@ -946,6 +1146,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   thinkingLevels: [],
   commands: APP_COMMANDS,
   items: [],
+  pendingWorktree: false,
+  setPendingWorktree: (armed) => set({ pendingWorktree: armed }),
   threads: {},
   drafts: {},
   updateDraft: (sessionKey, updater) => {
@@ -958,6 +1160,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         : { ...previous, ...updater }
       const empty =
         !nextDraft.text &&
+        !nextDraft.command &&
         nextDraft.images.length === 0 &&
         (nextDraft.files?.length ?? 0) === 0 &&
         (!nextDraft.pastedRefs || Object.keys(nextDraft.pastedRefs).length === 0) &&
@@ -966,14 +1169,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
         if (!(key in state.drafts)) return state
         const drafts = { ...state.drafts }
         delete drafts[key]
+        persistDraftSnapshot(state, drafts)
         return { drafts }
       }
-      return {
-        drafts: {
-          ...state.drafts,
-          [key]: nextDraft
-        }
+      const drafts = {
+        ...state.drafts,
+        [key]: nextDraft
       }
+      persistDraftSnapshot(state, drafts)
+      return { drafts }
     })
   },
   clearDraft: (sessionKey) => {
@@ -983,6 +1187,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (!(key in state.drafts)) return state
       const drafts = { ...state.drafts }
       delete drafts[key]
+      persistDraftSnapshot(state, drafts)
       return { drafts }
     })
   },
@@ -1179,6 +1384,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
               }
             : undefined
         })
+        // The supervisor is holding this prompt behind another conversation in
+        // the same folder. Show it in the transcript now; the empty composer
+        // would otherwise be the only sign that anything was sent.
+        if (!queueEvent.queued) return
+        const prompts = takeQueuedPrompts(key)
+        if (prompts.length === 0) return
+        bindSet(set, get, key)((state) => {
+          const visible = new Set(
+            state.items.filter((item) => item.kind === 'user').map((item) => item.id)
+          )
+          const missing = prompts.filter((prompt) => !visible.has(prompt.id))
+          return missing.length > 0 ? { items: [...state.items, ...missing] } : {}
+        })
       })
       const offStatus = window.pi.runtime.onStatus((incoming) => {
         const scoped = scopeStatus(incoming, viewKeyOf(get()))
@@ -1237,12 +1455,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
         void get().refreshSessions()
       })
 
+      const offNotificationOpen = window.pi.app.onNotificationOpen?.(({ sessionKey }) => {
+        if (!sessionKey) return
+        const state = get()
+        const key = threadKey(sessionKey)
+        const target =
+          state.sessions.find((entry) => threadKey(entry.file) === key) ??
+          state.sessions.find((entry) => entry.file === sessionKey)
+        if (target) void get().selectSession(target, 'notification-open')
+      })
+
       unsubscribeRuntime = () => {
         offEvent()
         offRekey?.()
         offQueue?.()
         offStatus()
         offSessionsChanged?.()
+        offNotificationOpen?.()
       }
 
       const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
@@ -1374,7 +1603,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const cached = sessionFile ? get().threads[sessionFile] : undefined
     const shouldHydrate = Boolean(sessionFile && (!cached || cached.version === 0) && !cached?.isStreaming)
     const hydratingSessionFile = shouldHydrate ? sessionFile : undefined
-    const draftId = sessionFile ? undefined : mintDraft()
+    const savedDrafts = loadComposerDrafts()
+    const drafts = { ...savedDrafts.drafts, ...get().drafts }
+    const restoredDraftId = savedDrafts.lastDraftKeys[draftWorkspaceKey(workspace)]
+    const draftId = sessionFile ? undefined : restoredDraftId || mintDraft()
     // Opening a conversation is what clears its mark: the reader has seen it.
     const thread = cached
       ? { ...cached, clientKey: cached.clientKey || mintClientKey(), notice: undefined }
@@ -1393,6 +1625,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({
       workspace,
       threads,
+      drafts,
       draftId,
       activeSessionFile: sessionFile,
       hydratingSessionFile,
@@ -1407,6 +1640,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       status: thread.version > 0 ? thread.status : { phase: 'ready', cwd: workspace?.path },
       transport: 'connected'
     })
+    if (!sessionFile && draftId) persistDraftSnapshot(get(), drafts, draftId)
     if (shouldHydrate && sessionFile) void get().hydrateSession(sessionFile)
     if (epoch !== workspaceEpoch) return
     await get().refreshSessions()
@@ -1581,7 +1815,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
     const work = (async () => {
       try {
-        const messages = await hydrate(file)
+        const { messages, historyTruncated } = await hydrate(file)
         const current = get().threads[file]
         if (!current) return
         const stale = hydrationStale(versionAtStart, current.version, current.isStreaming)
@@ -1611,6 +1845,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const next: SessionThread = {
           ...current,
           items: nextItems,
+          historyTruncated,
           contextBreakdown: current.contextBreakdown?.source === 'request'
             ? current.contextBreakdown
             : estimateContextBreakdown(messages ?? [], current.stats?.contextUsage?.tokens),
@@ -1737,6 +1972,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const draftId = mintDraft()
         const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
         threads[draftId] = thread
+        persistDraftSnapshot(get(), drafts, draftId)
         set({
           sessions,
           threads,
@@ -1750,6 +1986,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           ...projectThread(thread)
         })
       } else {
+        persistDraftSnapshot(get(), drafts)
         set({ sessions, threads, drafts })
       }
       let preferenceCleanupError: string | undefined
@@ -1838,6 +2075,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       { ...prunedThreads, [draftId]: thread },
       draftId
     )
+    persistDraftSnapshot(get(), get().drafts, draftId)
     set({
       draftId,
       activeSessionFile: undefined,
@@ -1944,10 +2182,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
         return
       }
     }
+    if (get().pendingWorktree && !conversationStarted(get().items)) {
+      const created = await createWorktreeForSessionStart(get)
+      if (!created) return
+    }
     let key = viewKeyOf(get())
     if (!key) {
       const draftId = mintDraft()
       const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
+      persistDraftSnapshot(get(), get().drafts, draftId)
       set({
         draftId,
         threads: { ...get().threads, [draftId]: thread },
@@ -1962,6 +2205,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const payload: Record<string, unknown> = { message: trimmed, streamingBehavior: kind }
     if (images.length) payload.images = images
     pinScrollToBottom(key)
+    // The prompt is recorded before it leaves, so a queue event from the main
+    // process can show it as waiting. It is only put in the transcript once
+    // the folder is busy: a prompt that reaches Pi at once never needs a
+    // placeholder, and Pi's own `message_start` is what the reader sees.
+    const pendingPrompt: UserItem = {
+      id: nextId('user'),
+      kind: 'user',
+      text: trimmed,
+      images: images ?? [],
+      timestamp: Date.now(),
+      order: nextOrder(),
+      pending: true
+    }
+    rememberQueuedPrompt(key, pendingPrompt)
     update((state) => ({
       error: undefined,
       isStreaming: true,
@@ -1971,7 +2228,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }))
     try {
       await get().ensureRuntime(key, 'prompt-send')
-      if (ownGet().run.phase === 'aborting' || ownGet().run.outcome === 'aborted') return
+      if (ownGet().run.phase === 'aborting' || ownGet().run.outcome === 'aborted') {
+        // Stop was pressed while this prompt was still cold-starting. Pi never
+        // opened a run for it (`runId` is absent), so no `agent_settled` will
+        // follow; leaving the phase on `aborting` would refuse every later
+        // prompt in this conversation. Inline bash settles the same optimistic
+        // run the same way. A prompt Pi did accept reopens the run on its own
+        // `agent_start`, so this cannot hide a run that kept going.
+        forgetQueuedPrompt(key, pendingPrompt.id)
+        if (!ownGet().run.settled && !ownGet().run.runId) {
+          update((state) => ({
+            cwdWait: undefined,
+            isStreaming: false,
+            run: { ...state.run, phase: 'idle', settled: true, outcome: 'aborted' },
+            items: clearPendingPrompts(state.items, pendingPrompt.id)
+          }))
+        }
+        return
+      }
       // An extension command can block on a dialog, and Pi only answers the
       // prompt once the command is done. The deadline has to outlast that.
       const result = await tracedRpc<{ disposition?: string; cancelled?: boolean }>(
@@ -1982,25 +2256,33 @@ export const useAppStore = create<AppStore>((set, get) => ({
         'prompt-send'
       )
       // Pi reports what it did with the prompt: `handled` means an extension
-      // or input handler consumed it and no model turn follows, `started`
-      // means it accepted the prompt to start a run, and `queued` means it is
-      // holding the message for a run that is already going. The phase has to
+      // or input handler consumed it (the handler may send a separate prompt),
+      // `started` means Pi accepted it for a run, and `queued` means Pi is
+      // holding it for a run that is already going. The phase has to
       // follow that answer rather than stay on the optimistic `queued`.
       if (result?.disposition === 'handled') {
+        forgetQueuedPrompt(key, pendingPrompt.id)
         update((state) => ({
           cwdWait: undefined,
           isStreaming: state.run.phase === 'queued' || state.run.phase === 'aborting' ? false : state.isStreaming,
           run: state.run.phase === 'queued' || (result.cancelled && state.run.phase === 'aborting') ? { ...state.run, phase: 'idle', settled: true } : state.run,
-          items: result.cancelled ? state.items : applyEvent(state.items, {
-            type: 'client_notice',
-            level: 'info',
-            text: `Pi handled ${trimmed} directly — no model turn was needed`
-          })
+          // The handler consumed the command, so no model turn follows: the
+          // transcript still records it, or a late response lands on a thread
+          // whose transcript never shows what the reader asked for. A cancelled
+          // prompt never reached Pi, so its waiting bubble is removed instead.
+          items: result.cancelled
+            ? clearPendingPrompts(state.items, pendingPrompt.id)
+            : applyEvent(state.items, {
+                type: 'client_notice',
+                level: 'info',
+                text: `Pi handled ${trimmed} directly — no model turn was needed`
+              })
         }))
       } else if (result?.disposition === 'started') {
         // A run is opening. `agent_start` confirms it; until then this is the
         // truth, and it keeps the row from reading "Queued" for a run that is
         // already on its way.
+        forgetQueuedPrompt(key, pendingPrompt.id)
         const startedAt = Date.now()
         const startedMonotonicAt = monotonicNow()
         update((state) => ({
@@ -2015,23 +2297,33 @@ export const useAppStore = create<AppStore>((set, get) => ({
                 }
               : state.run
         }))
-      } else if (result?.disposition !== 'queued') {
+      } else if (result?.disposition === 'queued') {
+        // Pi is holding the prompt for its own run queue. It will echo it back
+        // in `message_start`, so a bubble already revealed for the folder
+        // queue stays until then.
+        forgetQueuedPrompt(key, pendingPrompt.id)
+      } else {
         // No run was opened and Pi did not say it queued the message, so the
-        // optimistic phase must not be left standing.
+        // optimistic phase must not be left standing. Nothing will echo the
+        // prompt back, so its waiting bubble goes too.
+        forgetQueuedPrompt(key, pendingPrompt.id)
         update((state) => ({
           cwdWait: undefined,
           isStreaming: state.run.phase === 'queued' ? false : state.isStreaming,
-          run: state.run.phase === 'queued' ? { ...state.run, phase: 'idle', settled: true } : state.run
+          run: state.run.phase === 'queued' ? { ...state.run, phase: 'idle', settled: true } : state.run,
+          items: clearPendingPrompts(state.items, pendingPrompt.id)
         }))
       }
     } catch (error) {
       // The prompt never reached Pi, so a run it was shown as queued for
       // must not stay open.
+      forgetQueuedPrompt(key, pendingPrompt.id)
       update((state) => ({
         cwdWait: undefined,
         error: state.run.phase === 'aborting' || state.run.outcome === 'aborted' ? state.error : messageOf(error),
         isStreaming: state.run.phase === 'queued' ? false : state.isStreaming,
-        run: state.run.phase === 'queued' ? { ...state.run, phase: 'idle', settled: true } : state.run
+        run: state.run.phase === 'queued' ? { ...state.run, phase: 'idle', settled: true } : state.run,
+        items: clearPendingPrompts(state.items, pendingPrompt.id)
       }))
     }
   },
@@ -2046,6 +2338,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (!owner) {
       const draftId = mintDraft()
       const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
+      persistDraftSnapshot(get(), get().drafts, draftId)
       set({
         draftId,
         threads: { ...get().threads, [draftId]: thread },
@@ -2234,7 +2527,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
         undefined,
         'user-stop'
       )
-      update({ queue: { steering: [], followUp: [] } })
+      // A prompt still waiting for the folder lock was cancelled with the
+      // queue; its bubble goes back to being the composer text below.
+      queuedPromptDrafts.delete(threadKey(key))
+      update((state) => ({
+        queue: { steering: [], followUp: [] },
+        items: clearPendingPrompts(state.items)
+      }))
       const restored = [...(removed?.steering ?? []), ...(removed?.followUp ?? [])]
         .map((entry) => entry.trim())
         .filter(Boolean)
@@ -2276,7 +2575,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         undefined,
         'clear-queue'
       )
-      update({ queue: { steering: [], followUp: [] } })
+      update((state) => ({
+        queue: { steering: [], followUp: [] },
+        items: clearPendingPrompts(state.items)
+      }))
+      if (key) queuedPromptDrafts.delete(threadKey(key))
       if (restoreToEditor) {
         const restored = [...(removed?.steering ?? []), ...(removed?.followUp ?? [])]
           .map((entry) => entry.trim())
@@ -2313,24 +2616,31 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // missed. Treat it as live so `ensureRuntime` waits for it and sends
       // `set_model` instead of leaving the first prompt on the old model.
       const starting = get().threads[key]?.status.phase === 'starting'
+      // A conversation keeps its own model: only a draft — a conversation that
+      // does not exist yet — writes the app default. A session records the
+      // choice in Pi's own session file, so switching models here cannot move
+      // the default any other conversation reads.
+      const fresh = !key || key.startsWith('draft:')
       if (!running && !starting) {
         const spec = `${model.provider}/${model.id}`
         if (selection === modelPreferenceSequence) {
-          const shouldWrite = get().settings.model !== spec ||
-            get().settings.provider !== model.provider ||
-            (modelPreferenceValue !== undefined && modelPreferenceValue !== spec)
           modelPreferenceValue = spec
-          if (shouldWrite) {
-            const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
-            if (modelPreferenceSequence === selection) {
-              set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
+          if (fresh) {
+            const shouldWrite = get().settings.model !== spec ||
+              get().settings.provider !== model.provider
+            if (shouldWrite) {
+              const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
+              if (modelPreferenceSequence === selection) {
+                set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
+              }
             }
           }
         }
         // A draft's next launch already receives the saved default through
         // `ensureRuntime`; only a resumed session needs the extra command.
-        if (key && !key.startsWith('draft:')) {
+        if (key && !fresh) {
           pendingModelSelections.set(key, { provider: model.provider, id: model.id })
+          rememberSessionModel(set, key, spec)
         }
         recordModelUse(model)
         return true
@@ -2356,15 +2666,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await get().refreshState(threadKey(owner))
       const spec = `${model.provider}/${model.id}`
       if (selection === modelPreferenceSequence) {
-        const shouldWrite = get().settings.model !== spec ||
-          get().settings.provider !== model.provider ||
-          (modelPreferenceValue !== undefined && modelPreferenceValue !== spec)
         modelPreferenceValue = spec
-        if (shouldWrite) {
-          const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
-          if (modelPreferenceSequence === selection) {
-            set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
+        if (fresh) {
+          const shouldWrite = get().settings.model !== spec ||
+            get().settings.provider !== model.provider
+          if (shouldWrite) {
+            const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
+            if (modelPreferenceSequence === selection) {
+              set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
+            }
           }
+        } else {
+          rememberSessionModel(set, key, spec)
         }
       }
       recordModelUse(model)
@@ -2453,8 +2766,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       get().showToast(`Only ${models[0].name || models[0].id} is available`, 'warning')
       return
     }
-    const live = state.piState?.model
-    const selected = live?.id && live.provider ? live : resolveSavedModel(state.settings.model, state.settings.provider, models)
+    const selected = currentConversationModel(state, models)
     const current = models.findIndex((model) => model.id === selected?.id && model.provider === selected?.provider)
     // A model that is not in the list — a scoped one, say — has no place in
     // the cycle, so the walk starts at the first or the last entry.
@@ -2652,6 +2964,32 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // the reader has to see; the panel falls back to the transcript.
       return undefined
     }
+  },
+
+  refreshLiveStats(sessionKey = viewKeyOf(get())) {
+    const key = threadKey(sessionKey)
+    if (!key) return
+    if (liveStatsInFlight.has(key)) return
+    const now = Date.now()
+    const last = liveStatsAt.get(key) ?? 0
+    if (now - last < LIVE_STATS_INTERVAL_MS) return
+    liveStatsAt.set(key, now)
+    const epoch = liveStatsEpoch.get(key) ?? 0
+    const task = tracedRpc<SessionStats>(key, 'get_session_stats', undefined, 20_000, 'live-stats')
+      .then((stats) => {
+        if (!stats) return
+        if (deletedSessionKeys.has(key)) return
+        if ((liveStatsEpoch.get(key) ?? 0) !== epoch) return
+        bindSet(set, get, key)({ stats })
+      })
+      .catch(() => {
+        // A process that stopped between the event and the read is not an
+        // error the reader has to see: the transcript still drives the line.
+      })
+      .finally(() => {
+        liveStatsInFlight.delete(key)
+      })
+    liveStatsInFlight.set(key, task)
   },
 
   async refreshState(sessionKey = viewKeyOf(get())) {
@@ -3000,8 +3338,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ error: undefined })
   },
 
-  showToast(message, level = 'info') {
-    set({ toast: { text: message, level } })
+  showToast(message, level = 'info', sessionKey) {
+    set({ toast: { text: message, level, ...(sessionKey ? { sessionKey } : {}) } })
     if (toastTimer) clearTimeout(toastTimer)
     toastTimer = setTimeout(() => set({ toast: undefined }), 3200)
   },
@@ -3120,6 +3458,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           text: mergedText
         }
       }
+      persistDraftSnapshot(state, nextDrafts)
       return {
         drafts: nextDrafts,
         ...(isViewed
@@ -3786,6 +4125,7 @@ function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEY
   const uiRequests = pendingDialogsFor(thread)
   return {
     items: thread.items,
+    historyTruncated: thread.historyTruncated === true,
     run: thread.run,
     isStreaming: thread.isStreaming,
     transport: thread.transport,
@@ -3858,7 +4198,10 @@ function bindSet(set: SetState, get: GetState, owner: string): SetState {
     const key = threadKey(owner)
     const base = state.threads[key]
     if (key && !base && deletedSessionKeys.has(key)) return
-    const thread = base ?? emptyThread(state.workspace?.path)
+    // A background key has no thread yet, and its folder is not necessarily
+    // the one on screen. Leave the cwd blank so the runtime's own status fills
+    // it, instead of pointing the row at whichever project the reader opened.
+    const thread = base ?? emptyThread()
     const patch = typeof partial === 'function' ? partial({ ...state, ...projectThread(thread) }) : partial
     const next = threadFromPatch(thread, patch)
     const threads = { ...state.threads, ...(key ? { [key]: next } : {}) }
@@ -3910,6 +4253,7 @@ function rekeyThread(
     migrateScrollMemory(from, to)
     migrateViewState(from, to)
     migrateSessionTiming(from, to)
+    migrateQueuedPrompts(from, to)
     const aliases = [...(threadAliasesByTarget.get(from) ?? [])]
     for (const alias of aliases) {
       migrateScrollMemory(alias, to)
@@ -3948,6 +4292,9 @@ function rekeyThread(
 
   const targetThread = threads[to]
   const viewing = state.draftId === from || state.activeSessionFile === from
+  if (shouldMove && from.startsWith('draft:')) {
+    persistPromotedDraft(state, from, nextDrafts ?? state.drafts)
+  }
   set({
     threads,
     ...(nextDrafts ? { drafts: nextDrafts } : {}),
@@ -4266,6 +4613,9 @@ function forgetDeletedThread(file: string): void {
     pendingModelSelections.delete(key)
     toolStarts.delete(key)
     pending.delete(key)
+    liveStatsAt.delete(key)
+    liveStatsEpoch.delete(key)
+    liveStatsInFlight.delete(key)
     forgetSessionLru(key)
     clearScrollMemory(key)
     clearViewState(key)
@@ -4402,6 +4752,11 @@ function handleEvent(
       const sessionKey = runContextOf(get).sessionKey
       drainPending(sessionKey || (owner ? threadKey(owner) : undefined))
       beginStream(sessionKey)
+      // A live-stats read issued before this run describes the session as it
+      // was; it must not land on the fresh transcript numbers below, and the
+      // first answer of the new run should be allowed to ask again at once.
+      liveStatsEpoch.set(sessionKey, (liveStatsEpoch.get(sessionKey) ?? 0) + 1)
+      liveStatsAt.delete(sessionKey)
       // One run per prompt. A follow-up prompt that arrives while a run is
       // active does not open a second one: Pi folds it into the current run.
       const startedAt = Date.now()
@@ -4479,9 +4834,11 @@ function handleEvent(
       finishStream(runContextOf(get).sessionKey)
       const state = get()
       const durationMs =
-        state.run.startedMonotonicAt === undefined
-          ? undefined
-          : Math.max(0, monotonicNow() - state.run.startedMonotonicAt)
+        state.run.startedMonotonicAt !== undefined
+          ? Math.max(0, monotonicNow() - state.run.startedMonotonicAt)
+          : state.run.startedAt !== undefined
+            ? Math.max(0, Date.now() - state.run.startedAt)
+            : undefined
       const timingKey = owner ? threadKey(owner) : viewKeyOf(state)
       toolStarts.delete(timingKey)
       // Model durations are recorded only when the assistant message ends.
@@ -4568,6 +4925,32 @@ function handleEvent(
             text: 'Pi stopped before the run finished'
           })
         }))
+      }
+      // A finish in another conversation is easy to miss while the reader is
+      // watching this one: the row dot is the only mark, and a folded or long
+      // project lists hide attention rows. A named toast says which
+      // conversation moved and is itself the way back to it. A run the reader
+      // stopped is not news, and an unfocused window already gets the system
+      // notification.
+      if (!viewed && settledKey && !aborted) {
+        // Tests and non-DOM hosts have no focus concept; treat them as focused.
+        const focused =
+          typeof document === 'undefined' || typeof document.hasFocus !== 'function'
+            ? true
+            : document.hasFocus()
+        if (focused) {
+          const store = (realGet ?? get)()
+          const language = store.settings.language ?? 'en'
+          const title =
+            activeConversationTitle(topState.sessions, topState.threads, settledKey) ||
+            translate('A background conversation', language)
+          const template = translate(failed ? '{title} failed' : '{title} finished', language)
+          store.showToast(
+            template.replace('{title}', title),
+            failed ? 'error' : 'info',
+            settledKey
+          )
+        }
       }
       if (realGet && realSet) {
         const current = realGet()
@@ -4830,6 +5213,11 @@ function handleEvent(
         if (touchesWorkingTree(event.toolName) && gitBelongsToView(get, realGet, owner)) {
           get().scheduleGitRefresh()
         }
+        // A tool result is part of the next prompt, and the session totals Pi
+        // reports now include it. Pulling them here keeps the usage line and
+        // the context ring moving between answers instead of jumping only at
+        // `agent_settled`; the read is throttled per conversation.
+        get().refreshLiveStats(owner ? threadKey(owner) : undefined)
       }
       if (event.type === 'message_end') {
         const message = event.message as { role?: unknown; timestamp?: unknown } | undefined
@@ -4843,6 +5231,12 @@ function handleEvent(
             owner,
             typeof message?.timestamp === 'number' ? message.timestamp : undefined
           )
+          // `agent_start` cleared the last Pi snapshot so the transcript could
+          // drive the line; this is the first moment a new one is worth
+          // reading. Without it the bar showed the previous totals (or zero,
+          // when the live items had not landed their usage yet) until the run
+          // settled, which is a long wait on a tool-heavy turn.
+          get().refreshLiveStats(owner ? threadKey(owner) : undefined)
         }
       }
       // Only text moves the visible phase to generating. Thinking and tool
@@ -4886,6 +5280,10 @@ function handleEvent(
             owner,
             typeof payload?.message?.timestamp === 'number' ? payload.message.timestamp : undefined
           )
+          // Some providers close a message through `message_update:done` and
+          // never emit a top-level `message_end`; the statistics read must
+          // not depend on which of the two shapes the provider chose.
+          get().refreshLiveStats(owner ? threadKey(owner) : undefined)
         }
         const needsFirstToken = contentDelta && get().run.firstTokenAt === undefined
         const needsWindowStart = generatingDelta && get().run.messageGenerationStartedAt === undefined
@@ -5090,6 +5488,7 @@ function handleExtensionUi(
         realSet((state) => {
           const previous = state.drafts[targetKey] ?? { text: '', images: [] }
           const nextDrafts = { ...state.drafts, [targetKey]: { ...previous, text: nextText } }
+          persistDraftSnapshot(state, nextDrafts)
           return {
             drafts: nextDrafts,
             ...(isViewed ? { composerText: nextText } : {})

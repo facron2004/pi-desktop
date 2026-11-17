@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ModelInfo } from '@shared/types'
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Search, X } from 'lucide-react'
-import { resolveSavedModel, selectableModels } from '@shared/provider-models'
+import { selectableModels, resolveSavedModel } from '@shared/provider-models'
 import { useAppStore } from '../store/useAppStore'
 import { EffortSlider } from './EffortSlider'
 import { Popover } from './Popover'
@@ -75,13 +75,12 @@ function acceptsImages(model: ModelInfo): boolean {
 
 /** The model and its reasoning effort share one composer control. */
 export function ModelPicker() {
+  const pickerA11yId = useId().replace(/[^a-zA-Z0-9_-]/g, '')
+  const modelListId = `${pickerA11yId}-model-list`
   const threadModels = useAppStore((state) => state.models)
   const catalogModels = useAppStore((state) => state.catalogModels)
   const disabledModelSpecs = useAppStore((state) => state.disabledModelSpecs)
-  const savedModel = useAppStore((state) => state.settings.model)
-  const savedProvider = useAppStore((state) => state.settings.provider)
   const piState = useAppStore((state) => state.piState)
-  const liveModel = piState?.model
   const liveLevel = piState?.thinkingLevel
   const savedLevel = useAppStore((state) => state.settings.thinkingLevel)
   const thinkingLevels = useAppStore((state) => state.thinkingLevels)
@@ -96,10 +95,22 @@ export function ModelPicker() {
     () => selectableModels(threadModels, catalogModels, disabledModelSpecs),
     [threadModels, catalogModels, disabledModelSpecs]
   )
-  const currentModel =
-    liveModel?.id && liveModel.provider
-      ? liveModel
-      : resolveSavedModel(savedModel, savedProvider, models)
+  // The conversation's own model wins when Pi is cold: a session keeps the
+  // model it last used, so the chip must not follow the app default, which
+  // other conversations keep moving. Subscribe to stable values and resolve
+  // in a memo — a selector returning the fallback literal would repaint the
+  // picker on every store notification.
+  const liveModel = useAppStore((state) => state.piState?.model)
+  const sessionModelSpec = useAppStore((state) => {
+    const key = state.activeSessionFile
+    return key ? state.sessions.find((entry) => entry.file === key)?.model : undefined
+  })
+  const savedModel = useAppStore((state) => state.settings.model)
+  const savedProvider = useAppStore((state) => state.settings.provider)
+  const currentModel = useMemo(() => {
+    if (liveModel?.id && liveModel.provider) return liveModel
+    return resolveSavedModel(sessionModelSpec ?? savedModel, savedProvider, models)
+  }, [liveModel, sessionModelSpec, savedModel, savedProvider, models])
   useEffect(() => {
     let cancelled = false
     setConfiguredThinkingLevels([])
@@ -299,10 +310,12 @@ export function ModelPicker() {
     return (
       <button
         key={key}
+        id={`${modelListId}-option-${modelIndex}`}
+        role="option"
         className="popover__item model-picker__row"
         data-selected={selected}
         data-highlighted={highlighted === modelIndex}
-        aria-pressed={selected}
+        aria-selected={highlighted === modelIndex}
         aria-disabled={updating}
         title={rowTitle}
         onMouseEnter={() => setHighlighted(modelIndex)}
@@ -424,6 +437,16 @@ export function ModelPicker() {
                     value={modelQuery}
                     placeholder={t('Search models')}
                     aria-label={t('Search models')}
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-haspopup="listbox"
+                    aria-expanded={showModels}
+                    aria-controls={modelListId}
+                    aria-activedescendant={
+                      displayModels[highlighted]
+                        ? `${modelListId}-option-${highlighted}`
+                        : undefined
+                    }
                     onChange={(event) => {
                       setModelQuery(event.target.value)
                       setHighlighted(0)
@@ -459,7 +482,13 @@ export function ModelPicker() {
 
               <div className="project-menu__divider" />
 
-              <div className="model-picker__list" ref={attachList}>
+              <div
+                className="model-picker__list"
+                id={modelListId}
+                role="listbox"
+                aria-label={t('Models')}
+                ref={attachList}
+              >
                 {displayModels.length === 0 ? (
                   <div className="model-picker__empty">
                     {t('No model matches')} “{modelQuery}”

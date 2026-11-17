@@ -42,7 +42,8 @@ export class TerminalManager {
 
   constructor(
     private readonly send: (channel: string, payload: unknown) => void,
-    private readonly spawn: typeof pty.spawn
+    private readonly spawn: typeof pty.spawn,
+    private readonly platform: NodeJS.Platform = process.platform
   ) {}
 
   create(options: TerminalCreateOptions): TerminalSessionInfo {
@@ -59,13 +60,25 @@ export class TerminalManager {
     env.TERM = 'xterm-256color'
     env.COLORTERM = 'truecolor'
 
-    const processHandle = this.spawn(shell.file, shell.args, {
+    const spawnOptions: pty.IPtyForkOptions = {
       name: 'xterm-256color',
       cols: clamp(options.cols, 2, MAX_COLS),
       rows: clamp(options.rows, 2, MAX_ROWS),
       cwd,
       env
-    })
+    }
+    let processHandle: pty.IPty
+    try {
+      processHandle = this.spawn(shell.file, shell.args, spawnOptions)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // Some supported Windows builds cannot create ConPTY even though the
+      // bundled Winpty backend still works. Retry that specific startup failure
+      // once; permission, cwd and shell errors must not spawn a second process.
+      if (this.platform !== 'win32' || !/cannot launch conpty/i.test(message)) throw error
+      console.warn('[pi-desktop] ConPTY is unavailable; starting this terminal with Winpty')
+      processHandle = this.spawn(shell.file, shell.args, { ...spawnOptions, useConpty: false })
+    }
     const id = randomUUID()
     const session: Session = {
       process: processHandle,

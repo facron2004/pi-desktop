@@ -1231,17 +1231,29 @@ function sameReferences<T>(left: T[], right: T[]): boolean {
  */
 function turnElapsedMs(turn: Turn): number | undefined {
   const start = turn.user?.timestamp
-  if (start === undefined) return undefined
-  let end = start
+  if (start !== undefined) {
+    let end = start
+    for (const assistant of turn.assistants) {
+      const finished = assistant.timestamp + (assistant.durationMs ?? 0)
+      if (finished > end) end = finished
+    }
+    for (const tool of turn.tools) {
+      const finished = tool.finishedAt ?? tool.timestamp
+      if (finished > end) end = finished
+    }
+    if (end > start) return end - start
+  }
+  // Timestamps can fail to span the turn (a replay whose clocks do not line
+  // up). The durations Pi stored on the answers and tools are still the time
+  // the turn spent working, and "Finished" with no number is the bug.
+  let worked = 0
   for (const assistant of turn.assistants) {
-    const finished = assistant.timestamp + (assistant.durationMs ?? 0)
-    if (finished > end) end = finished
+    if (typeof assistant.durationMs === 'number' && assistant.durationMs > 0) worked += assistant.durationMs
   }
   for (const tool of turn.tools) {
-    const finished = tool.finishedAt ?? tool.timestamp
-    if (finished > end) end = finished
+    if (typeof tool.durationMs === 'number' && tool.durationMs > 0) worked += tool.durationMs
   }
-  return end > start ? end - start : undefined
+  return worked > 0 ? worked : undefined
 }
 
 function sameTurnContent(left: Turn, right: Turn): boolean {
@@ -1385,6 +1397,16 @@ const ThreadTurnView = memo(function ThreadTurnView({
     () => (liveTail ? [] : collectChanges(turn.tools)),
     [liveTail, turn.tools]
   )
+  const showAssistantError = Boolean(
+    lastAssistant?.stopReason === 'error' &&
+      !(isLastTurn && (run.outcome === 'aborted' || (!run.settled && isRateLimitError(lastAssistant.error))))
+  )
+  const showFallbackFailure = Boolean(
+    isLastTurn &&
+      outcome?.outcome === 'failed' &&
+      !showAssistantError &&
+      !turn.notices.some((notice) => notice.level === 'error')
+  )
 
   return (
     <section className="turn" data-turn={turn.id} data-session-turn={turn.user ? '' : undefined}>
@@ -1460,8 +1482,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
               />
             ) : null}
 
-            {lastAssistant?.stopReason === 'error' &&
-            !(isLastTurn && (run.outcome === 'aborted' || (!run.settled && isRateLimitError(lastAssistant.error)))) ? (
+            {showAssistantError && lastAssistant ? (
               <ErrorNotice
                 title={lastAssistant.error}
                 message={
@@ -1470,6 +1491,8 @@ const ThreadTurnView = memo(function ThreadTurnView({
                     : (lastAssistant.error ?? t('error'))
                 }
               />
+            ) : showFallbackFailure ? (
+              <ErrorNotice message={t('This run failed. See the details above.')} />
             ) : null}
 
             {statusRow}

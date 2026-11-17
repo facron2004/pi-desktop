@@ -272,6 +272,24 @@
   background: var(--bg-hover);
 }
 
+/* The add-worktree row is a checkbox. Checking it is the create. */
+.branch-menu__check-box {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.branch-menu__check-box[data-checked='true'] {
+  border-color: var(--text);
+  color: var(--text);
+}
+
 .branch-menu__remote-actions {
   display: flex;
   align-items: center;

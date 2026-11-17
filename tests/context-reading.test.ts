@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { contextReading } from '../src/renderer/src/lib/context-reading'
+import { alignBreakdown, contextReading } from '../src/renderer/src/lib/context-reading'
 import type { AssistantItem, ThreadItem } from '../src/renderer/src/lib/thread'
 import type { ModelInfo, SessionStats } from '../src/shared/types'
 
@@ -142,4 +142,51 @@ test('the session totals prefer Pi and fall back to the transcript', () => {
     ],
     [30, 10, 10, 10, 0]
   )
+})
+
+test('the breakdown rows add up to the reading they are printed under', () => {
+  // A split taken from an earlier request: system 11.3K, tools 7.5K, messages
+  // 87.4K — it adds up to 106K, while the panel now reads 30K.
+  const stored = {
+    systemPrompt: 11_300,
+    toolDefinitions: 7_500,
+    conversationMessages: 87_400,
+    source: 'request' as const,
+    total: 106_200
+  }
+  const aligned = alignBreakdown(stored, 30_000)
+  assert.ok(aligned)
+  const sum = (aligned.systemPrompt ?? 0) + (aligned.toolDefinitions ?? 0) + (aligned.conversationMessages ?? 0)
+  assert.equal(sum, 30_000)
+  assert.equal(aligned.systemPrompt, 3_192)
+  assert.equal(aligned.toolDefinitions, 2_119)
+  assert.equal(aligned.conversationMessages, 24_689)
+  assert.equal(aligned.total, 30_000)
+  assert.equal(aligned.source, 'request', 'rescaling keeps the source it came from')
+})
+
+test('a split that already describes the reading is left alone', () => {
+  const stored = {
+    systemPrompt: 10_000,
+    toolDefinitions: 5_000,
+    conversationMessages: 20_000,
+    source: 'session' as const,
+    total: 35_000
+  }
+  const aligned = alignBreakdown(stored, 35_000)
+  assert.deepEqual(aligned, { ...stored, total: 35_000 })
+})
+
+test('a split with no reading or no conversation row is printed as it was stored', () => {
+  const stored = {
+    systemPrompt: 11_300,
+    toolDefinitions: 7_500,
+    conversationMessages: 87_400,
+    source: 'request' as const,
+    total: 106_200
+  }
+  assert.deepEqual(alignBreakdown(stored, null), stored)
+  const scaffoldingOnly = { ...stored, conversationMessages: null }
+  assert.deepEqual(alignBreakdown(scaffoldingOnly, 30_000), scaffoldingOnly, 'stretching the scaffolding would claim the whole window is system and tools')
+  assert.equal(alignBreakdown(undefined, 30_000), undefined)
 })

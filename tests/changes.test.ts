@@ -78,3 +78,36 @@ test('changedFilePaths lists the files without building their diffs', () => {
     { path: 'src/b.ts', at: 1 }
   ])
 })
+
+test('an unchanged tool node reuses its diff instead of diffing again', () => {
+  const item = tool({ status: 'ok' })
+  const first = collectChanges([item])
+  const second = collectChanges([item])
+  // Same block object: the second call did not run another line diff. The
+  // Changes panel calls this on every `items` update while the agent streams,
+  // so a rebuild per call used to freeze the window for seconds.
+  assert.equal(first[0].diffs[0], second[0].diffs[0])
+  assert.notEqual(first[0].diffs, second[0].diffs, 'the returned list is not the cached array')
+})
+
+test('a changed tool node rebuilds only its own diffs', () => {
+  const a = tool({
+    id: 'a',
+    toolCallId: 'a',
+    args: { path: 'src/a.ts', edits: [{ oldText: 'one', newText: 'two' }] }
+  })
+  const b = tool({
+    id: 'b',
+    toolCallId: 'b',
+    args: { path: 'src/b.ts', edits: [{ oldText: 'three', newText: 'four' }] }
+  })
+  const first = collectChanges([a, b])
+  const patchedB: ToolItem = {
+    ...b,
+    args: { path: 'src/b.ts', edits: [{ oldText: 'three', newText: 'four\nfive' }] }
+  }
+  const second = collectChanges([a, patchedB])
+  const before = (changes: typeof first, path: string) => changes.find((change) => change.path === path)!
+  assert.equal(before(first, 'src/a.ts').diffs[0], before(second, 'src/a.ts').diffs[0], 'untouched node keeps its diff')
+  assert.notEqual(before(first, 'src/b.ts').diffs[0], before(second, 'src/b.ts').diffs[0], 'patched node is rebuilt')
+})

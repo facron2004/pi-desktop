@@ -647,6 +647,54 @@ test('a task whose running status cannot be saved is released for retry', async 
   }
 })
 
+test('a failing automatic launch backs off instead of retrying in a tight loop', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-backoff-test-'))
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'provider/model',
+      thinkingLevel: 'off'
+    })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  const originalError = console.error
+  let attempts = 0
+
+  try {
+    const task = service.create({
+      title: 'Unwritable task file',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'once', at: Date.now() + 400 }
+    })[0]
+    assert.ok(task)
+    // Every write now fails: the task file becomes a directory. An automatic
+    // launch cannot advance the schedule, so the task stays due.
+    const file = path.join(userData, 'scheduled-tasks.json')
+    unlinkSync(file)
+    mkdirSync(file)
+    console.error = () => { attempts += 1 }
+
+    await new Promise((resolve) => setTimeout(resolve, 1_500))
+
+    // Without a backoff the timer re-armed at 0ms and ran ~30 attempts in this
+    // window; one backed-off attempt is the expected shape.
+    assert.ok(attempts <= 3, `expected one backed-off attempt, saw ${attempts}`)
+    assert.equal(supervisor.ensureCalls, 0)
+    assert.ok((service.list()[0]?.nextRunAt ?? 0) > Date.now())
+  } finally {
+    console.error = originalError
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
 test('a scheduled run that crashes is recorded as an error, not completed', async () => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-test-'))
   const supervisor = new FakeSupervisor()

@@ -59,14 +59,13 @@ export const RunSummary = memo(function RunSummary({
       ? Math.max(0, now - (run.startedMonotonicAt ?? run.startedAt ?? now))
       : undefined
     : run.durationMs
-  const duration =
-    elapsedMs !== undefined && !aborted && !failed
-      ? formatElapsed(elapsedMs, language)
-      : undefined
-  const label = failed
-    ? t('Failed')
-    : aborted
-      ? t('Stopped by you')
+  const duration = elapsedMs !== undefined && !aborted
+    ? formatElapsed(elapsedMs, language)
+    : undefined
+  const label = aborted
+    ? t('Stopped by you')
+    : failed
+      ? t('Failed')
       : isRunning
         ? t('Working')
         : duration !== undefined
@@ -78,6 +77,7 @@ export const RunSummary = memo(function RunSummary({
       type="button"
       className="run-outcome"
       data-outcome={run.outcome}
+      data-has-duration={duration !== undefined || undefined}
       data-running={isRunning || undefined}
       data-foldable={canFold || undefined}
       data-open={canFold ? open || undefined : undefined}

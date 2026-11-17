@@ -150,6 +150,26 @@ test('sanitizeCommand masks embedded URLs and flags in command lines', () => {
   assert.equal(sanitizeCommand(rawCmd2), 'uvx mcp-server --api-key=*** --port=8080')
 })
 
+test('sanitizeCommand masks space-separated secrets with quotes and escapes', () => {
+  assert.equal(
+    sanitizeCommand('uvx mcp-server --api-key dummy-secret --port 8080'),
+    'uvx mcp-server --api-key *** --port 8080'
+  )
+  assert.equal(
+    sanitizeCommand('uvx --token "secret with spaces" --password \'another secret\' --port 8080'),
+    'uvx --token *** --password *** --port 8080'
+  )
+  assert.equal(
+    sanitizeCommand('uvx --api-key escaped\\ secret --port 8080'),
+    'uvx --api-key *** --port 8080'
+  )
+  assert.equal(
+    sanitizeCommand('cmd /c "uvx --api-key nested-secret --port 8080"'),
+    'cmd /c "uvx --api-key *** --port 8080"'
+  )
+  assert.equal(sanitizeCommand('uvx --port 8080 --name public-value'), 'uvx --port 8080 --name public-value')
+})
+
 test('readMcpConfig sanitizes server URLs and STDIO args from project config', () => {
   const temp = realpathSync(os.tmpdir())
   const dir = mkdtempSync(path.join(temp, 'pi-desktop-mcp-test-'))
@@ -168,7 +188,7 @@ test('readMcpConfig sanitizes server URLs and STDIO args from project config', (
           type: 'http'
         },
         stdioServer: {
-          command: 'npx -y @mcp/server-postgres postgresql://admin:pass123@localhost:5432/mydb',
+          command: 'npx -y @mcp/server-postgres postgresql://admin:pass123@localhost:5432/mydb --token command-secret',
           args: ['--api-key', 'secret_key', '--port', '8080'],
           type: 'stdio'
         }
@@ -176,7 +196,10 @@ test('readMcpConfig sanitizes server URLs and STDIO args from project config', (
     }
     writeFileSync(configPath, JSON.stringify(configData), 'utf8')
 
-    const config = readMcpConfig(dir, true)
+    const config = readMcpConfig(dir, true, {
+      userPath: path.join(dir, 'missing-user-mcp.json'),
+      projectPath: configPath
+    })
     assert.equal(config.projectExists, true)
 
     const secure = config.servers.find((s) => s.name === 'secureServer')
@@ -191,9 +214,10 @@ test('readMcpConfig sanitizes server URLs and STDIO args from project config', (
     assert.ok(stdio)
     assert.equal(
       stdio.command,
-      'npx -y @mcp/server-postgres postgresql://admin:***@localhost:5432/mydb'
+      'npx -y @mcp/server-postgres postgresql://admin:***@localhost:5432/mydb --token ***'
     )
     assert.deepEqual(stdio.args, ['--api-key', '***', '--port', '8080'])
+    assert.equal(JSON.stringify(config).includes('command-secret'), false)
   } finally {
     try {
       rmSync(dir, { recursive: true, force: true })

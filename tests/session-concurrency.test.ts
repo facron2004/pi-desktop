@@ -8,7 +8,8 @@ import {
   type RuntimeEnsureOptions,
   type RuntimeQueueEvent,
   type RuntimeStatus,
-  type SessionMeta
+  type SessionMeta,
+  type SessionHydrationResult
 } from '@shared/types'
 import { lastAssistantText } from '../src/renderer/src/lib/thread'
 import {
@@ -54,7 +55,7 @@ const bridge = {
       }
     }
   },
-  sessions: { list: async () => [], hydrate: async () => [], remove: async (_file?: string) => true },
+  sessions: { list: async () => [], hydrate: async () => ({ messages: [], historyTruncated: false }), remove: async (_file?: string) => true },
   git: { status: async () => ({ isRepo: false }) },
   runtime: {
     ensure: async (options: RuntimeEnsureOptions) => {
@@ -232,6 +233,39 @@ test('a late prompt response updates its own thread', async () => {
   await sending
   assert.equal(useAppStore.getState().items.length, 0)
   assert.equal(useAppStore.getState().threads['A.jsonl'].items.length, 1)
+})
+
+test('a prompt held behind another conversation stays visible until Pi echoes it', async () => {
+  await useAppStore.getState().selectSession(session('A.jsonl'))
+  let finish!: (value: unknown) => void
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'prompt') return new Promise((resolve) => { finish = resolve })
+    return originalRequest(command, ...args)
+  }
+  const sending = useAppStore.getState().send('held prompt', [])
+  await tick()
+  // Nothing has reached Pi yet, so there is nothing to show.
+  assert.deepEqual(useAppStore.getState().items.map((item) => item.kind), [])
+
+  // The supervisor reports the prompt is waiting for the folder.
+  emitQueue({
+    ownerId: 'A.jsonl',
+    cwd: 'C:/p',
+    queued: true,
+    position: 1,
+    holderOwnerId: 'B.jsonl',
+    holderCwd: 'C:/p'
+  })
+  const waiting = useAppStore.getState().items.find((item) => item.kind === 'user')
+  assert.ok(waiting?.kind === 'user' && waiting.pending === true, 'the held prompt is shown as waiting')
+  assert.equal(useAppStore.getState().cwdWait?.position, 1)
+
+  finish({ disposition: 'started' })
+  await sending
+  emit({ ownerId: 'A.jsonl', event: { type: 'message_start', message: { role: 'user', content: 'held prompt' } } })
+  const echoed = useAppStore.getState().items.filter((item) => item.kind === 'user')
+  assert.equal(echoed.length, 1, 'the echo claims the waiting bubble instead of adding a second one')
+  assert.ok(echoed[0]?.kind === 'user' && echoed[0].pending !== true)
 })
 
 test('background settlement refreshes only the runtime that settled', async () => {
@@ -1109,10 +1143,10 @@ test('runtime.onQueue updates and clears per-thread cwdWait state', async () => 
 
 test('hydrateSession deduplicates concurrent loads and preserves live prompt items appended mid-hydration', async () => {
   let hydrateCalls = 0
-  let resolveHydrate!: (msgs: any[]) => void
+  let resolveHydrate!: (result: SessionHydrationResult) => void
   bridge.sessions.hydrate = async () => {
     hydrateCalls += 1
-    return await new Promise<any[]>((resolve) => {
+    return await new Promise<SessionHydrationResult>((resolve) => {
       resolveHydrate = resolve
     })
   }
@@ -1127,13 +1161,17 @@ test('hydrateSession deduplicates concurrent loads and preserves live prompt ite
     event: { type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'live tail' }], timestamp: 200 } }
   })
 
-  resolveHydrate([
-    { role: 'user', content: [{ type: 'text', text: 'historical prompt' }], timestamp: 100 },
-    { role: 'assistant', content: [{ type: 'text', text: 'historical answer' }], timestamp: 150 }
-  ])
+  resolveHydrate({
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'historical prompt' }], timestamp: 100 },
+      { role: 'assistant', content: [{ type: 'text', text: 'historical answer' }], timestamp: 150 }
+    ],
+    historyTruncated: true
+  })
   await Promise.all([p1, p2])
 
   const items = useAppStore.getState().threads['hyd.jsonl'].items
+  assert.equal(useAppStore.getState().threads['hyd.jsonl'].historyTruncated, true)
   assert.equal(items.length, 3)
   assert.equal(items[0]?.kind === 'user' ? items[0].text : '', 'historical prompt')
   assert.equal(items[1]?.kind, 'assistant')

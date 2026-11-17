@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUpRight, Check, MessageSquareText, TriangleAlert } from 'lucide-react'
+import { ArrowUpRight, Check, ListChecks, MessageSquareText, TriangleAlert } from 'lucide-react'
 import { draftKeyOf, useAppStore, type SessionThread } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
@@ -7,6 +7,8 @@ import { activeConversationTitle, listPendingUiSessions } from '../lib/live-sess
 import { basename } from '../lib/path'
 import { Markdown } from './Markdown'
 import { findSessionMeta } from './RunStatusRow'
+
+const PLAN_REVIEW_TITLE = 'Plan ready to review'
 
 function pendingUiSignature(threads: Readonly<Record<string, SessionThread>>): string {
   let sig = ''
@@ -134,9 +136,8 @@ export function ExtensionDialog() {
   if (!request) return null
 
   const title = t(request.title ?? 'Pi is asking for input')
-  // Plan review has two meaningful outcomes; "No" and "Yes" make the user read
-  // the plan twice to remember which one leaves Plan Mode.
-  const planReview = request.method === 'confirm' && request.title === 'Approve this plan?'
+  // Plan review has two outcomes: keep editing the plan or explicitly execute it.
+  const planReview = request.method === 'confirm' && request.title === PLAN_REVIEW_TITLE
   const selectedIndex = (request.options ?? []).indexOf(selected ?? '')
   const originLabel =
     selectedPending?.title ||
@@ -174,10 +175,11 @@ export function ExtensionDialog() {
     <div className="modal-layer">
       <div
         ref={dialogRef}
-        className="modal modal--prompt"
+        className={planReview ? 'modal modal--prompt modal--plan-review' : 'modal modal--prompt'}
         role="dialog"
         aria-modal="true"
         aria-labelledby="extension-dialog-title"
+        aria-describedby={planReview && request.message ? 'extension-dialog-message' : undefined}
       >
         <div className="modal__context">
           <span className="modal__context-session" title={selectedPending?.cwd || originLabel}>
@@ -228,8 +230,10 @@ export function ExtensionDialog() {
           </div>
         ) : null}
         <header className="modal__head modal__head--prompt">
-          <span className="modal__icon" data-kind={request.method}>
-            {request.method === 'confirm' ? (
+          <span className="modal__icon" data-kind={planReview ? 'plan-review' : request.method}>
+            {planReview ? (
+              <ListChecks size={16} />
+            ) : request.method === 'confirm' ? (
               <TriangleAlert size={15} />
             ) : (
               <MessageSquareText size={15} />
@@ -239,9 +243,7 @@ export function ExtensionDialog() {
             <h2 id="extension-dialog-title" className="modal__title">{title}</h2>
             {request.message ? (
               planReview ? (
-                <div id="extension-dialog-message" className="modal__plan">
-                  <Markdown>{request.message}</Markdown>
-                </div>
+                null
               ) : (
                 <p
                   id="extension-dialog-message"
@@ -254,6 +256,12 @@ export function ExtensionDialog() {
             ) : null}
           </div>
         </header>
+
+        {planReview && request.message ? (
+          <div id="extension-dialog-message" className="modal__plan" role="region" aria-label={t('Implementation plan')}>
+            <Markdown>{request.message}</Markdown>
+          </div>
+        ) : null}
 
         {request.approval ? (
           <div className="modal__approval">
@@ -355,9 +363,11 @@ export function ExtensionDialog() {
 
         <footer className="modal__foot">
           <span className="modal__note">{timeoutNote ?? ''}</span>
-          <button className="btn" onClick={() => void dismissUi(uiTarget)}>
-            {t('Cancel')}
-          </button>
+          {planReview ? null : (
+            <button className="btn" onClick={() => void dismissUi(uiTarget)}>
+              {t('Cancel')}
+            </button>
+          )}
           {request.method === 'confirm' ? (
             <>
               <button
@@ -368,7 +378,7 @@ export function ExtensionDialog() {
                 {t(planReview ? 'Keep planning' : request.approval ? 'Deny' : 'No')}
               </button>
               <button className="btn btn--primary" onClick={submit}>
-                {t(planReview ? 'Approve plan' : request.approval ? 'Approve' : 'Yes')}
+                {t(planReview ? 'Start implementation' : request.approval ? 'Approve' : 'Yes')}
               </button>
             </>
           ) : (

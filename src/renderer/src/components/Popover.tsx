@@ -9,6 +9,7 @@ import {
   type ReactNode
 } from 'react'
 import { createPortal } from 'react-dom'
+import { windowShellBottom } from '../lib/hover-tip'
 
 interface PopoverProps {
   /**
@@ -133,11 +134,18 @@ export function Popover({
     const panel = popoverRef.current
     if (!anchor || !panel) return
 
+    // React reapplies the inline `visibility: hidden` on every render. A parent
+    // that updates while the menu is open (the branch list loading, for one)
+    // would otherwise leave the panel hidden, because this effect used to skip
+    // when `open` itself had not changed. Re-assert visibility before paint.
     const position = () => {
       const rect = anchor.getBoundingClientRect()
       const edge = 12
       const gap = 8
-      const above = Math.max(0, rect.top - edge - gap)
+      // The caption buttons are a native layer over the page. Room "above" a
+      // control does not include that band, or the menu opens under the shell.
+      const topInset = Math.max(edge, windowShellBottom())
+      const above = Math.max(0, rect.top - topInset - gap)
       const below = Math.max(0, innerHeight - rect.bottom - edge - gap)
       const preferTop = placement === 'top'
       // `scrollHeight` is the full content height even while the panel is
@@ -149,7 +157,19 @@ export function Popover({
         (preferTop
           ? above >= naturalHeight || above >= below
           : below < naturalHeight && above > below)
-      const available = placement === 'right' ? innerHeight - edge * 2 : useTop ? above : below
+      let sideTop = useTop
+      let available = placement === 'right' ? innerHeight - edge * 2 : sideTop ? above : below
+      // A chip flush with the window edge used to clamp the menu to 0px, so
+      // the click looked like it did nothing. Flip to the roomier side, and
+      // never collapse below a readable strip.
+      if (placement !== 'right' && available < 160) {
+        const other = sideTop ? below : above
+        if (other > available) {
+          sideTop = !sideTop
+          available = other
+        }
+      }
+      available = Math.max(available, Math.min(160, innerHeight - edge * 2))
       // A max-height that only just covers the content still produces a
       // scrollbar: the border and rounding take the last pixels. Leave the
       // panel unclamped when it fits, and only scroll when it really cannot.
@@ -162,9 +182,9 @@ export function Popover({
             ? rect.right - size.width
             : rect.left
       const top =
-        placement === 'right' ? rect.top : useTop ? rect.top - gap - size.height : rect.bottom + gap
+        placement === 'right' ? rect.top : sideTop ? rect.top - gap - size.height : rect.bottom + gap
       panel.style.left = `${Math.max(edge, Math.min(left, innerWidth - edge - size.width))}px`
-      panel.style.top = `${Math.max(edge, Math.min(top, innerHeight - edge - size.height))}px`
+      panel.style.top = `${Math.max(topInset, Math.min(top, innerHeight - edge - size.height))}px`
       panel.style.visibility = 'visible'
     }
     position()
@@ -181,21 +201,29 @@ export function Popover({
       window.removeEventListener('resize', position)
       window.removeEventListener('scroll', onScroll, true)
     }
-  }, [align, open, placement])
+  })
 
   useEffect(() => {
     if (!open) return
+    // The opening click and the search field's autofocus both move focus
+    // before this effect runs. Arming immediately treated that as "focus
+    // left the menu" and closed it on the same gesture.
+    let armed = false
+    const arm = window.setTimeout(() => {
+      armed = true
+    }, 0)
+    const inside = (target: Node | null) =>
+      Boolean(
+        target &&
+          (containerRef.current?.contains(target) || popoverRef.current?.contains(target))
+      )
     const onPointerDown = (event: MouseEvent) => {
-      const target = event.target as Node
-      if (!containerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
-        setOpen(false)
-      }
+      if (!armed || inside(event.target as Node)) return
+      setOpen(false)
     }
     const onFocusIn = (event: FocusEvent) => {
-      const target = event.target as Node
-      if (!containerRef.current?.contains(target) && !popoverRef.current?.contains(target)) {
-        setOpen(false)
-      }
+      if (!armed || inside(event.target as Node)) return
+      setOpen(false)
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return
@@ -232,6 +260,7 @@ export function Popover({
     document.addEventListener('focusin', onFocusIn)
     document.addEventListener('keydown', onKeyDown)
     return () => {
+      window.clearTimeout(arm)
       document.removeEventListener('mousedown', onPointerDown)
       document.removeEventListener('focusin', onFocusIn)
       document.removeEventListener('keydown', onKeyDown)
@@ -257,10 +286,7 @@ export function Popover({
           className={`popover ${className ?? ''}`}
           onMouseEnter={stopClosing}
           onMouseLeave={scheduleClose}
-          style={{
-            width,
-            visibility: 'hidden'
-          }}
+          style={{ width }}
         >
           {children(close)}
         </div>,

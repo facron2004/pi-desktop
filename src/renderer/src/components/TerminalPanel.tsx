@@ -84,7 +84,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   ref
 ) {
   const t = useT()
-  const showToast = useAppStore((state) => state.showToast)
   const isDark = useIsDark()
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -253,8 +252,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
         awaitingCreate = false
         if (disposed) return
         const message = failure instanceof Error ? failure.message : String(failure)
+        // Keep one actionable error in the terminal instead of duplicating the
+        // native backend message in a toast over the panel controls.
         setError(message)
-        showToast(message, 'error')
       })
 
     return () => {
@@ -273,7 +273,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       termRef.current = null
       fitRef.current = null
     }
-  }, [cwd, shell, restartKey, showToast])
+  }, [cwd, shell, restartKey])
 
   // The app theme can change without restarting the shell.
   useEffect(() => {

@@ -34,7 +34,7 @@ export const UserMessage = memo(function UserMessage({
 }) {
   const t = useT()
   return (
-    <div className="user-msg">
+    <div className="user-msg" data-pending={item.pending ? 'true' : undefined}>
       <div className="user-msg__content">
         <div className="user-msg__bubble">
           {item.images.length > 0 ? (
@@ -52,28 +52,41 @@ export const UserMessage = memo(function UserMessage({
           {item.text ? <Markdown>{item.text}</Markdown> : null}
         </div>
         <div className="user-msg__actions">
-          <span className="user-msg__time">{formatClock(item.timestamp)}</span>
-          <button
-            type="button"
-            className="ghost-btn"
-            onClick={() => onCopy(item.id, item.text)}
-            title={t(copied === item.id ? 'Copied' : 'Copy your message')}
-            aria-label={t(copied === item.id ? 'Copied' : 'Copy your message')}
-          >
-            {copied === item.id ? <Check size={14} /> : <Copy size={14} />}
-          </button>
-          {editEntryId && onEdit ? (
-            <button
-              type="button"
-              className="ghost-btn ghost-btn--edit"
-              onClick={() => onEdit(editEntryId, item.text, item.images)}
-              disabled={editing}
-              title={t('Edit message')}
-              aria-label={t('Edit message')}
-            >
-              <Pencil size={14} />
-            </button>
-          ) : null}
+          {/* A prompt that Pi has not taken yet can be waiting for another
+              conversation's run in the same folder. Saying so keeps the empty
+              composer from reading as "nothing was sent". */}
+          {item.pending ? (
+            <span className="user-msg__pending" role="status">
+              {t('Waiting to send')}
+            </span>
+          ) : (
+            <span className="user-msg__time">{formatClock(item.timestamp)}</span>
+          )}
+          {item.pending ? null : (
+            <>
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => onCopy(item.id, item.text)}
+                title={t(copied === item.id ? 'Copied' : 'Copy your message')}
+                aria-label={t(copied === item.id ? 'Copied' : 'Copy your message')}
+              >
+                {copied === item.id ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+              {editEntryId && onEdit ? (
+                <button
+                  type="button"
+                  className="ghost-btn ghost-btn--edit"
+                  onClick={() => onEdit(editEntryId, item.text, item.images)}
+                  disabled={editing}
+                  title={t('Edit message')}
+                  aria-label={t('Edit message')}
+                >
+                  <Pencil size={14} />
+                </button>
+              ) : null}
+            </>
+          )}
         </div>
       </div>
     </div>

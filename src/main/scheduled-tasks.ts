@@ -42,6 +42,15 @@ interface RunSlotLease {
 
 const TIMER_SLICE_MS = 60_000
 const CROSS_PROCESS_POLL_MS = 2_000
+/**
+ * How long a task waits after an automatic launch failed before it is attempted
+ * again. A launch that fails before its schedule was advanced leaves the task
+ * due, and a zero-delay retry would turn an unwritable task file into a busy
+ * loop (measured at ~26 attempts a second).
+ */
+const FAILED_LAUNCH_RETRY_MS = 60_000
+/** A due task is never polled faster than this, so no failure can spin the timer. */
+const MIN_DUE_DELAY_MS = 250
 const TASK_LOCK_STALE_MS = 60_000
 const TASK_LOCK_UPDATE_MS = 20_000
 const LIVE_PROCESS_LOCK_STALE_MS = Number.MAX_SAFE_INTEGER
@@ -771,13 +780,38 @@ export class ScheduledTaskService extends EventEmitter {
           if (task.enabled && task.nextRunAt !== undefined && task.nextRunAt <= checkAt) {
             void this.launch(task, false).catch((error) => {
               console.error('[pi-desktop] scheduled task failed:', error)
+              this.deferAfterFailedLaunch(task.id)
             })
             if (this.waitingForRunSlot) break
           }
         }
       }
       this.scheduleNext(checkAt)
-    }, Math.min(Math.max(0, due - now), TIMER_SLICE_MS))
+    }, Math.min(due <= now ? MIN_DUE_DELAY_MS : due - now, TIMER_SLICE_MS))
+  }
+
+  /**
+   * An automatic launch can fail before the schedule was advanced: an
+   * unreadable or unwritable task file, a lock a stale helper still holds, a
+   * run slot that could not be taken. The task is still due afterwards, so
+   * `scheduleNext` would arm a zero-delay timer and retry as fast as the disk
+   * allows. Move it one backoff window forward instead; its row already carries
+   * the failure, and a recovered disk picks it up on the next pass.
+   */
+  private deferAfterFailedLaunch(taskId: string): void {
+    if (this.disposed || this.schedulingStopped) return
+    const now = Date.now()
+    const index = this.tasks.findIndex((task) => task.id === taskId)
+    if (index === -1) return
+    const task = this.tasks[index]
+    if (!task.enabled || task.nextRunAt === undefined || task.nextRunAt > now) return
+    const next = this.tasks.slice()
+    next[index] = { ...task, nextRunAt: now + FAILED_LAUNCH_RETRY_MS }
+    this.tasks = next
+    // In memory only: the failure that got us here may well be the task file
+    // itself. The row already carries the error; this just spaces the retries.
+    this.emit('changed', this.cloneTasks(next))
+    this.scheduleNext(now)
   }
 
   private async launch(task: ScheduledTask, manual: boolean): Promise<void> {

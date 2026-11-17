@@ -2368,7 +2368,7 @@ export function AgentSettings() {
 
         <SettingsItemRow
           title={t('Default plan mode')}
-          description={t('Open a brand-new conversation in Plan Mode, which begins read-only: read, grep, find, ls and the plan tool. Approving the plan, or /plan off, leaves it. A conversation already open or resumed from disk keeps the mode it stored.')}
+          description={t('Open a brand-new conversation in Plan Mode, which begins read-only: read, grep, find, ls and the plan tool. Reviewing and executing the plan leaves Plan Mode and begins implementation; /plan off leaves without approval. A conversation already open or resumed from disk keeps the mode it stored.')}
         >
           <Switch
             checked={settings.defaultPlanMode === true}

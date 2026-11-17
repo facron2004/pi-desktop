@@ -32,7 +32,7 @@ const bridge = {
   },
   sessions: {
     list: async () => [],
-    hydrate: async () => [],
+    hydrate: async () => ({ messages: [], historyTruncated: false }),
     remove: async (_file?: string) => true
   },
   git: { status: async () => ({ isRepo: false }) },
