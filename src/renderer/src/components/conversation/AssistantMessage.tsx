@@ -46,6 +46,10 @@ export const AssistantMessage = memo(function AssistantMessage({
   processExpanded?: boolean
 }) {
   const segments: TurnSegment[] = []
+  // A generated picture is the answer, and it reads best under the words that
+  // explain it. The cards are collected here and appended after the turn's
+  // text, so the image always sits at the bottom of the reply.
+  const imageCards: ReactNode[] = []
   const replyStart = replyStartOf(turn)
   let beforeReply = Boolean(replyStart) || turn.tools.length > 0
   let group: ToolItem[] = []
@@ -59,6 +63,11 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   const isThinkingRow = (node: ReactNode) =>
     isValidElement(node) && node.type === ThinkingBlock
+
+  const isSettledThinkingRow = (node: ReactNode) =>
+    isValidElement<{ streaming?: boolean }>(node) &&
+    node.type === ThinkingBlock &&
+    !node.props.streaming
 
   const flushTools = () => {
     if (!group.length) return
@@ -83,6 +92,12 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   const flushProcess = () => {
     flushTools()
+    if (trace && trace.tools.length > 0) {
+      // A completed thought that followed a tool call in the same stretch is
+      // already accounted for by the tool process; only an in-progress live
+      // thought stays visible below the call.
+      trace.children = trace.children.filter((child) => !isSettledThinkingRow(child))
+    }
     if (!trace || trace.children.length === 0 || !processOpen) {
       trace = null
       return
@@ -152,6 +167,15 @@ export const AssistantMessage = memo(function AssistantMessage({
       }
       const tool = toolMap.get(block.id)
       if (!tool) return
+      // A generated picture is the answer, not a step inside the process fold:
+      // it stays on the reading column as its own card so the image is visible
+      // without opening anything. The card is appended after the text below.
+      if (tool.toolName === 'generate_image') {
+        flushTools()
+        flushProcess()
+        imageCards.push(<ToolCard key={tool.id} item={tool} presentation="card" />)
+        return
+      }
       group.push(tool)
     })
   }
@@ -179,6 +203,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           </ProcessTrail>
         )
       })}
+      {imageCards}
     </>
   )
 })

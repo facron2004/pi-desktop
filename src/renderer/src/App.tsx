@@ -30,7 +30,6 @@ import { AppMenuBar } from './components/AppMenuBar'
 import { AppUpdateDialog } from './components/AppUpdateDialog'
 import { BrowserView } from './components/BrowserView'
 import { ImageViewer } from './components/ImageViewer'
-import { ImageGeneration } from './components/ImageGeneration'
 import { TaskPanel } from './components/TaskPanel'
 import { SubagentPanel, type SubagentSelection } from './components/SubagentPanel'
 import { TitleSubagents } from './components/TitleSubagents'
@@ -139,7 +138,9 @@ export default function App() {
   const [panelMounted, setPanelMounted] = useState(false)
   const [panelClosing, setPanelClosing] = useState(false)
   const panelCloseTimer = useRef<number | null>(null)
-  const [panelView, setPanelView] = useState<ToolPanelView>('changes')
+  // The panel opens on its home page; its pages are a choice made per visit,
+  // not a mode that follows the conversation around.
+  const [panelView, setPanelView] = useState<ToolPanelView>('start')
   /**
    * The panel's tools are tabs; the terminal is the one tab whose content is a
    * live process. Once it has been opened it stays mounted while another tab
@@ -604,17 +605,6 @@ export default function App() {
       setChangesOpen(true)
     }
     window.addEventListener('pi:open-inspector', onOpenInspector)
-    // A tool-panel page can ask for a sibling page (the image generator sends
-    // the reader to the Images page without knowing the panel's state).
-    const onOpenToolPage = (event: Event) => {
-      const view = (event as CustomEvent<{ view?: ToolPanelView }>).detail?.view
-      if (!view || view === 'start') return
-      setDeskPage(null)
-      setPanelView(view)
-      setInspectorFile(null)
-      setChangesOpen(true)
-    }
-    window.addEventListener('pi:open-tool-page', onOpenToolPage)
     // The command palette and the shortcuts dialog can open the drawer too.
     // The command palette and the shortcuts dialog can open the terminal too.
     const onToggleTerminal = () => toggleTerminal()
@@ -647,7 +637,6 @@ export default function App() {
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
       window.removeEventListener('pi:rename-session', onRenameSession)
       window.removeEventListener('pi:open-inspector', onOpenInspector)
-      window.removeEventListener('pi:open-tool-page', onOpenToolPage)
       window.removeEventListener('pi:toggle-terminal', onToggleTerminal)
       window.removeEventListener('pi:terminal-run', onTerminalRun)
       window.removeEventListener('pi:open-session-tree', onOpenSessionTree)
@@ -970,8 +959,6 @@ export default function App() {
                 <BrowserView />
               ) : panelView === 'images' ? (
                 <ImageViewer />
-              ) : panelView === 'imagegen' ? (
-                <ImageGeneration />
               ) : panelView === 'subagents' ? (
                 <SubagentPanel selected={subagentSelection} onSelectTask={setSubagentSelection} />
               ) : panelView === 'files' || panelView === 'changes' ? (
@@ -1023,7 +1010,7 @@ export default function App() {
             aria-label={t(changesOpen ? 'Hide tools panel' : 'Show tools panel')}
             title={t(changesOpen ? 'Hide tools panel' : 'Show tools panel')}
             aria-expanded={changesOpen}
-            onClick={() => (changesOpen ? setChangesOpen(false) : openInspector(panelView))}
+            onClick={() => (changesOpen ? setChangesOpen(false) : openInspector('start'))}
           >
             <PanelRight size={16} strokeWidth={1.7} />
           </button>

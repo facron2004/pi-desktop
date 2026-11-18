@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Download, X } from 'lucide-react'
+import { Check, Download, FolderOpen, ImagePlus, X } from 'lucide-react'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
@@ -12,7 +12,7 @@ interface InlineImage {
 }
 
 /** The base64 half of a `data:` URL, when it is the kind the bridge can write. */
-function inlineOf(src: string): InlineImage | null {
+export function inlineOfDataUrl(src: string): InlineImage | null {
   const match = /^data:(image\/[^;,]+)[^,]*;base64,(.+)$/.exec(src)
   if (!match) return null
   return { mimeType: match[1], data: match[2] }
@@ -29,7 +29,9 @@ export function ImageButton({
   src,
   alt,
   inline,
-  title
+  title,
+  filePath,
+  onUseAsReference
 }: {
   src: string
   alt?: string
@@ -37,6 +39,10 @@ export function ImageButton({
   inline?: InlineImage
   /** The markdown image title, shown as the tooltip. */
   title?: string
+  /** Absolute workspace path when the picture is already on disk. */
+  filePath?: string
+  /** Hand this picture to the composer as a reference image. */
+  onUseAsReference?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const t = useT()
@@ -63,7 +69,9 @@ export function ImageButton({
         <Lightbox
           src={src}
           alt={alt}
-          inline={inline ?? inlineOf(src)}
+          inline={inline ?? inlineOfDataUrl(src)}
+          filePath={filePath}
+          onUseAsReference={onUseAsReference}
           onClose={() => setOpen(false)}
         />
       ) : null}
@@ -76,11 +84,15 @@ function Lightbox({
   src,
   alt,
   inline,
+  filePath,
+  onUseAsReference,
   onClose
 }: {
   src: string
   alt?: string
   inline: InlineImage | null
+  filePath?: string
+  onUseAsReference?: () => void
   onClose: () => void
 }) {
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -105,6 +117,27 @@ function Lightbox({
     }
   }
 
+  const useAsReference = () => {
+    if (onUseAsReference) {
+      onUseAsReference()
+      onClose()
+      return
+    }
+    if (!inline) return
+    window.dispatchEvent(
+      new CustomEvent('pi:enter-image-mode', {
+        detail: {
+          referenceImage: {
+            data: inline.data,
+            mimeType: inline.mimeType,
+            name: alt || 'reference.png'
+          }
+        }
+      })
+    )
+    onClose()
+  }
+
   const kind = inline ? inline.mimeType.replace(/^image\//, '').toUpperCase() : null
   const meta = [size ? `${size.width} × ${size.height}` : null, kind].filter(Boolean).join(' · ')
 
@@ -127,6 +160,28 @@ function Lightbox({
         <div className="lightbox__head">
           <span className="lightbox__meta">{meta}</span>
           <span className="lightbox__actions">
+            {onUseAsReference || inline ? (
+              <button
+                type="button"
+                className="lightbox__btn"
+                onClick={useAsReference}
+                title={t('Use as reference')}
+              >
+                <ImagePlus size={14} />
+                {t('Use as reference')}
+              </button>
+            ) : null}
+            {filePath ? (
+              <button
+                type="button"
+                className="lightbox__btn"
+                onClick={() => void window.pi.fs.reveal(filePath)}
+                title={t('Reveal in the file manager')}
+              >
+                <FolderOpen size={14} />
+                {t('Reveal in the file manager')}
+              </button>
+            ) : null}
             {inline ? (
               <button
                 type="button"

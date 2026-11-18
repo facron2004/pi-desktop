@@ -82,13 +82,15 @@ function buildAttentionSignature(
       }
     >
   >,
-  workspacePath: string | undefined
+  workspacePath: string | undefined,
+  sessionNotices: Readonly<Record<string, 'error' | 'unread'>>
 ): string {
   const cwdByFile = new Map<string, string>()
   for (const session of sessions) {
     if (session.cwd) cwdByFile.set(normalisePathKey(session.file), session.cwd)
   }
   const rows: string[] = []
+  const seen = new Set<string>()
   for (const [key, thread] of Object.entries(threads)) {
     const needsInput = Boolean(thread.uiRequest || thread.uiRequests?.length)
     const indicator = sessionIndicator({
@@ -97,12 +99,20 @@ function buildAttentionSignature(
       needsInput
     })
     if (indicator === 'idle') continue
+    seen.add(key)
     const cwd =
       thread.status.cwd ||
       cwdByFile.get(normalisePathKey(key)) ||
       (key.startsWith('draft:') ? workspacePath : undefined)
     const cwdKey = cwd ? normalisePathKey(cwd) : ''
     rows.push(`${key}\u0000${indicator}\u0000${cwdKey}`)
+  }
+  // A mark that outlived its thread (the app restarted before the reader
+  // opened the conversation) still has to reach the row and its project.
+  for (const [file, notice] of Object.entries(sessionNotices)) {
+    if (seen.has(file)) continue
+    const cwd = cwdByFile.get(normalisePathKey(file))
+    rows.push(`${file}\u0000${notice}\u0000${cwd ? normalisePathKey(cwd) : ''}`)
   }
   if (rows.length === 0) return ''
   rows.sort()
@@ -182,12 +192,13 @@ export const Sidebar = memo(function Sidebar({
   const projectOrder = useAppStore((state) => state.settings.projectOrder)
   const pinnedSessionsSetting = useAppStore((state) => state.settings.pinnedSessions)
   const language = useAppStore((state) => state.settings.language ?? 'en')
-  // A folded project hides the marks of its conversations, and an expanded
-  // project above 5 chats hides active/attention rows unless promoted. Track
-  // non-idle thread states via a compact string signature so streaming deltas
-  // never re-render the sidebar.
+  // A folded project draws one mark for all of its chats. An expanded project
+  // keeps the dot for an answer, a failure or a waiting dialog the reader has
+  // not opened, because its conversation row can sit below the fold. Track the
+  // non-idle thread states as a compact signature so streaming deltas never
+  // re-render the sidebar.
   const attentionSignature = useAppStore((state) =>
-    buildAttentionSignature(state.sessions, state.threads, state.workspace?.path)
+    buildAttentionSignature(state.sessions, state.threads, state.workspace?.path, state.sessionNotices)
   )
   const archivedFiles = useMemo(
     () => new Set(archivedSessions ?? []),
@@ -1075,10 +1086,14 @@ export const Sidebar = memo(function Sidebar({
                     ]
                 const iconTone = projectIconColor(project.iconColor)
                 const emoji = projectIconEmoji(project.icon)
-                const collapsedIndicator: SessionIndicator = !expanded
-                  ? (projectIndicators.get(normalisePathKey(project.path)) ?? 'idle')
-                  : 'idle'
-                const runningCollapsed = collapsedIndicator === 'running'
+                const projectMark = projectIndicators.get(normalisePathKey(project.path)) ?? 'idle'
+                // A folded project speaks for all of its chats. An open one
+                // still keeps the dot for a failure, a waiting dialog or an
+                // answer the reader has not opened: its conversation row can
+                // sit below the fold. Running stays on the child's spinner.
+                const projectRowIndicator: SessionIndicator =
+                  expanded && projectMark === 'running' ? 'idle' : projectMark
+                const runningCollapsed = projectRowIndicator === 'running'
                 // Built only if hovered long enough to show the card.
                 const getProjectTip = () => ({
                   path: project.path,
@@ -1101,7 +1116,7 @@ export const Sidebar = memo(function Sidebar({
                     data-dragging={draggingPath != null && samePath(draggingPath, project.path)}
                     data-expanded={expanded}
                     data-running={runningCollapsed ? 'true' : undefined}
-                    data-indicator={collapsedIndicator !== 'idle' ? collapsedIndicator : undefined}
+                    data-indicator={projectRowIndicator !== 'idle' ? projectRowIndicator : undefined}
                     data-pending={
                       pendingProject?.path != null
                         ? samePath(pendingProject.path, project.path)
@@ -1230,31 +1245,31 @@ export const Sidebar = memo(function Sidebar({
                       ) : null}
 
                       <div className="project__actions">
-                        {collapsedIndicator !== 'idle' ? (
+                        {projectRowIndicator !== 'idle' ? (
                           <span
                             className="project__indicator"
-                            data-indicator={collapsedIndicator}
+                            data-indicator={projectRowIndicator}
                             role="status"
                             aria-label={
-                              collapsedIndicator === 'needs-input'
+                              projectRowIndicator === 'needs-input'
                                 ? t('Waiting for your answer')
-                                : collapsedIndicator === 'error'
+                                : projectRowIndicator === 'error'
                                   ? t('The last run failed')
-                                  : collapsedIndicator === 'unread'
+                                  : projectRowIndicator === 'unread'
                                     ? t('Unread')
                                     : t('Running')
                             }
                             title={
-                              collapsedIndicator === 'needs-input'
+                              projectRowIndicator === 'needs-input'
                                 ? t('Waiting for your answer')
-                                : collapsedIndicator === 'error'
+                                : projectRowIndicator === 'error'
                                   ? t('The last run failed')
-                                  : collapsedIndicator === 'unread'
+                                  : projectRowIndicator === 'unread'
                                     ? t('Unread')
                                     : t('Running')
                             }
                           >
-                            {collapsedIndicator === 'running' ? (
+                            {projectRowIndicator === 'running' ? (
                               <Loader2 size={12} strokeWidth={1.6} className="spin" aria-hidden="true" />
                             ) : null}
                           </span>
@@ -2044,9 +2059,12 @@ const SessionRowItem = memo(function SessionRowItem({
     useCallback(
       (state) => {
         const thread = state.threads[session.file]
-        if (!thread) return '0||0'
+        if (!thread) {
+          const persisted = state.sessionNotices[session.file] ?? ''
+          return `0|${persisted}|0`
+        }
         const streaming = thread.isStreaming ? '1' : '0'
-        const notice = thread.notice ?? ''
+        const notice = thread.notice ?? state.sessionNotices[session.file] ?? ''
         const needsInput = thread.uiRequest || thread.uiRequests?.length ? '1' : '0'
         return `${streaming}|${notice}|${needsInput}`
       },
@@ -2097,11 +2115,10 @@ const SearchResultIndicator = memo(function SearchResultIndicator({
     useCallback(
       (state) => {
         const thread = state.threads[sessionKey]
-        if (!thread) return 'idle' as SessionIndicator
         return sessionIndicator({
-          isStreaming: thread.isStreaming,
-          notice: thread.notice,
-          needsInput: Boolean(thread.uiRequest || thread.uiRequests?.length)
+          isStreaming: thread?.isStreaming ?? false,
+          notice: thread?.notice ?? state.sessionNotices[sessionKey],
+          needsInput: Boolean(thread?.uiRequest || thread?.uiRequests?.length)
         })
       },
       [sessionKey]

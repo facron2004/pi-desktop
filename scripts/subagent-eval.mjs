@@ -292,8 +292,8 @@ function parseArgs(argv) {
 const scenarios = [
   {
     name: 'basic-delegation',
-    title: '基础委托：子代理读文件并回答',
-    description: '父代理必须调用一次 subagent，子代理在 fixture 中读取 numbers.txt 并回答 beta 行的数。',
+    title: '基础委托：子智能体读文件并回答',
+    description: '父代理必须调用一次 subagent，子智能体在 fixture 中读取 numbers.txt 并回答 beta 行的数。',
     setup(fixture) {
       writeFileSync(path.join(fixture, 'numbers.txt'), 'alpha 17\nbeta 42\ngamma 8\n', 'utf8')
     },
@@ -314,8 +314,8 @@ const scenarios = [
   },
   {
     name: 'context-isolation',
-    title: '上下文隔离：子代理不知道父会话 secret',
-    description: '父上下文含私有值 ORCHID-9，子任务不得携带该值；子代理应回答 NO。',
+    title: '上下文隔离：子智能体不知道父会话 secret',
+    description: '父上下文含私有值 ORCHID-9，子任务不得携带该值；子智能体应回答 NO。',
     setup(fixture) {
       writeFileSync(path.join(fixture, 'note.txt'), 'context isolation fixture\n', 'utf8')
     },
@@ -366,8 +366,8 @@ const scenarios = [
   },
   {
     name: 'tool-allowlist',
-    title: '工具白名单：仅 read 的子代理不能写文件',
-    description: "subagent 调用带 tools:['read']，子代理被要求写 forbidden.txt；文件必须不存在且子代理明确报告无法写入。",
+    title: '工具白名单：仅 read 的子智能体不能写文件',
+    description: "subagent 调用带 tools:['read']，子智能体被要求写 forbidden.txt；文件必须不存在且子智能体明确报告无法写入。",
     setup() {
       // Intentionally empty: the scenario is about a file that must never appear.
     },
@@ -417,7 +417,7 @@ const scenarios = [
   {
     name: 'output-quality',
     title: '输出质量：严格 JSON 格式与内容',
-    description: '子代理必须原样返回指定 JSON（无 markdown、无额外文字），父代理最终回答也带上该 JSON。',
+    description: '子智能体必须原样返回指定 JSON（无 markdown、无额外文字），父代理最终回答也带上该 JSON。',
     setup() {
       // Intentionally empty.
     },
@@ -452,7 +452,7 @@ const scenarios = [
   {
     name: 'named-agent',
     title: '命名 agent 预设：按角色路由一次委派',
-    description: '仅在 --agents 注入静态 preset 时有意义。父代理用 agent 参数选择 scout，子代理拿到该角色的 model/tools/系统提示并回答。',
+    description: '仅在 --agents 注入静态 preset 时有意义。父代理用 agent 参数选择 scout，子智能体拿到该角色的 model/tools/系统提示并回答。',
     setup(fixture) {
       writeFileSync(path.join(fixture, 'numbers.txt'), 'alpha 17\nbeta 42\ngamma 8\n', 'utf8')
     },
@@ -536,7 +536,7 @@ const scenarios = [
   {
     name: 'schema-delegation',
     title: '结构化输出：outputSchema 产出可校验的 JSON',
-    description: '父代理带 outputSchema 委派一次；子代理返回匹配的 JSON，父侧 details.structured 得到解析后的对象。',
+    description: '父代理带 outputSchema 委派一次；子智能体返回匹配的 JSON，父侧 details.structured 得到解析后的对象。',
     setup() {
       // Intentionally empty: the answer is the schema shape itself.
     },
@@ -582,7 +582,7 @@ const scenarios = [
   {
     name: 'long-running-timeout',
     title: '长任务超时观测：20s 探针 + 父进程 abort 清理',
-    description: '故意让子代理跑 120s。观察当前实现没有 per-task 超时；随后通过 RPC abort 验证整棵进程树可被取消。',
+    description: '故意让子智能体跑 120s。观察当前实现没有 per-task 超时；随后通过 RPC abort 验证整棵进程树可被取消。',
     setup() {
       // Intentionally empty.
     },
@@ -602,7 +602,7 @@ const scenarios = [
         {
           name: 'no-per-task-timeout-observed',
           pass: Boolean(probe && probe.stillRunning === true),
-          detail: '当前实现未在 20s 内自行结束子代理（观察到 running）',
+          detail: '当前实现未在 20s 内自行结束子智能体（观察到 running）',
           required: false
         },
         check('child-aborted', cancelled, result ? `status=${result.status} aborted=${result.aborted}` : 'no result'),
@@ -1194,7 +1194,7 @@ function renderMarkdown(report) {
     lines.push(`### ${scenario.name} — ${scenario.pass ? 'PASS' : 'FAIL'} (${(scenario.durationMs / 1000).toFixed(1)}s)`)
     lines.push('')
     lines.push(`${scenario.title}：${scenario.description}`)
-    if (scenario.observedModel) lines.push(`子代理实际报告模型：\`${scenario.observedModel}\``)
+    if (scenario.observedModel) lines.push(`子智能体实际报告模型：\`${scenario.observedModel}\``)
     lines.push('')
     lines.push('| 检查项 | 结果 | 详情 |')
     lines.push('|---|---|---|')
@@ -1212,7 +1212,7 @@ function renderMarkdown(report) {
         const call = scenario.raw.toolCalls[index]
         for (let resultIndex = 0; resultIndex < call.results.length; resultIndex += 1) {
           const result = call.results[resultIndex]
-          lines.push(`子代理输出 [call ${index + 1} / task ${resultIndex + 1}]（status=${result.status}, exitCode=${result.exitCode}）：`)
+          lines.push(`子智能体输出 [call ${index + 1} / task ${resultIndex + 1}]（status=${result.status}, exitCode=${result.exitCode}）：`)
           lines.push('```text')
           lines.push(truncate(result.output || result.errorMessage || '(empty)', 2000))
           lines.push('```')

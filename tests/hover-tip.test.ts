@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   clipTipText,
+  expandedPopupHidesTip,
   looksLikePath,
   placeHoverTip,
   readTipText,
@@ -51,11 +52,31 @@ test('a title React wrote while the tip was up is not overwritten on restore', (
   assert.equal(el.getAttribute('data-pi-tip'), null)
 })
 
+test('an icon-only control falls back to its accessible name', () => {
+  const iconOnly = new Attrs({ 'aria-label': 'Close' })
+  assert.equal(readTipText(iconOnly), 'Close')
+  // A real title still wins over the accessible name.
+  const both = new Attrs({ title: 'Close the panel', 'aria-label': 'Close' })
+  assert.equal(readTipText(both), 'Close the panel')
+})
+
 test('a title that repeats a fully visible label is not a bubble', () => {
   assert.equal(tipIsRedundant('Close', 'Close', false), true)
   assert.equal(tipIsRedundant('Close', 'Close', true), false)
   assert.equal(tipIsRedundant('docs/status.md', 'status.md', false), false)
   assert.equal(tipIsRedundant('Close', '', false), false)
+})
+
+test('only an expanded popup trigger loses its bubble', () => {
+  // An open menu already names the control that opened it.
+  assert.equal(expandedPopupHidesTip('true', 'menu'), true)
+  assert.equal(expandedPopupHidesTip('true', 'dialog'), true)
+  assert.equal(expandedPopupHidesTip('true', ''), true)
+  // The tools-panel and sidebar toggles expand a surface elsewhere; their
+  // bubble is the only name an icon-only control has. They must keep it.
+  assert.equal(expandedPopupHidesTip('true', null), false)
+  assert.equal(expandedPopupHidesTip('false', 'menu'), false)
+  assert.equal(expandedPopupHidesTip(null, null), false)
 })
 
 test('paths wrap in a monospace bubble and short labels stay one line', () => {

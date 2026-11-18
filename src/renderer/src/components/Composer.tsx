@@ -2,8 +2,13 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   Bot,
+  Check,
+  ChevronDown,
+  Image as ImageIcon,
   ListChecks,
   Loader2,
+  Plus,
+  Sparkles,
   Target,
   Square,
   Wrench,
@@ -16,9 +21,18 @@ import {
   type ComposerDraftCommand,
   type ComposerDraftFile,
   type ComposerDraftImage,
+  type ComposerImageOptions,
   type QueueKind
 } from '../store/useAppStore'
-import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
+import {
+  DEFAULT_IMAGE_QUALITY,
+  DEFAULT_IMAGE_SIZE,
+  IMAGE_MODELS,
+  IMAGE_QUALITIES,
+  MAX_COMPOSER_IMAGE_BYTES,
+  MAX_IMAGE_DATA_BYTES,
+  MAX_SEARCH_QUERY_LENGTH
+} from '@shared/types'
 import type { AppLanguage, FileEntry, PiCommand } from '@shared/types'
 import { appCommandName } from '../lib/app-commands'
 import { COMMAND_SOURCE } from '../lib/command-source'
@@ -28,6 +42,12 @@ import {
   makeComposerFile,
   mergeComposerFiles
 } from '../lib/composer-files'
+import {
+  IMAGE_RATIO_OPTIONS,
+  imageModelName,
+  imageQualityLabel,
+  imageRatioLabel
+} from '../lib/image-options'
 import { filterCommands } from '../lib/commands'
 import { relativePath } from '../lib/path'
 import { useT } from '../lib/i18n'
@@ -40,6 +60,7 @@ import { ProjectSelector } from './ProjectSelector'
 import { BranchMenu } from './BranchMenu'
 import { PermissionPicker } from './PermissionPicker'
 import { AddMenu } from './AddMenu'
+import { Popover } from './Popover'
 import { UsageBar } from './UsageBar'
 
 interface SlashMatch {
@@ -57,6 +78,17 @@ interface MentionMatch {
 const EMPTY_IMAGES: ComposerDraftImage[] = []
 const EMPTY_FILES: ComposerDraftFile[] = []
 const EMPTY_HISTORY: string[] = []
+
+interface EnterImageModeDetail {
+  prompt?: string
+  options?: Partial<ComposerImageOptions>
+  referenceImage?: {
+    data: string
+    mimeType: string
+    name?: string
+  }
+  off?: boolean
+}
 
 function makeDraftImage(
   data: string,
@@ -175,6 +207,7 @@ export function Composer() {
   const images = draft?.images ?? EMPTY_IMAGES
   const files = draft?.files ?? EMPTY_FILES
   const history = draft?.history ?? EMPTY_HISTORY
+  const image = draft?.image
 
   const draftKeyRef = useRef(draftKey)
   draftKeyRef.current = draftKey
@@ -196,6 +229,82 @@ export function Composer() {
     if (targetKey) return useAppStore.getState().drafts[targetKey] ?? { text: '', images: EMPTY_IMAGES }
     return fallbackDraftRef.current
   }, [])
+
+  const focusComposer = useCallback(() => {
+    requestAnimationFrame(() => {
+      const node = textareaRef.current
+      if (!node) return
+      node.focus()
+      const end = node.value.length
+      node.setSelectionRange(end, end)
+    })
+  }, [])
+
+  const defaultImageOptions = useCallback((): ComposerImageOptions => {
+    const settings = useAppStore.getState().settings
+    return {
+      model: settings.imageModel ?? '',
+      size: settings.imageSize ?? DEFAULT_IMAGE_SIZE,
+      quality: settings.imageQuality ?? DEFAULT_IMAGE_QUALITY,
+      count: 1
+    }
+  }, [])
+
+  const exitImageMode = useCallback(() => {
+    patchDraft(draftKeyRef.current, (prev) => ({ ...prev, image: undefined }))
+  }, [patchDraft])
+
+  /** Put the composer into image mode without leaving the conversation. */
+  const enterImageMode = useCallback((input?: string | EnterImageModeDetail) => {
+    const detail: EnterImageModeDetail =
+      typeof input === 'string' ? { prompt: input } : (input ?? {})
+    if (detail.off) {
+      exitImageMode()
+      focusComposer()
+      return
+    }
+    const targetKey = draftKeyRef.current
+    patchDraft(targetKey, (prev) => {
+      const baseOptions = prev.image ?? defaultImageOptions()
+      const nextOptions: ComposerImageOptions = {
+        ...baseOptions,
+        ...(detail.options?.model !== undefined ? { model: detail.options.model } : {}),
+        ...(detail.options?.size !== undefined ? { size: detail.options.size } : {}),
+        ...(detail.options?.quality !== undefined ? { quality: detail.options.quality } : {}),
+        ...(detail.options?.count !== undefined
+          ? { count: Math.min(4, Math.max(1, Math.round(detail.options.count))) }
+          : {})
+      }
+      let nextImages = prev.images
+      if (detail.referenceImage?.data && detail.referenceImage?.mimeType) {
+        const refData = detail.referenceImage.data
+        const alreadyAttached = nextImages.some((item) => item.data === refData)
+        if (!alreadyAttached) {
+          const bytes = imageByteLength(refData)
+          const committed = sumImageBytes(nextImages)
+          if (bytes > 0 && bytes <= MAX_IMAGE_DATA_BYTES && committed + bytes <= MAX_COMPOSER_IMAGE_BYTES) {
+            nextImages = [
+              ...nextImages,
+              makeDraftImage(
+                refData,
+                detail.referenceImage.mimeType,
+                bytes,
+                detail.referenceImage.name || 'reference.png'
+              )
+            ]
+          }
+        }
+      }
+      return {
+        ...prev,
+        command: undefined,
+        image: nextOptions,
+        images: nextImages,
+        text: detail.prompt && detail.prompt.trim() ? detail.prompt : prev.text
+      }
+    })
+    focusComposer()
+  }, [defaultImageOptions, exitImageMode, focusComposer, patchDraft])
 
   const setText = useCallback(
     (next: string | ((current: string) => string), targetKey = draftKeyRef.current) => {
@@ -232,6 +341,22 @@ export function Composer() {
           files: typeof next === 'function' ? next(current) : next
         }
       })
+    },
+    [patchDraft]
+  )
+
+  const setImageOption = useCallback(
+    (patch: Partial<ComposerImageOptions>) => {
+      patchDraft(draftKeyRef.current, (prev) =>
+        prev.image ? { ...prev, image: { ...prev.image, ...patch } } : prev
+      )
+      const settingsPatch: { imageModel?: string; imageSize?: string; imageQuality?: string } = {}
+      if (patch.model !== undefined) settingsPatch.imageModel = patch.model
+      if (patch.size !== undefined) settingsPatch.imageSize = patch.size
+      if (patch.quality !== undefined) settingsPatch.imageQuality = patch.quality
+      if (Object.keys(settingsPatch).length > 0) {
+        void useAppStore.getState().updateSettings(settingsPatch)
+      }
     },
     [patchDraft]
   )
@@ -280,6 +405,7 @@ export function Composer() {
   const [mentionIndex, setMentionIndex] = useState(0)
   const [paletteIndex, setPaletteIndex] = useState(0)
   const [commandSelected, setCommandSelected] = useState(false)
+  const [imageSelected, setImageSelected] = useState(false)
 
   const commandName = command
     ? command.source === 'app'
@@ -334,25 +460,28 @@ export function Composer() {
   const hasContent = Boolean(command || text.trim() || images.length > 0 || files.length > 0)
   const inputPrompt = command
     ? t('Add command arguments…')
-    : canCompose
-      ? cwdWait
-        ? t('Waiting for another conversation in this folder…')
-        : agentMode === 'plan'
-          ? t('Describe the task to plan…')
-          : workspace
-            ? t('Describe a task, or use @ to reference project files…')
-            : t('Describe a task…')
-      : status.phase === 'error'
-        ? t('Pi unavailable')
-        : !workspace
-          ? t('Open a project folder to start')
-          : t('Pi stopped')
+    : image
+      ? t('Describe the image you want…')
+      : canCompose
+        ? cwdWait
+          ? t('Waiting for another conversation in this folder…')
+          : agentMode === 'plan'
+            ? t('Describe the task to plan…')
+            : workspace
+              ? t('Describe a task, or use @ to reference project files…')
+              : t('Describe a task…')
+        : status.phase === 'error'
+          ? t('Pi unavailable')
+          : !workspace
+            ? t('Open a project folder to start')
+            : t('Pi stopped')
 
   useEffect(() => {
     setSlash(null)
     setMention(null)
     setPaletteIndex(0)
     setCommandSelected(false)
+    setImageSelected(false)
   }, [draftKey])
 
   useEffect(() => {
@@ -366,6 +495,18 @@ export function Composer() {
     window.addEventListener('pi:focus-composer', focus)
     return () => window.removeEventListener('pi:focus-composer', focus)
   }, [])
+
+  // `/image` and the Add menu's Image action both land here: the generator's
+  // controls belong to the composer, so they load in place instead of a panel.
+  useEffect(() => {
+    const onEnter = (event: Event) => {
+      const detail = (event as CustomEvent<EnterImageModeDetail>).detail
+      setImageSelected(false)
+      enterImageMode(detail)
+    }
+    window.addEventListener('pi:enter-image-mode', onEnter)
+    return () => window.removeEventListener('pi:enter-image-mode', onEnter)
+  }, [enterImageMode])
 
   // Development aid: prefill the composer so screenshots can show the
   // command palette. Set by the main process via PI_DESKTOP_PREFILL.
@@ -677,12 +818,37 @@ export function Composer() {
       const node = textareaRef.current
       const cursor = node?.selectionStart ?? slash.cursor
       const suffix = currentText.slice(cursor).replace(/^\s/, '')
+      if (command.source === 'app' && command.name === 'image') {
+        setCommandSelected(false)
+        setImageSelected(false)
+        setMention(null)
+        setSlash(null)
+        if (suffix.trim().toLowerCase() === 'off') {
+          patchDraft(targetKey, (prev) => ({ ...prev, command: undefined, image: undefined, text: '' }))
+          focusComposer()
+          return
+        }
+        patchDraft(targetKey, (prev) => ({
+          ...prev,
+          command: undefined,
+          image: prev.image ?? defaultImageOptions(),
+          text: suffix
+        }))
+        requestAnimationFrame(() => {
+          const target = textareaRef.current
+          if (!target) return
+          target.focus()
+          target.setSelectionRange(0, 0)
+        })
+        return
+      }
       patchDraft(targetKey, (prev) => ({
         ...prev,
         command: { name: command.name, source: command.source },
         text: suffix
       }))
       setCommandSelected(false)
+      setImageSelected(false)
       setMention(null)
       requestAnimationFrame(() => {
         const target = textareaRef.current
@@ -692,7 +858,7 @@ export function Composer() {
       })
       setSlash(null)
     },
-    [slash, readTargetDraft, patchDraft]
+    [slash, readTargetDraft, patchDraft, defaultImageOptions, focusComposer]
   )
 
   const submit = useCallback(() => {
@@ -702,12 +868,44 @@ export function Composer() {
     if ((pendingAddsByKeyRef.current.get(targetKey) ?? 0) > 0) return
     const currentDraft = readTargetDraft(targetKey)
     if (!currentDraft.text.trim() && !currentDraft.command && !currentDraft.images.length && !(currentDraft.files?.length ?? 0)) return
-    const loneSlash = /^\/([^\s/]+)$/.exec(currentDraft.text.trim())
-    if (!currentDraft.command && currentDraft.text.trim() === '/') {
+    const rawTrimmed = currentDraft.text.trim()
+    const rawImageMatch = !currentDraft.command ? /^\/(?:image|图片)(?:\s+([\s\S]*))?$/iu.exec(rawTrimmed) : null
+    const rawImageArg = rawImageMatch ? (rawImageMatch[1] ?? '').trim() : ''
+    const startsImage =
+      (currentDraft.command?.source === 'app' && currentDraft.command.name === 'image') ||
+      Boolean(rawImageMatch)
+    const effectiveText = rawImageMatch ? rawImageArg : currentDraft.text
+    if (
+      (startsImage && effectiveText.trim().toLowerCase() === 'off') ||
+      (currentDraft.image && /^\/?(?:image\s+|图片\s+)?off$/iu.test(rawTrimmed))
+    ) {
+      patchDraft(targetKey, (prev) => ({ ...prev, command: undefined, image: undefined, text: '' }))
+      setCommandSelected(false)
+      setImageSelected(false)
+      closePalette()
+      setMention(null)
+      focusComposer()
+      return
+    }
+    const imageOptions = startsImage
+      ? (currentDraft.image ?? defaultImageOptions())
+      : currentDraft.image
+    // `/image` on its own only loads the controls; the prompt comes next.
+    if (startsImage && !effectiveText.trim() && !currentDraft.images.length) {
+      patchDraft(targetKey, (prev) => ({ ...prev, command: undefined, image: imageOptions, text: '' }))
+      setCommandSelected(false)
+      setImageSelected(false)
+      closePalette()
+      setMention(null)
+      focusComposer()
+      return
+    }
+    const loneSlash = /^\/([^\s/]+)$/.exec(rawTrimmed)
+    if (!currentDraft.command && rawTrimmed === '/') {
       useAppStore.getState().showToast(t('Choose a slash command before sending'), 'warning')
       return
     }
-    if (loneSlash && !findCommand(commands, loneSlash[1], language)) {
+    if (!rawImageMatch && loneSlash && !findCommand(commands, loneSlash[1], language)) {
       useAppStore.getState().showToast(t('No command matches this slash command'), 'warning')
       return
     }
@@ -716,14 +914,25 @@ export function Composer() {
     // request is still starting.
     sendingClientsRef.current.add(lockKey)
     const fileReferences = (currentDraft.files ?? EMPTY_FILES).map(composerFileToken)
-    const visibleText = currentDraft.text
+    const visibleText = effectiveText
     const body = [...fileReferences, visibleText].filter((part) => part.trim()).join('\n')
-    const draftText = currentDraft.command
+    const rawDraftText = currentDraft.command && !startsImage
       ? `/${currentDraft.command.name}${body ? ` ${body}` : ''}`
       : body
     const shots = currentDraft.images.map(({ data, mimeType }) => ({ data, mimeType }))
-    const delivery = kind
-    void send(draftText, shots, delivery).finally(() => {
+    const isCommandOrBash =
+      rawDraftText.trimStart().startsWith('/') || rawDraftText.trimStart().startsWith('!')
+    // A command other than `/image` keeps its own meaning even while the image
+    // controls are on screen.
+    const sendImage = (currentDraft.command && !startsImage) || isCommandOrBash ? undefined : imageOptions
+    const draftText =
+      sendImage && !rawDraftText.trim() && shots.length > 0
+        ? t('Create a refined variation based on the reference image.')
+        : rawDraftText
+    // An image prompt needs its own agent start: the options travel with the
+    // run, and a steer would be folded into a run that already started.
+    const delivery = sendImage ? 'followUp' : kind
+    void send(draftText, shots, delivery, sendImage).finally(() => {
       sendingClientsRef.current.delete(lockKey)
     })
     patchDraft(targetKey, (prev) => ({
@@ -732,13 +941,15 @@ export function Composer() {
       images: EMPTY_IMAGES,
       files: EMPTY_FILES,
       pastedRefs: undefined,
-      history: [draftText, ...(prev.history ?? EMPTY_HISTORY).filter((entry) => entry !== draftText)].slice(0, 50)
+      history: [draftText, ...(prev.history ?? EMPTY_HISTORY).filter((entry) => entry !== draftText)].slice(0, 50),
+      image: imageOptions
     }))
     setHistoryIndex(-1)
     setCommandSelected(false)
+    setImageSelected(false)
     closePalette()
     setMention(null)
-  }, [kind, send, commands, language, t, closePalette, patchDraft, readTargetDraft, setHistoryIndex])
+  }, [kind, send, commands, language, t, closePalette, patchDraft, readTargetDraft, setHistoryIndex, defaultImageOptions, focusComposer])
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
@@ -822,6 +1033,22 @@ export function Composer() {
       }
     } else if (commandSelected) {
       setCommandSelected(false)
+    }
+
+    if (image && !command && !text && event.key === 'Backspace') {
+      const input = event.currentTarget
+      if (input.selectionStart === 0 && input.selectionEnd === 0) {
+        event.preventDefault()
+        if (imageSelected) {
+          exitImageMode()
+          setImageSelected(false)
+        } else {
+          setImageSelected(true)
+        }
+        return
+      }
+    } else if (imageSelected) {
+      setImageSelected(false)
     }
 
     const isEnter = event.key === 'Enter'
@@ -951,9 +1178,10 @@ export function Composer() {
     bumpPendingAdds(targetKey, 1)
     try {
       const items = Array.from(files)
+      const inImageMode = Boolean(readTargetDraft(targetKey).image)
       // The switch decides whether a pasted picture is also named in the text,
       // and a batch without a picture does not go near the text at all.
-      if (pasteMentions && items.some((file) => file.type.startsWith('image/'))) {
+      if (pasteMentions && !inImageMode && items.some((file) => file.type.startsWith('image/'))) {
         await addPicturesInPlace(items, targetKey)
         return
       }
@@ -1045,6 +1273,10 @@ export function Composer() {
 
   const insertMenuCommand = useCallback(
     (command: PiCommand) => {
+      if (command.source === 'app' && command.name === 'image') {
+        enterImageMode()
+        return
+      }
       const targetKey = draftKeyRef.current
       const currentDraft = readTargetDraft(targetKey)
       if (!currentDraft.text.trim()) {
@@ -1054,6 +1286,7 @@ export function Composer() {
           text: ''
         }))
         setCommandSelected(false)
+        setImageSelected(false)
         setSlash(null)
         setMention(null)
         requestAnimationFrame(() => {
@@ -1078,7 +1311,7 @@ export function Composer() {
         target.scrollTop = target.scrollHeight
       })
     },
-    [language, readTargetDraft, patchDraft, setText]
+    [enterImageMode, language, readTargetDraft, patchDraft, setText]
   )
 
   const commandListOpen = Boolean(slash && !mention)
@@ -1158,7 +1391,7 @@ export function Composer() {
             </div>
           ) : null}
 
-          {images.length > 0 ? (
+          {images.length > 0 && !image ? (
             <div className="composer__queue">
               <div className="composer__attachments">
                 {images.map((image, index) => (
@@ -1205,6 +1438,62 @@ export function Composer() {
             </div>
           ) : null}
 
+          {image ? (
+            <div className="composer__image-context" role="group" aria-label={t('Image generation')}>
+              <div className="composer__image-refs">
+                {images.map((attached, index) => (
+                  <span className="composer__image-ref" key={attached.id}>
+                    <ImageButton
+                      src={`data:${attached.mimeType};base64,${attached.data}`}
+                      alt="reference"
+                      inline={{ data: attached.data, mimeType: attached.mimeType }}
+                    />
+                    <button
+                      type="button"
+                      className="composer__image-ref-remove"
+                      onClick={() => setImages((current) => current.filter((item) => item.id !== attached.id))}
+                      aria-label={`${t('Remove image')} ${index + 1}`}
+                      title={`${t('Remove image')} ${index + 1}`}
+                    >
+                      <X size={10} />
+                    </button>
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  className="composer__image-ref-add"
+                  onClick={() => void pickFiles()}
+                  disabled={!canCompose || addingFiles}
+                  aria-busy={addingFiles || undefined}
+                  title={t('Reference')}
+                >
+                  {addingFiles ? <Loader2 size={16} className="spin" aria-hidden="true" /> : <Plus size={16} aria-hidden="true" />}
+                  <span>{t('Reference')}</span>
+                </button>
+              </div>
+              <div
+                className="composer__image-badge"
+                data-selected={imageSelected || undefined}
+                title={t('Press Backspace twice to remove')}
+              >
+                <ImageIcon size={14} aria-hidden="true" />
+                <span>{t('Image generation')}</span>
+                <button
+                  type="button"
+                  className="composer__image-exit"
+                  aria-label={t('Exit image mode')}
+                  title={t('Exit image mode')}
+                  onClick={() => {
+                    setImageSelected(false)
+                    exitImageMode()
+                  }}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           <div className="composer__input-row">
             {command && CommandIcon ? (
               <span
@@ -1241,12 +1530,34 @@ export function Composer() {
               if (recognized) {
                 const argumentStart = value.length - recognized.argument.length
                 const argumentCursor = Math.max(0, Math.min(recognized.argument.length, cursor - argumentStart))
+                if (recognized.command.source === 'app' && recognized.command.name === 'image') {
+                  const trimmedArg = recognized.argument.trim().toLowerCase()
+                  patchDraft(draftKeyRef.current, (prev) => ({
+                    ...prev,
+                    command: undefined,
+                    image: trimmedArg === 'off' ? undefined : (prev.image ?? defaultImageOptions()),
+                    text: trimmedArg === 'off' ? '' : recognized.argument
+                  }))
+                  setCommandSelected(false)
+                  setImageSelected(false)
+                  setSlash(null)
+                  setMention(trimmedArg === 'off' ? null : detectMention(recognized.argument, argumentCursor))
+                  setPaletteIndex(0)
+                  requestAnimationFrame(() => {
+                    const target = textareaRef.current
+                    if (!target) return
+                    const nextPos = trimmedArg === 'off' ? 0 : argumentCursor
+                    target.setSelectionRange(nextPos, nextPos)
+                  })
+                  return
+                }
                 patchDraft(draftKeyRef.current, (prev) => ({
                   ...prev,
                   command: recognized.command,
                   text: recognized.argument
                 }))
                 setCommandSelected(false)
+                setImageSelected(false)
                 setSlash(null)
                 setMention(detectMention(recognized.argument, argumentCursor))
                 setPaletteIndex(0)
@@ -1259,6 +1570,7 @@ export function Composer() {
               }
               setText(value)
               setCommandSelected(false)
+              setImageSelected(false)
               setSlash(command ? null : detectSlash(value, cursor))
               setMention(detectMention(value, cursor))
               setPaletteIndex(0)
@@ -1266,12 +1578,14 @@ export function Composer() {
             onKeyDown={onKeyDown}
             onClick={(event) => {
               setCommandSelected(false)
+              setImageSelected(false)
               const cursor = event.currentTarget.selectionStart ?? text.length
               setSlash(command ? null : detectSlash(text, cursor))
               setMention(detectMention(text, cursor))
             }}
             onBlur={() => {
               setCommandSelected(false)
+              setImageSelected(false)
               // Let a click on a list item land before the list disappears.
               window.setTimeout(() => {
                 setSlash(null)
@@ -1305,11 +1619,13 @@ export function Composer() {
               ready={canCompose}
               busy={isStreaming}
               mode={agentMode}
+              imageMode={Boolean(image)}
               skillCommands={skillCommands}
               pluginCommands={pluginCommands}
               onModeChange={setAgentMode}
               onPickFiles={pickFiles}
               onInsertCommand={insertMenuCommand}
+              onEnterImageMode={() => (image ? exitImageMode() : enterImageMode())}
             />
             {agentMode !== 'default' ? (
               <button
@@ -1344,6 +1660,12 @@ export function Composer() {
               </button>
             ) : null}
             <PermissionPicker />
+            {image ? (
+              <>
+                <ImageModelPicker value={image.model} onChange={setImageOption} />
+                <ImageParamsPicker image={image} onChange={setImageOption} />
+              </>
+            ) : null}
 
             <div className="composer__bar-spacer" />
 
@@ -1397,5 +1719,166 @@ export function Composer() {
         <UsageBar />
       </div>
     </div>
+  )
+}
+
+/** The image model, as a chip in the composer bar rather than a form row. */
+function ImageModelPicker({
+  value,
+  onChange
+}: {
+  value: string
+  onChange: (patch: Partial<ComposerImageOptions>) => void
+}) {
+  const t = useT()
+  return (
+    <Popover
+      placement="top"
+      align="left"
+      width={300}
+      className="composer__image-model"
+      renderTrigger={({ open, toggle }) => (
+        <button
+          type="button"
+          className="model-chip composer__image-chip"
+          data-active={open || undefined}
+          aria-expanded={open}
+          title={t('Image model')}
+          onClick={toggle}
+        >
+          <ImageIcon size={14} aria-hidden="true" />
+          <span className="model-chip__name">
+            {value ? imageModelName(value) : t('Gateway default')}
+          </span>
+          <ChevronDown size={12} className="pill__caret" aria-hidden="true" />
+        </button>
+      )}
+    >
+      {(close) => (
+        <div className="composer__image-model-list">
+          <div className="popover__label">{t('Model')}</div>
+          <button
+            type="button"
+            className="popover__item"
+            role="menuitem"
+            onClick={() => { onChange({ model: '' }); close() }}
+          >
+            <span className="popover__item-text">{t('Gateway default')}</span>
+            {!value ? <Check size={14} /> : null}
+          </button>
+          {IMAGE_MODELS.map((id) => (
+            <button
+              key={id}
+              type="button"
+              className="popover__item"
+              role="menuitem"
+              onClick={() => { onChange({ model: id }); close() }}
+            >
+              <span className="popover__item-text">{imageModelName(id)}</span>
+              {value === id ? <Check size={14} /> : null}
+            </button>
+          ))}
+        </div>
+      )}
+    </Popover>
+  )
+}
+
+/** Ratio, quality and count behind one compact chip, in the reference layout. */
+function ImageParamsPicker({
+  image,
+  onChange
+}: {
+  image: ComposerImageOptions
+  onChange: (patch: Partial<ComposerImageOptions>) => void
+}) {
+  const t = useT()
+  const ratio = imageRatioLabel(image.size)
+  const quality = imageQualityLabel(image.quality, t)
+  return (
+    <Popover
+      placement="top"
+      align="left"
+      width={480}
+      className="image-params-popover"
+      renderTrigger={({ open, toggle }) => (
+        <button
+          type="button"
+          className="model-chip composer__image-chip"
+          data-active={open || undefined}
+          aria-expanded={open}
+          title={t('Image size and quality')}
+          onClick={toggle}
+        >
+          <span>{ratio === 'Auto' ? t('Auto') : ratio}</span>
+          <span className="composer__image-chip-sep">·</span>
+          <span>{quality}</span>
+          {image.count > 1 ? (
+            <>
+              <span className="composer__image-chip-sep">·</span>
+              <span>{image.count}</span>
+            </>
+          ) : null}
+          <ChevronDown size={12} className="pill__caret" aria-hidden="true" />
+        </button>
+      )}
+    >
+      {() => (
+        <div className="image-params">
+          <div className="image-params__section">
+            <div className="image-params__label">{t('Ratio')}</div>
+            <div className="image-params__ratios">
+              {IMAGE_RATIO_OPTIONS.map((option) => (
+                <button
+                  key={option.label}
+                  type="button"
+                  className="image-params__ratio"
+                  data-active={option.value === image.size ? 'true' : undefined}
+                  aria-pressed={option.value === image.size}
+                  onClick={() => onChange({ size: option.value })}
+                >
+                  <span className="image-params__ratio-icon" data-shape={option.shape} aria-hidden="true">
+                    {option.shape === 'auto' ? <Sparkles size={14} /> : null}
+                  </span>
+                  <span>{option.label === 'Auto' ? t('Auto') : option.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="image-params__section">
+            <div className="image-params__label">{t('Quality')}</div>
+            <div className="image-params__segments">
+              {IMAGE_QUALITIES.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  data-active={value === image.quality ? 'true' : undefined}
+                  aria-pressed={value === image.quality}
+                  onClick={() => onChange({ quality: value })}
+                >
+                  {imageQualityLabel(value, t)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="image-params__section">
+            <div className="image-params__label">{t('Count')}</div>
+            <div className="image-params__segments image-params__segments--count">
+              {[1, 2, 3, 4].map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  data-active={value === image.count ? 'true' : undefined}
+                  aria-pressed={value === image.count}
+                  onClick={() => onChange({ count: value })}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </Popover>
   )
 }

@@ -263,6 +263,28 @@ test('TPS is the newest turn\'s output over the generation window', () => {
   assert.equal(sessionMetrics(items, undefined, { firstTokenAt: 10_000 }).tps, null)
 })
 
+test('TPS holds the last completed turn while a new prompt has no answer yet', () => {
+  const items: ThreadItem[] = [
+    { ...user('u1'), timestamp: 1_000 },
+    { ...assistant('a1', 120), timestamp: 1_500, durationMs: 2_000 },
+    { ...user('u2'), timestamp: 5_000 }
+  ]
+  assert.equal(
+    sessionMetrics(items, undefined, {}).tps,
+    60,
+    'sending a prompt must not erase the speed of the turn that just finished'
+  )
+  const answered: ThreadItem[] = [
+    ...items,
+    { ...assistant('a2', 300), timestamp: 8_000, durationMs: 2_000 }
+  ]
+  assert.equal(
+    sessionMetrics(answered, undefined, {}).tps,
+    150,
+    'the new turn takes over as soon as it has its own completed answer'
+  )
+})
+
 test('TPS sums each answer\'s window, so a tool gap is not model time', () => {
   const items: ThreadItem[] = [
     user('u1'),

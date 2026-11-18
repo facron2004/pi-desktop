@@ -1401,6 +1401,22 @@ const ThreadTurnView = memo(function ThreadTurnView({
     lastAssistant?.stopReason === 'error' &&
       !(isLastTurn && (run.outcome === 'aborted' || (!run.settled && isRateLimitError(lastAssistant.error))))
   )
+  const assistantErrorText = lastAssistant?.error?.trim()
+  const visibleNotices = processVisible
+    ? turn.notices.filter((notice) => {
+        if (notice.status === 'compacting') return false
+        if (!liveTail && notice.status === 'retrying') return false
+        if (
+          showAssistantError &&
+          assistantErrorText &&
+          notice.level === 'error' &&
+          notice.text.includes(assistantErrorText)
+        ) {
+          return false
+        }
+        return true
+      })
+    : []
   const showFallbackFailure = Boolean(
     isLastTurn &&
       outcome?.outcome === 'failed' &&
@@ -1442,7 +1458,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
               toolMap={toolMap}
               liveTail={liveTail}
               processOpen={processVisible}
-              processExpanded={Boolean(outcome?.settled && processOpen)}
+              processExpanded={Boolean(outcome?.settled && processVisible)}
             />
 
             {turn.bash.map((item) => (
@@ -1455,7 +1471,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
                 tools={orphanTools}
                 thoughts={0}
                 searchText=""
-                defaultOpen={Boolean(outcome?.settled && processOpen)}
+                defaultOpen={Boolean(outcome?.settled && processVisible)}
                 live={liveTail && orphanTools.some((tool) => tool.status === 'running')}
               >
                 {orphanTools.map((tool) => (
@@ -1464,11 +1480,9 @@ const ThreadTurnView = memo(function ThreadTurnView({
               </ProcessTrail>
             ) : null}
 
-            {processVisible
-              ? turn.notices
-                  .filter((notice) => notice.status !== 'compacting')
-                  .map((notice) => <NoticeMessage key={notice.id} item={notice} />)
-              : null}
+            {visibleNotices.map((notice) => (
+              <NoticeMessage key={notice.id} item={notice} />
+            ))}
             {turnChanges.length > 0 && !liveTail ? (
               <FileChangeSummary
                 changes={turnChanges}

@@ -301,7 +301,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   min-width: 0;
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border-subtle);
-  border-top: 1px solid var(--border-subtle);
   border-left: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
   border-radius: var(--r-lg) 0 0 var(--r-lg);
@@ -820,6 +819,9 @@ transition: background var(--dur-fast) var(--ease);
 .session-list {
   display: flex;
   flex-direction: column;
+  /* Adjacent rows paint their own rounded fill on hover or when active; a
+     hairline between them keeps the two bubbles from fusing into one slab. */
+  gap: 2px;
 }
 
 .project__show-more {
@@ -946,9 +948,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   pointer-events: none;
 }
 
+/* The row already lights up under the pointer; a second rounded fill behind
+   the icon reads as a bubble stacked on it. The icon carries the state. */
 .session-item__more:hover,
 .session-item__more[aria-expanded='true'] {
-  background: var(--bg-active);
+  background: transparent;
   color: var(--sidebar-text);
 }
 
@@ -1127,8 +1131,10 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   min-width: 0;
   min-height: 0;
   background: var(--bg);
-  border: 1px solid var(--border-subtle);
-  border-left: 0;
+  /* The menu strip above is the top of the shell: the column has no rule
+     under it, only the sides and the bottom that close the panel. */
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
   border-radius: 0 var(--r-lg) var(--r-lg) 0;
   overflow: hidden;
   transition: border-radius 320ms var(--ease);
@@ -2149,6 +2155,7 @@ transition: background var(--dur-fast) var(--ease);
 
 .user-msg__content {
   position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -2193,13 +2200,19 @@ transition: background var(--dur-fast) var(--ease);
 
 .user-msg__actions {
   position: absolute;
-  top: calc(100% + 2px);
+  top: 100%;
   right: 0;
+  z-index: 2;
   display: flex;
   justify-content: flex-end;
   align-items: center;
   gap: var(--sp-2);
   min-height: 0;
+  /* The two pixels that separate the buttons from the bubble are padding on
+     the action row itself. A gap would break the hover chain: the pointer
+     crossed empty space, the row lost its hover styling and pointer events,
+     and the buttons could not be clicked at all. */
+  padding-top: 2px;
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--dur-fast) var(--ease);
@@ -2254,7 +2267,7 @@ transition: background var(--dur-fast) var(--ease);
 .user-msg__actions .ghost-btn {
   flex: 0 0 auto;
   width: var(--ctl-sm);
-  height: 22px;
+  height: var(--ctl-sm);
   padding: 0;
   justify-content: center;
   font-size: var(--text-2xs);
@@ -2262,6 +2275,13 @@ transition: background var(--dur-fast) var(--ease);
   color: var(--text-muted);
   white-space: nowrap;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.user-msg__actions .ghost-btn:hover {
+  /* The message already has the reader's attention; a gray pill behind one
+     icon reads as a second bubble. The icon colour is the only hover cue. */
+  background: transparent;
+  color: var(--text-primary);
 }
 
 .user-msg__content:hover .user-msg__actions,
@@ -2346,15 +2366,16 @@ transition: background var(--dur-fast) var(--ease);
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
 }
 
 .assistant__footer {
   display: flex;
   align-items: center;
-  gap: var(--sp-4);
-  font-size: var(--text-2xs);
-  color: var(--text-faint);
+  gap: var(--sp-3);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
   /* A flex item will not shrink below its content by default, so a long model
      error pushed the whole footer past the window at 1280px and below. The
@@ -2379,7 +2400,8 @@ transition: background var(--dur-fast) var(--ease);
   flex: 1 1 auto;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: var(--text-2xs);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -2390,36 +2412,41 @@ transition: background var(--dur-fast) var(--ease);
 
 .thinking {
   display: block;
-  align-self: stretch;
-  width: 100%;
+  align-self: flex-start;
+  width: fit-content;
   max-width: 100%;
   min-width: 0;
 }
 
 .thinking__head {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  width: 100%;
-  min-height: 22px;
+  width: fit-content;
+  max-width: 100%;
+  min-height: var(--ctl-xs);
   padding: 0;
-  font-size: var(--text-xs);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
   color: var(--text-tertiary);
-  transition: color var(--dur-fast) var(--ease);
-}
-
-.thinking__head:hover {
-  color: var(--text);
 }
 
 .thinking__title {
-  font-weight: 500;
+  font-weight: var(--weight-ui);
+  color: var(--text-tertiary);
 }
 
 .thinking__private {
-  margin-left: auto;
-  font-size: var(--text-2xs);
-  color: var(--text-faint);
+  margin-left: 0;
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  color: var(--text-disabled);
+}
+
+.thinking__private::before {
+  content: '·';
+  margin-right: var(--sp-2);
+  color: var(--text-disabled);
 }
 
 .thinking__body {
@@ -2449,9 +2476,10 @@ transition: background var(--dur-fast) var(--ease);
  * ------------------------------------------------------------------ */
 
 /* A tool call is one step of the work, not a list row: it sits a head below
-   the answer in weight, and its own surface only appears while the pointer is
-   over it — the label and the icon are what lift, so a column of calls stays
-   quiet until one is actually being read. */
+   the answer in weight, and it has no surface of its own — not even under the
+   pointer. A gray band across the column reads as another bubble in the
+   transcript; the label, the revealed actions and the caret are the hover
+   cue instead. */
 .tool {
   border: 1px solid transparent;
   border-radius: var(--r-sm);
@@ -2460,12 +2488,6 @@ transition: background var(--dur-fast) var(--ease);
   transition:
     border-color var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease);
-}
-
-/* --bg-hover is the semantic hover surface and it is defined in both themes;
-   a mix built from --surface-raised would be white on white in the light one. */
-.tool:hover {
-  background: var(--bg-hover);
 }
 
 /* A failure is a two-pixel mark in the gutter, not a red block: the row still
@@ -2542,13 +2564,14 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   opacity: 1;
 }
 
+/* The revealed action icons answer with ink, not with a pill of their own:
+   the row already lifts, and a second gray bubble behind the icon is the
+   stacking the transcript avoids. */
 .tool__reuse-icon:hover {
-  background: var(--accent-soft);
   color: var(--accent);
 }
 
 .tool__caret:hover {
-  background: var(--bg-active);
   color: var(--text);
 }
 
@@ -2671,6 +2694,159 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   background: var(--surface-sunken);
 }
 
+/* The prompt behind a generated picture is context, not the result: it sits
+   in the card's fold, above the pictures the call actually produced. */
+.tool__image-prompt {
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tool__image-prompt-label {
+  display: block;
+  margin-bottom: var(--sp-1);
+  color: var(--text-faint);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.tool__image-prompt p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* A generated picture is the result of the call, so it stays on the reading
+   column instead of waiting behind the card's caret. */
+.tool__images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+:root[data-theme='light'] .tool__images {
+  background: var(--surface-sunken);
+}
+
+.tool__image-item {
+  position: relative;
+  display: inline-flex;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-sunken);
+}
+
+.tool__images .lightbox-trigger {
+  display: block;
+  width: 168px;
+  height: 168px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: transparent;
+}
+
+.tool__images[data-count='1'] .lightbox-trigger {
+  width: auto;
+  height: auto;
+  max-width: min(100%, 360px);
+  max-height: 360px;
+}
+
+.tool__images .lightbox-trigger img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: var(--r-md);
+}
+
+.tool__images[data-count='1'] .lightbox-trigger img {
+  width: auto;
+  height: auto;
+  max-width: min(100%, 360px);
+  max-height: 360px;
+  object-fit: contain;
+}
+
+.tool__image-actions {
+  position: absolute;
+  right: var(--sp-2);
+  bottom: var(--sp-2);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--surface-glass);
+  backdrop-filter: var(--blur-glass);
+  box-shadow: var(--shadow-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.tool__image-item:hover .tool__image-actions,
+.tool__image-item:focus-within .tool__image-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tool__image-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.tool__image-action--icon {
+  width: 24px;
+  padding: 0;
+  justify-content: center;
+}
+
+.tool__image-action:hover,
+.tool__image-action:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-pure);
+}
+
+.tool__image-placeholder {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  width: 180px;
+  height: 140px;
+  padding: var(--sp-4);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--r-md);
+  background: var(--surface-sunken);
+  color: var(--text-tertiary);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+}
+
 .tool__body--group {
   display: flex;
   flex-direction: column;
@@ -2728,11 +2904,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   font-size: var(--text-2xs);
   color: var(--accent);
   border-top: 1px solid var(--border-soft);
-transition: background var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .tool__more:hover {
-  background: var(--accent-soft);
+  color: var(--accent-hover);
 }
 
 /* diff view */
@@ -3552,12 +3728,16 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   gap: var(--sp-2);
   flex: 0 0 auto;
   max-width: 100%;
-  margin: 10px 0 0;
-  padding: 3px 8px;
+  /* The chip shares the textarea's first line box: same top inset and the same
+     line height, so its label sits level with the argument beside it. */
+  height: var(--leading-composer);
+  margin: var(--sp-4) 0 0;
+  padding: 0 8px;
   border: 1px solid var(--border-soft);
   border-radius: var(--r-sm);
   background: var(--surface-chrome);
   color: var(--text-muted);
+  line-height: 1;
   transition:
     border-color var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease),
@@ -3579,6 +3759,316 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
      list falls through to a serif CJK fallback for command names like /计划. */
   font-family: var(--font-mono);
   font-size: var(--text-sm);
+}
+
+/* Image generation lives in the composer: a reference tile and the mode label
+   inside the box, with the model and picture settings in the toolbar below. */
+.composer__image-context {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4) 0;
+}
+
+.composer__image-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.composer__image-ref {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+}
+
+.composer__image-ref .lightbox-trigger {
+  display: block;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
+.composer__image-ref .lightbox-trigger img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+}
+
+.composer__image-ref-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.composer__image-ref:hover .composer__image-ref-remove,
+.composer__image-ref:focus-within .composer__image-ref-remove,
+.composer__image-ref-remove:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.composer__image-ref-add {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  color: var(--text-tertiary);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.composer__image-ref-add:hover,
+.composer__image-ref-add:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.composer__image-ref-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.composer__image-badge {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--sp-2);
+  min-height: 22px;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-xs);
+  color: var(--blue);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  font-weight: var(--weight-medium);
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.composer__image-badge[data-selected='true'] {
+  background: var(--blue-soft);
+}
+
+.composer__image-exit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--blue);
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+.composer__image-exit:hover,
+.composer__image-exit:focus-visible {
+  opacity: 1;
+  background: var(--blue-soft);
+}
+
+/* The image controls read as two compact pills beside the other composer
+   controls, not as a second form above the input. */
+.composer__bar > .popover-wrap:has(.composer__image-chip.model-chip) {
+  flex: 0 0 auto;
+}
+
+.composer__image-chip.model-chip {
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  max-width: 220px;
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+.composer__image-chip.model-chip:hover,
+.composer__image-chip.model-chip[data-active='true'] {
+  background: var(--bg-hover);
+  color: var(--text-pure);
+}
+
+.composer__image-chip svg {
+  color: var(--text-tertiary);
+}
+
+.composer__image-chip-sep {
+  color: var(--text-faint);
+}
+
+.composer__image-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.image-params-popover {
+  padding: var(--sp-3);
+}
+
+.image-params {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.image-params__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.image-params__label {
+  color: var(--text-tertiary);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+}
+
+.image-params__ratios {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--sp-2);
+}
+
+.image-params__ratio {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 58px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.image-params__ratio:hover,
+.image-params__ratio:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.image-params__ratio[data-active='true'] {
+  border-color: var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.image-params__ratio-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+}
+
+.image-params__ratio-icon[data-shape='square'] {
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.image-params__ratio-icon[data-shape='landscape'] {
+  width: 21px;
+  height: 14px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.image-params__ratio-icon[data-shape='portrait'] {
+  width: 14px;
+  height: 21px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.image-params__ratio-icon[data-shape='wide'] {
+  width: 23px;
+  height: 13px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.image-params__ratio-icon[data-shape='tall'] {
+  width: 13px;
+  height: 23px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.image-params__segments {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-md);
+  background: var(--bg-active);
+}
+
+.image-params__segments button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 30px;
+  padding: 0 var(--sp-2);
+  border: none;
+  border-radius: calc(var(--r-md) - 2px);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.image-params__segments button:hover {
+  color: var(--text-primary);
+}
+
+.image-params__segments button[data-active='true'] {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.image-params__segments--count button {
+  flex: 0 0 auto;
+  min-width: 44px;
 }
 
 .composer__bar {
@@ -3863,6 +4353,66 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The chip is a container: the glyph and the name are separate buttons (a
+   button inside a button is not valid markup). The glyph is also the way out —
+   hover the chip or open the menu and the folder turns into an X that drops
+   back to working without a project. */
+.project-chip {
+  cursor: default;
+}
+
+.project-chip__glyph,
+.project-chip__label {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Both glyphs share one cell so the swap does not move the name. */
+.project-chip__glyph {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+}
+
+.project-chip__glyph > svg {
+  grid-area: 1 / 1;
+}
+
+.project-chip__glyph--static {
+  cursor: default;
+}
+
+.project-chip__remove {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.project-chip:hover .project-chip__remove,
+.project-chip[data-active='true'] .project-chip__remove,
+.project-chip__glyph:focus-visible .project-chip__remove {
+  opacity: 1;
+}
+
+.project-chip:hover .project-chip__folder,
+.project-chip[data-active='true'] .project-chip__folder,
+.project-chip__glyph:focus-visible .project-chip__folder {
+  opacity: 0;
+}
+
+.project-chip__glyph:hover .project-chip__remove,
+.project-chip__glyph:focus-visible .project-chip__remove {
+  color: var(--red);
 }
 
 .git-chip__branch {
@@ -5018,7 +5568,22 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .md a {
   color: var(--accent);
   text-decoration: none;
-  border-bottom: 1px dotted transparent;
+  border-bottom: 1px dotted color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* A quiet outbound arrow on the baseline, not a boxed badge: the link text is
+   still the thing that reads, and a sentence with several links stays calm. */
+.md-link__icon {
+  display: inline-block;
+  margin-right: 2px;
+  vertical-align: -0.05em;
+  opacity: 0.5;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.md a:hover .md-link__icon,
+.md a:focus-visible .md-link__icon {
+  opacity: 0.9;
 }
 
 .md a:hover,
@@ -5036,11 +5601,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .md code {
   font-family: var(--font-mono);
   font-size: var(--text-inline-code);
-  background: none;
-  padding: 0;
-  border-radius: 0;
-  color: var(--accent);
-  border: 0;
+  background: var(--bg-active);
+  padding: 1.5px var(--sp-2);
+  border-radius: var(--r-sm);
+  color: inherit;
+  border: 1px solid var(--border-soft);
 }
 
 .md pre {
@@ -8132,9 +8697,9 @@ button:focus-visible,
 }
 
 .thinking__duration {
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  color: var(--text-faint);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+  color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
   flex: 0 0 auto;
 }
@@ -8142,29 +8707,26 @@ button:focus-visible,
 .md-file-link {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 0;
-  margin: 0;
+  gap: 4px;
+  padding: 2px 7px;
+  margin: 0 1px;
+  border-radius: var(--r-xs);
   border: 0;
-  border-bottom: 1px dotted transparent;
-  border-radius: 0;
-  background: none;
-  color: var(--accent);
+  background: var(--bg-raised);
+  color: var(--text-pure);
   font-family: var(--font-mono);
   font-size: 0.92em;
   line-height: 1.4;
   cursor: pointer;
   vertical-align: baseline;
   transition:
-    color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease);
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
 
-.md-file-link:hover,
-.md-file-link:focus-visible,
-.md-file-link:active {
-  color: var(--accent-hover);
-  border-bottom-color: currentColor;
+.md-file-link:hover {
+  background: var(--bg-hover);
+  color: var(--text-pure);
 }
 
 .code-block__tool[data-active='true'] {

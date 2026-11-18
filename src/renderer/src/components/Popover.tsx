@@ -20,6 +20,7 @@ interface PopoverProps {
   renderTrigger: (state: {
     open: boolean
     toggle: (event?: ReactMouseEvent<HTMLElement>) => void
+    close: () => void
   }) => ReactNode
   children: (close: () => void) => ReactNode
   align?: 'left' | 'right'
@@ -278,7 +279,7 @@ export function Popover({
       onFocus={openNow}
       onBlur={scheduleClose}
     >
-      {renderTrigger({ open, toggle })}
+      {renderTrigger({ open, toggle, close })}
       {open ? createPortal(
         <div
           ref={popoverRef}

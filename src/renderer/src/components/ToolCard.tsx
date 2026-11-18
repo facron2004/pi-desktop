@@ -7,12 +7,15 @@ import {
   CornerDownLeft,
   FileSearch,
   FileText,
+  FolderOpen,
+  ImagePlus,
   ListChecks,
   Monitor,
   Pencil,
   Play,
   Search,
   SquareTerminal,
+  WandSparkles,
   Wrench
 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
@@ -21,11 +24,12 @@ import { diffableEdits, summarizeTool, writtenContent } from '../lib/tool-render
 import { formatDuration } from '../lib/format'
 import { buildDiff } from '../lib/diff-fold'
 import { formatDiff } from '../lib/diff-text'
-import { relativePath } from '../lib/path'
+import { basename, relativePath } from '../lib/path'
 import { subagentCalls, type SubagentTreeTask } from '../lib/subagents'
 import { useAppStore } from '../store/useAppStore'
 import { readToolFull, readToolOpen, writeToolFull, writeToolOpen } from '../lib/view-state'
 import { CopyButton } from './conversation/CopyButton'
+import { ImageButton, inlineOfDataUrl } from './Lightbox'
 import { ToolResultPanel } from './conversation/ToolResultPanel'
 import { runInTerminal } from './conversation/tool-actions'
 import { useT } from '../lib/i18n'
@@ -39,6 +43,7 @@ const TONE_ICONS = {
   subagent: Bot,
   plan: ListChecks,
   computer: Monitor,
+  image: WandSparkles,
   generic: Wrench
 } as const
 
@@ -127,6 +132,10 @@ export const ToolCard = memo(function ToolCard({
     if (item.status === 'error') {
       return { label: 'Copy the result', text: result }
     }
+    if (item.toolName === 'generate_image') {
+      const promptText = typeof item.args?.prompt === 'string' ? item.args.prompt.trim() : ''
+      if (promptText) return { label: 'Copy prompt', text: promptText }
+    }
     if (edits.length > 0) {
       if (open && diffs.length > 0) {
         return { label: 'Copy the diff', text: formatDiff(diffs) }
@@ -140,7 +149,7 @@ export const ToolCard = memo(function ToolCard({
       return { label: 'Copy the file', text: content }
     }
     return { label: 'Copy the result', text: result }
-  }, [item.status, result, edits, open, diffs, content])
+  }, [item.status, item.toolName, item.args?.prompt, result, edits, open, diffs, content])
 
   // A command or a file path can be handed back to the composer, so the
   // user can build on it without copying it by hand.
@@ -153,6 +162,21 @@ export const ToolCard = memo(function ToolCard({
             text: relativePath(workspacePath ?? '', String(item.args?.path ?? ''))
           }
         : null
+  const imagePrompt =
+    item.toolName === 'generate_image' && typeof item.args?.prompt === 'string'
+      ? item.args.prompt.trim()
+      : ''
+  const reuseImage = () => {
+    if (!imagePrompt) return
+    window.dispatchEvent(
+      new CustomEvent('pi:enter-image-mode', {
+        detail: {
+          prompt: imagePrompt,
+          options: imageOptionsFromItem(item)
+        }
+      })
+    )
+  }
 
   // A shell command can also be run again in the terminal drawer, where its
   // output stays out of the conversation.
@@ -340,6 +364,7 @@ export const ToolCard = memo(function ToolCard({
             ) : null}
           </div>
           {details}
+          {item.toolName === 'generate_image' ? <GeneratedImageStrip item={item} /> : null}
         </div>
       </ErrorBoundary>
     )
@@ -379,6 +404,17 @@ export const ToolCard = memo(function ToolCard({
             </button>
           ) : null}
 
+          {imagePrompt ? (
+            <button
+              className="tool__reuse-icon"
+              title={t('Reuse in image generator')}
+              aria-label={t('Reuse in image generator')}
+              onClick={reuseImage}
+            >
+              <CornerDownLeft size={12} />
+            </button>
+          ) : null}
+
           {reuse ? (
             <button
               className="tool__reuse-icon"
@@ -414,10 +450,150 @@ export const ToolCard = memo(function ToolCard({
         </div>
 
         {details}
+        {item.toolName === 'generate_image' ? <GeneratedImageStrip item={item} /> : null}
       </div>
     </ErrorBoundary>
   )
 })
+
+function imageOptionsFromItem(item: ToolItem): {
+  model?: string
+  size?: string
+  quality?: string
+  count?: number
+} {
+  const detailsModel =
+    item.details && typeof item.details === 'object' && typeof (item.details as { model?: unknown }).model === 'string'
+      ? (item.details as { model: string }).model.trim()
+      : ''
+  const argModel = typeof item.args?.model === 'string' ? item.args.model.trim() : ''
+  const model = detailsModel || argModel
+  const size = typeof item.args?.size === 'string' && item.args.size.trim() ? item.args.size.trim() : undefined
+  const quality = typeof item.args?.quality === 'string' && item.args.quality.trim() ? item.args.quality.trim() : undefined
+  const rawCount = Number(item.args?.n)
+  const count = Number.isFinite(rawCount) ? Math.min(4, Math.max(1, Math.round(rawCount))) : undefined
+  return {
+    ...(model ? { model } : {}),
+    ...(size !== undefined ? { size } : {}),
+    ...(quality !== undefined ? { quality } : {}),
+    ...(count !== undefined ? { count } : {})
+  }
+}
+
+function useGeneratedImageAsReference(src: string, path: string, item: ToolItem): void {
+  const inline = inlineOfDataUrl(src)
+  if (!inline) return
+  window.dispatchEvent(
+    new CustomEvent('pi:enter-image-mode', {
+      detail: {
+        referenceImage: {
+          data: inline.data,
+          mimeType: inline.mimeType,
+          name: basename(path) || 'reference.png'
+        },
+        options: imageOptionsFromItem(item)
+      }
+    })
+  )
+}
+
+/**
+ * The pictures a `generate_image` call produced.
+ *
+ * The tool already wrote them into the project; this strip reads them through
+ * the same verified image bridge as the Images page, so the conversation shows
+ * the result without a second copy of the bytes.
+ */
+function GeneratedImageStrip({ item }: { item: ToolItem }) {
+  const t = useT()
+  const details = item.details
+  const paths = useMemo(() => {
+    if (!details || typeof details !== 'object') return []
+    const list = (details as { paths?: unknown }).paths
+    return Array.isArray(list)
+      ? list.filter((path): path is string => typeof path === 'string' && path.length > 0)
+      : []
+  }, [details])
+  const [previews, setPreviews] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    const missing = paths.filter((path) => !previews[path])
+    if (!missing.length) return
+    void Promise.all(
+      missing.map(async (path) => {
+        const data = await window.pi.fs.readImageDataUrl(path).catch(() => null)
+        return data ? ([path, data] as const) : null
+      })
+    ).then((entries) => {
+      if (cancelled) return
+      const found = entries.filter((entry): entry is readonly [string, string] => entry !== null)
+      if (found.length) {
+        setPreviews((current) => ({ ...current, ...Object.fromEntries(found) }))
+      }
+    })
+    return () => { cancelled = true }
+  }, [paths])
+
+  const loaded = paths.filter((path) => previews[path])
+  if (!loaded.length) {
+    if (item.status === 'running') {
+      const rawCount = Number(item.args?.n)
+      const count = Number.isFinite(rawCount) ? Math.min(4, Math.max(1, Math.round(rawCount))) : 1
+      return (
+        <div className="tool__images" data-running="true" data-count={count}>
+          {Array.from({ length: count }, (_, index) => (
+            <div className="tool__image-placeholder" key={index} role="status">
+              <span className="spinner" aria-hidden="true" />
+              <span>{t('Generating an image')}</span>
+            </div>
+          ))}
+        </div>
+      )
+    }
+    return null
+  }
+  return (
+    <div className="tool__images" data-count={loaded.length}>
+      {loaded.map((path) => {
+        const src = previews[path]
+        const name = basename(path)
+        return (
+          <div className="tool__image-item" key={path}>
+            <ImageButton
+              src={src}
+              alt={name}
+              title={name}
+              filePath={path}
+              onUseAsReference={() => useGeneratedImageAsReference(src, path, item)}
+            />
+            <div className="tool__image-actions">
+              <button
+                type="button"
+                className="tool__image-action"
+                onClick={() => useGeneratedImageAsReference(src, path, item)}
+                title={t('Use as reference')}
+                aria-label={t('Use as reference')}
+              >
+                <ImagePlus size={12} aria-hidden="true" />
+                <span>{t('Reference')}</span>
+              </button>
+              <button
+                type="button"
+                className="tool__image-action tool__image-action--icon"
+                onClick={() => void window.pi.fs.reveal(path)}
+                title={t('Reveal in the file manager')}
+                aria-label={t('Reveal in the file manager')}
+              >
+                <FolderOpen size={12} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 function shortTaskName(value: string): string {
   const firstLine = value.trim().split(/\r?\n/, 1)[0] || 'Subagent'

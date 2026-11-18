@@ -73,7 +73,7 @@ export function canAutoApprove(approval: ToolApproval, cwd: string, env: NodeJS.
 /** A private dialog title keeps ordinary extension confirmations out of this gate. */
 export function permissionExtension(title: string, exemptDesktopTools = true): string {
   const exemptTools = exemptDesktopTools
-    ? ['desktop_goal_finish', 'exit_plan_mode', 'desktop_todo', 'computer']
+    ? ['desktop_goal_finish', 'exit_plan_mode', 'desktop_todo', 'computer', 'generate_image']
     : []
   return `export default function (pi) {
     let pending = Promise.resolve();

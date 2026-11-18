@@ -43,9 +43,18 @@ export function restoreNativeTitle(el: TipAttrHost): void {
   el.removeAttribute(NATIVE_TITLE_STASH)
 }
 
-/** The tip's text: the live title if React just updated it, otherwise the stash. */
+/**
+ * The tip's text: the live title if React just updated it, otherwise the
+ * stash, otherwise the control's accessible name. Icon-only buttons often
+ * carry only an `aria-label`; without this fallback they had no bubble at all.
+ */
 export function readTipText(el: TipAttrHost): string {
-  return (el.getAttribute('title') ?? el.getAttribute(NATIVE_TITLE_STASH) ?? '').trim()
+  return (
+    el.getAttribute('title') ??
+    el.getAttribute(NATIVE_TITLE_STASH) ??
+    el.getAttribute('aria-label') ??
+    ''
+  ).trim()
 }
 
 export function clipTipText(text: string, max = CLIP_AT): string {
@@ -67,6 +76,21 @@ export function tipIsRedundant(title: string, visible: string, truncated: boolea
   const shown = collapse(visible)
   if (!shown) return false
   return collapse(title) === shown
+}
+
+/**
+ * An open popup explains the control that opened it: its own trigger is the
+ * header of a card that already lists the choices, and a bubble on top of them
+ * would cover the thing the reader just asked for.
+ *
+ * `aria-expanded` alone is not that fact. The tools-panel toggle and the sidebar
+ * toggle both expand a surface somewhere else on screen, and the bubble is the
+ * only place an icon-only control writes its name — hiding it exactly while the
+ * control reads "Hide …" removed the tip the reader needed. Only a control that
+ * opens its own popup (`aria-haspopup`) is answered by what it opened.
+ */
+export function expandedPopupHidesTip(expanded: string | null, haspopup: string | null): boolean {
+  return expanded === 'true' && haspopup !== null
 }
 
 /** A filesystem path, as opposed to a sentence that happens to contain a slash. */

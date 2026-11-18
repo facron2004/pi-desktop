@@ -67,8 +67,8 @@ export const UserMessage = memo(function UserMessage({
               <button
                 type="button"
                 className="ghost-btn"
+                data-pi-tip-ignore
                 onClick={() => onCopy(item.id, item.text)}
-                title={t(copied === item.id ? 'Copied' : 'Copy your message')}
                 aria-label={t(copied === item.id ? 'Copied' : 'Copy your message')}
               >
                 {copied === item.id ? <Check size={14} /> : <Copy size={14} />}
@@ -77,9 +77,9 @@ export const UserMessage = memo(function UserMessage({
                 <button
                   type="button"
                   className="ghost-btn ghost-btn--edit"
+                  data-pi-tip-ignore
                   onClick={() => onEdit(editEntryId, item.text, item.images)}
                   disabled={editing}
-                  title={t('Edit message')}
                   aria-label={t('Edit message')}
                 >
                   <Pencil size={14} />

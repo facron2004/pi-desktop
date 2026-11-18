@@ -73,7 +73,7 @@ writeFileSync(path.join(profile, 'settings.json'), JSON.stringify({
   model: 'fixture/sidebar-test', thinkingLevel: 'off', permissionMode: 'full', trustProject: false, desktopNotifications: false
 }))
 
-async function checkRenderer(markerFile, nestedWorkspace) {
+async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const setInputValue = (input, value) => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value)
@@ -466,6 +466,42 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   document.querySelector('.run-outcome').click()
   await until(() => !streamBody().textContent.includes('STREAM_PROGRESS'), 'The process did not fold again')
 
+  // The copy/edit row must sit flush under the bubble and above the run
+  // summary: a visual gap used to drop the hover state before the pointer
+  // reached the buttons, so neither action could be clicked.
+  const userActions = await until(
+    () => document.querySelector('.user-msg__actions'),
+    'The message actions did not render'
+  )
+  const userBubble = document.querySelector('.user-msg__bubble')
+  const actionBox = userActions.getBoundingClientRect()
+  check(
+    Math.abs(actionBox.top - userBubble.getBoundingClientRect().bottom) <= 1,
+    'A gap separates the message actions from the bubble'
+  )
+  userActions.style.opacity = '1'
+  userActions.style.pointerEvents = 'auto'
+  const copyButton = userActions.querySelector('button')
+  check(!copyButton.hasAttribute('title'), 'The message action still draws a native title bubble')
+  check(
+    copyButton.hasAttribute('data-pi-tip-ignore'),
+    'The message action is not opted out of the hover tip'
+  )
+  const copyBox = copyButton.getBoundingClientRect()
+  const copyHit = document.elementFromPoint(copyBox.left + copyBox.width / 2, copyBox.top + copyBox.height / 2)
+  check(
+    copyHit === copyButton || copyButton.contains(copyHit),
+    'The message action is covered by the run below it'
+  )
+  const hoverBridge = document.elementFromPoint(actionBox.right - 4, actionBox.top + 1)
+  check(
+    hoverBridge === userActions || userActions.contains(hoverBridge),
+    'The message action row has no hover bridge'
+  )
+  userActions.style.opacity = ''
+  userActions.style.pointerEvents = ''
+  passed.push('message copy and edit actions stay reachable under the bubble')
+
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))
   const streamSearch = await until(() => document.querySelector('.thread-search input'), 'Conversation search did not open')
   const setInput = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
@@ -778,12 +814,12 @@ async function checkRenderer(markerFile, nestedWorkspace) {
     panelToggle()?.click()
   }
   await until(() => document.querySelector('.tool-start'), 'The panel start page did not render')
-  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 7, 'The start page does not list every page')
+  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 6, 'The start page does not list every page')
   const filesCard = [...document.querySelectorAll('.tool-start .tool-menu__card')].find((node) => node.textContent?.includes('Files'))
   check(filesCard, 'The start page has no Files entry')
   check(
-    [...document.querySelectorAll('.tool-start .tool-menu__card')].some((node) => node.textContent?.includes('Image generation')),
-    'The start page has no Image generation entry'
+    [...document.querySelectorAll('.tool-start .tool-menu__card')].some((node) => node.textContent?.includes('Images')),
+    'The start page has no Images entry'
   )
   filesCard.click()
   await until(() => document.querySelector('.file-workspace'), 'Files page did not render')
@@ -1206,13 +1242,125 @@ async function checkRenderer(markerFile, nestedWorkspace) {
   await pause(200)
   passed.push('sidebar rows explain themselves in a card instead of a native tooltip')
 
-  // The image generation page is a real tool-panel page: it renders its form
-  // and guards the Generate button while the prompt is empty.
-  await openToolPage('imagegen', 'Image generation')
-  const imageGen = await until(() => document.querySelector('.image-gen'), 'Image generation page did not render')
-  check(imageGen.querySelector('.image-gen__prompt'), 'The image generation page has no prompt box')
-  check(imageGen.querySelector('.image-gen__generate')?.disabled, 'Generate was not guarded by an empty prompt')
-  passed.push('the image generation page renders a guarded prompt form')
+  // Image generation lives in the composer: `/image` loads the reference tile,
+  // the blue mode label and the compact model/parameter chips in place.
+  await store.getState().send('/image a lighthouse at dusk', [])
+  const imageMode = await until(
+    () => document.querySelector('.composer__image-context'),
+    'The /image command did not open the composer image controls'
+  )
+  check(imageMode.querySelector('.composer__image-ref-add'), 'The image reference tile is missing')
+  const imageChips = [...document.querySelectorAll('.composer__image-chip')]
+  check(imageChips.length === 2, `Expected a model and a parameter chip, got ${imageChips.length}`)
+  await until(
+    () => document.querySelector('.composer__input')?.value === 'a lighthouse at dusk',
+    'The /image command did not fill the composer prompt'
+  )
+  imageChips[1].click()
+  const paramsPanel = await until(
+    () => document.querySelector('.image-params'),
+    'The image parameter popover did not open'
+  )
+  check(
+    paramsPanel.querySelectorAll('.image-params__ratio').length === 6,
+    'The ratio grid is missing options'
+  )
+  check(
+    paramsPanel.querySelectorAll('.image-params__segments').length === 2,
+    'The quality and count segments are missing'
+  )
+  imageChips[1].click()
+  passed.push('the /image command loads the image controls in the composer')
+
+  // A generate_image result shows its picture inline: not inside the process
+  // fold and not in a side panel, and its picture can be handed back to the
+  // composer as a reference image or reused with its parameters.
+  const imageItems = [
+    { id: 'img-user', kind: 'user', text: 'Draw a lighthouse', images: [], timestamp: 1, order: 1 },
+    {
+      id: 'img-assistant', kind: 'assistant', streaming: false, timestamp: 2, order: 2,
+      blocks: [{
+        type: 'toolCall', id: 'img-call', name: 'generate_image', argsText: '{}',
+        args: { prompt: 'a lighthouse at dusk', model: 'codex/gpt-image-2', size: '1536x1024' }
+      }]
+    },
+    {
+      id: 'img-tool', kind: 'tool', toolCallId: 'img-call', toolName: 'generate_image',
+      args: { prompt: 'a lighthouse at dusk', model: 'codex/gpt-image-2', size: '1536x1024' },
+      status: 'ok', result: 'Generated 1 image(s)',
+      details: { paths: [`${workspace}/shot.png`], model: 'codex/gpt-image-2' }, timestamp: 3, order: 3
+    }
+  ]
+  showStream('draft:ui-image', imageItems, {
+    phase: 'idle', turns: 1, settled: true, outcome: 'completed'
+  })
+  const imageCard = await until(
+    () => document.querySelector('.tool[data-tone="image"]'),
+    'The generate_image card did not render'
+  )
+  check(
+    imageCard.querySelector('.tool__summary')?.textContent?.includes('GPT Image 2 · 3:2'),
+    'The generate_image card did not summarise the model and ratio'
+  )
+  const inlineImage = await until(
+    () => imageCard.querySelector('.tool__images img'),
+    'The generated picture did not render inline'
+  )
+  check(
+    inlineImage.getAttribute('src')?.startsWith('data:image/png;base64,'),
+    'The inline picture is not drawn from the verified image bridge'
+  )
+  const useRefBtn = imageCard.querySelector('.tool__image-action')
+  check(useRefBtn, 'The generated picture has no Use as reference action')
+  useRefBtn.click()
+  await until(
+    () => document.querySelector('.composer__image-ref img'),
+    'Clicking Use as reference did not attach the generated picture in the composer'
+  )
+  const reusePromptBtn = imageCard.querySelector('.tool__reuse-icon')
+  check(reusePromptBtn, 'The generate_image card has no Reuse prompt action')
+  reusePromptBtn.click()
+  await until(
+    () => document.querySelector('.composer__input')?.value === 'a lighthouse at dusk',
+    'Clicking Reuse did not restore the prompt into the composer'
+  )
+  passed.push('a generated picture renders inline and can be reused as a reference or prompt')
+
+  // The preview's close control must clear the native caption buttons; the
+  // header used to sit high enough that the window buttons covered it.
+  const previewCanvas = document.createElement('canvas')
+  previewCanvas.width = 1535
+  previewCanvas.height = 1024
+  const previewContext = previewCanvas.getContext('2d')
+  previewContext.fillStyle = '#6b8e23'
+  previewContext.fillRect(0, 0, previewCanvas.width, previewCanvas.height)
+  const previewData = previewCanvas.toDataURL('image/png').split(',')[1]
+  showStream('draft:lightbox', [
+    {
+      id: 'lightbox-user', kind: 'user', text: 'Preview', timestamp: 1, order: 1,
+      images: [{ data: previewData, mimeType: 'image/png' }]
+    }
+  ], { phase: 'idle', turns: 1, settled: true, outcome: 'completed' })
+  const previewTrigger = await until(
+    () => document.querySelector('.user-msg__images .lightbox-trigger'),
+    'The message image did not render'
+  )
+  previewTrigger.click()
+  await until(() => document.querySelector('.lightbox'), 'The image preview did not open')
+  const previewClose = document.querySelector('.lightbox__btn--icon')
+  const previewCloseBox = previewClose.getBoundingClientRect()
+  const titlebarHeight =
+    parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--titlebar-h')) || 36
+  check(
+    previewCloseBox.top >= titlebarHeight,
+    `The preview close control starts under the caption buttons: ${previewCloseBox.top}`
+  )
+  previewClose.click()
+  await until(
+    () => !document.querySelector('.lightbox'),
+    'The preview close control did not close the preview'
+  )
+  passed.push('the image preview close control clears the caption buttons and closes')
 
   // Leave the environment section folded in the harness screenshot so the
   // collapsed state remains visible for visual review.
@@ -1241,7 +1389,7 @@ Object.assign(env, {
   PI_DESKTOP_SCREENSHOT_DELAY: '1000',
   PI_DESKTOP_EVAL_DELAY: '100',
   PI_DESKTOP_RPC_TRACE: '0',
-  PI_DESKTOP_EVAL: `(${checkRenderer.toString()})(${JSON.stringify(markerFile)}, ${JSON.stringify(nestedWorkspace)})`
+  PI_DESKTOP_EVAL: `(${checkRenderer.toString()})(${JSON.stringify(markerFile)}, ${JSON.stringify(nestedWorkspace)}, ${JSON.stringify(workspace)})`
 })
 try {
   const { stdout, stderr } = await promisify(execFile)(require('electron'), [root], {
@@ -1252,7 +1400,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 26 : 25)
+  assert.equal(passed.length, process.platform === 'win32' ? 29 : 28)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

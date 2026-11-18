@@ -119,6 +119,27 @@ function truncateOutput(output: string, limit = 180): string {
   return text.length > limit ? `${text.slice(0, limit - 1)}…` : text
 }
 
+const NPM_DEPRECATION = /^npm warn deprecated /i
+const INSTALL_ERROR_HINT =
+  /(^npm (?:error|ERR!)|\b(?:error|failed|timed out|ERESOLVE|ETIMEDOUT|EACCES|ENOSPC|EAI_AGAIN|ECONNRESET)\b)/i
+
+/**
+ * The reason an install stopped is the last thing it printed, while npm's
+ * deprecation notices pile up at the top. Reading the head of the output showed
+ * only warnings and hid the failure; pick the diagnostic lines instead.
+ */
+function summarizeInstallFailure(output: string, limit = 200): string {
+  const lines = output
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !NPM_DEPRECATION.test(line))
+  const errors = lines.filter((line) => INSTALL_ERROR_HINT.test(line))
+  const flat = (errors.length ? errors : lines).slice(-3).join(' ').replace(/\s+/g, ' ').trim()
+  if (!flat) return ''
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat
+}
+
 function relativeFromIso(iso: string, language: AppLanguage): string {
   const timestamp = Date.parse(iso)
   return Number.isNaN(timestamp) ? '' : formatRelativeTime(timestamp, language)
@@ -225,6 +246,7 @@ function MarketplaceCard({
   installBusy,
   canInstall,
   installError,
+  progress,
   onInstall,
   onOpenGithub,
   onOpenNpm,
@@ -237,6 +259,8 @@ function MarketplaceCard({
   installBusy: boolean
   canInstall: boolean
   installError?: string
+  /** Newest CLI line and elapsed time while this card's install runs. */
+  progress?: { line: string; elapsed: number }
   onInstall: (entry: MarketplaceEntry) => void
   onOpenGithub: (entry: MarketplaceEntry) => void
   onOpenNpm: (entry: MarketplaceEntry) => void
@@ -356,6 +380,16 @@ function MarketplaceCard({
         </p>
       ) : null}
 
+      {progress ? (
+        <div className="marketplace-card__progress" role="status" aria-live="polite">
+          <span className="marketplace-card__progress-bar" aria-hidden="true" />
+          <span className="marketplace-card__progress-line" title={progress.line || undefined}>
+            {progress.line || t('Waiting for the package manager…')}
+          </span>
+          <span className="marketplace-card__progress-time">{progress.elapsed}s</span>
+        </div>
+      ) : null}
+
       <div className="marketplace-card__actions">
         <button
           type="button"
@@ -414,6 +448,11 @@ export function Marketplace() {
   const [total, setTotal] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
+  const [installProgress, setInstallProgress] = useState('')
+  const [installElapsed, setInstallElapsed] = useState(0)
+  // An install can run for minutes; the newest CLI line and the timer below
+  // are the only signs of life besides the button's spinner.
+  const installRunId = useRef('')
   const [installed, setInstalled] = useState<Record<string, boolean>>(readInstalledIds)
   const [serverInstalled, setServerInstalled] = useState<string[]>([])
   const [mineOnly, setMineOnly] = useState(false)
@@ -434,6 +473,23 @@ export function Marketplace() {
   const showToast = useCallback((tone: ToastTone, title: string, note?: string) => {
     setToast({ id: Date.now(), tone, title, note })
   }, [])
+
+  // Only the lines of the install this page started: a dialog run in another
+  // window must not paint over this card.
+  useEffect(() => {
+    const subscribe = window.pi?.marketplace?.onInstallProgress
+    if (typeof subscribe !== 'function') return
+    return subscribe((progress) => {
+      if (!installRunId.current || progress.runId !== installRunId.current) return
+      setInstallProgress(progress.line)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!installingId) return
+    const timer = window.setInterval(() => setInstallElapsed((value) => value + 1), 1_000)
+    return () => window.clearInterval(timer)
+  }, [installingId])
 
   const loadPage = useCallback(
     async (nextPage: number, append: boolean, force = false) => {
@@ -563,7 +619,16 @@ export function Marketplace() {
         }))
         return
       }
+      // Mint the id before the call: progress events that arrive while it runs
+      // are matched against this run only.
+      const runId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+      installRunId.current = runId
       setInstallingId(entry.id)
+      setInstallProgress('')
+      setInstallElapsed(0)
       setInstallErrors((prev) => {
         if (!(entry.id in prev)) return prev
         const next = { ...prev }
@@ -571,20 +636,21 @@ export function Marketplace() {
         return next
       })
       try {
-        const result = await installFn(entry.npmPackage ?? entry.id)
+        const result = await installFn(entry.npmPackage ?? entry.id, runId)
         if (result.ok) {
           setInstalled((prev) => ({ ...prev, [entry.id]: true }))
           showToast('success', t('Install complete'), t('Restart Pi Desktop to load it.'))
         } else {
-          const output = truncateOutput(result.output) || t('Install failed')
+          const output = summarizeInstallFailure(result.output) || t('Install failed')
           setInstallErrors((prev) => ({ ...prev, [entry.id]: output }))
           showToast('error', t('Install failed'), output)
         }
       } catch (cause) {
-        const output = truncateOutput(errorMessage(cause))
+        const output = summarizeInstallFailure(errorMessage(cause))
         setInstallErrors((prev) => ({ ...prev, [entry.id]: output }))
         showToast('error', t('Install failed'), output || undefined)
       } finally {
+        installRunId.current = ''
         setInstallingId(null)
       }
     },
@@ -932,6 +998,11 @@ export function Marketplace() {
               installBusy={installingId !== null}
               canInstall={canInstall}
               installError={installErrors[entry.id]}
+              progress={
+                installingId === entry.id
+                  ? { line: installProgress, elapsed: installElapsed }
+                  : undefined
+              }
               onInstall={requestInstall}
               onOpenGithub={openGithub}
               onOpenNpm={openNpm}

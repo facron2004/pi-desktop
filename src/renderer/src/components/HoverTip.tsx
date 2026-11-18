@@ -4,6 +4,7 @@ import {
   HOVER_TIP_ID,
   NATIVE_TITLE_STASH,
   clipTipText,
+  expandedPopupHidesTip,
   placeHoverTip,
   readTipText,
   windowShellBottom,
@@ -48,6 +49,8 @@ interface TipSession {
   host: HTMLElement | null
   /** The host whose tip a click dismissed. It stays down until the pointer leaves. */
   dismissed: HTMLElement | null
+  /** What that host said when the click dismissed it; a later change re-arms. */
+  dismissedText: string
   openTimer: number | null
   observer: MutationObserver | null
   cursor: { x: number; y: number } | null
@@ -67,11 +70,28 @@ function eventElement(node: EventTarget | null): Element | null {
   return null
 }
 
+/**
+ * An icon-only button names itself with `aria-label`. With no `title` it had
+ * no bubble at all — and that is exactly the control a bubble exists for: a
+ * glyph cannot say what it does. A button with visible words is already
+ * saying them and is left alone.
+ */
+function iconOnlyControl(target: Element): HTMLElement | null {
+  const button = target.closest<HTMLElement>('button[aria-label]')
+  if (!button) return null
+  return button.innerText.trim() ? null : button
+}
+
 function findTipHost(node: EventTarget | null): HTMLElement | null {
   const target = eventElement(node)
   if (!target) return null
-  const el = target.closest<HTMLElement>(`[title], [${NATIVE_TITLE_STASH}]`)
+  const el =
+    target.closest<HTMLElement>(`[title], [${NATIVE_TITLE_STASH}]`) ?? iconOnlyControl(target)
   if (!(el instanceof HTMLElement)) return null
+  // A control that opts out keeps its aria-label but draws no bubble: the
+  // message copy/edit row is already explained by its icons, and a card there
+  // would cover the message it belongs to.
+  if (el.closest('[data-pi-tip-ignore]')) return null
   if (el.closest('.hover-tip, .sidebar-tip')) return null
   if (el instanceof HTMLOptionElement || el instanceof HTMLOptGroupElement) return null
   if (el.isContentEditable) return null
@@ -120,9 +140,27 @@ function ownedByCustomFloat(host: HTMLElement): boolean {
   return Boolean(host.closest('.file-change') && document.querySelector('.file-change__preview'))
 }
 
+/**
+ * The control's own popup is open and names it. A popup that opens elsewhere —
+ * the tools panel, the sidebar — does not count, or an icon-only toggle would
+ * lose its only label exactly while it reads "Hide …". `Popover` marks its
+ * trigger's wrapper while open, which also covers triggers that open a dialog
+ * without `aria-haspopup`.
+ */
+function ownPopupIsOpen(host: HTMLElement): boolean {
+  if (
+    expandedPopupHidesTip(
+      host.getAttribute('aria-expanded'),
+      host.getAttribute('aria-haspopup')
+    )
+  ) {
+    return true
+  }
+  return Boolean(host.closest('.popover-wrap[data-open="true"]'))
+}
+
 function skipVisual(host: HTMLElement, text: string): boolean {
-  if (host.getAttribute('aria-expanded') === 'true') return true
-  if (host.closest('.popover-wrap[data-open="true"]')) return true
+  if (ownPopupIsOpen(host)) return true
   if (ownedByCustomFloat(host)) return true
   if (describedElsewhere(host)) return true
   const label = labelState(host)
@@ -160,6 +198,7 @@ export function HoverTip() {
   const session = useRef<TipSession>({
     host: null,
     dismissed: null,
+    dismissedText: '',
     openTimer: null,
     observer: null,
     cursor: null,
@@ -247,12 +286,31 @@ export function HoverTip() {
           return
         }
         if (state.fromPointer || state.visible) suppressNativeTitle(host)
+        const text = clipTipText(readTipText(host))
+        // A click dismisses the bubble, but a control that flips its own name
+        // (the tools-panel and task-rail toggles do) has just changed meaning
+        // under the pointer. Staying down until the pointer leaves hid exactly
+        // the name the reader needs; let the new one arrive after the usual
+        // delay, without moving the mouse.
+        if (
+          !state.visible &&
+          state.dismissed === host &&
+          state.dismissedText &&
+          text !== state.dismissedText
+        ) {
+          state.dismissed = null
+          state.dismissedText = ''
+          clearTimer()
+          if (text && !skipVisual(host, text)) {
+            state.openTimer = window.setTimeout(show, OPEN_DELAY)
+          }
+          return
+        }
         if (!state.visible) return
-        if (host.getAttribute('aria-expanded') === 'true' || ownedByCustomFloat(host)) {
+        if (ownPopupIsOpen(host) || ownedByCustomFloat(host)) {
           hideVisual()
           return
         }
-        const text = clipTipText(readTipText(host))
         if (!text) {
           hideVisual()
           return
@@ -265,7 +323,7 @@ export function HoverTip() {
           return { ...current, text, mono: shape.mono, wrap: shape.wrap, placed: false }
         })
       })
-      observer.observe(host, { attributes: true, attributeFilter: ['title', 'aria-expanded'] })
+      observer.observe(host, { attributes: true, attributeFilter: ['title', 'aria-label', 'aria-expanded'] })
       state.observer = observer
     }
 
@@ -309,6 +367,7 @@ export function HoverTip() {
       }
       state.host = host
       state.dismissed = null
+      state.dismissedText = ''
       state.fromPointer = fromPointer
       if (!fromPointer) state.cursor = null
       if (fromPointer) suppressNativeTitle(host)
@@ -336,6 +395,7 @@ export function HoverTip() {
       if (!(event.target instanceof Node) || !host.contains(event.target)) return
       clearTimer()
       state.dismissed = null
+      state.dismissedText = ''
       hideVisual()
       release(host)
     }
@@ -345,6 +405,7 @@ export function HoverTip() {
       if (!state.host) return
       clearTimer()
       state.dismissed = state.host
+      state.dismissedText = clipTipText(readTipText(state.host))
       hideVisual()
     }
 
@@ -365,6 +426,7 @@ export function HoverTip() {
       if (next instanceof Node && host.contains(next)) return
       clearTimer()
       state.dismissed = null
+      state.dismissedText = ''
       hideVisual()
       release(host)
     }
@@ -373,6 +435,7 @@ export function HoverTip() {
       if (event.key !== 'Escape') return
       clearTimer()
       state.dismissed = state.host
+      state.dismissedText = ''
       hideVisual()
     }
 
@@ -385,6 +448,7 @@ export function HoverTip() {
     const onBlur = () => {
       clearTimer()
       state.dismissed = null
+      state.dismissedText = ''
       hideVisual()
       if (state.host) release(state.host)
     }

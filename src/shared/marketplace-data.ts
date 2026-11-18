@@ -84,7 +84,7 @@ export const MARKETPLACE_SNAPSHOT: MarketplaceSnapshot = {
       npmPackage: 'pi-subagents',
       official: false,
       category: '多代理',
-      tags: ['子代理', '多代理', '编排'],
+      tags: ['子智能体', '多代理', '编排'],
     },
     {
       id: 'injaneity/pi-computer-use',
@@ -160,7 +160,7 @@ export const MARKETPLACE_SNAPSHOT: MarketplaceSnapshot = {
       npmPackage: '@tintinweb/pi-subagents',
       official: false,
       category: '多代理',
-      tags: ['子代理', '工作流', '并行'],
+      tags: ['子智能体', '工作流', '并行'],
     },
     {
       id: 'elidickinson/pi-claude-bridge',
@@ -236,7 +236,7 @@ export const MARKETPLACE_SNAPSHOT: MarketplaceSnapshot = {
       npmPackage: null,
       official: false,
       category: '多代理',
-      tags: ['工作流', '子代理', '并行'],
+      tags: ['工作流', '子智能体', '并行'],
     },
     {
       id: 'sting8k/pi-vcc',
@@ -654,7 +654,7 @@ export const MARKETPLACE_SNAPSHOT: MarketplaceSnapshot = {
       npmPackage: 'pi-herdsman',
       official: false,
       category: '多代理',
-      tags: ['子代理', '多代理', '后台'],
+      tags: ['子智能体', '多代理', '后台'],
     },
     {
       id: 'patlux/pi-commandcode-provider',
@@ -1338,7 +1338,7 @@ export const MARKETPLACE_SNAPSHOT: MarketplaceSnapshot = {
       npmPackage: null,
       official: false,
       category: '开发',
-      tags: ['技能', '工作流', '子代理'],
+      tags: ['技能', '工作流', '子智能体'],
     },
     {
       id: 'mrclrchtr/supi',

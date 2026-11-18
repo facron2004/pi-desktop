@@ -583,6 +583,71 @@
   -webkit-line-clamp: 3;
 }
 
+/* An install can reify hundreds of packages; a spinner alone reads as a frozen
+   card. The newest CLI line and an indeterminate bar show it is still moving. */
+.marketplace-card__progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-assist);
+}
+
+.marketplace-card__progress-bar {
+  position: relative;
+  grid-column: 1 / -1;
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--r-full);
+  background: var(--bg-active);
+}
+
+.marketplace-card__progress-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: marketplace-install-slide 1.1s var(--ease) infinite;
+}
+
+.marketplace-card__progress-line {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marketplace-card__progress-time {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes marketplace-install-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marketplace-card__progress-bar::after {
+    width: 100%;
+    animation: none;
+    opacity: 0.45;
+  }
+}
+
 .marketplace-card__actions {
   display: flex;
   align-items: center;

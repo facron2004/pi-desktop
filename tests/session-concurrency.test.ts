@@ -634,6 +634,30 @@ test('events for unvisited background sessions establish thread shell with runni
   const settledThread = useAppStore.getState().threads['background-task.jsonl']
   assert.equal(settledThread.isStreaming, false)
   assert.equal(settledThread.notice, 'unread', 'background session must acquire unread notice')
+  assert.equal(
+    useAppStore.getState().sessionNotices['background-task.jsonl'],
+    'unread',
+    'the unread mark must survive the thread for the next run'
+  )
+
+  // A restart loses the live thread; the persisted mark is what the sidebar
+  // falls back to until the reader opens the conversation.
+  useAppStore.setState((state) => {
+    const threads = { ...state.threads }
+    delete threads['background-task.jsonl']
+    return { threads }
+  })
+  assert.equal(
+    useAppStore.getState().sessionNotices['background-task.jsonl'],
+    'unread',
+    'the persisted mark must outlive the in-memory thread'
+  )
+  await useAppStore.getState().selectSession(session('background-task.jsonl'))
+  assert.equal(
+    useAppStore.getState().sessionNotices['background-task.jsonl'],
+    undefined,
+    'opening the conversation clears the persisted mark'
+  )
 })
 
 test('deleted sessions are not resurrected by late background events', async () => {

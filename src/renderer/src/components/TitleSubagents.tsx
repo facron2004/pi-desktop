@@ -68,7 +68,9 @@ function TaskRow({ task, now, onOpen }: {
           <span className="title-subagents__name">{label}</span>
           <span className="title-subagents__state">{state}</span>
         </span>
-        {preview ? <span className="title-subagents__preview">{preview}</span> : null}
+        {preview ? (
+          <span className="title-subagents__preview" title={preview}>{preview}</span>
+        ) : null}
         {duration !== undefined || task.tokens || task.model ? (
           <span className="title-subagents__metrics">
             {duration !== undefined ? <span>{formatDuration(duration)}</span> : null}
@@ -124,7 +126,7 @@ export function TitleSubagents({ onOpenTask, onOpenAll }: {
     <Popover
       placement="bottom"
       align="left"
-      width={340}
+      width={320}
       className="title-subagents-popover"
       renderTrigger={({ open, toggle }) => (
         <button

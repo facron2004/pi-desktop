@@ -531,6 +531,45 @@ export function TerminalPanel({
     void updateSettings({ terminalHeight: undefined })
   }, [updateSettings])
 
+  // Inside the side panel the page tab already names the shell, so a single
+  // terminal does not need a second tab strip above the screen. Its controls
+  // float in the corner; the strip comes back as soon as there is a choice.
+  const singleEmbedded = embedded && tabs.length === 1
+
+  const actions = (
+    <div className="terminal__actions">
+      <button
+        className="icon-btn"
+        title={t('Copy the output')}
+        aria-label={t('Copy the output')}
+        onClick={() => void copyOutput()}
+      >
+        <Copy size={13} />
+      </button>
+      <button
+        className="icon-btn"
+        title={t('Clear')}
+        aria-label={t('Clear')}
+        onClick={clearOutput}
+      >
+        <Eraser size={13} />
+      </button>
+      <button
+        className="icon-btn"
+        title={t('Restart the terminal')}
+        aria-label={t('Restart the terminal')}
+        onClick={restart}
+      >
+        <RotateCcw size={13} />
+      </button>
+      {embedded ? null : (
+        <button className="icon-btn" title={t('Close')} aria-label={t('Close')} onClick={onClose}>
+          <X size={14} />
+        </button>
+      )}
+    </div>
+  )
+
   return (
     <section
       className="terminal"
@@ -554,82 +593,66 @@ export function TerminalPanel({
         hidden={embedded || undefined}
       />
 
-      <div className="terminal__bar">
-        <div className="terminal__tabstrip" role="tablist" aria-label={t('Terminal')}>
-          {tabs.map((tab) => (
-            <div
-              key={tab.key}
-              className="terminal__tab"
-              data-active={tab.key === activeKey || undefined}
-              role="tab"
-              aria-selected={tab.key === activeKey}
-            >
-              <button
-                type="button"
-                className="terminal__tab-main"
-                title={tab.label || t('Terminal')}
-                onClick={() => setActiveKey(tab.key)}
-              >
-                <SquareTerminal size={18} className="terminal__tab-icon" />
-                <span className="terminal__tab-label">{tab.label || t('Terminal')}</span>
-              </button>
-              <button
-                type="button"
-                className="terminal__tab-close"
-                title={t('Close')}
-                aria-label={t('Close')}
-                onClick={() => closeTab(tab.key)}
-              >
-                <X size={16} />
-              </button>
-            </div>
-          ))}
+      {singleEmbedded ? (
+        <div className="terminal__floating">
           <button
             type="button"
-            className="terminal__new"
-            title={t(
-              tabs.length >= MAX_TERMINAL_SESSIONS ? 'Terminal limit reached' : 'New terminal'
-            )}
+            className="icon-btn terminal__new"
+            title={t('New terminal')}
             aria-label={t('New terminal')}
-            disabled={tabs.length >= MAX_TERMINAL_SESSIONS}
             onClick={addTab}
           >
-            <Plus size={18} />
+            <Plus size={14} />
           </button>
+          {actions}
         </div>
-
-        <div className="terminal__actions">
-          <button
-            className="icon-btn"
-            title={t('Copy the output')}
-            aria-label={t('Copy the output')}
-            onClick={() => void copyOutput()}
-          >
-            <Copy size={13} />
-          </button>
-          <button
-            className="icon-btn"
-            title={t('Clear')}
-            aria-label={t('Clear')}
-            onClick={clearOutput}
-          >
-            <Eraser size={13} />
-          </button>
-          <button
-            className="icon-btn"
-            title={t('Restart the terminal')}
-            aria-label={t('Restart the terminal')}
-            onClick={restart}
-          >
-            <RotateCcw size={13} />
-          </button>
-          {embedded ? null : (
-            <button className="icon-btn" title={t('Close')} aria-label={t('Close')} onClick={onClose}>
-              <X size={14} />
+      ) : (
+        <div className="terminal__bar">
+          <div className="terminal__tabstrip" role="tablist" aria-label={t('Terminal')}>
+            {tabs.map((tab) => (
+              <div
+                key={tab.key}
+                className="terminal__tab"
+                data-active={tab.key === activeKey || undefined}
+                role="tab"
+                aria-selected={tab.key === activeKey}
+              >
+                <button
+                  type="button"
+                  className="terminal__tab-main"
+                  title={tab.label || t('Terminal')}
+                  onClick={() => setActiveKey(tab.key)}
+                >
+                  <SquareTerminal size={18} className="terminal__tab-icon" />
+                  <span className="terminal__tab-label">{tab.label || t('Terminal')}</span>
+                </button>
+                <button
+                  type="button"
+                  className="terminal__tab-close"
+                  title={t('Close')}
+                  aria-label={t('Close')}
+                  onClick={() => closeTab(tab.key)}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="terminal__new"
+              title={t(
+                tabs.length >= MAX_TERMINAL_SESSIONS ? 'Terminal limit reached' : 'New terminal'
+              )}
+              aria-label={t('New terminal')}
+              disabled={tabs.length >= MAX_TERMINAL_SESSIONS}
+              onClick={addTab}
+            >
+              <Plus size={18} />
             </button>
-          )}
+          </div>
+          {actions}
         </div>
-      </div>
+      )}
 
       <div className="terminal__body">
         {tabs.map((tab) => (

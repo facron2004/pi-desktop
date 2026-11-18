@@ -14,6 +14,14 @@ export interface ComposerDraftCommand {
   source: PiCommand['source']
 }
 
+/** The image generator's controls, kept with the draft that is using them. */
+export interface ComposerImageOptions {
+  model: string
+  size: string
+  quality: string
+  count: number
+}
+
 export interface ComposerDraft {
   text: string
   images: ComposerDraftImage[]
@@ -21,6 +29,8 @@ export interface ComposerDraft {
   files?: ComposerDraftFile[]
   pastedRefs?: Record<string, string>
   history?: string[]
+  /** Present while the composer is generating images instead of chatting. */
+  image?: ComposerImageOptions
 }
 
 export interface ComposerDraftSnapshot {
@@ -94,13 +104,27 @@ function persistedDraft(value: unknown): ComposerDraft | undefined {
   const command = commandSource && typeof commandSource.name === 'string' && typeof commandSource.source === 'string'
     ? { name: commandSource.name, source: commandSource.source as PiCommand['source'] }
     : undefined
+  const imageSource = record(source.image)
+  const image = imageSource &&
+    typeof imageSource.model === 'string' &&
+    typeof imageSource.size === 'string' &&
+    typeof imageSource.quality === 'string' &&
+    typeof imageSource.count === 'number' && Number.isFinite(imageSource.count)
+    ? {
+        model: imageSource.model,
+        size: imageSource.size,
+        quality: imageSource.quality,
+        count: Math.min(4, Math.max(1, Math.round(imageSource.count)))
+      }
+    : undefined
   return {
     text: source.text,
     images,
     ...(command ? { command } : {}),
     ...(files ? { files } : {}),
     ...(pastedRefs ? { pastedRefs } : {}),
-    ...(strings(source.history) ? { history: strings(source.history) } : {})
+    ...(strings(source.history) ? { history: strings(source.history) } : {}),
+    ...(image ? { image } : {})
   }
 }
 

@@ -154,10 +154,11 @@ reason to drop a call from the stream.
 A row in the stream is a link, not a card, so it carries no surface of its
 own: the pointer must not paint a gray band across the column. The hover
 surface belongs to a card. `styles/global.css` is bundled after
-`styles/conversation-stream.css`, so the rule that keeps the row
-transparent has to outrank `.tool:hover` on specificity — it is
-`.tool.tool--link:hover`, not `.tool--link:hover`, or the later rule wins
-and the row paints a band the moment the pointer touches it.
+`styles/conversation-stream.css`, so the card hover rule itself excludes
+links: `.tool:hover:not(.tool--link)`. A plain `.tool:hover` of equal
+weight would win the tie and paint the band. `.tool.tool--link:hover` in
+the stream stylesheet stays as a second lock; `.tool--link:hover` alone
+does not outrank `.tool:hover`.
 
 The stream's leaf components live in `components/conversation/`:
 `AssistantMessage` owns process segmentation, `StreamingText` owns the reply
@@ -770,11 +771,20 @@ window width. The comparison with the reference app is in
 
 ## Image generation
 
-`Image generation` is a tool-panel page, and `generate_image` is a Pi tool;
-both draw through the same local Magpie gateway, neither keeps a second copy
-of the picture.
+Image generation is part of the composer, not a tool-panel page. `/image` (or
+the Add menu's Image action) loads the model, size, quality and count controls
+into the chat box; the prompt is an ordinary user message, and the pictures
+appear in the conversation as the tool's result.
 
-- The main process owns the HTTP call (`src/main/image-generation.ts`,
+- The desktop hands the chosen options to the task-mode extension with
+  `/desktop-image <json>` immediately before the prompt. The extension adds a
+  `desktop-image` section to the system prompt for that run only, telling the
+  agent to refine the prompt and call `generate_image` exactly once. A
+  per-run section is deliberate: a returned `before_agent_start` message would
+  stay in the session and keep asking later turns to draw. The options are
+  one-shot and are dropped when the next run's prompt does not match, so a
+  failed send or an unrelated message can never inherit them.
+- The main process owns the direct HTTP path (`src/main/image-generation.ts`,
   `image:generate`): it resolves the `magpie` provider from Pi's `models.json`
   (`baseUrl` + `apiKey`, falling back to `http://127.0.0.1:3425/v1`), POSTs
   `{ prompt, n, size, quality, response_format: 'b64_json' }` to
@@ -785,19 +795,18 @@ of the picture.
   root and an absolute path or a `..` segment is rejected — so the picture
   immediately shows up in the Images page and can be referenced with `@`.
   Names are slugified from the prompt plus a timestamp and random suffix.
-- The page (`ImageGeneration.tsx`) keeps only metadata: the last twelve results
-  per project in localStorage, previews read through `fs:readImageDataUrl`,
-  and the model/size/quality choices persisted in `AppSettings`. Its Generate
-  button is disabled until a prompt exists; a link sends the reader to the
-  Images page through `pi:open-tool-page`.
 - The Pi tool is a generated extension (`src/main/pi/image-tool.ts`), wired
   into the launch args in `runtime.ts` / `rpc-args.ts` like every other bundled
   extension. It reads the same `models.json` **at runtime** inside the Pi
   process rather than baking a key into the generated file, writes to
   `<cwd>/output/generated/`, and returns the saved paths plus an inline
-  `image` content block so the picture appears in the transcript. The two
-  callers deliberately do not share an HTTP client: one lives in Electron
-  main, the other in a generated JS string inside a separate process.
+  `image` content block for the model. The two callers deliberately do not
+  share an HTTP client: one lives in Electron main, the other in a generated
+  JS string inside a separate process.
+- The transcript keeps the result inline. `ToolCard` reads `details.paths`
+  through `fs:readImageDataUrl` and draws the thumbnails under the call, and
+  `AssistantMessage` keeps `generate_image` out of the process fold so the
+  picture is not hidden behind an activity summary.
 
 ## The task rail
 
@@ -1263,6 +1272,18 @@ sidebar — a conversation that is not mounted has nothing to scroll.
   the same words in `title` and `aria-label`, so the tooltip explains what the
   icon does. Do not solve the wrap by shrinking the font or abbreviating the
   wording.
+- `HoverTip` replaces the OS `title` bubble for the whole window. It stays down
+  while a control's **own** popup is open (`aria-expanded` plus `aria-haspopup`,
+  or anywhere inside `.popover-wrap[data-open='true']`), because the open menu
+  already names its trigger. `aria-expanded` alone is not that fact: the
+  tools-panel and sidebar toggles expand a surface elsewhere on screen, and the
+  bubble is the only place an icon-only control is named — hiding it exactly
+  while the control reads "Hide …" removed the tip. `expandedPopupHidesTip` in
+  `lib/hover-tip.ts` is the rule; `tests/hover-tip.test.ts` guards it. A click
+  still dismisses the bubble until the pointer leaves, **except** on a control
+  that flips its own name under the pointer (the panel and task-rail toggles do):
+  the new name arrives after the usual delay without moving the mouse, because
+  otherwise the one control whose meaning just changed is the one you cannot read.
 - Prefer small, focused components. Keep protocol knowledge out of the React tree.
 - Comments explain *why*, not *what*.
 

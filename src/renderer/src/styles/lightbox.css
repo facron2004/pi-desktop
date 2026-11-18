@@ -35,8 +35,14 @@ transition: box-shadow var(--dur-fast) var(--ease);
   z-index: var(--z-overlay);
   display: grid;
   place-items: center;
-  padding: var(--sp-6) 32px 36px;
+  /* The caption buttons are a native layer over the top-right of the page.
+     Keeping the header below that band leaves the close control fully visible
+     and clickable instead of half-hidden under the window buttons. The layer
+     also opts out of the window drag region, or the caption band would still
+     swallow clicks even where the controls are not painted. */
+  padding: calc(var(--titlebar-h) + var(--sp-5)) 32px 36px;
   background: var(--lightbox-scrim);
+  -webkit-app-region: no-drag;
 animation: lightbox-fade var(--dur-fast) var(--ease);
 }
 
@@ -92,6 +98,7 @@ animation: lightbox-fade var(--dur-fast) var(--ease);
   border-radius: var(--r-sm);
   color: var(--lightbox-fg-strong);
   background: var(--lightbox-control-line);
+  -webkit-app-region: no-drag;
 transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
@@ -106,7 +113,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .lightbox__btn--icon {
-  width: 26px;
+  width: var(--ctl-sm);
   padding: 0;
 }
 
@@ -121,7 +128,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .lightbox__stage img {
   display: block;
   max-width: calc(100vw - 64px);
-  max-height: calc(100vh - 96px);
+  max-height: calc(100vh - var(--titlebar-h) - 92px);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-lg);
   object-fit: contain;

@@ -27,9 +27,9 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 | 能力 | 说明 |
 | --- | --- |
 | 会话与项目 | 按项目管理对话（支持自定义 Emoji 图标与配色），检索、重命名、置顶、导出 HTML、浏览会话树并分支；多会话可在后台并行运行，空转 RPC 进程自动 LRU 回收。 |
-| 对话信息流 | 微任务合批与单帧原子流式渲染，保留独立滚动记忆、子代理标题栏状态入口，以及轮次速度、Token 缓存命中与上下文环形指示器。 |
+| 对话信息流 | 微任务合批与单帧原子流式渲染，保留独立滚动记忆、子智能体标题栏状态入口，以及轮次速度、Token 缓存命中与上下文环形指示器。 |
 | Git 工作流 | 查看分支、工作区状态、变更/全量双索引文件树与逐文件 Diff 对比，暂存、提交、回退改动，并管理分支与 worktree。 |
-| 工作区工具 | 文件名与全文搜索、语法高亮、代码变更审查、图片查看与生图面板、内置浏览器视图，以及支持 PowerShell、CMD、Git Bash 和 WSL 的集成终端。 |
+| 工作区工具 | 文件名与全文搜索、语法高亮、代码变更审查、图片查看与输入框生图、内置浏览器视图，以及支持 PowerShell、CMD、Git Bash 和 WSL 的集成终端。 |
 | 模型与任务 | 配置提供商和模型，选择权限与推理强度；支持普通、Goal、Plan 和 Subagent 模式，右侧任务轨道实时同步分支变更、计划进度与交付物。 |
 | 扩展与官方市场 | 接入 `pi.dev/packages` 官方 npm 包目录，支持按下载量/更新时间搜索筛选、实时查看安装输出、创建本地资源并管理已安装插件、技能、主题与提示词。 |
 | Mermaid 图表 | 对话里的 Mermaid 代码块直接渲染为可缩放、可全屏、可导出 SVG 的图表；输入框提供流程图、泳道图、时序图等 13 个产品经理模板，并内置作图规范与校验插件。 |
@@ -56,16 +56,16 @@ Pi Desktop 是 [Pi coding agent](https://github.com/earendil-works/pi) 的独立
 
 ## 下载与安装
 
-当前发布版本为 **v0.11.4**，内置 **Pi 1.5.2**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
+当前发布版本为 **v0.11.5**，内置 **Pi 1.5.2**。安装版与免安装版均无需额外安装 Node.js 或 Pi CLI。
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.4/Pi.Desktop-0.11.4-x64.exe) |
-| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.4/Pi.Desktop-0.11.4-arm64.exe) |
-| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.4/Pi.Desktop-0.11.4.exe) |
-| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.11.4/Pi.Desktop-0.11.4-portable-x64.zip) |
+| Windows x64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.5/Pi.Desktop-0.11.5-x64.exe) |
+| Windows ARM64 安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.5/Pi.Desktop-0.11.5-arm64.exe) |
+| Windows x64 / ARM64 通用安装版 | [下载 EXE](https://github.com/facron2004/pi-desktop/releases/download/v0.11.5/Pi.Desktop-0.11.5.exe) |
+| Windows x64 免安装版 | [下载 ZIP](https://github.com/facron2004/pi-desktop/releases/download/v0.11.5/Pi.Desktop-0.11.5-portable-x64.zip) |
 
-免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.11.4/SHA256SUMS.txt)，版本说明见 [v0.11.4 更新说明](docs/releases/v0.11.4.md)。
+免安装版解压后运行 `Pi Desktop.exe`。文件校验值见 [SHA256SUMS.txt](https://github.com/facron2004/pi-desktop/releases/download/v0.11.5/SHA256SUMS.txt)，版本说明见 [v0.11.5 更新说明](docs/releases/v0.11.5.md)。
 
 ## 快速上手
 

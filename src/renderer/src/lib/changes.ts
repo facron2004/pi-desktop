@@ -20,6 +20,16 @@ function pathOf(args: Record<string, unknown> | undefined): string {
   return typeof value === 'string' ? value : ''
 }
 
+function generatedPathsOf(item: ToolItem): string[] {
+  if (item.toolName !== 'generate_image' || !item.details || typeof item.details !== 'object') {
+    return []
+  }
+  const paths = (item.details as { paths?: unknown }).paths
+  return Array.isArray(paths)
+    ? paths.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+    : []
+}
+
 /** Count distinct files changed by successful edit/write tool calls without building diffs. */
 export function countChangedFiles(items: ThreadItem[]): number {
   const paths = new Set<string>()
@@ -57,6 +67,12 @@ export function changedFilePaths(items: ThreadItem[]): ChangedFilePath[] {
   for (const item of items) {
     if (item.kind !== 'tool') continue
     if (item.status !== 'ok') continue
+    if (item.toolName === 'generate_image') {
+      for (const path of generatedPathsOf(item)) {
+        if (!changes.has(path)) changes.set(path, { path, at: item.timestamp })
+      }
+      continue
+    }
     if (item.toolName !== 'edit' && item.toolName !== 'write') continue
     const path = pathOf(item.args)
     if (!path) continue

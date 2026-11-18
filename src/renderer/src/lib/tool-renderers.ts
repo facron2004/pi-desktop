@@ -1,4 +1,5 @@
 import type { ToolItem } from './thread'
+import { imageModelName, imageRatioLabel } from './image-options'
 
 /**
  * Which renderer draws a tool call.
@@ -17,6 +18,7 @@ export type ToolRendererKind =
   | 'subagent'
   | 'plan'
   | 'computer'
+  | 'image'
   | 'generic'
 
 const REGISTRY: Record<string, ToolRendererKind> = {
@@ -30,7 +32,8 @@ const REGISTRY: Record<string, ToolRendererKind> = {
   ls: 'search',
   subagent: 'subagent',
   exit_plan_mode: 'plan',
-  computer: 'computer'
+  computer: 'computer',
+  generate_image: 'image'
 }
 
 /** The renderer for a tool name, with a safe fallback for unknown ones. */
@@ -54,7 +57,7 @@ export interface ToolSummary {
   tone: ToolSummaryTone
 }
 
-export type ToolSummaryTone = 'read' | 'edit' | 'command' | 'search' | 'subagent' | 'plan' | 'computer' | 'generic'
+export type ToolSummaryTone = 'read' | 'edit' | 'command' | 'search' | 'subagent' | 'plan' | 'computer' | 'image' | 'generic'
 
 function str(value: unknown): string {
   if (value === undefined || value === null) return ''
@@ -80,7 +83,8 @@ const TONES: Record<string, ToolSummaryTone> = {
   ls: 'search',
   subagent: 'subagent',
   exit_plan_mode: 'plan',
-  computer: 'computer'
+  computer: 'computer',
+  generate_image: 'image'
 }
 
 /**
@@ -154,6 +158,34 @@ export function summarizeTool(tool: ToolItem): ToolSummary {
       } else {
         detail = oneLine(action)
       }
+      break
+    }
+    case 'image': {
+      // The prompt lives in the card's fold. The header names the model and
+      // size/count when the call carried them, so the reader can see what drew
+      // the picture without unfolding the prompt.
+      label = 'Generate image'
+      const detailsModel =
+        tool.details && typeof tool.details === 'object'
+          ? str((tool.details as { model?: unknown }).model)
+          : ''
+      const model = detailsModel || str(args.model)
+      const size = str(args.size)
+      const quality = str(args.quality)
+      const count =
+        typeof args.n === 'number' && Number.isFinite(args.n) && args.n > 1
+          ? `${Math.round(args.n)}×`
+          : ''
+      detail = oneLine(
+        [
+          model ? imageModelName(model) : '',
+          size ? imageRatioLabel(size) : '',
+          quality && quality !== 'auto' ? quality : '',
+          count
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      )
       break
     }
     default:

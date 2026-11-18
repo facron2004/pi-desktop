@@ -165,6 +165,12 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
       const y = str(args.y)
       return x && y ? `${action} ${x},${y}` : action
     }
+  },
+  generate_image: {
+    label: 'Generate image',
+    plural: 'generated images',
+    tone: 'write',
+    summary: (args) => brief(str(args.prompt))
   }
 }
 

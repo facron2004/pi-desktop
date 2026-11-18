@@ -121,7 +121,7 @@ export default function (pi) {
   pi.registerTool({
     name: 'generate_image',
     label: 'Generate image',
-    description: 'Generate an image from a text prompt through the local Magpie gateway. The picture is returned inline AND saved to disk under <project>/output/generated/, so it can be referenced later by its absolute path. Write a detailed prompt: name the subject, the style, the composition, the colours and any exact text that must appear in the picture. Prefer one rich paragraph over a few words; leave the model, size, quality and n at their defaults unless the request needs something specific. Use n only for several variations of the same prompt.',
+    description: 'Generate an image from a text prompt through the local Magpie gateway. The picture is returned inline AND saved to disk under <project>/output/generated/, so it can be referenced later by its absolute path. Write a detailed prompt: name the subject, the style, the composition, the colours and any exact text that must appear in the picture. Prefer one rich paragraph over a few words; leave the model, size, quality and n at their defaults unless the request needs something specific. Use n only for several variations of the same prompt. After the call, keep your visible reply to a short sentence; do not repeat the prompt or the saved paths — the app shows both in the image card.',
     defaultActive: true,
     annotations: { destructiveHint: false, readOnlyHint: false, openWorldHint: true },
     parameters: Type.Object({

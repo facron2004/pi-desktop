@@ -551,7 +551,14 @@ export async function readImageDataUrl(
   maxBytes = MAX_IMAGE_DATA_BYTES
 ): Promise<string | null> {
   const root = workspaceRoot(context)
-  const opened = await openWorkspaceFile(root, file)
+  let opened = await openWorkspaceFile(root, file)
+  if (!opened && typeof file === 'string' && path.isAbsolute(file)) {
+    for (const workspace of context.settings.get().workspaces ?? []) {
+      if (!workspace.path || workspace.path === root) continue
+      opened = await openWorkspaceFile(workspace.path, file)
+      if (opened) break
+    }
+  }
   if (!opened) return null
   try {
     const type = IMAGE_MIME[path.extname(opened.target).toLowerCase()]
@@ -1859,7 +1866,14 @@ export function registerIpc(context: IpcContext): void {
   })
 
   ipcMain.handle('fs:reveal', async (_event, file: string) => {
-    const target = await resolveWorkspacePath(workspaceRoot(context), file)
+    let target = await resolveWorkspacePath(workspaceRoot(context), file)
+    if (!target && typeof file === 'string' && path.isAbsolute(file)) {
+      for (const workspace of context.settings.get().workspaces ?? []) {
+        if (!workspace.path) continue
+        target = await resolveWorkspacePath(workspace.path, file)
+        if (target) break
+      }
+    }
     if (target) shell.showItemInFolder(target)
   })
 

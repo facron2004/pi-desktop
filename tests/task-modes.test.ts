@@ -169,6 +169,95 @@ test('Plan Mode exposes only read tools plus exit_plan_mode, blocks writes and r
   assert.equal(f.mode(), 'default')
 })
 
+test('image options ride on the prompt they were sent with, once', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.command('desktop-image', JSON.stringify({
+    prompt: 'a red fox in snow',
+    model: 'codex/gpt-image-2',
+    size: '1536x1024',
+    quality: 'high',
+    n: 2
+  }))
+
+  const sections: Record<string, string> = {}
+  const result = f.emit('before_agent_start', {
+    prompt: 'a red fox in snow',
+    systemPromptOptions: { sections }
+  }) as { message?: { display?: boolean; content?: string } } | undefined
+  assert.equal(result?.message, undefined)
+  const content = sections['desktop-image'] ?? ''
+  assert.match(content, /generate_image exactly once/)
+  assert.match(content, /n=2/)
+  assert.match(content, /model=codex\/gpt-image-2/)
+  assert.match(content, /size=1536x1024/)
+  assert.match(content, /quality=high/)
+  assert.match(content, /a red fox in snow/)
+
+  // A later prompt must not inherit the image options.
+  const laterSections: Record<string, string> = {}
+  assert.equal(f.emit('before_agent_start', {
+    prompt: 'a red fox in snow',
+    systemPromptOptions: { sections: laterSections }
+  }), undefined)
+  assert.deepEqual(laterSections, {})
+})
+
+test('image options include reference guidance and allow generate_image even in Plan Mode', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('plan')
+  await f.command('desktop-image', JSON.stringify({
+    prompt: 'turn this sketch into a watercolour',
+    model: 'codex/gpt-image-2',
+    size: '1024x1024',
+    quality: 'high',
+    n: 1,
+    references: 1
+  }))
+
+  const sections: Record<string, string> = {}
+  const selectedTools = ['read', 'grep', 'find', 'ls', 'exit_plan_mode']
+  const result = f.emit('before_agent_start', {
+    prompt: 'turn this sketch into a watercolour',
+    systemPromptOptions: { sections, selectedTools }
+  })
+  assert.equal(result, undefined, 'an image run in Plan Mode must not inject the read-only plan prompt')
+  assert.ok(selectedTools.includes('generate_image'))
+  assert.match(sections['desktop-image'] ?? '', /reference image/i)
+  assert.equal(f.emit('tool_call', { toolName: 'generate_image' }), undefined)
+  assert.equal((f.emit('tool_call', { toolName: 'write' }) as { block: boolean }).block, true)
+
+  f.emit('agent_end')
+  assert.equal((f.emit('tool_call', { toolName: 'generate_image' }) as { block: boolean }).block, true)
+})
+
+test('image options are discarded when a different prompt starts', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.command('desktop-image', JSON.stringify({ prompt: 'a red fox in snow', n: 1 }))
+
+  const unrelated: Record<string, string> = {}
+  assert.equal(f.emit('before_agent_start', {
+    prompt: 'unrelated question',
+    systemPromptOptions: { sections: unrelated }
+  }), undefined)
+  assert.deepEqual(unrelated, {})
+  const stale: Record<string, string> = {}
+  assert.equal(f.emit('before_agent_start', {
+    prompt: 'a red fox in snow',
+    systemPromptOptions: { sections: stale }
+  }), undefined)
+  assert.deepEqual(stale, {})
+})
+
+test('image options reject malformed requests', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await assert.rejects(() => f.command('desktop-image', '{not json'))
+  await assert.rejects(() => f.command('desktop-image', '{}'))
+})
+
 test('Plan Mode blocks extension tools that shadow a built-in read tool', async () => {
   const f = fixture()
   f.toolSource('read', 'project')

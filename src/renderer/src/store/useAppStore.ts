@@ -30,6 +30,7 @@ import type {
 import type { ProviderProfile, SaveProviderInput } from '@shared/providers'
 import { modelsFromProfiles, resolveSavedModel, selectableModels } from '@shared/provider-models'
 import type { SessionNotice } from '../lib/session-indicator'
+import { loadSessionNotices, saveSessionNotices } from '../lib/session-notices'
 import {
   applyEventBatch,
   applyEvent,
@@ -77,13 +78,14 @@ import {
   loadComposerDrafts,
   saveComposerDrafts
 } from '../lib/composer-drafts'
-import type { ComposerDraft } from '../lib/composer-drafts'
+import type { ComposerDraft, ComposerImageOptions } from '../lib/composer-drafts'
 
 export { listPendingUiSessions, type PendingUiSession }
 export type {
   ComposerDraft,
   ComposerDraftCommand,
-  ComposerDraftImage
+  ComposerDraftImage,
+  ComposerImageOptions
 } from '../lib/composer-drafts'
 export type { ComposerDraftFile } from '../lib/composer-files'
 
@@ -455,6 +457,14 @@ export interface AppStore {
   historyTruncated?: boolean
   /** Transcript and run of every conversation, keyed by file path or draft id. */
   threads: Record<string, SessionThread>
+  /**
+   * Unread/failed marks that outlive the in-memory thread, keyed by session
+   * file. A background run's notice must survive a restart so the sidebar can
+   * keep pointing at the conversation the reader has not opened yet.
+   */
+  sessionNotices: Record<string, SessionNotice>
+  rememberSessionNotice: (file: string, notice: SessionNotice) => void
+  forgetSessionNotice: (file: string) => void
   /** Per-session unsent composer text, attachments, pasted chunks, and input history. */
   drafts: Record<string, ComposerDraft>
   updateDraft: (
@@ -580,7 +590,12 @@ export interface AppStore {
   newChat: () => Promise<void>
   ensureRuntime: (sessionKey?: string, sourceAction?: string) => Promise<string>
   prewarmRuntime: (sessionKey?: string) => void
-  send: (text: string, images: { data: string; mimeType: string }[], kind?: QueueKind) => Promise<void>
+  send: (
+    text: string,
+    images: { data: string; mimeType: string }[],
+    kind?: QueueKind,
+    image?: ComposerImageOptions
+  ) => Promise<void>
   /** Execute a shell command inline in the thread via Pi's `bash` RPC. */
   runInlineBash: (command: string, excludeFromContext?: boolean) => Promise<void>
   stop: () => Promise<void>
@@ -1149,6 +1164,23 @@ export const useAppStore = create<AppStore>((set, get) => ({
   pendingWorktree: false,
   setPendingWorktree: (armed) => set({ pendingWorktree: armed }),
   threads: {},
+  sessionNotices: loadSessionNotices(),
+  rememberSessionNotice: (file, notice) => {
+    const key = threadKey(file)
+    if (!key || key.startsWith('draft:')) return
+    if (get().sessionNotices[key] === notice) return
+    const sessionNotices = { ...get().sessionNotices, [key]: notice }
+    saveSessionNotices(sessionNotices)
+    set({ sessionNotices })
+  },
+  forgetSessionNotice: (file) => {
+    const key = threadKey(file)
+    if (!key || !(key in get().sessionNotices)) return
+    const sessionNotices = { ...get().sessionNotices }
+    delete sessionNotices[key]
+    saveSessionNotices(sessionNotices)
+    set({ sessionNotices })
+  },
   drafts: {},
   updateDraft: (sessionKey, updater) => {
     const key = threadKey(sessionKey.trim())
@@ -1215,6 +1247,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
           : {})
       }
     })
+    if (deskPage === null) {
+      const key = viewKeyOf(get())
+      if (key) get().forgetSessionNotice(key)
+    }
   },
   forkTargets: [],
   forking: false,
@@ -1611,6 +1647,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const thread = cached
       ? { ...cached, clientKey: cached.clientKey || mintClientKey(), notice: undefined }
       : emptyThread(workspace?.path, draftMode(get().settings))
+    if (sessionFile) get().forgetSessionNotice(sessionFile)
     if (sessionFile) {
       deletedSessionKeys.delete(sessionFile)
       deletedSessionKeys.delete(threadKey(sessionFile))
@@ -1720,6 +1757,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const thread = cached
       ? { ...cached, clientKey: cached.clientKey || mintClientKey(), notice: undefined }
       : emptyThread(session.cwd)
+    get().forgetSessionNotice(targetFile)
     // A conversation Pi has not written to disk yet is still keyed by its
     // draft id (or by the path Pi assigned before flushing). It is a
     // conversation, not a file, so the view follows its own key and nothing
@@ -1967,6 +2005,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       delete drafts[file]
       delete drafts[threadKey(file)]
       forgetDeletedThread(file)
+      get().forgetSessionNotice(file)
       const sessions = get().sessions.filter((entry) => entry.file !== file)
       if (get().activeSessionFile === file) {
         const draftId = mintDraft()
@@ -2036,6 +2075,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         return true
       })
       if (!archivedNow) return
+      get().forgetSessionNotice(file)
       if (get().activeSessionFile === file) await get().newChat()
       get().showToast('Conversation archived')
     } catch (error) {
@@ -2143,7 +2183,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     })
   },
 
-  async send(text, images, kind = 'steer') {
+  async send(text, images, kind = 'steer', image) {
     const trimmed = normalizeAppCommandInput(text.trim())
     if (!trimmed && !images.length) return
     // `!cmd` and `!!cmd` run a shell command inline via Pi's `bash` RPC.
@@ -2169,6 +2209,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const rename = /^\/name\s+([\s\S]+)$/.exec(trimmed)
     if (rename && !images.length) {
       await get().renameSession(rename[1].trim())
+      return
+    }
+    // `/image [prompt]` is the composer's shortcut into its image mode: the
+    // controls and the prompt belong to the chat box, not to a side panel.
+    const imageCommand = /^\/image(?:\s+([\s\S]*))?$/i.exec(trimmed)
+    if (imageCommand) {
+      const arg = (imageCommand[1] ?? '').trim()
+      window.dispatchEvent(
+        new CustomEvent<{ prompt: string; off?: boolean }>('pi:enter-image-mode', {
+          detail: arg.toLowerCase() === 'off' ? { prompt: '', off: true } : { prompt: arg }
+        })
+      )
       return
     }
     // App commands are client features, not Pi slash commands. Typing one is
@@ -2245,6 +2297,35 @@ export const useAppStore = create<AppStore>((set, get) => ({
           }))
         }
         return
+      }
+      // The image controls live in the composer, the tool lives in Pi: hand the
+      // chosen options to the task-mode extension first, so the run that the
+      // user's prompt starts is the one those options apply to.
+      if (image && (trimmed || images.length > 0) && !trimmed.startsWith('/')) {
+        const imagePrompt = trimmed || 'Create a refined variation based on the attached reference image.'
+        payload.message = imagePrompt
+        pendingPrompt.text = imagePrompt
+        await tracedRpc(
+          threadKey(key),
+          'prompt',
+          {
+            message: `/desktop-image ${JSON.stringify({
+              prompt: imagePrompt,
+              model: image.model,
+              size: image.size,
+              quality: image.quality,
+              n: image.count,
+              references: images.length
+            })}`
+          },
+          30_000,
+          'image-params'
+        )
+        void get().updateSettings({
+          imageModel: image.model,
+          imageSize: image.size,
+          imageQuality: image.quality
+        })
       }
       // An extension command can block on a dialog, and Pi only answers the
       // prompt once the command is done. The deadline has to outlast that.
@@ -3162,6 +3243,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
               command.name !== 'desktop-mode' &&
               command.name !== 'desktop-goal' &&
               command.name !== 'desktop-computer' &&
+              command.name !== 'desktop-image' &&
               command.name !== 'desktop-rewind'
           )
         ]
@@ -3270,6 +3352,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         break
       case 'plugin':
         await get().setAgentMode(get().agentMode === 'plugin' ? 'default' : 'plugin')
+        break
+      case 'image':
+        window.dispatchEvent(new CustomEvent('pi:enter-image-mode'))
         break
       default:
         break
@@ -4655,7 +4740,13 @@ function scheduleFlush(): void {
  */
 function touchesWorkingTree(toolName: unknown): boolean {
   if (typeof toolName !== 'string') return false
-  return toolName === 'edit' || toolName === 'write' || toolName === 'bash'
+  return (
+    toolName === 'edit' ||
+    toolName === 'write' ||
+    toolName === 'bash' ||
+    toolName === 'powershell' ||
+    toolName === 'generate_image'
+  )
 }
 
 /**
@@ -4752,6 +4843,9 @@ function handleEvent(
       const sessionKey = runContextOf(get).sessionKey
       drainPending(sessionKey || (owner ? threadKey(owner) : undefined))
       beginStream(sessionKey)
+      // A new run supersedes whatever the last one left behind, including the
+      // persisted copy the sidebar falls back to after a restart.
+      get().forgetSessionNotice(sessionKey || (owner ? threadKey(owner) : ''))
       // A live-stats read issued before this run describes the session as it
       // was; it must not land on the fresh transcript numbers below, and the
       // first answer of the new run should be allowed to ask again at once.
@@ -4915,6 +5009,9 @@ function handleEvent(
         uiRequests: [],
         uiRequest: state.uiRequest ? undefined : state.uiRequest
       })
+      // The mark has to outlive this thread: a scheduled or background run is
+      // often read after the app has been restarted.
+      if (notice) get().rememberSessionNotice(settledKey, notice)
       // A crashed run has no live process to read state from, and the reason
       // it stopped is the only thing the reader can still act on.
       if (crashed) {

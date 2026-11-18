@@ -71,6 +71,10 @@ export default function (pi) {
   let computerEnabled = ${computerUse ? 'true' : 'false'};
   let goal;
   let originalTools;
+  // Options the composer handed over for the next image generation. They are
+  // one-shot: the run they belong to consumes them, a later prompt does not.
+  let imageRequest;
+  let imageRunActive = false;
 
   function isLocalToolImplementation(name, tool) {
     if (localBuiltinTools.has(name)) return tool?.sourceInfo?.source === 'builtin';
@@ -174,7 +178,7 @@ export default function (pi) {
 
   pi.on('session_start', (_event, ctx) => {
     if (originalTools) pi.setActiveTools(originalTools);
-    mode = startMode; goal = undefined; originalTools = undefined;
+    mode = startMode; goal = undefined; originalTools = undefined; imageRequest = undefined; imageRunActive = false;
     externalToolOverrides.clear();
     externalContextUsed = false;
     externalContextUnknown = false;
@@ -238,6 +242,29 @@ export default function (pi) {
     description: 'Change the desktop task mode',
     handler: async (value, ctx) => {
       setMode(value.trim(), ctx);
+    }
+  });
+
+  pi.registerCommand('desktop-image', {
+    description: 'Prepare the image settings the next prompt must generate with',
+    handler: async (value) => {
+      const text = (value || '').trim();
+      if (!text) throw new Error('Usage: /desktop-image <json>');
+      let request;
+      try { request = JSON.parse(text); } catch { throw new Error('Image request must be valid JSON'); }
+      if (!request || typeof request.prompt !== 'string' || !request.prompt.trim()) {
+        throw new Error('Image prompt is required');
+      }
+      const count = Number(request.n);
+      const references = Number(request.references);
+      imageRequest = {
+        prompt: request.prompt.trim(),
+        model: typeof request.model === 'string' ? request.model.trim() : '',
+        size: typeof request.size === 'string' ? request.size.trim() : '',
+        quality: typeof request.quality === 'string' ? request.quality.trim() : '',
+        n: Number.isFinite(count) ? Math.min(4, Math.max(1, Math.round(count))) : 1,
+        references: Number.isFinite(references) && references > 0 ? Math.min(8, Math.round(references)) : 0
+      };
     }
   });
 
@@ -338,6 +365,37 @@ export default function (pi) {
     if (Array.isArray(guidelines) && !guidelines.includes(progressGuideline)) {
       guidelines.push(progressGuideline);
     }
+    imageRunActive = false;
+    if (imageRequest) {
+      const request = imageRequest;
+      imageRequest = undefined;
+      // The options belong to the prompt they were sent with. A later, normal
+      // prompt must not inherit them just because the first send failed.
+      if (typeof event?.prompt === 'string' && event.prompt.trim() === request.prompt) {
+        imageRunActive = true;
+        const selected = event?.systemPromptOptions?.selectedTools;
+        if (Array.isArray(selected) && !selected.includes('generate_image')) {
+          selected.push('generate_image');
+        }
+        const options = ['n=' + request.n];
+        if (request.model) options.push('model=' + request.model);
+        if (request.size) options.push('size=' + request.size);
+        if (request.quality) options.push('quality=' + request.quality);
+        const hasReferences = (Array.isArray(event?.images) && event.images.length > 0) || request.references > 0;
+        const referenceNote = hasReferences
+          ? 'The user attached reference image(s) to this message. Carefully inspect their subject, style, composition, lighting, colour palette and key visual details, and fold those details into your refined prompt so the generated picture follows the reference. '
+          : '';
+        const content = 'Image generation request: ' + request.prompt + '\\n\\n' + referenceNote + 'Refine it into one detailed image prompt: name the subject, style, composition, colours and any exact text that must appear in the picture. Then call generate_image exactly once with prompt set to the refined prompt and these options unchanged (' + options.join(', ') + '). Do not use any other tool, and do not ask questions when the request is clear. After the tool returns, keep your visible reply to one short sentence. Do not repeat the refined prompt or the saved file paths: the app shows the pictures below your reply and keeps the prompt folded inside the image card.';
+        // A section lives for this run only. A returned message would stay in
+        // the session and tell every later turn to draw another picture.
+        const sections = event?.systemPromptOptions?.sections;
+        if (sections && typeof sections === 'object') {
+          sections['desktop-image'] = content;
+          return;
+        }
+        return { systemPrompt: String(event?.systemPrompt || '') + '\\n\\n' + content };
+      }
+    }
     if (mode === 'plan') return { message: {
       customType: 'desktop-plan-context', display: false,
       content: 'Plan Mode is active. Inspect files using the read-only tools and clarify requirements when necessary. Before asking for approval, write the complete implementation plan in your visible assistant response as a Markdown document with a goal, ordered checkbox steps, affected files or areas, verification, and risks. Do not modify files or execute commands while planning. After showing the Markdown plan, call exit_plan_mode with the same complete plan for the user to review. Wait for explicit approval before leaving Plan Mode or implementing anything. If the user keeps planning, ask what to change and revise the Markdown plan.'
@@ -362,6 +420,7 @@ export default function (pi) {
 
   pi.on('tool_call', event => {
     if (mode !== 'plan') return;
+    if (imageRunActive && event.toolName === 'generate_image') return;
     const builtinReadTools = new Set(
       pi.getAllTools()
         .filter(tool => readTools.has(tool.name) && tool.sourceInfo?.source === 'builtin')
@@ -389,6 +448,7 @@ export default function (pi) {
   // Keep the classification near the session tail so bounded reads of long
   // conversations still see outside context from earlier turns.
   pi.on('agent_end', () => {
+    imageRunActive = false;
     appendContextClassification();
     if (externalToolOverrides.size) {
       pi.appendEntry(externalOverrideEntry, { toolNames: [...externalToolOverrides] });
@@ -469,6 +529,7 @@ export default function (pi) {
   });
 
   pi.on('agent_settled', (event, ctx) => {
+    imageRunActive = false;
     if (mode === 'goal' && goal?.status === 'active') {
       goal = { ...goal, status: 'blocked', summary: event.aborted ? 'Stopped by user' : 'The runtime could not continue' };
       persist(ctx);

@@ -54,8 +54,9 @@ export const MAX_MARKETPLACE_RESPONSE_BYTES = 2 * 1024 * 1024
 const MAX_MARKETPLACE_CACHE_BYTES = 4 * 1024 * 1024
 const MAX_MARKETPLACE_SETTINGS_BYTES = 8 * 1024 * 1024
 
-/** How long `pi install` or a skill collection clone may take. */
-const INSTALL_TIMEOUT_MS = 180000
+/** How long `pi install` or a skill collection clone may take. A package with
+ *  hundreds of transitive dependencies can spend minutes in npm's reify step. */
+const INSTALL_TIMEOUT_MS = 300000
 const packageSettingsLockWait = new Int32Array(new SharedArrayBuffer(4))
 
 /** The cache file's on-disk shape. */
@@ -989,7 +990,7 @@ export async function installGitRepository(
   const result = await runPiCli(['install', source], {
     cwd: options.cwd && options.cwd.trim() ? options.cwd : undefined,
     customPiPath: options.customPiPath,
-    timeoutMs: 180000,
+    timeoutMs: INSTALL_TIMEOUT_MS,
     onOutput: options.onProgress
   })
   return {
@@ -1357,7 +1358,7 @@ export async function installNpmPackage(
   const result = await runPiCli(['install', `npm:${name}`], {
     cwd: options.cwd && options.cwd.trim() ? options.cwd : undefined,
     customPiPath: options.customPiPath,
-    timeoutMs: 180000,
+    timeoutMs: INSTALL_TIMEOUT_MS,
     onOutput: options.onProgress
   })
   return {
@@ -1393,7 +1394,7 @@ export async function installMarketplaceEntry(
   const result = await runPiCli(['install', source], {
     cwd: options.cwd && options.cwd.trim() ? options.cwd : undefined,
     customPiPath: options.customPiPath,
-    timeoutMs: 180000,
+    timeoutMs: INSTALL_TIMEOUT_MS,
     onOutput: options.onProgress
   })
   return {

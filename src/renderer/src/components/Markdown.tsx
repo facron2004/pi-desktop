@@ -2,7 +2,7 @@ import { createContext, useContext, isValidElement, memo, useEffect, useState, t
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Check, Code, Copy, Eye, FileCode2 } from 'lucide-react'
+import { ArrowUpRight, Check, Code, Copy, Eye, FileCode2 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { highlightCode, readHighlightedCodeSync } from '../lib/highlight'
 import { resolveAgainst } from '../lib/path'
@@ -288,17 +288,26 @@ const markdownComponents: Components = {
     )
   },
   a({ children, href, node: _node, ...rest }) {
+    const external = Boolean(href && /^https?:\/\//i.test(href))
     return (
       <a
         href={href}
         onClick={(event) => {
-          if (href && /^https?:\/\//i.test(href)) {
+          if (external && href) {
             event.preventDefault()
             void window.pi.shell.openExternal(href)
           }
         }}
         {...rest}
       >
+        {external ? (
+          <ArrowUpRight
+            size={11}
+            strokeWidth={1.8}
+            className="md-link__icon"
+            aria-hidden="true"
+          />
+        ) : null}
         {children}
       </a>
     )

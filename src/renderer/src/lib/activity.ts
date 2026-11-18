@@ -26,6 +26,7 @@ const LABELS: Record<ToolSummaryTone, string> = {
   subagent: 'Delegating to a subagent',
   plan: 'Reviewing the plan',
   computer: 'Using the computer',
+  image: 'Generating an image',
   generic: 'Working'
 }
 

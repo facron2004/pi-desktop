@@ -64,32 +64,73 @@ export function ProjectSelector({
       align={align}
       width={232}
       className="project-menu-popover"
-      renderTrigger={({ open, toggle }) => (
-        <button
-          type="button"
-          className={variant === 'inline' ? 'welcome__project' : 'session-bar__item project-chip'}
-          data-active={open}
-          aria-expanded={open}
-          aria-haspopup="menu"
-          aria-label={variant === 'inline' ? t('Projects') : undefined}
-          onClick={(e) => {
-            if (!open) setSearchQuery('')
-            toggle(e)
-          }}
-          title={workspace?.path ?? displayName}
-        >
-          {variant === 'inline' ? displayName : (
-            <>
-              {noProject ? (
-                <MessageSquare size={11} className="project-chip__icon" />
-              ) : (
-                <Folder size={11} className="project-chip__icon" />
-              )}
+      renderTrigger={({ open, toggle, close }) =>
+        variant === 'inline' ? (
+          <button
+            type="button"
+            className="welcome__project"
+            data-active={open}
+            aria-expanded={open}
+            aria-haspopup="menu"
+            aria-label={t('Projects')}
+            onClick={(e) => {
+              if (!open) setSearchQuery('')
+              toggle(e)
+            }}
+            title={workspace?.path ?? displayName}
+          >
+            {displayName}
+          </button>
+        ) : (
+          // The chip is a container, not one button: the glyph and the name are
+          // separate targets. A button inside a button is not valid markup.
+          <div
+            className="session-bar__item project-chip"
+            data-active={open}
+          >
+            {workspace ? (
+              // The folder doubles as the way out: hovering the chip (or
+              // opening the menu) turns it into an X, and the X drops back to
+              // working without a project. One hover, one click — no trip
+              // through the menu for the common "stop using this folder".
+              <button
+                type="button"
+                className="project-chip__glyph"
+                aria-label={t('Stop using this project')}
+                title={t('Stop using this project')}
+                onClick={() => {
+                  close()
+                  void switchProject(null, { allowWhileRunning: true })
+                }}
+              >
+                <Folder size={11} className="project-chip__icon project-chip__folder" />
+                <X size={11} className="project-chip__icon project-chip__remove" />
+              </button>
+            ) : (
+              <span className="project-chip__glyph project-chip__glyph--static" aria-hidden="true">
+                {noProject ? (
+                  <MessageSquare size={11} className="project-chip__icon" />
+                ) : (
+                  <Folder size={11} className="project-chip__icon" />
+                )}
+              </span>
+            )}
+            <button
+              type="button"
+              className="project-chip__label"
+              aria-expanded={open}
+              aria-haspopup="menu"
+              onClick={(e) => {
+                if (!open) setSearchQuery('')
+                toggle(e)
+              }}
+              title={workspace?.path ?? displayName}
+            >
               <span className="project-chip__name">{displayName}</span>
-            </>
-          )}
-        </button>
-      )}
+            </button>
+          </div>
+        )
+      }
     >
       {(close) => (
         <div className="project-menu" role="menu">

@@ -115,8 +115,9 @@
   pointer-events: auto;
 }
 
-/* Collapsed project mark lives inside the fixed action slot at rest and yields
-   to the action buttons on hover/focus so the project title never moves. */
+/* The project mark lives inside the fixed action slot at rest and steps to
+   the left edge of it when the action buttons appear, so hovering a row never
+   takes away the reason the reader came to it and the title never moves. */
 .project__indicator {
   position: absolute;
   right: var(--sp-2);
@@ -128,7 +129,7 @@
   height: 14px;
   color: var(--text-secondary);
   pointer-events: none;
-  transition: opacity var(--dur-fast) var(--ease);
+  transition: right var(--dur-fast) var(--ease);
 }
 
 .project__indicator[data-indicator='unread']::before,
@@ -153,7 +154,7 @@
 .project__row:hover .project__indicator,
 .project__row:focus-within .project__indicator,
 .project__actions:has([data-active='true']) .project__indicator {
-  opacity: 0;
+  right: calc(var(--sidebar-action-slot) - 12px);
 }
 
 /* The mark of a conversation hangs in the row's indent, out of the flow: a row

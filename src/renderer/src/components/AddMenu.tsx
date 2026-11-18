@@ -1,5 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, Target, Workflow, Wrench } from 'lucide-react'
+import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, Target, WandSparkles, Workflow, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { useT } from '../lib/i18n'
 import { mermaidTemplateList } from '../lib/mermaid-templates'
@@ -22,15 +22,17 @@ const PAGES = [
   { page: 'skills', label: 'Skills', icon: Sparkles }
 ] as const
 
-export function AddMenu({ ready, busy, mode, skillCommands, pluginCommands, onModeChange, onPickFiles, onInsertCommand }: {
+export function AddMenu({ ready, busy, mode, imageMode, skillCommands, pluginCommands, onModeChange, onPickFiles, onInsertCommand, onEnterImageMode }: {
   ready: boolean
   busy: boolean
   mode: AgentMode
+  imageMode?: boolean
   skillCommands: PiCommand[]
   pluginCommands: PiCommand[]
   onModeChange: (mode: AgentMode) => Promise<void>
   onPickFiles: () => Promise<void>
   onInsertCommand: (command: PiCommand) => void
+  onEnterImageMode: () => void
 }) {
   const t = useT()
   const language = useAppStore((state) => state.settings.language ?? 'en')
@@ -111,6 +113,11 @@ export function AddMenu({ ready, busy, mode, skillCommands, pluginCommands, onMo
               <button type="button" className="popover__item" role="menuitem" onClick={() => { close(); void onPickFiles() }}>
                 <Paperclip size={15} />
                 <span className="popover__item-text">{t('Add files')}</span>
+              </button>
+              <button type="button" className="popover__item" role="menuitemcheckbox" aria-checked={Boolean(imageMode)} onClick={() => { close(); onEnterImageMode() }}>
+                <WandSparkles size={15} />
+                <span className="popover__item-text">{t('Image generation')}</span>
+                {imageMode ? <Check size={14} /> : null}
               </button>
               {PAGES.map((entry) => {
                 const Icon = entry.icon

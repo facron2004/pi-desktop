@@ -5,8 +5,9 @@ export const APP_COMMAND_ZH_NAMES: Record<string, string> = {
   name: '重命名',
   plan: '计划',
   goal: '目标',
-  subagent: '子代理',
+  subagent: '子智能体',
   plugin: '插件',
+  image: '图片',
   export: '导出对话',
   duplicate: '复制对话',
   branch: '创建分支',
@@ -72,6 +73,12 @@ export const APP_COMMANDS: PiCommand[] = [
     name: 'plugin',
     description: 'Switch to Plugin Mode — build or modify a Pi extension',
     source: 'app'
+  },
+  {
+    name: 'image',
+    description: 'Generate an image in the composer — follow it with the prompt',
+    source: 'app',
+    takesArgument: true
   },
   {
     name: 'export',

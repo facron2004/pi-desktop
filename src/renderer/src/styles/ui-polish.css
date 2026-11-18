@@ -110,6 +110,13 @@
   outline-offset: -2px;
 }
 
+/* The row's own hover/active fill already marks the conversation; the title
+   button only fills that row, so its ring lands as a second box around the
+   label. Focus moves between rows via the fill, without an accent frame. */
+:root .session-item__main:focus-visible {
+  outline: none;
+}
+
 :root .composer__add:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;

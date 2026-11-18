@@ -66,6 +66,15 @@ test('changedFilePaths lists the files without building their diffs', () => {
       status: 'ok'
     }),
     tool({
+      id: 'image',
+      toolCallId: 'image-call',
+      toolName: 'generate_image',
+      args: { prompt: 'lighthouse' },
+      details: { paths: ['output/generated/lighthouse.png'] },
+      status: 'ok',
+      timestamp: 2
+    }),
+    tool({
       id: 'failed',
       toolCallId: 'failed-call',
       toolName: 'edit',
@@ -75,7 +84,8 @@ test('changedFilePaths lists the files without building their diffs', () => {
   ]
   assert.deepEqual(changedFilePaths(items), [
     { path: 'src/a.ts', at: 1 },
-    { path: 'src/b.ts', at: 1 }
+    { path: 'src/b.ts', at: 1 },
+    { path: 'output/generated/lighthouse.png', at: 2 }
   ])
 })
 

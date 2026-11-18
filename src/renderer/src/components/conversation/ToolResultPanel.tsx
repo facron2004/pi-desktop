@@ -81,6 +81,15 @@ export const ToolResultPanel = memo(function ToolResultPanel({
     ? item.args.plan
     : ''
   const shot = computerShot(item.details)
+  // The prompt belongs to the picture's fold: the card keeps its one-line
+  // header for the verb, and this is where the reader finds the words again.
+  const imagePrompt =
+    item.toolName === 'generate_image' && typeof item.args?.prompt === 'string'
+      ? item.args.prompt.trim()
+      : ''
+  // A successful image call already renders its pictures in the card strip and
+  // its prompt above; the tool's text summary of saved paths is for the model.
+  const suppressResult = item.toolName === 'generate_image' && item.status !== 'error'
 
   if (!open) return null
 
@@ -88,6 +97,13 @@ export const ToolResultPanel = memo(function ToolResultPanel({
     <div className="tool__body">
       {item.status === 'error' && visibleResult ? (
         <LogOutput text={visibleResult} className="tool__error" />
+      ) : null}
+
+      {imagePrompt ? (
+        <div className="tool__image-prompt">
+          <span className="tool__image-prompt-label">{t('Prompt')}</span>
+          <p>{imagePrompt}</p>
+        </div>
       ) : null}
 
       {plan ? (
@@ -131,7 +147,7 @@ export const ToolResultPanel = memo(function ToolResultPanel({
         )
       ) : null}
 
-      {visibleResult && item.status !== 'error' ? (
+      {visibleResult && item.status !== 'error' && !suppressResult ? (
         item.toolName === 'read' && visibleResultLines <= LOG_PAGE_LINES ? (
           <CodeSnippet code={visibleResult} language={language} />
         ) : item.toolName === 'subagent' ? (
@@ -143,7 +159,7 @@ export const ToolResultPanel = memo(function ToolResultPanel({
         )
       ) : null}
 
-      {truncated ? (
+      {truncated && !suppressResult ? (
         <button className="tool__more" onClick={() => onFullChange?.(!full)}>
           {full
             ? t('Show less')
@@ -151,7 +167,7 @@ export const ToolResultPanel = memo(function ToolResultPanel({
         </button>
       ) : null}
 
-      {!diffs.length && !visibleResult && !content && !plan && !shot && !shellCommand ? (
+      {!diffs.length && !visibleResult && !content && !plan && !shot && !shellCommand && !imagePrompt ? (
         <pre className="tool__pre">{JSON.stringify(item.args ?? {}, null, 2)}</pre>
       ) : null}
     </div>

@@ -107,9 +107,15 @@ export const ProcessTrail = memo(function ProcessTrail({
     }
   }
 
-  // A live stretch that is not a batch is the raw trace, exactly as before.
-  if (live && !summarizing) {
-    return <div className="process process--live">{children}</div>
+  // A live stretch that is not a batch, a pure-thinking stretch, or an opened
+  // non-gathered stretch renders its items directly on the reading column
+  // without a redundant nested header or indent border.
+  if ((live && !summarizing) || tools.length === 0 || (!gatherCalls && open)) {
+    return (
+      <div className={live ? 'process process--live' : 'process'} data-status={activity.status}>
+        {children}
+      </div>
+    )
   }
 
   return (

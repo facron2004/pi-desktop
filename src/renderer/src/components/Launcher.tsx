@@ -32,6 +32,7 @@ import {
   Sun,
   Target,
   Type,
+  WandSparkles,
   Wrench
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -108,6 +109,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const archivedSessions = useAppStore((state) => state.settings.archivedSessions)
   const sessions = useAppStore((state) => state.sessions)
   const threads = useAppStore((state) => state.threads)
+  const sessionNotices = useAppStore((state) => state.sessionNotices)
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const activeKey = useAppStore((state) => draftKeyOf(state))
@@ -298,6 +300,13 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       run: () => setAgentMode(agentMode === 'plugin' ? 'default' : 'plugin')
     },
     {
+      id: 'mode-image',
+      title: 'Image generation',
+      group: 'Mode',
+      icon: WandSparkles,
+      run: () => runAppCommand('image')
+    },
+    {
       id: 'open-project',
       title: 'Open another project…',
       group: 'Project',
@@ -430,7 +439,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
     const thread = threads[row.file]
     const indicator = sessionIndicator({
       isStreaming: Boolean(thread?.isStreaming),
-      notice: thread?.notice,
+      notice: thread?.notice ?? sessionNotices[row.file],
       needsInput: Boolean(thread?.uiRequest || thread?.uiRequests?.length)
     })
     if (archived.has(row.file) && indicator === 'idle') continue

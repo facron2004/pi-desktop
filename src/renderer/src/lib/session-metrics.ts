@@ -89,7 +89,8 @@ function round(value: number, digits = 1): number {
  */
 function newestTurnModelWindowMs(
   durations: Record<string, number> | undefined,
-  lastUserTimestamp: number | undefined
+  lastUserTimestamp: number | undefined,
+  beforeTimestamp?: number
 ): number {
   if (!durations || lastUserTimestamp === undefined) return 0
   let sum = 0
@@ -98,6 +99,9 @@ function newestTurnModelWindowMs(
     if (!match) continue
     const stamp = Number(match[1])
     if (!Number.isFinite(stamp) || stamp < lastUserTimestamp) continue
+    // A held reading describes the turn that ended at this prompt; samples
+    // stamped with the newest prompt belong to the turn now starting.
+    if (beforeTimestamp !== undefined && stamp >= beforeTimestamp) continue
     if (typeof value === 'number' && Number.isFinite(value) && value > 0) sum += value
   }
   return sum
@@ -119,12 +123,17 @@ export function sessionMetrics(
   let lastUserIndex = -1
   let lastUserTimestamp: number | undefined
   let lastUserOrdinal: number | undefined
+  let previousUserIndex = -1
+  let previousUserTimestamp: number | undefined
+  let previousUserOrdinal: number | undefined
   const userTimestampCounts = new Map<number, number>()
   let transcriptTurnCount = 0
   let toolItemCount = 0
   let knownToolTimeMs = 0
   let timedToolCalls = 0
   let lastTurnGenerationMs = 0
+  let previousTurnGenerationMs = 0
+  let previousTurnOutput = 0
   let hasStreamingAssistant = false
   let transcriptModelMs = 0
   let completedAssistantCount = 0
@@ -133,6 +142,9 @@ export function sessionMetrics(
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
     if (item.kind === 'user') {
+      previousUserIndex = lastUserIndex
+      previousUserTimestamp = lastUserTimestamp
+      previousUserOrdinal = lastUserOrdinal
       lastUserIndex = index
       lastUserTimestamp = item.timestamp
       lastUserOrdinal = transcriptTurnCount
@@ -169,6 +181,12 @@ export function sessionMetrics(
         lastTurnGenerationMs += item.durationMs
       }
     }
+    const inPreviousTurn = previousUserIndex >= 0 && index > previousUserIndex && index < lastUserIndex
+    if (inPreviousTurn && !item.streaming) {
+      if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
+        previousTurnGenerationMs += item.durationMs
+      }
+    }
     if (!item.usage) continue
     input += item.usage.input
     output += item.usage.output
@@ -182,6 +200,12 @@ export function sessionMetrics(
       const produced = item.usage?.output
       if (typeof produced === 'number' && Number.isFinite(produced) && produced > 0) {
         lastTurnOutput += produced
+      }
+    }
+    if (inPreviousTurn) {
+      const produced = item.usage.output
+      if (typeof produced === 'number' && Number.isFinite(produced) && produced > 0) {
+        previousTurnOutput += produced
       }
     }
   }
@@ -315,6 +339,26 @@ export function sessionMetrics(
         : 0
   const tps =
     speedWindowMs > 0 && turnOutput > 0 ? round(turnOutput / (speedWindowMs / 1000)) : null
+  // A prompt does not produce tokens at the instant it is sent. Blanking the
+  // reading there hid the speed of the turn that had just finished, so hold
+  // that completed turn's value until this one has an answer of its own.
+  const previousRestoredWindowMs = previousUserIndex >= 0
+    ? userTimingDuration(
+      timing?.generationWindowMs ?? {},
+      previousUserTimestamp,
+      previousUserOrdinal,
+      previousUserTimestamp === undefined ? 0 : userTimestampCounts.get(previousUserTimestamp) ?? 0
+    )
+    : undefined
+  const previousWindowMs = previousRestoredWindowMs !== undefined && previousRestoredWindowMs > 0
+    ? previousRestoredWindowMs
+    : previousTurnGenerationMs > 0
+      ? previousTurnGenerationMs
+      : newestTurnModelWindowMs(timing?.modelDurationsMs, previousUserTimestamp, lastUserTimestamp)
+  const heldTps =
+    turnOutput === 0 && previousTurnOutput > 0 && previousWindowMs > 0
+      ? round(previousTurnOutput / (previousWindowMs / 1000))
+      : null
 
   // Kept apart from the token totals above: the children are their own Pi
   // processes, so their usage is neither in the parent's statistics nor in
@@ -337,7 +381,7 @@ export function sessionMetrics(
     contextTokens,
     contextWindow,
     contextPercent,
-    tps,
+    tps: tps ?? heldTps,
     ttftMs,
     subagentTokens: subagents.tokens,
     subagentCost: subagents.cost ?? null,

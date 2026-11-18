@@ -41,6 +41,7 @@ if (!scripts[action]) {
   process.exitCode = 1
 } else {
   let release
+  let waitingNotice = null
   try {
     const options = {
       lockfilePath: lockPath,
@@ -50,9 +51,22 @@ if (!scripts[action]) {
       retries: { retries: 3600, factor: 1, minTimeout: 1000, maxTimeout: 1000 }
     }
     if (await lockfile.check(root, options)) {
-      process.stderr.write('Another app command is using out/. Waiting for it to finish.\n')
+      // A dev session that outlives its window keeps this lock for as long as
+      // its process lives. Printing the notice once made a second `npm run dev`
+      // look like it simply refused to start, so repeat it while it waits.
+      process.stderr.write(
+        'Another app command is using out/. Waiting for it to finish — a dev session that is still running holds this lock. Press Ctrl+C to give up.\n'
+      )
+      waitingNotice = setInterval(() => {
+        process.stderr.write('Still waiting for the other app command to finish…\n')
+      }, 30 * 1000)
+      waitingNotice.unref?.()
     }
     release = await lockfile.lock(root, options)
+    if (waitingNotice) {
+      clearInterval(waitingNotice)
+      waitingNotice = null
+    }
     process.on('SIGINT', onInterrupt)
     process.on('SIGTERM', onTerminate)
 
@@ -70,6 +84,7 @@ if (!scripts[action]) {
     process.stderr.write(`${message}\n`)
     process.exitCode = 1
   } finally {
+    if (waitingNotice) clearInterval(waitingNotice)
     await activeChildTermination
     activeChild = null
     if (release) {
