@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import {
   clipTipText,
   expandedPopupHidesTip,
@@ -167,4 +169,14 @@ test('a tall control follows the pointer instead of the far edge of the control'
   )
   assert.equal(placed.top, 52)
   assert.equal(placed.left, 8)
+})
+
+test('HoverTip fast-paths icon controls and floating tips avoid backdrop-filter', () => {
+  const component = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/components/HoverTip.tsx'), 'utf8')
+  const hoverCss = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/styles/hover-tip.css'), 'utf8')
+  const sidebarCss = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/styles/sidebar-tip.css'), 'utf8')
+  assert.match(component, /!button\.textContent\?\.trim\(\)/)
+  assert.match(component, /!host\.textContent\?\.trim\(\)/)
+  assert.equal(hoverCss.includes('backdrop-filter'), false)
+  assert.equal(sidebarCss.includes('backdrop-filter'), false)
 })

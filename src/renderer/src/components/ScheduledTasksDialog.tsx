@@ -21,6 +21,7 @@ import type {
 import { resolveSavedModel, selectableModels } from '@shared/provider-models'
 import { DateTimeField } from './DateTimeField'
 import { Popover } from './Popover'
+import { SettingsSelect, type SettingsSelectOption } from './settings/SettingsShared'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { DEFAULT_THINKING_LEVELS } from '../lib/thinking'
@@ -137,6 +138,17 @@ function formatDateTime(timestamp: number | undefined): string {
   return timestamp ? new Date(timestamp).toLocaleString() : '—'
 }
 
+const relativeTimeFormatters = new Map<AppLanguage, Intl.RelativeTimeFormat>()
+
+function getRelativeTimeFormatter(language: AppLanguage): Intl.RelativeTimeFormat {
+  let formatter = relativeTimeFormatters.get(language)
+  if (!formatter) {
+    formatter = new Intl.RelativeTimeFormat(language, { numeric: 'auto' })
+    relativeTimeFormatters.set(language, formatter)
+  }
+  return formatter
+}
+
 function formatRelative(timestamp: number, language: AppLanguage): string {
   const difference = timestamp - Date.now()
   const absolute = Math.abs(difference)
@@ -146,7 +158,7 @@ function formatRelative(timestamp: number, language: AppLanguage): string {
   const unit = absolute >= day ? 'day' : absolute >= hour ? 'hour' : absolute >= minute ? 'minute' : 'second'
   const step = unit === 'day' ? day : unit === 'hour' ? hour : unit === 'minute' ? minute : 1_000
   try {
-    return new Intl.RelativeTimeFormat(language, { numeric: 'auto' }).format(Math.round(difference / step), unit)
+    return getRelativeTimeFormatter(language).format(Math.round(difference / step), unit)
   } catch {
     return ''
   }
@@ -193,7 +205,10 @@ export function ScheduledTasksDialog() {
     ? tasks.find((task) => task.id === selectedTaskId)
     : undefined
   const detailOpen = Boolean(draft && (manualOpen || selectedTask))
-  const dirty = draft !== null && draftBase !== '' && formKey(draft) !== draftBase
+  const dirty = useMemo(
+    () => draft !== null && draftBase !== '' && formKey(draft) !== draftBase,
+    [draft, draftBase]
+  )
   const detailBusy = Boolean(
     selectedTask &&
     (workingId === selectedTask.id || selectedTask.lastStatus === 'running' || saving)
@@ -394,6 +409,35 @@ export function ScheduledTasksDialog() {
     !levelChoices.some((level) => level.toLowerCase() === draft.thinkingLevel.toLowerCase())
     ? [...levelChoices, draft.thinkingLevel]
     : levelChoices
+  const repeatOptions: SettingsSelectOption[] = [
+    { value: 'once', label: t('Once') },
+    { value: 'daily', label: t('Daily') },
+    { value: 'weekly', label: t('Weekly') }
+  ]
+  const weekdayOptions: SettingsSelectOption[] = WEEKDAYS.map((day, index) => ({
+    value: String(index),
+    label: t(day)
+  }))
+  const workspaceOptions: SettingsSelectOption[] = workspaces.map((workspace) => ({
+    value: workspace.id,
+    label: workspace.name
+  }))
+  if (draft?.workspaceId && !workspaces.some((workspace) => workspace.id === draft.workspaceId)) {
+    workspaceOptions.push({ value: draft.workspaceId, label: t('Project unavailable') })
+  }
+  const modelOptions: SettingsSelectOption[] = [{ value: '', label: t('Follow app default') }]
+  for (const [provider, list] of modelGroups) {
+    for (const model of list) {
+      modelOptions.push({ value: modelSpec(model), label: model.name || model.id, group: provider })
+    }
+  }
+  if (draft?.model && !models.some((model) => modelSpec(model) === draft.model)) {
+    modelOptions.push({ value: draft.model, label: draft.model })
+  }
+  const effortOptions: SettingsSelectOption[] = [
+    { value: '', label: t('Follow app default') },
+    ...levelOptions.map((level) => ({ value: level, label: t(levelLabel(level)) }))
+  ]
   const canSubmit = Boolean(draft && dirty && draft.title.trim() && draft.prompt.trim() && draft.workspaceId && !saving)
   const language = settings.language ?? 'en'
 
@@ -738,23 +782,23 @@ export function ScheduledTasksDialog() {
                   <div className="scheduled-detail__rule-rows">
                     <label className="scheduled-detail__rule-row">
                       <span>{t('Project')}</span>
-                      <select
-                        className="input settings-select"
+                      <SettingsSelect
+                        label={t('Project')}
                         value={draft.workspaceId}
-                        onChange={(event) => setDraft({ ...draft, workspaceId: event.target.value })}
-                      >
-                        {workspaces.map((workspace) => (
-                          <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-                        ))}
-                      </select>
+                        options={workspaceOptions}
+                        onChange={(workspaceId) => setDraft({ ...draft, workspaceId })}
+                        menuWidth={260}
+                        className="scheduled-detail__picker"
+                      />
                     </label>
                     <label className="scheduled-detail__rule-row">
                       <span>{t('Repeat')}</span>
-                      <select
-                        className="input settings-select"
+                      <SettingsSelect
+                        label={t('Repeat')}
                         value={draft.kind}
-                        onChange={(event) => {
-                          const kind = event.target.value as RepeatKind
+                        options={repeatOptions}
+                        onChange={(value) => {
+                          const kind = value as RepeatKind
                           // Switching a recurring task to "once" has to land on a
                           // future moment; the value the form opened with may have
                           // passed while it was being edited.
@@ -767,11 +811,9 @@ export function ScheduledTasksDialog() {
                               : draft.dateTime
                           })
                         }}
-                      >
-                        <option value="once">{t('Once')}</option>
-                        <option value="daily">{t('Daily')}</option>
-                        <option value="weekly">{t('Weekly')}</option>
-                      </select>
+                        menuWidth={160}
+                        className="scheduled-detail__picker"
+                      />
                     </label>
                     {draft.kind === 'once' ? (
                       <label className="scheduled-detail__rule-row">
@@ -787,13 +829,14 @@ export function ScheduledTasksDialog() {
                         {draft.kind === 'weekly' ? (
                           <label className="scheduled-detail__rule-row">
                             <span>{t('Day of week')}</span>
-                            <select
-                              className="input settings-select"
-                              value={draft.weekday}
-                              onChange={(event) => setDraft({ ...draft, weekday: Number(event.target.value) })}
-                            >
-                              {WEEKDAYS.map((day, index) => <option key={day} value={index}>{t(day)}</option>)}
-                            </select>
+                            <SettingsSelect
+                              label={t('Day of week')}
+                              value={String(draft.weekday)}
+                              options={weekdayOptions}
+                              onChange={(value) => setDraft({ ...draft, weekday: Number(value) })}
+                              menuWidth={180}
+                              className="scheduled-detail__picker"
+                            />
                           </label>
                         ) : null}
                         <label className="scheduled-detail__rule-row">
@@ -808,39 +851,25 @@ export function ScheduledTasksDialog() {
                     )}
                     <label className="scheduled-detail__rule-row">
                       <span>{t('Model')}</span>
-                      <select
-                        className="input settings-select"
+                      <SettingsSelect
+                        label={t('Model')}
                         value={draft.model}
-                        onChange={(event) =>
-                          setDraft({ ...draft, model: event.target.value, thinkingLevel: '' })}
-                      >
-                        <option value="">{t('Follow app default')}</option>
-                        {modelGroups.map(([provider, list]) => (
-                          <optgroup key={provider} label={provider}>
-                            {list.map((model) => (
-                              <option key={modelSpec(model)} value={modelSpec(model)}>
-                                {model.name || model.id}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                        {draft.model && !models.some((model) => modelSpec(model) === draft.model) ? (
-                          <option value={draft.model}>{draft.model}</option>
-                        ) : null}
-                      </select>
+                        options={modelOptions}
+                        onChange={(model) => setDraft({ ...draft, model, thinkingLevel: '' })}
+                        menuWidth={300}
+                        className="scheduled-detail__picker"
+                      />
                     </label>
                     <label className="scheduled-detail__rule-row">
                       <span>{t('Reasoning effort')}</span>
-                      <select
-                        className="input settings-select"
+                      <SettingsSelect
+                        label={t('Reasoning effort')}
                         value={draft.thinkingLevel}
-                        onChange={(event) => setDraft({ ...draft, thinkingLevel: event.target.value })}
-                      >
-                        <option value="">{t('Follow app default')}</option>
-                        {levelOptions.map((level) => (
-                          <option key={level} value={level}>{t(levelLabel(level))}</option>
-                        ))}
-                      </select>
+                        options={effortOptions}
+                        onChange={(thinkingLevel) => setDraft({ ...draft, thinkingLevel })}
+                        menuWidth={200}
+                        className="scheduled-detail__picker"
+                      />
                     </label>
                   </div>
                   {draft.id && draft.kind === 'once' && new Date(draft.dateTime).getTime() <= Date.now() ? (

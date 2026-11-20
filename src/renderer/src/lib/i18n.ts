@@ -165,6 +165,11 @@ const zhCN: Record<string, string> = {
   'Default storage location for data from new chats started outside a project.':
     '在项目外发起的新聊天，其数据的默认存储位置。',
   'Default file opening location': '默认文件打开位置',
+  'Where links open': '链接打开方式',
+  'Open links from the conversation in the system browser or in the app.':
+    '对话中的链接在系统浏览器或应用内浏览器中打开。',
+  'System browser': '系统浏览器',
+  'In-app browser': '应用内浏览器',
   'Default location to open files and folders': '默认打开文件和文件夹的位置',
   'Agent environment': '智能体环境',
   'Choose where the agent runs on Windows': '选择智能体在 Windows 上的运行位置',
@@ -356,7 +361,7 @@ const zhCN: Record<string, string> = {
   'A new Pi Desktop version is ready to install.': '新版本已发布，可以更新 Pi Desktop。',
   'You are running the latest Pi Desktop version.': '当前 Pi Desktop 已是最新版本。',
   'Could not check for app updates. Please try again.': '暂时无法检查应用更新，请稍后重试。',
-  'The update will be downloaded and verified before the app restarts.': '下载并校验更新后，应用将重启完成安装。',
+  'The update will be downloaded and verified before the app restarts.': '下载并校验后，应用将重启。',
   'Automatic updates are available in the Windows installer version.': '自动更新适用于 Windows 安装版，当前版本请前往下载页更新。',
   'A built-in service update is available in About settings.': '内置服务另有可用更新，可在“关于”页面升级。',
   'Finish or stop active tasks before updating Pi Desktop.': '请先完成或停止正在运行的任务，再更新 Pi Desktop。',
@@ -368,6 +373,11 @@ const zhCN: Record<string, string> = {
   'No verified installer is available for this release.': '此版本尚无可校验的安装包，请稍后重试。',
   'Downloading…': '正在下载…',
   'New version': '发现新版本',
+  'A new version is ready to download': '自动检查发现新版本，点击查看并下载',
+  'Download update': '下载更新',
+  'Update failed': '更新失败',
+  'Installer size': '安装包大小',
+  'Download progress': '下载进度',
   'New version available: {version}': '发现新版本：{version}',
   'Reinstall & Upgrade': '重新安装升级',
   'Open download page': '打开下载页',
@@ -531,6 +541,7 @@ const zhCN: Record<string, string> = {
   'No project or conversation matches': '没有匹配的项目或对话',
   Pinned: '已固定',
   'No conversation matches': '没有匹配的对话',
+  'No conversations yet.': '暂无对话。',
   'Delete conversation': '删除对话',
   'Archive conversation': '归档对话',
   'Archived conversations': '已归档对话',
@@ -625,6 +636,7 @@ const zhCN: Record<string, string> = {
     '仅在本会话内实际运行时记录时间；历史对话没有这项数据',
   'Token count': 'Token',
   Context: '上下文',
+  Price: '价格',
   TPS: '生成速度',
   TTFT: '首字延迟',
   'Tokens used in this conversation': '本对话已用 Token',
@@ -719,6 +731,8 @@ const zhCN: Record<string, string> = {
   'Leave Goal Mode': '退出目标模式',
   'Use Subagent Mode': '使用子智能体模式',
   'Leave Subagent Mode': '退出子智能体模式',
+  'Use Plugin Mode': '使用插件模式',
+  'Leave Plugin Mode': '退出插件模式',
   'Let the agent see and operate this Windows desktop. Screenshots, clicks and keystrokes are not asked for one by one. Plan Mode still cannot use it.':
     '允许代理查看并操作这台 Windows 桌面。截图、点击和按键不再逐次询问。计划模式仍然不能使用。',
   'Using the computer': '正在操作电脑',
@@ -1818,6 +1832,16 @@ const zhCN: Record<string, string> = {
   'Search plugins…': '搜索插件…',
   'Search skills…': '搜索技能…',
   'Sort by': '排序方式',
+  'View options': '视图选项',
+  'Group by': '分组方式',
+  'By workspace': '按工作区',
+  'By workspace tree': '按工作区树',
+  'Single list': '单列表',
+  'Manual order': '手动排序',
+  'Filter sessions': '筛选会话',
+  'Hide archived': '隐藏已归档',
+  'All conversations (show archived)': '全部对话（显示已归档）',
+  'Archived only': '仅显示已归档',
   Stars: '星标',
   'Recently updated': '最近更新',
   Name: '名称',
@@ -1948,6 +1972,7 @@ export function translate(text: string, language: AppLanguage): string {
     if (text === 'Period All') return 'All time'
     return text
   }
+  if (Object.hasOwn(zhCN, text)) return zhCN[text]
   const compacting = /^Compacting context \((manual|threshold|overflow)\)…$/.exec(text)
   if (compacting) {
     const reasons: Record<string, string> = {
@@ -2007,8 +2032,7 @@ export function translate(text: string, language: AppLanguage): string {
     }
     return `${activity[1]} ${units[activity[2]]}`
   }
-  const translation = zhCN[text]
-  return translation ?? text
+  return text
 }
 
 export function useT() {

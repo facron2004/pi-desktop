@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Command as CommandIcon } from 'lucide-react'
 import type { AppLanguage, PiCommand } from '@shared/types'
 import { appCommandName } from '../lib/app-commands'
-import { COMMAND_SOURCE } from '../lib/command-source'
+import { COMMAND_SOURCE, commandIcon } from '../lib/command-source'
 import { useT } from '../lib/i18n'
 
 interface CommandPaletteProps {
@@ -66,7 +66,7 @@ export function CommandPalette({
         <div className="palette__list">
           {commands.map((command, index) => {
             const meta = COMMAND_SOURCE[command.source] ?? COMMAND_SOURCE.extension
-            const Icon = meta.Icon
+            const Icon = commandIcon(command)
             const desc = command.description ? t(command.description) : undefined
             const name = command.source === 'app' && language === 'zh-CN'
               ? appCommandName(command.name, language)
@@ -85,7 +85,7 @@ export function CommandPalette({
                 onClick={() => onSelect(command)}
                 title={tooltip}
               >
-                <span className="palette__icon">
+                <span className="palette__icon" data-source={command.source}>
                   <Icon size={12} />
                 </span>
                 <span className="palette__name">{name}</span>

@@ -1120,3 +1120,42 @@ test('safeRemoteValue strips hidden reasoning from snapshots and live deltas', (
   assert.equal(snapshot.content[1]?.text, 'visible answer')
   assert.equal(delta.assistantMessageEvent.contentIndex, 0)
 })
+
+test('remote SSE streams coalesce token deltas and flush before structural events', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-remote-sse-coalesce-'))
+  const stateFile = path.join(userData, 'remote-access.json')
+  const device = { id: 'phone-1', name: 'Phone', pairedAt: 1, tokenHash: 'a'.repeat(64) }
+  writeFileSync(stateFile, JSON.stringify({ enabled: true, devices: [device] }))
+  const workspace = { id: 'workspace-1', path: path.join(userData, 'workspace') }
+  const service = new RemoteAccessService({
+    userData,
+    uiDirectory: userData,
+    settings: { get: () => ({ workspaces: [workspace] }) } as never,
+    supervisor: new EventEmitter() as never,
+    customInstructions: () => undefined
+  })
+  const stream = attachOpenTestStream(service, device, workspace)
+  const internals = service as unknown as {
+    enabled: boolean
+    onRuntimeEvent: (payload: { ownerId: string; event: unknown }) => void
+  }
+  internals.enabled = true
+  const file = path.join(workspace.path, 'session.jsonl')
+
+  try {
+    const token1 = { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Hello ' } }
+    const token2 = { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'world' } }
+    internals.onRuntimeEvent({ ownerId: file, event: token1 })
+    internals.onRuntimeEvent({ ownerId: file, event: token2 })
+    assert.equal(stream.writes.length, 0, 'token deltas batch until flush window or structural event')
+    assert.equal(token1.assistantMessageEvent.delta, 'Hello ', 'input token object is never mutated')
+
+    internals.onRuntimeEvent({ ownerId: file, event: { type: 'agent_settled', aborted: false } })
+    assert.equal(stream.writes.length, 2, 'coalesced token batch flushes ahead of structural settle')
+    assert.ok(stream.writes[0].includes('Hello world'))
+    assert.ok(stream.writes[1].includes('agent_settled'))
+  } finally {
+    await stream.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})

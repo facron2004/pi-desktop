@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { highlightCode, readHighlightedCodeSync } from '../lib/highlight'
 import { useIsDark } from '../lib/theme'
 
@@ -9,7 +9,7 @@ import { useIsDark } from '../lib/theme'
  * replaced once the highlighter is ready. Without a grammar the lines are
  * wrapped by hand, so the numbering still works.
  */
-export function CodeSnippet({
+export const CodeSnippet = memo(function CodeSnippet({
   code,
   language,
   className = '',
@@ -46,6 +46,7 @@ export function CodeSnippet({
     rendered.isDark === isDark
       ? rendered.html
       : null)
+  const plainLines = useMemo(() => (html ? [] : code.split('\n')), [code, html])
 
   useEffect(() => {
     if (!shouldHighlight || readHighlightedCodeSync(code, langKey, isDark) !== null) return
@@ -78,7 +79,7 @@ export function CodeSnippet({
 
   return (
     <pre className={`snippet snippet--plain ${className}`.trim()} ref={onHost}>
-      {code.split('\n').map((text, index) => (
+      {plainLines.map((text, index) => (
         // The same element is reused for the next block of code, so the line
         // itself is the stable part of the key and the index only keeps two
         // identical lines apart.
@@ -89,4 +90,4 @@ export function CodeSnippet({
       ))}
     </pre>
   )
-}
+})

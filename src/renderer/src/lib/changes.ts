@@ -127,15 +127,23 @@ export function collectChanges(items: ThreadItem[]): FileChange[] {
         ? item.args.content
         : existing?.content
 
+    if (existing) {
+      existing.kind = item.toolName
+      existing.edits += 1
+      if (diffs.length > 0) existing.diffs.push(...diffs)
+      existing.content = content
+      continue
+    }
+
     changes.set(path, {
       path,
       kind: item.toolName,
-      edits: (existing?.edits ?? 0) + 1,
+      edits: 1,
       // The cached array belongs to the node; the change gets its own list so
       // no caller can grow the cache by mutating it.
-      diffs: existing ? [...existing.diffs, ...diffs] : [...diffs],
+      diffs: diffs.slice(),
       content,
-      at: existing?.at ?? item.timestamp
+      at: item.timestamp
     })
   }
 

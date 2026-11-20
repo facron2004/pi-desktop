@@ -233,3 +233,36 @@ test('file-scoped Git operations accept filenames beginning with two dots', asyn
     cleanup()
   }
 })
+
+test('readStatus coalesces concurrent calls and detects detached HEAD', async () => {
+  const { root, git, cleanup } = fixture()
+  try {
+    writeFileSync(path.join(root, 'tracked.txt'), 'v1\n')
+    git('add', 'tracked.txt')
+    git('commit', '-qm', 'initial')
+    const headHash = git('rev-parse', 'HEAD').trim()
+    git('checkout', '--quiet', '--detach', headHash)
+    writeFileSync(path.join(root, 'tracked.txt'), 'v1\nv2\n')
+
+    const [a, b] = await Promise.all([readStatus(root), readStatus(root)])
+    assert.strictEqual(a, b, 'concurrent readStatus calls for the same repo root share in-flight work')
+    assert.equal(a.isRepo, true)
+    assert.equal(a.detached, true)
+    assert.equal(a.branch, undefined)
+    assert.equal(a.head, headHash.slice(0, 7))
+    assert.equal(a.files[0]?.worktree, 'M')
+    assert.equal(a.files[0]?.added, 1)
+
+    const preWriteRead = readStatus(root)
+    const staged = await stageFile(root, 'tracked.txt')
+    assert.equal(staged.ok, true)
+    const postWriteRead = readStatus(root)
+    assert.notStrictEqual(postWriteRead, preWriteRead, 'git writes evict pre-write in-flight status promises')
+    const [preResult, postResult] = await Promise.all([preWriteRead, postWriteRead])
+    assert.equal(preResult.isRepo, true)
+    assert.equal(postResult.files[0]?.staged, true)
+    assert.equal(postResult.files[0]?.worktree, ' ')
+  } finally {
+    cleanup()
+  }
+})

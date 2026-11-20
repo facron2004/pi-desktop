@@ -239,10 +239,14 @@ export interface ForkTarget {
 
 /** What the app shell is asked to show in the inspector. */
 export interface InspectorRequest {
-  tab?: 'changes' | 'files'
+  tab?: 'changes' | 'files' | 'browser' | 'images'
   /** A file to open, optionally at a line. */
   file?: string
   line?: number
+  /** An absolute http(s) URL to load in the Browser page. */
+  url?: string
+  /** An absolute image path to select in the Images page. */
+  image?: string
 }
 
 export interface PiState {
@@ -431,6 +435,32 @@ export interface SessionHydrationResult {
   messages: AgentMessage[]
   /** True when messages are only the bounded tail of a larger session file. */
   historyTruncated: boolean
+}
+
+/** A conversation the tray's right-click popup offers to open. */
+export interface TrayConversation {
+  /** Stable key used to find the conversation when the item is clicked. */
+  key: string
+  /** Short display title (session name or first prompt), already truncated. */
+  title: string
+  /** True while the agent is actively working in this conversation. */
+  isStreaming: boolean
+}
+
+/** Labels the tray popup renders, localised in the main process. */
+export interface TrayPopupLabels {
+  show: string
+  running: string
+  recent: string
+  quit: string
+  empty: string
+}
+
+/** Everything the frameless tray popup needs to draw itself. */
+export interface TrayPopupState {
+  running: TrayConversation[]
+  recent: TrayConversation[]
+  labels: TrayPopupLabels
 }
 
 /** A conversation renamed in the main process, pushed so the UI can re-read it. */
@@ -778,6 +808,14 @@ export interface ToolApproval {
   cwd?: string
 }
 
+export type SidebarGroupBy = 'workspace' | 'tree' | 'flat'
+export type SidebarSortBy = 'manual' | 'updated'
+export type SidebarArchiveFilter = 'hidden' | 'all' | 'archived'
+
+export const SIDEBAR_GROUP_MODES: readonly SidebarGroupBy[] = ['workspace', 'tree', 'flat']
+export const SIDEBAR_SORT_MODES: readonly SidebarSortBy[] = ['manual', 'updated']
+export const SIDEBAR_ARCHIVE_FILTERS: readonly SidebarArchiveFilter[] = ['hidden', 'all', 'archived']
+
 export interface AppSettings {
   workspaces: Workspace[]
   /**
@@ -797,6 +835,12 @@ export interface AppSettings {
    * registered and shows up despite being listed here.
    */
   hiddenProjects?: string[]
+  /** How the sidebar groups its rows; defaults to one row per workspace. */
+  sidebarGroupBy?: SidebarGroupBy
+  /** Manual order uses `projectOrder`; updated sorts by newest activity. */
+  sidebarSortBy?: SidebarSortBy
+  /** Which archived conversations the sidebar lists. */
+  sidebarArchiveFilter?: SidebarArchiveFilter
   /** The conversation that was open in a project, by project path. */
   lastSessions?: Record<string, string>
   /** Absolute path to a custom `pi` executable or CLI script. */
@@ -843,6 +887,11 @@ export interface AppSettings {
   externalChatFolderHistory?: string[]
   /** Default location to open files and folders: 'vscode' | 'cursor' | 'windsurf' | 'system'. */
   defaultFileOpener?: string
+  /**
+   * Where a link in the conversation opens: 'external' (the OS default
+   * browser) or 'internal' (the app's own Browser page).
+   */
+  urlOpenTarget?: 'external' | 'internal'
   /** Agent environment on Windows: 'windows' | 'wsl'. */
   agentEnvironment?: string
   /** Integrated terminal shell: 'powershell' | 'cmd' | 'gitbash' | 'wsl'. */
@@ -946,6 +995,8 @@ export interface VersionItemStatus {
   current: string
   latest?: string
   hasUpdate: boolean
+  /** Size of the release installer, when the check could read it. */
+  installerBytes?: number
   error?: string
 }
 
@@ -958,6 +1009,10 @@ export interface AppUpdateProgress {
   version: string
   stage: 'downloading' | 'installing'
   percent: number
+  /** Bytes already written to the staging file. */
+  transferredBytes?: number
+  /** Size of the installer being downloaded. */
+  totalBytes?: number
 }
 
 /** Progress of the development Pi CLI upgrade while npm is running. */
@@ -1096,6 +1151,12 @@ export interface PiDesktopBridge {
      * menu bar instead of drifting back to a hard-coded default.
      */
     setTheme(theme: 'dark' | 'light', colors?: { color: string; symbolColor: string }): Promise<void>
+    /**
+     * Disable the native title-bar controls while a full-window layer (a modal
+     * or lightbox) covers the app, so a click on its scrim cannot close or
+     * maximize the window underneath. Restore them when the layer unmounts.
+     */
+    setWindowControlsEnabled(enabled: boolean): Promise<void>
     /** Query the font families installed on the operating system. */
     getSystemFonts(): Promise<string[]>
     /**
@@ -1120,6 +1181,27 @@ export interface PiDesktopBridge {
      * whichever was last on screen.
      */
     onNotificationOpen(handler: (payload: { sessionKey: string }) => void): () => void
+  }
+  tray: {
+    /** Publish the conversations the right-click menu should list (renderer → main). */
+    setConversations(conversations: TrayConversation[]): void
+    /** The reader picked a conversation in the tray menu (main → renderer). */
+    onOpenConversation(handler: (payload: { key: string }) => void): () => void
+  }
+  /** Bridge used only by the frameless tray popup window. */
+  trayPopup: {
+    /** Fetch the current list once; the popup loads fresh on every open. */
+    getState(): Promise<TrayPopupState>
+    /** Live updates while the popup is open. */
+    onState(handler: (state: TrayPopupState) => void): () => void
+    /** Report rendered height so the main process can size the frameless window. */
+    setHeight(height: number): void
+    /** Actions the popup's rows trigger. */
+    openConversation(key: string): void
+    showWindow(): void
+    quit(): void
+    /** The popup should close (e.g. Escape). */
+    close(): void
   }
   dialog: {
     pickDirectory(defaultPath?: string): Promise<string | null>

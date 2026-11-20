@@ -1,10 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Archive,
   ArrowDown,
   ArrowUp,
+  Check,
   Clock,
+  Download,
   Ellipsis,
   Folder,
   FolderEdit,
@@ -22,22 +24,42 @@ import {
   Trash2,
   X
 } from 'lucide-react'
-import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
-import type { AppLanguage, ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from '@shared/types'
-import { formatDateTime, formatRelativeTime } from '../lib/format'
+import type { AppLanguage, AppUpdateProgress, ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from '@shared/types'
+import { formatBytes, formatDateTime, formatRelativeTime } from '../lib/format'
 import { normalisePathKey, samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
+import { filterByArchive, flatSessions, projectDepths, sortByMode } from '../lib/sidebar-view'
 import { liveConversationRows, type ConversationRow } from '../lib/live-sessions'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Popover } from './Popover'
 import { SidebarTip, SIDEBAR_TIP_ID, useHoverTip, type SidebarTipRow } from './SidebarTip'
 import { PiLogo } from './PiLogo'
-import { ProjectIconPicker } from './ProjectIconPicker'
 import { projectIconColor, projectIconEmoji } from '../lib/project-icons'
+import { subscribeAvailableAppUpdate, type AvailableAppUpdate } from '../lib/app-update'
+
+/** A lighter funnel for the project view menu; lucide's list-filter reads too heavy at 14px. */
+function ViewFilterIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M2.5 3.5h11l-4.2 5v3.7l-2.6 1.3V8.5l-4.2-5Z"
+        fill="currentColor"
+        fillOpacity="0.14"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+const ProjectIconPicker = lazy(() =>
+  import('./ProjectIconPicker').then((m) => ({ default: m.ProjectIconPicker }))
+)
 import {
   projectIndicator,
   sessionIndicator,
@@ -59,9 +81,14 @@ import '../styles/sidebar-workspace.css'
 
 const MIN_WIDTH = 200
 const MAX_WIDTH = 460
+/** The update ring: radius 10 inside a 24-unit viewBox. */
+const UPDATE_RING_CIRCUMFERENCE = 2 * Math.PI * 10
 const SESSION_PREVIEW_LIMIT = 5
+const SESSION_PAGE_SIZE = 50
 const INITIAL_CONVERSATION_SEARCH_RESULTS = 50
 const CONVERSATION_SEARCH_RESULTS_PAGE = 50
+const INITIAL_CONTENT_SEARCH_RESULTS = 50
+const CONTENT_SEARCH_RESULTS_PAGE = 50
 
 interface AttentionSummary {
   attentionKeys: Set<string>
@@ -181,24 +208,46 @@ export const Sidebar = memo(function Sidebar({
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const draftId = useAppStore((state) => state.draftId)
   const statusPhase = useAppStore((state) => state.status.phase)
-  const liveRows = useAppStore(
-    useShallow((state) =>
-      liveConversationRows(state.sessions, state.threads, state.workspace?.path)
-    )
+  const threadsMetaVersion = useAppStore((state) => state.threadsMetaVersion)
+  const sessionNotices = useAppStore((state) => state.sessionNotices)
+  const liveRows = useMemo(
+    () => liveConversationRows(sessions, useAppStore.getState().threads, workspace?.path),
+    [sessions, threadsMetaVersion, workspace?.path]
   )
   const archivedSessions = useAppStore((state) => state.settings.archivedSessions)
   const workspacesSetting = useAppStore((state) => state.settings.workspaces)
   const hiddenProjects = useAppStore((state) => state.settings.hiddenProjects)
   const projectOrder = useAppStore((state) => state.settings.projectOrder)
+  const sidebarGroupBy = useAppStore((state) => state.settings.sidebarGroupBy ?? 'workspace')
+  const sidebarSortBy = useAppStore((state) => state.settings.sidebarSortBy ?? 'manual')
+  const sidebarArchiveFilter = useAppStore((state) => state.settings.sidebarArchiveFilter ?? 'hidden')
   const pinnedSessionsSetting = useAppStore((state) => state.settings.pinnedSessions)
   const language = useAppStore((state) => state.settings.language ?? 'en')
+  const [appUpdate, setAppUpdate] = useState<AvailableAppUpdate | null>(null)
+  // The foot's update control downloads in place: the ring around the glyph
+  // is the install progress, and the card carries the versions.
+  const [updateDownloading, setUpdateDownloading] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState<AppUpdateProgress | null>(null)
+  const [updateError, setUpdateError] = useState('')
+  const updateVersionRef = useRef<string | undefined>(undefined)
+  const updateSupported = useAppStore((state) => state.info?.appUpdateSupported !== false)
+  // The card is anchored by hand rather than through `useHoverTip`: its rows
+  // change while the download runs, and the card must show the live percent.
+  const [updateTipAnchor, setUpdateTipAnchor] = useState<HTMLElement | null>(null)
   // A folded project draws one mark for all of its chats. An expanded project
   // keeps the dot for an answer, a failure or a waiting dialog the reader has
   // not opened, because its conversation row can sit below the fold. Track the
-  // non-idle thread states as a compact signature so streaming deltas never
-  // re-render the sidebar.
-  const attentionSignature = useAppStore((state) =>
-    buildAttentionSignature(state.sessions, state.threads, state.workspace?.path, state.sessionNotices)
+  // non-idle thread states via `threadsMetaVersion` so streaming deltas never
+  // scan threads or re-render the sidebar.
+  const attentionSignature = useMemo(
+    () =>
+      buildAttentionSignature(
+        sessions,
+        useAppStore.getState().threads,
+        workspace?.path,
+        sessionNotices
+      ),
+    [sessions, threadsMetaVersion, workspace?.path, sessionNotices]
   )
   const archivedFiles = useMemo(
     () => new Set(archivedSessions ?? []),
@@ -226,8 +275,12 @@ export const Sidebar = memo(function Sidebar({
     needle: '',
     count: INITIAL_CONVERSATION_SEARCH_RESULTS
   })
+  const [contentHitWindow, setContentHitWindow] = useState({
+    query: '',
+    count: INITIAL_CONVERSATION_SEARCH_RESULTS
+  })
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set())
-  const [expandedLists, setExpandedLists] = useState<Set<string>>(() => new Set())
+  const [expandedLimits, setExpandedLimits] = useState<Record<string, number>>({})
   const [searchOpen, setSearchOpen] = useState(false)
   const searchDialogRef = useRef<HTMLElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -249,6 +302,64 @@ export const Sidebar = memo(function Sidebar({
   const recentsRef = useRef<HTMLDivElement | null>(null)
   // One card serves the whole project list: only one row can be hovered.
   const projectTip = useHoverTip<{ path: string; title: string; rows: SidebarTipRow[] }>()
+
+  useEffect(() => subscribeAvailableAppUpdate(setAppUpdate), [])
+
+  useEffect(() => {
+    return window.pi.app.onAppUpdateProgress((progress) => {
+      if (!updateVersionRef.current || progress.version !== updateVersionRef.current) return
+      setUpdateProgress(progress)
+    })
+  }, [])
+
+  const startAppUpdate = async () => {
+    if (!appUpdate || updateDownloading) return
+    if (!updateSupported) {
+      const result = await window.pi.app.openReleasePage().catch((error: unknown) => ({
+        success: false,
+        error: String(error)
+      }))
+      if (!result.success) setUpdateError(result.error || 'Update failed. Please try again.')
+      return
+    }
+    updateVersionRef.current = appUpdate.latest
+    setUpdateDownloading(true)
+    setUpdateError('')
+    setUpdateProgress({ version: appUpdate.latest, stage: 'downloading', percent: 0 })
+    try {
+      const result = await window.pi.app.installAppUpdate(appUpdate.latest)
+      if (!result.success) throw new Error(result.error || 'Update failed. Please try again.')
+      setUpdateProgress({ version: appUpdate.latest, stage: 'installing', percent: 100 })
+    } catch (error) {
+      setUpdateError(error instanceof Error ? error.message : String(error))
+      setUpdateDownloading(false)
+      setUpdateProgress(null)
+      updateVersionRef.current = undefined
+    }
+  }
+
+  const updatePercent = updateProgress
+    ? Math.min(100, Math.max(0, Math.round(updateProgress.percent)))
+    : 0
+  // Before the download starts the size comes from the release check; while it
+  // runs the progress events carry the exact asset size.
+  const updateInstallerBytes = updateProgress?.totalBytes ?? appUpdate?.bytes
+  // What the ring cannot say: the installer size and how far the download has
+  // come. Nothing else belongs in this card.
+  const getUpdateTip = () => {
+    if (!appUpdate) return { title: '', rows: [] as SidebarTipRow[] }
+    const progress = updateError
+      ? t('Update failed')
+      : updateDownloading
+        ? `${updatePercent}%`
+        : '0%'
+    const rows: SidebarTipRow[] = [
+      { label: t('Installer size'), value: formatBytes(updateInstallerBytes) || '—' },
+      { label: t('Download progress'), value: progress }
+    ]
+    return { title: `v${appUpdate.latest}`, rows }
+  }
+  const updateTipContent = updateTipAnchor && appUpdate ? getUpdateTip() : null
 
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus()
@@ -360,7 +471,18 @@ export const Sidebar = memo(function Sidebar({
   // slower question, so it is asked separately and debounced.
   const contentSearch = useSessionSearch(trimmedQuery, sessions.length > 0)
   // Archived conversations are hidden from every list, including full-text hits.
-  const contentHits = contentSearch.hits.filter((hit) => !archivedFiles.has(hit.file))
+  const contentHits = useMemo(
+    () => contentSearch.hits.filter((hit) => !archivedFiles.has(hit.file)),
+    [contentSearch.hits, archivedFiles]
+  )
+  const contentHitLimit =
+    contentHitWindow.query === trimmedQuery
+      ? contentHitWindow.count
+      : INITIAL_CONTENT_SEARCH_RESULTS
+  const visibleContentHits = useMemo(
+    () => contentHits.slice(0, contentHitLimit),
+    [contentHits, contentHitLimit]
+  )
   const showContentSearch =
     sessions.length > 0 &&
     trimmedQuery.length >= MIN_SESSION_SEARCH_LENGTH &&
@@ -416,8 +538,8 @@ export const Sidebar = memo(function Sidebar({
     [sessions]
   )
   const listed = useMemo(
-    () => [...liveRows, ...diskRows].filter((session) => !archivedFiles.has(session.file)),
-    [liveRows, diskRows, archivedFiles]
+    () => filterByArchive([...liveRows, ...diskRows], archivedFiles, sidebarArchiveFilter),
+    [liveRows, diskRows, archivedFiles, sidebarArchiveFilter]
   )
 
   const projects = useMemo(() => {
@@ -447,8 +569,19 @@ export const Sidebar = memo(function Sidebar({
     if (missing.length > 0) void updateSettings({ projectOrder: [...order, ...missing] })
   }, [projects, projectOrder, updateSettings])
 
-  const ordered = useMemo(() => sortProjects(projects), [projects])
+  const ordered = useMemo(
+    () => sortByMode(sortProjects(projects), sidebarSortBy),
+    [projects, sidebarSortBy]
+  )
+  // Tree grouping indents a project by the number of workspace folders that
+  // contain it; the flat list has no project rows at all.
+  const projectDepthsById = useMemo(
+    () => (sidebarGroupBy === 'tree' ? projectDepths(ordered) : new Map<string, number>()),
+    [ordered, sidebarGroupBy]
+  )
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null)
+  // A drag from manual mode must not keep reordering the newest-first view.
+  useEffect(() => setOrderOverride(null), [sidebarSortBy])
   const [draggingPath, setDraggingPath] = useState<string | null>(null)
   const [dropLineTop, setDropLineTop] = useState<number | null>(null)
   const dragPath = useRef<string | null>(null)
@@ -505,6 +638,15 @@ export const Sidebar = memo(function Sidebar({
   const projectlessSessions = useMemo(
     () => listed.filter((session) => !session.cwd && !pinned.has(session.file) && matches(session, needle)),
     [listed, pinned, needle]
+  )
+
+  // Single list: every non-pinned conversation, from projects and from chats
+  // without one, in one newest-first column with no project rows in between.
+  const flatList = useMemo(
+    () => sidebarGroupBy === 'flat'
+      ? flatSessions(listed.filter((session) => !pinned.has(session.file) && matches(session, needle)))
+      : [],
+    [sidebarGroupBy, listed, pinned, needle]
   )
 
   const projectSearchResults = useMemo(
@@ -607,7 +749,7 @@ export const Sidebar = memo(function Sidebar({
     project: Project<ConversationRow>,
     event: React.PointerEvent<HTMLButtonElement>
   ) => {
-    if (event.button !== 0 || needle) return
+    if (event.button !== 0 || needle || sidebarSortBy !== 'manual') return
     // Renaming happens in an input inside the row; selecting its text is not a
     // drag.
     if ((event.target as HTMLElement).closest('input, textarea, [contenteditable="true"]')) return
@@ -1038,17 +1180,94 @@ export const Sidebar = memo(function Sidebar({
 
         <div className="sidebar__section sidebar__projects">
           <div className="sidebar__section-head">
-            <span>{t('Projects')}</span>
-            <button
-              aria-label={t('New project')}
-              title={t('New project')}
-              onClick={() => openProjectDialog({ mode: 'create' })}
-            >
-              <Plus size={15} strokeWidth={1.5} />
-            </button>
+            <span>{t(sidebarGroupBy === 'flat' ? 'Chats' : 'Projects')}</span>
+            <div className="sidebar__section-actions no-drag">
+              <Popover
+                placement="bottom"
+                align="right"
+                className="sidebar-view-menu"
+                renderTrigger={({ open, toggle }) => (
+                  <button
+                    className="sidebar__section-action"
+                    aria-label={t('View options')}
+                    title={t('View options')}
+                    aria-expanded={open}
+                    data-active={open}
+                    onClick={(event) => toggle(event)}
+                  >
+                    <ViewFilterIcon size={14} />
+                  </button>
+                )}
+              >
+                {(close) => {
+                  const radio = (label: string, active: boolean, onSelect: () => void) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className="popover__item"
+                      role="menuitemradio"
+                      aria-checked={active}
+                      onClick={() => { close(); onSelect() }}
+                    >
+                      <span className="popover__item-text">{t(label)}</span>
+                      {active ? <Check size={13} /> : null}
+                    </button>
+                  )
+                  return (
+                    <div className="view-option-menu" role="menu" aria-label={t('View options')}>
+                      <div className="popover__label">{t('Group by')}</div>
+                      {radio('By workspace', sidebarGroupBy === 'workspace', () => {
+                        void updateSettings({ sidebarGroupBy: 'workspace' })
+                      })}
+                      {radio('By workspace tree', sidebarGroupBy === 'tree', () => {
+                        void updateSettings({ sidebarGroupBy: 'tree' })
+                      })}
+                      {radio('Single list', sidebarGroupBy === 'flat', () => {
+                        void updateSettings({ sidebarGroupBy: 'flat' })
+                      })}
+                      <div className="popover__divider" role="separator" />
+                      <div className="popover__label">{t('Sort by')}</div>
+                      {radio('Manual order', sidebarSortBy === 'manual', () => {
+                        void updateSettings({ sidebarSortBy: 'manual' })
+                      })}
+                      {radio('Recently updated', sidebarSortBy === 'updated', () => {
+                        void updateSettings({ sidebarSortBy: 'updated' })
+                      })}
+                      <div className="popover__divider" role="separator" />
+                      <div className="popover__label">{t('Filter sessions')}</div>
+                      {radio('Hide archived', sidebarArchiveFilter === 'hidden', () => {
+                        void updateSettings({ sidebarArchiveFilter: 'hidden' })
+                      })}
+                      {radio('All conversations (show archived)', sidebarArchiveFilter === 'all', () => {
+                        void updateSettings({ sidebarArchiveFilter: 'all' })
+                      })}
+                      {radio('Archived only', sidebarArchiveFilter === 'archived', () => {
+                        void updateSettings({ sidebarArchiveFilter: 'archived' })
+                      })}
+                    </div>
+                  )
+                }}
+              </Popover>
+              {sidebarGroupBy === 'flat' ? null : (
+                <button
+                  className="sidebar__section-action"
+                  aria-label={t('New project')}
+                  title={t('New project')}
+                  onClick={() => openProjectDialog({ mode: 'create' })}
+                >
+                  <Plus size={15} strokeWidth={1.5} />
+                </button>
+              )}
+            </div>
           </div>
 
-          {ordered.length === 0 ? (
+          {sidebarGroupBy === 'flat' ? (
+            flatList.length === 0 ? (
+              <div className="sidebar__empty">{t('No conversations yet.')}</div>
+            ) : (
+              <div className="session-list">{renderSessions(flatList)}</div>
+            )
+          ) : ordered.length === 0 ? (
             <div className="sidebar__empty">{t('No project selected yet.')}</div>
           ) : (
             <div className="project-tree">
@@ -1071,19 +1290,23 @@ export const Sidebar = memo(function Sidebar({
                 const projectIndex = shown.findIndex((item) => samePath(item.path, project.path))
                 const active = Boolean(workspace && samePath(workspace.path, project.path))
                 const expanded = Boolean(needle) || !collapsedProjects.has(project.path)
-                const showAll = Boolean(needle) || expandedLists.has(project.path)
+                const expandedLimit = needle
+                  ? projectSessions.length
+                  : expandedLimits[project.path] ?? SESSION_PREVIEW_LIMIT
+                const allVisible = Boolean(needle) || expandedLimit >= projectSessions.length
                 const activeKey = activeSessionFile ?? draftId
-                const visibleSessions = showAll || projectSessions.length <= SESSION_PREVIEW_LIMIT
-                  ? projectSessions
-                  : [
-                      ...projectSessions.slice(0, SESSION_PREVIEW_LIMIT),
-                      ...projectSessions
-                        .slice(SESSION_PREVIEW_LIMIT)
-                        .filter(
-                          (session) =>
-                            session.file === activeKey || attentionKeys.has(session.file)
-                        )
-                    ]
+                const visibleSessions =
+                  allVisible || projectSessions.length <= expandedLimit
+                    ? projectSessions
+                    : [
+                        ...projectSessions.slice(0, expandedLimit),
+                        ...projectSessions
+                          .slice(expandedLimit)
+                          .filter(
+                            (session) =>
+                              session.file === activeKey || attentionKeys.has(session.file)
+                          )
+                      ]
                 const iconTone = projectIconColor(project.iconColor)
                 const emoji = projectIconEmoji(project.icon)
                 const projectMark = projectIndicators.get(normalisePathKey(project.path)) ?? 'idle'
@@ -1112,6 +1335,7 @@ export const Sidebar = memo(function Sidebar({
                     className="project"
                     key={project.path || 'unknown'}
                     data-path={project.path}
+                    data-depth={projectDepthsById.get(normalisePathKey(project.path)) ?? 0}
                     data-active={active}
                     data-dragging={draggingPath != null && samePath(draggingPath, project.path)}
                     data-expanded={expanded}
@@ -1229,16 +1453,18 @@ export const Sidebar = memo(function Sidebar({
                             )}
                           >
                             {() => (
-                              <ProjectIconPicker
-                                icon={emoji}
-                                color={iconTone}
-                                onPick={(next, colour) => {
-                                  void setProjectIcon(project, next, colour)
-                                }}
-                                onReset={() => {
-                                  void setProjectIcon(project, undefined, 'neutral')
-                                }}
-                              />
+                              <Suspense fallback={null}>
+                                <ProjectIconPicker
+                                  icon={emoji}
+                                  color={iconTone}
+                                  onPick={(next, colour) => {
+                                    void setProjectIcon(project, next, colour)
+                                  }}
+                                  onReset={() => {
+                                    void setProjectIcon(project, undefined, 'neutral')
+                                  }}
+                                />
+                              </Suspense>
                             )}
                           </Popover>
                         </div>
@@ -1268,11 +1494,7 @@ export const Sidebar = memo(function Sidebar({
                                     ? t('Unread')
                                     : t('Running')
                             }
-                          >
-                            {projectRowIndicator === 'running' ? (
-                              <Loader2 size={12} strokeWidth={1.6} className="spin" aria-hidden="true" />
-                            ) : null}
-                          </span>
+                          />
                         ) : null}
                         <div className="project__buttons">
                           <Popover
@@ -1365,7 +1587,7 @@ export const Sidebar = memo(function Sidebar({
                                 className="popover__item"
                                 type="button"
                                 role="menuitem"
-                                disabled={Boolean(needle) || projectIndex <= 0}
+                                disabled={Boolean(needle) || sidebarSortBy !== 'manual' || projectIndex <= 0}
                                 onClick={() => {
                                   close()
                                   moveProject(project, -1)
@@ -1378,7 +1600,7 @@ export const Sidebar = memo(function Sidebar({
                                 className="popover__item"
                                 type="button"
                                 role="menuitem"
-                                disabled={Boolean(needle) || projectIndex < 0 || projectIndex >= shown.length - 1}
+                                disabled={Boolean(needle) || sidebarSortBy !== 'manual' || projectIndex < 0 || projectIndex >= shown.length - 1}
                                 onClick={() => {
                                   close()
                                   moveProject(project, 1)
@@ -1426,18 +1648,27 @@ export const Sidebar = memo(function Sidebar({
                         {renderSessions(visibleSessions)}
                         {!needle &&
                         projectSessions.length > SESSION_PREVIEW_LIMIT &&
-                        (showAll || visibleSessions.length < projectSessions.length) ? (
+                        (allVisible || visibleSessions.length < projectSessions.length) ? (
                           <button
                             className="project__show-more"
-                            aria-expanded={showAll}
-                            onClick={() => setExpandedLists((current) => {
-                              const next = new Set(current)
-                              if (next.has(project.path)) next.delete(project.path)
-                              else next.add(project.path)
-                              return next
+                            aria-expanded={allVisible}
+                            onClick={() => setExpandedLimits((current) => {
+                              const currentLimit = current[project.path] ?? SESSION_PREVIEW_LIMIT
+                              if (currentLimit >= projectSessions.length) {
+                                const next = { ...current }
+                                delete next[project.path]
+                                return next
+                              }
+                              return {
+                                ...current,
+                                [project.path]: Math.min(
+                                  projectSessions.length,
+                                  currentLimit + SESSION_PAGE_SIZE
+                                )
+                              }
                             })}
                           >
-                            {showAll ? t('Show less') : t('Show more')}
+                            {allVisible ? t('Show less') : t('Show more')}
                           </button>
                         ) : null}
                       </div>
@@ -1449,7 +1680,7 @@ export const Sidebar = memo(function Sidebar({
           )}
         </div>
 
-        {projectlessSessions.length > 0 ? (
+        {sidebarGroupBy !== 'flat' && projectlessSessions.length > 0 ? (
           <div className="sidebar__section">
             <div className="sidebar__section-head">
               <span>{t('Chats')}</span>
@@ -1471,16 +1702,62 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       <div className="sidebar__foot">
-        <button
-          type="button"
-          className="sidebar__foot-btn"
-          onClick={onOpenSettings}
-          title={t('Settings')}
-        >
-          <Settings size={15} strokeWidth={1.6} />
-          <span>{t('Settings')}</span>
-        </button>
+        <div className="sidebar__foot-row">
+          <button
+            type="button"
+            className="sidebar__foot-btn"
+            onClick={onOpenSettings}
+            title={t('Settings')}
+          >
+            <Settings size={15} strokeWidth={1.6} />
+            <span>{t('Settings')}</span>
+          </button>
+          {appUpdate ? (
+            <button
+              type="button"
+              className="sidebar__update-btn"
+              data-state={
+                updateError
+                  ? 'error'
+                  : updateDownloading
+                    ? updateProgress?.stage ?? 'downloading'
+                    : 'idle'
+              }
+              aria-label={t(updateSupported ? 'Download update' : 'Open download page')}
+              aria-describedby={updateTipAnchor ? SIDEBAR_TIP_ID : undefined}
+              aria-disabled={updateDownloading || undefined}
+              onMouseEnter={(event) => setUpdateTipAnchor(event.currentTarget)}
+              onMouseLeave={() => setUpdateTipAnchor(null)}
+              onFocus={(event) => setUpdateTipAnchor(event.currentTarget)}
+              onBlur={() => setUpdateTipAnchor(null)}
+              onClick={() => void startAppUpdate()}
+            >
+              <span className="sidebar__update-mark" aria-hidden="true">
+                <svg className="sidebar__update-ring" viewBox="0 0 24 24">
+                  <circle className="sidebar__update-ring-track" cx="12" cy="12" r="10" />
+                  <circle
+                    className="sidebar__update-ring-fill"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    strokeDasharray={UPDATE_RING_CIRCUMFERENCE}
+                    strokeDashoffset={UPDATE_RING_CIRCUMFERENCE * (1 - updatePercent / 100)}
+                  />
+                </svg>
+                <Download size={13} strokeWidth={1.8} />
+              </span>
+            </button>
+          ) : null}
+        </div>
       </div>
+
+      {updateTipAnchor && updateTipContent ? (
+        <SidebarTip
+          anchor={updateTipAnchor}
+          title={updateTipContent.title}
+          rows={updateTipContent.rows}
+        />
+      ) : null}
 
       {pendingRemove ? (
         <ConfirmDialog
@@ -1747,7 +2024,28 @@ export const Sidebar = memo(function Sidebar({
                 {contentSearch.status === 'searching' ? (
                   <div className="session-search__state">{t('Searching…')}</div>
                 ) : contentHits.length > 0 ? (
-                  <div className="search-dialog__text-hits">{renderContentHits(contentHits)}</div>
+                  <>
+                    <div className="search-dialog__text-hits">
+                      {renderContentHits(visibleContentHits)}
+                    </div>
+                    {visibleContentHits.length < contentHits.length ? (
+                      <button
+                        type="button"
+                        className="search-dialog__more"
+                        onClick={() =>
+                          setContentHitWindow((current) => ({
+                            query: trimmedQuery,
+                            count:
+                              (current.query === trimmedQuery
+                                ? current.count
+                                : INITIAL_CONTENT_SEARCH_RESULTS) + CONTENT_SEARCH_RESULTS_PAGE
+                          }))
+                        }
+                      >
+                        {t('Show more')}
+                      </button>
+                    ) : null}
+                  </>
                 ) : (
                   <div className="session-search__state">{t('No matches in conversation text')}</div>
                 )}

@@ -1192,13 +1192,13 @@ export class SessionSupervisor extends EventEmitter {
   }
 
   private async acquireSessionFileLock(file: string, ownerId: string): Promise<HeldSessionFileLock | undefined> {
-    if (!existsSync(file) && (!path.isAbsolute(file) || !existsSync(path.dirname(file)))) return undefined
     const key = canonicalSessionFile(file)
     const held = this.sessionFileLocks.get(key)
     if (held) {
       if (held.ownerId === ownerId) return held
       throw new SessionFileLockError('This conversation is already open in another Pi Desktop process.')
     }
+    if (!existsSync(file) && (!path.isAbsolute(file) || !existsSync(path.dirname(file)))) return undefined
 
     const lock: HeldSessionFileLock = { ownerId, release: async () => {} }
     try {

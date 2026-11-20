@@ -39,11 +39,11 @@
   position: relative;
   display: grid;
   grid-template-columns:
-    minmax(0px, min(var(--sidebar-track), calc(100vw - 480px - 2 * var(--shell-inset))))
+    minmax(0px, min(var(--sidebar-track), calc(100% - 480px)))
     minmax(480px, 1fr);
   grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
   height: 100%;
-  padding: 0 var(--shell-inset) var(--shell-inset);
+  padding-left: var(--shell-inset);
   background: var(--chrome-bg);
   transition: --sidebar-track 320ms var(--ease);
 }
@@ -51,25 +51,14 @@
 /* 3-column layout when drawer is open and docked */
 .app[data-drawer='open'][data-inspector='docked'] {
   grid-template-columns:
-    minmax(0px, min(var(--sidebar-track), calc(100vw - 480px - var(--drawer-w) - 2 * var(--shell-inset))))
+    minmax(0px, min(var(--sidebar-track), calc(100% - 480px - var(--drawer-w))))
     minmax(400px, 1fr)
     var(--drawer-w);
 }
 
 .app[data-sidebar='collapsed'] > .main {
   border-left: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-}
-
-/* When drawer is docked, middle main panel adjusts its borders & corners */
-.app[data-drawer='open'][data-inspector='docked'] > .main {
-  border-radius: 0;
-  border-right: 0;
-}
-
-.app[data-sidebar='collapsed'][data-drawer='open'][data-inspector='docked'] > .main {
-  border-radius: var(--r-lg) 0 0 var(--r-lg);
-  border-left: 1px solid var(--border-subtle);
+  border-top-left-radius: var(--r-lg);
 }
 
 .inspector-scrim {
@@ -124,17 +113,75 @@
   gap: var(--sp-1);
 }
 
+/* The sidebar toggle matches the tools-panel corner toggle: same 30px box,
+   same medium radius and the same accent bubble while its panel is open. */
 .app-menu__button {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: var(--ctl-sm);
+  width: var(--toolpanel-tab-h);
+  height: var(--toolpanel-tab-h);
   padding: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   color: var(--text-muted);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
-.app-menu__button:hover:not(:disabled),
+/* The sidebar outline is permanent; only the direction arrow inside it
+   fades in once the pointer reaches the control. */
+.app-menu__toggle-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.app-menu__toggle-glyph {
+  grid-area: 1 / 1;
+  transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease);
+}
+
+/* Both arrows wait off-stage until the pointer arrives. */
+.app-menu__toggle-glyph--closed,
+.app-menu__toggle-glyph--open {
+  opacity: 0;
+}
+
+.app-menu__toggle-glyph--closed {
+  transform: translateX(-6px);
+}
+
+.app-menu__toggle-glyph--open {
+  transform: translateX(6px);
+}
+
+/* Open sidebar: hover reveals the arrow that offers to close it. A click
+   mutes this until the pointer leaves, so the arrow does not reappear under a
+   resting cursor. */
+.app-menu__button:not([data-hover-muted='true']):hover[data-active='true'] .app-menu__toggle-glyph--open,
+.app-menu__button:focus-visible[data-active='true'] .app-menu__toggle-glyph--open {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* Closed sidebar: hover reveals the arrow that offers to open it. */
+.app-menu__button:not([data-hover-muted='true']):hover:not([data-active='true']) .app-menu__toggle-glyph--closed,
+.app-menu__button:focus-visible:not([data-active='true']) .app-menu__toggle-glyph--closed {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-menu__toggle-glyph {
+    transition: none;
+  }
+}
+
+.app-menu__button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
 .app-menu__trigger:hover,
 .app-menu__trigger[aria-expanded='true'] {
   background: var(--sidebar-hover);
@@ -302,8 +349,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border-subtle);
   border-left: 1px solid var(--border-subtle);
-  border-bottom: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg) 0 0 var(--r-lg);
+  border-top-left-radius: var(--r-lg);
   color: var(--sidebar-text);
   font-family: var(--font-sidebar);
   overflow: hidden;
@@ -475,6 +521,31 @@ transition: background var(--dur-fast) var(--ease);
   -webkit-app-region: no-drag;
 }
 
+.sidebar .sidebar-view-menu {
+  min-width: 0;
+  width: min(228px, calc(var(--sidebar-w) - 24px));
+  padding: 3px;
+  -webkit-app-region: no-drag;
+}
+
+/* The view menu carries three short groups; tighter rows keep it from
+   dominating a short window. */
+.view-option-menu .popover__label {
+  padding: 5px 9px 2px;
+  font-size: var(--text-2xs);
+  line-height: 1.3;
+}
+
+.view-option-menu .popover__item {
+  min-height: 25px;
+  padding: 0 9px;
+  font-size: var(--text-xs);
+}
+
+.view-option-menu .popover__divider {
+  margin: 3px 5px;
+}
+
 .sidebar__notice {
   padding: var(--sp-3) var(--sp-3);
   font-size: var(--text-xs);
@@ -567,10 +638,9 @@ transition: background var(--dur-fast) var(--ease);
   color: var(--sidebar-muted);
 }
 
-.sidebar__section-head button {
-  position: absolute;
-  right: 4px;
-  top: -3px;
+.sidebar__section-head > button,
+.sidebar__section-actions button {
+  position: relative;
   display: grid;
   place-items: center;
   width: 24px;
@@ -581,12 +651,26 @@ transition: background var(--dur-fast) var(--ease);
 transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 
-.sidebar__section-head:hover button,
-.sidebar__section-head:focus-within button {
+/* The view menu and New project share the section head's one hover slot. */
+.sidebar__section-actions {
+  position: absolute;
+  right: 4px;
+  top: -3px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar__section-head:hover > button,
+.sidebar__section-head:focus-within > button,
+.sidebar__section-head:hover .sidebar__section-actions button,
+.sidebar__section-head:focus-within .sidebar__section-actions button {
   opacity: 1;
 }
 
-.sidebar__section-head button:hover {
+.sidebar__section-head > button:hover,
+.sidebar__section-actions button:hover,
+.sidebar__section-actions button[data-active='true'] {
   background: transparent;
   color: var(--sidebar-text);
 }
@@ -613,13 +697,25 @@ transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(
 }
 
 body.is-project-dragging,
-body.is-project-dragging * {
+body.is-project-dragging .sidebar,
+body.is-project-dragging .sidebar * {
   cursor: grabbing !important;
   user-select: none;
 }
 
 .project:has(.session-item) + .project {
   margin-top: var(--sp-3);
+}
+
+/* Tree grouping: a project nested under another workspace folder sits one
+   step in, and its conversations follow it, without a second tree widget. */
+.project[data-depth='1'] { --project-indent: 12px; }
+.project[data-depth='2'] { --project-indent: 24px; }
+.project[data-depth='3'] { --project-indent: 36px; }
+.project[data-depth='4'] { --project-indent: 48px; }
+.project[data-depth] > .project__row,
+.project[data-depth] > .session-list {
+  margin-left: var(--project-indent, 0px);
 }
 
 .project__row {
@@ -632,12 +728,6 @@ transition: background var(--dur-fast) var(--ease);
 
 .project__row:hover {
   background: var(--sidebar-hover);
-}
-
-/* A project row only expands its conversation list; it is not a selection
-   target and must not paint the same rounded "bubble" as the active chat. */
-.project[data-active='true'] > .project__row {
-  background: transparent;
 }
 
 .project[data-dragging='true'] > .project__row {
@@ -686,7 +776,7 @@ transition: background var(--dur-fast) var(--ease);
 .project[data-running='true'] .project__name {
   --project-running-pulse-color: #fff;
   color: var(--project-running-pulse-color);
-  animation: project-running-pulse 2s ease-in-out infinite;
+  animation: project-running-pulse 3s ease-in-out infinite;
 }
 
 :root[data-theme='light'] .project[data-running='true'] .project__name {
@@ -695,17 +785,12 @@ transition: background var(--dur-fast) var(--ease);
 
 @keyframes project-running-pulse {
   0%,
-  70%,
   100% {
     opacity: 1;
   }
 
-  80% {
-    opacity: 0.35;
-  }
-
-  90% {
-    opacity: 1;
+  50% {
+    opacity: 0.45;
   }
 }
 
@@ -1105,6 +1190,83 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--sidebar-text);
 }
 
+/* The app-update control sits beside Settings: a download glyph inside a
+   ring that fills as the installer arrives. The versions and the current
+   phase live in the hover card, because the foot has no room for a second
+   line of text. */
+.sidebar__foot-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.sidebar__foot-row .sidebar__foot-btn {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.sidebar__update-btn {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: var(--ctl-md);
+  height: var(--ctl-md);
+  padding: 0;
+  border-radius: var(--r-full);
+  color: var(--amber);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.sidebar__update-btn:hover,
+.sidebar__update-btn:focus-visible {
+  background: var(--amber-soft);
+}
+
+.sidebar__update-btn[aria-disabled='true'] {
+  cursor: default;
+}
+
+.sidebar__update-btn[data-state='error'] {
+  color: var(--status-danger);
+}
+
+.sidebar__update-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+}
+
+.sidebar__update-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.sidebar__update-ring-track {
+  fill: none;
+  stroke: var(--border-subtle);
+  stroke-width: 2;
+}
+
+/* Nothing is downloading yet: the ring is only a quiet frame. */
+.sidebar__update-btn[data-state='idle'] .sidebar__update-ring-track {
+  stroke: var(--amber-soft);
+}
+
+.sidebar__update-ring-fill {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke-dashoffset var(--dur-base) linear;
+}
+
 .desk-page {
   flex: 1 1 auto;
   min-width: 0;
@@ -1131,11 +1293,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   min-width: 0;
   min-height: 0;
   background: var(--bg);
-  /* The menu strip above is the top of the shell: the column has no rule
-     under it, only the sides and the bottom that close the panel. */
-  border-right: 1px solid var(--border-subtle);
-  border-bottom: 1px solid var(--border-subtle);
-  border-radius: 0 var(--r-lg) var(--r-lg) 0;
   overflow: hidden;
   transition: border-radius 320ms var(--ease);
 }
@@ -1841,7 +1998,6 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
-  scroll-behavior: smooth;
   /* Keep the reading position stable when a tool body above the viewport
      grows; the browser's anchored overflow handles the shift. */
   overflow-anchor: auto;
@@ -2080,6 +2236,11 @@ transition: background var(--dur-fast) var(--ease);
   animation: rise var(--dur-slow) var(--ease);
 }
 
+.turn:not([data-live='true']) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+
 @keyframes rise {
   from {
     opacity: 0;
@@ -2219,10 +2380,15 @@ transition: background var(--dur-fast) var(--ease);
 }
 
 .user-msg__time {
-  font-size: var(--text-2xs);
+  font-size: var(--text-disclaimer);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   margin-right: var(--sp-1);
+  /* The action row hangs off the bubble, so a short prompt gives it a few
+     characters of width — and the CJK date then wraps into a stack of
+     "10月 / 26日 / 10:57" lines. One moment, one line: the row grows left
+     into the stream's empty space instead of squeezing the timestamp. */
+  white-space: nowrap;
 }
 
 /* A prompt still on its way to Pi says so without waiting for a hover: the
@@ -2241,8 +2407,10 @@ transition: background var(--dur-fast) var(--ease);
   align-items: center;
   gap: 5px;
   margin-right: var(--sp-1);
-  font-size: var(--text-2xs);
+  font-size: var(--text-disclaimer);
   color: var(--amber);
+  /* Same row, same rule: the label must not wrap inside a short bubble. */
+  white-space: nowrap;
 }
 
 .user-msg__pending::before {
@@ -2266,8 +2434,8 @@ transition: background var(--dur-fast) var(--ease);
 
 .user-msg__actions .ghost-btn {
   flex: 0 0 auto;
-  width: var(--ctl-sm);
-  height: var(--ctl-sm);
+  width: 22px;
+  height: 22px;
   padding: 0;
   justify-content: center;
   font-size: var(--text-2xs);
@@ -2697,8 +2865,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 /* The prompt behind a generated picture is context, not the result: it sits
    in the card's fold, above the pictures the call actually produced. */
 .tool__image-prompt {
-  padding: var(--sp-3) var(--sp-4);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--sp-3) var(--sp-4) 0;
 }
 
 .tool__image-prompt-label {
@@ -2721,18 +2888,15 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 /* A generated picture is the result of the call, so it stays on the reading
-   column instead of waiting behind the card's caret. */
+   column instead of waiting behind the card's caret. It has no surface of its
+   own: a gray band behind the picture reads as another bubble, and the rule
+   above it drew a second divider under a row that already has a head. */
 .tool__images {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
-  border-top: 1px solid var(--border-subtle);
-  background: var(--surface-raised);
-}
-
-:root[data-theme='light'] .tool__images {
-  background: var(--surface-sunken);
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  background: none;
 }
 
 .tool__image-item {
@@ -2740,8 +2904,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   display: inline-flex;
   border-radius: var(--r-md);
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-sunken);
+  border: 0;
+  background: none;
 }
 
 .tool__images .lightbox-trigger {
@@ -2755,11 +2919,13 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   background: transparent;
 }
 
+/* One picture gets a capped preview: the card is a glance at the result, and
+   the lightbox is where it is read at full size. */
 .tool__images[data-count='1'] .lightbox-trigger {
   width: auto;
   height: auto;
-  max-width: min(100%, 360px);
-  max-height: 360px;
+  max-width: min(100%, 300px);
+  max-height: 300px;
 }
 
 .tool__images .lightbox-trigger img {
@@ -2773,8 +2939,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .tool__images[data-count='1'] .lightbox-trigger img {
   width: auto;
   height: auto;
-  max-width: min(100%, 360px);
-  max-height: 360px;
+  max-width: min(100%, 300px);
+  max-height: 300px;
   object-fit: contain;
 }
 
@@ -3258,7 +3424,10 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   flex: 0 0 auto;
   min-width: 0;
   max-width: 100%;
-  padding: var(--sp-2) var(--sp-6) var(--sp-4);
+  /* The usage caption is the last line of the column and sits on the panel's
+     bottom border. Padding under it used to be 12px, which held both the
+     caption and the composer up off the floor. */
+  padding: var(--sp-2) var(--sp-6) 0;
   background: transparent;
 }
 
@@ -3402,6 +3571,28 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--text-secondary);
 }
 
+/* The source's own tint, the same one its badge wears: the glyph changes per
+   command, and the tile says which family that command came from. */
+.palette__icon[data-source='app'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.palette__icon[data-source='skill'] {
+  background: var(--violet-soft);
+  color: var(--violet);
+}
+
+.palette__icon[data-source='prompt'] {
+  background: var(--command-prompt-soft);
+  color: var(--command-prompt);
+}
+
+.palette__icon[data-source='extension'] {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
 .palette__name {
   flex: 0 0 auto;
   min-width: 0;
@@ -3456,8 +3647,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .palette__badge--prompt {
-  background: var(--blue-soft);
-  color: var(--blue);
+  background: var(--command-prompt-soft);
+  color: var(--command-prompt);
 }
 
 .palette__badge--app {
@@ -3703,12 +3894,12 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 /* The command chip lives inside the input, on the input's own first line:
-   [icon /command] argument… — the way the reference app reads it, not a
-   separate row floating above the box. */
+   [icon command] argument… — a soft tonal capsule aligned to the first
+   line's optical centre, removed with two Backspaces. */
 .composer__input-row {
   display: flex;
   align-items: flex-start;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   min-width: 0;
   padding: 0 var(--sp-4);
 }
@@ -3723,90 +3914,211 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .composer__command {
+  --command-tone: var(--accent);
+  --command-chip-h: calc(26px * var(--font-scale, 1));
+  --command-bg: color-mix(in oklab, var(--command-tone) 13%, var(--surface-raised));
+  --command-bg-hover: color-mix(in oklab, var(--command-tone) 18%, var(--surface-raised));
+  --command-bg-selected: color-mix(in oklab, var(--command-tone) 23%, var(--surface-raised));
+  --command-border: color-mix(in oklab, var(--command-tone) 24%, transparent);
+  --command-border-hover: color-mix(in oklab, var(--command-tone) 38%, transparent);
+  --command-border-selected: color-mix(in oklab, var(--command-tone) 68%, transparent);
+  --command-fg: color-mix(in oklab, var(--command-tone) 24%, var(--text-primary));
+  --command-icon: var(--command-tone);
+  --command-shadow: var(--border-specular);
+
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: 5px;
   flex: 0 0 auto;
-  max-width: 100%;
-  /* The chip shares the textarea's first line box: same top inset and the same
-     line height, so its label sits level with the argument beside it. */
-  height: var(--leading-composer);
-  margin: var(--sp-4) 0 0;
-  padding: 0 8px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--r-sm);
-  background: var(--surface-chrome);
-  color: var(--text-muted);
+  min-width: 0;
+  max-width: min(280px, 55%);
+  /* Keep the capsule's vertical centre on the textarea's first line box at
+     every font-scale preset, so the chip and argument read on one line. */
+  height: var(--command-chip-h);
+  margin: calc(var(--sp-4) + (var(--leading-composer) - var(--command-chip-h)) / 2) 0 0;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--command-border);
+  border-radius: var(--r-full);
+  background: var(--command-bg);
+  color: var(--command-fg);
+  box-shadow: var(--command-shadow);
   line-height: 1;
+  user-select: none;
+  cursor: default;
+  animation: command-chip-in var(--dur-fast) var(--ease);
   transition:
     border-color var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease),
-    box-shadow var(--dur-fast) var(--ease);
+    box-shadow var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+:root[data-theme='light'] .composer__command {
+  --command-bg: color-mix(in oklab, var(--command-tone) 8%, var(--surface-canvas));
+  --command-bg-hover: color-mix(in oklab, var(--command-tone) 12%, var(--surface-canvas));
+  --command-bg-selected: color-mix(in oklab, var(--command-tone) 16%, var(--surface-canvas));
+  --command-border: color-mix(in oklab, var(--command-tone) 18%, var(--border-subtle));
+  --command-border-hover: color-mix(in oklab, var(--command-tone) 30%, var(--border-default));
+  --command-border-selected: color-mix(in oklab, var(--command-tone) 62%, var(--border-strong));
+  --command-fg: color-mix(in oklab, var(--command-tone) 34%, var(--text-strong));
+  --command-icon: color-mix(in oklab, var(--command-tone) 86%, var(--text-strong));
+  --command-shadow:
+    0 1px 2px color-mix(in oklab, var(--text-strong) 4%, transparent),
+    var(--border-specular);
+}
+
+:root[data-theme='light'][data-tone='contrast'] .composer__command {
+  --command-border: color-mix(in oklab, var(--command-tone) 38%, var(--border-default));
+  --command-border-hover: color-mix(in oklab, var(--command-tone) 54%, var(--border-strong));
+  --command-fg: var(--text-primary);
+}
+
+:root:not([data-theme='light'])[data-tone='contrast'] .composer__command {
+  --command-border: color-mix(in oklab, var(--command-tone) 44%, var(--border-default));
+  --command-border-hover: color-mix(in oklab, var(--command-tone) 60%, var(--border-strong));
+  --command-fg: var(--text-primary);
+}
+
+.composer__command[data-source='skill'] {
+  --command-tone: var(--violet);
+}
+
+.composer__command[data-source='prompt'] {
+  --command-tone: var(--command-prompt);
+}
+
+.composer__command[data-source='extension'] {
+  --command-tone: var(--status-success);
+}
+
+.composer__command:hover {
+  border-color: var(--command-border-hover);
+  background: var(--command-bg-hover);
 }
 
 .composer__command[data-selected='true'] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  box-shadow: 0 0 0 2px var(--accent-line);
-  color: var(--text);
+  border-color: var(--command-border-selected);
+  background: var(--command-bg-selected);
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--command-tone) 28%, transparent),
+    var(--command-shadow);
 }
 
-.composer__command code {
+.composer__command-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--command-icon);
+}
+
+.composer__command-label {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* The shared mono stack starts with the app's CJK face: a bare Latin mono
-     list falls through to a serif CJK fallback for command names like /计划. */
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: 1;
 }
 
-/* Image generation lives in the composer: a reference tile and the mode label
-   inside the box, with the model and picture settings in the toolbar below. */
+.composer__command[data-script='cjk'] .composer__command-label {
+  font-family: var(--font-ui);
+  font-size: var(--text-small);
+  letter-spacing: 0;
+}
+
+.composer__command[data-script='ascii'] .composer__command-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-code-block);
+  letter-spacing: -0.015em;
+}
+
+@keyframes command-chip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer__command {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .composer__command {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    box-shadow: none;
+  }
+
+  .composer__command-icon {
+    color: CanvasText;
+  }
+
+  .composer__command[data-selected='true'] {
+    border-color: Highlight;
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+    box-shadow: none;
+  }
+}
+
+/* Image generation lives in the composer: a soft borderless reference tile at
+   the top, an inline sky-blue mode chip on the textarea's first line (removed
+   with two Backspaces), and quiet model + ratio/quality chips in the toolbar. */
 .composer__image-context {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4) 0;
+  padding: 14px var(--sp-4) 0;
 }
 
 .composer__image-refs {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
 }
 
 .composer__image-ref {
   position: relative;
-  width: 56px;
-  height: 56px;
+  width: 72px;
+  height: 72px;
   flex: 0 0 auto;
 }
 
 .composer__image-ref .lightbox-trigger {
   display: block;
-  width: 56px;
-  height: 56px;
-  border-radius: var(--r-sm);
+  width: 72px;
+  height: 72px;
+  border-radius: var(--r-lg);
   overflow: hidden;
 }
 
 .composer__image-ref .lightbox-trigger img {
-  width: 56px;
-  height: 56px;
+  width: 72px;
+  height: 72px;
   object-fit: cover;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
 }
 
 .composer__image-ref-remove {
   position: absolute;
-  top: -6px;
-  right: -6px;
+  top: -5px;
+  right: -5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--r-full);
@@ -3831,18 +4143,26 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  width: 56px;
-  height: 56px;
+  gap: 5px;
+  width: 72px;
+  height: 72px;
   padding: 0;
-  border: 1px dashed var(--border);
-  border-radius: var(--r-sm);
-  background: var(--surface-sunken);
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
+  background: color-mix(in oklab, var(--text-primary) 5%, var(--surface-raised));
   color: var(--text-tertiary);
-  font-size: var(--text-assist);
-  line-height: var(--leading-assist);
+  font-size: var(--text-small);
+  font-weight: var(--weight-ui);
+  line-height: 1.2;
   cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+:root[data-theme='light'] .composer__image-ref-add {
+  background: color-mix(in oklab, var(--text-primary) 4.5%, var(--surface-chrome));
 }
 
 .composer__image-ref-add:hover,
@@ -3856,58 +4176,125 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   cursor: default;
 }
 
+.composer__input--image {
+  min-height: 54px;
+}
+
 .composer__image-badge {
+  --image-tone: var(--image-mode);
+  --image-chip-h: calc(26px * var(--font-scale, 1));
+  --image-bg: color-mix(in oklab, var(--image-tone) 16%, var(--surface-raised));
+  --image-bg-hover: color-mix(in oklab, var(--image-tone) 22%, var(--surface-raised));
+  --image-bg-selected: color-mix(in oklab, var(--image-tone) 26%, var(--surface-raised));
+  --image-fg: color-mix(in oklab, var(--image-tone) 66%, var(--text-primary));
+  --image-icon: var(--image-tone);
+
   display: inline-flex;
   align-items: center;
-  align-self: flex-start;
-  gap: var(--sp-2);
-  min-height: 22px;
-  padding: 0 var(--sp-1);
-  border-radius: var(--r-xs);
-  color: var(--blue);
+  gap: 5px;
+  flex: 0 0 auto;
+  height: var(--image-chip-h);
+  margin: calc(var(--sp-4) + (var(--leading-composer) - var(--image-chip-h)) / 2) 0 0;
+  padding: 0 8px 0 7px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--image-bg);
+  color: var(--image-fg);
+  font-family: var(--font-ui);
   font-size: var(--text-body);
-  line-height: var(--leading-body);
   font-weight: var(--weight-medium);
-  transition: background var(--dur-fast) var(--ease);
+  line-height: 1;
+  user-select: none;
+  cursor: default;
+  animation: command-chip-in var(--dur-fast) var(--ease);
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+:root[data-theme='light'] .composer__image-badge {
+  --image-bg: color-mix(in oklab, var(--image-tone) 9%, var(--surface-canvas));
+  --image-bg-hover: color-mix(in oklab, var(--image-tone) 13%, var(--surface-canvas));
+  --image-bg-selected: color-mix(in oklab, var(--image-tone) 17%, var(--surface-canvas));
+  --image-fg: color-mix(in oklab, var(--image-tone) 84%, var(--text-strong));
+  --image-icon: var(--image-tone);
+}
+
+.composer__image-badge:hover {
+  background: var(--image-bg-hover);
 }
 
 .composer__image-badge[data-selected='true'] {
-  background: var(--blue-soft);
+  border-color: color-mix(in oklab, var(--image-tone) 64%, transparent);
+  background: var(--image-bg-selected);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--image-tone) 24%, transparent);
 }
 
-.composer__image-exit {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: none;
-  border-radius: var(--r-full);
-  background: transparent;
-  color: var(--blue);
-  opacity: 0.55;
-  cursor: pointer;
+.composer__image-badge-icon {
+  flex: 0 0 auto;
+  color: var(--image-icon);
 }
 
-.composer__image-exit:hover,
-.composer__image-exit:focus-visible {
-  opacity: 1;
-  background: var(--blue-soft);
+.composer__image-badge-label {
+  white-space: nowrap;
 }
 
-/* The image controls read as two compact pills beside the other composer
-   controls, not as a second form above the input. */
+@media (prefers-reduced-motion: reduce) {
+  .composer__image-badge {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .composer__image-ref-add,
+  .composer__image-badge {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+
+  .composer__image-badge-icon {
+    color: CanvasText;
+  }
+
+  .composer__image-badge[data-selected='true'] {
+    border-color: Highlight;
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+    box-shadow: none;
+  }
+}
+
+/* The image controls read as quiet inline controls beside permissions: the
+   model stays borderless at rest, and ratio/quality sit in a soft whisper pill
+   separated by a thin vertical hairline. */
 .composer__bar > .popover-wrap:has(.composer__image-chip.model-chip) {
   flex: 0 0 auto;
 }
 
 .composer__image-chip.model-chip {
+  height: var(--ctl-sm);
   gap: var(--sp-2);
   flex: 0 0 auto;
   max-width: 220px;
-  background: var(--bg-active);
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-sm);
+  background: transparent;
   color: var(--text-primary);
+  font-weight: var(--weight-ui);
+}
+
+.composer__image-chip--params.model-chip {
+  gap: 8px;
+  padding: 0 10px;
+  background: color-mix(in oklab, var(--text-primary) 6%, var(--surface-raised));
+}
+
+:root[data-theme='light'] .composer__image-chip--params.model-chip {
+  background: color-mix(in oklab, var(--text-primary) 4.5%, var(--surface-chrome));
 }
 
 .composer__image-chip.model-chip:hover,
@@ -3917,11 +4304,15 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .composer__image-chip svg {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
 .composer__image-chip-sep {
-  color: var(--text-faint);
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 1px;
+  height: 11px;
+  background: var(--border-strong);
 }
 
 .composer__image-model-list {
@@ -4627,13 +5018,19 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   grid-row: 2;
   min-width: 0;
   min-height: 0;
-  border: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-subtle);
   border-left: 1px solid var(--border-soft);
-  border-radius: 0 var(--r-lg) var(--r-lg) 0;
   background: var(--surface-canvas);
   overflow: hidden;
   container: tool-panel / inline-size;
   animation: tool-panel-in var(--dur-slow) var(--ease);
+}
+
+/* Folded panels stay mounted (the browser and the tabs live in here) but must
+   leave the grid. `display: flex` above would otherwise beat the hidden
+   attribute and keep a phantom column. */
+.tool-panel[hidden] {
+  display: none;
 }
 
 /* The panel's tools are peers, so they are a tab strip rather than a menu
@@ -4718,16 +5115,19 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   }
 }
 
-/* The terminal tab's content stays mounted behind the other tabs so its
-   processes survive a tab switch; only the active one is laid out. */
-.tool-panel__terminal {
+/* The terminal and the browser stay mounted behind the other tabs so a shell
+   and a loaded page survive a tab switch and folding the panel. Only the
+   active one is laid out. */
+.tool-panel__terminal,
+.tool-panel__browser {
   display: none;
   flex: 1 1 auto;
   min-height: 0;
   flex-direction: column;
 }
 
-.tool-panel__terminal[data-active] {
+.tool-panel__terminal[data-active],
+.tool-panel__browser[data-active] {
   display: flex;
 }
 
@@ -4831,7 +5231,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   /* Under the rule that closes the title bar, so the button sits on the same
      line as the controls of the header it stands in. */
   top: calc(var(--titlebar-h) + var(--panel-head-rule));
-  right: calc(var(--shell-inset) + var(--sp-5));
+  right: var(--sp-5);
   /* One fixed band matching the panel strip's own height, so the icon centres
      on the same line as the strip's maximize and page-action buttons. The band
      must never narrow to the panel's 46px header when the panel is up: the
@@ -4853,6 +5253,18 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .shell__panel-toggle .icon-btn {
   width: var(--toolpanel-tab-h);
   height: var(--toolpanel-tab-h);
+}
+
+/* The toggle is a switch, not a mode: an open panel must not read as an
+   accented selection, so the active state stays neutral and only hovers. */
+.shell__panel-toggle .icon-btn[data-active='true'] {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.shell__panel-toggle .icon-btn[data-active='true']:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .tool-panel__body {
@@ -4977,12 +5389,12 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .tool-panel--overlay {
   position: fixed;
   top: var(--titlebar-h);
-  right: var(--shell-inset);
-  bottom: var(--shell-inset);
+  right: 0;
+  bottom: 0;
   z-index: var(--z-drawer, 40);
-  width: min(var(--drawer-w, 420px), calc(100vw - 2 * var(--shell-inset))) !important;
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
+  width: min(var(--drawer-w, 420px), calc(100vw - var(--shell-inset))) !important;
+  border-top-color: var(--border);
+  border-top-left-radius: var(--r-lg);
   background: var(--surface-canvas);
   box-shadow: var(--shadow-lg);
 }
@@ -5586,6 +5998,24 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   opacity: 0.9;
 }
 
+/* A URL written inside backticks keeps the inline-code shape but is a link:
+   the mono face and the chip stay, the border becomes the link's underline. */
+.md a.md-link--url {
+  font-family: var(--font-mono);
+  font-size: var(--text-inline-code);
+  background: var(--bg-active);
+  padding: 1.5px var(--sp-2);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--accent);
+}
+
+.md a.md-link--url:hover {
+  background: var(--bg-hover);
+  color: var(--accent-hover);
+}
+
 .md a:hover,
 .md a:focus-visible,
 .md a:active {
@@ -5713,6 +6143,12 @@ transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--
   display: block;
   width: fit-content;
   min-width: 100%;
+  /* The UA stylesheet gives <code> its own `font-family: monospace`, which
+     wins over inheritance from <pre> — and on Windows that generic family
+     is NSimSun, a serif face. The highlighted text lives in here, so the
+     guarded mono stack (JetBrains Mono … Pi Desktop CJK … monospace) has to
+     be applied here too, not only on <pre>. */
+  font-family: var(--font-mono);
 }
 
 .md pre code {
@@ -5786,7 +6222,6 @@ transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--
   inset: 0;
   z-index: var(--z-modal);
   background: var(--scrim);
-  backdrop-filter: blur(3px);
   display: grid;
   place-items: center;
   padding: var(--sp-8) var(--sp-6);
@@ -6374,8 +6809,70 @@ animation: fade var(--dur-fast) var(--ease);
   border-radius: var(--r-sm);
 }
 
+/* Copied from the reference dialog: one light-gray rounded card, the bold
+   question at the top left, the gray explanation under it, an X in the
+   corner — and at the bottom right two filled chips, a white one to leave
+   it alone and a pale-red one with red ink to go through with it. No
+   outlines anywhere: the fill is the state. */
 .modal--narrow {
-  width: min(480px, 100%);
+  width: min(560px, 100%);
+  border-radius: 16px;
+  border-color: transparent;
+  background: var(--bg-hover);
+}
+
+.modal--narrow .modal__head {
+  align-items: flex-start;
+  padding: var(--sp-5) var(--sp-6) 0;
+  border-bottom: 0;
+}
+
+.modal--narrow .modal__title {
+  font-size: 18px;
+  font-weight: var(--weight-semibold);
+  line-height: 1.4;
+}
+
+.modal--narrow .modal__body {
+  padding: var(--sp-3) var(--sp-6) var(--sp-5);
+}
+
+.modal--narrow .modal__foot {
+  padding: 0 var(--sp-6) var(--sp-5);
+  border-top: 0;
+  background: transparent;
+}
+
+.modal--narrow .modal__foot .btn {
+  height: var(--ctl-md);
+  padding: 0 var(--sp-5);
+  border-color: transparent;
+  border-radius: var(--r-md);
+  font-weight: var(--weight-medium);
+}
+
+/* Cancel: the white chip on the gray card. */
+.modal--narrow .modal__foot .btn:not(.btn--danger) {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.modal--narrow .modal__foot .btn:not(.btn--danger):hover {
+  background: var(--bg-active);
+  color: var(--text-pure);
+}
+
+/* Delete: a pale-red wash with red ink — the tint carries the danger, not
+   a filled red button. */
+.modal--narrow .modal__foot .btn--danger,
+.modal--narrow .modal__foot .btn--danger:hover {
+  background: var(--red-soft);
+  border-color: transparent;
+  color: var(--red);
+}
+
+.modal--narrow .modal__foot .btn--danger:hover {
+  background: color-mix(in oklab, var(--red) 18%, transparent);
 }
 
 /* ------------------------------------------------------------------ *
@@ -6910,28 +7407,6 @@ kbd {
   white-space: nowrap;
 }
 
-.confirm {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-4);
-}
-
-.confirm__icon {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: var(--r-md);
-  flex: 0 0 auto;
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.confirm__icon[data-tone='danger'] {
-  background: var(--red-soft);
-  color: var(--red);
-}
-
 .confirm__body {
   margin: 0;
   font-size: var(--text-sm);
@@ -7155,43 +7630,12 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .tree__file-icon {
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 16px;
   width: 16px;
   color: var(--text-tertiary);
-}
-
-/* One hue per language family. A code file is blue, a script is amber, data
-   is green, styles are violet, and a picture is red — the same reading a
-   syntax-highlighted editor gives the same files. */
-.tree__file-icon[data-tone='ts'] {
-  color: var(--project-icon-blue);
-}
-
-.tree__file-icon[data-tone='js'] {
-  color: var(--status-warning);
-}
-
-.tree__file-icon[data-tone='json'] {
-  color: var(--status-success);
-}
-
-.tree__file-icon[data-tone='style'] {
-  color: var(--violet);
-}
-
-.tree__file-icon[data-tone='shell'] {
-  color: var(--status-success);
-}
-
-.tree__file-icon[data-tone='image'] {
-  color: var(--status-danger);
-}
-
-.tree__file-icon[data-tone='markdown'],
-.tree__file-icon[data-tone='plain'] {
-  color: var(--text-secondary);
 }
 
 .tree__change {
@@ -7351,16 +7795,25 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   flex: 0 0 auto;
 }
 
+/* The monogram keeps the code face, so TS and JS read as abbreviations
+   rather than two arbitrary capitals. */
+.file-icon__mark {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+/* One hue per family, theme-aware: code blue, script amber, data green,
+   styles violet, pictures red. The tree and the flat lists share it. */
 .tree__icon[data-tone='ts'] {
-  color: var(--blue);
+  color: var(--project-icon-blue);
 }
 
 .tree__icon[data-tone='js'] {
-  color: var(--accent);
+  color: var(--status-warning);
 }
 
 .tree__icon[data-tone='json'] {
-  color: var(--green);
+  color: var(--status-success);
 }
 
 .tree__icon[data-tone='style'] {
@@ -7368,15 +7821,19 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .tree__icon[data-tone='markdown'] {
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 .tree__icon[data-tone='shell'] {
-  color: var(--green);
+  color: var(--status-success);
 }
 
 .tree__icon[data-tone='image'] {
-  color: var(--red);
+  color: var(--status-danger);
+}
+
+.tree__icon[data-tone='plain'] {
+  color: var(--text-secondary);
 }
 
 .spin {
@@ -8309,7 +8766,7 @@ button:focus-visible,
   }
 
   .composer-wrap {
-    padding: 0 var(--sp-4) var(--sp-4);
+    padding: 0 var(--sp-4) 0;
   }
 
   .app[data-empty='true'] .composer-wrap {
@@ -8630,7 +9087,8 @@ button:focus-visible,
   }
 
   .project__remove,
-  .sidebar__section-head button,
+  .sidebar__section-head > button,
+  .sidebar__section-actions button,
   .titlebar > .icon-btn,
   .drawer__head > .icon-btn,
   .modal__head > .icon-btn,
@@ -9065,8 +9523,8 @@ button:focus-visible,
 .tool-panel--maximized {
   position: fixed;
   top: var(--titlebar-h);
-  right: var(--shell-inset);
-  bottom: var(--shell-inset);
+  right: 0;
+  bottom: 0;
   left: calc(var(--sidebar-track) + var(--shell-inset));
   /* The level of the panel itself, not above it: maximizing replaces the panel,
      it must not outrank the controls that operate it. At `--z-floating` the
@@ -9076,14 +9534,14 @@ button:focus-visible,
      paints over them at this level. */
   z-index: var(--z-drawer);
   width: auto !important;
-  border: 1px solid var(--border-default);
-  border-radius: var(--r-lg);
+  border-color: var(--border-default);
+  border-top-left-radius: var(--r-lg);
   box-shadow: var(--shadow-lg);
 }
 
 .app[data-drawer='open'][data-inspector='docked']:has(.tool-panel--maximized) {
   grid-template-columns:
-    minmax(0px, min(var(--sidebar-track), calc(100vw - 480px - 2 * var(--shell-inset))))
+    minmax(0px, min(var(--sidebar-track), calc(100% - 480px)))
     minmax(400px, 1fr)
     0px;
 }
@@ -9552,19 +10010,20 @@ button:focus-visible,
   color: var(--status-danger);
 }
 
+/* A word, not git's single letter: "M" beside a file icon read as one more
+   file glyph instead of a state. */
 .review-file__status {
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
   flex: 0 0 auto;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 3px;
-  border-radius: var(--r-xs);
+  height: 18px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-full);
   background: var(--bg-active);
   color: var(--text-tertiary);
-  font-family: var(--font-mono);
   font-size: var(--text-2xs);
   line-height: 1;
+  white-space: nowrap;
 }
 
 .review-file__status[data-kind='add'] {

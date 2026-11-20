@@ -25,6 +25,8 @@ const PAIR_ATTEMPT_WINDOW_MS = 60_000
 const MAX_PAIR_ATTEMPTS_PER_WINDOW = 8
 const REMOTE_STATE_SYNC_MS = 1_000
 const REMOTE_EVENT_STATE_CHECK_MS = 250
+const REMOTE_STREAM_BATCH_MS = 16
+const MAX_REMOTE_PENDING_EVENTS = 64
 export const MAX_PAIR_ATTEMPT_SOURCES = 256
 export const MAX_REMOTE_EVENT_STREAMS = 24
 const MAX_PAIR_BODY_BYTES = 64 * 1024
@@ -279,6 +281,8 @@ export class RemoteAccessService {
   // Keep only references needed to authorize active streams, not every session a phone browses.
   private readonly sessionRefs = new Map<string, SessionRef>()
   private readonly streams = new Set<EventStream>()
+  private readonly pendingEvents = new Map<string, PiEvent[]>()
+  private streamBatchTimer: ReturnType<typeof setTimeout> | undefined
   private stateSyncTimer: ReturnType<typeof setTimeout> | undefined
   private disposed = false
   private lastEventStateCheckAt = Number.NEGATIVE_INFINITY
@@ -386,6 +390,7 @@ export class RemoteAccessService {
     this.disposed = true
     if (this.stateSyncTimer) clearTimeout(this.stateSyncTimer)
     this.stateSyncTimer = undefined
+    this.clearPendingStreamEvents()
     await this.enqueueLifecycle(async () => {
       this.enabled = false
       await this.stopServer()
@@ -613,6 +618,7 @@ export class RemoteAccessService {
 
   private async stopServer(): Promise<void> {
     this.options.supervisor.off('event', this.onRuntimeEvent)
+    this.clearPendingStreamEvents()
     for (const stream of [...this.streams]) this.closeStream(stream)
     const server = this.server
     this.server = null
@@ -625,8 +631,90 @@ export class RemoteAccessService {
     })
   }
 
-  private readonly onRuntimeEvent = (payload: { ownerId: string; event: PiEvent }): void => {
-    const fileKey = pathKey(payload.ownerId)
+  private clearPendingStreamEvents(): void {
+    if (this.streamBatchTimer) {
+      clearTimeout(this.streamBatchTimer)
+      this.streamBatchTimer = undefined
+    }
+    this.pendingEvents.clear()
+  }
+
+  private scheduleStreamFlush(): void {
+    if (this.streamBatchTimer) return
+    this.streamBatchTimer = setTimeout(() => {
+      this.streamBatchTimer = undefined
+      const keys = [...this.pendingEvents.keys()]
+      for (const fileKey of keys) {
+        this.flushPendingStreamEvents(fileKey)
+      }
+    }, REMOTE_STREAM_BATCH_MS)
+    this.streamBatchTimer.unref?.()
+  }
+
+  private cloneRemoteEvent(event: PiEvent): PiEvent {
+    if (
+      event.type === 'message_update' &&
+      event.assistantMessageEvent &&
+      typeof event.assistantMessageEvent === 'object'
+    ) {
+      return {
+        ...event,
+        assistantMessageEvent: { ...(event.assistantMessageEvent as Record<string, unknown>) }
+      }
+    }
+    return { ...event }
+  }
+
+  private isCoalescableRemoteEvent(event: PiEvent): boolean {
+    if (event.type === 'message_delta' || event.type === 'tool_execution_update') return true
+    if (event.type === 'message_update') {
+      const sub = (event as { assistantMessageEvent?: { type?: string } }).assistantMessageEvent?.type
+      return sub === 'text_delta' || sub === 'thinking_delta' || sub === 'toolcall_delta'
+    }
+    return false
+  }
+
+  private tryCoalesceRemoteEvent(last: PiEvent, next: PiEvent): boolean {
+    if (last.type === 'message_delta' && next.type === 'message_delta') {
+      if (typeof last.delta === 'string' && typeof next.delta === 'string') {
+        ;(last as Record<string, unknown>).delta = last.delta + next.delta
+        return true
+      }
+      return false
+    }
+    if (last.type === 'message_update' && next.type === 'message_update') {
+      const lastSub = last.assistantMessageEvent as Record<string, unknown> | undefined
+      const nextSub = next.assistantMessageEvent as Record<string, unknown> | undefined
+      if (
+        lastSub &&
+        nextSub &&
+        lastSub.type === nextSub.type &&
+        lastSub.contentIndex === nextSub.contentIndex &&
+        (lastSub.type === 'text_delta' || lastSub.type === 'thinking_delta' || lastSub.type === 'toolcall_delta') &&
+        typeof lastSub.delta === 'string' &&
+        typeof nextSub.delta === 'string'
+      ) {
+        lastSub.delta = (lastSub.delta as string) + (nextSub.delta as string)
+        return true
+      }
+    }
+    return false
+  }
+
+  private flushPendingStreamEvents(fileKey: string): void {
+    const queue = this.pendingEvents.get(fileKey)
+    if (!queue || queue.length === 0) return
+    this.pendingEvents.delete(fileKey)
+    if (this.pendingEvents.size === 0 && this.streamBatchTimer) {
+      clearTimeout(this.streamBatchTimer)
+      this.streamBatchTimer = undefined
+    }
+    for (const event of queue) {
+      this.dispatchRuntimeEventToStreams(fileKey, event)
+    }
+  }
+
+  private dispatchRuntimeEventToStreams(fileKey: string, rawEvent: PiEvent): void {
     const matchingStreams = [...this.streams].filter((stream) => stream.fileKey === fileKey)
     if (!matchingStreams.length) return
 
@@ -654,7 +742,7 @@ export class RemoteAccessService {
     })
     if (!authorizedStreams.length) return
 
-    let event = payload.event
+    let event = rawEvent
     if (event.type === 'extension_ui_request') {
       if (!['select', 'confirm', 'input', 'editor'].includes(String(event.method))) return
       event = { type: 'remote_waiting_for_desktop' }
@@ -666,11 +754,59 @@ export class RemoteAccessService {
     }
   }
 
+  private readonly onRuntimeEvent = (payload: { ownerId: string; event: PiEvent }): void => {
+    if (this.streams.size === 0) return
+    const fileKey = pathKey(payload.ownerId)
+    let hasTargetStream = false
+    for (const stream of this.streams) {
+      if (stream.fileKey === fileKey) {
+        hasTargetStream = true
+        break
+      }
+    }
+    if (!hasTargetStream) return
+
+    if (!this.isCoalescableRemoteEvent(payload.event)) {
+      this.flushPendingStreamEvents(fileKey)
+      this.dispatchRuntimeEventToStreams(fileKey, payload.event)
+      return
+    }
+
+    let queue = this.pendingEvents.get(fileKey)
+    if (!queue) {
+      queue = []
+      this.pendingEvents.set(fileKey, queue)
+    }
+    if (payload.event.type === 'tool_execution_update' && payload.event.toolCallId) {
+      for (let i = queue.length - 1; i >= 0; i -= 1) {
+        const item = queue[i]
+        if (item.type === 'tool_execution_update' && item.toolCallId === payload.event.toolCallId) {
+          queue[i] = this.cloneRemoteEvent(payload.event)
+          this.scheduleStreamFlush()
+          return
+        }
+      }
+    }
+    const last = queue[queue.length - 1]
+    if (last && this.tryCoalesceRemoteEvent(last, payload.event)) {
+      this.scheduleStreamFlush()
+      return
+    }
+    if (queue.length >= MAX_REMOTE_PENDING_EVENTS) {
+      this.flushPendingStreamEvents(fileKey)
+      queue = []
+      this.pendingEvents.set(fileKey, queue)
+    }
+    queue.push(this.cloneRemoteEvent(payload.event))
+    this.scheduleStreamFlush()
+  }
+
   private closeStream(stream: EventStream): void {
     if (!this.streams.delete(stream)) return
     clearInterval(stream.heartbeat)
     if (![...this.streams].some((active) => active.fileKey === stream.fileKey)) {
       this.sessionRefs.delete(stream.fileKey)
+      this.pendingEvents.delete(stream.fileKey)
     }
     stream.response.end()
   }

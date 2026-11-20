@@ -26,6 +26,7 @@ import { RunStatusRow } from './RunStatusRow'
 import { AssistantMessage } from './conversation/AssistantMessage'
 import { RunSummary } from './conversation/RunSummary'
 import { ErrorNotice, ThreadErrorBanner } from './conversation/ErrorNotice'
+import { ThreadEnvStoreProvider, useThreadEnv } from './conversation/ThreadEnvContext'
 import { SessionRail } from './SessionRail'
 import { Popover } from './Popover'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -237,9 +238,10 @@ export const Thread = memo(function Thread() {
   const sessionKey = scrollKeyOf(activeSessionFile ?? draftId)
   const sessionKeyRef = useRef(sessionKey)
   sessionKeyRef.current = sessionKey
+  const settledDurationKey = run.settled ? run.durationMs : undefined
   const runDurationsMs = useMemo(
     () => readSessionTiming(sessionKey).runDurationsMs,
-    [sessionKey, items.length, run.durationMs]
+    [sessionKey, run.settled, settledDurationKey]
   )
   const previousClientKeyRef = useRef(clientKey)
   /** A conversation switch that still has to place the viewport. */
@@ -646,7 +648,7 @@ export const Thread = memo(function Thread() {
       const grew = clientHeight > previousClientHeight
       previousClientHeight = clientHeight
       if (stickRef.current && (shrank || isStreamingRef.current)) {
-        node.scrollTop = node.scrollHeight
+        node.scrollTo({ top: node.scrollHeight, behavior: 'instant' })
         previousScrollTopRef.current = node.scrollTop
         rememberScrollMemory(sessionKeyRef.current, node, FOLLOW_RANGE)
       } else if (stickRef.current && grew) {
@@ -1115,6 +1117,7 @@ export const Thread = memo(function Thread() {
             </button>
           </div>
         ) : null}
+        <ThreadEnvStoreProvider threadKey={sessionKey} workspacePath={workspacePath}>
         <SearchContext.Provider value={deferredSearchQuery}>
           {visibleTurns.map((turn, index) => {
             const turnIndex = firstVisibleTurn + index
@@ -1164,6 +1167,7 @@ export const Thread = memo(function Thread() {
             )
           })}
         </SearchContext.Provider>
+        </ThreadEnvStoreProvider>
 
         {visibleTurns.length === 0 && runOpen ? (
           <RunStatusRow
@@ -1360,7 +1364,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
   // The tail stays open only while this turn is the one still being written.
   // A finished turn, including every earlier stretch of a long run, folds.
   const liveTail = isLastTurn && !run.settled
-  const autoFoldProcess = useAppStore((state) => state.settings.autoFoldProcess !== false)
+  const { autoFoldProcess } = useThreadEnv()
   const processId = `turn-${turn.id}`
   const [manualProcessOpen, setManualProcessOpen] = useState(() => readProcessOpen(threadKey, processId))
   useEffect(() => {
@@ -1425,7 +1429,12 @@ const ThreadTurnView = memo(function ThreadTurnView({
   )
 
   return (
-    <section className="turn" data-turn={turn.id} data-session-turn={turn.user ? '' : undefined}>
+    <section
+      className="turn"
+      data-turn={turn.id}
+      data-session-turn={turn.user ? '' : undefined}
+      data-live={liveTail ? 'true' : undefined}
+    >
       {turn.user ? (
         <UserMessage
           item={turn.user}
@@ -1520,15 +1529,16 @@ const ThreadTurnView = memo(function ThreadTurnView({
                   {lastAssistant.model ? <span>{modelName(models, lastAssistant.model)}</span> : null}
                   {turnUsage ? (
                     <Popover
-                      trigger="hover"
                       placement="top"
                       align="left"
                       width={340}
                       className="usage-popover"
-                      renderTrigger={({ toggle }) => (
+                      renderTrigger={({ open, toggle }) => (
                         <button
                           type="button"
                           className="assistant__usage"
+                          data-active={open || undefined}
+                          aria-expanded={open}
                           onClick={toggle}
                           aria-label={t('Turn usage')}
                         >

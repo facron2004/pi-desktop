@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { execFile, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import type { AuthStatus } from '@shared/types'
@@ -381,12 +381,95 @@ export async function checkAuth(
   }
 }
 
+interface CachedPiVersion {
+  dev: bigint
+  ino: bigint
+  mtimeNs: bigint
+  size: bigint
+  version: string
+}
+
+const piVersionCache = new Map<string, CachedPiVersion>()
+
+function fileStamp(file: string): { dev: bigint; ino: bigint; mtimeNs: bigint; size: bigint } | undefined {
+  try {
+    const stats = statSync(file, { bigint: true })
+    return { dev: stats.dev, ino: stats.ino, mtimeNs: stats.mtimeNs, size: stats.size }
+  } catch {
+    return undefined
+  }
+}
+
+function readBundledPiPackageVersion(cliEntryPath: string): string | undefined {
+  if (!cliEntryPath) return undefined
+  const packageJsonPath = path.resolve(path.dirname(cliEntryPath), '..', '..', 'package.json')
+  const stamp = fileStamp(packageJsonPath)
+  if (!stamp) return undefined
+  const cached = piVersionCache.get(packageJsonPath)
+  if (
+    cached &&
+    cached.dev === stamp.dev &&
+    cached.ino === stamp.ino &&
+    cached.mtimeNs === stamp.mtimeNs &&
+    cached.size === stamp.size
+  ) {
+    return cached.version
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { name?: unknown; version?: unknown }
+    if (
+      parsed.name === '@earendil-works/pi-coding-agent' &&
+      typeof parsed.version === 'string' &&
+      /^\d+\.\d+\.\d+/.test(parsed.version.trim())
+    ) {
+      const version = parsed.version.trim()
+      piVersionCache.set(packageJsonPath, { ...stamp, version })
+      return version
+    }
+  } catch {
+    /* Fall back to running --version below. */
+  }
+  return undefined
+}
+
 /** Read the installed Pi version, used for the About panel. */
 export async function piVersion(
   customPiPath?: string,
   options: { allowDuringMaintenance?: boolean } = {}
 ): Promise<string | undefined> {
+  const launch = resolvePiLaunch(customPiPath)
+  if (launch.source === 'none') return undefined
+  if (launch.source === 'bundled') {
+    if (bundledMaintenanceDone && !options.allowDuringMaintenance) {
+      const ready = await waitForBundledMaintenance(bundledMaintenanceDone)
+      if (!ready) return undefined
+      return piVersion(customPiPath, options)
+    }
+    const fast = readBundledPiPackageVersion(launch.prefixArgs[0] ?? '')
+    if (fast) return fast
+  }
+
+  const targetFile = launch.prefixArgs[0] || launch.command
+  const stamp = targetFile ? fileStamp(targetFile) : undefined
+  const cacheKey = `${launch.command}\0${launch.prefixArgs.join('\0')}`
+  if (stamp) {
+    const cached = piVersionCache.get(cacheKey)
+    if (
+      cached &&
+      cached.dev === stamp.dev &&
+      cached.ino === stamp.ino &&
+      cached.mtimeNs === stamp.mtimeNs &&
+      cached.size === stamp.size
+    ) {
+      return cached.version
+    }
+  }
+
   const result = await runPiCli(['--version'], { customPiPath, ...options })
   const value = result.stdout.trim() || result.stderr.trim()
-  return value ? value.split('\n')[0] : undefined
+  const version = value ? value.split('\n')[0] : undefined
+  if (version && result.code === 0 && stamp) {
+    piVersionCache.set(cacheKey, { ...stamp, version })
+  }
+  return version
 }

@@ -1264,6 +1264,15 @@ sidebar — a conversation that is not mounted has nothing to scroll.
   `sans-serif` family (Noto Sans SC on this image). Do not put an explicit
   Microsoft YaHei family before it — that changes every CJK glyph. Code uses
   the bundled JetBrains Mono (OFL) in `src/renderer/src/assets/fonts/`.
+- **The font chosen in Appearance owns the whole line, Chinese included.**
+  `--font-cjk` is a local face whose `unicode-range` covers every CJK block, so
+  it claims all Chinese glyphs ahead of anything after it. That makes its
+  position a decision: never in front of the chosen font (or the picker changes
+  Latin only), and required in `--font-mono` after JetBrains Mono (Windows links
+  generic `monospace` to NSimSun). The UI stack does not carry the face at all —
+  `sans-serif` already links Chinese to a sans face. Build chosen stacks with
+  `uiFontStack()` in `src/renderer/src/lib/ui-font.ts`, never as an inline CSS
+  string, and keep `output/audit/ui-font-sweep.mjs` passing.
 - The four text sizes live in `src/shared/font-scale.ts` (12/14/15/16 against
   the 14px body). Stored legacy multipliers are normalized there; use that
   module instead of re-deriving the ratios in a component.

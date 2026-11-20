@@ -18,15 +18,22 @@ import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
 import { FeatureLoading } from './FeatureLoading'
-import { checkForAppUpdates, showAppUpdate } from '../lib/app-update'
+import {
+  checkForAppUpdates,
+  lastAppUpdateCheck,
+  noteAppUpdateCheck,
+  showAppUpdate,
+  subscribeAppUpdateCheck
+} from '../lib/app-update'
+import '../styles/appearance.css'
 
-const AboutSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.AboutSettings })))
-const AgentSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.AgentSettings })))
-const AppearanceSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.AppearanceSettings })))
-const GeneralSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.GeneralSettings })))
-const PersonalizationSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.PersonalizationSettings })))
-const ShortcutsSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.ShortcutsSettings })))
-const UsageSettings = lazy(() => import('./SettingsSections').then((m) => ({ default: m.UsageSettings })))
+const AboutSettings = lazy(() => import('./settings/AboutSettings').then((m) => ({ default: m.AboutSettings })))
+const AgentSettings = lazy(() => import('./settings/AgentSettings').then((m) => ({ default: m.AgentSettings })))
+const AppearanceSettings = lazy(() => import('./settings/AppearanceSettings').then((m) => ({ default: m.AppearanceSettings })))
+const GeneralSettings = lazy(() => import('./settings/GeneralSettings').then((m) => ({ default: m.GeneralSettings })))
+const PersonalizationSettings = lazy(() => import('./settings/PersonalizationSettings').then((m) => ({ default: m.PersonalizationSettings })))
+const ShortcutsSettings = lazy(() => import('./settings/ShortcutsSettings').then((m) => ({ default: m.ShortcutsSettings })))
+const UsageSettings = lazy(() => import('./settings/UsageSettings').then((m) => ({ default: m.UsageSettings })))
 const MemorySettings = lazy(() => import('./MemorySettings').then((m) => ({ default: m.MemorySettings })))
 const ArchivedSessionsSettings = lazy(() => import('./ArchivedSessionsSettings').then((m) => ({ default: m.ArchivedSessionsSettings })))
 const ModelsSettings = lazy(() => import('./models/ModelsSettings').then((m) => ({ default: m.ModelsSettings })))
@@ -116,11 +123,12 @@ export function SettingsDialog({
     [updateSettings]
   )
 
-  // The dialog owns the update readings, not the About page. Switching
-  // settings pages unmounts that page; an upgrade started there must survive
-  // the trip or the reader comes back to a blank version section (and could
-  // start the same upgrade twice).
-  const [updateStatus, setUpdateStatus] = useState<VersionCheckResult | null>(null)
+  // The full update reading lives in the shared module, not in a component:
+  // closing Settings, reopening it, or toggling a switch in between must not
+  // throw away the version the reader just checked for. Subscribing also picks
+  // up a check started from the menu bar or the sidebar while this dialog is up.
+  const [updateStatus, setUpdateStatus] = useState<VersionCheckResult | null>(lastAppUpdateCheck)
+  useEffect(() => subscribeAppUpdateCheck(setUpdateStatus), [])
   const [checkingUpdates, setCheckingUpdates] = useState(false)
   const [upgradingCli, setUpgradingCli] = useState(false)
   const [piCliProgress, setPiCliProgress] = useState<PiCliUpgradeProgress | null>(null)
@@ -137,6 +145,7 @@ export function SettingsDialog({
     setCheckingUpdates(true)
     try {
       const result = await (silent ? window.pi.app.checkUpdate() : checkForAppUpdates())
+      if (silent) noteAppUpdateCheck(result)
       setUpdateStatus(result)
     } catch {
       // The shared result card owns errors from a manual check.
@@ -154,6 +163,7 @@ export function SettingsDialog({
         showToast(t('Upgrade completed'))
         await refreshInfo()
         const result = await window.pi.app.checkUpdate()
+        noteAppUpdateCheck(result)
         setUpdateStatus(result)
       } else {
         showToast(res.error ? `${t('Upgrade failed')}: ${res.error}` : t('Upgrade failed'), 'error')

@@ -45,8 +45,10 @@ const BY_EXTENSION: Record<string, FileTone> = {
   jpeg: 'image',
   gif: 'image',
   webp: 'image',
+  bmp: 'image',
   svg: 'image',
-  ico: 'image'
+  ico: 'image',
+  avif: 'image'
 }
 
 const BY_NAME: Record<string, FileTone> = {
@@ -71,6 +73,11 @@ export function fileTone(name: string): FileTone {
   if (dot === -1) return 'plain'
   const extension = lower.slice(dot + 1)
   return Object.hasOwn(BY_EXTENSION, extension) ? BY_EXTENSION[extension] : 'plain'
+}
+
+/** The picture types the Images page can draw, aligned with `IMAGE_MIME` in main. */
+export function isImageName(name: string): boolean {
+  return fileTone(name) === 'image'
 }
 
 /** The grammar for a file, or an empty string when there is none. */

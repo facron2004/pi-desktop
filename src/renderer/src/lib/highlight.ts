@@ -199,6 +199,124 @@ let highlighterPromise: Promise<Highlighter> | null = null
  */
 const highlightCache = new HighlightCache()
 const resolvedHighlightCache = new ResolvedHighlightCache()
+const languageLoadPromises = new WeakMap<Highlighter, Map<Grammar, Promise<void>>>()
+
+const MAX_HIGHLIGHT_CHARS = 250_000
+const CHUNKED_HIGHLIGHT_LINE_THRESHOLD = 80
+const CHUNKED_HIGHLIGHT_LINES = 50
+const HIGHLIGHT_SLICE_BUDGET_MS = 10
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function nowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+}
+
+function yieldFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0)
+  })
+}
+
+async function loadGrammarOnce(highlighter: Highlighter, grammar: Grammar): Promise<void> {
+  if (highlighter.getLoadedLanguages().includes(grammar)) return
+  let map = languageLoadPromises.get(highlighter)
+  if (!map) {
+    map = new Map()
+    languageLoadPromises.set(highlighter, map)
+  }
+  const inFlight = map.get(grammar)
+  if (inFlight) return inFlight
+  const task = highlighter
+    .loadLanguage(grammar)
+    .then(() => undefined)
+    .catch(() => {
+      // A grammar that refuses to load is not worth breaking the block over.
+    })
+    .finally(() => {
+      if (map?.get(grammar) === task) map.delete(grammar)
+    })
+  map.set(grammar, task)
+  return task
+}
+
+function plainShikiHtml(code: string, isDark: boolean): string {
+  const theme = themeName(isDark)
+  const bg = isDark ? '#121212' : '#ffffff'
+  const fg = isDark ? '#dbd7caee' : '#393a34'
+  const lines = code.split(/\r?\n/)
+  const body = lines.map((line) => `<span class="line">${escapeHtml(line)}</span>`).join('\n')
+  return `<pre class="shiki ${theme}" style="background-color:${bg};color:${fg}" tabindex="0"><code>${body}</code></pre>`
+}
+
+function formatTokenLine(tokens: readonly { content: string; color?: string; fontStyle?: number }[]): string {
+  if (tokens.length === 0) return '<span class="line"></span>'
+  let inner = ''
+  for (const token of tokens) {
+    const styles: string[] = []
+    if (token.color) styles.push(`color:${token.color}`)
+    if (token.fontStyle) {
+      if (token.fontStyle & 1) styles.push('font-style:italic')
+      if (token.fontStyle & 2) styles.push('font-weight:bold')
+      if (token.fontStyle & 4) styles.push('text-decoration:underline')
+    }
+    const text = escapeHtml(token.content)
+    inner += styles.length ? `<span style="${styles.join(';')}">${text}</span>` : text
+  }
+  return `<span class="line">${inner}</span>`
+}
+
+async function highlightInChunks(
+  highlighter: Highlighter,
+  code: string,
+  lang: Grammar | typeof PLAIN,
+  theme: Theme
+): Promise<string> {
+  const lines = code.split(/\r?\n/)
+  if (lines.length <= CHUNKED_HIGHLIGHT_LINE_THRESHOLD) {
+    return highlighter.codeToHtml(code, { lang, theme })
+  }
+
+  let grammarState: ReturnType<Highlighter['getLastGrammarState']> | undefined
+  let bg = theme === DARK ? '#121212' : '#ffffff'
+  let fg = theme === DARK ? '#dbd7caee' : '#393a34'
+  let themeClass = theme
+  const lineHtml: string[] = []
+  let sliceStart = nowMs()
+
+  for (let start = 0; start < lines.length; start += CHUNKED_HIGHLIGHT_LINES) {
+    const chunk = lines.slice(start, start + CHUNKED_HIGHLIGHT_LINES).join('\n')
+    const result = highlighter.codeToTokens(chunk, {
+      lang,
+      theme,
+      ...(grammarState ? { grammarState } : {})
+    })
+    grammarState = result.grammarState
+    if (start === 0) {
+      if (result.bg) bg = result.bg
+      if (result.fg) fg = result.fg
+      if (result.themeName) themeClass = result.themeName as Theme
+    }
+    for (const row of result.tokens) {
+      lineHtml.push(formatTokenLine(row))
+    }
+    if (start + CHUNKED_HIGHLIGHT_LINES < lines.length && nowMs() - sliceStart >= HIGHLIGHT_SLICE_BUDGET_MS) {
+      await yieldFrame()
+      sliceStart = nowMs()
+    }
+  }
+
+  return `<pre class="shiki ${themeClass}" style="background-color:${bg};color:${fg}" tabindex="0"><code>${lineHtml.join('\n')}</code></pre>`
+}
 
 function getHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
@@ -283,40 +401,42 @@ export function readHighlightedCodeSync(code: string, language: string, isDark: 
   return resolvedHighlightCache.get(key) ?? null
 }
 
-export function highlightCode(code: string, language: string, isDark: boolean): Promise<string> {
+export function highlightCode(
+  code: string,
+  language: string,
+  isDark: boolean,
+  options?: { cache?: boolean }
+): Promise<string> {
+  const useCache = options?.cache !== false
   const key = highlightCacheKey(code, language, isDark)
   if (key !== undefined) {
     const html = resolvedHighlightCache.get(key)
     if (html !== undefined) return Promise.resolve(html)
   }
-  const cached = key === undefined ? undefined : highlightCache.get(key)
+  const cached = useCache && key !== undefined ? highlightCache.get(key) : undefined
   if (cached) return cached
+
+  if (code.length > MAX_HIGHLIGHT_CHARS) {
+    return Promise.resolve(plainShikiHtml(code, isDark))
+  }
 
   const pending = (async () => {
     const highlighter = await getHighlighter()
     const grammar = resolveHighlightLanguage(language)
 
-    if (grammar && !highlighter.getLoadedLanguages().includes(grammar)) {
-      try {
-        await highlighter.loadLanguage(grammar)
-      } catch {
-        // A grammar that refuses to load is not worth breaking the block over.
-      }
+    if (grammar) {
+      await loadGrammarOnce(highlighter, grammar)
     }
 
     const lang = grammar && highlighter.getLoadedLanguages().includes(grammar) ? grammar : PLAIN
-
-    const html = highlighter.codeToHtml(code, {
-      lang: lang as Grammar | typeof PLAIN,
-      theme: themeName(isDark)
-    })
-    if (key !== undefined) resolvedHighlightCache.set(key, code.length, html)
+    const html = await highlightInChunks(highlighter, code, lang, themeName(isDark))
+    if (useCache && key !== undefined) resolvedHighlightCache.set(key, code.length, html)
     return html
   })()
 
-  if (key !== undefined) {
+  if (useCache && key !== undefined) {
     highlightCache.set(key, code.length, pending)
-    pending.catch(() => highlightCache.deleteIfValue(key, pending))
+    void pending.finally(() => highlightCache.deleteIfValue(key, pending)).catch(() => {})
   }
   return pending
 }

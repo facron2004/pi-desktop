@@ -5,6 +5,7 @@ import { AssistantImage, ThinkingBlock } from '../MessageItem'
 import { ProcessTrail } from '../ProcessTrail'
 import { ToolCard } from '../ToolCard'
 import { StreamingText } from './StreamingText'
+import { stripEchoedPrompt } from '../../lib/image-echo'
 
 interface ProcessBuffer {
   key: string
@@ -50,6 +51,14 @@ export const AssistantMessage = memo(function AssistantMessage({
   // explain it. The cards are collected here and appended after the turn's
   // text, so the image always sits at the bottom of the reply.
   const imageCards: ReactNode[] = []
+  // An older run was told to quote its prompt in the reply, and a current one
+  // sometimes does it anyway. The card's fold keeps the prompt, so the reply's
+  // copy is dropped there instead of here — one copy, and it is the collapsible
+  // one.
+  const imagePrompts = turn.tools
+    .filter((tool) => tool.toolName === 'generate_image')
+    .map((tool) => (typeof tool.args?.prompt === 'string' ? tool.args.prompt.trim() : ''))
+    .filter(Boolean)
   const replyStart = replyStartOf(turn)
   let beforeReply = Boolean(replyStart) || turn.tools.length > 0
   let group: ToolItem[] = []
@@ -115,7 +124,11 @@ export const AssistantMessage = memo(function AssistantMessage({
     assistant.blocks.forEach((block, index) => {
       if (block === replyStart) beforeReply = false
       if (block.type === 'text') {
-        if (!block.text.trim()) return
+        // The picture card keeps the prompt in its fold, so a reply that quotes
+        // it would print the same paragraph twice. Keep the copy the reader can
+        // collapse and drop the one in the answer column.
+        const text = stripEchoedPrompt(block.text, imagePrompts)
+        if (!text.trim()) return
         flushProcess()
         if (beforeReply && replyStart && !processOpen) return
         segments.push({
@@ -123,7 +136,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           node: (
             <StreamingText
               key={`${assistant.id}-${index}`}
-              text={block.text}
+              text={text}
               streaming={assistant.streaming && index === lastTextIndex}
               commentary={beforeReply}
             />
@@ -173,7 +186,9 @@ export const AssistantMessage = memo(function AssistantMessage({
       if (tool.toolName === 'generate_image') {
         flushTools()
         flushProcess()
-        imageCards.push(<ToolCard key={tool.id} item={tool} presentation="card" />)
+        imageCards.push(
+          <ToolCard key={tool.id} item={tool} presentation="card" />
+        )
         return
       }
       group.push(tool)

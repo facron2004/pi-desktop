@@ -1,6 +1,6 @@
 {
   "name": "pi-desktop",
-  "version": "0.11.5",
+  "version": "0.11.6",
   "description": "Pi Desktop — a native GUI for the Pi coding agent",
   "main": "./out/main/index.js",
   "author": "Facron",
@@ -33,6 +33,7 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "icon": "electron scripts/make-icon.mjs",
+    "installer-art": "node scripts/make-installer-art.mjs",
     "dist": "node scripts/build-lock.mjs dist",
     "dist:dir": "node scripts/build-lock.mjs dist:dir",
     "test": "node tests/run.mjs",

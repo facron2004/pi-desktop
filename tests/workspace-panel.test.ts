@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { sessionIndicator, isDotIndicator } from '../src/renderer/src/lib/session-indicator'
 import {
   DEFAULT_PROJECT_ICON_COLOR,
@@ -100,4 +102,13 @@ test('a folder that is only known from disk wears no icon', () => {
   assert.equal(projects.length, 1)
   assert.equal(projects[0].icon, undefined)
   assert.equal(projects[0].iconColor, undefined)
+})
+
+test('Sidebar keys live/attention projections on threadsMetaVersion, lazy-loads picker, and paginates expansion/hits', () => {
+  const source = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/components/Sidebar.tsx'), 'utf8')
+  assert.match(source, /state\.threadsMetaVersion/)
+  assert.match(source, /SESSION_PAGE_SIZE/)
+  assert.match(source, /visibleContentHits/)
+  assert.match(source, /lazy\(\(\) =>/)
+  assert.equal(source.includes('useShallow'), false)
 })

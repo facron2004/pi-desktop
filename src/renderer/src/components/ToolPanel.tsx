@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useRef,
@@ -66,11 +67,13 @@ interface TabContextMenu {
   y: number
 }
 
-export function ToolPanel({
+export const ToolPanel = memo(function ToolPanel({
   view,
   onViewChange,
+  onViewClosed,
   children,
   className,
+  concealed = false,
   overlay,
   onClose,
   width,
@@ -80,9 +83,13 @@ export function ToolPanel({
 }: {
   view: ToolPanelView
   onViewChange: (view: ToolPanelView) => void
+  /** A page tab was closed, so its live content (browser, terminal) can go. */
+  onViewClosed?: (view: Exclude<ToolPanelView, 'start'>) => void
   /** The active page's content. The start page is drawn by the panel itself. */
   children?: ReactNode
   className?: string
+  /** Folded away, but still mounted so its tabs and pages survive. */
+  concealed?: boolean
   overlay: boolean
   onClose: () => void
   width: number
@@ -95,7 +102,7 @@ export function ToolPanel({
   const panelRef = useRef<HTMLElement>(null)
   // The overlay keeps the focus trap but not Escape: a find box inside the
   // panel owns that key. The panel's own handler below closes it otherwise.
-  useDialogFocus(panelRef, onClose, { enabled: overlay, closeOnEscape: false })
+  useDialogFocus(panelRef, onClose, { enabled: overlay && !concealed, closeOnEscape: false })
 
   // The strip holds the pages the reader opened in this panel visit. App still
   // owns the active view, while each new-tab page gets its own tab identity.
@@ -232,11 +239,18 @@ export function ToolPanel({
     onViewChange('start')
   }
 
+  const release = (closed: readonly ToolTab[]) => {
+    for (const tab of closed) {
+      if (tab.view) onViewClosed?.(tab.view)
+    }
+  }
+
   const closeTab = (next: ToolTab) => {
     const index = tabs.findIndex((tab) => tab.id === next.id)
     const remaining = tabs.filter((tab) => tab.id !== next.id)
     setTabs(remaining)
     setMenu(null)
+    release([next])
     if (remaining.length === 0) {
       const blankTab: ToolTab = { id: `new-tab-${++newTabSequence.current}`, view: null }
       setTabs([blankTab])
@@ -257,6 +271,7 @@ export function ToolPanel({
   }
 
   const closeOthers = (keep: ToolTab) => {
+    release(tabs.filter((tab) => tab.id !== keep.id))
     setTabs([keep])
     setActive(keep.id)
     onViewChange(keep.view ?? 'start')
@@ -266,6 +281,7 @@ export function ToolPanel({
   const closeToRight = (keep: ToolTab) => {
     const index = tabs.findIndex((tab) => tab.id === keep.id)
     if (index < 0) return
+    release(tabs.slice(index + 1))
     setTabs(tabs.slice(0, index + 1))
     setActive(keep.id)
     onViewChange(keep.view ?? 'start')
@@ -273,6 +289,7 @@ export function ToolPanel({
   }
 
   const closeAll = () => {
+    release(tabs)
     const blankTab: ToolTab = { id: `new-tab-${++newTabSequence.current}`, view: null }
     setTabs([blankTab])
     setActive(blankTab.id)
@@ -394,8 +411,11 @@ export function ToolPanel({
       ref={panelRef}
       className={`tool-panel${maximized ? ' tool-panel--maximized' : ''}${className ? ` ${className}` : ''}`}
       style={{ width }}
-      role={overlay ? 'dialog' : undefined}
-      aria-modal={overlay ? true : undefined}
+      hidden={concealed}
+      inert={concealed || undefined}
+      aria-hidden={concealed || undefined}
+      role={overlay && !concealed ? 'dialog' : undefined}
+      aria-modal={overlay && !concealed ? true : undefined}
       tabIndex={overlay ? -1 : undefined}
       aria-label={t('Tools')}
     >
@@ -651,7 +671,7 @@ export function ToolPanel({
         : null}
     </aside>
   )
-}
+})
 
 /** The panel's home page: the tools start from here, as cards. */
 function ToolStart({ onOpen }: { onOpen: (view: Exclude<ToolPanelView, 'start'>) => void }) {

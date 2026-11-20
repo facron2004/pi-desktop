@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { ClipboardCopy, RotateCcw } from 'lucide-react'
 import {
   CONTEXT_LINES,
@@ -187,7 +187,10 @@ function GapButton({
   )
 }
 
-export function DiffView({
+const DIFF_INITIAL_ROWS = 400
+const DIFF_ROW_STEP = 500
+
+export const DiffView = memo(function DiffView({
   diffs,
   mode = 'unified',
   patchPath,
@@ -219,6 +222,11 @@ export function DiffView({
   onExpandAllChange?: (value: boolean | undefined) => void
 }) {
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
+  const [limitState, setLimitState] = useState<{ diffs: DiffBlock[]; limit: number }>(() => ({
+    diffs,
+    limit: DIFF_INITIAL_ROWS
+  }))
+  const rowLimit = limitState.diffs === diffs ? limitState.limit : DIFF_INITIAL_ROWS
   // The hunk patch shown in the confirmation, captured when the reader asked.
   const [pendingRevert, setPendingRevert] = useState<string | null>(null)
   const [reverting, setReverting] = useState(false)
@@ -258,6 +266,15 @@ export function DiffView({
     }
     return next
   }, [expandAll, opened, gapKeys])
+
+  const displayedBlocks = useMemo(
+    () => folded.map((rows) => displayRows(rows, effective)),
+    [folded, effective]
+  )
+  const splitBlocks = useMemo(
+    () => (mode === 'split' ? displayedBlocks.map((rows) => buildSplitDiff(rows)) : []),
+    [mode, displayedBlocks]
+  )
 
   const hasContent = useMemo(() => folded.some((rows) => rows.length > 0), [folded])
   // A block is degraded when aligning the two sides would have cost more than
@@ -416,14 +433,33 @@ export function DiffView({
   ) : null
 
   if (mode === 'split') {
+    let remaining = rowLimit
+    let hiddenRows = 0
+    const visibleSplit: { rows: SplitRow[]; blockIndex: number; sourceRows: DiffRow[] }[] = []
+    for (let i = 0; i < splitBlocks.length; i += 1) {
+      const rows = splitBlocks[i]
+      if (remaining <= 0) {
+        hiddenRows += rows.length
+        continue
+      }
+      if (rows.length > remaining) {
+        visibleSplit.push({ rows: rows.slice(0, remaining), blockIndex: i, sourceRows: folded[i] })
+        hiddenRows += rows.length - remaining
+        remaining = 0
+      } else {
+        visibleSplit.push({ rows, blockIndex: i, sourceRows: folded[i] })
+        remaining -= rows.length
+      }
+    }
+
     return (
       <>
         {degradedNote}
         <div className="diff diff--split">
-          {folded.map((rows, blockIndex) => (
-            <div className={blockClassName(blockIndex)} key={blockKey(rows, blockIndex)}>
+          {visibleSplit.map(({ rows, blockIndex, sourceRows }) => (
+            <div className={blockClassName(blockIndex)} key={blockKey(sourceRows, blockIndex)}>
               {hunkActions(blockIndex)}
-              {buildSplitDiff(displayRows(rows, effective)).map((row) =>
+              {rows.map((row) =>
                 row.gap ? (
                   <div className="diff__split" data-gap="true" key={`gap-${row.gap.key}`}>
                     <GapButton
@@ -451,20 +487,50 @@ export function DiffView({
               )}
             </div>
           ))}
+          {hiddenRows > 0 ? (
+            <button
+              type="button"
+              className="diff__gap"
+              onClick={() => setLimitState({ diffs, limit: rowLimit + DIFF_ROW_STEP })}
+            >
+              <span className="diff__gap-label">
+                {t('Show more')} ({hiddenRows.toLocaleString()} {t('lines')})
+              </span>
+            </button>
+          ) : null}
         </div>
         {confirmation}
       </>
     )
   }
 
+  let remaining = rowLimit
+  let hiddenRows = 0
+  const visibleUnified: { rows: DiffRow[]; blockIndex: number; sourceRows: DiffRow[] }[] = []
+  for (let i = 0; i < displayedBlocks.length; i += 1) {
+    const rows = displayedBlocks[i]
+    if (remaining <= 0) {
+      hiddenRows += rows.length
+      continue
+    }
+    if (rows.length > remaining) {
+      visibleUnified.push({ rows: rows.slice(0, remaining), blockIndex: i, sourceRows: folded[i] })
+      hiddenRows += rows.length - remaining
+      remaining = 0
+    } else {
+      visibleUnified.push({ rows, blockIndex: i, sourceRows: folded[i] })
+      remaining -= rows.length
+    }
+  }
+
   return (
     <>
       {degradedNote}
       <div className="diff">
-        {folded.map((rows, blockIndex) => (
-          <div className={blockClassName(blockIndex)} key={blockKey(rows, blockIndex)}>
+        {visibleUnified.map(({ rows, blockIndex, sourceRows }) => (
+          <div className={blockClassName(blockIndex)} key={blockKey(sourceRows, blockIndex)}>
             {hunkActions(blockIndex)}
-            {displayRows(rows, effective).map((row) =>
+            {rows.map((row) =>
               row.kind === 'gap' ? (
                 <div className="diff__row diff__row--gap" key={`gap-${row.key}`}>
                   <GapButton
@@ -490,8 +556,19 @@ export function DiffView({
             )}
           </div>
         ))}
+        {hiddenRows > 0 ? (
+          <button
+            type="button"
+            className="diff__gap"
+            onClick={() => setLimitState({ diffs, limit: rowLimit + DIFF_ROW_STEP })}
+          >
+            <span className="diff__gap-label">
+              {t('Show more')} ({hiddenRows.toLocaleString()} {t('lines')})
+            </span>
+          </button>
+        ) : null}
       </div>
       {confirmation}
     </>
   )
-}
+})

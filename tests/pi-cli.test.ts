@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { runPiCli } from '../src/main/pi/cli'
+import { piVersion, runPiCli } from '../src/main/pi/cli'
 
 /**
  * A workspace folder can disappear between listing it and running a Pi CLI
@@ -181,5 +181,39 @@ test('runPiCli abort terminates nested processes', async () => {
     rmSync(started, { force: true })
     rmSync(descendantStarted, { force: true })
     rmSync(descendantPid, { force: true })
+  }
+})
+
+test('piVersion reads bundled version from package.json and caches custom CLI results by file stamp', async () => {
+  const bundledPkg = JSON.parse(
+    readFileSync(path.resolve('node_modules/@earendil-works/pi-coding-agent/package.json'), 'utf8')
+  ) as { version: string }
+  assert.equal(await piVersion(), bundledPkg.version)
+
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'pi-version-cache-'))
+  const script = path.join(dir, 'custom-pi.js')
+  const countFile = path.join(dir, 'runs.txt')
+  writeFileSync(
+    script,
+    `const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(countFile)}, '1');
+console.log('1.0.0-custom');`
+  )
+  try {
+    assert.equal(await piVersion(script), '1.0.0-custom')
+    assert.equal(await piVersion(script), '1.0.0-custom')
+    assert.equal(readFileSync(countFile, 'utf8').length, 1, 'identical file stamp reuses cached version')
+
+    // Modifying the custom script invalidates the stamp-keyed version cache
+    writeFileSync(
+      script,
+      `const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(countFile)}, '1');
+console.log('1.0.1-custom');`
+    )
+    assert.equal(await piVersion(script), '1.0.1-custom')
+    assert.equal(readFileSync(countFile, 'utf8').length, 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

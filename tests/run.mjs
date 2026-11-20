@@ -38,6 +38,7 @@ const suites = [
   'shortcuts.test.ts',
   'user-data.test.ts',
   'app-updates.test.ts',
+  'setup-args.test.ts',
   'pi-cli.test.ts',
   'session-metrics.test.ts',
   'session-timing.test.ts',
@@ -53,6 +54,7 @@ const suites = [
   'title-subagents.test.ts',
   'file-status.test.ts',
   'fonts.test.ts',
+  'ui-font.test.ts',
   'font-scale.test.ts',
   'providers.test.ts',
   'model-catalog.test.ts',
@@ -68,6 +70,8 @@ const suites = [
   'supervisor.test.ts',
   'runtime-ensure.test.ts',
   'runtime-session-path.test.ts',
+  'window-controls.test.ts',
+  'sidebar-view.test.ts',
   'navigation-policy.test.ts',
   'webview-policy.test.ts',
   'session-concurrency.test.ts',
@@ -84,6 +88,9 @@ const suites = [
   'terminal-startup.test.ts',
   'view-state.test.ts',
   'live-sessions.test.ts',
+  'tray-conversations.test.ts',
+  'url-link.test.ts',
+  'image-echo.test.ts',
   'git-branches.test.ts',
   'mcp.test.ts',
   'remote-access.test.ts',
@@ -124,6 +131,7 @@ const suites = [
   'pm-pricing.test.ts',
   'image-generation.test.ts',
   'image-tool.test.ts',
+  'image-echo.test.ts',
   'multi-rpc-stress.test.ts'
 ]
 const debug = process.argv[2] === '--debug'
@@ -135,6 +143,8 @@ writeFileSync(
   `export const app = { getPath: () => "C:/tmp", getAppPath: () => process.cwd(), isPackaged: false, getVersion: () => "0.7.3", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {}, exit: () => {} };
 export const dialog = { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true, filePath: undefined }) };
 export const BrowserWindow = class { static getAllWindows() { return [] } isDestroyed() { return false } };
+export const Menu = { buildFromTemplate: () => ({}) };
+export const Tray = class { setContextMenu() {} setImage() {} setToolTip() {} on() {} destroy() {} isDestroyed() { return false } };
 export const ipcMain = { handle: () => {}, on: () => {} };
 export const shell = { showItemInFolder: () => {}, trashItem: async () => {} };
 export const Notification = class { show() {} };

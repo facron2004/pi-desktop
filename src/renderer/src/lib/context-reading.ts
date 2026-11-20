@@ -52,15 +52,18 @@ function estimateTextTokens(value: string): number {
 function messageText(message: AgentMessage): string {
   if (typeof message.content === 'string') return message.content
   if (!Array.isArray(message.content)) return ''
-  return message.content.map((block) => {
-    if (block.type === 'text') return block.text
-    if (block.type === 'thinking') return block.thinking
-    if (block.type === 'toolCall') {
-      return `${block.name} ${JSON.stringify(block.arguments)}`
+  let text = ''
+  for (const block of message.content) {
+    let part = ''
+    if (block.type === 'text') part = block.text
+    else if (block.type === 'thinking') part = block.thinking
+    else if (block.type === 'toolCall') {
+      part = `${block.name} ${JSON.stringify(block.arguments)}`
     }
-    // Image tokenization depends on the provider and image dimensions.
-    return ''
-  }).join('\n')
+    if (text) text += '\n' + part
+    else text = part
+  }
+  return text
 }
 
 /**
@@ -77,18 +80,21 @@ export function estimateContextBreakdown(
   const tools = new Map<string, unknown>()
   let hasSystemMessage = false
   let hasToolData = false
-  let conversationTokens = 0
+  let hasConversationMessage = false
+  let firstSystemMessage: AgentMessage | undefined
   let newestUsageTokens: number | null = null
+  const hasReportedTotal = typeof reportedContextTokens === 'number' && reportedContextTokens > 0
 
   for (const message of messages) {
     if (message.role !== 'system') {
-      conversationTokens += estimateTextTokens(`${message.role}\n${messageText(message)}`)
-      if (message.role === 'assistant' && typeof message.usage?.totalTokens === 'number') {
+      hasConversationMessage = true
+      if (!hasReportedTotal && message.role === 'assistant' && typeof message.usage?.totalTokens === 'number') {
         newestUsageTokens = message.usage.totalTokens
       }
       continue
     }
 
+    if (!firstSystemMessage) firstSystemMessage = message
     hasSystemMessage = true
     const system = message as AgentMessage & {
       sections?: Record<string, unknown>
@@ -121,7 +127,6 @@ export function estimateContextBreakdown(
       .filter(([name]) => name !== 'tools')
       .map(([name, text]) => `${name}\n${text}`)
       .join('\n')
-    const firstSystemMessage = messages.find((message) => message.role === 'system')
     const systemContent = sections.size === 0 && firstSystemMessage
       ? messageText(firstSystemMessage)
       : ''
@@ -134,13 +139,19 @@ export function estimateContextBreakdown(
     }
   }
 
-  const totalTokens = typeof reportedContextTokens === 'number' && reportedContextTokens > 0
-    ? reportedContextTokens
+  const totalTokens = hasReportedTotal
+    ? reportedContextTokens!
     : newestUsageTokens
   if (totalTokens === null || totalTokens === undefined) {
-    const conversation = messages.some((message) => message.role !== 'system')
-      ? conversationTokens
-      : null
+    let conversationTokens = 0
+    if (hasConversationMessage) {
+      for (const message of messages) {
+        if (message.role !== 'system') {
+          conversationTokens += estimateTextTokens(`${message.role}\n${messageText(message)}`)
+        }
+      }
+    }
+    const conversation = hasConversationMessage ? conversationTokens : null
     return {
       systemPrompt: promptTokens,
       toolDefinitions: toolTokens,
@@ -158,7 +169,7 @@ export function estimateContextBreakdown(
   return {
     systemPrompt,
     toolDefinitions,
-    conversationMessages: messages.some((message) => message.role !== 'system')
+    conversationMessages: hasConversationMessage
       ? Math.max(0, totalTokens - knownRows)
       : null,
     source: 'session',
@@ -246,28 +257,43 @@ export function contextReading(input: {
 }): ContextReading {
   const { stats, items, model, fallbackModel } = input
 
+  const statsTokens = stats?.tokens
+  const hasStats = Boolean(statsTokens && statsTokens.total > 0)
+  const context = stats?.contextUsage
+  const reportedTokens = typeof context?.tokens === 'number' ? context.tokens : null
+
   let inputTokens = 0
   let outputTokens = 0
   let cacheRead = 0
   let cacheWrite = 0
   let total = 0
   let newestContext: number | null = null
-  for (const item of items) {
-    if (item.kind !== 'assistant' || !item.usage) continue
-    const usage = item.usage
-    inputTokens += usage.input
-    outputTokens += usage.output
-    cacheRead += usage.cacheRead
-    cacheWrite += usage.cacheWrite
-    total += usage.totalTokens
-    // The newest message is the closest thing the transcript knows to "what
-    // the last request actually put in the window". A message that reported
-    // zero usage (a failed or cut-off answer) cannot erase a real reading.
-    if (usage.totalTokens > 0) newestContext = usage.totalTokens
+
+  if (!hasStats) {
+    for (const item of items) {
+      if (item.kind !== 'assistant' || !item.usage) continue
+      const usage = item.usage
+      inputTokens += usage.input
+      outputTokens += usage.output
+      cacheRead += usage.cacheRead
+      cacheWrite += usage.cacheWrite
+      total += usage.totalTokens
+      // The newest message is the closest thing the transcript knows to "what
+      // the last request actually put in the window". A message that reported
+      // zero usage (a failed or cut-off answer) cannot erase a real reading.
+      if (usage.totalTokens > 0) newestContext = usage.totalTokens
+    }
+  } else if (reportedTokens === null) {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index]
+      if (item.kind !== 'assistant' || !item.usage) continue
+      if (item.usage.totalTokens > 0) {
+        newestContext = item.usage.totalTokens
+        break
+      }
+    }
   }
 
-  const statsTokens = stats?.tokens
-  const hasStats = Boolean(statsTokens && statsTokens.total > 0)
   const totals = hasStats
     ? {
         tokensTotal: statsTokens!.total,
@@ -284,8 +310,6 @@ export function contextReading(input: {
         cacheWrite
       }
 
-  const context = stats?.contextUsage
-  const reportedTokens = typeof context?.tokens === 'number' ? context.tokens : null
   const reportedWindow =
     typeof context?.contextWindow === 'number' && context.contextWindow > 0
       ? context.contextWindow

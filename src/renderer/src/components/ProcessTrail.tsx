@@ -3,10 +3,10 @@ import { ChevronRight } from 'lucide-react'
 import type { ToolItem } from '../lib/thread'
 import { describeTool } from '../lib/tools'
 import { useSearchQuery } from '../lib/search-context'
-import { useAppStore } from '../store/useAppStore'
 import { readProcessOpen, readToolOpen, writeProcessOpen, writeToolOpen } from '../lib/view-state'
 import { activityHeadline } from './ToolGroup'
 import { useT } from '../lib/i18n'
+import { useThreadEnv } from './conversation/ThreadEnvContext'
 
 /**
  * The working trace of one stretch of a turn: thinking and tool calls.
@@ -39,12 +39,7 @@ export const ProcessTrail = memo(function ProcessTrail({
   children: ReactNode
 }) {
   const t = useT()
-  const workspacePath = useAppStore((state) => state.workspace?.path)
-  const threadKey = useAppStore((state) => state.activeSessionFile ?? state.draftId ?? 'draft')
-  /** On by default: a trace that is over folds, and only the reader opens it again. */
-  const autoFold = useAppStore((state) => state.settings.autoFoldProcess !== false)
-  /** Off by default: while the agent works, every call keeps its own row. */
-  const gatherCalls = useAppStore((state) => state.settings.toolCallSummary === true)
+  const { workspacePath, threadKey, autoFoldProcess: autoFold, toolCallSummary: gatherCalls } = useThreadEnv()
   const query = useSearchQuery().trim().toLowerCase()
   const activity = activityHeadline(tools, t)
   const thought = thoughts > 0 ? t('Thought') : ''

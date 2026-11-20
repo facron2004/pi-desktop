@@ -1,7 +1,8 @@
 import { app } from 'electron'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
-import { mkdir, unlink, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, rm, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { resolveSessionFilePath, resolveSessionRoots } from '../sessions'
 import {
@@ -164,53 +165,48 @@ export class PiRuntime extends EventEmitter {
     const permissionFile = path.join(userData, `pi-desktop-permissions-${scratchId}.mjs`)
     const subagentPermissionFile = path.join(userData, `pi-desktop-subagent-permissions-${scratchId}.mjs`)
     const modeFile = path.join(userData, `pi-desktop-task-modes-${scratchId}.mjs`)
-    const providerFile = path.join(userData, `pi-desktop-providers-${scratchId}.mjs`)
     const subagentFile = path.join(userData, `pi-desktop-subagent-${scratchId}.mjs`)
-    const computerFile = path.join(userData, `pi-desktop-computer-${scratchId}.mjs`)
-    const imageFile = path.join(userData, `pi-desktop-image-${scratchId}.mjs`)
-    const contextBreakdownFile = path.join(userData, `pi-desktop-context-breakdown-${scratchId}.mjs`)
-    const generationTimingFile = path.join(userData, `pi-desktop-generation-timing-${scratchId}.mjs`)
-    const mermaidFile = path.join(userData, `pi-desktop-mermaid-${scratchId}.mjs`)
     const permissionTitle = `pi-desktop-permissions-${scratchId}`
     const files: string[] = []
+    let staticFiles: StaticExtensionFilePaths
     try {
       await mkdir(userData, { recursive: true })
-      files.push(permissionFile, subagentPermissionFile, modeFile, providerFile, subagentFile, computerFile, imageFile, contextBreakdownFile, generationTimingFile, mermaidFile)
+      files.push(permissionFile, subagentPermissionFile, modeFile, subagentFile)
       // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
       // is the one moment "a brand-new conversation starts in Plan Mode" is true.
       const defaultMode =
         !sessionFile && this.options.getDefaultPlanMode?.() === true ? 'plan' : 'default'
-      const staticSources = getStaticExtensionSources()
-      const writes: [string, string][] = [
-        [permissionFile, permissionExtension(permissionTitle)],
-        [subagentPermissionFile, permissionExtension(permissionTitle, false)],
-        [modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile)],
-        [providerFile, staticSources.provider],
-        [
-          subagentFile,
-          subagentExtension(
-            this.options.getSubagentModel?.() ?? {},
-            subagentPermissionFile,
-            permissionTitle,
-            this.options.trustProject === true,
-            { command: launch.command, prefixArgs: launch.prefixArgs },
-            // Named agent presets are project data, not Settings, but they cross
-            // the same boundary: read here once per process, verified and bounded
-            // by the loader, so the generated extension never re-opens a file.
-            this.options.getAgentPresets?.(options.cwd) ?? []
-          )
-        ],
-        [computerFile, staticSources.computer],
-        [imageFile, staticSources.image],
-        [contextBreakdownFile, staticSources.contextBreakdown],
-        [generationTimingFile, staticSources.generationTiming],
-        [mermaidFile, staticSources.mermaid]
-      ]
-      if (options.customInstructions?.trim()) {
-        files.push(customInstructionsFile)
-        writes.push([customInstructionsFile, options.customInstructions.trim()])
-      }
-      await Promise.all(writes.map(([filePath, content]) => writeFile(filePath, content, 'utf8')))
+      const [resolvedStaticFiles] = await Promise.all([
+        ensureStaticExtensionFiles(userData),
+        (async () => {
+          const writes: [string, string][] = [
+            [permissionFile, permissionExtension(permissionTitle)],
+            [subagentPermissionFile, permissionExtension(permissionTitle, false)],
+            [modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile)],
+            [
+              subagentFile,
+              subagentExtension(
+                this.options.getSubagentModel?.() ?? {},
+                subagentPermissionFile,
+                permissionTitle,
+                this.options.trustProject === true,
+                { command: launch.command, prefixArgs: launch.prefixArgs },
+                // Named agent presets are project data, not Settings, but they cross
+                // the same boundary: read here once per process, verified and bounded
+                // by the loader, so the generated extension never re-opens a file.
+                this.options.getAgentPresets?.(options.cwd) ?? []
+              )
+            ]
+          ]
+          if (options.customInstructions?.trim()) {
+            files.push(customInstructionsFile)
+            writes.push([customInstructionsFile, options.customInstructions.trim()])
+          }
+          for (const filePath of files) activeScratchEntries.add(path.basename(filePath))
+          await Promise.all(writes.map(([filePath, content]) => writeFile(filePath, content, 'utf8')))
+        })()
+      ])
+      staticFiles = resolvedStaticFiles
     } catch (error) {
       await this.deleteFiles(files)
       if (generation !== this.generation) return { ok: false }
@@ -231,13 +227,13 @@ export class PiRuntime extends EventEmitter {
         options.customInstructions?.trim() ? customInstructionsFile : undefined,
         permissionFile,
         modeFile,
-        providerFile,
+        staticFiles.provider,
         subagentFile,
-        computerFile,
-        contextBreakdownFile,
-        generationTimingFile,
-        mermaidFile,
-        imageFile
+        staticFiles.computer,
+        staticFiles.contextBreakdown,
+        staticFiles.generationTiming,
+        staticFiles.mermaid,
+        staticFiles.image
       )
     ]
     const sessionDir = this.options.getSessionDir?.(options.cwd)?.trim()
@@ -597,9 +593,13 @@ export class PiRuntime extends EventEmitter {
     if (files.length === 0) return
     await Promise.all(
       files.map((file) =>
-        unlink(file).catch(() => {
-          // The process may still be releasing the file, or it was already removed.
-        })
+        unlink(file)
+          .catch(() => {
+            // The process may still be releasing the file, or it was already removed.
+          })
+          .finally(() => {
+            activeScratchEntries.delete(path.basename(file))
+          })
       )
     )
   }
@@ -707,6 +707,22 @@ interface StaticExtensionSources {
   generationTiming: string
   mermaid: string
 }
+
+interface StaticExtensionFilePaths {
+  dir: string
+  provider: string
+  computer: string
+  image: string
+  contextBreakdown: string
+  generationTiming: string
+  mermaid: string
+}
+
+const STATIC_EXT_DIR_PREFIX = 'pi-desktop-ext-'
+const PROCESS_STATIC_DIR_NAME = `${STATIC_EXT_DIR_PREFIX}${process.pid}-${randomUUID().slice(0, 8)}`
+const activeScratchEntries = new Set<string>([PROCESS_STATIC_DIR_NAME])
+const staticExtensionPromises = new Map<string, Promise<StaticExtensionFilePaths>>()
+const staticExtensionDirs = new Set<string>()
 let staticExtensionSources: StaticExtensionSources | undefined
 
 function getStaticExtensionSources(): StaticExtensionSources {
@@ -721,6 +737,52 @@ function getStaticExtensionSources(): StaticExtensionSources {
     }
   }
   return staticExtensionSources
+}
+
+async function ensureStaticExtensionFiles(userData: string): Promise<StaticExtensionFilePaths> {
+  const dir = path.join(userData, PROCESS_STATIC_DIR_NAME)
+  const paths: StaticExtensionFilePaths = {
+    dir,
+    provider: path.join(dir, 'pi-desktop-providers.mjs'),
+    computer: path.join(dir, 'pi-desktop-computer.mjs'),
+    image: path.join(dir, 'pi-desktop-image.mjs'),
+    contextBreakdown: path.join(dir, 'pi-desktop-context-breakdown.mjs'),
+    generationTiming: path.join(dir, 'pi-desktop-generation-timing.mjs'),
+    mermaid: path.join(dir, 'pi-desktop-mermaid.mjs')
+  }
+  const existing = staticExtensionPromises.get(dir)
+  if (existing && existsSync(paths.provider)) return existing
+
+  const task = (async () => {
+    const sources = getStaticExtensionSources()
+    await mkdir(dir, { recursive: true })
+    staticExtensionDirs.add(dir)
+    await Promise.all([
+      writeFile(paths.provider, sources.provider, 'utf8'),
+      writeFile(paths.computer, sources.computer, 'utf8'),
+      writeFile(paths.image, sources.image, 'utf8'),
+      writeFile(paths.contextBreakdown, sources.contextBreakdown, 'utf8'),
+      writeFile(paths.generationTiming, sources.generationTiming, 'utf8'),
+      writeFile(paths.mermaid, sources.mermaid, 'utf8')
+    ])
+    return paths
+  })().catch((error) => {
+    if (staticExtensionPromises.get(dir) === task) staticExtensionPromises.delete(dir)
+    throw error
+  })
+  staticExtensionPromises.set(dir, task)
+  return task
+}
+
+export function isActiveRuntimeScratchEntry(name: string): boolean {
+  return activeScratchEntries.has(name)
+}
+
+export async function cleanupStaticExtensionCache(): Promise<void> {
+  const dirs = [...staticExtensionDirs]
+  staticExtensionDirs.clear()
+  staticExtensionPromises.clear()
+  await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})))
 }
 
 function describeExit(stderr: string[], code: number | null, signal: string | null): string {

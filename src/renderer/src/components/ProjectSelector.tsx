@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { Check, Folder, MessageSquare, Plus, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
@@ -6,7 +6,7 @@ import { basename, normalisePathKey, samePath } from '../lib/path'
 import { useT } from '../lib/i18n'
 import { Popover } from './Popover'
 
-export function ProjectSelector({
+export const ProjectSelector = memo(function ProjectSelector({
   placement = 'bottom',
   align = 'left',
   variant = 'chip'
@@ -225,4 +225,4 @@ export function ProjectSelector({
       )}
     </Popover>
   )
-}
+})

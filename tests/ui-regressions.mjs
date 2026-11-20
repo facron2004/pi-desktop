@@ -151,15 +151,16 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   await until(() => !document.querySelector('.app-toast'), 'The app toast did not dismiss')
   passed.push('app messages float below the title bar without moving the composer')
 
+  const visibleToolPanel = () => document.querySelector('.tool-panel:not([hidden])')
   // A page opens the way the panel does it: the `+` creates a new tab, and its
   // start page turns that tab into the chosen page. A page already open is only
   // focused, never added twice.
   const openToolPage = async (view, label) => {
-    if (!document.querySelector('.tool-panel')) {
+    if (!visibleToolPanel()) {
       const toggle = [...document.querySelectorAll('button')].find((node) => node.getAttribute('aria-label') === 'Show tools panel')
       toggle?.click()
     }
-    await until(() => document.querySelector('.tool-panel__new-tab'), 'The workspace panel did not open')
+    await until(() => visibleToolPanel()?.querySelector('.tool-panel__new-tab'), 'The workspace panel did not open')
     const tab = [...document.querySelectorAll('.tool-panel__tab')].find((node) => node.textContent?.includes(label))
     if (tab) {
       tab.click()
@@ -267,8 +268,15 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
       passed.push('terminal requests run once in their target tab')
     } finally {
       off()
-      document.querySelector('.shell__panel-toggle button').click()
-      await until(() => !document.querySelector('.terminal'), 'Terminal did not close')
+      const panel = visibleToolPanel()
+      if (panel) {
+        const terminal = panel.querySelector('.terminal')
+        document.querySelector('.shell__panel-toggle button').click()
+        await until(() => !visibleToolPanel(), 'The terminal panel did not fold')
+        if (terminal) {
+          check(terminal.isConnected && terminal.getClientRects().length === 0, 'Folding the panel did not preserve the hidden terminal')
+        }
+      }
     }
   }
 
@@ -314,13 +322,16 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   check(!document.querySelector('.status-strip, .plan-strip'), 'A status or plan strip returned above the composer')
   // A desk page owns the content row: the tools panel closes with it, and the
   // corner toggle is not drawn over the page's own header.
-  if (!document.querySelector('.tool-panel')) {
+  if (!visibleToolPanel()) {
     document.querySelector('.shell__panel-toggle button').click()
-    await until(() => document.querySelector('.tool-panel'), 'The tools panel did not open')
+    await until(visibleToolPanel, 'The tools panel did not open')
   }
   document.querySelector('.sidebar__plugin-entry button').click()
   await until(() => document.querySelector('.desk-page'), 'Plugins desk page did not open')
-  await until(() => !document.querySelector('.tool-panel'), 'The tools panel stayed open over the desk page')
+  await until(
+    () => !visibleToolPanel(),
+    'The tools panel stayed open over the desk page'
+  )
   check(
     !document.querySelector('.goal-bar, .widget, .task-rail, .shell__panel-toggle'),
     'Conversation controls remained underneath the desk page'
@@ -484,8 +495,12 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   const copyButton = userActions.querySelector('button')
   check(!copyButton.hasAttribute('title'), 'The message action still draws a native title bubble')
   check(
-    copyButton.hasAttribute('data-pi-tip-ignore'),
-    'The message action is not opted out of the hover tip'
+    copyButton.hasAttribute('aria-label'),
+    'The message action has no accessible name for the hover tip'
+  )
+  check(
+    !copyButton.hasAttribute('data-pi-tip-ignore'),
+    'The message action is still opted out of the hover tip'
   )
   const copyBox = copyButton.getBoundingClientRect()
   const copyHit = document.elementFromPoint(copyBox.left + copyBox.width / 2, copyBox.top + copyBox.height / 2)
@@ -797,8 +812,8 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   // tree beside the preview on the Files page.
   const panelToggle = () => [...document.querySelectorAll('button')].find((node) =>
     node.getAttribute('aria-label') === 'Show tools panel' || node.getAttribute('aria-label') === 'Hide tools panel')
-  if (!document.querySelector('.tool-panel')) panelToggle()?.click()
-  await until(() => document.querySelector('.tool-panel'), 'Workspace panel did not open')
+  if (!visibleToolPanel()) panelToggle()?.click()
+  await until(visibleToolPanel, 'Workspace panel did not open')
   while (true) {
     const pageTab = [...document.querySelectorAll('.tool-panel__tab-shell')].find(
       (tab) => !tab.querySelector('.tool-panel__tab-label')?.textContent?.includes('New tab')
@@ -807,10 +822,11 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
     pageTab.querySelector('.tool-panel__tab-close').click()
     await pause(30)
   }
-  // Closing the last page closes the panel. Wait out its exit before using
-  // the fresh start page; the closing instance is still in the DOM briefly.
-  if (!document.querySelector('.tool-panel') || document.querySelector('.tool-panel--closing')) {
-    await until(() => !document.querySelector('.tool-panel'), 'The last page did not close the panel')
+  // Closing the last page folds the panel away. It stays mounted (its tabs and
+  // pages survive a later open) but must not keep covering the conversation.
+  const panelIsFolded = () => !visibleToolPanel()
+  if (panelIsFolded() || document.querySelector('.tool-panel--closing')) {
+    await until(panelIsFolded, 'The last page did not close the panel')
     panelToggle()?.click()
   }
   await until(() => document.querySelector('.tool-start'), 'The panel start page did not render')
@@ -828,8 +844,8 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   check(tabWidth >= 120 && tabWidth <= 160, `A page tab is not MCode-sized: ${tabWidth}`)
   check(firstTab?.getBoundingClientRect().height === 30, 'A page tab is not 30px high')
   check(document.querySelector('.tool-panel__tabs')?.getBoundingClientRect().height === 46, 'The panel header is not 46px high')
-  // The corner controls are one family: the panel's `+` and maximize buttons and
-  // the shell's pinned toggle share a box, a radius and a centre line.
+  // The corner controls share a box and a centre line. The shell toggle uses
+  // the same medium radius as the sidebar toggle.
   const corner = ['.tool-panel__new-tab', '.tool-panel__action', '.shell__panel-toggle button']
     .map((selector) => document.querySelector(selector))
   check(corner.every(Boolean), 'A corner control is missing')
@@ -845,15 +861,16 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
     new Set(cornerBoxes.map((box) => box.size)).size === 1,
     `The corner controls are not one size: ${JSON.stringify(cornerBoxes)}`
   )
+  const radii = getComputedStyle(document.documentElement)
+  const smallRadius = radii.getPropertyValue('--r-sm').trim()
+  const mediumRadius = radii.getPropertyValue('--r-md').trim()
   check(
-    new Set(cornerBoxes.map((box) => box.radius)).size === 1,
-    `The corner controls are not one shape: ${JSON.stringify(cornerBoxes)}`
+    cornerBoxes[0].radius === smallRadius && cornerBoxes[1].radius === smallRadius && cornerBoxes[2].radius === mediumRadius,
+    `The corner controls use the wrong radii: ${JSON.stringify(cornerBoxes)}`
   )
   const cornerLines = cornerBoxes.map((box) => box.centre)
   const panelLines = cornerLines.slice(0, 2)
-  // The panel's own controls sit in its 46px header. The shell toggle narrows
-  // its band with the panel, so all three share one centre line; when the panel
-  // is closed it keeps the title bar's 52px band instead.
+  // The fixed shell toggle band matches the panel's 46px header.
   check(
     Math.max(...panelLines) - Math.min(...panelLines) <= 0.5,
     `The panel corner controls are not on one line: ${JSON.stringify(cornerLines)}`

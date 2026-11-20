@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { highlightCode, resolveHighlightLanguage } from '../src/renderer/src/lib/highlight'
+import { highlightCode, readHighlightedCodeSync, resolveHighlightLanguage } from '../src/renderer/src/lib/highlight'
 
 test('resolveHighlightLanguage resolves PowerShell aliases, paths, and qualifiers safely', () => {
   const psInputs = [
@@ -57,4 +57,24 @@ test('highlightCode tokenizes PowerShell and Batch snippets cleanly', async () =
     assert.match(html, /class="shiki/)
     assert.match(html, /style="color:#/)
   }
+})
+
+test('highlightCode chunks large multi-line comments cleanly and honors cache: false', async () => {
+  const lines = [
+    'const header = 1',
+    '/*',
+    ...Array.from({ length: 120 }, (_, i) => `comment line ${i}`),
+    '*/',
+    'export const trailer = "done"'
+  ]
+  const code = lines.join('\n')
+  const html = await highlightCode(code, 'ts', true)
+  const renderedLines = html.match(/<span class="line">/g)?.length ?? 0
+  assert.equal(renderedLines, lines.length)
+  assert.match(html, /export/)
+  assert.equal(readHighlightedCodeSync(code, 'ts', true), html)
+
+  const partial = 'const transientStreamingSnippet = 12345'
+  await highlightCode(partial, 'ts', true, { cache: false })
+  assert.equal(readHighlightedCodeSync(partial, 'ts', true), null)
 })

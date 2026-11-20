@@ -14,6 +14,8 @@ import {
   GitBranch,
   ListTodo,
   PanelRight,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil
 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
@@ -25,25 +27,17 @@ import { Composer } from './components/Composer'
 import { AppToast } from './components/AppToast'
 import { HoverTip } from './components/HoverTip'
 import { Welcome } from './components/Welcome'
-import { SettingsDialog, type SettingsPage } from './components/SettingsDialog'
+import type { SettingsPage } from './components/SettingsDialog'
 import { AppMenuBar } from './components/AppMenuBar'
-import { AppUpdateDialog } from './components/AppUpdateDialog'
-import { BrowserView } from './components/BrowserView'
-import { ImageViewer } from './components/ImageViewer'
 import { TaskPanel } from './components/TaskPanel'
-import { SubagentPanel, type SubagentSelection } from './components/SubagentPanel'
 import { TitleSubagents } from './components/TitleSubagents'
 import { ToolPanel, type ToolPanelView } from './components/ToolPanel'
-import { ShortcutsDialog } from './components/ShortcutsDialog'
-import { ExtensionDialog } from './components/ExtensionDialog'
-import { LauncherDialog, type LauncherShell } from './components/Launcher'
+import type { LauncherShell } from './components/Launcher'
 import type { TerminalRunRequest } from './components/TerminalPanel'
 import { GoalBar } from './components/GoalBar'
-import { SessionTreeDialog } from './components/SessionTreeDialog'
-import { McpDialog } from './components/McpDialog'
 import { FeatureLoading } from './components/FeatureLoading'
-import { EditProjectDialog } from './components/EditProjectDialog'
 import { Popover } from './components/Popover'
+import { APP_UPDATE_NOTICE, noteAppUpdateCheck, type AppUpdateNotice } from './lib/app-update'
 import { matchesAnyShortcut, type ShortcutId } from './lib/shortcuts'
 import { activeConversationTitle } from './lib/live-sessions'
 import { useT } from './lib/i18n'
@@ -53,6 +47,19 @@ const InspectorPanel = lazy(() => import('./components/InspectorPanel').then((m)
 const TerminalPanel = lazy(() => import('./components/TerminalPanel').then((m) => ({ default: m.TerminalPanel })))
 const ScheduledTasksDialog = lazy(() => import('./components/ScheduledTasksDialog').then((m) => ({ default: m.ScheduledTasksDialog })))
 const Marketplace = lazy(() => import('./components/Marketplace').then((m) => ({ default: m.Marketplace })))
+const SettingsDialog = lazy(() => import('./components/SettingsDialog').then((m) => ({ default: m.SettingsDialog })))
+const AppUpdateDialog = lazy(() => import('./components/AppUpdateDialog').then((m) => ({ default: m.AppUpdateDialog })))
+const BrowserView = lazy(() => import('./components/BrowserView').then((m) => ({ default: m.BrowserView })))
+const ImageViewer = lazy(() => import('./components/ImageViewer').then((m) => ({ default: m.ImageViewer })))
+const SubagentPanel = lazy(() => import('./components/SubagentPanel').then((m) => ({ default: m.SubagentPanel })))
+const ShortcutsDialog = lazy(() => import('./components/ShortcutsDialog').then((m) => ({ default: m.ShortcutsDialog })))
+const ExtensionDialog = lazy(() => import('./components/ExtensionDialog').then((m) => ({ default: m.ExtensionDialog })))
+const LauncherDialog = lazy(() => import('./components/Launcher').then((m) => ({ default: m.LauncherDialog })))
+const SessionTreeDialog = lazy(() => import('./components/SessionTreeDialog').then((m) => ({ default: m.SessionTreeDialog })))
+const McpDialog = lazy(() => import('./components/McpDialog').then((m) => ({ default: m.McpDialog })))
+const EditProjectDialog = lazy(() => import('./components/EditProjectDialog').then((m) => ({ default: m.EditProjectDialog })))
+
+import type { SubagentSelection } from './components/SubagentPanel'
 
 /** Matches the closing animation in global.css; the panel stays mounted that long. */
 const INSPECTOR_EXIT_MS = 200
@@ -104,7 +111,12 @@ export default function App() {
   const cycleThinkingLevel = useAppStore((state) => state.cycleThinkingLevel)
   const compact = useAppStore((state) => state.compact)
   const showToast = useAppStore((state) => state.showToast)
-  const anySessionStreaming = useAppStore((state) => hasAnyStreamingThread(state.threads))
+  const threadsMetaVersion = useAppStore((state) => state.threadsMetaVersion)
+  const anySessionStreaming = useMemo(
+    () => hasAnyStreamingThread(useAppStore.getState().threads),
+    [threadsMetaVersion]
+  )
+  const hasActiveUiRequest = useAppStore((state) => Boolean(state.uiRequest))
   const t = useT()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -119,34 +131,53 @@ export default function App() {
   const [launcherOpen, setLauncherOpen] = useState(false)
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
+  const [extensionDialogMounted, setExtensionDialogMounted] = useState(false)
+  const [pendingUpdateNotice, setPendingUpdateNotice] = useState<AppUpdateNotice | null>(null)
   const deskPage = useAppStore((state) => state.deskPage)
   const setDeskPage = useAppStore((state) => state.setDeskPage)
   // A command headed for the drawer. `seq` makes the same command twice two
   // requests instead of one the drawer already ran.
   const [terminalRequest, setTerminalRequest] = useState<TerminalRunRequest | null>(null)
   const terminalSeqRef = useRef(0)
+  // A URL the Browser page was asked to load. `seq` makes the same link twice
+  // two loads instead of one the page already shows.
+  const [browserUrl, setBrowserUrl] = useState<{ url: string; seq: number } | null>(null)
+  const browserSeqRef = useRef(0)
+  // The picture the Images page was asked to show. `seq` makes asking for the
+  // same picture twice select it again even if the reader moved away.
+  const [imageRequest, setImageRequest] = useState<{ path: string; seq: number } | null>(null)
+  const imageSeqRef = useRef(0)
   /** Last automatic update check; the effect below re-runs when a run settles. */
   const lastAutomaticUpdateCheck = useRef(0)
   const [changesOpen, setChangesOpen] = useState(false)
+  // A click leaves the pointer on the corner control; the arrow stays hidden
+  // until the pointer leaves and comes back.
+  const [panelToggleHoverMuted, setPanelToggleHoverMuted] = useState(false)
   // Independent of Tools: a status card column beside the conversation.
   const [taskRailOpen, setTaskRailOpen] = useState(true)
+  const [taskPanelMounted, setTaskPanelMounted] = useState(true)
+  const taskPanelCloseTimer = useRef<number | null>(null)
   // The Files page's tree aside. The panel header owns its toggle, so the
   // control stays put whether the tree is open or folded away.
   const [fileTreeOpen, setFileTreeOpen] = useState(true)
-  // Keep the panel mounted for the closing animation; `changesOpen` alone
-  // unmounts it on the same frame and the exit would never be seen.
+  // Keep the panel mounted after its first open. Collapsing it only hides the
+  // column: the tabs, the browser page and the terminal stay alive underneath,
+  // and opening the panel again shows the same pages. Unmounting here is what
+  // used to throw the browser away.
   const [panelMounted, setPanelMounted] = useState(false)
   const [panelClosing, setPanelClosing] = useState(false)
+  const [panelConcealed, setPanelConcealed] = useState(false)
   const panelCloseTimer = useRef<number | null>(null)
   // The panel opens on its home page; its pages are a choice made per visit,
   // not a mode that follows the conversation around.
   const [panelView, setPanelView] = useState<ToolPanelView>('start')
   /**
-   * The panel's tools are tabs; the terminal is the one tab whose content is a
-   * live process. Once it has been opened it stays mounted while another tab
-   * is in front, so switching tabs does not kill the shells.
+   * The panel's tools are tabs. The terminal and the browser are live pages:
+   * once opened they stay mounted while another tab is in front, and collapsing
+   * the panel does not throw them away either.
    */
   const [terminalMounted, setTerminalMounted] = useState(false)
+  const [browserMounted, setBrowserMounted] = useState(false)
   const inspectorTab: 'changes' | 'files' =
     panelView === 'files' ? 'files' : 'changes'
   const [inspectorFile, setInspectorFile] = useState<{ path: string; line?: number } | null>(null)
@@ -171,13 +202,11 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    // Do not replace the built-in service while any conversation is using it.
-    if (
-      automaticUpdates !== true ||
-      info?.isPackaged !== false ||
-      anySessionStreaming ||
-      info?.pi.source !== 'bundled'
-    ) return
+    // A running conversation is left alone. The built-in service is only
+    // replaced in a development build; an app release is recorded either way,
+    // so the sidebar can offer the update without starting the download.
+    if (anySessionStreaming) return
+    const updateService = automaticUpdates === true && info?.isPackaged === false && info.pi.source === 'bundled'
 
     let active = true
     let running = false
@@ -188,8 +217,9 @@ export default function App() {
       try {
         const result = await window.pi.app.checkUpdate()
         if (!active) return
+        noteAppUpdateCheck(result)
         let downloaded = false
-        if (active && result.piCli.hasUpdate) {
+        if (updateService && result.piCli.hasUpdate) {
           const serviceUpdate = await window.pi.app.upgradePiCli()
           downloaded = downloaded || serviceUpdate.success
         }
@@ -215,7 +245,7 @@ export default function App() {
       active = false
       window.clearInterval(interval)
     }
-  }, [anySessionStreaming, info?.pi.source, automaticUpdates, showToast, t])
+  }, [anySessionStreaming, info?.isPackaged, info?.pi.source, automaticUpdates, showToast, t])
 
   useEffect(() => {
     if (changesOpen) {
@@ -225,14 +255,17 @@ export default function App() {
       }
       setPanelMounted(true)
       setPanelClosing(false)
+      setPanelConcealed(false)
       return
     }
     if (!panelMounted) return
     setPanelClosing(true)
     panelCloseTimer.current = window.setTimeout(() => {
       panelCloseTimer.current = null
-      setPanelMounted(false)
       setPanelClosing(false)
+      // Hide, don't unmount. The tabs and the pages they hold (the browser
+      // especially) are the reader's, and folding the panel is not closing them.
+      setPanelConcealed(true)
     }, INSPECTOR_EXIT_MS)
     return () => {
       if (panelCloseTimer.current !== null) {
@@ -250,16 +283,45 @@ export default function App() {
     if (deskPage) setChangesOpen(false)
   }, [deskPage])
 
-  // Mount the terminal on its first visit and keep it alive afterwards, so a
-  // tab switch does not throw away the shells it is running. Closing the whole
-  // panel ends them, exactly like closing the drawer used to.
+  // Mount a live page on its first visit and keep it afterwards. A tab switch
+  // or folding the panel must not reload the browser or kill the shells.
   useEffect(() => {
-    if (panelMounted && panelView === 'terminal') setTerminalMounted(true)
-  }, [panelMounted, panelView])
+    if (panelView === 'terminal') setTerminalMounted(true)
+    if (panelView === 'browser') setBrowserMounted(true)
+  }, [panelView])
 
   useEffect(() => {
-    if (!changesOpen && !panelMounted) setTerminalMounted(false)
-  }, [changesOpen, panelMounted])
+    if (taskRailOpen) {
+      if (taskPanelCloseTimer.current !== null) {
+        window.clearTimeout(taskPanelCloseTimer.current)
+        taskPanelCloseTimer.current = null
+      }
+      setTaskPanelMounted(true)
+      return
+    }
+    taskPanelCloseTimer.current = window.setTimeout(() => {
+      taskPanelCloseTimer.current = null
+      setTaskPanelMounted(false)
+    }, INSPECTOR_EXIT_MS)
+    return () => {
+      if (taskPanelCloseTimer.current !== null) {
+        window.clearTimeout(taskPanelCloseTimer.current)
+        taskPanelCloseTimer.current = null
+      }
+    }
+  }, [taskRailOpen])
+
+  useEffect(() => {
+    if (hasActiveUiRequest) setExtensionDialogMounted(true)
+  }, [hasActiveUiRequest])
+
+  useEffect(() => {
+    const onNotice = (event: Event) => {
+      setPendingUpdateNotice((event as CustomEvent<AppUpdateNotice>).detail)
+    }
+    window.addEventListener(APP_UPDATE_NOTICE, onNotice)
+    return () => window.removeEventListener(APP_UPDATE_NOTICE, onNotice)
+  }, [])
 
   // The panel is a column of the grid; it only floats over the conversation
   // when the window is too narrow to give it a column of its own.
@@ -267,6 +329,16 @@ export default function App() {
   const inspectorOverlay = windowWidth < neededWidth
 
   const toggleSidebar = useCallback(() => setSidebarOpen((value) => !value), [])
+  const toggleTaskPanel = useCallback(() => setTaskRailOpen((value) => !value), [])
+  const handleNewChat = useCallback(() => void newChat(), [newChat])
+  const handleNewProject = useCallback(
+    () => openProjectDialog({ mode: 'create' }),
+    [openProjectDialog]
+  )
+  const handleExportConversation = useCallback(() => void exportSession(), [exportSession])
+  const handleOpenSessionTree = useCallback(() => setSessionTreeOpen(true), [])
+  const handleCompact = useCallback(() => void compact(), [compact])
+  const handleOpenLauncher = useCallback(() => setLauncherOpen(true), [])
   const openSettings = useCallback((page: SettingsPage = 'general') => {
     setSettingsPage(page)
     setSettingsOpen(true)
@@ -296,6 +368,7 @@ export default function App() {
   }, [setDeskPage])
   const openChanges = useCallback(() => openInspector('changes'), [openInspector])
   const openFiles = useCallback(() => openInspector('files'), [openInspector])
+  const openBrowser = useCallback(() => openInspector('browser'), [openInspector])
   /**
    * One child's transcript, opened on the Subagents page of the side panel.
    * The title badge and the task rail share this door, so neither keeps a
@@ -335,12 +408,51 @@ export default function App() {
   )
   const openMarketplace = useCallback(() => setDeskPage('marketplace'), [setDeskPage])
   const closeLauncher = useCallback(() => setLauncherOpen(false), [])
+  const closeSettings = useCallback(() => setSettingsOpen(false), [])
+  const closeShortcuts = useCallback(() => setShortcutsOpen(false), [])
+  const closeSessionTree = useCallback(() => setSessionTreeOpen(false), [])
+  const closeMcp = useCallback(() => setMcpOpen(false), [])
+  const closeChanges = useCallback(() => setChangesOpen(false), [])
+  const handlePanelViewChange = useCallback((view: ToolPanelView) => {
+    setPanelView(view)
+    // The Files page keeps the open file while the reader visits
+    // another page; its tree is the way back to the same preview.
+    if (view !== 'files') setInspectorFile(null)
+  }, [])
+  const handlePanelResizeEnd = useCallback(
+    (width: number) => {
+      setDraggedWidth(null)
+      void updateSettings({ drawerWidth: width })
+    },
+    [updateSettings]
+  )
+  const toggleFileTree = useCallback(() => setFileTreeOpen((open) => !open), [])
   const handleSidebarResizeEnd = useCallback(
     (nextWidth: number) => {
       setDraggedSidebar(null)
       void updateSettings({ sidebarWidth: nextWidth })
     },
     [updateSettings]
+  )
+  const togglePanelFromCorner = useCallback(() => {
+    if (changesOpen) setChangesOpen(false)
+    else openInspector('start')
+  }, [changesOpen, openInspector])
+  const filesPanelAction = useMemo(
+    () => (
+      <button
+        type="button"
+        className="tool-panel__action"
+        aria-label={fileTreeOpen ? t('Hide file tree') : t('Show file tree')}
+        title={fileTreeOpen ? t('Hide file tree') : t('Show file tree')}
+        aria-pressed={fileTreeOpen}
+        data-active={fileTreeOpen || undefined}
+        onClick={toggleFileTree}
+      >
+        <FolderTree size={16} strokeWidth={1.7} />
+      </button>
+    ),
+    [fileTreeOpen, t, toggleFileTree]
   )
   const launcherShell = useMemo<LauncherShell>(
     () => ({
@@ -598,6 +710,27 @@ export default function App() {
       // A desk page owns the content row; opening a conversation tool has to
       // leave it first, or the panel would be drawn over an unrelated page.
       setDeskPage(null)
+      if (request?.tab === 'browser') {
+        // A link the reader chose to open inside the app: switch the panel to
+        // its Browser page and hand that page the URL to load.
+        if (request.url) {
+          browserSeqRef.current += 1
+          setBrowserUrl({ url: request.url, seq: browserSeqRef.current })
+        }
+        setPanelView('browser')
+        setChangesOpen(true)
+        return
+      }
+      if (request?.tab === 'images') {
+        // A deliverable picture goes to the renderer, not the Files viewer.
+        if (request.image) {
+          imageSeqRef.current += 1
+          setImageRequest({ path: request.image, seq: imageSeqRef.current })
+        }
+        setPanelView('images')
+        setChangesOpen(true)
+        return
+      }
       setPanelView(request?.tab === 'files' ? 'files' : 'changes')
       // A request without a file means the changes list; keeping the previous
       // preview would leave the panel showing that file instead of the list.
@@ -677,7 +810,7 @@ export default function App() {
     <div
       className="app"
       data-sidebar={sidebarOpen ? 'open' : 'collapsed'}
-      data-drawer={panelMounted ? 'open' : 'closed'}
+      data-drawer={panelMounted && !panelConcealed ? 'open' : 'closed'}
       data-inspector={inspectorOverlay ? 'overlay' : 'docked'}
       data-empty={showThread ? 'false' : 'true'}
       style={
@@ -694,21 +827,21 @@ export default function App() {
         hasItems={hasItems}
         canCompact={hasItems && status.phase === 'ready' && !isCompacting}
         onToggleSidebar={toggleSidebar}
-        onToggleTaskPanel={() => setTaskRailOpen((open) => !open)}
-        onNewChat={() => void newChat()}
-        onNewProject={() => openProjectDialog({ mode: 'create' })}
-        onExportConversation={() => void exportSession()}
+        onToggleTaskPanel={toggleTaskPanel}
+        onNewChat={handleNewChat}
+        onNewProject={handleNewProject}
+        onExportConversation={handleExportConversation}
         onOpenChanges={openChanges}
         onOpenFiles={openFiles}
-        onOpenBrowser={() => openInspector('browser')}
+        onOpenBrowser={openBrowser}
         onOpenSubagents={openSubagentPanel}
         onToggleTerminal={toggleTerminal}
-        onOpenSessionTree={() => setSessionTreeOpen(true)}
+        onOpenSessionTree={handleOpenSessionTree}
         onSearchConversation={searchConversation}
-        onCompact={() => void compact()}
+        onCompact={handleCompact}
         onOpenSettings={openSettings}
         onOpenShortcuts={openShortcuts}
-        onOpenLauncher={() => setLauncherOpen(true)}
+        onOpenLauncher={handleOpenLauncher}
         onOpenAbout={openAbout}
       />
 
@@ -901,7 +1034,7 @@ export default function App() {
               aria-label={t('Task status')}
             >
               <div className="task-rail__body">
-                <TaskPanel />
+                {taskPanelMounted ? <TaskPanel /> : null}
               </div>
             </aside>
           ) : null}
@@ -910,55 +1043,36 @@ export default function App() {
 
       {panelMounted ? (
         <>
-          {inspectorOverlay ? (
+          {inspectorOverlay && !panelConcealed ? (
             <button
               className="inspector-scrim"
               data-closing={panelClosing || undefined}
               tabIndex={-1}
               aria-label={t('Close the inspector')}
-              onClick={() => setChangesOpen(false)}
+              onClick={closeChanges}
             />
           ) : null}
           <ToolPanel
             view={panelView}
-            onViewChange={(view) => {
-              setPanelView(view)
-              // The Files page keeps the open file while the reader visits
-              // another page; its tree is the way back to the same preview.
-              if (view !== 'files') setInspectorFile(null)
+            onViewChange={handlePanelViewChange}
+            onViewClosed={(closed) => {
+              if (closed === 'browser') setBrowserMounted(false)
+              if (closed === 'terminal') setTerminalMounted(false)
             }}
+            concealed={panelConcealed}
             className={[inspectorOverlay ? 'tool-panel--overlay' : '', panelClosing ? 'tool-panel--closing' : '']
               .filter(Boolean)
               .join(' ')}
             overlay={inspectorOverlay}
             width={drawerWidth}
-            onClose={() => setChangesOpen(false)}
+            onClose={closeChanges}
             onResize={setDraggedWidth}
-            onResizeEnd={(width) => {
-              setDraggedWidth(null)
-              void updateSettings({ drawerWidth: width })
-            }}
-            actions={
-              panelView === 'files' ? (
-                <button
-                  type="button"
-                  className="tool-panel__action"
-                  aria-label={fileTreeOpen ? t('Hide file tree') : t('Show file tree')}
-                  title={fileTreeOpen ? t('Hide file tree') : t('Show file tree')}
-                  aria-pressed={fileTreeOpen}
-                  data-active={fileTreeOpen || undefined}
-                  onClick={() => setFileTreeOpen((open) => !open)}
-                >
-                  <FolderTree size={16} strokeWidth={1.7} />
-                </button>
-              ) : null
-            }
+            onResizeEnd={handlePanelResizeEnd}
+            actions={panelView === 'files' ? filesPanelAction : null}
           >
             <Suspense fallback={<FeatureLoading />}>
-              {panelView === 'terminal' ? null : panelView === 'browser' ? (
-                <BrowserView />
-              ) : panelView === 'images' ? (
-                <ImageViewer />
+              {panelView === 'terminal' || panelView === 'browser' ? null : panelView === 'images' ? (
+                <ImageViewer request={imageRequest} />
               ) : panelView === 'subagents' ? (
                 <SubagentPanel selected={subagentSelection} onSelectTask={setSubagentSelection} />
               ) : panelView === 'files' || panelView === 'changes' ? (
@@ -968,11 +1082,21 @@ export default function App() {
                   initialTab={inspectorTab}
                   file={inspectorFile}
                   onOpenFile={setInspectorFile}
-                  onClose={() => setChangesOpen(false)}
+                  onClose={closeChanges}
                   fileTreeOpen={fileTreeOpen}
                 />
               ) : null}
             </Suspense>
+            {browserMounted ? (
+              <div
+                className="tool-panel__browser"
+                data-active={panelView === 'browser' || undefined}
+              >
+                <Suspense fallback={<FeatureLoading />}>
+                  <BrowserView request={browserUrl} />
+                </Suspense>
+              </div>
+            ) : null}
             {terminalMounted ? (
               <div
                 className="tool-panel__terminal"
@@ -982,7 +1106,7 @@ export default function App() {
                   <TerminalPanel
                     embedded
                     request={panelView === 'terminal' ? terminalRequest : null}
-                    onClose={() => setChangesOpen(false)}
+                    onClose={closeChanges}
                   />
                 </Suspense>
               </div>
@@ -1003,42 +1127,81 @@ export default function App() {
           a tools-panel button over the plugins or schedule page would be a
           control for a surface that is not on screen. */}
       {deskPage ? null : (
-        <div className="shell__panel-toggle">
+        <div
+          className="shell__panel-toggle"
+          data-hover-muted={panelToggleHoverMuted || undefined}
+          onMouseLeave={() => setPanelToggleHoverMuted(false)}
+        >
           <button
-            className="icon-btn"
+            className="icon-btn shell__panel-toggle__btn"
             type="button"
+            data-active={changesOpen}
             aria-label={t(changesOpen ? 'Hide tools panel' : 'Show tools panel')}
             title={t(changesOpen ? 'Hide tools panel' : 'Show tools panel')}
             aria-expanded={changesOpen}
-            onClick={() => (changesOpen ? setChangesOpen(false) : openInspector('start'))}
+            onClick={(event) => {
+              if (event.detail > 0) setPanelToggleHoverMuted(true)
+              togglePanelFromCorner()
+            }}
           >
-            <PanelRight size={16} strokeWidth={1.7} />
+            <span className="shell__panel-toggle__icon" aria-hidden="true">
+              {/* The plain outline is always drawn. The arrow-carrying
+                  glyphs are stacked over it and only fade in under the
+                  pointer, so the corner stays quiet at rest. */}
+              <PanelRight className="shell__panel-toggle__glyph" size={16} strokeWidth={1.7} />
+              <PanelRightOpen className="shell__panel-toggle__glyph shell__panel-toggle__glyph--closed" size={16} strokeWidth={1.7} />
+              <PanelRightClose className="shell__panel-toggle__glyph shell__panel-toggle__glyph--open" size={16} strokeWidth={1.7} />
+            </span>
           </button>
         </div>
       )}
       {settingsOpen ? (
-        <SettingsDialog
-          initialPage={settingsPage}
-          onClose={() => setSettingsOpen(false)}
-        />
+        <Suspense fallback={null}>
+          <SettingsDialog
+            initialPage={settingsPage}
+            onClose={closeSettings}
+          />
+        </Suspense>
       ) : null}
-      {shortcutsOpen ? <ShortcutsDialog onClose={() => setShortcutsOpen(false)} /> : null}
+      {shortcutsOpen ? (
+        <Suspense fallback={null}>
+          <ShortcutsDialog onClose={closeShortcuts} />
+        </Suspense>
+      ) : null}
       {launcherOpen ? (
-        <LauncherDialog shell={launcherShell} onClose={closeLauncher} />
+        <Suspense fallback={null}>
+          <LauncherDialog shell={launcherShell} onClose={closeLauncher} />
+        </Suspense>
       ) : null}
       {sessionTreeOpen ? (
-        <SessionTreeDialog onClose={() => setSessionTreeOpen(false)} />
+        <Suspense fallback={null}>
+          <SessionTreeDialog onClose={closeSessionTree} />
+        </Suspense>
       ) : null}
-      {mcpOpen ? <McpDialog onClose={() => setMcpOpen(false)} /> : null}
+      {mcpOpen ? (
+        <Suspense fallback={null}>
+          <McpDialog onClose={closeMcp} />
+        </Suspense>
+      ) : null}
       {projectDialog?.open ? (
-        <EditProjectDialog
-          mode={projectDialog.mode}
-          project={projectDialog.project}
-          onClose={closeProjectDialog}
-        />
+        <Suspense fallback={null}>
+          <EditProjectDialog
+            mode={projectDialog.mode}
+            project={projectDialog.project}
+            onClose={closeProjectDialog}
+          />
+        </Suspense>
       ) : null}
-      <ExtensionDialog />
-      <AppUpdateDialog />
+      {hasActiveUiRequest || extensionDialogMounted ? (
+        <Suspense fallback={null}>
+          <ExtensionDialog />
+        </Suspense>
+      ) : null}
+      {pendingUpdateNotice ? (
+        <Suspense fallback={null}>
+          <AppUpdateDialog initialNotice={pendingUpdateNotice} />
+        </Suspense>
+      ) : null}
       <HoverTip />
       <AppToast />
     </div>

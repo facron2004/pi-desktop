@@ -52,9 +52,12 @@ export const COMPOSER_DRAFTS_STORAGE_KEY = 'pi-desktop.composer-drafts.v1'
 type DraftStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 const EMPTY_SNAPSHOT: ComposerDraftSnapshot = { drafts: {}, lastDraftKeys: {} }
+const snapshotCache = new WeakMap<DraftStorage, { raw: string; snapshot: ComposerDraftSnapshot }>()
 
 function browserStorage(): DraftStorage | undefined {
-  return typeof localStorage === 'undefined' ? undefined : localStorage
+  if (typeof localStorage !== 'undefined') return localStorage
+  if (typeof window !== 'undefined') return window.localStorage
+  return undefined
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -134,6 +137,13 @@ export function loadComposerDrafts(storage = browserStorage()): ComposerDraftSna
   try {
     const raw = storage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)
     if (!raw) return EMPTY_SNAPSHOT
+    const cached = snapshotCache.get(storage)
+    if (cached && cached.raw === raw) {
+      return {
+        drafts: { ...cached.snapshot.drafts },
+        lastDraftKeys: { ...cached.snapshot.lastDraftKeys }
+      }
+    }
     const parsed = record(JSON.parse(raw))
     if (!parsed || parsed.version !== 1) return EMPTY_SNAPSHOT
     const draftSource = record(parsed.drafts) ?? {}
@@ -148,7 +158,12 @@ export function loadComposerDrafts(storage = browserStorage()): ComposerDraftSna
         typeof entry[1] === 'string' && entry[1].startsWith('draft:')
       )
     )
-    return { drafts, lastDraftKeys }
+    const snapshot = { drafts, lastDraftKeys }
+    snapshotCache.set(storage, { raw, snapshot })
+    return {
+      drafts: { ...drafts },
+      lastDraftKeys: { ...lastDraftKeys }
+    }
   } catch {
     return EMPTY_SNAPSHOT
   }
@@ -174,15 +189,21 @@ export function saveComposerDrafts(
 ): DraftSaveResult {
   if (!storage) return 'failed'
   const write = (includeImages: boolean): boolean => {
-    const drafts = Object.fromEntries(
-      Object.entries(snapshot.drafts).map(([key, draft]) => [key, serializableDraft(draft, includeImages)])
-    )
+    const drafts: Record<string, ComposerDraft> = {}
+    for (const [key, draft] of Object.entries(snapshot.drafts)) {
+      drafts[key] = serializableDraft(draft, includeImages)
+    }
+    const serialized = JSON.stringify({
+      version: 1,
+      drafts,
+      lastDraftKeys: snapshot.lastDraftKeys
+    })
     try {
-      storage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
-        version: 1,
-        drafts,
-        lastDraftKeys: snapshot.lastDraftKeys
-      }))
+      storage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, serialized)
+      snapshotCache.set(storage, {
+        raw: serialized,
+        snapshot: { drafts, lastDraftKeys: { ...snapshot.lastDraftKeys } }
+      })
       return true
     } catch {
       return false

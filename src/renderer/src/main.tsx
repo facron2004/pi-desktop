@@ -7,6 +7,7 @@ import './styles/global.css'
 import './styles/ui-polish.css'
 import './styles/plan.css'
 import './styles/base/focus.css'
+import './styles/active-bubble.css'
 
 const container = document.getElementById('root')
 if (!container) throw new Error('Root container is missing')

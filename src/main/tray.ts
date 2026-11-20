@@ -1,9 +1,38 @@
-import { app, Menu, Tray, type BrowserWindow } from 'electron'
+import path from 'node:path'
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  screen,
+  Tray,
+  type BrowserWindowConstructorOptions
+} from 'electron'
+import type { TrayPopupState } from '@shared/types'
 import { trayIconImage } from './app-icon'
+import { resolveRendererEntry } from './navigation-policy'
 
 let tray: Tray | null = null
+let popup: BrowserWindow | null = null
 let quitting = false
 let lockHeld = false
+
+/** Cap each section so the popup keeps a predictable, modest height. */
+const MAX_RUNNING = 3
+const MAX_RECENT = 3
+const POPUP_WIDTH = 300
+const POPUP_MIN_HEIGHT = 120
+const POPUP_MAX_HEIGHT = 520
+
+interface TrayOptions {
+  language?: string
+  theme?: 'dark' | 'light'
+  show: () => void
+  openConversation: (key: string) => void
+}
+
+/** Kept so the popup and IPC handlers can act without new arguments. */
+let lastOptions: TrayOptions | null = null
+let conversations: import('@shared/types').TrayConversation[] = []
 
 function harnessProcess(): boolean {
   // Only the screenshot harness has to start beside a running copy. The
@@ -49,15 +78,197 @@ export function isQuitting(): boolean {
 }
 
 function destroyTray(): void {
+  if (popup && !popup.isDestroyed()) popup.destroy()
+  popup = null
   if (!tray) return
   tray.destroy()
   tray = null
+  lastOptions = null
 }
 
-function menuLabels(language: string | undefined): { show: string; quit: string } {
-  if (language === 'zh-CN') return { show: '显示主窗口', quit: '退出' }
-  return { show: 'Show window', quit: 'Quit' }
+function popupLabels(language: string | undefined): TrayPopupState['labels'] {
+  if (language === 'zh-CN') {
+    return {
+      show: '显示主窗口',
+      running: '进行中的对话',
+      recent: '最近对话',
+      quit: '退出',
+      empty: '暂无对话'
+    }
+  }
+  return {
+    show: 'Show window',
+    running: 'In progress',
+    recent: 'Recent conversations',
+    quit: 'Quit',
+    empty: 'No conversations yet'
+  }
 }
+
+function currentState(): TrayPopupState {
+  const running = conversations.filter((item) => item.isStreaming).slice(0, MAX_RUNNING)
+  const recent = conversations.filter((item) => !item.isStreaming).slice(0, MAX_RECENT)
+  return {
+    running,
+    recent,
+    labels: popupLabels(lastOptions?.language)
+  }
+}
+
+function sendToPopup(channel: string, payload: unknown): void {
+  if (!popup || popup.isDestroyed()) return
+  const contents = popup.webContents
+  if (!contents || contents.isDestroyed()) return
+  try {
+    contents.send(channel, payload)
+  } catch (error) {
+    console.error(`[pi-desktop] could not deliver "${channel}" to tray popup:`, error)
+  }
+}
+
+/** Replace the conversations offered by the popup. */
+export function setTrayConversations(list: import('@shared/types').TrayConversation[]): void {
+  conversations = Array.isArray(list)
+    ? list.slice(0, MAX_RUNNING + MAX_RECENT + 4)
+    : []
+  sendToPopup('tray-popup:state', currentState())
+}
+
+function popupUrl(theme: 'dark' | 'light'): { load: () => Promise<void> } {
+  // app-main and this module are bundled into out/main/chunks after the setup
+  // entry split, so __dirname is not the app root. Resolve from getAppPath().
+  const entryFile = path.join(app.getAppPath(), 'out', 'renderer', 'tray.html')
+  const entry = resolveRendererEntry(app.isPackaged, process.env.ELECTRON_RENDERER_URL, entryFile)
+  if (entry.developmentUrl) {
+    const url = new URL(entry.developmentUrl)
+    // The dev server URL points at the app root; the popup is its own HTML
+    // entry. Resolve it against the root so dev loads the popup, not index.
+    url.pathname = new URL('tray.html', url).pathname
+    url.searchParams.set('piDesktopTheme', theme)
+    return { load: () => popup!.loadURL(url.toString()) }
+  }
+  return { load: () => popup!.loadFile(entryFile, { query: { piDesktopTheme: theme } }) }
+}
+
+function positionPopup(): void {
+  if (!popup || popup.isDestroyed() || !tray || tray.isDestroyed()) return
+  const bounds = tray.getBounds()
+  if (!bounds || bounds.width === 0) return
+  const display = screen.getDisplayMatching(bounds)
+  const area = display.workArea
+  const [width, height] = popup.getContentSize()
+
+  let x = Math.round(bounds.x + bounds.width / 2 - width / 2)
+  x = Math.max(area.x, Math.min(x, area.x + area.width - width))
+
+  // Prefer opening above the icon (taskbar is usually at the bottom); fall
+  // back below when there is more room there.
+  const spaceAbove = bounds.y - area.y
+  const spaceBelow = area.y + area.height - (bounds.y + bounds.height)
+  let y: number
+  if (spaceBelow >= height + 8 || spaceBelow >= spaceAbove) {
+    y = bounds.y + bounds.height + 8
+  } else {
+    y = bounds.y - height - 8
+  }
+  y = Math.max(area.y, Math.min(y, area.y + area.height - height))
+  popup.setPosition(x, y)
+}
+
+function createPopup(): boolean {
+  if (popup && !popup.isDestroyed()) return true
+  if (!lastOptions) return false
+  const theme = lastOptions.theme ?? 'dark'
+  const options: BrowserWindowConstructorOptions = {
+    width: POPUP_WIDTH,
+    height: POPUP_MIN_HEIGHT,
+    show: false,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    transparent: true,
+    alwaysOnTop: true,
+    hasShadow: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(app.getAppPath(), 'out', 'preload', 'index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  }
+  popup = new BrowserWindow(options)
+  // A transparent frameless window with no drag region: it lives briefly by
+  // the tray icon and closes on blur/Escape, so the OS drag strip is moot.
+  popup.on('closed', () => {
+    popup = null
+  })
+  popup.on('blur', () => {
+    // Clicking the icon again or elsewhere dismisses the transient popup.
+    if (popup && !popup.isDestroyed() && popup.isVisible()) popup.hide()
+  })
+  const loader = popupUrl(theme)
+  void loader.load()
+  return true
+}
+
+function showPopup(): void {
+  if (quitting) return
+  if (!createPopup()) return
+  if (!popup || popup.isDestroyed()) return
+  if (popup.isVisible()) {
+    popup.hide()
+    return
+  }
+  sendToPopup('tray-popup:state', currentState())
+  positionPopup()
+  popup.show()
+  popup.focus()
+}
+
+function hidePopup(): void {
+  if (!popup || popup.isDestroyed()) return
+  if (popup.isVisible()) popup.hide()
+}
+
+/**
+ * Keep an already-open popup in sync with a settings change. Called after the
+ * options are updated in `syncTray`.
+ */
+function refreshPopup(): void {
+  if (!popup || popup.isDestroyed() || !popup.isVisible()) return
+  sendToPopup('tray-popup:state', currentState())
+}
+
+// --- Popup-originated IPC ---------------------------------------------------
+
+ipcMain.handle('tray-popup:get-state', () => currentState())
+ipcMain.on('tray-popup:set-height', (_event, height: unknown) => {
+  if (!popup || popup.isDestroyed() || typeof height !== 'number' || !Number.isFinite(height)) return
+  const next = Math.max(POPUP_MIN_HEIGHT, Math.min(Math.round(height), POPUP_MAX_HEIGHT))
+  const [width] = popup.getContentSize()
+  if (popup.getContentSize()[1] === next) return
+  popup.setContentSize(width, next)
+  positionPopup()
+})
+ipcMain.on('tray-popup:open-conversation', (_event, key: unknown) => {
+  hidePopup()
+  if (typeof key !== 'string' || !lastOptions) return
+  lastOptions.openConversation(key)
+})
+ipcMain.on('tray-popup:show-window', () => {
+  hidePopup()
+  lastOptions?.show()
+})
+ipcMain.on('tray-popup:quit', () => {
+  hidePopup()
+  app.quit()
+})
+ipcMain.on('tray-popup:close', () => hidePopup())
 
 /**
  * Closing the window hides it only while the tray icon is actually there.
@@ -71,11 +282,7 @@ export function shouldHideToTray(): boolean {
   return true
 }
 
-export function syncTray(options: {
-  enabled: boolean
-  language?: string
-  show: () => void
-}): void {
+export function syncTray(options: TrayOptions & { enabled: boolean }): void {
   // A settings write or a second launch can arrive while the app is quitting;
   // rebuilding the tray then would leave a ghost icon beside a closing app.
   if (quitting || !options.enabled) {
@@ -88,21 +295,22 @@ export function syncTray(options: {
     destroyTray()
     return
   }
+  lastOptions = {
+    language: options.language,
+    theme: options.theme,
+    show: options.show,
+    openConversation: options.openConversation
+  }
   if (!tray || tray.isDestroyed()) {
     tray = new Tray(image)
     tray.setToolTip('Pi Desktop')
     // The hidden window leaves the taskbar, so the icon itself has to open it.
     tray.on('click', options.show)
     tray.on('double-click', options.show)
+    // Right-click draws the custom popup instead of a native context menu.
+    tray.on('right-click', showPopup)
   } else {
     tray.setImage(image)
   }
-  const labels = menuLabels(options.language)
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: labels.show, click: options.show },
-      { type: 'separator' },
-      { label: labels.quit, click: () => app.quit() }
-    ])
-  )
+  refreshPopup()
 }

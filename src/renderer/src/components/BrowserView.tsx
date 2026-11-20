@@ -11,7 +11,8 @@ import { useT } from '../lib/i18n'
  * the app, so a page that is looked at can never reach the app's runtime.
  *
  * The history buttons follow the view's own events rather than a local guess —
- * a page can navigate itself.
+ * a page can navigate itself. The mouse's back and forward keys are not clicks
+ * the page owns; the main process walks this view's history for them.
  */
 
 interface WebviewElement extends HTMLElement {
@@ -26,7 +27,14 @@ interface WebviewElement extends HTMLElement {
 
 const HOME = 'https://www.google.com/'
 
-export function BrowserView() {
+/** A URL the app shell asked this page to load, with a counter so the same
+ *  address requested twice still counts as two requests. */
+export interface BrowserRequest {
+  url: string
+  seq: number
+}
+
+export function BrowserView({ request }: { request?: BrowserRequest | null } = {}) {
   const t = useT()
   const viewRef = useRef<WebviewElement | null>(null)
   const [address, setAddress] = useState('')
@@ -35,6 +43,16 @@ export function BrowserView() {
   const [canForward, setCanForward] = useState(false)
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
+
+  // A link the reader opened inside the app lands here. The address box shows
+  // it at once, and the view is remounted on `seq` so a repeated request for
+  // the same page still performs a navigation instead of looking ignored.
+  const requestedUrl = request?.url ?? ''
+  useEffect(() => {
+    if (!requestedUrl) return
+    setAddress(requestedUrl)
+    setFailed(false)
+  }, [requestedUrl, request?.seq])
 
   const syncNavigation = useCallback((view: WebviewElement) => {
     try {
@@ -173,7 +191,11 @@ export function BrowserView() {
       </form>
 
       <div className="browser-pane__view">
-        <webview ref={viewRef as never} src={HOME} />
+        <webview
+          key={`browser-${request?.seq ?? 0}`}
+          ref={viewRef as never}
+          src={requestedUrl || HOME}
+        />
       </div>
 
       {failed ? (

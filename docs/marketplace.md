@@ -33,8 +33,16 @@ in a handful of classes. `src/main/pi-catalog.ts` parses that markup, and it is
 deliberately tolerant — attributes first, visible text as a fallback — so a small
 markup change loses a field rather than the whole catalog. Search and type
 filters are sent to the server (the catalog holds thousands of packages, so a
-local filter over page 1 would hide most of them); pages are cached in memory for
-five minutes and a failed request falls back to the cached page.
+local filter over page 1 would hide most of them).
+
+A cold page takes seconds on the server, so pages are cached twice: in memory
+and in `<userData>/marketplace-catalog.json`. A page younger than five minutes
+is returned as is; an older one (up to a day) is still painted immediately while
+a fresh copy is fetched in the background for the next open, and a failed
+request falls back to the cached page. A manual refresh waits for the network.
+The app also prefetches the landing page a few seconds after the window is up
+(harness runs excepted), so the first visit in a session is usually already
+warm.
 
 The bundled `marketplace-data.ts` snapshot and the GitHub topic search in
 `src/main/marketplace.ts` are still there — the install paths, the package
@@ -46,7 +54,7 @@ bundled GitHub entry shows stars and forks.
 
 | Path | Role |
 |---|---|
-| `src/main/pi-catalog.ts` | Fetches and parses `pi.dev/packages`: search, type, sort, paging, the five-minute page cache |
+| `src/main/pi-catalog.ts` | Fetches and parses `pi.dev/packages`: search, type, sort, paging, the memory + disk page cache and stale-while-revalidate |
 | `src/shared/marketplace.ts` | `MarketplaceEntry` / `MarketplaceSnapshot` / `PiCatalogPage` types plus the pure filter, sort and download-format helpers |
 | `src/shared/marketplace-data.ts` | The bundled GitHub snapshot (kept for the install path and its data contract test) |
 | `src/main/marketplace.ts` | `listInstalledMarketplaceIds`, `installNpmPackage`, `installGitRepository`, `createResource`, the package manager and MCP helpers |

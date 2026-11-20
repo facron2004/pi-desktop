@@ -6,7 +6,16 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { downloadAppInstaller, launchAppInstaller, supportsAppUpdate } from '../src/main/app-update-installer'
-import { APP_UPDATE_NOTICE, checkForAppUpdates, showAppUpdate } from '../src/renderer/src/lib/app-update'
+import {
+  APP_UPDATE_NOTICE,
+  availableAppUpdate,
+  checkForAppUpdates,
+  lastAppUpdateCheck,
+  noteAppUpdateCheck,
+  showAppUpdate,
+  subscribeAppUpdateCheck,
+  subscribeAvailableAppUpdate
+} from '../src/renderer/src/lib/app-update'
 import {
   APP_RELEASE_PAGE_URL,
   checkAppVersion,
@@ -201,6 +210,8 @@ test('automatic installation requires an installed Windows build', async () => {
     assert.equal(supportsAppUpdate(true, 'win32', executable), false)
     await writeFile(path.join(directory, 'Uninstall Pi Desktop.exe'), '')
     assert.equal(supportsAppUpdate(true, 'win32', executable), true)
+    await writeFile(path.join(directory, 'install.json'), '{}')
+    assert.equal(supportsAppUpdate(true, 'win32', executable), true)
     assert.equal(supportsAppUpdate(false, 'win32', executable), false)
     assert.equal(supportsAppUpdate(true, 'darwin', executable), false)
   } finally {
@@ -208,11 +219,11 @@ test('automatic installation requires an installed Windows build', async () => {
   }
 })
 
-test('launches the verified NSIS file without a shell and with restart flags', async () => {
+test('launches the verified setup file without a shell and with restart flags', async () => {
   const child = Object.assign(new EventEmitter(), { unref() {} })
   const spawnProcess = ((file, args, options) => {
     assert.equal(file, 'C:/verified update/installer.exe')
-    assert.deepEqual(args, ['--updated', '/S', '--force-run'])
+    assert.deepEqual(args, ['--updated', '/S', '--force-run', `--install-dir=${path.dirname(process.execPath)}`])
     assert.deepEqual(options, { detached: true, stdio: 'ignore', windowsHide: true })
     queueMicrotask(() => child.emit('spawn'))
     return child
@@ -252,7 +263,66 @@ test('manual checks share one request and one card; failures remain retryable', 
     const count = calls
     showAppUpdate(result)
     assert.equal(calls, count)
+    assert.deepEqual(availableAppUpdate(), { current: '0.11.1', latest: '0.11.2' })
+    // The manual result is kept in full, not just the sidebar's summary.
+    assert.equal(lastAppUpdateCheck(), result)
   } finally {
     Object.assign(globalThis, { window: previousWindow })
+  }
+})
+
+test('a persisted check survives resubscribing and a failed check keeps it', () => {
+  const seen: unknown[] = []
+  const result = {
+    app: { current: '0.11.1', latest: '0.11.2', hasUpdate: true },
+    piCli: { current: '1.5.0', hasUpdate: false }
+  }
+  const stop = subscribeAppUpdateCheck((value) => seen.push(value))
+  try {
+    noteAppUpdateCheck(result)
+    assert.equal(lastAppUpdateCheck(), result)
+    // Closing and reopening settings is a fresh subscriber that reads
+    // lastAppUpdateCheck() on mount; the version is still there.
+    const stopReopened = subscribeAppUpdateCheck(() => {})
+    assert.equal(lastAppUpdateCheck(), result)
+    stopReopened()
+    // A network failure keeps the last good reading; a check that says the
+    // running version is current clears it.
+    noteAppUpdateCheck({
+      app: { current: '0.11.1', hasUpdate: false, error: 'offline' },
+      piCli: { current: '1.5.0', hasUpdate: false }
+    })
+    assert.equal(lastAppUpdateCheck(), result)
+    const current = { app: { current: '0.11.2', hasUpdate: false }, piCli: { current: '1.5.0', hasUpdate: false } }
+    noteAppUpdateCheck(current)
+    assert.equal(lastAppUpdateCheck(), current)
+    assert.deepEqual(seen, [result, current])
+  } finally {
+    stop()
+  }
+})
+
+test('an app release is remembered for the sidebar and a failed check keeps it', () => {
+  const seen: Array<{ latest: string } | null> = []
+  const stop = subscribeAvailableAppUpdate((update) => seen.push(update ? { latest: update.latest } : null))
+  try {
+    noteAppUpdateCheck({
+      app: { current: '0.11.5', latest: '0.12.0', hasUpdate: true },
+      piCli: { current: '1.5.0', hasUpdate: false }
+    })
+    assert.deepEqual(availableAppUpdate(), { current: '0.11.5', latest: '0.12.0' })
+    noteAppUpdateCheck({
+      app: { current: '0.11.5', hasUpdate: false, error: 'offline' },
+      piCli: { current: '1.5.0', hasUpdate: false }
+    })
+    assert.equal(availableAppUpdate()?.latest, '0.12.0')
+    noteAppUpdateCheck({
+      app: { current: '0.12.0', latest: '0.12.0', hasUpdate: false },
+      piCli: { current: '1.5.0', hasUpdate: false }
+    })
+    assert.equal(availableAppUpdate(), null)
+    assert.deepEqual(seen, [{ latest: '0.12.0' }, null])
+  } finally {
+    stop()
   }
 })

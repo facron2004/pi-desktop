@@ -17,6 +17,8 @@ import { icoPngFrame } from './ico'
 export const APP_USER_MODEL_ID = 'dev.pi.desktop.v3'
 
 let warned = false
+const resolvedFileCache = new Map<string, string | null>()
+let cachedWindowIcon: { appPath: string; image: NativeImage | undefined } | undefined
 
 function iconCandidates(name: string): string[] {
   return [
@@ -29,13 +31,17 @@ function iconCandidates(name: string): string[] {
 }
 
 function firstExisting(name: string): string | undefined {
-  return iconCandidates(name).find((file) => existsSync(file))
+  const key = `${app.getAppPath()}\0${name}`
+  if (resolvedFileCache.has(key)) return resolvedFileCache.get(key) ?? undefined
+  const found = iconCandidates(name).find((file) => existsSync(file))
+  const resolved = found ? path.resolve(found) : undefined
+  resolvedFileCache.set(key, resolved ?? null)
+  return resolved
 }
 
 /** Absolute .ico path for the Windows shell. Undefined when the file is absent. */
 export function windowsIconFile(): string | undefined {
-  const file = firstExisting('icon-geometric.ico')
-  return file ? path.resolve(file) : undefined
+  return firstExisting('icon-geometric.ico')
 }
 
 function imageFromFile(file: string | undefined): NativeImage | undefined {
@@ -46,14 +52,25 @@ function imageFromFile(file: string | undefined): NativeImage | undefined {
 
 /** Window and Alt-Tab icon. The taskbar icon is applied separately on Windows. */
 export function windowIconImage(): NativeImage | undefined {
+  const appPath = app.getAppPath()
+  if (cachedWindowIcon && cachedWindowIcon.appPath === appPath) {
+    return cachedWindowIcon.image
+  }
   const fromIco = imageFromFile(windowsIconFile())
-  if (fromIco) return fromIco
+  if (fromIco) {
+    cachedWindowIcon = { appPath, image: fromIco }
+    return fromIco
+  }
   const fromPng = imageFromFile(firstExisting('icon-geometric.png'))
-  if (fromPng) return fromPng
+  if (fromPng) {
+    cachedWindowIcon = { appPath, image: fromPng }
+    return fromPng
+  }
   if (!warned) {
     warned = true
     console.error('[pi-desktop] application icon missing; the taskbar keeps the Electron icon')
   }
+  cachedWindowIcon = { appPath, image: undefined }
   return undefined
 }
 
@@ -87,8 +104,8 @@ export function trayIconImage(): NativeImage | undefined {
  * The window icon is set as well, because it is what the taskbar falls back
  * to and what Alt-Tab shows.
  */
-export function applyTaskbarIcon(window: BrowserWindow): void {
-  const image = windowIconImage()
+export function applyTaskbarIcon(window: BrowserWindow, existingImage?: NativeImage): void {
+  const image = existingImage ?? windowIconImage()
   if (image && !window.isDestroyed()) window.setIcon(image)
   if (process.platform !== 'win32' || window.isDestroyed()) return
   const file = windowsIconFile()

@@ -1,10 +1,26 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  browserHistoryCommand,
+  browserMouseDirection,
+  claimBrowserHistoryNav,
   denyWebviewPopups,
   hardenWebviewPreferences,
   isAllowedWebviewUrl
 } from '../src/main/webview-policy'
+
+test('mouse side buttons and browser app commands map to history', () => {
+  assert.equal(browserMouseDirection(3), 'back')
+  assert.equal(browserMouseDirection(4), 'forward')
+  assert.equal(browserMouseDirection(0), null)
+  assert.equal(browserMouseDirection(2), null)
+  assert.equal(browserHistoryCommand('browser-backward'), 'back')
+  assert.equal(browserHistoryCommand('browser-forward'), 'forward')
+  assert.equal(browserHistoryCommand('browser-refresh'), null)
+  assert.equal(claimBrowserHistoryNav(1000, 800), false)
+  assert.equal(claimBrowserHistoryNav(1000, 700), true)
+  assert.equal(claimBrowserHistoryNav(1000, Number.NEGATIVE_INFINITY), true)
+})
 
 test('webviews only load web URLs', () => {
   assert.equal(isAllowedWebviewUrl('https://example.com/'), true)

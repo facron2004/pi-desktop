@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ChevronDown,
@@ -32,6 +32,92 @@ type LoadState =
   | { status: 'error' }
 
 const EMPTY_VIEW: TreeView = { rows: [], matched: true }
+const TREE_DIALOG_PAGE = 250
+
+interface SessionTreeRowProps {
+  row: TreeRow
+  isFlashing: boolean
+  isForking: boolean
+  t: (text: string) => string
+  onToggle: (id: string) => void
+  onFork: (row: TreeRow) => void
+  onCopy: (text: string) => void
+  onRowRef: (id: string, leaf: boolean, element: HTMLDivElement | null) => void
+}
+
+const SessionTreeRow = memo(function SessionTreeRow({
+  row,
+  isFlashing,
+  isForking,
+  t,
+  onToggle,
+  onFork,
+  onCopy,
+  onRowRef
+}: SessionTreeRowProps) {
+  return (
+    <div
+      ref={(element) => onRowRef(row.id, row.leaf, element)}
+      className="session-tree__row"
+      data-role={row.role}
+      data-active={row.active || undefined}
+      data-leaf={row.leaf || undefined}
+      data-branch={row.branch || undefined}
+      data-flash={isFlashing || undefined}
+      style={{ paddingLeft: 10 + row.depth * 16 }}
+    >
+      <button
+        className="session-tree__chevron"
+        data-open={row.childrenOpen || undefined}
+        disabled={!row.hasChildren}
+        aria-label={
+          row.hasChildren
+            ? row.childrenOpen
+              ? t('Collapse this branch')
+              : t('Expand this branch')
+            : undefined
+        }
+        onClick={() => {
+          if (row.hasChildren) onToggle(row.id)
+        }}
+      >
+        {row.hasChildren ? (
+          <ChevronRight size={12} />
+        ) : (
+          <span className="session-tree__dot" />
+        )}
+      </button>
+      <span className="session-tree__title" title={row.prompt ?? row.title}>
+        {row.title}
+      </span>
+      {row.label ? <span className="session-tree__label">{row.label}</span> : null}
+      {row.leaf ? (
+        <span className="session-tree__current">{t('current')}</span>
+      ) : null}
+      {row.prompt ? (
+        <span className="session-tree__actions">
+          <button
+            className="icon-btn"
+            title={t('Fork from this prompt')}
+            aria-label={t('Fork from this prompt')}
+            disabled={isForking}
+            onClick={() => onFork(row)}
+          >
+            <GitFork size={12} />
+          </button>
+          <button
+            className="icon-btn"
+            title={t('Copy the prompt')}
+            aria-label={t('Copy the prompt')}
+            onClick={() => onCopy(row.prompt ?? '')}
+          >
+            <Copy size={12} />
+          </button>
+        </span>
+      ) : null}
+    </div>
+  )
+})
 
 /** The folds of one conversation are remembered by its session file. */
 function collapseKey(file: string): string {
@@ -80,6 +166,7 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
   const [forking, setForking] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [flash, setFlash] = useState<{ id: string; seq: number } | null>(null)
+  const [rowLimit, setRowLimit] = useState(TREE_DIALOG_PAGE)
   const leafRef = useRef<HTMLDivElement>(null)
   const filterRef = useRef<HTMLInputElement>(null)
   const rowRefs = useRef(new Map<string, HTMLDivElement>())
@@ -90,6 +177,7 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
   const load = useCallback(async () => {
     const sequence = ++loadSequence.current
     setState({ status: 'loading' })
+    setRowLimit(TREE_DIALOG_PAGE)
     try {
       const key = await useAppStore.getState().ensureRuntime(activeSessionFile, 'session-tree')
       if (sequence !== loadSequence.current) return
@@ -136,14 +224,35 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
     [state]
   )
 
-  // The open leaf is what the reader came to see, so it is brought into view.
+  const revealedStateRef = useRef<typeof state | null>(null)
+
   useEffect(() => {
-    if (state.status !== 'ready') return
+    setRowLimit(TREE_DIALOG_PAGE)
+  }, [query])
+
+  // Ensure the open leaf stays inside the rendered slice once per loaded tree,
+  // without yanking scroll back on subsequent collapse/filter/Show-more/tip-jump.
+  useEffect(() => {
+    if (state.status !== 'ready') {
+      revealedStateRef.current = null
+      return
+    }
+    if (flash) {
+      revealedStateRef.current = state
+      return
+    }
+    if (revealedStateRef.current === state) return
+    const leafIndex = rows.findIndex((row) => row.leaf)
+    if (leafIndex >= rowLimit) {
+      setRowLimit(leafIndex + 80)
+      return
+    }
+    revealedStateRef.current = state
     const frame = requestAnimationFrame(() =>
       leafRef.current?.scrollIntoView({ block: 'center' })
     )
     return () => cancelAnimationFrame(frame)
-  }, [state])
+  }, [state, rows, rowLimit, flash])
 
   // The folds survive closing the dialog and coming back to the same
   // conversation. Only a branch can be folded, so only branches are stored.
@@ -156,10 +265,20 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
   // the scroll has moved it into the middle of the list.
   useEffect(() => {
     if (!flash) return
-    rowRefs.current.get(flash.id)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    const targetIndex = rows.findIndex((row) => row.id === flash.id)
+    if (targetIndex >= rowLimit) {
+      setRowLimit(targetIndex + 80)
+      return
+    }
+    const frame = requestAnimationFrame(() => {
+      rowRefs.current.get(flash.id)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    })
     const timer = window.setTimeout(() => setFlash(null), 1400)
-    return () => window.clearTimeout(timer)
-  }, [flash])
+    return () => {
+      cancelAnimationFrame(frame)
+      window.clearTimeout(timer)
+    }
+  }, [flash, rows, rowLimit])
 
   // The dialog closes on Escape through a capture listener on the document.
   // While the filter has text the first Escape belongs to the filter, so it is
@@ -177,14 +296,14 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [query])
 
-  const toggle = (id: string) => {
+  const toggle = useCallback((id: string) => {
     setExpanded((previous) => {
       const next = new Set(previous)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }
+  }, [])
 
   // Walk the tips of the tree in the order they read. A tip behind a fold is
   // opened first; a filter steps aside because it may hide the tip entirely.
@@ -209,7 +328,7 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
     setFlash({ id, seq: ++flashSeq.current })
   }
 
-  const fork = async (row: TreeRow) => {
+  const fork = useCallback(async (row: TreeRow) => {
     if (forking) return
     setForking(row.id)
     try {
@@ -218,16 +337,27 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
     } finally {
       setForking(null)
     }
-  }
+  }, [forking, forkFrom, onClose])
 
-  const copy = async (text: string) => {
+  const copy = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
       showToast(t('The prompt was copied'))
     } catch {
       showToast(t('The clipboard is not available'), 'error')
     }
-  }
+  }, [showToast, t])
+
+  const handleRowRef = useCallback((id: string, leaf: boolean, element: HTMLDivElement | null) => {
+    if (element) rowRefs.current.set(id, element)
+    else rowRefs.current.delete(id)
+    if (leaf) leafRef.current = element
+  }, [])
+
+  const visibleRows = useMemo(
+    () => (rows.length > rowLimit ? rows.slice(0, rowLimit) : rows),
+    [rows, rowLimit]
+  )
 
   return (
     <div className="modal-layer" onMouseDown={onClose}>
@@ -328,73 +458,30 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
           ) : rows.length === 0 ? (
             <div className="session-tree__state">{t('This conversation has no messages yet.')}</div>
           ) : (
-            rows.map((row) => (
-              <div
-                key={`${row.id}-${row.depth}`}
-                ref={(element) => {
-                  if (element) rowRefs.current.set(row.id, element)
-                  else rowRefs.current.delete(row.id)
-                  if (row.leaf) leafRef.current = element
-                }}
-                className="session-tree__row"
-                data-role={row.role}
-                data-active={row.active || undefined}
-                data-leaf={row.leaf || undefined}
-                data-branch={row.branch || undefined}
-                data-flash={flash?.id === row.id || undefined}
-                style={{ paddingLeft: 10 + row.depth * 16 }}
-              >
+            <>
+              {visibleRows.map((row) => (
+                <SessionTreeRow
+                  key={`${row.id}-${row.depth}`}
+                  row={row}
+                  isFlashing={flash?.id === row.id}
+                  isForking={forking === row.id}
+                  t={t}
+                  onToggle={toggle}
+                  onFork={fork}
+                  onCopy={copy}
+                  onRowRef={handleRowRef}
+                />
+              ))}
+              {rows.length > visibleRows.length ? (
                 <button
-                  className="session-tree__chevron"
-                  data-open={row.childrenOpen || undefined}
-                  disabled={!row.hasChildren}
-                  aria-label={
-                    row.hasChildren
-                      ? row.childrenOpen
-                        ? t('Collapse this branch')
-                        : t('Expand this branch')
-                      : undefined
-                  }
-                  onClick={() => {
-                    if (row.hasChildren) toggle(row.id)
-                  }}
+                  type="button"
+                  className="btn btn--sm session-tree__more"
+                  onClick={() => setRowLimit((current) => current + TREE_DIALOG_PAGE)}
                 >
-                  {row.hasChildren ? (
-                    <ChevronRight size={12} />
-                  ) : (
-                    <span className="session-tree__dot" />
-                  )}
+                  {t('Show more')} ({rows.length - visibleRows.length})
                 </button>
-                <span className="session-tree__title" title={row.prompt ?? row.title}>
-                  {row.title}
-                </span>
-                {row.label ? <span className="session-tree__label">{row.label}</span> : null}
-                {row.leaf ? (
-                  <span className="session-tree__current">{t('current')}</span>
-                ) : null}
-                {row.prompt ? (
-                  <span className="session-tree__actions">
-                    <button
-                      className="icon-btn"
-                      title={t('Fork from this prompt')}
-                      aria-label={t('Fork from this prompt')}
-                      disabled={forking === row.id}
-                      onClick={() => void fork(row)}
-                    >
-                      <GitFork size={12} />
-                    </button>
-                    <button
-                      className="icon-btn"
-                      title={t('Copy the prompt')}
-                      aria-label={t('Copy the prompt')}
-                      onClick={() => void copy(row.prompt ?? '')}
-                    >
-                      <Copy size={12} />
-                    </button>
-                  </span>
-                ) : null}
-              </div>
-            ))
+              ) : null}
+            </>
           )}
         </div>
 

@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   Bot,
   Check,
-  ChevronDown,
   Image as ImageIcon,
   ListChecks,
   Loader2,
@@ -35,7 +34,7 @@ import {
 } from '@shared/types'
 import type { AppLanguage, FileEntry, PiCommand } from '@shared/types'
 import { appCommandName } from '../lib/app-commands'
-import { COMMAND_SOURCE } from '../lib/command-source'
+import { commandIcon } from '../lib/command-source'
 import {
   composerFileToken,
   extractFilePathMentions,
@@ -158,7 +157,7 @@ function detectMention(text: string, cursor: number): MentionMatch | null {
   return { query, start: at, cursor }
 }
 
-export function Composer() {
+export const Composer = memo(function Composer() {
   const send = useAppStore((state) => state.send)
   const stop = useAppStore((state) => state.stop)
   const isStreaming = useAppStore((state) => state.isStreaming)
@@ -407,13 +406,14 @@ export function Composer() {
   const [commandSelected, setCommandSelected] = useState(false)
   const [imageSelected, setImageSelected] = useState(false)
 
-  const commandName = command
+  const commandLabel = command
     ? command.source === 'app'
-      ? `/${appCommandName(command.name, language)}`
-      : `/${command.name}`
+      ? appCommandName(command.name, language)
+      : command.name
     : ''
-  const commandMeta = command ? COMMAND_SOURCE[command.source] : undefined
-  const CommandIcon = commandMeta?.Icon
+  const commandName = commandLabel ? `/${commandLabel}` : ''
+  const commandHasNonAscii = /[^\x20-\x7e]/.test(commandLabel)
+  const CommandIcon = command ? commandIcon(command) : undefined
 
   const reserveImageBytes = useCallback(
     (bytes: number, targetKey = draftKeyRef.current): boolean => {
@@ -603,11 +603,12 @@ export function Composer() {
 
   const textareaSizeRef = useRef<{
     height: number
+    minHeight: number
     len: number
     newlines: number
     width: number
     fontScale: number
-  }>({ height: 0, len: 0, newlines: 0, width: 0, fontScale })
+  }>({ height: 0, minHeight: 0, len: 0, newlines: 0, width: 0, fontScale })
   const [textareaLayoutVersion, setTextareaLayoutVersion] = useState(0)
 
   useEffect(() => {
@@ -631,11 +632,12 @@ export function Composer() {
     }
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = textareaRef.current
     if (!node) return
     const prev = textareaSizeRef.current
     const width = node.clientWidth
+    const sameBox = prev.width === width && prev.fontScale === fontScale
     const caretAtEnd =
       document.activeElement === node &&
       node.selectionStart === text.length &&
@@ -644,12 +646,31 @@ export function Composer() {
     for (let i = 0; i < text.length; i += 1) {
       if (text.charCodeAt(i) === 10) newlines += 1
     }
+    const minHeight = sameBox ? prev.minHeight : 0
+    // A single-line edit that stays within the empty placeholder minimum height
+    // cannot shrink below `minHeight`, so skip collapsing `'auto'` on deletes.
+    if (
+      sameBox &&
+      minHeight > 0 &&
+      prev.height <= minHeight &&
+      newlines === 0 &&
+      text.length <= prev.len
+    ) {
+      textareaSizeRef.current = {
+        height: prev.height,
+        minHeight,
+        len: text.length,
+        newlines,
+        width,
+        fontScale
+      }
+      return
+    }
     // Single-character additions that keep line breaks can only grow: skip the
     // collapsing `height = 'auto'` write so normal typing stays a single layout pass.
     const canOnlyGrow =
       prev.height > 0 &&
-      prev.width === width &&
-      prev.fontScale === fontScale &&
+      sameBox &&
       text.length === prev.len + 1 &&
       newlines >= prev.newlines
     if (canOnlyGrow) {
@@ -657,6 +678,7 @@ export function Composer() {
         if (caretAtEnd) node.scrollTop = node.scrollHeight
         textareaSizeRef.current = {
           height: prev.height,
+          minHeight,
           len: text.length,
           newlines,
           width,
@@ -675,6 +697,7 @@ export function Composer() {
       }
       textareaSizeRef.current = {
         height: Math.max(prev.height, nextHeight),
+        minHeight,
         len: text.length,
         newlines,
         width,
@@ -693,6 +716,7 @@ export function Composer() {
     }
     textareaSizeRef.current = {
       height: nextHeight,
+      minHeight: text.length === 0 ? nextHeight : minHeight,
       len: text.length,
       newlines,
       width,
@@ -1035,7 +1059,7 @@ export function Composer() {
       setCommandSelected(false)
     }
 
-    if (image && !command && !text && event.key === 'Backspace') {
+    if (image && !command && event.key === 'Backspace') {
       const input = event.currentTarget
       if (input.selectionStart === 0 && input.selectionEnd === 0) {
         event.preventDefault()
@@ -1328,6 +1352,16 @@ export function Composer() {
     ...queue.followUp.map((value) => ({ kind: 'followUp' as const, text: value }))
   ]
 
+  const openChangesInspector = useCallback(() => {
+    window.dispatchEvent(
+      new CustomEvent('pi:open-inspector', { detail: { tab: 'changes' } })
+    )
+  }, [])
+  const toggleImageMode = useCallback(() => {
+    if (image) exitImageMode()
+    else enterImageMode()
+  }, [image, exitImageMode, enterImageMode])
+
   return (
     <div className="composer-wrap">
       <div className="composer-stack">
@@ -1363,11 +1397,7 @@ export function Composer() {
               <BranchMenu
                 placement="top"
                 align="left"
-                onOpenChanges={() => {
-                  window.dispatchEvent(
-                    new CustomEvent('pi:open-inspector', { detail: { tab: 'changes' } })
-                  )
-                }}
+                onOpenChanges={openChangesInspector}
               />
             ) : null}
           </div>
@@ -1467,50 +1497,65 @@ export function Composer() {
                   aria-busy={addingFiles || undefined}
                   title={t('Reference')}
                 >
-                  {addingFiles ? <Loader2 size={16} className="spin" aria-hidden="true" /> : <Plus size={16} aria-hidden="true" />}
+                  {addingFiles ? (
+                    <Loader2 size={18} strokeWidth={1.6} className="spin" aria-hidden="true" />
+                  ) : (
+                    <Plus size={18} strokeWidth={1.6} aria-hidden="true" />
+                  )}
                   <span>{t('Reference')}</span>
-                </button>
-              </div>
-              <div
-                className="composer__image-badge"
-                data-selected={imageSelected || undefined}
-                title={t('Press Backspace twice to remove')}
-              >
-                <ImageIcon size={14} aria-hidden="true" />
-                <span>{t('Image generation')}</span>
-                <button
-                  type="button"
-                  className="composer__image-exit"
-                  aria-label={t('Exit image mode')}
-                  title={t('Exit image mode')}
-                  onClick={() => {
-                    setImageSelected(false)
-                    exitImageMode()
-                  }}
-                >
-                  <X size={11} />
                 </button>
               </div>
             </div>
           ) : null}
 
-          <div className="composer__input-row">
+          <div className="composer__input-row" data-image-mode={image && !command ? 'true' : undefined}>
             {command && CommandIcon ? (
               <span
                 className="composer__command"
+                data-source={command.source}
                 data-selected={commandSelected}
+                data-script={commandHasNonAscii ? 'cjk' : 'ascii'}
                 role="group"
                 aria-label={`${t('Command')}: ${commandName}`}
-                title={t('Press Backspace twice to remove')}
+                title={`${commandName} · ${t('Press Backspace twice to remove')}`}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  setCommandSelected(false)
+                  textareaRef.current?.focus()
+                }}
               >
-                <CommandIcon size={13} aria-hidden="true" />
-                <code>{commandName}</code>
+                <span className="composer__command-icon" aria-hidden="true">
+                  <CommandIcon size={13} strokeWidth={2} />
+                </span>
+                <span className="composer__command-label">{commandLabel}</span>
+              </span>
+            ) : image ? (
+              <span
+                className="composer__image-badge"
+                data-selected={imageSelected || undefined}
+                role="group"
+                aria-label={t('Image generation')}
+                title={`${t('Image generation')} · ${t('Press Backspace twice to remove')}`}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  setImageSelected(false)
+                  textareaRef.current?.focus()
+                }}
+              >
+                <ImageModeGlyph />
+                <span className="composer__image-badge-label">{t('Image generation')}</span>
               </span>
             ) : null}
 
             <textarea
             ref={textareaRef}
-            className={command ? 'composer__input composer__input--command' : 'composer__input'}
+            className={
+              command || image
+                ? image && !command
+                  ? 'composer__input composer__input--command composer__input--image'
+                  : 'composer__input composer__input--command'
+                : 'composer__input'
+            }
             rows={1}
             value={text}
             disabled={!canCompose}
@@ -1625,7 +1670,7 @@ export function Composer() {
               onModeChange={setAgentMode}
               onPickFiles={pickFiles}
               onInsertCommand={insertMenuCommand}
-              onEnterImageMode={() => (image ? exitImageMode() : enterImageMode())}
+              onEnterImageMode={toggleImageMode}
             />
             {agentMode !== 'default' ? (
               <button
@@ -1720,6 +1765,27 @@ export function Composer() {
       </div>
     </div>
   )
+})
+
+/** Filled rounded photo mark for the inline image-mode chip, punched out in currentColor. */
+function ImageModeGlyph() {
+  return (
+    <svg
+      className="composer__image-badge-icon"
+      width="15"
+      height="15"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        fill="currentColor"
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M4 2.25H12Q14.5 2.25 14.5 4.75V11.25Q14.5 13.75 12 13.75H4Q1.5 13.75 1.5 11.25V4.75Q1.5 2.25 4 2.25ZM5.35 4.55A1.2 1.2 0 1 0 5.35 6.95A1.2 1.2 0 1 0 5.35 4.55ZM3.45 12.15L12.55 12.15Q13 12.15 12.76 11.75L10.55 7.6Q10.18 6.95 9.72 7.52L7.35 10.4L6.45 9.52Q6 9.08 5.58 9.54L3.22 11.75Q2.92 12.15 3.45 12.15Z"
+      />
+    </svg>
+  )
 }
 
 /** The image model, as a chip in the composer bar rather than a form row. */
@@ -1740,17 +1806,16 @@ function ImageModelPicker({
       renderTrigger={({ open, toggle }) => (
         <button
           type="button"
-          className="model-chip composer__image-chip"
+          className="model-chip composer__image-chip composer__image-chip--model"
           data-active={open || undefined}
           aria-expanded={open}
           title={t('Image model')}
           onClick={toggle}
         >
-          <ImageIcon size={14} aria-hidden="true" />
+          <ImageIcon size={14} strokeWidth={1.75} aria-hidden="true" />
           <span className="model-chip__name">
             {value ? imageModelName(value) : t('Gateway default')}
           </span>
-          <ChevronDown size={12} className="pill__caret" aria-hidden="true" />
         </button>
       )}
     >
@@ -1804,22 +1869,21 @@ function ImageParamsPicker({
       renderTrigger={({ open, toggle }) => (
         <button
           type="button"
-          className="model-chip composer__image-chip"
+          className="model-chip composer__image-chip composer__image-chip--params"
           data-active={open || undefined}
           aria-expanded={open}
           title={t('Image size and quality')}
           onClick={toggle}
         >
           <span>{ratio === 'Auto' ? t('Auto') : ratio}</span>
-          <span className="composer__image-chip-sep">·</span>
+          <span className="composer__image-chip-sep" aria-hidden="true" />
           <span>{quality}</span>
           {image.count > 1 ? (
             <>
-              <span className="composer__image-chip-sep">·</span>
+              <span className="composer__image-chip-sep" aria-hidden="true" />
               <span>{image.count}</span>
             </>
           ) : null}
-          <ChevronDown size={12} className="pill__caret" aria-hidden="true" />
         </button>
       )}
     >

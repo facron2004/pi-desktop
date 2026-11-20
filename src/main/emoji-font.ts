@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 
 /**
@@ -11,6 +11,7 @@ import path from 'node:path'
  * where the renderer can use Apple Color Emoji or Noto Color Emoji.
  */
 let cached: Uint8Array | null | undefined
+let pending: Promise<Uint8Array | null> | undefined
 
 function candidates(): string[] {
   if (process.platform === 'win32') {
@@ -36,13 +37,11 @@ function candidates(): string[] {
   ]
 }
 
-/** Bytes of the emoji font, or null when this platform has none installed. */
-export function readEmojiFont(): Uint8Array | null {
-  if (cached !== undefined) return cached
+async function loadEmojiFont(): Promise<Uint8Array | null> {
   for (const file of candidates()) {
     try {
-      if (!existsSync(file)) continue
-      cached = new Uint8Array(readFileSync(file))
+      const data = await readFile(file)
+      cached = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
       return cached
     } catch {
       // A font can disappear between the check and the read; try the next.
@@ -50,4 +49,13 @@ export function readEmojiFont(): Uint8Array | null {
   }
   cached = null
   return null
+}
+
+/** Bytes of the emoji font, or null when this platform has none installed. */
+export async function readEmojiFont(): Promise<Uint8Array | null> {
+  if (cached !== undefined) return cached
+  pending ??= loadEmojiFont().finally(() => {
+    pending = undefined
+  })
+  return pending
 }

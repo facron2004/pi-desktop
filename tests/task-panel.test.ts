@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { listBackgroundTasks, listDeliverables, summariseDiff } from '../src/renderer/src/lib/task-panel'
+import { isImageName } from '../src/renderer/src/lib/files'
 import type { GitStatus } from '../src/shared/types'
 import type { ToolItem } from '../src/renderer/src/lib/thread'
 
@@ -169,4 +172,27 @@ test('bookkeeping tools are not listed as background work', () => {
     rows.map((row) => row.toolName),
     ['bash']
   )
+})
+
+test('image deliverables are routed to the renderer, not the Files viewer', () => {
+  // The set has to match IMAGE_MIME in main so a picture the viewer can draw
+  // never falls through to a text tab.
+  for (const name of ['shot.png', 'a.JPG', 'frame.jpeg', 'anim.gif', 'pic.webp', 'raw.bmp', 'vector.svg', 'fav.ico', 'next.avif']) {
+    assert.equal(isImageName(name), true, name)
+  }
+  for (const name of ['note.md', 'code.ts', 'data.json', 'no-extension']) {
+    assert.equal(isImageName(name), false, name)
+  }
+  const source = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/components/TaskPanel.tsx'), 'utf8')
+  assert.match(source, /isImageName\(file\.name\)/)
+  assert.match(source, /tab: 'images', image: target/)
+  assert.match(source, /tab: 'files', file: target/)
+})
+
+test('TaskPanel gates tool derivations behind activeToolsRevision and isolates plan checklist streaming', () => {
+  const source = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/components/TaskPanel.tsx'), 'utf8')
+  assert.match(source, /state\.activeToolsRevision/)
+  assert.match(source, /TaskProgressSection/)
+  assert.match(source, /lazy\(\(\) =>/)
+  assert.equal(source.includes('useShallow'), false)
 })

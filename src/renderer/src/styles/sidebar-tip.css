@@ -15,9 +15,7 @@
   padding: var(--sp-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);
-  background: var(--surface-glass);
-  backdrop-filter: var(--blur-glass);
-  -webkit-backdrop-filter: var(--blur-glass);
+  background: var(--surface-overlay);
   box-shadow: var(--shadow-lg);
   /* The card is placed next to the row and must not swallow the pointer: it
      has no interactive content, so it never takes a click. */

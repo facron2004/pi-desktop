@@ -61,46 +61,57 @@ function statusOf(tool: ToolItem, result: Record<string, unknown>): SubagentTree
   return result.exitCode === -1 ? 'running' : 'queued'
 }
 
+const subagentCallCache = new WeakMap<ToolItem, SubagentCall>()
+
+/** Parse one subagent tool item once; unchanged nodes reuse the cached object. */
+export function subagentCallOf(item: ToolItem): SubagentCall {
+  const cached = subagentCallCache.get(item)
+  if (cached) return cached
+  const details = record(item.details)
+  const results = Array.isArray(details.results) ? details.results.map(record) : []
+  const requested = Array.isArray(item.args.tasks) ? item.args.tasks.map(record) : [item.args]
+  const id = item.toolCallId || item.id
+  const count = Math.max(requested.length, results.length, 1)
+  const call: SubagentCall = {
+    id,
+    tasks: Array.from({ length: count }, (_, index) => {
+      const result = results[index] ?? {}
+      const args = requested[index] ?? {}
+      const status = statusOf(item, result)
+      const usage = record(result.usage)
+      return {
+        id: `${id}:${index}`,
+        task: text(result.task) || text(args.task) || 'Subagent',
+        label: text(result.label) || text(args.label),
+        cwd: text(result.cwd) || text(args.cwd) || text(item.args.cwd) || '',
+        status,
+        model: text(result.model) || text(item.args.model),
+        activity: status === 'running' ? text(result.activity) : undefined,
+        toolName: status === 'running' ? text(result.toolName) : undefined,
+        progressText: status === 'running' ? text(result.progressText) : undefined,
+        startedAt: time(result.startedAt),
+        finishedAt: time(result.finishedAt) ?? (status === 'aborted' ? item.finishedAt : undefined),
+        tokens: usage.input !== undefined || usage.output !== undefined
+          ? numberOf(usage.input) + numberOf(usage.output) + numberOf(usage.cacheRead) + numberOf(usage.cacheWrite)
+          : undefined,
+        cost: typeof usage.cost === 'number' ? usage.cost : undefined,
+        messages: Array.isArray(result.messages) ? result.messages as AgentMessage[] : undefined,
+        messagesTruncated: result.messagesTruncated === true,
+        output: text(result.output) || (count === 1 ? item.result : undefined),
+        errorMessage: text(result.errorMessage) || (status === 'failed' ? text(result.stderr) : undefined)
+      }
+    })
+  }
+  subagentCallCache.set(item, call)
+  return call
+}
+
 /** Derive the tree from tool nodes, shared by live progress and session replay. */
 export function subagentCalls(items: readonly ThreadItem[]): SubagentCall[] {
   const calls: SubagentCall[] = []
   for (const item of items) {
     if (item.kind !== 'tool' || item.toolName !== 'subagent') continue
-    const details = record(item.details)
-    const results = Array.isArray(details.results) ? details.results.map(record) : []
-    const requested = Array.isArray(item.args.tasks) ? item.args.tasks.map(record) : [item.args]
-    const id = item.toolCallId || item.id
-    const count = Math.max(requested.length, results.length, 1)
-    calls.push({
-      id,
-      tasks: Array.from({ length: count }, (_, index) => {
-        const result = results[index] ?? {}
-        const args = requested[index] ?? {}
-        const status = statusOf(item, result)
-        const usage = record(result.usage)
-        return {
-          id: `${id}:${index}`,
-          task: text(result.task) || text(args.task) || 'Subagent',
-          label: text(result.label) || text(args.label),
-          cwd: text(result.cwd) || text(args.cwd) || text(item.args.cwd) || '',
-          status,
-          model: text(result.model) || text(item.args.model),
-          activity: status === 'running' ? text(result.activity) : undefined,
-          toolName: status === 'running' ? text(result.toolName) : undefined,
-          progressText: status === 'running' ? text(result.progressText) : undefined,
-          startedAt: time(result.startedAt),
-          finishedAt: time(result.finishedAt) ?? (status === 'aborted' ? item.finishedAt : undefined),
-          tokens: usage.input !== undefined || usage.output !== undefined
-            ? numberOf(usage.input) + numberOf(usage.output) + numberOf(usage.cacheRead) + numberOf(usage.cacheWrite)
-            : undefined,
-          cost: typeof usage.cost === 'number' ? usage.cost : undefined,
-          messages: Array.isArray(result.messages) ? result.messages as AgentMessage[] : undefined,
-          messagesTruncated: result.messagesTruncated === true,
-          output: text(result.output) || (count === 1 ? item.result : undefined),
-          errorMessage: text(result.errorMessage) || (status === 'failed' ? text(result.stderr) : undefined)
-        }
-      })
-    })
+    calls.push(subagentCallOf(item))
   }
   return calls
 }

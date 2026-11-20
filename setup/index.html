@@ -1,0 +1,1492 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>Pi Desktop</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+
+      /* Light Bauhaus (Warm Archival Paper) */
+      --paper-light: #f5f2eb;
+      --card-light: #fcfbf8;
+      --poster-sub-light: #ece7dc;
+      --ink-light: #141416;
+      --muted-light: #5d5b56;
+      --faint-light: #77746d;
+      --line-light: rgba(20, 20, 22, 0.13);
+      --line-strong-light: rgba(20, 20, 22, 0.28);
+      --input-bg-light: #ffffff;
+      --input-border-light: #141416;
+      --btn-primary-bg-light: #141416;
+      --btn-primary-fg-light: #fcfbf8;
+      --btn-primary-hover-light: #002090;
+      --brand-blue-light: #002090;
+      --brand-blue-hover-light: #001870;
+      --brand-coral-light: #cf4f3d;
+      --brand-coral-hover-light: #b13d2c;
+      --brand-gold-light: #e4b135;
+      --success-light: #15803d;
+      --danger-bg-light: #fdf2f0;
+      --danger-ink-light: #b13d2c;
+      --active-tile-bg-light: #eef2ff;
+      --poster-hero-bg-light: #002090;
+      --poster-tile-bg-light: #fcfbf8;
+      --poster-ready-bg-light: #fcfbf8;
+      --poster-ready-ring1-light: rgba(0, 32, 144, 0.22);
+      --poster-ready-ring2-light: rgba(207, 79, 61, 0.42);
+      --switch-off-light: rgba(20, 20, 22, 0.22);
+      --switch-on-light: #002090;
+      --progress-track-light: rgba(20, 20, 22, 0.1);
+      --winbtn-hover-light: rgba(20, 20, 22, 0.07);
+      --focus-light: #002090;
+
+      /* Dark Bauhaus (Night Architecture) */
+      --paper-dark: #131418;
+      --card-dark: #191b22;
+      --poster-sub-dark: #0f1116;
+      --ink-dark: #f2f0e9;
+      --muted-dark: #a6a49d;
+      --faint-dark: #888680;
+      --line-dark: rgba(242, 240, 233, 0.12);
+      --line-strong-dark: rgba(242, 240, 233, 0.26);
+      --input-bg-dark: #0e1014;
+      --input-border-dark: rgba(242, 240, 233, 0.34);
+      --btn-primary-bg-dark: #f2f0e9;
+      --btn-primary-fg-dark: #131418;
+      --btn-primary-hover-dark: #ffffff;
+      --brand-blue-dark: #3f6fe0;
+      --brand-blue-hover-dark: #5482ec;
+      --brand-coral-dark: #db5a48;
+      --brand-coral-hover-dark: #c44a39;
+      --brand-gold-dark: #e4b135;
+      --success-dark: #4ade80;
+      --danger-bg-dark: rgba(219, 90, 72, 0.14);
+      --danger-ink-dark: #fca5a5;
+      --active-tile-bg-dark: rgba(63, 111, 224, 0.16);
+      --poster-hero-bg-dark: #0c1f5c;
+      --poster-tile-bg-dark: #141720;
+      --poster-ready-bg-dark: #0f1116;
+      --poster-ready-ring1-dark: rgba(63, 111, 224, 0.34);
+      --poster-ready-ring2-dark: rgba(219, 90, 72, 0.45);
+      --switch-off-dark: rgba(242, 240, 233, 0.22);
+      --switch-on-dark: #3f6fe0;
+      --progress-track-dark: rgba(242, 240, 233, 0.11);
+      --winbtn-hover-dark: rgba(242, 240, 233, 0.08);
+      --focus-dark: #5b9dff;
+
+      /* Active semantic tokens (light default + prefers-color-scheme fallback) */
+      --paper: var(--paper-light);
+      --card: var(--card-light);
+      --poster-sub: var(--poster-sub-light);
+      --ink: var(--ink-light);
+      --muted: var(--muted-light);
+      --faint: var(--faint-light);
+      --line: var(--line-light);
+      --line-strong: var(--line-strong-light);
+      --input-bg: var(--input-bg-light);
+      --input-border: var(--input-border-light);
+      --btn-primary-bg: var(--btn-primary-bg-light);
+      --btn-primary-fg: var(--btn-primary-fg-light);
+      --btn-primary-hover: var(--btn-primary-hover-light);
+      --brand-blue: var(--brand-blue-light);
+      --brand-blue-hover: var(--brand-blue-hover-light);
+      --brand-coral: var(--brand-coral-light);
+      --brand-coral-hover: var(--brand-coral-hover-light);
+      --brand-gold: var(--brand-gold-light);
+      --success: var(--success-light);
+      --danger-bg: var(--danger-bg-light);
+      --danger-ink: var(--danger-ink-light);
+      --active-tile-bg: var(--active-tile-bg-light);
+      --poster-hero-bg: var(--poster-hero-bg-light);
+      --poster-tile-bg: var(--poster-tile-bg-light);
+      --poster-ready-bg: var(--poster-ready-bg-light);
+      --poster-ready-ring1: var(--poster-ready-ring1-light);
+      --poster-ready-ring2: var(--poster-ready-ring2-light);
+      --switch-off: var(--switch-off-light);
+      --switch-on: var(--switch-on-light);
+      --progress-track: var(--progress-track-light);
+      --winbtn-hover: var(--winbtn-hover-light);
+      --focus: var(--focus-light);
+
+      --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+      accent-color: var(--brand-blue);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: var(--paper-dark);
+        --card: var(--card-dark);
+        --poster-sub: var(--poster-sub-dark);
+        --ink: var(--ink-dark);
+        --muted: var(--muted-dark);
+        --faint: var(--faint-dark);
+        --line: var(--line-dark);
+        --line-strong: var(--line-strong-dark);
+        --input-bg: var(--input-bg-dark);
+        --input-border: var(--input-border-dark);
+        --btn-primary-bg: var(--btn-primary-bg-dark);
+        --btn-primary-fg: var(--btn-primary-fg-dark);
+        --btn-primary-hover: var(--btn-primary-hover-dark);
+        --brand-blue: var(--brand-blue-dark);
+        --brand-blue-hover: var(--brand-blue-hover-dark);
+        --brand-coral: var(--brand-coral-dark);
+        --brand-coral-hover: var(--brand-coral-hover-dark);
+        --brand-gold: var(--brand-gold-dark);
+        --success: var(--success-dark);
+        --danger-bg: var(--danger-bg-dark);
+        --danger-ink: var(--danger-ink-dark);
+        --active-tile-bg: var(--active-tile-bg-dark);
+        --poster-hero-bg: var(--poster-hero-bg-dark);
+        --poster-tile-bg: var(--poster-tile-bg-dark);
+        --poster-ready-bg: var(--poster-ready-bg-dark);
+        --poster-ready-ring1: var(--poster-ready-ring1-dark);
+        --poster-ready-ring2: var(--poster-ready-ring2-dark);
+        --switch-off: var(--switch-off-dark);
+        --switch-on: var(--switch-on-dark);
+        --progress-track: var(--progress-track-dark);
+        --winbtn-hover: var(--winbtn-hover-dark);
+        --focus: var(--focus-dark);
+      }
+    }
+
+    @supports (color: light-dark(white, black)) {
+      :root {
+        --paper: light-dark(var(--paper-light), var(--paper-dark));
+        --card: light-dark(var(--card-light), var(--card-dark));
+        --poster-sub: light-dark(var(--poster-sub-light), var(--poster-sub-dark));
+        --ink: light-dark(var(--ink-light), var(--ink-dark));
+        --muted: light-dark(var(--muted-light), var(--muted-dark));
+        --faint: light-dark(var(--faint-light), var(--faint-dark));
+        --line: light-dark(var(--line-light), var(--line-dark));
+        --line-strong: light-dark(var(--line-strong-light), var(--line-strong-dark));
+        --input-bg: light-dark(var(--input-bg-light), var(--input-bg-dark));
+        --input-border: light-dark(var(--input-border-light), var(--input-border-dark));
+        --btn-primary-bg: light-dark(var(--btn-primary-bg-light), var(--btn-primary-bg-dark));
+        --btn-primary-fg: light-dark(var(--btn-primary-fg-light), var(--btn-primary-fg-dark));
+        --btn-primary-hover: light-dark(var(--btn-primary-hover-light), var(--btn-primary-hover-dark));
+        --brand-blue: light-dark(var(--brand-blue-light), var(--brand-blue-dark));
+        --brand-blue-hover: light-dark(var(--brand-blue-hover-light), var(--brand-blue-hover-dark));
+        --brand-coral: light-dark(var(--brand-coral-light), var(--brand-coral-dark));
+        --brand-coral-hover: light-dark(var(--brand-coral-hover-light), var(--brand-coral-hover-dark));
+        --brand-gold: light-dark(var(--brand-gold-light), var(--brand-gold-dark));
+        --success: light-dark(var(--success-light), var(--success-dark));
+        --danger-bg: light-dark(var(--danger-bg-light), var(--danger-bg-dark));
+        --danger-ink: light-dark(var(--danger-ink-light), var(--danger-ink-dark));
+        --active-tile-bg: light-dark(var(--active-tile-bg-light), var(--active-tile-bg-dark));
+        --poster-hero-bg: light-dark(var(--poster-hero-bg-light), var(--poster-hero-bg-dark));
+        --poster-tile-bg: light-dark(var(--poster-tile-bg-light), var(--poster-tile-bg-dark));
+        --poster-ready-bg: light-dark(var(--poster-ready-bg-light), var(--poster-ready-bg-dark));
+        --poster-ready-ring1: light-dark(var(--poster-ready-ring1-light), var(--poster-ready-ring1-dark));
+        --poster-ready-ring2: light-dark(var(--poster-ready-ring2-light), var(--poster-ready-ring2-dark));
+        --switch-off: light-dark(var(--switch-off-light), var(--switch-off-dark));
+        --switch-on: light-dark(var(--switch-on-light), var(--switch-on-dark));
+        --progress-track: light-dark(var(--progress-track-light), var(--progress-track-dark));
+        --winbtn-hover: light-dark(var(--winbtn-hover-light), var(--winbtn-hover-dark));
+        --focus: light-dark(var(--focus-light), var(--focus-dark));
+      }
+    }
+
+    @media (forced-colors: active) {
+      :root {
+        --line: CanvasText;
+        --line-strong: CanvasText;
+        --focus: Highlight;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body { height: 100%; margin: 0; padding: 0; }
+    body {
+      position: relative;
+      overflow: hidden;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--font-ui);
+      font-size: 13px;
+      line-height: 1.5;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      flex-direction: column;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      border: 1px solid var(--line);
+      pointer-events: none;
+      z-index: 20;
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+      border: 0;
+      background: none;
+      padding: 0;
+      cursor: pointer;
+    }
+    button:focus-visible,
+    input:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+    .mono { font-family: var(--font-mono); }
+
+    /* Top architectural drafting strip (38px) */
+    .topbar {
+      height: 38px;
+      flex: 0 0 auto;
+      background: var(--card);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 8px 0 16px;
+      -webkit-app-region: drag;
+    }
+    .topbar__brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .topbar__brand svg { width: 16px; height: 16px; display: block; flex-shrink: 0; }
+    .topbar__title {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: var(--ink);
+    }
+    .topbar__right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      -webkit-app-region: no-drag;
+    }
+    .topbar__step {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .topbar__controls { display: flex; gap: 2px; }
+    .winbtn {
+      width: 30px;
+      height: 26px;
+      border-radius: 4px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      transition: background 140ms var(--ease), color 140ms var(--ease);
+    }
+    .winbtn:hover { background: var(--winbtn-hover); color: var(--ink); }
+    .winbtn[data-close]:hover { background: var(--brand-coral); color: #ffffff; }
+    .winbtn[disabled] { opacity: 0.35; cursor: default; pointer-events: none; }
+
+    /* Two-column Swiss grid (222px poster + 438px stage) */
+    .shell {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 222px 1fr;
+    }
+
+    /* Left Bauhaus geometric poster */
+    .poster {
+      position: relative;
+      border-right: 1px solid var(--line);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .poster-view {
+      display: none;
+      flex: 1 1 auto;
+      min-height: 0;
+      padding: 18px;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .poster-view[data-active] { display: flex; }
+
+    .poster-view--welcome {
+      background: var(--poster-hero-bg);
+      color: #fcfbf8;
+    }
+    .poster-view--location {
+      background: var(--poster-sub);
+      color: var(--ink);
+    }
+    .poster-view--progress {
+      background: #111318;
+      color: #fcfbf8;
+    }
+    .poster-view--finish {
+      background: var(--poster-ready-bg);
+      color: var(--ink);
+    }
+    .poster-view--uninstall {
+      background: #1c1516;
+      color: #fcfbf8;
+    }
+
+    .poster__head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .poster__kicker {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+    .poster__dots { display: flex; gap: 4px; }
+    .poster__dot { width: 7px; height: 7px; display: block; }
+    .poster__upgrade-tag {
+      padding: 2px 6px;
+      background: #e4b135;
+      color: #141416;
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+    .poster__upgrade-tag[hidden] { display: none; }
+
+    .poster__hero-center {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+    .poster__tile {
+      width: 118px;
+      height: 118px;
+      background: var(--poster-tile-bg);
+      display: grid;
+      place-items: center;
+      box-shadow: 8px 8px 0 #cf4f3d;
+    }
+    .poster__tile svg { width: 82px; height: 82px; display: block; }
+    .poster__ver-shift {
+      padding: 3px 8px;
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: #fcfbf8;
+      letter-spacing: 0.03em;
+    }
+    .poster__ver-shift[hidden] { display: none; }
+
+    .poster__bars {
+      display: grid;
+      grid-template-columns: 62fr 24fr 14fr;
+      height: 5px;
+      margin-bottom: 10px;
+    }
+    .poster__meta-title {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      color: rgba(255, 255, 255, 0.9);
+    }
+    .poster__meta-sub {
+      font-size: 10.5px;
+      color: rgba(255, 255, 255, 0.6);
+      margin-top: 2px;
+    }
+    .poster__caption {
+      font-size: 11px;
+      line-height: 1.55;
+      color: var(--muted);
+    }
+
+    .poster__assemble {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    .poster__big-pct {
+      font-family: var(--font-mono);
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      font-variant-numeric: tabular-nums;
+      color: #fcfbf8;
+    }
+    .poster__prog-foot {
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      letter-spacing: 0.06em;
+      color: rgba(255, 255, 255, 0.56);
+    }
+
+    .poster__compass {
+      display: grid;
+      place-items: center;
+    }
+    .poster__ring-outer {
+      width: 144px;
+      height: 144px;
+      border-radius: 50%;
+      border: 1px solid var(--poster-ready-ring1);
+      display: grid;
+      place-items: center;
+    }
+    .poster__ring-inner {
+      width: 110px;
+      height: 110px;
+      border-radius: 50%;
+      border: 1px dashed var(--poster-ready-ring2);
+      display: grid;
+      place-items: center;
+    }
+    .poster__ring-inner svg { width: 62px; height: 62px; display: block; }
+    .poster__ready-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .poster__ready-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--success);
+    }
+    .poster__ready-status[data-tone="muted"] { color: var(--muted); }
+
+    /* Right Swiss content column */
+    .stage {
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      background: var(--paper);
+    }
+    .page {
+      display: none;
+      flex: 1 1 auto;
+      min-height: 0;
+      flex-direction: column;
+    }
+    .page[data-active] { display: flex; }
+    .stage[data-animated] .page[data-active] {
+      animation: page-in 200ms var(--ease);
+    }
+    @keyframes page-in {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .page__body {
+      flex: 1 1 auto;
+      min-height: 0;
+      padding: 20px 26px 14px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .page__footer {
+      flex: 0 0 auto;
+      height: 56px;
+      padding: 0 26px;
+      border-top: 1px solid var(--line);
+      background: var(--card);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .footer__actions { display: flex; align-items: center; gap: 8px; }
+    .footer__note {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--faint);
+      letter-spacing: 0.04em;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      color: var(--brand-coral);
+    }
+    .eyebrow--blue { color: var(--brand-blue); }
+    .eyebrow--muted { color: var(--muted); }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.2;
+      color: var(--ink);
+    }
+    .page--compact h1 { font-size: 22px; }
+    .lede {
+      margin: 10px 0 0;
+      font-size: 13px;
+      line-height: 1.65;
+      color: var(--muted);
+    }
+
+    /* Architectural metadata row */
+    .meta-strip {
+      margin: 18px 0 0;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .meta-strip__cell {
+      padding: 10px 8px;
+      border-right: 1px solid var(--line);
+      min-width: 0;
+    }
+    .meta-strip__cell:first-child { padding-left: 0; }
+    .meta-strip__cell:last-child { border-right: 0; padding-right: 0; }
+    .meta-strip dt {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--faint);
+    }
+    .meta-strip dd {
+      margin: 3px 0 0;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .target-preview {
+      margin-top: 14px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--card);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 11.5px;
+    }
+    .target-preview__label {
+      color: var(--faint);
+      flex: 0 0 auto;
+    }
+    .target-preview__path {
+      min-width: 0;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: right;
+    }
+
+    /* Buttons (Crisp Bauhaus 4px radius) */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 34px;
+      padding: 0 14px;
+      border-radius: 4px;
+      font-size: 12.5px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      transition: background 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease), opacity 140ms var(--ease);
+    }
+    .btn--primary { background: var(--btn-primary-bg); color: var(--btn-primary-fg); }
+    .btn--primary:hover { background: var(--btn-primary-hover); }
+    .btn--blue { background: var(--brand-blue); color: #ffffff; }
+    .btn--blue:hover { background: var(--brand-blue-hover); }
+    .btn--ghost {
+      border: 1px solid var(--line-strong);
+      background: var(--card);
+      color: var(--ink);
+    }
+    .btn--ghost:hover { border-color: var(--ink); }
+    .btn--text {
+      padding: 0 8px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .btn--text:hover { color: var(--ink); }
+    .btn--danger { background: var(--brand-coral); color: #ffffff; }
+    .btn--danger:hover { background: var(--brand-coral-hover); }
+    .btn[disabled] { opacity: 0.45; cursor: default; pointer-events: none; }
+    .btn[hidden] { display: none; }
+
+    /* Form & location controls */
+    .field { margin-top: 18px; }
+    .field-label {
+      display: block;
+      margin-bottom: 6px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    .path-row { display: flex; gap: 8px; }
+    .path-input {
+      flex: 1 1 auto;
+      min-width: 0;
+      height: 36px;
+      padding: 0 10px;
+      border: 1.5px solid var(--input-border);
+      border-radius: 4px;
+      background: var(--input-bg);
+      color: var(--ink);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      user-select: text;
+      transition: border-color 140ms var(--ease);
+    }
+    .path-input:focus { border-color: var(--brand-blue); }
+    .path-input[aria-invalid="true"] { border-color: var(--brand-coral); }
+    .path-row .btn { height: 36px; flex: 0 0 auto; }
+    .hint {
+      margin: 8px 0 0;
+      font-size: 11.5px;
+      line-height: 1.6;
+      color: var(--faint);
+    }
+
+    .error {
+      display: none;
+      align-items: flex-start;
+      gap: 8px;
+      margin-top: 10px;
+      padding: 9px 11px;
+      border-radius: 4px;
+      background: var(--brand-coral);
+      color: #ffffff;
+      font-size: 12px;
+      line-height: 1.5;
+      user-select: text;
+    }
+    .error[data-visible] { display: flex; }
+
+    /* Progress bar & 3-phase tiles */
+    .progress-wrap { margin-top: 20px; }
+    .progress-bar {
+      appearance: none;
+      -webkit-appearance: none;
+      display: block;
+      width: 100%;
+      height: 7px;
+      border: 0;
+      border-radius: 2px;
+      background: var(--progress-track);
+      overflow: hidden;
+    }
+    .progress-bar::-webkit-progress-bar { background: transparent; }
+    .progress-bar::-webkit-progress-value {
+      border-radius: 2px;
+      background: linear-gradient(90deg, var(--brand-blue) 0%, var(--brand-coral) 66%, var(--brand-gold) 100%);
+      transition: width 220ms var(--ease);
+    }
+    .progress-meta {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .progress-detail {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .progress-pct {
+      flex: 0 0 auto;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--ink);
+    }
+    .phase-grid {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .phase-grid[hidden] { display: none; }
+    .phase-tile {
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: transparent;
+      transition: border-color 160ms var(--ease), background 160ms var(--ease);
+    }
+    .phase-tile[data-state="active"] {
+      border-color: var(--brand-blue);
+      background: var(--active-tile-bg);
+    }
+    .phase-tile[data-state="done"] {
+      background: var(--card);
+    }
+    .phase-tile__tag {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--faint);
+    }
+    .phase-tile[data-state="active"] .phase-tile__tag { color: var(--brand-blue); }
+    .phase-tile[data-state="done"] .phase-tile__tag { color: var(--success); }
+    .phase-tile__label {
+      margin-top: 2px;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    /* Finish path + launch switch */
+    .finish-path {
+      margin-top: 16px;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--card);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      user-select: text;
+    }
+    .finish-path[hidden] { display: none; }
+
+    .toggle-row {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--card);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+    .toggle-row[hidden] { display: none; }
+    .toggle-row__label { display: flex; flex-direction: column; gap: 2px; }
+    .toggle-row__label strong { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+    .toggle-row__label span { font-size: 11px; color: var(--faint); }
+
+    .switch {
+      position: relative;
+      flex: 0 0 auto;
+      width: 38px;
+      height: 22px;
+      border-radius: 999px;
+      background: var(--switch-off);
+      transition: background 180ms var(--ease);
+    }
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+      transition: transform 180ms var(--ease);
+    }
+    .switch[aria-checked="true"] { background: var(--switch-on); }
+    .switch[aria-checked="true"]::after { transform: translateX(16px); }
+
+    /* Uninstall high-risk checkbox button */
+    .checkbox-card {
+      margin-top: 18px;
+      width: 100%;
+      text-align: left;
+      padding: 12px 13px;
+      border: 1.5px solid var(--line-strong);
+      border-radius: 4px;
+      background: var(--card);
+      display: flex;
+      align-items: flex-start;
+      gap: 11px;
+      transition: border-color 150ms var(--ease), background 150ms var(--ease);
+    }
+    .checkbox-card[aria-checked="true"] {
+      border-color: var(--brand-coral);
+      background: var(--danger-bg);
+    }
+    .checkbox-box {
+      flex: 0 0 auto;
+      width: 17px;
+      height: 17px;
+      margin-top: 1px;
+      border: 1.5px solid var(--ink);
+      background: var(--input-bg);
+      color: #ffffff;
+      display: grid;
+      place-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      transition: background 140ms var(--ease), border-color 140ms var(--ease);
+    }
+    .checkbox-card[aria-checked="true"] .checkbox-box {
+      border-color: var(--brand-coral);
+      background: var(--brand-coral);
+    }
+    .checkbox-card__text { display: flex; flex-direction: column; gap: 2px; }
+    .checkbox-card__text strong { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+    .checkbox-card__text span { font-size: 11.5px; color: var(--faint); line-height: 1.5; }
+    .checkbox-card[aria-checked="true"] .checkbox-card__text span { color: var(--danger-ink); }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__brand">
+      <svg viewBox="0 0 886 886" aria-hidden="true">
+        <g transform="translate(0 24)">
+          <rect x="55" y="0" width="831" height="161" fill="var(--brand-blue)"/>
+          <rect x="137" y="161" width="206" height="677" fill="var(--brand-blue)"/>
+          <rect x="55" y="725" width="288" height="113" fill="var(--brand-blue)"/>
+          <rect x="543" y="161" width="207" height="677" fill="var(--brand-blue)"/>
+          <rect x="543" y="725" width="288" height="113" fill="var(--brand-blue)"/>
+          <rect x="0" y="0" width="169" height="105" fill="#cf4f3d"/>
+          <rect x="0" y="105" width="55" height="56" fill="#cf4f3d"/>
+          <rect x="543" y="161" width="207" height="185" fill="#cf4f3d"/>
+          <rect x="543" y="346" width="108" height="125" fill="#cf4f3d"/>
+          <rect x="636" y="0" width="135" height="87" fill="#e4b135"/>
+          <rect x="137" y="289" width="80" height="162" fill="#e4b135"/>
+        </g>
+      </svg>
+      <span class="topbar__title" id="topbar-title">PI DESKTOP // SETUP</span>
+    </div>
+    <div class="topbar__right">
+      <span class="topbar__step" id="topbar-step">01 / 04</span>
+      <div class="topbar__controls">
+        <button type="button" class="winbtn" id="minimize" aria-label="最小化">
+          <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        </button>
+        <button type="button" class="winbtn" id="close" data-close aria-label="关闭">
+          <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- Left Bauhaus Dynamic Geometric Poster -->
+    <aside class="poster" aria-hidden="true">
+      <!-- Poster: Welcome / Upgrade -->
+      <div class="poster-view poster-view--welcome" data-poster="welcome">
+        <div class="poster__head">
+          <span class="poster__kicker" style="color: rgba(255, 255, 255, 0.72)">EDITION 2026</span>
+          <span class="poster__dots" id="poster-dots">
+            <span class="poster__dot" style="background: #cf4f3d"></span>
+            <span class="poster__dot" style="background: #e4b135"></span>
+          </span>
+          <span class="poster__upgrade-tag" id="poster-upgrade-tag" hidden>UPGRADE</span>
+        </div>
+        <div class="poster__hero-center">
+          <div class="poster__tile">
+            <svg viewBox="0 0 886 886">
+              <g transform="translate(0 24)">
+                <rect x="55" y="0" width="831" height="161" fill="var(--brand-blue)"/>
+                <rect x="137" y="161" width="206" height="677" fill="var(--brand-blue)"/>
+                <rect x="55" y="725" width="288" height="113" fill="var(--brand-blue)"/>
+                <rect x="543" y="161" width="207" height="677" fill="var(--brand-blue)"/>
+                <rect x="543" y="725" width="288" height="113" fill="var(--brand-blue)"/>
+                <rect x="0" y="0" width="169" height="105" fill="#cf4f3d"/>
+                <rect x="0" y="105" width="55" height="56" fill="#cf4f3d"/>
+                <rect x="543" y="161" width="207" height="185" fill="#cf4f3d"/>
+                <rect x="543" y="346" width="108" height="125" fill="#cf4f3d"/>
+                <rect x="636" y="0" width="135" height="87" fill="#e4b135"/>
+                <rect x="137" y="289" width="80" height="162" fill="#e4b135"/>
+              </g>
+            </svg>
+          </div>
+          <span class="poster__ver-shift" id="poster-ver-shift" hidden></span>
+        </div>
+        <div>
+          <div class="poster__bars">
+            <span style="background: #fcfbf8"></span>
+            <span style="background: #cf4f3d"></span>
+            <span style="background: #e4b135"></span>
+          </div>
+          <div class="poster__meta-title" id="poster-version-label">PI DESKTOP · v0.0.0</div>
+          <div class="poster__meta-sub">Local AI Coding Workbench</div>
+        </div>
+      </div>
+
+      <!-- Poster: Location -->
+      <div class="poster-view poster-view--location" data-poster="location">
+        <span class="poster__kicker" style="color: var(--muted)">DIRECTORY TREE</span>
+        <svg viewBox="0 0 186 156" width="186" height="156" style="display: block; margin: 0 auto">
+          <rect x="4" y="8" width="178" height="140" fill="var(--card)" stroke="var(--ink)" stroke-width="1.3"/>
+          <rect x="4" y="8" width="178" height="24" fill="var(--brand-blue)"/>
+          <rect x="4" y="8" width="34" height="24" fill="#cf4f3d"/>
+          <rect x="150" y="8" width="32" height="24" fill="#e4b135"/>
+          <text x="46" y="24" fill="#ffffff" font-size="9" font-family="'JetBrains Mono', Consolas, monospace" font-weight="700">TARGET ROOT</text>
+          <rect x="18" y="46" width="150" height="88" fill="var(--paper)" stroke="var(--line-strong)" stroke-width="1.1" stroke-dasharray="4 3"/>
+          <rect x="18" y="46" width="7" height="88" fill="var(--brand-blue)"/>
+          <text x="34" y="66" fill="var(--ink)" font-size="10" font-weight="700" font-family="'JetBrains Mono', Consolas, monospace">Pi Desktop\</text>
+          <path d="M38 74v43M38 83h7M38 100h7M38 117h7" stroke="var(--faint)" stroke-width="1" fill="none"/>
+          <text x="50" y="86" fill="var(--muted)" font-size="9" font-family="'JetBrains Mono', Consolas, monospace">Pi Desktop.exe</text>
+          <text x="50" y="103" fill="var(--muted)" font-size="9" font-family="'JetBrains Mono', Consolas, monospace">resources\</text>
+          <text x="50" y="120" fill="var(--muted)" font-size="9" font-family="'JetBrains Mono', Consolas, monospace">install.json</text>
+        </svg>
+        <div class="poster__caption">程序文件将整齐收纳于独立的「Pi Desktop」子目录，不散落污染上级目录。</div>
+      </div>
+
+      <!-- Poster: Progress -->
+      <div class="poster-view poster-view--progress" data-poster="progress">
+        <span class="poster__kicker" id="poster-progress-kicker" style="color: #e4b135">ASSEMBLING</span>
+        <div class="poster__assemble">
+          <svg viewBox="0 0 180 180" width="132" height="132">
+            <rect x="6" y="6" width="168" height="168" fill="none" stroke="rgba(255,255,255,0.14)" stroke-width="1"/>
+            <g transform="translate(20 24) scale(0.158)">
+              <g id="pi-layer-blue" opacity="0.22">
+                <rect x="55" y="0" width="831" height="161" fill="#3f6fe0"/>
+                <rect x="137" y="161" width="206" height="677" fill="#3f6fe0"/>
+                <rect x="55" y="725" width="288" height="113" fill="#3f6fe0"/>
+                <rect x="543" y="161" width="207" height="677" fill="#3f6fe0"/>
+                <rect x="543" y="725" width="288" height="113" fill="#3f6fe0"/>
+              </g>
+              <g id="pi-layer-coral" opacity="0.14">
+                <rect x="0" y="0" width="169" height="105" fill="#cf4f3d"/>
+                <rect x="0" y="105" width="55" height="56" fill="#cf4f3d"/>
+                <rect x="543" y="161" width="207" height="185" fill="#cf4f3d"/>
+                <rect x="543" y="346" width="108" height="125" fill="#cf4f3d"/>
+              </g>
+              <g id="pi-layer-gold" opacity="0.12">
+                <rect x="636" y="0" width="135" height="87" fill="#e4b135"/>
+                <rect x="137" y="289" width="80" height="162" fill="#e4b135"/>
+              </g>
+            </g>
+          </svg>
+          <div class="poster__big-pct" id="poster-big-pct">0%</div>
+        </div>
+        <div class="poster__prog-foot">
+          <span id="poster-phase-label">PHASE: PREPARE</span>
+          <span>WIN</span>
+        </div>
+      </div>
+
+      <!-- Poster: Finish -->
+      <div class="poster-view poster-view--finish" data-poster="finish">
+        <span class="poster__kicker" id="poster-finish-kicker" style="color: var(--brand-blue)">STATUS // READY</span>
+        <div class="poster__compass">
+          <div class="poster__ring-outer">
+            <div class="poster__ring-inner">
+              <svg viewBox="0 0 886 886">
+                <g transform="translate(0 24)">
+                  <rect x="55" y="0" width="831" height="161" fill="var(--brand-blue)"/>
+                  <rect x="137" y="161" width="206" height="677" fill="var(--brand-blue)"/>
+                  <rect x="55" y="725" width="288" height="113" fill="var(--brand-blue)"/>
+                  <rect x="543" y="161" width="207" height="677" fill="var(--brand-blue)"/>
+                  <rect x="543" y="725" width="288" height="113" fill="var(--brand-blue)"/>
+                  <rect x="0" y="0" width="169" height="105" fill="#cf4f3d"/>
+                  <rect x="0" y="105" width="55" height="56" fill="#cf4f3d"/>
+                  <rect x="543" y="161" width="207" height="185" fill="#cf4f3d"/>
+                  <rect x="543" y="346" width="108" height="125" fill="#cf4f3d"/>
+                  <rect x="636" y="0" width="135" height="87" fill="#e4b135"/>
+                  <rect x="137" y="289" width="80" height="162" fill="#e4b135"/>
+                </g>
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div class="poster__ready-foot">
+          <span class="mono" id="poster-finish-tag" style="font-size: 10px">VERIFIED</span>
+          <span class="poster__ready-status" id="poster-finish-status">✓ 安装成功</span>
+        </div>
+      </div>
+
+      <!-- Poster: Uninstall -->
+      <div class="poster-view poster-view--uninstall" data-poster="uninstall">
+        <span class="poster__kicker" style="color: #db5a48">DECONSTRUCT</span>
+        <svg viewBox="0 0 180 180" width="136" height="136" style="display: block; margin: 0 auto">
+          <rect x="20" y="24" width="140" height="24" fill="none" stroke="rgba(255,255,255,0.42)" stroke-width="1.4" stroke-dasharray="5 3"/>
+          <rect x="14" y="17" width="30" height="23" fill="#cf4f3d"/>
+          <rect x="38" y="58" width="34" height="96" fill="none" stroke="rgba(255,255,255,0.34)" stroke-width="1.4"/>
+          <rect x="110" y="66" width="34" height="94" fill="none" stroke="#cf4f3d" stroke-width="1.4" stroke-dasharray="4 4"/>
+          <line x1="22" y1="160" x2="158" y2="24" stroke="#cf4f3d" stroke-width="1.4" opacity="0.72"/>
+        </svg>
+        <div style="font-size: 11px; line-height: 1.55; color: rgba(255, 255, 255, 0.6)">
+          仅在您明确勾选后才会清除本地设置与会话缓存。
+        </div>
+      </div>
+    </aside>
+
+    <!-- Right Swiss Grid Content Pages -->
+    <main class="stage">
+      <!-- Page 1: Welcome / Manual Upgrade -->
+      <section class="page" data-page="welcome">
+        <div class="page__body">
+          <p class="eyebrow" id="welcome-eyebrow">STEP 01 — WELCOME</p>
+          <h1 id="welcome-title">安装 Pi Desktop</h1>
+          <p class="lede" id="welcome-lede">为 Pi 编码智能体打造的原生桌面工作台。安静、专注，所有对话和项目只留在本机。</p>
+
+          <dl class="meta-strip">
+            <div class="meta-strip__cell">
+              <dt>Version</dt>
+              <dd class="mono" id="fact-version">0.0.0</dd>
+            </div>
+            <div class="meta-strip__cell">
+              <dt>Scope</dt>
+              <dd>仅当前用户</dd>
+            </div>
+            <div class="meta-strip__cell">
+              <dt>Privilege</dt>
+              <dd>免管理员</dd>
+            </div>
+          </dl>
+
+          <div class="target-preview" title="默认安装位置">
+            <span class="target-preview__label">安装至</span>
+            <span class="target-preview__path" id="welcome-path"></span>
+          </div>
+        </div>
+        <footer class="page__footer">
+          <button type="button" class="btn btn--text" data-action="cancel">取消</button>
+          <div class="footer__actions">
+            <button type="button" class="btn btn--ghost" data-action="to-location">更改位置</button>
+            <button type="button" class="btn btn--primary" id="welcome-primary-btn" data-action="quick-install">开始安装 →</button>
+          </div>
+        </footer>
+      </section>
+
+      <!-- Page 2: Location -->
+      <section class="page page--compact" data-page="location">
+        <div class="page__body">
+          <p class="eyebrow eyebrow--blue">STEP 02 — DESTINATION</p>
+          <h1>选择安装目录</h1>
+          <p class="lede">将在所选文件夹内创建「Pi Desktop」子文件夹，并添加桌面与开始菜单快捷方式。</p>
+          <div class="field">
+            <label for="path-input" class="field-label">TARGET PATH</label>
+            <div class="path-row">
+              <input class="path-input" id="path-input" type="text" spellcheck="false" aria-describedby="path-hint">
+              <button type="button" class="btn btn--ghost" data-action="browse">浏览…</button>
+            </div>
+            <p class="hint" id="path-hint">若路径已以 Pi Desktop 结尾则直接使用，不重复嵌套。安装完成后可在 Windows 设置中随时卸载。</p>
+            <div class="error" id="install-error" role="alert"></div>
+          </div>
+        </div>
+        <footer class="page__footer">
+          <button type="button" class="btn btn--text" data-action="back-welcome">← 返回</button>
+          <div class="footer__actions">
+            <button type="button" class="btn btn--blue" data-action="install">执行安装 →</button>
+          </div>
+        </footer>
+      </section>
+
+      <!-- Page 3: Progress -->
+      <section class="page page--compact" data-page="progress">
+        <div class="page__body">
+          <p class="eyebrow" id="progress-eyebrow">STEP 03 — INSTALLING</p>
+          <h1 id="progress-title">正在部署文件</h1>
+          <p class="lede" id="progress-note">安装过程中请不要关闭此窗口。</p>
+          <div class="progress-wrap">
+            <progress class="progress-bar" id="progress-bar" max="100" value="0" aria-label="安装进度"></progress>
+            <div class="progress-meta">
+              <span class="progress-detail" id="progress-detail">正在准备文件…</span>
+              <span class="progress-pct" id="progress-percent">0%</span>
+            </div>
+          </div>
+          <div class="phase-grid" id="phase-grid">
+            <div class="phase-tile" data-phase-tile="copying" data-state="active">
+              <div class="phase-tile__tag">ACTIVE</div>
+              <div class="phase-tile__label">01 文件复制</div>
+            </div>
+            <div class="phase-tile" data-phase-tile="shortcuts" data-state="wait">
+              <div class="phase-tile__tag">WAIT</div>
+              <div class="phase-tile__label">02 快捷方式</div>
+            </div>
+            <div class="phase-tile" data-phase-tile="registry" data-state="wait">
+              <div class="phase-tile__tag">WAIT</div>
+              <div class="phase-tile__label">03 系统注册</div>
+            </div>
+          </div>
+        </div>
+        <footer class="page__footer">
+          <span class="footer__note" id="progress-footer-note">DO NOT CLOSE WINDOW</span>
+          <div class="footer__actions"></div>
+        </footer>
+      </section>
+
+      <!-- Page 4: Finish -->
+      <section class="page page--compact" data-page="finish">
+        <div class="page__body">
+          <p class="eyebrow eyebrow--blue" id="finish-eyebrow">STEP 04 — COMPLETE</p>
+          <h1 id="finish-title">安装完成</h1>
+          <p class="lede" id="finish-subtitle">Pi Desktop 已写入目标位置，随时可以开始编码。</p>
+          <div class="finish-path" id="finish-path"></div>
+          <div class="toggle-row" id="launch-row">
+            <span class="toggle-row__label">
+              <strong>立即启动 Pi Desktop</strong>
+              <span>点击完成后直接打开工作台</span>
+            </span>
+            <button type="button" class="switch" id="launch-toggle" role="switch" aria-checked="true" aria-label="立即启动 Pi Desktop"></button>
+          </div>
+        </div>
+        <footer class="page__footer">
+          <button type="button" class="btn btn--ghost" id="reveal-button" data-action="reveal">打开目录</button>
+          <div class="footer__actions">
+            <button type="button" class="btn btn--primary" data-action="finish">完成</button>
+          </div>
+        </footer>
+      </section>
+
+      <!-- Page 5: Uninstall -->
+      <section class="page page--compact" data-page="uninstall">
+        <div class="page__body">
+          <p class="eyebrow">CAUTION — UNINSTALL</p>
+          <h1>卸载 Pi Desktop</h1>
+          <p class="lede">将移除应用程序、桌面与开始菜单快捷方式及安装记录。本地数据默认保留，以便之后重装。</p>
+          <button type="button" class="checkbox-card" id="remove-data-row" role="checkbox" aria-checked="false">
+            <span class="checkbox-box" id="remove-data-check" aria-hidden="true"></span>
+            <span class="checkbox-card__text">
+              <strong>同时永久删除本地数据</strong>
+              <span>设置、模型配置与会话索引将被永久清空且无法恢复。</span>
+            </span>
+          </button>
+          <div class="error" id="uninstall-error" role="alert"></div>
+        </div>
+        <footer class="page__footer">
+          <button type="button" class="btn btn--text" data-action="cancel">取消</button>
+          <div class="footer__actions">
+            <button type="button" class="btn btn--danger" id="uninstall-btn" data-action="uninstall">确认卸载</button>
+          </div>
+        </footer>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const pages = [...document.querySelectorAll('[data-page]')]
+    const posters = [...document.querySelectorAll('[data-poster]')]
+    const phaseTiles = [...document.querySelectorAll('[data-phase-tile]')]
+    const PHASE_ORDER = { copying: 0, shortcuts: 1, registry: 2, finishing: 3, done: 4 }
+
+    const state = {
+      info: null,
+      activePage: 'welcome',
+      targetDir: '',
+      launchAfterInstall: true,
+      removeUserData: false,
+      busy: false
+    }
+
+    function stepCodeFor(name) {
+      if (state.info && state.info.mode === 'uninstall') {
+        if (name === 'uninstall') return 'UN / 01'
+        if (name === 'progress') return 'UN / 02'
+        return 'UN / 03'
+      }
+      return { welcome: '01 / 04', location: '02 / 04', progress: '03 / 04', finish: '04 / 04' }[name] || '01 / 04'
+    }
+
+    function show(name, animate = true) {
+      const stage = document.querySelector('.stage')
+      stage.toggleAttribute('data-animated', Boolean(animate))
+      state.activePage = name
+      for (const page of pages) page.toggleAttribute('data-active', page.dataset.page === name)
+      for (const poster of posters) poster.toggleAttribute('data-active', poster.dataset.poster === name)
+      document.getElementById('topbar-step').textContent = stepCodeFor(name)
+    }
+
+    function setError(id, message) {
+      const box = document.getElementById(id)
+      box.textContent = message || ''
+      box.toggleAttribute('data-visible', Boolean(message))
+      if (id === 'install-error') {
+        const input = document.getElementById('path-input')
+        if (message) input.setAttribute('aria-invalid', 'true')
+        else input.removeAttribute('aria-invalid')
+      }
+    }
+
+    function syncPhaseTiles(phase, percent) {
+      const idx = PHASE_ORDER[phase] ?? 0
+      phaseTiles.forEach((tile, i) => {
+        const isDone = i < idx || percent >= 100
+        const isActive = !isDone && i === idx
+        const nextState = isDone ? 'done' : isActive ? 'active' : 'wait'
+        tile.dataset.state = nextState
+        tile.querySelector('.phase-tile__tag').textContent = isDone ? 'DONE' : isActive ? 'ACTIVE' : 'WAIT'
+      })
+    }
+
+    function setProgress(percent, detail, phase) {
+      const value = Math.max(0, Math.min(100, Math.round(percent)))
+      document.getElementById('progress-bar').value = value
+      document.getElementById('progress-percent').textContent = value + '%'
+      document.getElementById('poster-big-pct').textContent = value + '%'
+      if (detail) document.getElementById('progress-detail').textContent = detail
+      if (phase) {
+        document.getElementById('poster-phase-label').textContent = 'PHASE: ' + String(phase).toUpperCase()
+        syncPhaseTiles(phase, value)
+      }
+      // Progressively illuminate the three geometric Bauhaus layers
+      const b1 = Math.min(1, value / 40)
+      const b2 = Math.max(0, Math.min(1, (value - 30) / 40))
+      const b3 = Math.max(0, Math.min(1, (value - 65) / 35))
+      document.getElementById('pi-layer-blue').setAttribute('opacity', (0.2 + 0.8 * b1).toFixed(2))
+      document.getElementById('pi-layer-coral').setAttribute('opacity', (0.14 + 0.86 * b2).toFixed(2))
+      document.getElementById('pi-layer-gold').setAttribute('opacity', (0.12 + 0.88 * b3).toFixed(2))
+    }
+
+    function setBusy(busy) {
+      state.busy = busy
+      for (const button of document.querySelectorAll('[data-action]')) button.disabled = busy
+      document.getElementById('close').disabled = busy
+    }
+
+    /** Every chosen folder gets the app folder inside it, one level only. */
+    function installPathFor(choice) {
+      const trimmed = String(choice || '').trim().replace(/[\\/]+$/, '')
+      if (!trimmed) return ''
+      const base = trimmed.split(/[\\/]/).pop() || ''
+      return base.toLowerCase() === 'pi desktop' ? trimmed : trimmed + '\\Pi Desktop'
+    }
+
+    function updateDisplayedPath(dir) {
+      state.targetDir = dir
+      document.getElementById('path-input').value = dir
+      const welcomePath = document.getElementById('welcome-path')
+      welcomePath.textContent = dir
+      welcomePath.title = dir
+    }
+
+    async function runInstall() {
+      const normalized = installPathFor(document.getElementById('path-input').value || state.targetDir)
+      updateDisplayedPath(normalized)
+      setError('install-error', '')
+      setBusy(true)
+      document.getElementById('phase-grid').hidden = false
+      document.getElementById('progress-eyebrow').textContent = 'STEP 03 — INSTALLING'
+      document.getElementById('progress-title').textContent = state.info && state.info.existing ? '正在更新文件' : '正在部署文件'
+      document.getElementById('progress-note').textContent = '安装过程中请不要关闭此窗口。'
+      document.getElementById('poster-progress-kicker').textContent = 'ASSEMBLING'
+      setProgress(0, '正在准备文件…', 'copying')
+      show('progress')
+
+      const result = await window.setup.install(state.targetDir, state.launchAfterInstall)
+      setBusy(false)
+      if (!result.success) {
+        show('location')
+        setError('install-error', result.error || '安装失败，请重试。')
+        return
+      }
+      if (result.targetDir) updateDisplayedPath(result.targetDir)
+      document.getElementById('finish-eyebrow').textContent = 'STEP 04 — COMPLETE'
+      document.getElementById('finish-title').textContent = state.info && state.info.existing ? '更新完成' : '安装完成'
+      document.getElementById('finish-subtitle').textContent = 'Pi Desktop 已准备就绪，随时可以开始编码。'
+      document.getElementById('finish-path').textContent = state.targetDir
+      document.getElementById('finish-path').hidden = false
+      document.getElementById('launch-row').hidden = false
+      document.getElementById('reveal-button').hidden = false
+      document.getElementById('poster-finish-kicker').textContent = 'STATUS // READY'
+      document.getElementById('poster-finish-tag').textContent = 'VERIFIED'
+      const readyStatus = document.getElementById('poster-finish-status')
+      readyStatus.textContent = '✓ 安装成功'
+      readyStatus.removeAttribute('data-tone')
+      show('finish')
+    }
+
+    async function loadInfo() {
+      state.info = await window.setup.info()
+      updateDisplayedPath(state.info.targetDir)
+      document.getElementById('fact-version').textContent = state.info.version
+      document.getElementById('poster-version-label').textContent = 'PI DESKTOP · v' + state.info.version
+
+      if (state.info.mode === 'uninstall') {
+        document.getElementById('topbar-title').textContent = 'PI DESKTOP // UNINSTALL'
+        show('uninstall', false)
+        return
+      }
+
+      document.getElementById('topbar-title').textContent = 'PI DESKTOP // SETUP'
+      if (state.info.existing) {
+        document.getElementById('poster-dots').hidden = true
+        document.getElementById('poster-upgrade-tag').hidden = false
+        document.getElementById('welcome-eyebrow').textContent = 'STEP 01 — UPGRADE'
+        document.getElementById('welcome-title').textContent = '升级 Pi Desktop'
+        document.getElementById('welcome-lede').textContent = '已检测到本机安装。更新将替换程序文件，保留所有项目、会话历史与设置。'
+        document.getElementById('welcome-primary-btn').textContent = '立即升级 →'
+        if (state.info.installedVersion && state.info.installedVersion !== state.info.version) {
+          const shift = document.getElementById('poster-ver-shift')
+          shift.textContent = 'v' + state.info.installedVersion + ' → v' + state.info.version
+          shift.hidden = false
+        }
+      }
+      show('welcome', false)
+    }
+
+    document.addEventListener('click', async (event) => {
+      const target = event.target.closest('[data-action]')
+      if (target) {
+        const action = target.dataset.action
+        if (action === 'cancel') return window.setup.close()
+        if (action === 'to-location') {
+          setError('install-error', '')
+          show('location')
+          return
+        }
+        if (action === 'back-welcome') {
+          setError('install-error', '')
+          show('welcome')
+          return
+        }
+        if (action === 'browse') {
+          const picked = await window.setup.browse()
+          if (picked) {
+            updateDisplayedPath(installPathFor(picked))
+            setError('install-error', '')
+          }
+          return
+        }
+        if (action === 'quick-install' || action === 'install') {
+          await runInstall()
+          return
+        }
+        if (action === 'finish') {
+          if (state.launchAfterInstall) await window.setup.launch(state.targetDir)
+          window.setup.close()
+          return
+        }
+        if (action === 'reveal') {
+          await window.setup.reveal(state.targetDir)
+          return
+        }
+        if (action === 'uninstall') {
+          setError('uninstall-error', '')
+          setBusy(true)
+          document.getElementById('phase-grid').hidden = true
+          document.getElementById('progress-eyebrow').textContent = 'UNINSTALL — REMOVING'
+          document.getElementById('progress-title').textContent = '正在卸载 Pi Desktop'
+          document.getElementById('progress-note').textContent = '正在移除快捷方式、注册记录与程序文件…'
+          document.getElementById('poster-progress-kicker').textContent = 'REMOVING'
+          setProgress(35, '正在移除应用文件…', 'removing')
+          show('progress')
+
+          const result = await window.setup.uninstall(state.removeUserData)
+          setBusy(false)
+          if (!result.success) {
+            show('uninstall')
+            setError('uninstall-error', result.error || '卸载失败，请重试。')
+            return
+          }
+          setProgress(100, '卸载完成', 'done')
+          state.launchAfterInstall = false
+          document.getElementById('finish-eyebrow').textContent = 'UNINSTALL — COMPLETE'
+          document.getElementById('finish-title').textContent = '已卸载'
+          document.getElementById('finish-subtitle').textContent = state.removeUserData
+            ? 'Pi Desktop 与本地数据已从这台电脑移除。'
+            : 'Pi Desktop 已从这台电脑移除，本地数据已保留。'
+          document.getElementById('finish-path').textContent = state.targetDir
+          document.getElementById('finish-path').hidden = false
+          document.getElementById('launch-row').hidden = true
+          document.getElementById('reveal-button').hidden = true
+          document.getElementById('poster-finish-kicker').textContent = 'STATUS // REMOVED'
+          document.getElementById('poster-finish-tag').textContent = 'CLEANED'
+          const readyStatus = document.getElementById('poster-finish-status')
+          readyStatus.textContent = '✓ 已移除'
+          readyStatus.setAttribute('data-tone', 'muted')
+          show('finish')
+          return
+        }
+      }
+
+      if (event.target.closest('#launch-toggle')) {
+        state.launchAfterInstall = !state.launchAfterInstall
+        document.getElementById('launch-toggle').setAttribute('aria-checked', String(state.launchAfterInstall))
+        return
+      }
+
+      if (event.target.closest('#remove-data-row')) {
+        state.removeUserData = !state.removeUserData
+        const row = document.getElementById('remove-data-row')
+        row.setAttribute('aria-checked', String(state.removeUserData))
+        document.getElementById('remove-data-check').textContent = state.removeUserData ? '✓' : ''
+        document.getElementById('uninstall-btn').textContent = state.removeUserData ? '卸载并清除数据' : '确认卸载'
+      }
+    })
+
+    document.getElementById('minimize').addEventListener('click', () => window.setup.minimize())
+    document.getElementById('close').addEventListener('click', () => window.setup.close())
+
+    document.getElementById('path-input').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !state.busy) document.querySelector('[data-action="install"]').click()
+    })
+    document.getElementById('path-input').addEventListener('blur', () => {
+      const normalized = installPathFor(document.getElementById('path-input').value)
+      if (!normalized) return
+      updateDisplayedPath(normalized)
+    })
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || state.busy) return
+      if (state.activePage === 'location') {
+        setError('install-error', '')
+        show('welcome')
+      } else if (state.activePage === 'welcome' || state.activePage === 'uninstall') {
+        window.setup.close()
+      }
+    })
+
+    window.setup.onProgress((progress) => {
+      setProgress(progress.percent, progress.detail, progress.phase)
+    })
+
+    loadInfo().catch((error) => {
+      show('location')
+      setError('install-error', String(error))
+    })
+  </script>
+</body>
+</html>

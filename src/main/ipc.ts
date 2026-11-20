@@ -37,12 +37,14 @@ import type {
   TerminalCreateOptions,
   TextSearchHit,
   TextSearchResult,
+  TrayConversation,
   UpgradeResult,
   VersionCheckResult,
   VersionItemStatus,
   Workspace
 } from '@shared/types'
 import { generateImages } from './image-generation'
+import { setTrayConversations } from './tray'
 import {
   APP_RELEASE_PAGE_URL,
   checkAppVersion,
@@ -52,7 +54,7 @@ import { downloadAppInstaller, launchAppInstaller, supportsAppUpdate } from './a
 import { beginBundledPiCliMaintenance, checkAuth, killProcessTree, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
 import { spawn } from './pi/spawn'
-import { discoverSkillCommands } from './pi/command-catalog'
+import { discoverSkillCommands, invalidateSkillCommandsCache } from './pi/command-catalog'
 import { getModelThinkingLevels } from './pi/model-catalog'
 import { readTraceHint } from './pi/trace'
 import type { SessionSupervisor } from './pi/supervisor'
@@ -70,7 +72,7 @@ import {
   removePackage,
   setPackageEnabled
 } from './marketplace'
-import { fetchPiCatalog } from './pi-catalog'
+import { fetchPiCatalog, configurePiCatalogCache } from './pi-catalog'
 import type { MemoryService } from './memory/service'
 import type { RemoteAccessService } from './remote-access'
 import { readEmojiFont } from './emoji-font'
@@ -255,17 +257,18 @@ export async function readBoundedFile(
 export async function readBoundedHandle(
   handle: FileHandle,
   maxBytes: number,
-  onBytesRead?: (totalRead: number) => void
+  onBytesRead?: (totalRead: number) => void,
+  initialStats?: Awaited<ReturnType<FileHandle['stat']>> & { size: bigint; mtimeNs: bigint; ctimeNs: bigint }
 ): Promise<{ content: string; truncated: boolean; size: number } | null> {
   try {
-    const stats = await handle.stat({ bigint: true })
+    const stats = initialStats ?? await handle.stat({ bigint: true })
     if (!stats.isFile()) return null
     const byteLimit = BigInt(maxBytes)
     const truncated = stats.size > byteLimit
     const bytesToRead = Number(truncated ? byteLimit : stats.size)
     let content = ''
     if (bytesToRead > 0) {
-      const buffer = Buffer.alloc(bytesToRead)
+      const buffer = Buffer.allocUnsafe(bytesToRead)
       let totalRead = 0
       while (totalRead < bytesToRead) {
         const { bytesRead } = await handle.read(buffer, totalRead, bytesToRead - totalRead, totalRead)
@@ -598,6 +601,29 @@ const IMAGE_EXTENSIONS = new Set(Object.keys(IMAGE_MIME).map((extension) => exte
  * whole project nine times for the same answer. The skip list and the depth
  * cap are the ones the file search uses, so both see the same project.
  */
+const SEARCH_STAT_CONCURRENCY = 16
+const TEXT_SEARCH_CONCURRENCY = 12
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return []
+  const results = new Array<R>(items.length)
+  let nextIndex = 0
+  const workers = Math.min(limit, items.length)
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex++
+        results[index] = await worker(items[index]!, index)
+      }
+    })
+  )
+  return results
+}
+
 export async function listProjectImages(
   root: string,
   limit = MAX_IMAGE_RESULTS,
@@ -605,13 +631,13 @@ export async function listProjectImages(
 ): Promise<ImageListResult> {
   if (!root) return { entries: [], truncated: false }
   const base = path.resolve(root)
-  const results: FileEntry[] = []
+  const candidates: Array<{ name: string; full: string }> = []
   let scannedEntries = 0
   let truncated = false
 
   const walk = async (dir: string, depth: number): Promise<void> => {
     if (shouldStop()) return
-    if (results.length >= limit || scannedEntries >= MAX_IMAGE_SCAN_ENTRIES || depth > MAX_SEARCH_DEPTH) {
+    if (candidates.length >= limit || scannedEntries >= MAX_IMAGE_SCAN_ENTRIES || depth > MAX_SEARCH_DEPTH) {
       truncated = true
       return
     }
@@ -625,7 +651,7 @@ export async function listProjectImages(
     try {
       for await (const entry of directory) {
         if (shouldStop()) return
-        if (results.length >= limit || scannedEntries >= MAX_IMAGE_SCAN_ENTRIES) {
+        if (candidates.length >= limit || scannedEntries >= MAX_IMAGE_SCAN_ENTRIES) {
           truncated = true
           return
         }
@@ -643,16 +669,8 @@ export async function listProjectImages(
         if (!entry.isFile()) continue
         const extension = path.extname(entry.name).slice(1).toLowerCase()
         if (!IMAGE_EXTENSIONS.has(extension)) continue
-        let size: number | undefined
-        try {
-          const info = await lstat(full)
-          if (info.isFile()) size = info.size
-        } catch {
-          size = undefined
-        }
-        if (shouldStop()) return
-        results.push({ name: entry.name, path: full, kind: 'file', size })
-        if (results.length >= limit) truncated = true
+        candidates.push({ name: entry.name, full })
+        if (candidates.length >= limit) truncated = true
       }
     } catch {
       truncated = true
@@ -660,6 +678,22 @@ export async function listProjectImages(
   }
 
   await walk(base, 0)
+  if (shouldStop()) {
+    return { entries: [], truncated }
+  }
+  const results = await mapWithConcurrency(candidates, SEARCH_STAT_CONCURRENCY, async ({ name, full }): Promise<FileEntry> => {
+    let size: number | undefined
+    try {
+      const info = await lstat(full)
+      if (info.isFile()) size = info.size
+    } catch {
+      size = undefined
+    }
+    return { name, path: full, kind: 'file', size }
+  })
+  if (shouldStop()) {
+    return { entries: [], truncated }
+  }
   results.sort((a, b) => a.path.localeCompare(b.path))
   return { entries: results, truncated }
 }
@@ -677,26 +711,27 @@ async function searchFileText(
   file: string,
   needle: string,
   remainingHits: number,
-  remainingBytes: number
+  remainingBytes: number,
+  preResolvedRoot?: string
 ): Promise<{ hits: TextSearchHit[]; bytesRead: number; budgetExceeded: boolean; incomplete: boolean }> {
   const perFile = Math.min(remainingHits, MAX_TEXT_HITS_PER_FILE)
   if (perFile <= 0 || remainingBytes <= 0) {
     return { hits: [], bytesRead: 0, budgetExceeded: remainingBytes <= 0, incomplete: false }
   }
 
-  const opened = await openWorkspaceFile(root, file)
+  const opened = await openWorkspaceFile(root, file, preResolvedRoot)
   if (!opened) return { hits: [], bytesRead: 0, budgetExceeded: false, incomplete: true }
   let content: string
   let bytesRead = 0
   try {
-    const stats = await opened.handle.stat()
-    if (!stats.isFile() || stats.size === 0) {
+    const stats = await opened.handle.stat({ bigint: true })
+    if (!stats.isFile() || stats.size === 0n) {
       return { hits: [], bytesRead: 0, budgetExceeded: false, incomplete: false }
     }
-    if (stats.size > MAX_FILE_BYTES) {
+    if (stats.size > BigInt(MAX_FILE_BYTES)) {
       return { hits: [], bytesRead: 0, budgetExceeded: false, incomplete: true }
     }
-    if (stats.size > remainingBytes) {
+    if (stats.size > BigInt(remainingBytes)) {
       return { hits: [], bytesRead: 0, budgetExceeded: true, incomplete: false }
     }
     const result = await readBoundedHandle(
@@ -704,7 +739,8 @@ async function searchFileText(
       Math.min(MAX_FILE_BYTES, remainingBytes),
       (totalRead) => {
         bytesRead = totalRead
-      }
+      },
+      stats
     )
     // A file past the read cap is skipped rather than half-read: a hit in the
     // part that was never read would be a result the user cannot find.
@@ -729,6 +765,9 @@ async function searchFileText(
     await opened.handle.close().catch(() => {})
   }
   if (content.includes('\0')) return { hits: [], bytesRead, budgetExceeded: false, incomplete: false }
+  if (!content.toLowerCase().includes(needle)) {
+    return { hits: [], bytesRead, budgetExceeded: false, incomplete: false }
+  }
 
   const hits: TextSearchHit[] = []
   let lineStart = 0
@@ -957,7 +996,30 @@ export function registerIpc(context: IpcContext): void {
   // Large sessions are searched through an index kept beside the app's data,
   // never inside the user's project folder.
   configureSessionSearchIndex(path.join(app.getPath('userData'), 'session-search-index'))
+  // The catalog is server-rendered and slow when cold; its last pages survive
+  // a restart so the desk page can paint before the network answers.
+  configurePiCatalogCache(path.join(app.getPath('userData'), 'marketplace-catalog.json'))
   registerProviderIpc(context)
+
+  // The tray menu lists conversations the renderer knows about (including
+  // live chats Pi has not flushed yet). Rebuild the native menu on each push.
+  ipcMain.on('tray:conversations', (_event, list: unknown) => {
+    const clean: TrayConversation[] = []
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        if (!item || typeof item !== 'object') continue
+        const entry = item as Partial<TrayConversation>
+        if (typeof entry.key !== 'string' || typeof entry.title !== 'string') continue
+        clean.push({
+          key: entry.key,
+          title: entry.title.slice(0, 80),
+          isStreaming: entry.isStreaming === true
+        })
+      }
+    }
+    setTrayConversations(clean)
+  })
+
   ipcMain.handle('model-catalog:thinking-levels', (_event, provider: unknown, modelId: unknown) =>
     getModelThinkingLevels(typeof provider === 'string' ? provider : '', typeof modelId === 'string' ? modelId : '')
   )
@@ -1002,12 +1064,12 @@ export function registerIpc(context: IpcContext): void {
         display: launch.display,
         version
       },
-      sessionRoot: resolveSessionRoot(settings.get().externalChatFolder),
+      sessionRoot: resolveSessionRoot(current.externalChatFolder),
       forcedTheme: forcedTheme()
     }
   })
 
-  ipcMain.handle('app:emojiFont', (): Uint8Array | null => readEmojiFont())
+  ipcMain.handle('app:emojiFont', (): Promise<Uint8Array | null> => readEmojiFont())
 
   ipcMain.handle('dialog:pickDirectory', async (_event, defaultPath?: string): Promise<string | null> => {
     try {
@@ -1115,6 +1177,21 @@ export function registerIpc(context: IpcContext): void {
       }
     }
   )
+
+  ipcMain.handle('app:setWindowControlsEnabled', (_event, enabled: boolean) => {
+    const window = getWindow()
+    if (!window || window.isDestroyed()) return
+    try {
+      // Native title-bar buttons are drawn over the web content (Windows) or as
+      // traffic lights (macOS), so a modal scrim cannot intercept their clicks.
+      // Grey them out for the lifetime of a full-window layer instead.
+      window.setClosable(enabled)
+      window.setMinimizable(enabled)
+      window.setMaximizable(enabled)
+    } catch {
+      /* the platform may not expose these toggles */
+    }
+  })
 
   ipcMain.handle('app:getSystemFonts', async (): Promise<string[]> => {
     return querySystemFonts()
@@ -1609,25 +1686,28 @@ export function registerIpc(context: IpcContext): void {
       return a.name.localeCompare(b.name)
     })
     if (candidates.length > MAX_DIRECTORY_LIST_ENTRIES) truncated = true
-    const listed: FileEntry[] = []
-    for (const entry of candidates.slice(0, MAX_DIRECTORY_LIST_ENTRIES)) {
-      const full = path.join(target, entry.name)
-      let size: number | undefined
-      if (entry.isFile()) {
-        try {
-          const info = await lstat(full)
-          if (info.isFile()) size = info.size
-        } catch {
-          size = undefined
+    const listed = await mapWithConcurrency(
+      candidates.slice(0, MAX_DIRECTORY_LIST_ENTRIES),
+      SEARCH_STAT_CONCURRENCY,
+      async (entry): Promise<FileEntry> => {
+        const full = path.join(target, entry.name)
+        let size: number | undefined
+        if (entry.isFile()) {
+          try {
+            const info = await lstat(full)
+            if (info.isFile()) size = info.size
+          } catch {
+            size = undefined
+          }
+        }
+        return {
+          name: entry.name,
+          path: full,
+          kind: entry.isDirectory() ? 'directory' : 'file',
+          size
         }
       }
-      listed.push({
-        name: entry.name,
-        path: full,
-        kind: entry.isDirectory() ? 'directory' : 'file',
-        size
-      })
-    }
+    )
     return { entries: listed, truncated }
   })
 
@@ -1682,7 +1762,7 @@ export function registerIpc(context: IpcContext): void {
     if (!root || limit === 0) return { entries: [], truncated: false }
     const requestedLimit = Number.isFinite(limit) ? Math.trunc(limit as number) : MAX_SEARCH_RESULTS
     const ceiling = Math.min(Math.max(requestedLimit, 1), MAX_SEARCH_RESULTS)
-    const results: FileEntry[] = []
+    const matched: Array<{ name: string; full: string }> = []
     const base = path.resolve(root)
     let scannedEntries = 0
     let truncated = false
@@ -1693,7 +1773,7 @@ export function registerIpc(context: IpcContext): void {
     // The walk awaits the disk, so the event loop keeps serving Pi events and
     // other IPC while a large project is being walked.
     const walk = async (dir: string, depth: number): Promise<void> => {
-      if (results.length >= ceiling) {
+      if (matched.length >= ceiling) {
         truncated = true
         stopWalk = true
         return
@@ -1731,14 +1811,8 @@ export function registerIpc(context: IpcContext): void {
           // files of the renderer and "readme" finds the README in a folder.
           const relative = path.relative(base, full)
           if (!relative.replace(/\\/g, '/').toLowerCase().includes(needle)) continue
-          let size: number | undefined
-          try {
-            size = (await stat(full)).size
-          } catch {
-            size = undefined
-          }
-          results.push({ name: entry.name, path: full, kind: 'file', size })
-          if (results.length >= ceiling) {
+          matched.push({ name: entry.name, full })
+          if (matched.length >= ceiling) {
             truncated = true
             stopWalk = true
             return
@@ -1750,6 +1824,16 @@ export function registerIpc(context: IpcContext): void {
     }
 
     await walk(base, 0)
+    if (superseded()) return { entries: [], truncated: false }
+    const results = await mapWithConcurrency(matched, SEARCH_STAT_CONCURRENCY, async ({ name, full }): Promise<FileEntry> => {
+      let size: number | undefined
+      try {
+        size = (await stat(full)).size
+      } catch {
+        size = undefined
+      }
+      return { name, path: full, kind: 'file', size }
+    })
     // The walk follows the disk, which has no order of its own.
     results.sort((a, b) => a.path.localeCompare(b.path))
     return { entries: results, truncated }
@@ -1773,13 +1857,76 @@ export function registerIpc(context: IpcContext): void {
     const requestedLimit = Number.isFinite(limit) ? Math.trunc(limit as number) : MAX_SEARCH_RESULTS
     const ceiling = Math.min(Math.max(requestedLimit, 1), MAX_SEARCH_RESULTS)
     const base = path.resolve(root)
+    const realRoot = await realpath(root).catch(() => undefined)
     const hits: TextSearchHit[] = []
     let scannedEntries = 0
     let scannedBytes = 0
     let truncated = false
     let stopWalk = false
+    let pendingFiles: string[] = []
     // Typing another character should not leave the previous query reading the
     // project; the sidebar's versioning only ignores the answer, not the work.
+
+    const flushPending = async (): Promise<void> => {
+      if (pendingFiles.length === 0 || stopWalk || superseded()) {
+        pendingFiles = []
+        return
+      }
+      const batch = pendingFiles
+      pendingFiles = []
+      const remainingHits = ceiling - hits.length
+      const remainingBytes = MAX_TEXT_SEARCH_SCAN_BYTES - scannedBytes
+      const safeParallel =
+        remainingHits >= batch.length * MAX_TEXT_HITS_PER_FILE &&
+        remainingBytes >= batch.length * MAX_FILE_BYTES
+      if (safeParallel) {
+        const batchResults = await Promise.all(
+          batch.map((file) =>
+            searchFileText(root, file, needle, remainingHits, remainingBytes, realRoot)
+          )
+        )
+        for (const result of batchResults) {
+          if (result.budgetExceeded) {
+            truncated = true
+            stopWalk = true
+            return
+          }
+          if (result.incomplete) truncated = true
+          scannedBytes += result.bytesRead
+          if (result.hits.length) hits.push(...result.hits)
+          if (hits.length >= ceiling) {
+            truncated = true
+            stopWalk = true
+            return
+          }
+        }
+        return
+      }
+      for (const file of batch) {
+        if (superseded() || stopWalk) return
+        const result = await searchFileText(
+          root,
+          file,
+          needle,
+          ceiling - hits.length,
+          MAX_TEXT_SEARCH_SCAN_BYTES - scannedBytes,
+          realRoot
+        )
+        if (result.budgetExceeded) {
+          truncated = true
+          stopWalk = true
+          return
+        }
+        if (result.incomplete) truncated = true
+        scannedBytes += result.bytesRead
+        if (result.hits.length) hits.push(...result.hits)
+        if (hits.length >= ceiling) {
+          truncated = true
+          stopWalk = true
+          return
+        }
+      }
+    }
 
     const walk = async (dir: string, depth: number): Promise<void> => {
       if (hits.length >= ceiling) {
@@ -1803,6 +1950,7 @@ export function registerIpc(context: IpcContext): void {
         for await (const entry of directory) {
           if (superseded()) return
           if (scannedEntries >= MAX_TEXT_SEARCH_SCAN_ENTRIES) {
+            await flushPending()
             truncated = true
             stopWalk = true
             return
@@ -1816,25 +1964,10 @@ export function registerIpc(context: IpcContext): void {
             continue
           }
           if (!entry.isFile()) continue
-          const result = await searchFileText(
-            root,
-            full,
-            needle,
-            ceiling - hits.length,
-            MAX_TEXT_SEARCH_SCAN_BYTES - scannedBytes
-          )
-          if (result.budgetExceeded) {
-            truncated = true
-            stopWalk = true
-            return
-          }
-          if (result.incomplete) truncated = true
-          scannedBytes += result.bytesRead
-          if (result.hits.length) hits.push(...result.hits)
-          if (hits.length >= ceiling) {
-            truncated = true
-            stopWalk = true
-            return
+          pendingFiles.push(full)
+          if (pendingFiles.length >= TEXT_SEARCH_CONCURRENCY) {
+            await flushPending()
+            if (stopWalk || superseded()) return
           }
         }
       } catch {
@@ -1843,6 +1976,7 @@ export function registerIpc(context: IpcContext): void {
     }
 
     await walk(base, 0)
+    await flushPending()
     hits.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
     return { hits: hits.slice(0, ceiling), truncated }
   })
@@ -2131,53 +2265,77 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('marketplace:managed', () =>
     listManagedPackages({ cwd: workspaceRoot(context) })
   )
-  ipcMain.handle('marketplace:install', (event, id: unknown, runId: unknown) => {
+  ipcMain.handle('marketplace:install', async (event, id: unknown, runId: unknown) => {
     if (typeof id !== 'string' || !id.trim()) {
       return { ok: false, output: 'Invalid marketplace entry id.' }
     }
-    return installMarketplaceEntry(id, {
-      cwd: workspaceRoot(context),
-      customPiPath: settings.get().piPath,
-      onProgress: installProgressReporter(BrowserWindow.fromWebContents(event.sender), runId)
-    })
+    try {
+      return await installMarketplaceEntry(id, {
+        cwd: workspaceRoot(context),
+        customPiPath: settings.get().piPath,
+        onProgress: installProgressReporter(BrowserWindow.fromWebContents(event.sender), runId)
+      })
+    } finally {
+      invalidateSkillCommandsCache()
+    }
   })
-  ipcMain.handle('marketplace:installNpm', (event, packageName: unknown, runId: unknown) => {
+  ipcMain.handle('marketplace:installNpm', async (event, packageName: unknown, runId: unknown) => {
     if (typeof packageName !== 'string' || !packageName.trim()) {
       return { ok: false, output: 'Invalid npm package name.' }
     }
-    return installNpmPackage(packageName, {
-      cwd: workspaceRoot(context),
-      customPiPath: settings.get().piPath,
-      onProgress: installProgressReporter(BrowserWindow.fromWebContents(event.sender), runId)
-    })
+    try {
+      return await installNpmPackage(packageName, {
+        cwd: workspaceRoot(context),
+        customPiPath: settings.get().piPath,
+        onProgress: installProgressReporter(BrowserWindow.fromWebContents(event.sender), runId)
+      })
+    } finally {
+      invalidateSkillCommandsCache()
+    }
   })
-  ipcMain.handle('marketplace:installGitRepository', (event, repository: unknown, runId: unknown) => {
+  ipcMain.handle('marketplace:installGitRepository', async (event, repository: unknown, runId: unknown) => {
     if (typeof repository !== 'string' || !repository.trim()) {
       return { ok: false, output: 'Invalid GitHub repository.' }
     }
-    return installGitRepository(repository, {
-      cwd: workspaceRoot(context),
-      customPiPath: settings.get().piPath,
-      onProgress: installProgressReporter(BrowserWindow.fromWebContents(event.sender), runId)
-    })
+    try {
+      return await installGitRepository(repository, {
+        cwd: workspaceRoot(context),
+        customPiPath: settings.get().piPath,
+        onProgress: installProgressReporter(BrowserWindow.fromWebContents(event.sender), runId)
+      })
+    } finally {
+      invalidateSkillCommandsCache()
+    }
   })
-  ipcMain.handle('marketplace:createResource', (_event, input: unknown) => {
+  ipcMain.handle('marketplace:createResource', async (_event, input: unknown) => {
     if (!input || typeof input !== 'object') {
       return { ok: false, output: 'Invalid resource input.' }
     }
-    return createResource(input as Parameters<typeof createResource>[0])
+    try {
+      return await createResource(input as Parameters<typeof createResource>[0])
+    } finally {
+      invalidateSkillCommandsCache()
+    }
   })
-  ipcMain.handle('marketplace:setPackageEnabled', (_event, id: unknown, enabled: unknown) => {
+  ipcMain.handle('marketplace:setPackageEnabled', async (_event, id: unknown, enabled: unknown) => {
     if (typeof id !== 'string' || !id.trim() || typeof enabled !== 'boolean') {
       return { ok: false, output: 'Invalid package action.' }
     }
-    return setPackageEnabled(id, enabled, workspaceRoot(context))
+    try {
+      return await setPackageEnabled(id, enabled, workspaceRoot(context))
+    } finally {
+      invalidateSkillCommandsCache()
+    }
   })
-  ipcMain.handle('marketplace:removePackage', (_event, id: unknown) => {
+  ipcMain.handle('marketplace:removePackage', async (_event, id: unknown) => {
     if (typeof id !== 'string' || !id.trim()) {
       return { ok: false, output: 'Invalid package id.' }
     }
-    return removePackage(id, workspaceRoot(context))
+    try {
+      return await removePackage(id, workspaceRoot(context))
+    } finally {
+      invalidateSkillCommandsCache()
+    }
   })
 
   ipcMain.handle('shell:nativeIcons', () => nativeAppIcons())
@@ -2321,14 +2479,14 @@ function isCoalescableStreamEvent(event: PiEvent): boolean {
   return false
 }
 
-function coalesceStreamEvent(last: PiEvent, next: PiEvent): PiEvent | null {
+function tryCoalesceEvent(entry: CoalescedEventEntry, next: PiEvent): boolean {
+  const last = entry.event
   if (last.type === 'message_delta' && next.type === 'message_delta') {
     if (typeof last.delta === 'string' && typeof next.delta === 'string') {
-      return {
-        ...last,
-        delta: last.delta + next.delta
-      }
+      ;(last as Record<string, unknown>).delta = last.delta + next.delta
+      return true
     }
+    return false
   }
   if (last.type === 'message_update' && next.type === 'message_update') {
     const lastSub = last.assistantMessageEvent as Record<string, unknown> | undefined
@@ -2342,23 +2500,9 @@ function coalesceStreamEvent(last: PiEvent, next: PiEvent): PiEvent | null {
       typeof lastSub.delta === 'string' &&
       typeof nextSub.delta === 'string'
     ) {
-      return {
-        ...last,
-        assistantMessageEvent: {
-          ...lastSub,
-          delta: (lastSub.delta as string) + (nextSub.delta as string)
-        }
-      }
+      lastSub.delta = (lastSub.delta as string) + (nextSub.delta as string)
+      return true
     }
-  }
-  return null
-}
-
-function tryCoalesceEvent(entry: CoalescedEventEntry, next: PiEvent): boolean {
-  const coalesced = coalesceStreamEvent(entry.event, next)
-  if (coalesced) {
-    entry.event = coalesced
-    return true
   }
   return false
 }
@@ -2546,7 +2690,7 @@ export function bridgeRuntime(context: IpcContext): void {
   const describeNotificationSession = async (ownerId: string): Promise<string> => {
     if (!ownerId || ownerId.startsWith('draft:')) return ''
     try {
-      const meta = await getSessionMeta(ownerId, resolveSessionRoots(settings.get().externalChatFolder))
+      const meta = await getSessionMeta(ownerId, resolveSessionRoots(settings.getCached().externalChatFolder))
       const name = (meta?.name || meta?.preview || '').replace(/\s+/g, ' ').trim()
       return name.length > 60 ? `${name.slice(0, 59)}…` : name
     } catch {

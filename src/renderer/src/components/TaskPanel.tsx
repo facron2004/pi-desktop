@@ -1,13 +1,11 @@
-import { memo, useCallback, useDeferredValue, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
-import { useShallow } from 'zustand/react/shallow'
+import { lazy, memo, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 import { ChevronRight, FileDiff, GitBranch, GitCommitHorizontal } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
-import { CommitDialog } from './CommitDialog'
-import { CommitHistoryDialog } from './CommitHistoryDialog'
 import { FileIcon } from './FileIcon'
 import { useAppStore } from '../store/useAppStore'
 import { changedFilePaths } from '../lib/changes'
 import { relativePath, resolveAgainst } from '../lib/path'
+import { isImageName } from '../lib/files'
 import { extractPlan } from '../lib/plan'
 import {
   listBackgroundTasks,
@@ -19,6 +17,13 @@ import {
 import { useT } from '../lib/i18n'
 import '../styles/task-panel.css'
 
+const CommitDialog = lazy(() =>
+  import('./CommitDialog').then((m) => ({ default: m.CommitDialog }))
+)
+const CommitHistoryDialog = lazy(() =>
+  import('./CommitHistoryDialog').then((m) => ({ default: m.CommitHistoryDialog }))
+)
+
 /**
  * One section of the rail.
  *
@@ -26,7 +31,7 @@ import '../styles/task-panel.css'
  * the same section reads in the reference app; the body folds open on a grid
  * row so the content keeps its height while it moves.
  */
-function TaskSection({
+const TaskSection = memo(function TaskSection({
   title,
   subtitle,
   meta,
@@ -77,7 +82,7 @@ function TaskSection({
       </div>
     </section>
   )
-}
+})
 
 /**
  * One in-flight tool call.
@@ -87,7 +92,7 @@ function TaskSection({
  * lists calls that are running. Clicking does nothing — the real body lives in
  * the transcript card above, and the rail is a glance, not a second transcript.
  */
-function BackgroundTaskRow({ task }: { task: BackgroundTask }) {
+const BackgroundTaskRow = memo(function BackgroundTaskRow({ task }: { task: BackgroundTask }) {
   const t = useT()
   return (
     <li className="task-panel__task" data-status="running">
@@ -104,10 +109,10 @@ function BackgroundTaskRow({ task }: { task: BackgroundTask }) {
       </div>
     </li>
   )
-}
+})
 
 /** One file the run produced, as one row of the deliverables list. */
-function DeliverableRow({
+const DeliverableRow = memo(function DeliverableRow({
   file,
   onOpenFile
 }: {
@@ -131,7 +136,7 @@ function DeliverableRow({
       </button>
     </li>
   )
-}
+})
 
 /**
  * The task rail: what the folder looks like from the outside, what is running
@@ -140,18 +145,52 @@ function DeliverableRow({
  * Every part of it is a projection of the thread and the Git state, so the rail
  * keeps no state of its own at all.
  */
-export const TaskPanel = memo(function TaskPanel() {
+const TaskProgressSection = memo(function TaskProgressSection() {
   const t = useT()
   const items = useAppStore((state) => state.items)
-  const toolItems = useAppStore(
-    useShallow((state) => state.items.filter((item) => item.kind === 'tool'))
+  const deferredItems = useDeferredValue(items)
+  const plan = useMemo(() => extractPlan(deferredItems), [deferredItems])
+
+  return (
+    <TaskSection
+      title={t('Progress')}
+      meta={
+        plan ? <span className="task-panel__count">{plan.done}/{plan.total}</span> : undefined
+      }
+    >
+      {plan ? (
+        <ul className="task-panel__list">
+          {plan.entries.map((entry, index) => (
+            <li
+              key={`${index}-${entry.text}`}
+              className="task-panel__check"
+              data-done={entry.done || undefined}
+              data-active={entry.active || undefined}
+            >
+              <span className="task-panel__check-mark" aria-hidden="true">
+                {index + 1}
+              </span>
+              <span className="task-panel__check-text">{entry.text}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="task-panel__empty">{t('No checklist in this conversation yet')}</p>
+      )}
+    </TaskSection>
   )
+})
+
+export const TaskPanel = memo(function TaskPanel() {
+  const t = useT()
+  const activeToolsRevision = useAppStore((state) => state.activeToolsRevision)
   const git = useAppStore((state) => state.git)
   const workspacePath = useAppStore((state) => state.workspace?.path)
   const refreshGit = useAppStore((state) => state.refreshGit)
-  const deferredItems = useDeferredValue(items)
-
-  const plan = useMemo(() => extractPlan(deferredItems), [deferredItems])
+  const toolItems = useMemo(
+    () => useAppStore.getState().items.filter((item) => item.kind === 'tool'),
+    [activeToolsRevision]
+  )
   const backgroundTasks = useMemo(
     () => listBackgroundTasks(toolItems, workspacePath),
     [toolItems, workspacePath]
@@ -209,20 +248,22 @@ export const TaskPanel = memo(function TaskPanel() {
     )
   ) : null
 
-  const openChanges = () => {
+  const openChanges = useCallback(() => {
     window.dispatchEvent(
       new CustomEvent<InspectorRequest>('pi:open-inspector', { detail: { tab: 'changes' } })
     )
-  }
+  }, [])
 
-  const openFile = (file: Deliverable) => {
+  const openFile = useCallback((file: Deliverable) => {
     const target = file.target ?? file.path
-    window.dispatchEvent(
-      new CustomEvent<InspectorRequest>('pi:open-inspector', {
-        detail: { tab: 'files', file: target }
-      })
-    )
-  }
+    // A picture is not worth reading as text: the Images page draws it. The
+    // request carries the path so the viewer selects this picture instead of
+    // silently showing the first one it scanned.
+    const detail: InspectorRequest = isImageName(file.name)
+      ? { tab: 'images', image: target }
+      : { tab: 'files', file: target }
+    window.dispatchEvent(new CustomEvent<InspectorRequest>('pi:open-inspector', { detail }))
+  }, [])
 
   return (
     <div className="task-panel">
@@ -279,32 +320,7 @@ export const TaskPanel = memo(function TaskPanel() {
           </TaskSection>
         ) : null}
 
-        <TaskSection
-          title={t('Progress')}
-          meta={
-            plan ? <span className="task-panel__count">{plan.done}/{plan.total}</span> : undefined
-          }
-        >
-          {plan ? (
-            <ul className="task-panel__list">
-              {plan.entries.map((entry, index) => (
-                <li
-                  key={`${index}-${entry.text}`}
-                  className="task-panel__check"
-                  data-done={entry.done || undefined}
-                  data-active={entry.active || undefined}
-                >
-                  <span className="task-panel__check-mark" aria-hidden="true">
-                    {index + 1}
-                  </span>
-                  <span className="task-panel__check-text">{entry.text}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="task-panel__empty">{t('No checklist in this conversation yet')}</p>
-          )}
-        </TaskSection>
+        <TaskProgressSection />
 
         <TaskSection title={t('Deliverables')}>
           {deliverables.length > 0 ? (
@@ -318,8 +334,16 @@ export const TaskPanel = memo(function TaskPanel() {
           )}
         </TaskSection>
       </div>
-      {commitOpen ? <CommitDialog onClose={() => setCommitOpen(false)} /> : null}
-      {historyOpen ? <CommitHistoryDialog onClose={() => setHistoryOpen(false)} /> : null}
+      {commitOpen ? (
+        <Suspense fallback={null}>
+          <CommitDialog onClose={() => setCommitOpen(false)} />
+        </Suspense>
+      ) : null}
+      {historyOpen ? (
+        <Suspense fallback={null}>
+          <CommitHistoryDialog onClose={() => setHistoryOpen(false)} />
+        </Suspense>
+      ) : null}
     </div>
   )
 })

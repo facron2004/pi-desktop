@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ChevronLeft, ChevronRight, Folder, MessageSquare, Monitor, MoreHorizontal, Send } from 'lucide-react'
@@ -10,7 +10,7 @@ import {
   type RemoteSession,
   type RemoteWorkspace
 } from '@shared/types'
-import { applyEvent, itemsFromMessages, type ThreadItem } from '@renderer/lib/thread'
+import { applyEventBatch, itemsFromMessages, type ThreadItem } from '@renderer/lib/thread'
 import { beginStream } from '@renderer/lib/stream-events'
 import {
   beginRemoteSendRequest,
@@ -20,6 +20,7 @@ import {
 } from './session-state'
 
 const TOKEN_KEY = 'pi-desktop.remote.token'
+const REMARK_PLUGINS = [remarkGfm]
 
 interface ApiError extends Error {
   status?: number
@@ -223,8 +224,72 @@ export function RemoteApp() {
       && activeToken.current === token
       && activeConversationKey.current === conversationKey
     let refreshTimer: number | undefined
+    let frameHandle: number | null = null
+    const pendingEvents: { event: PiEvent; context: { sessionKey: string } }[] = []
+    const streamContext = { sessionKey: session.id }
     const query = new URLSearchParams({ workspaceId: workspace.id, sessionId: session.id })
     beginStream(session.id)
+
+    const cancelFrame = () => {
+      if (frameHandle !== null) {
+        window.cancelAnimationFrame(frameHandle)
+        frameHandle = null
+      }
+    }
+
+    const flushPendingEvents = () => {
+      cancelFrame()
+      if (pendingEvents.length === 0 || !isActive()) {
+        pendingEvents.length = 0
+        return
+      }
+      const batch = pendingEvents.splice(0)
+      updateItems((current) => applyEventBatch(current, batch))
+    }
+
+    const scheduleFlush = () => {
+      if (frameHandle !== null) return
+      let completed = false
+      const handle = window.requestAnimationFrame(() => {
+        completed = true
+        frameHandle = null
+        flushPendingEvents()
+      })
+      if (!completed) frameHandle = handle
+    }
+
+    const queueBatchEvent = (event: PiEvent) => {
+      if (event.type === 'message_update' && pendingEvents.length > 0) {
+        const prev = pendingEvents[pendingEvents.length - 1].event
+        if (prev.type === 'message_update') {
+          const prevPart = prev.assistantMessageEvent as { type?: string; contentIndex?: number; delta?: string } | undefined
+          const nextPart = event.assistantMessageEvent as { type?: string; contentIndex?: number; delta?: string } | undefined
+          if (
+            prevPart &&
+            nextPart &&
+            prevPart.type === nextPart.type &&
+            (prevPart.type === 'text_delta' || prevPart.type === 'thinking_delta') &&
+            prevPart.contentIndex !== undefined &&
+            prevPart.contentIndex === nextPart.contentIndex
+          ) {
+            pendingEvents[pendingEvents.length - 1] = {
+              event: {
+                ...prev,
+                assistantMessageEvent: {
+                  ...prevPart,
+                  delta: (prevPart.delta ?? '') + (nextPart.delta ?? '')
+                }
+              },
+              context: streamContext
+            }
+            scheduleFlush()
+            return
+          }
+        }
+      }
+      pendingEvents.push({ event, context: streamContext })
+      scheduleFlush()
+    }
 
     const consume = async () => {
       let connectedBefore = false
@@ -246,9 +311,19 @@ export function RemoteApp() {
         }
       }
 
-      const applyEventNow = (event: PiEvent) => {
+      const applyEventNow = (event: PiEvent, immediate = false) => {
         updateRuntimeState(event)
-        updateItems((current) => applyEvent(current, event, { sessionKey: session.id }))
+        if (immediate || event.type === 'agent_settled' || event.type === 'message_end') {
+          if (pendingEvents.length > 0) {
+            pendingEvents.push({ event, context: streamContext })
+            flushPendingEvents()
+            return
+          }
+          cancelFrame()
+          updateItems((current) => applyEventBatch(current, [{ event, context: streamContext }]))
+          return
+        }
+        queueBatchEvent(event)
       }
 
       const applyFrame = (frame: string, bufferedEvents: PiEvent[] | null) => {
@@ -302,6 +377,8 @@ export function RemoteApp() {
               signal: snapshotController.signal
             }).then((snapshot) => {
               if (!isActive() || generation !== snapshotGeneration) return
+              cancelFrame()
+              pendingEvents.length = 0
               const events = bufferedEvents ?? []
               const restored = restoreRemoteSessionItems(
                 snapshot.messages,
@@ -326,7 +403,14 @@ export function RemoteApp() {
               setError(cause instanceof Error ? cause.message : 'Could not restore the conversation.')
               const events = bufferedEvents ?? []
               bufferedEvents = null
-              for (const event of events) applyEventNow(event)
+              for (const event of events) updateRuntimeState(event)
+              if (events.length > 0) {
+                cancelFrame()
+                pendingEvents.length = 0
+                updateItems((current) =>
+                  applyEventBatch(current, events.map((event) => ({ event, context: streamContext })))
+                )
+              }
               snapshotHandled = true
             })
             void snapshotTask.finally(() => {
@@ -383,10 +467,12 @@ export function RemoteApp() {
     void consume()
     return () => {
       controller.abort()
+      cancelFrame()
+      pendingEvents.length = 0
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
       setStreamConnected(false)
     }
-  }, [token, workspace, session, clearPairingForToken, loadSession])
+  }, [token, workspace, session, clearPairingForToken, loadSession, updateItems])
 
   useEffect(() => {
     const transcript = transcriptRef.current
@@ -599,7 +685,7 @@ export function RemoteApp() {
   )
 }
 
-function RemoteMessage({ item }: { item: ThreadItem }) {
+const RemoteMessage = memo(function RemoteMessage({ item }: { item: ThreadItem }) {
   if (item.kind === 'user') {
     return (
       <article className="remote-message remote-message--user">
@@ -618,7 +704,7 @@ function RemoteMessage({ item }: { item: ThreadItem }) {
           if (block.type === 'image') return <div className="remote-muted" key={`${item.id}-${index}`}>图片</div>
           return (
             <div className="remote-markdown" key={`${item.id}-${index}`}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.text}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{block.text}</ReactMarkdown>
             </div>
           )
         })}
@@ -640,4 +726,4 @@ function RemoteMessage({ item }: { item: ThreadItem }) {
     return <details className="remote-tool"><summary><strong>命令行</strong><span className="remote-tool__state">已完成</span></summary><pre>{item.command}{item.output ? `\n${item.output.slice(0, 8_000)}` : ''}</pre></details>
   }
   return <div className={`remote-notice remote-notice--${item.level}`}>{item.text}</div>
-}
+})

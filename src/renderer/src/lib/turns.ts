@@ -99,9 +99,20 @@ interface TurnBuild {
   starts: number[]
 }
 
-let lastBuild: TurnBuild | null = null
+const RECENT_BUILD_LIMIT = 8
+const recentBuilds: TurnBuild[] = []
+const buildByItems = new WeakMap<ThreadItem[], TurnBuild>()
 const turnChanges = new WeakMap<Turn[], { base: WeakRef<Turn[]>; firstChangedIndex: number }>()
 const userMetadataByTurns = new WeakMap<Turn[], TurnUserMetadata>()
+
+function rememberBuild(build: TurnBuild): void {
+  buildByItems.set(build.items, build)
+  const existingIndex = recentBuilds.indexOf(build)
+  if (existingIndex === 0) return
+  if (existingIndex > 0) recentBuilds.splice(existingIndex, 1)
+  recentBuilds.unshift(build)
+  if (recentBuilds.length > RECENT_BUILD_LIMIT) recentBuilds.pop()
+}
 
 /** Earliest turn changed since `base`, when `buildTurns` recorded the lineage. */
 export function changedTurnsFrom(turns: Turn[], base: Turn[]): number | undefined {
@@ -178,10 +189,11 @@ export function userMetadataForTurns(turns: Turn[]): TurnUserMetadata {
   return metadata
 }
 
-function userTimestamps(turns: Turn[]): number[] {
+function userTimestampsInRange(turns: Turn[], startIndex: number): number[] {
   const timestamps: number[] = []
-  for (const turn of turns) {
-    if (turn.user) timestamps.push(turn.user.timestamp)
+  for (let index = startIndex; index < turns.length; index += 1) {
+    const user = turns[index]?.user
+    if (user) timestamps.push(user.timestamp)
   }
   return timestamps
 }
@@ -200,14 +212,29 @@ function sameTimestamps(left: number[], right: number[]): boolean {
  * rather than to the whole conversation.
  */
 export function buildTurns(items: ThreadItem[]): Turn[] {
-  const cache = lastBuild
-  if (!cache) {
-    lastBuild = buildFresh(items)
-    return lastBuild.turns
+  const exact = buildByItems.get(items)
+  if (exact) {
+    rememberBuild(exact)
+    return exact.turns
   }
-  if (cache.items === items) return cache.turns
 
-  let firstDiff = changedThreadItemsFrom(items, cache.items)
+  let cache: TurnBuild | undefined
+  let firstDiff: number | undefined
+  for (const candidate of recentBuilds) {
+    const hinted = changedThreadItemsFrom(items, candidate.items)
+    if (hinted !== undefined) {
+      cache = candidate
+      firstDiff = hinted
+      break
+    }
+  }
+  if (!cache) cache = recentBuilds[0]
+  if (!cache) {
+    const fresh = buildFresh(items)
+    rememberBuild(fresh)
+    return fresh.turns
+  }
+
   if (firstDiff === undefined) {
     const shared = Math.min(cache.items.length, items.length)
     firstDiff = 0
@@ -245,12 +272,24 @@ export function buildTurns(items: ThreadItem[]): Turn[] {
     rebuildFrom = cache.starts[turnIndex] ?? firstDiff
   }
 
-  const suffix = buildFresh(items.slice(rebuildFrom))
-  const turns =
-    reuseTurns > 0 ? [...cache.turns.slice(0, reuseTurns), ...suffix.turns] : suffix.turns
+  const suffix = buildFresh(rebuildFrom === 0 ? items : items.slice(rebuildFrom))
+  let turns: Turn[]
+  if (reuseTurns === 0) {
+    turns = suffix.turns
+  } else if (reuseTurns === cache.turns.length - 1 && suffix.turns.length === 1) {
+    turns = cache.turns.slice()
+    turns[reuseTurns] = suffix.turns[0]
+  } else {
+    turns = new Array<Turn>(reuseTurns + suffix.turns.length)
+    for (let index = 0; index < reuseTurns; index += 1) turns[index] = cache.turns[index]
+    for (let index = 0; index < suffix.turns.length; index += 1) {
+      turns[reuseTurns + index] = suffix.turns[index]
+    }
+  }
+
   const previousMetadata = userMetadataForTurns(cache.turns)
-  const previousSuffixTimestamps = userTimestamps(cache.turns.slice(reuseTurns))
-  const nextSuffixTimestamps = userTimestamps(suffix.turns)
+  const previousSuffixTimestamps = userTimestampsInRange(cache.turns, reuseTurns)
+  const nextSuffixTimestamps = userTimestampsInRange(suffix.turns, 0)
   const timestampsChanged = !sameTimestamps(previousSuffixTimestamps, nextSuffixTimestamps)
   let timestampCounts = previousMetadata.timestampCounts
   if (timestampsChanged) {
@@ -289,14 +328,24 @@ export function buildTurns(items: ThreadItem[]): Turn[] {
     ? { userCount, timestampCounts, lastUserTurnIndex }
     : previousMetadata
   userMetadataByTurns.set(turns, metadata)
-  lastBuild = {
-    items,
-    turns,
-    starts: [
-      ...cache.starts.slice(0, reuseTurns),
-      ...suffix.starts.map((index) => index + rebuildFrom)
-    ]
+
+  let starts: number[]
+  if (
+    reuseTurns === cache.turns.length - 1 &&
+    suffix.starts.length === 1 &&
+    cache.starts[reuseTurns] === rebuildFrom
+  ) {
+    starts = cache.starts
+  } else {
+    starts = new Array<number>(reuseTurns + suffix.starts.length)
+    for (let index = 0; index < reuseTurns; index += 1) starts[index] = cache.starts[index]
+    for (let index = 0; index < suffix.starts.length; index += 1) {
+      starts[reuseTurns + index] = suffix.starts[index] + rebuildFrom
+    }
   }
+
+  const nextBuild: TurnBuild = { items, turns, starts }
+  rememberBuild(nextBuild)
   turnChanges.set(turns, { base: new WeakRef(cache.turns), firstChangedIndex: reuseTurns })
   return turns
 }

@@ -2,10 +2,10 @@ import { memo, useState } from 'react'
 import { ChevronRight, CircleAlert, CornerDownLeft, Play, SquareTerminal } from 'lucide-react'
 import type { BashItem } from '../../lib/thread'
 import { commandSummary } from '../../lib/tools'
-import { useAppStore } from '../../store/useAppStore'
 import { useT } from '../../lib/i18n'
 import { CopyButton } from './CopyButton'
 import { LogOutput } from './LogOutput'
+import { useThreadEnv } from './ThreadEnvContext'
 import { runInTerminal } from './tool-actions'
 
 /**
@@ -17,7 +17,7 @@ import { runInTerminal } from './tool-actions'
  */
 export const CommandOutput = memo(function CommandOutput({ item }: { item: BashItem }) {
   const [manualOpen, setManualOpen] = useState<boolean>()
-  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
+  const { insertIntoComposer } = useThreadEnv()
   const t = useT()
   const running = item.exitCode === undefined
   const failed = item.exitCode !== undefined && item.exitCode !== 0

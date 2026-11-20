@@ -7,15 +7,17 @@ import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { ReadableStream } from 'node:stream/web'
 import type { AppUpdateProgress } from '@shared/types'
-import { isNewerVersion } from './app-updates'
+import { installerAssetNames, isNewerVersion } from './app-updates'
 
 const RELEASES_API = 'https://api.github.com/repos/facron2004/pi-desktop/releases/tags/'
 const DOWNLOAD_ROOT = 'https://github.com/facron2004/pi-desktop/releases/download/'
 const MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
 
-/** Portable folders have no NSIS registration and must not be silently converted to installs. */
+/** Portable folders have no install record and must not be silently converted to installs. */
 export function supportsAppUpdate(isPackaged: boolean, platform: string, executable: string): boolean {
-  return isPackaged && platform === 'win32' && existsSync(path.join(path.dirname(executable), 'Uninstall Pi Desktop.exe'))
+  if (!isPackaged || platform !== 'win32') return false
+  const directory = path.dirname(executable)
+  return existsSync(path.join(directory, 'install.json')) || existsSync(path.join(directory, 'Uninstall Pi Desktop.exe'))
 }
 
 interface InstallerOptions {
@@ -47,9 +49,7 @@ export async function downloadAppInstaller(version: string, options: InstallerOp
   if (release.tag_name !== `v${version}` || release.draft !== false || release.prerelease !== false || !Array.isArray(release.assets)) {
     throw new Error('The update release is invalid.')
   }
-  const names = ['Pi.Desktop', 'Pi Desktop', 'Pi-Desktop'].flatMap((prefix) => [
-    `${prefix}-${version}-${options.arch}.exe`, `${prefix}-${version}.exe`
-  ])
+  const names = installerAssetNames(version, options.arch)
   // Prefer the architecture-specific build to the larger universal installer.
   const asset = release.assets.find((entry) => names.includes(entry.name ?? '') && entry.name?.endsWith(`-${options.arch}.exe`))
     ?? release.assets.find((entry) => names.includes(entry.name ?? ''))
@@ -68,7 +68,7 @@ export async function downloadAppInstaller(version: string, options: InstallerOp
     const hash = createHash('sha256')
     let transferred = 0
     let lastPercent = -1
-    options.onProgress({ version, stage: 'downloading', percent: 0 })
+    options.onProgress({ version, stage: 'downloading', percent: 0, transferredBytes: 0, totalBytes: asset.size })
     const verify = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         transferred += chunk.length
@@ -80,7 +80,7 @@ export async function downloadAppInstaller(version: string, options: InstallerOp
         const percent = Math.min(99, Math.floor(transferred / asset.size! * 100))
         if (percent !== lastPercent) {
           lastPercent = percent
-          options.onProgress({ version, stage: 'downloading', percent })
+          options.onProgress({ version, stage: 'downloading', percent, transferredBytes: transferred, totalBytes: asset.size })
         }
         callback(null, chunk)
       }
@@ -95,17 +95,22 @@ export async function downloadAppInstaller(version: string, options: InstallerOp
     }
     // Keep only one complete installer; a failed download never replaces it.
     await rename(partial, installer)
-    options.onProgress({ version, stage: 'downloading', percent: 100 })
+    options.onProgress({ version, stage: 'downloading', percent: 100, transferredBytes: asset.size, totalBytes: asset.size })
     return installer
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
 }
 
-/** These are electron-builder's NSIS update flags; no command shell is involved. */
+/** These are the setup app's silent-update flags; no command shell is involved. */
 export function launchAppInstaller(installer: string, spawnProcess = spawn): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawnProcess(installer, ['--updated', '/S', '--force-run'], {
+    const child = spawnProcess(installer, [
+      '--updated',
+      '/S',
+      '--force-run',
+      `--install-dir=${path.dirname(process.execPath)}`
+    ], {
       detached: true,
       stdio: 'ignore',
       windowsHide: true

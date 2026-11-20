@@ -7,7 +7,8 @@ import { icoPngDataUrl } from './ico'
 
 const execFileAsync = promisify(execFile)
 
-const cache = new Map<string, string>()
+const cache = new Map<string, string | null>()
+const pendingIcons = new Map<string, Promise<string | undefined>>()
 
 /**
  * Where each setting's program actually lives, so the menu can show that
@@ -107,14 +108,15 @@ function exeFromLauncher(file: string): string | undefined {
   }
 }
 
-async function iconFor(id: string): Promise<string | undefined> {
-  const cached = cache.get(id)
-  if (cached) return cached
+async function loadIcon(id: string): Promise<string | undefined> {
   let file = candidates(id).find((item) => existsSync(item))
   if (!file && (id === 'vscode' || id === 'cursor' || id === 'windsurf')) {
     file = await whereExe(id === 'vscode' ? 'code' : id)
   }
-  if (!file) return undefined
+  if (!file) {
+    cache.set(id, null)
+    return undefined
+  }
   if (/\.ico$/i.test(file)) {
     const fromIco = icoPngDataUrl(file)
     if (fromIco) {
@@ -127,13 +129,28 @@ async function iconFor(id: string): Promise<string | undefined> {
     // `normal` is 32×32: the menu draws it at 14 CSS px, so the larger source
     // stays sharp on a 150% display instead of the 16px `small` icon.
     const image = await app.getFileIcon(file, { size: 'normal' })
-    if (image.isEmpty()) return undefined
+    if (image.isEmpty()) {
+      cache.set(id, null)
+      return undefined
+    }
     const url = image.toDataURL()
     cache.set(id, url)
     return url
   } catch {
+    cache.set(id, null)
     return undefined
   }
+}
+
+async function iconFor(id: string): Promise<string | undefined> {
+  if (cache.has(id)) return cache.get(id) ?? undefined
+  const active = pendingIcons.get(id)
+  if (active) return active
+  const request = loadIcon(id).finally(() => {
+    pendingIcons.delete(id)
+  })
+  pendingIcons.set(id, request)
+  return request
 }
 
 const IDS = ['vscode', 'cursor', 'windsurf', 'system', 'windows', 'wsl', 'powershell', 'cmd', 'gitbash']

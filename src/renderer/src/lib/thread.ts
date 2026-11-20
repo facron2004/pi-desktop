@@ -22,7 +22,7 @@ export type AssistantBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }
   | { type: 'image'; data: string; mimeType: string }
-  | { type: 'toolCall'; id: string; name: string; argsText: string; args?: Record<string, unknown> }
+  | { type: 'toolCall'; id: string; name: string; argsText?: string; args?: Record<string, unknown> }
 
 /**
  * A tool call moves through `proposed` (the model named it) → `running`
@@ -158,6 +158,7 @@ interface ThreadItemIndexes {
 
 interface MutableThreadItemsDraft {
   base: ThreadItem[]
+  indexes?: ThreadItemIndexes
   firstChangedIndex: number
   changed: boolean
 }
@@ -179,11 +180,9 @@ function indexesFor(items: ThreadItem[]): ThreadItemIndexes {
   if (cached) return cached
   const draft = mutableThreadItemsDrafts.get(items)
   if (draft) {
-    // Give each batch its own copy of the lookup maps so appending items
-    // inside `applyEventBatch` never mutates `draft.base`'s index maps.
-    const indexes = cloneIndexes(indexesFor(draft.base))
-    threadItemIndexes.set(items, indexes)
-    return indexes
+    // Borrow `draft.base`'s index maps read-only until an item is appended,
+    // avoiding O(N) Map clones on every delta-only frame batch.
+    return draft.indexes ?? indexesFor(draft.base)
   }
   const indexes: ThreadItemIndexes = {
     byId: new Map(),
@@ -200,6 +199,15 @@ function indexesFor(items: ThreadItem[]): ThreadItemIndexes {
   }
   threadItemIndexes.set(items, indexes)
   return indexes
+}
+
+function writableDraftIndexes(items: ThreadItem[], draft: MutableThreadItemsDraft): ThreadItemIndexes {
+  if (!draft.indexes) {
+    // Detach lazily on the first append inside `applyEventBatch` so `draft.base` keeps its own maps.
+    draft.indexes = cloneIndexes(indexesFor(draft.base))
+    threadItemIndexes.set(items, draft.indexes)
+  }
+  return draft.indexes
 }
 
 function indexOfItem(items: ThreadItem[], id: string): number {
@@ -312,7 +320,7 @@ function appendThreadItem(items: ThreadItem[], item: ThreadItem): ThreadItem[] {
   if (draft) {
     const index = items.length
     items.push(item)
-    const indexes = indexesFor(items)
+    const indexes = writableDraftIndexes(items, draft)
     indexes.byId.set(item.id, index)
     if (item.kind === 'tool') indexes.byToolCallId.set(item.toolCallId, index)
     if ((item.kind === 'user' || item.kind === 'assistant') && item.messageId) {
@@ -392,7 +400,6 @@ function blocksFromContent(content: unknown): AssistantBlock[] {
         type: 'toolCall',
         id: block.id,
         name: block.name,
-        argsText: JSON.stringify(block.arguments ?? {}, null, 2),
         args: block.arguments ?? {}
       })
     }
@@ -424,6 +431,13 @@ function assistantForMessage(
   requireStreaming = true
 ): AssistantItem | undefined {
   if (!messageId) return lastStreamingAssistant(items)
+  const indexed = indexesFor(items).byMessageId.get(messageId)
+  if (indexed !== undefined) {
+    const item = items[indexed]
+    if (item?.kind === 'assistant' && item.messageId === messageId) {
+      return !requireStreaming || item.streaming ? item : undefined
+    }
+  }
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]
     if (item.kind !== 'assistant' || item.messageId !== messageId) continue
@@ -835,7 +849,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
         // a hand-built event consistent with that node.
         const toolCallId = event.toolCallId ?? nextId('call')
         const toolName = event.toolName ?? 'tool'
-        blocks[index] = { type: 'toolCall', id: toolCallId, name: toolName, argsText: '' }
+        blocks[index] = { type: 'toolCall', id: toolCallId, name: toolName }
         return patchTool(
           replaceItem(items, assistant.id, { ...assistant, blocks }),
           toolCallId,
@@ -908,7 +922,7 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       const status: ToolStatus = existing?.status === 'running' ? 'running' : 'proposed'
       const blocks = assistant.blocks.slice()
       const index = event.contentIndex ?? blocks.length
-      blocks[index] = { type: 'toolCall', id: toolCallId, name: toolName, argsText: '' }
+      blocks[index] = { type: 'toolCall', id: toolCallId, name: toolName }
       return patchTool(
         replaceItem(items, assistant.id, { ...assistant, blocks }),
         toolCallId,
@@ -942,24 +956,15 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
         }
         return items
       }
+      if (!event.complete) {
+        // Partial JSON argument chunks are not rendered anywhere; wait for
+        // `toolcall_end` (`event.complete === true`) with parsed `args`.
+        return items
+      }
+
       const blocks = assistant.blocks.slice()
       const index = event.contentIndex ?? blocks.length
       const previous = blocks[index]
-
-      if (!event.complete) {
-        // Arguments arrive as a JSON string. They are buffered, never parsed
-        // mid-flight: a half-written object is not an argument.
-        let block = previous
-        if (!block) {
-          block = { type: 'text', text: '' }
-          blocks[index] = block
-        }
-        if (block.type === 'toolCall') {
-          blocks[index] = { ...block, argsText: block.argsText + (event.delta ?? '') }
-        }
-        return replaceItem(items, assistant.id, { ...assistant, blocks })
-      }
-
       const previousId = previous && previous.type === 'toolCall' ? previous.id : undefined
       const resolvedId = event.toolCallId ?? previousId ?? nextId('call')
       const toolName =
@@ -970,7 +975,6 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
         type: 'toolCall',
         id: resolvedId,
         name: toolName,
-        argsText: JSON.stringify(args, null, 2),
         args
       }
       return patchTool(
@@ -1147,10 +1151,10 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
   }
 }
 
-/** Apply one normalized batch of Pi events, cloning the item array at most once. */
-export function applyEventBatch(
+/** Apply a batch of pre-normalized stream events, cloning the item array at most once. */
+export function applyStreamEventBatch(
   items: ThreadItem[],
-  events: { event: PiEvent; context?: StreamContext }[]
+  events: readonly StreamEvent[]
 ): ThreadItem[] {
   if (events.length === 0) return items
   let next = items.slice()
@@ -1160,8 +1164,8 @@ export function applyEventBatch(
     changed: false
   }
   mutableThreadItemsDrafts.set(next, draft)
-  for (const { event, context } of events) {
-    const updated = applyEvent(next, event, context)
+  for (const streamEvent of events) {
+    const updated = applyStreamEvent(next, streamEvent)
     if (updated === next) continue
     const changedIndex = changedThreadItemsFrom(updated, next)
     draft.firstChangedIndex = Math.min(draft.firstChangedIndex, changedIndex ?? 0)
@@ -1174,8 +1178,23 @@ export function applyEventBatch(
   }
   mutableThreadItemsDrafts.delete(next)
   if (!draft.changed) return items
+  threadItemIndexes.set(next, draft.indexes ?? indexesFor(items))
   threadItemsChanges.set(next, { base: new WeakRef(items), firstChangedIndex: draft.firstChangedIndex })
   return next
+}
+
+/** Apply one normalized batch of Pi events, cloning the item array at most once. */
+export function applyEventBatch(
+  items: ThreadItem[],
+  events: { event: PiEvent; context?: StreamContext }[]
+): ThreadItem[] {
+  if (events.length === 0) return items
+  const normalized: StreamEvent[] = []
+  for (const { event, context } of events) {
+    const streamEvent = normalizePiEvent(event, context)
+    if (streamEvent) normalized.push(streamEvent)
+  }
+  return applyStreamEventBatch(items, normalized)
 }
 
 /** Apply a batch of events in order, in one pass. */

@@ -328,18 +328,27 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     })
   }, [])
 
+  const selectedNodesRef = useRef<HTMLElement[]>([])
+
   const paintSelectedLines = useCallback(
     (range: { start: number; end: number } | null = selectedRangeRef.current) => {
+      for (const prev of selectedNodesRef.current) {
+        prev.removeAttribute('data-selected')
+      }
+      selectedNodesRef.current = []
+      if (!range) return
       const lines = codeRef.current?.querySelectorAll<HTMLElement>('.line')
       if (!lines) return
-      lines.forEach((node, index) => {
-        const lineNumber = index + 1
-        if (range && lineNumber >= range.start && lineNumber <= range.end) {
-          node.setAttribute('data-selected', 'true')
-        } else {
-          node.removeAttribute('data-selected')
-        }
-      })
+      const start = Math.max(0, range.start - 1)
+      const end = Math.min(lines.length - 1, range.end - 1)
+      const nextNodes: HTMLElement[] = []
+      for (let i = start; i <= end; i += 1) {
+        const node = lines[i]
+        if (!node) continue
+        node.setAttribute('data-selected', 'true')
+        nextNodes.push(node)
+      }
+      selectedNodesRef.current = nextNodes
     },
     []
   )
@@ -381,9 +390,9 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
     paintSelectedLines(selectedRangeRef.current)
   }, [revealLine, refreshFind, paintSelectedLines])
 
-  // The find bar searches as it is typed, and the first hit is scrolled to.
+  // The find bar searches after a brief typing pause, and the first hit is scrolled to.
   useEffect(() => {
-    if (!findOpen) {
+    if (!findOpen || !query) {
       matchesRef.current = []
       activeRef.current = 0
       setCount(0)
@@ -391,13 +400,16 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
       clearHighlights()
       return
     }
-    const matches = collectMatches(codeRef.current, query)
-    matchesRef.current = matches
-    activeRef.current = 0
-    setCount(matches.length)
-    setActive(0)
-    paintHighlights(matches, 0)
-    scrollToMatch(matches[0])
+    const timer = window.setTimeout(() => {
+      const matches = collectMatches(codeRef.current, query)
+      matchesRef.current = matches
+      activeRef.current = 0
+      setCount(matches.length)
+      setActive(0)
+      paintHighlights(matches, 0)
+      scrollToMatch(matches[0])
+    }, 100)
+    return () => window.clearTimeout(timer)
   }, [findOpen, query, scrollToMatch])
 
   // Opening a different line of the same file changes no code, so the snippet

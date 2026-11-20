@@ -160,6 +160,45 @@ A unit test (`tests/font-scale.test.ts`) pins the mapping.
   Latin face with the platform CJK fallback. Other user font picks are left
   alone; their fallback now names Noto Sans SC before YaHei so CJK matches
   MCode's fallback.
+
+## The chosen font owns the whole line
+
+`--font-cjk` is a local face whose `unicode-range` covers every CJK block, so
+wherever it appears it claims **all** Chinese glyphs ahead of anything after it.
+That makes its position in a stack a decision, and the app got it wrong: the
+UI stack led with the face, so choosing a font in Appearance changed the Latin
+and left every Chinese character in Microsoft YaHei. A serif pick drew a mixed
+line — serif English, sans Chinese.
+
+The rules that follow, and where each one is enforced:
+
+| Stack | The face | Why |
+|---|---|---|
+| UI (`--font-ui`, `--font-sidebar`, `--font-reading`) | **absent** | the generic `sans-serif` family already links Chinese to a sans face (Noto Sans SC here) |
+| A font chosen in Appearance | **absent**, choice first | the choice has to own its own line; a sans CJK net follows it for glyphs it lacks |
+| Code (`--font-mono`) | **present**, after JetBrains Mono | Windows links generic `monospace` to NSimSun (a serif) |
+
+Measured with CDP `CSS.getPlatformFontsForNode` on the built app:
+
+| Stack | Painted |
+|---|---|
+| `'Pi Desktop CJK', -apple-system, …, sans-serif` | YaHei + Segoe UI |
+| `-apple-system, …, sans-serif` | Noto Sans SC + Segoe UI |
+| `'Noto Serif SC', 'Pi Desktop CJK', sans-serif` | Noto Serif SC (all) |
+| `'JetBrains Mono', …, monospace` | NSimSun + JetBrains Mono |
+| `'JetBrains Mono', …, 'Pi Desktop CJK', monospace` | JetBrains Mono + YaHei |
+
+`src/renderer/src/lib/ui-font.ts` builds the chosen stacks (the picker no longer
+writes a CSS string inline), and `tests/ui-font.test.ts` pins the ordering.
+`output/audit/ui-font-sweep.mjs` walks the live window and fails if any Chinese
+UI text is not painted in the chosen font; `ui-font-check.mjs` checks the five
+named surfaces plus the Latin/Chinese split of the body stack.
+
+One field keeps a hand-written stack for a non-typographic reason:
+`.provider-key .input` masks a saved key with `-webkit-text-security`, which
+loses its discs under some CJK faces, so it uses `var(--font-ui)` and lets the
+token carry the fallback.
+
 - **Code text size is not exposed separately yet.** MCode has an independent
   code-size setting (11/12/15/17). Pi renders the standard 12px code role
   (matching this machine's MCode config) and the `--code-scale` hook exists

@@ -25,6 +25,15 @@ npm run dev
 | `npm run dist` | 按 electron-builder 配置生成发布包到 `release/`。 |
 | `npm run dist:dir` | 生成解包应用目录。 |
 | `npm run icon` | 重新生成应用图标。 |
+| `npm run installer-art` | 重新生成旧 NSIS 向导的页眉与侧栏位图（当前发布流程已不再使用）。 |
+
+## Windows 安装器外观
+
+Windows 发布包使用应用自绘的安装向导，不再显示 NSIS 页面。安装界面是一个无边框 Electron 窗口，页面与样式在 `setup/index.html`，安装逻辑在 `src/main/setup/`。主进程入口根据参数分流：`--setup` 或 portable 启动时由 electron-builder 注入的 `PORTABLE_EXECUTABLE_FILE` 进入安装界面，`--uninstall` 进入卸载界面，其余情况启动正常应用。
+
+发布产物是 electron-builder 的 `portable` 目标：外层 NSIS 自解压壳完全静默，只负责把应用解压到临时目录并启动安装界面；实际安装、快捷方式、卸载注册表项和卸载清理都由应用自己完成。自动更新复用同一产物，使用 `--updated /S --force-run --install-dir=<现有目录>` 静默完成覆盖安装。
+
+安装位置遵循固定规则：无论选择哪个文件夹，安装程序都会在其中创建 `Pi Desktop` 子文件夹；若所选路径已以 `Pi Desktop` 结尾则保持不变。`scripts/make-installer-art.mjs` 与 `build/installerHeader.bmp`、`build/installerSidebar.bmp` 仅作为旧 NSIS 构建的参考保留。
 
 协议冒烟检查：
 

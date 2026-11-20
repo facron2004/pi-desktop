@@ -26,11 +26,11 @@ import { buildDiff } from '../lib/diff-fold'
 import { formatDiff } from '../lib/diff-text'
 import { basename, relativePath } from '../lib/path'
 import { subagentCalls, type SubagentTreeTask } from '../lib/subagents'
-import { useAppStore } from '../store/useAppStore'
 import { readToolFull, readToolOpen, writeToolFull, writeToolOpen } from '../lib/view-state'
 import { CopyButton } from './conversation/CopyButton'
 import { ImageButton, inlineOfDataUrl } from './Lightbox'
 import { ToolResultPanel } from './conversation/ToolResultPanel'
+import { useThreadEnv } from './conversation/ThreadEnvContext'
 import { runInTerminal } from './conversation/tool-actions'
 import { useT } from '../lib/i18n'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -66,7 +66,8 @@ export const ToolCard = memo(function ToolCard({
   item,
   expanded,
   onExpandedChange,
-  presentation = 'card'
+  presentation = 'card',
+  hidePrompt = false
 }: {
   item: ToolItem
   expanded?: boolean
@@ -76,8 +77,10 @@ export const ToolCard = memo(function ToolCard({
    * command is a link rather than a card with its own toolbar.
    */
   presentation?: 'card' | 'link'
+  /** The reply already quotes the image prompt, so the fold must not repeat it. */
+  hidePrompt?: boolean
 }) {
-  const threadKey = useAppStore((state) => state.activeSessionFile ?? state.draftId ?? 'draft')
+  const { threadKey, insertIntoComposer, workspacePath, language } = useThreadEnv()
   const [manualOpen, setManualOpen] = useState<boolean | undefined>(() =>
     readToolOpen(threadKey, item.id)
   )
@@ -105,9 +108,6 @@ export const ToolCard = memo(function ToolCard({
     setFullState(value)
     writeToolFull(threadKey, item.id, value)
   }
-  const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
-  const workspacePath = useAppStore((state) => state.workspace?.path)
-  const language = useAppStore((state) => state.settings.language ?? 'en')
   const t = useT()
 
   const summary = useMemo(() => summarizeTool(item), [item])
@@ -305,6 +305,7 @@ export const ToolCard = memo(function ToolCard({
       diffs={diffs}
       content={content}
       onOpenLine={editedFile ? openLine : undefined}
+      hideImagePrompt={hidePrompt}
     />
   )
 

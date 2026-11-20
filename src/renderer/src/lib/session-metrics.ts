@@ -1,7 +1,13 @@
 import type { SessionStats } from '@shared/types'
 import type { ThreadItem } from './thread'
-import { subagentUsage } from './subagent-usage'
-import { monotonicNow, type SessionTimingRecord, userTimingDuration } from './session-timing'
+import { subagentCallOf } from './subagents'
+import { accumulateSubagentCall, type SubagentUsage } from './subagent-usage'
+import {
+  monotonicNow,
+  type SessionTimingRecord,
+  timingFieldRevision,
+  userTimingDuration
+} from './session-timing'
 
 /**
  * The numbers shown under the composer after a run.
@@ -107,19 +113,60 @@ function newestTurnModelWindowMs(
   return sum
 }
 
-export function sessionMetrics(
+function validNonNegative(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+interface ItemsDigest {
+  toolDurationsRef: Record<string, number> | undefined
+  toolDurationsRev: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  total: number
+  lastTurnOutput: number
+  lastUserIndex: number
+  lastUserTimestamp: number | undefined
+  lastUserOrdinal: number | undefined
+  previousUserIndex: number
+  previousUserTimestamp: number | undefined
+  previousUserOrdinal: number | undefined
+  userTimestampCounts: Map<number, number>
+  transcriptTurnCount: number
+  toolItemCount: number
+  knownToolTimeMs: number
+  timedToolCalls: number
+  lastTurnGenerationMs: number
+  previousTurnGenerationMs: number
+  previousTurnOutput: number
+  hasStreamingAssistant: boolean
+  transcriptModelMs: number
+  completedAssistantCount: number
+  completedAssistantDurationCount: number
+  subagents: SubagentUsage
+}
+
+const itemsDigestCache = new WeakMap<readonly ThreadItem[], ItemsDigest>()
+
+function summarizeItems(
   items: readonly ThreadItem[],
-  stats: SessionStats | undefined,
-  run: RunTiming,
-  timing?: SessionTimingRecord,
-  options: { historyTruncated?: boolean } = {}
-): SessionMetrics {
+  toolDurationsMs: Record<string, number> | undefined
+): ItemsDigest {
+  const toolRev = timingFieldRevision(toolDurationsMs)
+  const cached = itemsDigestCache.get(items)
+  if (cached && cached.toolDurationsRef === toolDurationsMs && cached.toolDurationsRev === toolRev) {
+    return cached
+  }
+
   let input = 0
   let output = 0
   let cacheRead = 0
   let cacheWrite = 0
   let total = 0
-  let lastTurnOutput = 0
+  let currentTurnCompletedOutput = 0
+  let currentTurnAllOutput = 0
+  let currentTurnGenerationMs = 0
   let lastUserIndex = -1
   let lastUserTimestamp: number | undefined
   let lastUserOrdinal: number | undefined
@@ -131,17 +178,25 @@ export function sessionMetrics(
   let toolItemCount = 0
   let knownToolTimeMs = 0
   let timedToolCalls = 0
-  let lastTurnGenerationMs = 0
   let previousTurnGenerationMs = 0
   let previousTurnOutput = 0
   let hasStreamingAssistant = false
   let transcriptModelMs = 0
   let completedAssistantCount = 0
   let completedAssistantDurationCount = 0
+  const subagents: SubagentUsage = { tokens: 0, cost: undefined, tasks: 0, settled: 0 }
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
     if (item.kind === 'user') {
+      if (lastUserIndex >= 0) {
+        previousTurnGenerationMs = currentTurnGenerationMs
+        previousTurnOutput = currentTurnAllOutput
+      }
+      currentTurnGenerationMs = 0
+      currentTurnCompletedOutput = 0
+      currentTurnAllOutput = 0
+      hasStreamingAssistant = false
       previousUserIndex = lastUserIndex
       previousUserTimestamp = lastUserTimestamp
       previousUserOrdinal = lastUserOrdinal
@@ -153,62 +208,111 @@ export function sessionMetrics(
     } else if (item.kind === 'tool') {
       toolItemCount += 1
       const terminal = item.status === 'ok' || item.status === 'error' || item.status === 'aborted'
-      const duration = [item.durationMs, timing?.toolDurationsMs[item.toolCallId]].find(
-        (value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
-      )
-      if (terminal && duration !== undefined) {
-        knownToolTimeMs += duration
-        timedToolCalls += 1
-      }
-    } else if (item.kind === 'assistant') {
-      if (!item.streaming) {
-        completedAssistantCount += 1
-        if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
-          completedAssistantDurationCount += 1
+      if (terminal) {
+        const duration = validNonNegative(item.durationMs) ?? validNonNegative(toolDurationsMs?.[item.toolCallId])
+        if (duration !== undefined) {
+          knownToolTimeMs += duration
+          timedToolCalls += 1
         }
       }
-      if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
-        transcriptModelMs += item.durationMs
+      if (item.toolName === 'subagent') {
+        accumulateSubagentCall(subagents, subagentCallOf(item))
+      }
+    } else if (item.kind === 'assistant') {
+      const duration = validNonNegative(item.durationMs)
+      if (!item.streaming) {
+        completedAssistantCount += 1
+        if (duration !== undefined) {
+          completedAssistantDurationCount += 1
+          currentTurnGenerationMs += duration
+        }
+      } else {
+        hasStreamingAssistant = true
+      }
+      if (duration !== undefined) {
+        transcriptModelMs += duration
+      }
+      if (item.usage) {
+        input += item.usage.input
+        output += item.usage.output
+        cacheRead += item.usage.cacheRead
+        cacheWrite += item.usage.cacheWrite
+        total += item.usage.totalTokens
+        const produced = item.usage.output
+        if (typeof produced === 'number' && Number.isFinite(produced) && produced > 0) {
+          currentTurnAllOutput += produced
+          if (!item.streaming) currentTurnCompletedOutput += produced
+        }
       }
     }
   }
-  for (let index = 0; index < items.length; index += 1) {
-    const item = items[index]
-    if (item.kind !== 'assistant') continue
-    if (index > lastUserIndex) {
-      hasStreamingAssistant ||= item.streaming
-      if (!item.streaming && typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
-        lastTurnGenerationMs += item.durationMs
-      }
-    }
-    const inPreviousTurn = previousUserIndex >= 0 && index > previousUserIndex && index < lastUserIndex
-    if (inPreviousTurn && !item.streaming) {
-      if (typeof item.durationMs === 'number' && Number.isFinite(item.durationMs) && item.durationMs >= 0) {
-        previousTurnGenerationMs += item.durationMs
-      }
-    }
-    if (!item.usage) continue
-    input += item.usage.input
-    output += item.usage.output
-    cacheRead += item.usage.cacheRead
-    cacheWrite += item.usage.cacheWrite
-    total += item.usage.totalTokens
-    // Only the newest turn's output belongs to the generation window that the
-    // run's timing fields describe. A message with no usage must not poison
-    // the sum: `undefined` would make it NaN and the speed would stay blank.
-    if (index > lastUserIndex && !item.streaming) {
-      const produced = item.usage?.output
-      if (typeof produced === 'number' && Number.isFinite(produced) && produced > 0) {
-        lastTurnOutput += produced
-      }
-    }
-    if (inPreviousTurn) {
-      const produced = item.usage.output
-      if (typeof produced === 'number' && Number.isFinite(produced) && produced > 0) {
-        previousTurnOutput += produced
-      }
-    }
+
+  const digest: ItemsDigest = {
+    toolDurationsRef: toolDurationsMs,
+    toolDurationsRev: toolRev,
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    total,
+    lastTurnOutput: currentTurnCompletedOutput,
+    lastUserIndex,
+    lastUserTimestamp,
+    lastUserOrdinal,
+    previousUserIndex,
+    previousUserTimestamp,
+    previousUserOrdinal,
+    userTimestampCounts,
+    transcriptTurnCount,
+    toolItemCount,
+    knownToolTimeMs,
+    timedToolCalls,
+    lastTurnGenerationMs: currentTurnGenerationMs,
+    previousTurnGenerationMs,
+    previousTurnOutput,
+    hasStreamingAssistant,
+    transcriptModelMs,
+    completedAssistantCount,
+    completedAssistantDurationCount,
+    subagents
   }
+  itemsDigestCache.set(items, digest)
+  return digest
+}
+
+export function sessionMetrics(
+  items: readonly ThreadItem[],
+  stats: SessionStats | undefined,
+  run: RunTiming,
+  timing?: SessionTimingRecord,
+  options: { historyTruncated?: boolean } = {}
+): SessionMetrics {
+  const {
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    total,
+    lastTurnOutput,
+    lastUserTimestamp,
+    lastUserOrdinal,
+    previousUserIndex,
+    previousUserTimestamp,
+    previousUserOrdinal,
+    userTimestampCounts,
+    transcriptTurnCount,
+    toolItemCount,
+    knownToolTimeMs,
+    timedToolCalls,
+    lastTurnGenerationMs,
+    previousTurnGenerationMs,
+    previousTurnOutput,
+    hasStreamingAssistant,
+    transcriptModelMs,
+    completedAssistantCount,
+    completedAssistantDurationCount,
+    subagents
+  } = summarizeItems(items, timing?.toolDurationsMs)
 
   // A live `get_session_stats` wins over the visible transcript, which is
   // only the current branch and may be behind by one event.
@@ -237,16 +341,22 @@ export function sessionMetrics(
   const contextWindow = context?.contextWindow ?? null
   const contextPercent = context?.percent ?? null
 
-  const ttftMs = typeof run.ttftMs === 'number' && Number.isFinite(run.ttftMs) && run.ttftMs >= 0
-    ? run.ttftMs
-    : null
-  const ttftSamples = Object.values(timing?.ttftDurationsMs ?? {})
-    .filter((value) => Number.isFinite(value) && value >= 0)
+  const ttftMs = validNonNegative(run.ttftMs) ?? null
+  let ttftSum = 0
+  let ttftCount = 0
+  if (timing?.ttftDurationsMs) {
+    for (const id in timing.ttftDurationsMs) {
+      const value = timing.ttftDurationsMs[id]
+      if (Number.isFinite(value) && value >= 0) {
+        ttftSum += value
+        ttftCount += 1
+      }
+    }
+  }
   const currentRunRecorded = Boolean(run.runId && timing?.ttftDurationsMs[run.runId] !== undefined)
   const includeCurrentTtft = !currentRunRecorded && ttftMs !== null
-  const averageTtftMs = ttftSamples.length || includeCurrentTtft
-    ? round((ttftSamples.reduce((sum, value) => sum + value, 0) + (includeCurrentTtft ? ttftMs! : 0)) /
-      (ttftSamples.length + (includeCurrentTtft ? 1 : 0)))
+  const averageTtftMs = ttftCount || includeCurrentTtft
+    ? round((ttftSum + (includeCurrentTtft ? ttftMs! : 0)) / (ttftCount + (includeCurrentTtft ? 1 : 0)))
     : null
   // Pi's session statistics cover the full session. Keep model samples at that
   // same scope, including messages in other branches and outside a long tail.
@@ -257,12 +367,22 @@ export function sessionMetrics(
   // "model time" from a 24-minute session. Use the larger complete reading
   // instead: the local journal can cover branches the visible transcript does
   // not, and the transcript is the authority for the branch it does show.
-  const modelEntries = Object.entries(timing?.modelDurationsMs ?? {})
-    .filter(([, value]) => Number.isFinite(value) && value >= 0)
-  const turnSamples = modelEntries.filter(([id]) => !id.startsWith('assistant:'))
-  const messageSamples = modelEntries.filter(([id]) => id.startsWith('assistant:'))
-  const measuredModelMs = (turnSamples.length > 0 ? turnSamples : messageSamples)
-    .reduce((sum, [, value]) => sum + value, 0)
+  let turnModelSum = 0
+  let hasTurnModelSamples = false
+  let messageModelSum = 0
+  if (timing?.modelDurationsMs) {
+    for (const id in timing.modelDurationsMs) {
+      const value = timing.modelDurationsMs[id]
+      if (!Number.isFinite(value) || value < 0) continue
+      if (id.startsWith('assistant:')) {
+        messageModelSum += value
+      } else {
+        turnModelSum += value
+        hasTurnModelSamples = true
+      }
+    }
+  }
+  const measuredModelMs = hasTurnModelSamples ? turnModelSum : messageModelSum
   const liveModelTime = run.modelTurnStartedAt !== undefined && !run.settled
     ? Math.max(0, monotonicNow() - run.modelTurnStartedAt)
     : 0
@@ -359,11 +479,6 @@ export function sessionMetrics(
     turnOutput === 0 && previousTurnOutput > 0 && previousWindowMs > 0
       ? round(previousTurnOutput / (previousWindowMs / 1000))
       : null
-
-  // Kept apart from the token totals above: the children are their own Pi
-  // processes, so their usage is neither in the parent's statistics nor in
-  // the parent transcript's usage.
-  const subagents = subagentUsage(items)
 
   return {
     totalTokens,

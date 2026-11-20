@@ -10,6 +10,10 @@ export function highlightCacheKey(code: string, language: string, isDark: boolea
 export class ResolvedHighlightCache {
   private readonly entries = new Map<string, string>()
 
+  get size(): number {
+    return this.entries.size
+  }
+
   get(key: string): string | undefined {
     const value = this.entries.get(key)
     if (value === undefined) return undefined
@@ -32,6 +36,10 @@ export class ResolvedHighlightCache {
 
 export class HighlightCache {
   private readonly entries = new Map<string, Promise<string>>()
+
+  get size(): number {
+    return this.entries.size
+  }
 
   get(key: string): Promise<string> | undefined {
     const value = this.entries.get(key)

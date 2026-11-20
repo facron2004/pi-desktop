@@ -13,6 +13,7 @@ import {
   type MermaidPalette
 } from '../src/renderer/src/lib/mermaid'
 import { MERMAID_TEMPLATES, mermaidTemplateList } from '../src/renderer/src/lib/mermaid-templates'
+import { readMermaidPalette } from '../src/renderer/src/lib/mermaid-renderer'
 
 const palette: MermaidPalette = {
   background: '#101010',
@@ -133,4 +134,52 @@ test('the composer exposes the full bilingual PM template catalogue', () => {
   const swimlane = MERMAID_TEMPLATES.find((template) => template.id === 'swimlane')
   assert.match(swimlane?.prompt.en ?? '', /flowchart LR/)
   assert.match(swimlane?.prompt.en ?? '', /subgraph/)
+})
+
+test('readMermaidPalette caches resolved canvas colors across identical token snapshots', () => {
+  const originalDocument = (globalThis as unknown as { document?: unknown }).document
+  const originalGetComputedStyle = (globalThis as unknown as { getComputedStyle?: unknown }).getComputedStyle
+  let canvasReadbacks = 0
+  let accent = '#4c9aff'
+
+  try {
+    const context = {
+      fillStyle: '#000000',
+      clearRect: () => {},
+      fillRect: () => {},
+      getImageData: () => {
+        canvasReadbacks += 1
+        return { data: accent === '#4c9aff' ? [76, 154, 255, 255] : [255, 100, 50, 255] }
+      }
+    }
+    ;(globalThis as unknown as { document: unknown }).document = {
+      documentElement: {},
+      body: {},
+      createElement: () => ({ width: 0, height: 0, getContext: () => context })
+    }
+    ;(globalThis as unknown as { getComputedStyle: unknown }).getComputedStyle = () => ({
+      fontFamily: 'system-ui, sans-serif',
+      getPropertyValue: (name: string) => (name === '--accent' ? accent : '#16181d')
+    })
+
+    const first = readMermaidPalette(true)
+    const afterFirst = canvasReadbacks
+    assert.ok(afterFirst > 0)
+    const second = readMermaidPalette(true)
+    assert.equal(second, first)
+    assert.equal(canvasReadbacks, afterFirst, 'second read with identical tokens skips canvas readbacks')
+
+    accent = '#ff6432'
+    const third = readMermaidPalette(true)
+    assert.notEqual(third, first)
+    assert.ok(canvasReadbacks > afterFirst, 'token change invalidates the cached palette')
+  } finally {
+    if (originalDocument === undefined) delete (globalThis as unknown as { document?: unknown }).document
+    else (globalThis as unknown as { document: unknown }).document = originalDocument
+    if (originalGetComputedStyle === undefined) {
+      delete (globalThis as unknown as { getComputedStyle?: unknown }).getComputedStyle
+    } else {
+      ;(globalThis as unknown as { getComputedStyle: unknown }).getComputedStyle = originalGetComputedStyle
+    }
+  }
 })

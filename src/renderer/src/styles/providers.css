@@ -102,9 +102,18 @@
   color: var(--text-muted);
 }
 
+/* The action icons sit on an already-highlighted card; a hover bubble on top
+   reads as a second highlight, so only the glyph colour changes. */
+.provider-card__actions .icon-btn:hover {
+  background: transparent;
+}
+
+.provider-card__actions .provider-card__edit:hover {
+  color: var(--accent);
+}
+
 .provider-card__delete:hover:not(:disabled) {
   color: var(--status-danger);
-  background: var(--status-danger-soft);
 }
 
 .provider-editor__head,
@@ -202,9 +211,10 @@
 
 .provider-key .input,
 .provider-key .input::placeholder {
-  /* YaHei / PingFang have to come first. A western face earlier in the
-     stack is font-linked to SimSun for missing CJK glyphs on Windows. */
-  font-family: 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', var(--font-sidebar);
+  /* The UI face, not a hand-written CJK stack: the chosen font has to reach
+     this field like every other one. --font-ui already ends in a sans CJK
+     fallback, so the saved-key hint cannot fall through to SimSun. */
+  font-family: var(--font-ui);
 }
 
 .provider-key .input {

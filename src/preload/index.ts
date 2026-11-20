@@ -57,6 +57,8 @@ import type {
   TerminalCreateOptions,
   TerminalDataPayload,
   TerminalExitPayload,
+  TrayConversation,
+  TrayPopupState,
   SessionSearchHit,
   TextSearchResult,
   UpgradeResult,
@@ -93,6 +95,8 @@ const bridge: PiDesktopBridge = {
       theme: 'dark' | 'light',
       colors?: { color: string; symbolColor: string }
     ): Promise<void> => ipcRenderer.invoke('app:setTheme', theme, colors),
+    setWindowControlsEnabled: (enabled: boolean): Promise<void> =>
+      ipcRenderer.invoke('app:setWindowControlsEnabled', enabled),
     getSystemFonts: (): Promise<string[]> => ipcRenderer.invoke('app:getSystemFonts'),
     emojiFont: (): Promise<Uint8Array | null> => ipcRenderer.invoke('app:emojiFont'),
     checkUpdate: (): Promise<VersionCheckResult> => ipcRenderer.invoke('app:checkUpdate'),
@@ -105,6 +109,22 @@ const bridge: PiDesktopBridge = {
     openReleasePage: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:openReleasePage'),
     onNotificationOpen: (handler: (payload: { sessionKey: string }) => void) =>
       subscribe<{ sessionKey: string }>('notification:open', handler)
+  },
+  tray: {
+    setConversations: (conversations: TrayConversation[]): void =>
+      ipcRenderer.send('tray:conversations', conversations),
+    onOpenConversation: (handler: (payload: { key: string }) => void) =>
+      subscribe<{ key: string }>('tray:open-conversation', handler)
+  },
+  trayPopup: {
+    getState: (): Promise<TrayPopupState> => ipcRenderer.invoke('tray-popup:get-state'),
+    onState: (handler: (state: TrayPopupState) => void) =>
+      subscribe<TrayPopupState>('tray-popup:state', handler),
+    setHeight: (height: number): void => ipcRenderer.send('tray-popup:set-height', height),
+    openConversation: (key: string): void => ipcRenderer.send('tray-popup:open-conversation', key),
+    showWindow: (): void => ipcRenderer.send('tray-popup:show-window'),
+    quit: (): void => ipcRenderer.send('tray-popup:quit'),
+    close: (): void => ipcRenderer.send('tray-popup:close')
   },
   dialog: {
     pickDirectory: (defaultPath?: string): Promise<string | null> =>

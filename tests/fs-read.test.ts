@@ -394,3 +394,38 @@ test('decodeBoundedTextBuffer and readBoundedFile decode UTF-16LE/BE and UTF-8 B
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('openWorkspaceFile with preResolvedRoot keeps containment and rejects escaping links', async (t) => {
+  const temp = realpathSync(os.tmpdir())
+  const parent = mkdtempSync(path.join(temp, 'pi-desktop-preroot-'))
+  const workspace = path.join(parent, 'workspace')
+  const outside = path.join(parent, 'outside.txt')
+  const inside = path.join(workspace, 'inside.txt')
+  mkdirSync(workspace)
+  writeFileSync(outside, 'secret')
+  writeFileSync(inside, 'hello')
+  try {
+    const realRoot = realpathSync(workspace)
+    const opened = await openWorkspaceFile(workspace, 'inside.txt', realRoot)
+    assert.ok(opened)
+    try {
+      const result = await readBoundedHandle(opened.handle, 1024, undefined, await opened.handle.stat({ bigint: true }))
+      assert.equal(result?.content, 'hello')
+      assert.equal(result?.truncated, false)
+    } finally {
+      await opened.handle.close()
+    }
+    assert.equal(await openWorkspaceFile(workspace, '../outside.txt', realRoot), null)
+
+    try {
+      linkSync(outside, path.join(workspace, 'hard.txt'))
+      assert.equal(await openWorkspaceFile(workspace, 'hard.txt', realRoot), null)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'EPERM' && code !== 'EACCES' && code !== 'ENOTSUP' && code !== 'EXDEV') throw error
+      t.diagnostic(`hard links unavailable (${code})`)
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+})

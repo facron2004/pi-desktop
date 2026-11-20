@@ -69,15 +69,17 @@ function defaultModelsFile(): string {
 async function loadBuiltinCatalog(directory: string): Promise<Map<string, ThinkingModel>> {
   const models = new Map<string, ThinkingModel>()
   try {
-    const files = await readdir(directory)
-    for (const file of files) {
-      if (!file.endsWith('.json') || file.startsWith('.')) continue
-      let data: unknown
-      try {
-        data = JSON.parse((await readFile(path.join(directory, file), 'utf8')).replace(/^\uFEFF/, ''))
-      } catch {
-        continue
-      }
+    const files = (await readdir(directory)).filter((file) => file.endsWith('.json') && !file.startsWith('.'))
+    const parsedFiles = await Promise.all(
+      files.map(async (file): Promise<unknown> => {
+        try {
+          return JSON.parse((await readFile(path.join(directory, file), 'utf8')).replace(/^\uFEFF/, ''))
+        } catch {
+          return undefined
+        }
+      })
+    )
+    for (const data of parsedFiles) {
       const groups = record(data)
       if (!groups) continue
       for (const group of Object.values(groups)) {

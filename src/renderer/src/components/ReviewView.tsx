@@ -517,10 +517,9 @@ export function ReviewView({
                     className="change-file"
                     data-active={selectedFile?.path === file.path || undefined}
                     data-staged={file.staged || undefined}
-                    title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
+                    title={`${t(status.key)} · ${file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}`}
                     onClick={() => setSelectedPath(file.path)}
                   >
-                    <span className="review-file__status" data-kind={status.kind}>{status.label}</span>
                     <FileIcon name={name} />
                     <span className="change-file__body">
                       <span className="change-file__name">{name}</span>
@@ -651,7 +650,7 @@ function ReviewFileDetail({
   return (
     <div className="change-preview" data-staged={file.staged || undefined}>
       <div className="change-preview__bar">
-        <span className="review-file__status" data-kind={status.kind}>{status.label}</span>
+        <span className="review-file__status" data-kind={status.kind} title={t(status.key)}>{t(status.key)}</span>
         <span className="change-preview__name" title={file.path}>{name}</span>
         <code className="change-preview__path" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}>
           {file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
@@ -738,14 +737,14 @@ function ReviewFileDetail({
   )
 }
 
-/** The single letter git shows in `status --short`, with its tone. */
+/** The change a row is, named rather than spelled as git's single letter. */
 function statusOf(file: GitFileStatus): {
-  label: string
+  key: 'Added' | 'Deleted' | 'Renamed' | 'Modified'
   kind: 'add' | 'del' | 'edit' | 'rename'
 } {
-  if (file.untracked) return { label: 'A', kind: 'add' }
-  if (file.index === 'D' || file.worktree === 'D') return { label: 'D', kind: 'del' }
-  if (file.index === 'R' || file.worktree === 'R') return { label: 'R', kind: 'rename' }
-  if (file.index === 'A') return { label: 'A', kind: 'add' }
-  return { label: 'M', kind: 'edit' }
+  if (file.untracked) return { key: 'Added', kind: 'add' }
+  if (file.index === 'D' || file.worktree === 'D') return { key: 'Deleted', kind: 'del' }
+  if (file.index === 'R' || file.worktree === 'R') return { key: 'Renamed', kind: 'rename' }
+  if (file.index === 'A') return { key: 'Added', kind: 'add' }
+  return { key: 'Modified', kind: 'edit' }
 }

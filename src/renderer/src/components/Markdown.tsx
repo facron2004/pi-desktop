@@ -1,19 +1,24 @@
-import { createContext, useContext, isValidElement, memo, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useContext, isValidElement, lazy, memo, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowUpRight, Check, Code, Copy, Eye, FileCode2 } from 'lucide-react'
+import { Globe, Check, Code, Copy, Eye, FileCode2 } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { highlightCode, readHighlightedCodeSync } from '../lib/highlight'
 import { resolveAgainst } from '../lib/path'
-import { useSearchQuery } from '../lib/search-context'
+import { SearchContext, useSearchQuery } from '../lib/search-context'
 import { useIsDark } from '../lib/theme'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { isMermaidLanguage } from '../lib/mermaid'
+import { looksLikeUrl } from '../lib/url-link'
+import { openResolvedUrl } from '../lib/open-link'
 import { ImageButton } from './Lightbox'
-import { MermaidDiagram } from './MermaidDiagram'
 import { ErrorBoundary } from './ErrorBoundary'
+
+const MermaidDiagram = lazy(() =>
+  import('./MermaidDiagram').then((m) => ({ default: m.MermaidDiagram }))
+)
 
 const FILE_EXTS = new Set([
   'ts',
@@ -105,6 +110,10 @@ function parseFileReference(raw: string): { path: string; line?: number } | null
   const trimmed = raw.trim()
   if (!trimmed || trimmed.length > 180 || /\s/.test(trimmed)) return null
   if (/^(https?:|mailto:|\/\/)/i.test(trimmed) || trimmed.includes('..')) return null
+  // A bare `example.com/page.html` matches the filename shape below — its last
+  // segment even ends in a known extension — but it is a link, not a project
+  // file. Treating it as a file opened the files panel on a URL click.
+  if (looksLikeUrl(trimmed)) return null
   const match =
     /^([a-zA-Z0-9_@.-]+(?:[\\/][a-zA-Z0-9_@.-]+)*\.([a-zA-Z0-9]{1,8}))(?::(\d+)|#L(\d+)(?:-L?\d+)?)?$/.exec(
       trimmed
@@ -185,7 +194,9 @@ function PreBlock({ children: content }: { children?: ReactNode }) {
       // One bad diagram must not take down the rest of the Markdown tree.
       return (
         <ErrorBoundary inline scope="Mermaid diagram">
-          <MermaidDiagram code={text} streaming={streaming} />
+          <Suspense fallback={<pre className="md-mermaid-loading"><code>{text}</code></pre>}>
+            <MermaidDiagram code={text} streaming={streaming} />
+          </Suspense>
         </ErrorBoundary>
       )
     }
@@ -200,6 +211,25 @@ const markdownComponents: Components = {
   code({ className, children, node: _node, ...rest }) {
     const raw = String(children ?? '')
     if (!className && !raw.includes('\n')) {
+      if (looksLikeUrl(raw)) {
+        // A URL a model wrote inside backticks is still a link. Without this
+        // it fell through to the file-reference branch and opened the files
+        // panel, which reads as "the file manager opened instead of a browser".
+        return (
+          <a
+            className="md-link md-link--url"
+            href={raw.trim()}
+            title={raw.trim()}
+            onClick={(event) => {
+              event.preventDefault()
+              openResolvedUrl(raw)
+            }}
+          >
+            <Globe size={11} strokeWidth={1.8} className="md-link__icon" aria-hidden="true" />
+            <Marked>{raw}</Marked>
+          </a>
+        )
+      }
       const ref = parseFileReference(raw)
       if (ref) {
         return (
@@ -288,20 +318,20 @@ const markdownComponents: Components = {
     )
   },
   a({ children, href, node: _node, ...rest }) {
-    const external = Boolean(href && /^https?:\/\//i.test(href))
+    const external = Boolean(href && looksLikeUrl(href))
     return (
       <a
         href={href}
         onClick={(event) => {
           if (external && href) {
             event.preventDefault()
-            void window.pi.shell.openExternal(href)
+            openResolvedUrl(href)
           }
         }}
         {...rest}
       >
         {external ? (
-          <ArrowUpRight
+          <Globe
             size={11}
             strokeWidth={1.8}
             className="md-link__icon"
@@ -370,27 +400,10 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
   const syncHtml = readHighlightedCodeSync(code, langKey, isDark)
 
   useEffect(() => {
-    if (readHighlightedCodeSync(code, langKey, isDark) !== null) return
+    // Keep transient streaming partials out of the Shiki LRU; finalized chunks
+    // and settled blocks render with `isStreaming === false` and highlight once.
+    if (isStreaming || readHighlightedCodeSync(code, langKey, isDark) !== null) return
     let cancelled = false
-    let timer: number | undefined
-
-    if (isStreaming) {
-      // While actively streaming, debounce Shiki highlighting by 250ms to prevent
-      // expensive regex tokenization on every single delta animation frame.
-      timer = window.setTimeout(() => {
-        highlightCode(code, langKey, isDark)
-          .then((value) => {
-            if (!cancelled) setRendered({ code, language: langKey, isDark, html: value })
-          })
-          .catch(() => {
-            if (!cancelled) setRendered(null)
-          })
-      }, 250)
-      return () => {
-        cancelled = true
-        if (timer) window.clearTimeout(timer)
-      }
-    }
 
     highlightCode(code, langKey, isDark)
       .then((value) => {
@@ -528,15 +541,26 @@ export const Markdown = memo(function Markdown({
   resolveImage,
   stripHtml = false
 }: MarkdownProps) {
-  const body = (
-    <ImageResolverContext.Provider value={resolveImage ?? null}>
-      <ReactMarkdown
-        remarkPlugins={stripHtml ? REMARK_PLUGINS_STRIPPED : REMARK_PLUGINS}
-        components={markdownComponents}
-      >
-        {children}
-      </ReactMarkdown>
-    </ImageResolverContext.Provider>
+  const rawSearchQuery = useSearchQuery()
+  const activeSearchQuery = useMemo(() => {
+    const trimmed = rawSearchQuery.trim()
+    if (!trimmed) return ''
+    return children.toLowerCase().includes(trimmed.toLowerCase()) ? rawSearchQuery : ''
+  }, [rawSearchQuery, children])
+  const body = useMemo(
+    () => (
+      <SearchContext.Provider value={activeSearchQuery}>
+        <ImageResolverContext.Provider value={resolveImage ?? null}>
+          <ReactMarkdown
+            remarkPlugins={stripHtml ? REMARK_PLUGINS_STRIPPED : REMARK_PLUGINS}
+            components={markdownComponents}
+          >
+            {children}
+          </ReactMarkdown>
+        </ImageResolverContext.Provider>
+      </SearchContext.Provider>
+    ),
+    [children, resolveImage, stripHtml, activeSearchQuery]
   )
   return (
     <ErrorBoundary inline scope="Markdown">

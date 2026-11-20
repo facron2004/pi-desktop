@@ -1,4 +1,4 @@
-import { AlertTriangle } from 'lucide-react'
+import { X } from 'lucide-react'
 import { useRef } from 'react'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
@@ -38,15 +38,19 @@ export function ConfirmDialog({
       >
         <div className="modal__head">
           <h2 id="confirm-title" className="modal__title">{title}</h2>
+          <button
+            className="icon-btn"
+            type="button"
+            onClick={onCancel}
+            aria-label={t('Close')}
+            title={t('Close')}
+          >
+            <X size={16} />
+          </button>
         </div>
 
         <div className="modal__body">
-          <div className="confirm">
-            <span className="confirm__icon" data-tone={tone}>
-              <AlertTriangle size={15} />
-            </span>
-            <p className="confirm__body">{body}</p>
-          </div>
+          <p className="confirm__body">{body}</p>
         </div>
 
         <div className="modal__foot">

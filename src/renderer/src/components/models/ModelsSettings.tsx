@@ -38,7 +38,7 @@ export function ModelsSettings() {
             </span>
             <span className="provider-card__actions">
               <button
-                className="icon-btn"
+                className="icon-btn provider-card__edit"
                 type="button"
                 aria-label={t('Edit provider')}
                 title={t('Edit provider')}

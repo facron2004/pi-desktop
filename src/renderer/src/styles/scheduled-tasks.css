@@ -495,8 +495,32 @@
   justify-content: flex-end;
 }
 
-.scheduled-detail__rule-row .settings-select {
-  cursor: pointer;
+/* The rule rows use the app's own listbox picker, sized like the text inputs
+   in the same group so the whole control column reads as one surface. */
+.scheduled-detail__rule-row .scheduled-detail__picker {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: var(--ctl-lg);
+  padding: 0 var(--sp-4);
+  border-color: var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  font-size: var(--text-button);
+  /* Values hug the right edge, matching the time field in the same column. */
+  justify-content: flex-end;
+}
+
+/* Shrink the label to its text so a short value sits on the right edge while
+   a long one still truncates from the end. */
+.scheduled-detail__rule-row .scheduled-detail__picker .settings-picker__label {
+  flex: 0 1 auto;
+}
+
+.scheduled-detail__rule-row .scheduled-detail__picker:hover,
+.scheduled-detail__rule-row .scheduled-detail__picker[aria-expanded='true'] {
+  border-color: var(--border-strong);
+  background: var(--bg-elevated);
 }
 
 .scheduled-detail__footer {

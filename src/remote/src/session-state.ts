@@ -1,6 +1,6 @@
 import type { AgentMessage, ContentBlock, PiEvent } from '@shared/types'
 import {
-  applyStreamEvent,
+  applyStreamEventBatch,
   itemsFromMessages,
   type AssistantItem,
   type ThreadItem
@@ -76,7 +76,29 @@ export function restoreRemoteSessionItems(
   previousItems: ThreadItem[]
 ): ThreadItem[] {
   const items = itemsFromMessages(messages)
-  const snapshotIdentities = new Set(messages.map(messageIdentity))
+  const snapshotByTimestamp = new Map<number | undefined, AgentMessage[]>()
+  const snapshotIdentities = new Map<AgentMessage, string>()
+  for (const message of messages) {
+    const bucket = snapshotByTimestamp.get(message.timestamp)
+    if (bucket) bucket.push(message)
+    else snapshotByTimestamp.set(message.timestamp, [message])
+  }
+  const matchesSnapshotMessage = (candidate: AgentMessage): boolean => {
+    const bucket = snapshotByTimestamp.get(candidate.timestamp)
+    if (!bucket) return false
+    let candidateId: string | undefined
+    for (const existing of bucket) {
+      if (existing.role !== candidate.role) continue
+      candidateId ??= messageIdentity(candidate)
+      let existingId = snapshotIdentities.get(existing)
+      if (existingId === undefined) {
+        existingId = messageIdentity(existing)
+        snapshotIdentities.set(existing, existingId)
+      }
+      if (existingId === candidateId) return true
+    }
+    return false
+  }
   const representedMessageIds = new Set<string>()
   const normalized: StreamEvent[] = []
 
@@ -88,7 +110,7 @@ export function restoreRemoteSessionItems(
       streamEvent.type === 'message.completed' &&
       streamEvent.messageId &&
       streamEvent.message &&
-      snapshotIdentities.has(messageIdentity(streamEvent.message))
+      matchesSnapshotMessage(streamEvent.message)
     ) {
       representedMessageIds.add(streamEvent.messageId)
     }
@@ -119,17 +141,23 @@ export function restoreRemoteSessionItems(
     ...previousItems.filter((item) => item.kind === 'tool' && liveToolIds.has(item.toolCallId))
   ]
   let nextOrder = items.reduce((maximum, item) => Math.max(maximum, item.order), 0)
-  items.push(...retainedLiveItems.map((item) => ({ ...item, order: ++nextOrder })))
+  for (const item of retainedLiveItems) {
+    items.push({ ...item, order: ++nextOrder })
+  }
 
   // A tool can outlive its assistant message: Pi may have flushed
   // `message_end` while the execution-start/update events were still live-only.
   // Keep that observed running state over a snapshot's proposed tool node.
+  const toolIndexByCallId = new Map<string, number>()
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]
+    if (item.kind === 'tool') toolIndexByCallId.set(item.toolCallId, index)
+  }
   for (const previous of previousItems) {
     if (previous.kind !== 'tool' || previous.status !== 'running') continue
-    const index = items.findIndex(
-      (item) => item.kind === 'tool' && item.toolCallId === previous.toolCallId
-    )
+    const index = toolIndexByCallId.get(previous.toolCallId) ?? -1
     if (index < 0) {
+      toolIndexByCallId.set(previous.toolCallId, items.length)
       items.push({ ...previous, order: ++nextOrder })
       continue
     }
@@ -143,7 +171,8 @@ export function restoreRemoteSessionItems(
     }
   }
 
-  return normalized.reduce((current, event) => {
+  const eventsToReplay: StreamEvent[] = []
+  for (const event of normalized) {
     const duplicateMessageLifecycle =
       event.type === 'message.started' ||
       event.type === 'message.block.started' ||
@@ -151,8 +180,10 @@ export function restoreRemoteSessionItems(
       event.type === 'message.block.completed' ||
       event.type === 'message.completed'
     if (duplicateMessageLifecycle && event.messageId && representedMessageIds.has(event.messageId)) {
-      return current
+      continue
     }
-    return applyStreamEvent(current, event)
-  }, items)
+    eventsToReplay.push(event)
+  }
+
+  return applyStreamEventBatch(items, eventsToReplay)
 }

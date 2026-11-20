@@ -720,9 +720,13 @@
   color: var(--text-tertiary);
 }
 
-/* The token count answers a question under the pointer, so it is not a link:
-   the card is the affordance and the number stays a quiet part of the footer. */
+/* The token count opens the turn's usage card on click; the card is the
+   affordance, so the number stays a quiet part of the footer until the pointer
+   gives it a grey bubble. */
 .assistant__usage {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
   padding: 0 var(--sp-1);
   margin-left: calc(-1 * var(--sp-1));
   color: inherit;
@@ -735,7 +739,9 @@
 }
 
 .assistant__usage:hover,
-.assistant__usage:focus-visible {
+.assistant__usage:focus-visible,
+.assistant__usage[data-active='true'] {
+  background: var(--bg-hover);
   color: var(--text-primary);
 }
 

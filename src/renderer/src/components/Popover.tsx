@@ -3,6 +3,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
@@ -174,7 +175,8 @@ export function Popover({
       // A max-height that only just covers the content still produces a
       // scrollbar: the border and rounding take the last pixels. Leave the
       // panel unclamped when it fits, and only scroll when it really cannot.
-      panel.style.maxHeight = available >= naturalHeight + 2 ? '' : `${available}px`
+      const nextMaxHeight = available >= naturalHeight + 2 ? '' : `${available}px`
+      if (panel.style.maxHeight !== nextMaxHeight) panel.style.maxHeight = nextMaxHeight
       const size = { width: panel.offsetWidth, height: panel.offsetHeight }
       const left =
         placement === 'right'
@@ -202,7 +204,7 @@ export function Popover({
       window.removeEventListener('resize', position)
       window.removeEventListener('scroll', onScroll, true)
     }
-  })
+  }, [open, placement, align, width])
 
   useEffect(() => {
     if (!open) return
@@ -268,6 +270,11 @@ export function Popover({
     }
   }, [close, open])
 
+  const panelStyle = useMemo(
+    () => (width !== undefined ? { width } : undefined),
+    [width]
+  )
+
   return (
     <div
       className="popover-wrap"
@@ -287,7 +294,7 @@ export function Popover({
           className={`popover ${className ?? ''}`}
           onMouseEnter={stopClosing}
           onMouseLeave={scheduleClose}
-          style={{ width }}
+          style={panelStyle}
         >
           {children(close)}
         </div>,

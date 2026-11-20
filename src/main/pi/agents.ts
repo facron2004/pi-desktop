@@ -100,10 +100,10 @@ function parseAgentFile(text: string): AgentPreset | null {
   return preset
 }
 
-/** True when `candidate` resolves inside `root` without a symlink escape. */
-function resolvesInside(root: string, candidate: string): boolean {
+/** True when `candidate` resolves inside pre-resolved `rootReal` without a symlink escape. */
+function resolvesInsideReal(rootReal: string, candidate: string): boolean {
   try {
-    const relative = path.relative(realpathSync(root), realpathSync(candidate))
+    const relative = path.relative(rootReal, realpathSync(candidate))
     return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
   } catch {
     return false
@@ -112,10 +112,22 @@ function resolvesInside(root: string, candidate: string): boolean {
 
 function readAgentDirectory(directory: string, workspaceRoot?: string): AgentPreset[] {
   if (!existsSync(directory)) return []
+  let directoryReal: string
+  try {
+    directoryReal = realpathSync(directory)
+  } catch {
+    return []
+  }
   // The project agents directory itself must live inside the workspace before
   // any file in it is even opened; a junction or symlink pointing elsewhere
   // would smuggle untrusted instructions into every delegation.
-  if (workspaceRoot && !resolvesInside(workspaceRoot, directory)) return []
+  if (workspaceRoot) {
+    try {
+      if (!resolvesInsideReal(realpathSync(workspaceRoot), directoryReal)) return []
+    } catch {
+      return []
+    }
+  }
   let entries
   try {
     entries = readdirSync(directory, { withFileTypes: true })
@@ -130,7 +142,7 @@ function readAgentDirectory(directory: string, workspaceRoot?: string): AgentPre
     try {
       const stat = statSync(file, { bigint: true })
       if (stat.size > BigInt(MAX_AGENT_FILE_BYTES)) continue
-      if (workspaceRoot && !resolvesInside(directory, file)) continue
+      if (workspaceRoot && !resolvesInsideReal(directoryReal, file)) continue
       const cached = agentFileCache.get(file)
       let preset: AgentPreset | null
       if (

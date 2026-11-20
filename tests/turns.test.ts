@@ -240,3 +240,13 @@ test('buildTurns uses reducer change hints across multiple updates', () => {
   assert.equal(next[0], first[0])
   assert.equal(next[1].assistants[0].blocks[0].text, 'a2More text')
 })
+
+test('buildTurns preserves recent turn builds across multi-thread interleaving', () => {
+  const threadA: ThreadItem[] = [user('ua1'), assistant('aa1'), user('ua2'), assistant('aa2')]
+  const threadB: ThreadItem[] = [user('ub1'), assistant('ab1')]
+
+  const builtA = buildTurns(threadA)
+  const builtB = buildTurns(threadB)
+  assert.equal(buildTurns(threadA), builtA)
+  assert.equal(buildTurns(threadB), builtB)
+})

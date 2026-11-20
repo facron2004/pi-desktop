@@ -1,4 +1,5 @@
-import { PanelLeft } from 'lucide-react'
+import { memo, useState } from 'react'
+import { PanelLeft, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { formatPlatformShortcut, keysFor, type ShortcutId } from '../lib/shortcuts'
@@ -73,7 +74,7 @@ function MenuGroup({ label, items, width = 260 }: MenuGroupProps) {
   )
 }
 
-export function AppMenuBar({
+export const AppMenuBar = memo(function AppMenuBar({
   sidebarOpen,
   taskRailOpen,
   hasItems,
@@ -121,6 +122,9 @@ export function AppMenuBar({
   const t = useT()
   const shortcutBindings = useAppStore((state) => state.settings.shortcutBindings)
   const platform = useAppStore((state) => state.info?.platform)
+  // After a click the pointer usually stays on the button; the arrow must not
+  // pop back up until the pointer leaves and returns.
+  const [toggleHoverMuted, setToggleHoverMuted] = useState(false)
 
   /** A menu chord, using the reader's own bindings and platform glyphs. */
   const chord = (id: ShortcutId) =>
@@ -144,9 +148,30 @@ export function AppMenuBar({
           aria-label={t('Toggle sidebar')}
           title={t('Toggle sidebar')}
           aria-expanded={sidebarOpen}
-          onClick={onToggleSidebar}
+          data-active={sidebarOpen}
+          data-hover-muted={toggleHoverMuted || undefined}
+          onMouseLeave={() => setToggleHoverMuted(false)}
+          onClick={(event) => {
+            if (event.detail > 0) setToggleHoverMuted(true)
+            onToggleSidebar()
+          }}
         >
-          <PanelLeft size={17} />
+          <span className="app-menu__toggle-icon" aria-hidden="true">
+            {/* The plain outline is always drawn. The arrow-carrying glyphs
+                are stacked over it and only fade in under the pointer, so the
+                corner stays quiet at rest. */}
+            <PanelLeft className="app-menu__toggle-glyph" size={16} strokeWidth={1.7} />
+            <PanelLeftOpen
+              className="app-menu__toggle-glyph app-menu__toggle-glyph--closed"
+              size={16}
+              strokeWidth={1.7}
+            />
+            <PanelLeftClose
+              className="app-menu__toggle-glyph app-menu__toggle-glyph--open"
+              size={16}
+              strokeWidth={1.7}
+            />
+          </span>
         </button>
       </div>
 
@@ -258,4 +283,4 @@ export function AppMenuBar({
       </nav>
     </header>
   )
-}
+})

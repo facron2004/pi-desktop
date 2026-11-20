@@ -4,7 +4,7 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, sym
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { addWorktree, readBranches, readStatus, readFileDiff, removeWorktree } from '../src/main/git'
+import { addWorktree, createBranch, readBranches, readStatus, readFileDiff, removeWorktree } from '../src/main/git'
 
 function createTempDir(prefix: string): { dir: string; cleanup: () => void } {
   const temp = realpathSync(os.tmpdir())
@@ -225,5 +225,25 @@ test('readFileDiff does not read a hard link to a file outside the repository', 
   } finally {
     cleanup()
     rmSync(outside, { force: true })
+  }
+})
+
+test('readBranches never reuses a pre-write in-flight promise after a git branch mutation', async () => {
+  const { root, git, cleanup } = gitRepoFixture()
+  try {
+    writeFileSync(path.join(root, 'file.txt'), 'initial\n')
+    git('add', 'file.txt')
+    git('commit', '-qm', 'initial commit')
+
+    const preWrite = readBranches(root)
+    const created = await createBranch(root, 'feature/post-write', true)
+    assert.equal(created.ok, true)
+    const postWrite = readBranches(root)
+    assert.notStrictEqual(postWrite, preWrite, 'branch writes must evict pre-write in-flight readBranches promises')
+    const [, postResult] = await Promise.all([preWrite, postWrite])
+    assert.equal(postResult.current, 'feature/post-write')
+    assert.equal(postResult.branches.some((branch) => branch.name === 'feature/post-write'), true)
+  } finally {
+    cleanup()
   }
 })

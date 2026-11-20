@@ -94,59 +94,199 @@ const NO_REPOSITORY: GitStatus = {
   clean: true
 }
 
+const inFlightStatus = new Map<string, Promise<GitStatus>>()
+const inFlightBranches = new Map<string, Promise<GitBranches>>()
+const gitWriteGenerations = new Map<string, number>()
+
+function repoCacheKey(root: string): string {
+  const resolved = path.resolve(root)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+function invalidateGitReadCache(root: string): void {
+  if (!root) return
+  const key = repoCacheKey(root)
+  gitWriteGenerations.set(key, (gitWriteGenerations.get(key) ?? 0) + 1)
+  inFlightStatus.delete(key)
+  inFlightBranches.delete(key)
+}
+
+async function withGitMutation<T>(root: string, action: () => Promise<T>): Promise<T> {
+  invalidateGitReadCache(root)
+  try {
+    return await action()
+  } finally {
+    invalidateGitReadCache(root)
+  }
+}
+
+function nthTokenOffset(text: string, tokenCount: number): number {
+  let seen = 0
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 32) {
+      seen += 1
+      if (seen === tokenCount) return i + 1
+    }
+  }
+  return -1
+}
+
+function parsePorcelainV2(raw: string): {
+  files: GitFileStatus[]
+  branch?: string
+  head?: string
+  unborn: boolean
+  ahead: number
+  behind: number
+} {
+  const files: GitFileStatus[] = []
+  let branch: string | undefined
+  let head: string | undefined
+  let unborn = false
+  let ahead = 0
+  let behind = 0
+  if (!raw) return { files, branch, head, unborn, ahead, behind }
+
+  const fields = raw.split('\0')
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index]
+    if (!field) continue
+    if (field.startsWith('# ')) {
+      if (field.startsWith('# branch.oid ')) {
+        const oid = field.slice('# branch.oid '.length).trim()
+        if (oid === '(initial)') {
+          unborn = true
+          head = undefined
+        } else if (oid) {
+          head = oid.slice(0, 7)
+        }
+      } else if (field.startsWith('# branch.head ')) {
+        const name = field.slice('# branch.head '.length).trim()
+        branch = name && name !== '(detached)' && name !== '(unknown)' ? name : undefined
+      } else if (field.startsWith('# branch.ab ')) {
+        const match = /^\+(\d+)\s+-(\d+)$/.exec(field.slice('# branch.ab '.length).trim())
+        if (match) {
+          ahead = Number(match[1]) || 0
+          behind = Number(match[2]) || 0
+        }
+      }
+      continue
+    }
+
+    if (field.startsWith('? ')) {
+      const filePath = field.slice(2)
+      if (!filePath) continue
+      files.push({
+        path: filePath,
+        index: '?',
+        worktree: '?',
+        staged: false,
+        untracked: true
+      })
+      continue
+    }
+
+    if (field.startsWith('1 ') || field.startsWith('2 ') || field.startsWith('u ')) {
+      const kind = field[0]
+      const xy = field.slice(2, 4)
+      if (xy.length < 2) continue
+      const headerTokens = kind === '1' ? 8 : kind === '2' ? 9 : 10
+      const pathStart = nthTokenOffset(field, headerTokens)
+      if (pathStart < 0) continue
+      const filePath = field.slice(pathStart)
+      let oldPath: string | undefined
+      if (kind === '2') {
+        oldPath = fields[index + 1]
+        index += 1
+      }
+      if (!filePath) continue
+      const indexStatus = xy[0] === '.' ? ' ' : xy[0]!
+      const worktreeStatus = xy[1] === '.' ? ' ' : xy[1]!
+      files.push({
+        path: filePath,
+        oldPath,
+        index: indexStatus,
+        worktree: worktreeStatus,
+        staged: indexStatus !== ' ' && indexStatus !== '?',
+        untracked: false
+      })
+    }
+  }
+
+  return { files, branch, head, unborn, ahead, behind }
+}
+
 /** Read the working tree of `root` the way the review panel needs it. */
 export async function readStatus(root: string): Promise<GitStatus> {
   if (!root) return { ...NO_REPOSITORY }
+  const key = repoCacheKey(root)
+  const existing = inFlightStatus.get(key)
+  if (existing) return existing
 
-  const inside = await git(root, ['rev-parse', '--is-inside-work-tree'])
-  if (inside.code !== 0 || inside.stdout.trim() !== 'true') return { ...NO_REPOSITORY }
+  const startGeneration = gitWriteGenerations.get(key) ?? 0
+  const task = (async (): Promise<GitStatus> => {
+    const [porcelain, topLevel, diffHead] = await Promise.all([
+      git(root, ['status', '--porcelain=v2', '--branch', '--untracked-files=all', '-z']),
+      git(root, ['rev-parse', '--show-toplevel']),
+      git(root, ['diff', '--numstat', '-z', '-M', 'HEAD', '--'])
+    ])
+    if (porcelain.code !== 0) return { ...NO_REPOSITORY }
 
-  const [topLevel, branchName, head, porcelain, upstream] = await Promise.all([
-    git(root, ['rev-parse', '--show-toplevel']),
-    git(root, ['branch', '--show-current']),
-    git(root, ['rev-parse', '--short', 'HEAD']),
-    git(root, ['status', '--porcelain=v1', '--untracked-files=all', '-z']),
-    git(root, ['rev-list', '--left-right', '--count', '@{upstream}...HEAD'])
-  ])
+    const parsed = parsePorcelainV2(porcelain.stdout)
+    const files = parsed.files
+    const hasTrackedChanges = files.some((file) => !file.untracked)
 
-  const files = parsePorcelain(porcelain.stdout)
-  // The review compares HEAD with the working tree, so staged and unstaged
-  // edits to the same file must be counted together against that same base.
-  const objectFormat = head.code === 0 ? null : await git(root, ['rev-parse', '--show-object-format'])
-  const emptyTree = createHash(objectFormat?.stdout.trim() === 'sha256' ? 'sha256' : 'sha1')
-    .update('tree 0\0')
-    .digest('hex')
-  const stats = await lineCounts(root, ['diff', '--numstat', '-z', '-M', head.code === 0 ? 'HEAD' : emptyTree, '--'])
-  for (const file of files) {
-    const known = stats.get(file.path)
-    if (known) {
-      file.added = known.added
-      file.removed = known.removed
+    let stats: Map<string, { added: number; removed: number }>
+    if (!hasTrackedChanges) {
+      stats = new Map()
+    } else if (!parsed.unborn && diffHead.code === 0) {
+      stats = new Map()
+      for (const file of parseNumstatZ(diffHead.stdout)) {
+        stats.set(file.path, { added: file.added, removed: file.removed })
+      }
+    } else {
+      // Unborn repository (or missing HEAD): compare staged index against the empty tree.
+      const objectFormat = await git(root, ['rev-parse', '--show-object-format'])
+      const emptyTree = createHash(objectFormat.stdout.trim() === 'sha256' ? 'sha256' : 'sha1')
+        .update('tree 0\0')
+        .digest('hex')
+      stats = await lineCounts(root, ['diff', '--numstat', '-z', '-M', emptyTree, '--'])
     }
-  }
-  await countUntracked(root, files)
 
-  let ahead = 0
-  let behind = 0
-  if (upstream.code === 0 && upstream.stdout.trim()) {
-    const [behindRaw, aheadRaw] = upstream.stdout.trim().split(/\s+/)
-    behind = Number(behindRaw) || 0
-    ahead = Number(aheadRaw) || 0
-  }
+    for (const file of files) {
+      const known = stats.get(file.path)
+      if (known) {
+        file.added = known.added
+        file.removed = known.removed
+      }
+    }
+    await countUntracked(root, files)
 
-  const branch = branchName.stdout.trim() || undefined
-  return {
-    isRepo: true,
-    root: topLevel.stdout.trim() || root,
-    branch,
-    head: head.code === 0 ? head.stdout.trim() || undefined : undefined,
-    detached: !branch,
-    ahead,
-    behind,
-    files,
-    staged: files.filter((file) => file.staged).length,
-    unstaged: files.filter((file) => !file.staged).length,
-    clean: files.length === 0
+    return {
+      isRepo: true,
+      root: topLevel.code === 0 ? topLevel.stdout.trim() || root : root,
+      branch: parsed.branch,
+      head: parsed.head,
+      detached: !parsed.branch,
+      ahead: parsed.ahead,
+      behind: parsed.behind,
+      files,
+      staged: files.filter((file) => file.staged).length,
+      unstaged: files.filter((file) => !file.staged).length,
+      clean: files.length === 0
+    }
+  })()
+
+  inFlightStatus.set(key, task)
+  try {
+    const result = await task
+    if ((gitWriteGenerations.get(key) ?? 0) !== startGeneration) {
+      if (inFlightStatus.get(key) === task) inFlightStatus.delete(key)
+      return await readStatus(root)
+    }
+    return result
+  } finally {
+    if (inFlightStatus.get(key) === task) inFlightStatus.delete(key)
   }
 }
 
@@ -197,93 +337,104 @@ export async function commitWorkingTree(
   const trimmed = message.trim()
   if (!root) return { ok: false, error: 'No project is open.' }
 
-  const status = await readStatus(root)
-  if (!status.isRepo) return { ok: false, error: 'This folder is not a git repository.' }
-  if (status.clean) return { ok: false, error: 'There is nothing to commit.' }
+  return withGitMutation(root, async () => {
+    const statusOut = await git(root, ['status', '--porcelain=v1', '--untracked-files=all', '-z'])
+    if (statusOut.code !== 0) return { ok: false, error: 'This folder is not a git repository.' }
+    const statusFiles = parsePorcelain(statusOut.stdout)
+    if (statusFiles.length === 0) return { ok: false, error: 'There is nothing to commit.' }
 
-  if (includeUnstaged) {
-    const added = await git(root, ['add', '-A'], COMMIT_TIMEOUT_MS)
-    if (added.code !== 0) {
-      return { ok: false, error: cleanError(added.stderr) || 'git add failed.' }
+    if (includeUnstaged) {
+      const added = await git(root, ['add', '-A'], COMMIT_TIMEOUT_MS)
+      if (added.code !== 0) {
+        return { ok: false, error: cleanError(added.stderr) || 'git add failed.' }
+      }
+    } else {
+      // Not staging anything would commit with an empty index, so say so
+      // instead of committing a surprise.
+      const staged = await git(root, ['diff', '--cached', '--quiet'])
+      if (staged.code === 0) {
+        return { ok: false, error: 'Nothing is staged. Stage a file or include unstaged changes.' }
+      }
+      if (staged.code !== 1) {
+        return { ok: false, error: cleanError(staged.stderr) || 'Could not read the index.' }
+      }
     }
-  } else {
-    // Not staging anything would commit with an empty index, so say so
-    // instead of committing a surprise.
-    const staged = await git(root, ['diff', '--cached', '--quiet'])
-    if (staged.code === 0) {
-      return { ok: false, error: 'Nothing is staged. Stage a file or include unstaged changes.' }
+
+    const stagedFiles = await git(root, ['diff', '--cached', '--name-only', '-z'])
+    const stagedPaths = stagedFiles.code === 0 ? stagedFiles.stdout.split('\0').filter(Boolean) : []
+    const count = stagedPaths.length
+    const commitMessage = trimmed || generatedCommitMessage(stagedPaths)
+
+    const committed = await git(root, ['commit', '-m', commitMessage], COMMIT_TIMEOUT_MS)
+    if (committed.code !== 0) {
+      const detail = cleanError(committed.stderr) || cleanError(committed.stdout)
+      return { ok: false, error: detail || 'git commit failed.' }
     }
-    if (staged.code !== 1) {
-      return { ok: false, error: cleanError(staged.stderr) || 'Could not read the index.' }
+
+    const head = await git(root, ['rev-parse', '--short', 'HEAD'])
+    return {
+      ok: true,
+      hash: head.code === 0 ? head.stdout.trim() || undefined : undefined,
+      files: count || statusFiles.length
     }
-  }
-
-  const stagedFiles = await git(root, ['diff', '--cached', '--name-only', '-z'])
-  const stagedPaths = stagedFiles.code === 0 ? stagedFiles.stdout.split('\0').filter(Boolean) : []
-  const count = stagedPaths.length
-  const commitMessage = trimmed || generatedCommitMessage(stagedPaths)
-
-  const committed = await git(root, ['commit', '-m', commitMessage], COMMIT_TIMEOUT_MS)
-  if (committed.code !== 0) {
-    const detail = cleanError(committed.stderr) || cleanError(committed.stdout)
-    return { ok: false, error: detail || 'git commit failed.' }
-  }
-
-  const head = await git(root, ['rev-parse', '--short', 'HEAD'])
-  return {
-    ok: true,
-    hash: head.code === 0 ? head.stdout.trim() || undefined : undefined,
-    files: count || status.files.length
-  }
+  })
 }
 
 /** Move one file into the index. Deleted and new files go in as well. */
 export async function stageFile(root: string, filePath: string): Promise<GitCommitResult> {
   if (!root) return { ok: false, error: 'No project is open.' }
   if (!filePath) return { ok: false, error: 'No file was given.' }
-  const result = await gitLiteralPathspecs(root, ['add', '-A', '--', filePath], COMMIT_TIMEOUT_MS)
-  if (result.code !== 0) {
-    return { ok: false, error: cleanError(result.stderr) || 'git add failed.' }
-  }
-  return { ok: true }
+  return withGitMutation(root, async () => {
+    const result = await gitLiteralPathspecs(root, ['add', '-A', '--', filePath], COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) {
+      return { ok: false, error: cleanError(result.stderr) || 'git add failed.' }
+    }
+    return { ok: true }
+  })
 }
 
 /** Move one file out of the index, keeping its working-tree changes. */
 export async function unstageFile(root: string, filePath: string): Promise<GitCommitResult> {
   if (!root) return { ok: false, error: 'No project is open.' }
   if (!filePath) return { ok: false, error: 'No file was given.' }
-  // `restore --staged` needs a HEAD; a repository without a commit has to
-  // fall back to removing the entry from the index instead.
-  let result = await gitLiteralPathspecs(root, ['restore', '--staged', '--', filePath], COMMIT_TIMEOUT_MS)
-  if (result.code !== 0) {
-    result = await gitLiteralPathspecs(root, ['reset', '-q', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
-  }
-  if (result.code !== 0) {
-    result = await gitLiteralPathspecs(root, ['rm', '--cached', '-q', '--', filePath], COMMIT_TIMEOUT_MS)
-  }
-  if (result.code !== 0) {
-    return { ok: false, error: cleanError(result.stderr) || 'git restore failed.' }
-  }
-  return { ok: true }
+  return withGitMutation(root, async () => {
+    // `restore --staged` needs a HEAD; a repository without a commit has to
+    // fall back to removing the entry from the index instead.
+    let result = await gitLiteralPathspecs(root, ['restore', '--staged', '--', filePath], COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) {
+      result = await gitLiteralPathspecs(root, ['reset', '-q', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
+    }
+    if (result.code !== 0) {
+      result = await gitLiteralPathspecs(root, ['rm', '--cached', '-q', '--', filePath], COMMIT_TIMEOUT_MS)
+    }
+    if (result.code !== 0) {
+      return { ok: false, error: cleanError(result.stderr) || 'git restore failed.' }
+    }
+    return { ok: true }
+  })
 }
 
 export async function stageAll(root: string): Promise<GitCommitResult> {
   if (!root) return { ok: false, error: 'No project is open.' }
-  const result = await git(root, ['add', '-A'], COMMIT_TIMEOUT_MS)
-  if (result.code !== 0) return { ok: false, error: cleanError(result.stderr) || 'git add failed.' }
-  return { ok: true }
+  return withGitMutation(root, async () => {
+    const result = await git(root, ['add', '-A'], COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) return { ok: false, error: cleanError(result.stderr) || 'git add failed.' }
+    return { ok: true }
+  })
 }
 
 export async function unstageAll(root: string): Promise<GitCommitResult> {
   if (!root) return { ok: false, error: 'No project is open.' }
-  let result = await git(root, ['reset', '-q'], COMMIT_TIMEOUT_MS)
-  if (result.code !== 0) {
-    result = await git(root, ['rm', '-r', '--cached', '-q', '.'], COMMIT_TIMEOUT_MS)
-  }
-  if (result.code !== 0) {
-    return { ok: false, error: cleanError(result.stderr) || 'git reset failed.' }
-  }
-  return { ok: true }
+  return withGitMutation(root, async () => {
+    let result = await git(root, ['reset', '-q'], COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) {
+      result = await git(root, ['rm', '-r', '--cached', '-q', '.'], COMMIT_TIMEOUT_MS)
+    }
+    if (result.code !== 0) {
+      return { ok: false, error: cleanError(result.stderr) || 'git reset failed.' }
+    }
+    return { ok: true }
+  })
 }
 
 /** Trim the noise git puts around its diagnostics before the UI shows it. */
@@ -511,15 +662,22 @@ export async function readPatch(root: string, filePath?: string): Promise<GitPat
 
   const args = ['-c', 'core.quotepath=false', 'diff', 'HEAD', '--no-color', '--no-ext-diff']
   if (filePath) args.push('--', filePath)
-  const diff = filePath
-    ? await gitLiteralPathspecs(root, args, COMMIT_TIMEOUT_MS)
-    : await git(root, args, COMMIT_TIMEOUT_MS)
+  const statusArgs = ['status', '--porcelain=v1', '--untracked-files=all', '-z']
+  if (filePath) statusArgs.push('--', filePath)
+
+  const [diff, statusOut] = await Promise.all([
+    filePath
+      ? gitLiteralPathspecs(root, args, COMMIT_TIMEOUT_MS)
+      : git(root, args, COMMIT_TIMEOUT_MS),
+    filePath
+      ? gitLiteralPathspecs(root, statusArgs)
+      : git(root, statusArgs)
+  ])
   const cappedDiff = capUtf8Text(diff.code === 0 ? diff.stdout : '', MAX_PATCH_BYTES)
   let text = cappedDiff.text
   let truncated = cappedDiff.truncated
 
-  const status = await readStatus(root)
-  const untracked = status.files.filter(
+  const untracked = (statusOut.code === 0 ? parsePorcelain(statusOut.stdout) : []).filter(
     (file) => file.untracked && (!filePath || file.path === filePath)
   )
   let textBytes = Buffer.byteLength(text, 'utf8')
@@ -641,9 +799,33 @@ export async function readCommitDetail(
 ): Promise<GitCommitDetail | null> {
   if (!root || !isHash(hash)) return null
 
-  const meta = await git(root, ['show', '-s', '--format=%H%x1f%s%x1f%an%x1f%at%x1f%P%x1f%b', hash])
-  if (meta.code !== 0 || !meta.stdout.trim()) return null
-  const parts = meta.stdout.split('\u001f')
+  const [metaAndStatus, numstat, shown] = await Promise.all([
+    git(
+      root,
+      [
+        '-c',
+        'core.quotepath=false',
+        'show',
+        '--format=%H%x1f%s%x1f%an%x1f%at%x1f%P%x1f%b%x00',
+        '--name-status',
+        '-M',
+        '-z',
+        hash
+      ],
+      COMMIT_TIMEOUT_MS
+    ),
+    git(root, ['show', '--numstat', '--format=', '-M', '-z', hash], COMMIT_TIMEOUT_MS),
+    git(root, ['show', '--no-color', '--format=', '-M', hash], COMMIT_TIMEOUT_MS)
+  ])
+  if (metaAndStatus.code !== 0 || !metaAndStatus.stdout.trim()) return null
+
+  const firstNull = metaAndStatus.stdout.indexOf('\0')
+  const metaText = firstNull === -1 ? metaAndStatus.stdout : metaAndStatus.stdout.slice(0, firstNull)
+  const nameStatusRaw = firstNull === -1
+    ? ''
+    : metaAndStatus.stdout.slice(firstNull + 1).replace(/^\0*[\r\n]*/, '')
+
+  const parts = metaText.split('\u001f')
   const fullHash = parts[0]?.trim() ?? hash
   const subject = parts[1] ?? ''
   const author = parts[2] ?? ''
@@ -651,13 +833,7 @@ export async function readCommitDetail(
   const parentHash = parts[4]?.trim().split(' ')[0] || undefined
   const body = parts.slice(5).join('\u001f').trim()
 
-  const [numstat, nameStatus, shown] = await Promise.all([
-    git(root, ['show', '--numstat', '--format=', '-M', '-z', hash], COMMIT_TIMEOUT_MS),
-    git(root, ['-c', 'core.quotepath=false', 'show', '--name-status', '--format=', '-M', '-z', hash], COMMIT_TIMEOUT_MS),
-    git(root, ['show', '--no-color', '--format=', '-M', hash], COMMIT_TIMEOUT_MS)
-  ])
-
-  const statuses = parseNameStatus(nameStatus.stdout)
+  const statuses = parseNameStatus(nameStatusRaw)
   const files = parseNumstatZ(numstat.stdout).map((file) => {
     const known = statuses.get(file.path)
     return {
@@ -777,122 +953,142 @@ export async function applyPatch(
     return { ok: false, error: 'That does not look like a patch.' }
   }
 
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'pi-desktop-patch-'))
-  const file = path.join(dir, 'change.patch')
-  try {
-    // The body is written as it came: trailing spaces and an empty last
-    // context line are part of the patch, even though the prefix check used
-    // a trimmed copy.
-    writeFileSync(file, patch.endsWith('\n') ? patch : `${patch}\n`, 'utf8')
-    const args = ['apply', '--whitespace=nowarn']
-    if (reverse) args.push('--reverse')
-    args.push(file)
-    const result = await git(root, args, COMMIT_TIMEOUT_MS)
-    if (result.code !== 0) {
-      return {
-        ok: false,
-        error: cleanError(result.stderr) || cleanError(result.stdout) || 'git apply failed.'
+  return withGitMutation(root, async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'pi-desktop-patch-'))
+    const file = path.join(dir, 'change.patch')
+    try {
+      // The body is written as it came: trailing spaces and an empty last
+      // context line are part of the patch, even though the prefix check used
+      // a trimmed copy.
+      writeFileSync(file, patch.endsWith('\n') ? patch : `${patch}\n`, 'utf8')
+      const args = ['apply', '--whitespace=nowarn']
+      if (reverse) args.push('--reverse')
+      args.push(file)
+      const result = await git(root, args, COMMIT_TIMEOUT_MS)
+      if (result.code !== 0) {
+        return {
+          ok: false,
+          error: cleanError(result.stderr) || cleanError(result.stdout) || 'git apply failed.'
+        }
+      }
+      return { ok: true }
+    } finally {
+      try {
+        rmSync(dir, { recursive: true, force: true })
+      } catch {
+        /* a temp directory that cannot be removed is not worth an error */
       }
     }
-    return { ok: true }
-  } finally {
-    try {
-      rmSync(dir, { recursive: true, force: true })
-    } catch {
-      /* a temp directory that cannot be removed is not worth an error */
-    }
-  }
+  })
 }
 
 /** Local branches and worktrees of the open repository. */
 export async function readBranches(root: string): Promise<GitBranches> {
   const empty: GitBranches = { isRepo: false, detached: false, branches: [], worktrees: [] }
   if (!root) return empty
+  const key = repoCacheKey(root)
+  const existing = inFlightBranches.get(key)
+  if (existing) return existing
 
-  const [topLevelOut, currentOut, refs, worktreesOut] = await Promise.all([
-    git(root, ['rev-parse', '--show-toplevel']),
-    git(root, ['branch', '--show-current']),
-    git(root, [
-      'for-each-ref',
-      // for-each-ref does not understand %x1f; a literal tab is the separator
-      // it can carry through every git version.
-      '--format=%(refname:short)\t%(upstream:short)\t%(objectname:short)\t%(contents:subject)',
-      'refs/heads'
-    ]),
-    git(root, ['worktree', 'list', '--porcelain'])
-  ])
-  if (topLevelOut.code !== 0) {
-    return empty
-  }
-  const failed = [currentOut, refs, worktreesOut].find((result) => result.code !== 0)
-  if (failed) {
-    throw new Error(cleanError(failed.stderr) || 'Could not read branches and worktrees.')
-  }
-
-  const currentRoot = path.resolve(topLevelOut.stdout.trim() || root)
-  const current = currentOut.stdout.trim() || undefined
-  const branches: GitBranch[] = refs.stdout
-    .split('\n')
-    .filter((line) => line.trim())
-    .map((line) => {
-      const [name = '', upstream = '', tip = '', ...subjectParts] = line.split('\t')
-      return {
-        name,
-        current: name === current,
-        tip: tip || undefined,
-        subject: subjectParts.join('\t') || undefined,
-        upstream: upstream || undefined
-      }
-    })
-    .filter((branch) => branch.name)
-    .sort((a, b) => a.name.localeCompare(b.name))
-
-  const worktrees: GitWorktree[] = []
-  let block: { path?: string; branch?: string; bare?: boolean } = {}
-  const flush = () => {
-    if (!block.path) return
-    worktrees.push({
-      path: block.path,
-      branch: block.branch,
-      bare: block.bare === true,
-      current: path.relative(currentRoot, path.resolve(block.path)) === ''
-    })
-    block = {}
-  }
-  for (const line of worktreesOut.stdout.split('\n')) {
-    if (!line.trim()) {
-      flush()
-      continue
+  const startGeneration = gitWriteGenerations.get(key) ?? 0
+  const task = (async (): Promise<GitBranches> => {
+    const [topLevelOut, currentOut, refs, worktreesOut] = await Promise.all([
+      git(root, ['rev-parse', '--show-toplevel']),
+      git(root, ['branch', '--show-current']),
+      git(root, [
+        'for-each-ref',
+        // for-each-ref does not understand %x1f; a literal tab is the separator
+        // it can carry through every git version.
+        '--format=%(refname:short)\t%(upstream:short)\t%(objectname:short)\t%(contents:subject)',
+        'refs/heads'
+      ]),
+      git(root, ['worktree', 'list', '--porcelain'])
+    ])
+    if (topLevelOut.code !== 0) {
+      return empty
     }
-    const space = line.indexOf(' ')
-    const key = space === -1 ? line : line.slice(0, space)
-    const value = space === -1 ? '' : line.slice(space + 1)
-    if (key === 'worktree') {
-      flush()
-      block.path = value
-    } else if (key === 'branch') {
-      block.branch = value.replace(/^refs\/heads\//, '')
-    } else if (key === 'bare') {
-      block.bare = true
+    const failed = [currentOut, refs, worktreesOut].find((result) => result.code !== 0)
+    if (failed) {
+      throw new Error(cleanError(failed.stderr) || 'Could not read branches and worktrees.')
     }
-  }
-  flush()
 
-  // A worktree is useful only when the menu says whether it has work in it;
-  // status per worktree is a handful of processes for a handful of folders.
-  await Promise.all(
-    worktrees
-      .filter((worktree) => !worktree.bare)
-      .slice(0, 20)
-      .map(async (worktree) => {
-        const status = await git(worktree.path, ['status', '--porcelain', '--untracked-files=all'])
-        if (status.code !== 0) return
-        const lines = status.stdout.split('\n').filter((line) => line.trim()).length
-        worktree.dirty = lines
+    const currentRoot = path.resolve(topLevelOut.stdout.trim() || root)
+    const current = currentOut.stdout.trim() || undefined
+    const branches: GitBranch[] = refs.stdout
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => {
+        const [name = '', upstream = '', tip = '', ...subjectParts] = line.split('\t')
+        return {
+          name,
+          current: name === current,
+          tip: tip || undefined,
+          subject: subjectParts.join('\t') || undefined,
+          upstream: upstream || undefined
+        }
       })
-  )
+      .filter((branch) => branch.name)
+      .sort((a, b) => a.name.localeCompare(b.name))
 
-  return { isRepo: true, current, detached: !current, branches, worktrees }
+    const worktrees: GitWorktree[] = []
+    let block: { path?: string; branch?: string; bare?: boolean } = {}
+    const flush = () => {
+      if (!block.path) return
+      worktrees.push({
+        path: block.path,
+        branch: block.branch,
+        bare: block.bare === true,
+        current: path.relative(currentRoot, path.resolve(block.path)) === ''
+      })
+      block = {}
+    }
+    for (const line of worktreesOut.stdout.split('\n')) {
+      if (!line.trim()) {
+        flush()
+        continue
+      }
+      const space = line.indexOf(' ')
+      const k = space === -1 ? line : line.slice(0, space)
+      const value = space === -1 ? '' : line.slice(space + 1)
+      if (k === 'worktree') {
+        flush()
+        block.path = value
+      } else if (k === 'branch') {
+        block.branch = value.replace(/^refs\/heads\//, '')
+      } else if (k === 'bare') {
+        block.bare = true
+      }
+    }
+    flush()
+
+    // A worktree is useful only when the menu says whether it has work in it;
+    // status per worktree is a handful of processes for a handful of folders.
+    await Promise.all(
+      worktrees
+        .filter((worktree) => !worktree.bare)
+        .slice(0, 20)
+        .map(async (worktree) => {
+          const status = await git(worktree.path, ['status', '--porcelain', '--no-renames', '--untracked-files=all'])
+          if (status.code !== 0) return
+          const lines = status.stdout.split('\n').filter((line) => line.trim()).length
+          worktree.dirty = lines
+        })
+    )
+
+    return { isRepo: true, current, detached: !current, branches, worktrees }
+  })()
+
+  inFlightBranches.set(key, task)
+  try {
+    const result = await task
+    if ((gitWriteGenerations.get(key) ?? 0) !== startGeneration) {
+      if (inFlightBranches.get(key) === task) inFlightBranches.delete(key)
+      return await readBranches(root)
+    }
+    return result
+  } finally {
+    if (inFlightBranches.get(key) === task) inFlightBranches.delete(key)
+  }
 }
 
 /** Remove a registered worktree, refusing the one the app is looking at. */
@@ -923,17 +1119,22 @@ export async function removeWorktree(
     return { ok: false, error: 'That folder is not a worktree of this repository.' }
   }
 
-  const remove = async (): Promise<GitCommitResult> => {
-    const result = await git(root, ['worktree', 'remove', resolved], COMMIT_TIMEOUT_MS)
-    if (result.code !== 0) {
-      const detail = cleanError(result.stderr) || cleanError(result.stdout)
-      return {
-        ok: false,
-        error: detail || 'Could not remove the worktree. It may still have uncommitted changes.'
+  const remove = async (): Promise<GitCommitResult> => withGitMutation(root, async () => {
+    invalidateGitReadCache(resolved)
+    try {
+      const result = await git(root, ['worktree', 'remove', resolved], COMMIT_TIMEOUT_MS)
+      if (result.code !== 0) {
+        const detail = cleanError(result.stderr) || cleanError(result.stdout)
+        return {
+          ok: false,
+          error: detail || 'Could not remove the worktree. It may still have uncommitted changes.'
+        }
       }
+      return { ok: true }
+    } finally {
+      invalidateGitReadCache(resolved)
     }
-    return { ok: true }
-  }
+  })
   return withRemoveLock ? withRemoveLock(resolved, remove) : remove()
 }
 
@@ -943,16 +1144,18 @@ export async function switchBranch(root: string, name: string): Promise<GitCommi
   const branch = cleanBranch(name)
   if (!branch) return { ok: false, error: 'That is not a branch name.' }
 
-  let result = await git(root, ['switch', branch], COMMIT_TIMEOUT_MS)
-  if (result.code !== 0) {
-    // Older git or a branch that only exists as a path: checkout understands
-    // both, so it is the fallback rather than a second command to maintain.
-    result = await git(root, ['checkout', branch], COMMIT_TIMEOUT_MS)
-  }
-  if (result.code !== 0) {
-    return { ok: false, error: cleanError(result.stderr) || 'Could not switch branch.' }
-  }
-  return { ok: true }
+  return withGitMutation(root, async () => {
+    let result = await git(root, ['switch', branch], COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) {
+      // Older git or a branch that only exists as a path: checkout understands
+      // both, so it is the fallback rather than a second command to maintain.
+      result = await git(root, ['checkout', branch], COMMIT_TIMEOUT_MS)
+    }
+    if (result.code !== 0) {
+      return { ok: false, error: cleanError(result.stderr) || 'Could not switch branch.' }
+    }
+    return { ok: true }
+  })
 }
 
 /** Create a local branch, checking it out unless `checkout` is false. */
@@ -965,18 +1168,20 @@ export async function createBranch(
   const branch = cleanBranch(name)
   if (!branch) return { ok: false, error: 'That is not a branch name.' }
 
-  const format = await git(root, ['check-ref-format', '--branch', branch])
-  if (format.code !== 0) return { ok: false, error: 'That is not a valid branch name.' }
+  return withGitMutation(root, async () => {
+    const format = await git(root, ['check-ref-format', '--branch', branch])
+    if (format.code !== 0) return { ok: false, error: 'That is not a valid branch name.' }
 
-  const result = await git(
-    root,
-    checkout ? ['switch', '-c', branch] : ['branch', branch],
-    COMMIT_TIMEOUT_MS
-  )
-  if (result.code !== 0) {
-    return { ok: false, error: cleanError(result.stderr) || 'Could not create the branch.' }
-  }
-  return { ok: true }
+    const result = await git(
+      root,
+      checkout ? ['switch', '-c', branch] : ['branch', branch],
+      COMMIT_TIMEOUT_MS
+    )
+    if (result.code !== 0) {
+      return { ok: false, error: cleanError(result.stderr) || 'Could not create the branch.' }
+    }
+    return { ok: true }
+  })
 }
 
 /**
@@ -1011,16 +1216,18 @@ export async function addWorktree(
     return { ok: false, error: 'The worktree has to be outside the project folder.' }
   }
 
-  const args = ['worktree', 'add']
-  if (create) args.push('-b', branch)
-  args.push(target)
-  if (!create) args.push(branch)
+  return withGitMutation(root, async () => {
+    const args = ['worktree', 'add']
+    if (create) args.push('-b', branch)
+    args.push(target)
+    if (!create) args.push(branch)
 
-  const result = await git(root, args, COMMIT_TIMEOUT_MS)
-  if (result.code !== 0) {
-    return { ok: false, error: cleanError(result.stderr) || 'Could not add the worktree.' }
-  }
-  return { ok: true, path: target, branch }
+    const result = await git(root, args, COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) {
+      return { ok: false, error: cleanError(result.stderr) || 'Could not add the worktree.' }
+    }
+    return { ok: true, path: target, branch }
+  })
 }
 
 /**
@@ -1032,49 +1239,57 @@ export async function addWorktree(
  */
 export async function revertFile(root: string, filePath: string): Promise<GitCommitResult> {
   if (!root) return { ok: false, error: 'No project is open.' }
-  const status = await readStatus(root)
-  if (!status.isRepo) return { ok: false, error: 'This folder is not a git repository.' }
-  const file = status.files.find((entry) => entry.path === filePath)
-  if (!file) return { ok: false, error: 'That file has no uncommitted changes.' }
-  if (file.untracked) {
-    return { ok: false, error: 'A new file is not reverted; delete it if you do not want it.' }
-  }
-  const head = await git(root, ['rev-parse', '--verify', 'HEAD'])
-  if (head.code !== 0) return { ok: false, error: 'The repository has no commit to go back to.' }
+  return withGitMutation(root, async () => {
+    const [statusOut, head] = await Promise.all([
+      gitLiteralPathspecs(root, ['status', '--porcelain=v1', '--untracked-files=all', '-z', '--', filePath]),
+      git(root, ['rev-parse', '--verify', 'HEAD'])
+    ])
+    if (statusOut.code !== 0) return { ok: false, error: 'This folder is not a git repository.' }
+    const file = parsePorcelain(statusOut.stdout).find((entry) => entry.path === filePath)
+    if (!file) return { ok: false, error: 'That file has no uncommitted changes.' }
+    if (file.untracked) {
+      return { ok: false, error: 'A new file is not reverted; delete it if you do not want it.' }
+    }
+    if (head.code !== 0) return { ok: false, error: 'The repository has no commit to go back to.' }
 
-  const result = await gitLiteralPathspecs(root, ['checkout', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
-  if (result.code !== 0) {
-    return { ok: false, error: cleanError(result.stderr) || 'git checkout failed.' }
-  }
-  return { ok: true }
+    const result = await gitLiteralPathspecs(root, ['checkout', 'HEAD', '--', filePath], COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) {
+      return { ok: false, error: cleanError(result.stderr) || 'git checkout failed.' }
+    }
+    return { ok: true }
+  })
 }
 
 /** Push the current branch to its upstream remote, setting `-u origin HEAD` when no upstream is configured. */
 export async function pushBranch(root: string): Promise<GitCommitResult> {
   if (!root) return { ok: false, error: 'No project is open.' }
-  const upstream = await git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
-  const args = upstream.code === 0 && upstream.stdout.trim() ? ['push'] : ['push', '-u', 'origin', 'HEAD']
-  const result = await git(root, args, COMMIT_TIMEOUT_MS)
-  if (result.code !== 0) {
-    return {
-      ok: false,
-      error: cleanError(result.stderr) || cleanError(result.stdout) || 'git push failed.'
+  return withGitMutation(root, async () => {
+    const upstream = await git(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])
+    const args = upstream.code === 0 && upstream.stdout.trim() ? ['push'] : ['push', '-u', 'origin', 'HEAD']
+    const result = await git(root, args, COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) {
+      return {
+        ok: false,
+        error: cleanError(result.stderr) || cleanError(result.stdout) || 'git push failed.'
+      }
     }
-  }
-  return { ok: true }
+    return { ok: true }
+  })
 }
 
 /** Pull the latest changes from the upstream remote. */
 export async function pullBranch(root: string): Promise<GitCommitResult> {
   if (!root) return { ok: false, error: 'No project is open.' }
-  const result = await git(root, ['pull'], COMMIT_TIMEOUT_MS)
-  if (result.code !== 0) {
-    return {
-      ok: false,
-      error: cleanError(result.stderr) || cleanError(result.stdout) || 'git pull failed.'
+  return withGitMutation(root, async () => {
+    const result = await git(root, ['pull'], COMMIT_TIMEOUT_MS)
+    if (result.code !== 0) {
+      return {
+        ok: false,
+        error: cleanError(result.stderr) || cleanError(result.stdout) || 'git pull failed.'
+      }
     }
-  }
-  return { ok: true }
+    return { ok: true }
+  })
 }
 
 /**

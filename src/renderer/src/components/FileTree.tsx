@@ -1,14 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Braces,
   ChevronRight,
-  FileCode,
-  FileImage,
-  FileTerminal,
-  FileText,
   Folder,
   FolderOpen,
-  Hash,
   List,
   Loader2,
   Search,
@@ -16,7 +10,7 @@ import {
 } from 'lucide-react'
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { FileListResult, FileSearchResult } from '@shared/types'
-import { fileTone } from '../lib/files'
+import { FileIcon } from './FileIcon'
 import {
   changeFor,
   changedFileTree,
@@ -36,27 +30,9 @@ interface FileTreeProps {
 
 type TreeMode = 'changed' | 'all'
 
-/**
- * The file's type as a real glyph, not its extension spelled out.
- *
- * The shape says what kind of thing it is at a glance — code brackets, braces,
- * a picture, a terminal prompt — and the tint separates the families that
- * share a glyph. This is how a file browser is read.
- */
+/** One icon set for every list, so a file looks the same wherever it is read. */
 function FileTypeIcon({ name }: { name: string }) {
-  const tone = fileTone(name)
-  const Icon =
-    tone === 'json' ? Braces
-      : tone === 'image' ? FileImage
-        : tone === 'markdown' || tone === 'plain' ? FileText
-          : tone === 'shell' ? FileTerminal
-            : tone === 'style' ? Hash
-              : FileCode
-  return (
-    <span className="tree__file-icon" data-tone={tone} aria-hidden="true">
-      <Icon size={14} strokeWidth={1.7} />
-    </span>
-  )
+  return <FileIcon name={name} size={15} className="tree__file-icon" />
 }
 
 const CHANGE_LABEL: Record<FileChangeKind, string> = {
@@ -113,6 +89,7 @@ function FolderMark({ kind }: { kind: FileChangeKind }) {
 
 /** Each level of the hierarchy is one step of this many pixels. */
 const INDENT = 12
+const TREE_PAGE_SIZE = 200
 
 export function FileTree({ root, onOpen }: FileTreeProps) {
   const t = useT()
@@ -127,6 +104,11 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
   const [loading, setLoading] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const [matches, setMatches] = useState<FileSearchResult | null>(null)
+  const [matchLimitState, setMatchLimitState] = useState<{ matches: FileSearchResult | null; limit: number }>({
+    matches: null,
+    limit: TREE_PAGE_SIZE
+  })
+  const matchLimit = matchLimitState.matches === matches ? matchLimitState.limit : TREE_PAGE_SIZE
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -388,7 +370,7 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
                 {!searching && !searchError && matches.entries.length === 0 && !matches.truncated ? (
                   <div className="tree__empty">{t('Nothing found')}</div>
                 ) : null}
-                {matches.entries.map((entry) => {
+                {matches.entries.slice(0, matchLimit).map((entry) => {
                   const relative = relativePath(root, entry.path)
                   const folder = relative.slice(0, Math.max(0, relative.length - entry.name.length)).replace(/[\\/]+$/, '')
                   const change = changeFor(changes, entry.path, 'file')
@@ -416,6 +398,17 @@ export function FileTree({ root, onOpen }: FileTreeProps) {
                     </button>
                   )
                 })}
+                {matches.entries.length > matchLimit ? (
+                  <button
+                    type="button"
+                    className="tree__empty"
+                    onClick={() =>
+                      setMatchLimitState({ matches, limit: matchLimit + TREE_PAGE_SIZE })
+                    }
+                  >
+                    {t('Show more')} ({matches.entries.length - matchLimit})
+                  </button>
+                ) : null}
               </div>
             ) : (
               <TreeLevel
@@ -540,7 +533,7 @@ interface TreeLevelProps {
  * shape. It still wears the type icon and the status mark, but a name keeps
  * its neutral colour here — this tab is for browsing, not for reviewing.
  */
-function TreeLevel({
+const TreeLevel = memo(function TreeLevel({
   dir,
   depth,
   changes,
@@ -552,6 +545,11 @@ function TreeLevel({
 }: TreeLevelProps) {
   const t = useT()
   const listing = children.get(dir)
+  const [limitState, setLimitState] = useState<{ listing: FileListResult | undefined; limit: number }>({
+    listing,
+    limit: TREE_PAGE_SIZE
+  })
+  const entryLimit = limitState.listing === listing ? limitState.limit : TREE_PAGE_SIZE
   if (!listing) {
     return loading.has(dir) ? (
       <div className="tree__loading" style={{ paddingLeft: depth * INDENT + 18 }}>
@@ -567,7 +565,7 @@ function TreeLevel({
     <>
       {listing.entries.length > 0 ? (
         <ul className="tree__list" role="group">
-          {listing.entries.map((entry) => {
+          {listing.entries.slice(0, entryLimit).map((entry) => {
             const isOpen = expanded.has(entry.path)
             const directory = entry.kind === 'directory'
             const change = changeFor(changes, entry.path, directory ? 'directory' : 'file')
@@ -634,6 +632,16 @@ function TreeLevel({
           })}
         </ul>
       ) : null}
+      {listing.entries.length > entryLimit ? (
+        <button
+          type="button"
+          className="tree__empty"
+          style={{ paddingLeft: depth * INDENT + 18 }}
+          onClick={() => setLimitState({ listing, limit: entryLimit + TREE_PAGE_SIZE })}
+        >
+          {t('Show more')} ({listing.entries.length - entryLimit})
+        </button>
+      ) : null}
       {listing.truncated ? (
         <div className="tree__empty" style={{ paddingLeft: depth * INDENT + 18 }}>
           {t('Folder listing may be incomplete.')}
@@ -641,4 +649,4 @@ function TreeLevel({
       ) : null}
     </>
   )
-}
+})

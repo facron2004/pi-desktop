@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { Bot, ChevronRight, Loader2, PanelRightOpen } from 'lucide-react'
 import { Popover } from './Popover'
 import { useAppStore } from '../store/useAppStore'
@@ -97,13 +97,16 @@ function TaskRow({ task, now, onOpen }: {
  * statuses and content, and a row opens that child's transcript in the right
  * side panel.
  */
-export function TitleSubagents({ onOpenTask, onOpenAll }: {
+export const TitleSubagents = memo(function TitleSubagents({ onOpenTask, onOpenAll }: {
   onOpenTask: (taskId: string) => void
   onOpenAll: () => void
 }) {
   const t = useT()
-  const items = useAppStore((state) => state.items)
-  const tasks = useMemo(() => subagentTasks(items), [items])
+  const activeToolsRevision = useAppStore((state) => state.activeToolsRevision)
+  const tasks = useMemo(
+    () => subagentTasks(useAppStore.getState().items),
+    [activeToolsRevision]
+  )
   const summary = useMemo(() => summarizeSubagents(tasks), [tasks])
   const [now, setNow] = useState(Date.now)
   // A running child's duration has to keep moving while the popover is open.
@@ -182,4 +185,4 @@ export function TitleSubagents({ onOpenTask, onOpenAll }: {
       )}
     </Popover>
   )
-}
+})

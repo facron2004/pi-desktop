@@ -1,4 +1,5 @@
-import { memo, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ArrowUpRight, ChevronDown, FileDiff, Undo2 } from 'lucide-react'
 import type { FileChange } from '../lib/changes'
 import { useAppStore } from '../store/useAppStore'
@@ -50,6 +51,24 @@ export const FileChangeSummary = memo(function FileChangeSummary({
       setUndoing(false)
     }
   }
+
+  // The preview is fixed to the viewport, so its anchor stops matching the row
+  // the moment the conversation scrolls. Dismiss it rather than leave a card
+  // floating over unrelated text. Scrolling inside the preview keeps it open.
+  useEffect(() => {
+    if (!hovered) return
+    const dismiss = (event: Event) => {
+      const target = event.target
+      if (target instanceof Node && previewRef.current?.contains(target)) return
+      setHovered(null)
+    }
+    window.addEventListener('scroll', dismiss, { capture: true, passive: true })
+    window.addEventListener('resize', dismiss)
+    return () => {
+      window.removeEventListener('scroll', dismiss, { capture: true })
+      window.removeEventListener('resize', dismiss)
+    }
+  }, [hovered])
 
   return (
     <div
@@ -117,22 +136,29 @@ export const FileChangeSummary = memo(function FileChangeSummary({
           <ChevronDown size={13} className="file-changes__more-caret" data-open={expanded} />
         </button>
       ) : null}
-      {hovered && anchor ? (
-        <div
-          ref={previewRef}
-          className="file-change__preview"
-          role="tooltip"
-          style={{
-            left: anchor.left,
-            bottom: anchor.bottom,
-            width: anchor.width,
-            maxHeight: anchor.maxHeight
-          }}
-          onMouseLeave={() => setHovered(null)}
-        >
-          <FileChangePreview key={hovered.path} change={hovered} />
-        </div>
-      ) : null}
+      {hovered && anchor
+        ? createPortal(
+            <div
+              ref={previewRef}
+              className="file-change__preview"
+              role="tooltip"
+              style={{
+                left: anchor.left,
+                bottom: anchor.bottom,
+                width: anchor.width,
+                maxHeight: anchor.maxHeight
+              }}
+              onMouseLeave={() => setHovered(null)}
+            >
+              <FileChangePreview key={hovered.path} change={hovered} />
+            </div>,
+            // A turn carries `content-visibility: auto`, which makes it the
+            // containing block for fixed descendants: inside the turn the
+            // preview's viewport coordinates land beside its own box. A portal
+            // puts the card back on the viewport.
+            document.body
+          )
+        : null}
       {confirmUndo ? (
         <ConfirmDialog
           title={t('Undo these changes')}

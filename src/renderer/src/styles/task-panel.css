@@ -385,10 +385,18 @@
 
 /* ---- deliverables ---------------------------------------------------- */
 
+/* A long run can touch dozens of files. Cap the list so one section cannot
+   push the environment, tasks and progress out of view, and scroll the files
+   inside it instead — the rail itself already scrolls as a last resort. */
 .task-panel__tree {
   margin: 0;
   padding: 0;
   list-style: none;
+  max-height: min(240px, 40vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 .task-panel__file {

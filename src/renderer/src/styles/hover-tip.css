@@ -10,9 +10,7 @@
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
-  background: var(--surface-glass);
-  backdrop-filter: var(--blur-glass);
-  -webkit-backdrop-filter: var(--blur-glass);
+  background: var(--surface-overlay);
   box-shadow: var(--shadow-lg);
   color: var(--text-primary);
   font-size: var(--text-assist);

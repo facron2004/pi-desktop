@@ -12,6 +12,7 @@ export interface SessionTimingRecord {
 
 const STORAGE_PREFIX = 'pi-desktop:session-timing:v1:'
 const MODEL_TIMING_VERSION = 10
+const SOFT_JOURNAL_COMPACT_SAMPLES = 64
 const MAX_JOURNAL_SAMPLES = 128
 const SAMPLE_MARKER = ':sample:'
 const JOURNAL_MARKER = ':journal:'
@@ -24,30 +25,86 @@ const TIMING_FIELDS = [
 ] as const satisfies readonly (keyof SessionTimingRecord)[]
 type TimingField = typeof TIMING_FIELDS[number]
 
+interface MemoryTimingEntry {
+  record: SessionTimingRecord
+  version: number
+  journalCount: number
+}
+
 /**
- * Parsed records, kept in memory for the conversations the reader moves
- * between.
+ * Parsed records, kept in memory per Storage host for the conversations the
+ * reader moves between.
  *
  * The usage line reads this record while the transcript streams, so a
  * `localStorage.getItem` and `JSON.parse` on every animation frame would be
- * repeated work for a value that only changes when a sample is recorded. The
- * bound keeps a long-lived window from holding every conversation at once.
+ * repeated work for a value that only changes when a sample is recorded.
  */
 const MEMORY_LIMIT = 40
-const memoryRecords = new Map<string, SessionTimingRecord>()
-const memoryVersions = new Map<string, number>()
+const memoryByStorage = new WeakMap<Storage, Map<string, MemoryTimingEntry>>()
 const userTimingIndexes = new WeakMap<Record<string, number>, Map<string, number | null>>()
+const fieldRevisions = new WeakMap<Record<string, number>, number>()
+const idleCompactions = new WeakMap<Storage, Map<string, number>>()
 
-function rememberRecord(sessionKey: string, record: SessionTimingRecord, version: number): void {
-  if (memoryRecords.size >= MEMORY_LIMIT && !memoryRecords.has(sessionKey)) {
-    const oldest = memoryRecords.keys().next().value
-    if (oldest !== undefined) {
-      memoryRecords.delete(oldest)
-      memoryVersions.delete(oldest)
-    }
+/** Monotonic revision of one timing map so caches detect in-place sample inserts. */
+export function timingFieldRevision(durations: Record<string, number> | undefined): number {
+  return durations ? (fieldRevisions.get(durations) ?? 0) : 0
+}
+
+function bumpFieldRevision(durations: Record<string, number>): void {
+  fieldRevisions.set(durations, (fieldRevisions.get(durations) ?? 0) + 1)
+}
+
+function entriesForStorage(store: Storage): Map<string, MemoryTimingEntry> {
+  let map = memoryByStorage.get(store)
+  if (!map) {
+    map = new Map()
+    memoryByStorage.set(store, map)
   }
-  memoryRecords.set(sessionKey, record)
-  memoryVersions.set(sessionKey, version)
+  return map
+}
+
+function cancelIdleCompaction(store: Storage, key: string): void {
+  const handles = idleCompactions.get(store)
+  const handle = handles?.get(key)
+  if (handle === undefined) return
+  handles?.delete(key)
+  if (typeof cancelIdleCallback === 'function') cancelIdleCallback(handle)
+}
+
+function scheduleIdleCompaction(
+  store: Storage,
+  sessionKey: string,
+  key: string,
+  entry: MemoryTimingEntry
+): void {
+  if (typeof requestIdleCallback !== 'function') return
+  let handles = idleCompactions.get(store)
+  if (handles?.has(key)) return
+  if (!handles) {
+    handles = new Map()
+    idleCompactions.set(store, handles)
+  }
+  const handle = requestIdleCallback(() => {
+    idleCompactions.get(store)?.delete(key)
+    const current = entriesForStorage(store).get(sessionKey)
+    if (!current || current !== entry || current.journalCount === 0) return
+    try {
+      compactJournal(store, key, current.record, current.journalCount)
+      current.journalCount = 0
+    } catch {
+      // Compaction is best effort; recording remains crash-safe in the journal.
+    }
+  })
+  handles.set(key, handle)
+}
+
+function rememberEntry(store: Storage, sessionKey: string, entry: MemoryTimingEntry): void {
+  const entries = entriesForStorage(store)
+  if (entries.size >= MEMORY_LIMIT && !entries.has(sessionKey)) {
+    const oldest = entries.keys().next().value
+    if (oldest !== undefined) entries.delete(oldest)
+  }
+  entries.set(sessionKey, entry)
 }
 
 /** Use an elapsed-time clock for durations; wall-clock changes must not affect them. */
@@ -125,7 +182,7 @@ function applySample(record: SessionTimingRecord, value: string | null): void {
   if (record[timingField][id] === undefined) record[timingField][id] = duration
 }
 
-function readJournalSamples(store: Storage, key: string, record: SessionTimingRecord): void {
+function readJournalSamples(store: Storage, key: string, record: SessionTimingRecord): number {
   const rawCount = store.getItem(journalCountKey(key))
   const count = rawCount === null ? 0 : Number(rawCount)
   let index = 0
@@ -142,6 +199,7 @@ function readJournalSamples(store: Storage, key: string, record: SessionTimingRe
     applySample(record, value)
     index += 1
   }
+  return index
 }
 
 function readLegacySamples(store: Storage, key: string, record: SessionTimingRecord): void {
@@ -219,7 +277,11 @@ function writeRecord(store: Storage, key: string, record: SessionTimingRecord): 
   store.setItem(key, JSON.stringify({ ...record, modelTimingVersion: MODEL_TIMING_VERSION }))
 }
 
-function readStoredRecord(store: Storage, key: string, raw: string | null): SessionTimingRecord {
+function readStoredRecord(
+  store: Storage,
+  key: string,
+  raw: string | null
+): { record: SessionTimingRecord; journalCount: number } {
   let record: SessionTimingRecord
   try {
     record = recordOf(raw ? JSON.parse(raw) : undefined)
@@ -227,38 +289,47 @@ function readStoredRecord(store: Storage, key: string, raw: string | null): Sess
     record = recordOf(undefined)
   }
 
-  if (!raw) return record
+  let journalCount = 0
+  if (!raw) return { record, journalCount }
   try {
     const version = storedVersion(raw)
     // v9 already wrote the indexed journal, so its samples have to be folded
     // into the snapshot before they can be discarded with the upgrade.
-    if (version >= 9) readJournalSamples(store, key, record)
+    if (version >= 9) journalCount = readJournalSamples(store, key, record)
     else if (version >= 8) readLegacySamples(store, key, record)
     if (version < MODEL_TIMING_VERSION) record.ttftDurationsMs = {}
   } catch {
     // A readable snapshot remains useful if the browser cannot enumerate keys.
   }
-  return record
+  return { record, journalCount }
 }
 
-export function readSessionTiming(sessionKey: string | undefined): SessionTimingRecord {
-  if (!sessionKey) return recordOf(undefined)
-  const cached = memoryRecords.get(sessionKey)
+function readTimingEntry(store: Storage, sessionKey: string): MemoryTimingEntry {
+  const cached = entriesForStorage(store).get(sessionKey)
   if (cached) return cached
-  const store = storage()
-  if (!store) return recordOf(undefined)
   let record: SessionTimingRecord
   let version = 1
+  let journalCount = 0
   try {
     const key = storageKey(sessionKey)
     const raw = store.getItem(key)
     version = storedVersion(raw)
-    record = readStoredRecord(store, key, raw)
+    const loaded = readStoredRecord(store, key, raw)
+    record = loaded.record
+    journalCount = loaded.journalCount
   } catch {
     record = recordOf(undefined)
   }
-  rememberRecord(sessionKey, record, version)
-  return record
+  const entry: MemoryTimingEntry = { record, version, journalCount }
+  rememberEntry(store, sessionKey, entry)
+  return entry
+}
+
+export function readSessionTiming(sessionKey: string | undefined): SessionTimingRecord {
+  if (!sessionKey) return recordOf(undefined)
+  const store = storage()
+  if (!store) return recordOf(undefined)
+  return readTimingEntry(store, sessionKey).record
 }
 
 function recordDuration(
@@ -270,36 +341,39 @@ function recordDuration(
   if (!sessionKey || !id || !Number.isFinite(durationMs) || durationMs < 0) return
   const store = storage()
   if (!store) return
-  const record = readSessionTiming(sessionKey)
+  const entry = readTimingEntry(store, sessionKey)
+  const record = entry.record
   if (record[field][id] !== undefined) return
   record[field][id] = durationMs
+  bumpFieldRevision(record[field])
   if (field === 'runDurationsMs' || field === 'generationWindowMs') {
     userTimingIndexes.delete(record[field])
   }
   try {
     const key = storageKey(sessionKey)
-    const version = memoryVersions.get(sessionKey) ?? storedVersion(store.getItem(key))
-    if (version < MODEL_TIMING_VERSION) {
+    if (entry.version < MODEL_TIMING_VERSION) {
       // Fold legacy samples into the snapshot once. Later samples use the
       // indexed journal so recording a duration does not rewrite history.
       // The v9 journal is folded too, then removed: its TTFT entries are the
       // run-level readings version 10 replaces.
+      cancelIdleCompaction(store, key)
       writeRecord(store, key, record)
-      if (version >= 8) removeSampleRecords(store, key)
-      memoryVersions.set(sessionKey, MODEL_TIMING_VERSION)
+      if (entry.version >= 8) removeSampleRecords(store, key)
+      entry.version = MODEL_TIMING_VERSION
+      entry.journalCount = 0
     } else {
-      const countKey = journalCountKey(key)
-      const rawCount = store.getItem(countKey)
-      const parsedCount = rawCount === null ? 0 : Number(rawCount)
-      const maxPossibleCount = Math.max(0, store.length - (rawCount === null ? 1 : 2))
-      let index = Number.isSafeInteger(parsedCount) && parsedCount >= 0 && parsedCount <= maxPossibleCount
-        ? parsedCount
-        : 0
-      while (index < store.length && store.getItem(journalSampleKey(key, index)) !== null) index += 1
+      const index = entry.journalCount
       store.setItem(journalSampleKey(key, index), JSON.stringify({ field, id, duration: durationMs }))
       const nextCount = index + 1
-      store.setItem(countKey, String(nextCount))
-      if (nextCount >= MAX_JOURNAL_SAMPLES) compactJournal(store, key, record, nextCount)
+      entry.journalCount = nextCount
+      store.setItem(journalCountKey(key), String(nextCount))
+      if (nextCount >= MAX_JOURNAL_SAMPLES) {
+        cancelIdleCompaction(store, key)
+        compactJournal(store, key, record, nextCount)
+        entry.journalCount = 0
+      } else if (nextCount >= SOFT_JOURNAL_COMPACT_SAMPLES) {
+        scheduleIdleCompaction(store, sessionKey, key, entry)
+      }
     }
   } catch {
     // A timing sample must never interrupt a conversation if storage is full.
@@ -419,16 +493,16 @@ function userTimingIndex(durations: Record<string, number>): Map<string, number 
 /** Drop the samples of a conversation the user deleted. */
 export function forgetSessionTiming(sessionKey: string | undefined): void {
   if (!sessionKey) return
-  memoryRecords.delete(sessionKey)
-  memoryVersions.delete(sessionKey)
+  const store = storage()
   let key: string
   try {
     key = storageKey(sessionKey)
   } catch {
     return
   }
-  const store = storage()
   if (!store) return
+  entriesForStorage(store).delete(sessionKey)
+  cancelIdleCompaction(store, key)
   try {
     store.removeItem(key)
     removeSampleRecords(store, key)
@@ -452,22 +526,25 @@ export function migrateSessionTiming(from: string, to: string): void {
   if (!from || !to || from === to) return
   const store = storage()
   if (!store) return
+  const entries = entriesForStorage(store)
   try {
     const sourceKey = storageKey(from)
     // Brand-new drafts rarely record timing samples before promotion; avoid a
     // full `localStorage.key()` enumeration when there is nothing to move.
-    const cachedSource = memoryRecords.get(from)
+    const cachedSource = entries.get(from)?.record
     if (
       !hasTimingSamples(cachedSource) &&
       store.getItem(sourceKey) === null &&
       store.getItem(journalCountKey(sourceKey)) === null &&
       store.getItem(journalSampleKey(sourceKey, 0)) === null
     ) {
-      memoryRecords.delete(from)
-      memoryVersions.delete(from)
+      entries.delete(from)
+      cancelIdleCompaction(store, sourceKey)
       return
     }
     const targetKey = storageKey(to)
+    cancelIdleCompaction(store, sourceKey)
+    cancelIdleCompaction(store, targetKey)
     const source = readSessionTiming(from)
     const target = readSessionTiming(to)
     const merged: SessionTimingRecord = {
@@ -480,15 +557,13 @@ export function migrateSessionTiming(from: string, to: string): void {
     if (hasTimingSamples(merged)) {
       writeRecord(store, targetKey, merged)
       removeSampleRecords(store, targetKey)
-      rememberRecord(to, merged, MODEL_TIMING_VERSION)
+      rememberEntry(store, to, { record: merged, version: MODEL_TIMING_VERSION, journalCount: 0 })
     } else {
-      memoryRecords.delete(to)
-      memoryVersions.delete(to)
+      entries.delete(to)
     }
     store.removeItem(sourceKey)
     removeSampleRecords(store, sourceKey)
-    memoryRecords.delete(from)
-    memoryVersions.delete(from)
+    entries.delete(from)
   } catch {
     // Migration is best effort; it does not affect the Pi session itself.
   }

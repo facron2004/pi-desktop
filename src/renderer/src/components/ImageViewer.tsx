@@ -21,7 +21,12 @@ interface ProjectImage {
   size?: number
 }
 
-export function ImageViewer() {
+export function ImageViewer({
+  request
+}: {
+  /** A picture picked elsewhere (e.g. a deliverable link) to show first. */
+  request?: { path: string; seq: number } | null
+} = {}) {
   const t = useT()
   const workspace = useAppStore((state) => state.workspace)
   const [images, setImages] = useState<ProjectImage[] | undefined>(undefined)
@@ -71,6 +76,13 @@ export function ImageViewer() {
       cancelled = true
     }
   }, [workspace?.path])
+
+  // A deliverable link asks for one picture by path. This runs after the scan
+  // effect above has cleared `active`, so the requested picture survives the
+  // list load instead of being replaced by the first scanned one.
+  useEffect(() => {
+    if (request?.path) setActive(request.path)
+  }, [request?.seq, request?.path])
 
   const visible = useMemo(() => (images ?? []).slice(0, limit), [images, limit])
   const activeSource = source?.path === active ? source.data : null

@@ -36,4 +36,6 @@ test('a rejected old highlighter request cannot evict a newer request for the sa
   cache.set('same', 4, newValue)
   cache.deleteIfValue('same', oldValue)
   assert.equal(cache.get('same'), newValue)
+  cache.deleteIfValue('same', newValue)
+  assert.equal(cache.size, 0)
 })

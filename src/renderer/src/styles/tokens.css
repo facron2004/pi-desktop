@@ -210,14 +210,25 @@
   --text-2xl: var(--text-hero);
 
   /* The platform's colour emoji comes from FontFace (`Pi Desktop Emoji`,
-     registered in App) because this Windows image has the font file but no
-     usable registry entry for it. The rest of the stack keeps the UI type. */
+   registered in App) because this Windows image has the font file but no
+   usable registry entry for it. The rest of the stack keeps the UI type. */
   --font-emoji: 'Pi Desktop Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Emoji';
+  /* A CJK-only local face. Its unicode-range covers every CJK block, so it
+     claims all Chinese glyphs wherever it sits in a stack. That makes its
+     position a decision, not a detail:
+       - never in front of the user's chosen font, or the Appearance picker
+         changes Latin only and leaves every Chinese character behind;
+       - required in the code stack, because Windows links the generic
+         `monospace` family to NSimSun (a serif);
+       - not needed in the UI stack, where the generic `sans-serif` family
+         already links Chinese to a sans face (Noto Sans SC on this image).
+     `src/renderer/src/lib/ui-font.ts` builds the chosen-font stacks and
+     records the measured evidence. */
   --font-cjk: 'Pi Desktop CJK';
-  --font-ui: var(--font-cjk), -apple-system, BlinkMacSystemFont, 'Segoe UI', var(--font-emoji), sans-serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', var(--font-emoji), sans-serif;
   --font-reading: var(--font-ui);
-  --font-mono: var(--font-cjk), 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Consolas,
-    'Liberation Mono', var(--font-emoji), monospace;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', var(--font-cjk), var(--font-emoji), monospace;
   --font-sidebar: var(--font-ui);
   --font-weight-ui: 430;
   --text-code: var(--text-code-block);
@@ -399,6 +410,9 @@
   --yellow-soft: var(--status-warning-soft);
   --violet: #a78bfa;
   --violet-soft: rgba(167, 139, 250, 0.14);
+  --command-prompt: #38bdf8;
+  --command-prompt-soft: rgba(56, 189, 248, 0.14);
+  --image-mode: #4c9aff;
 
   --radius-sm: var(--r-sm);
   --radius: var(--r-md);
@@ -532,6 +546,9 @@
 
   --violet: #7c3aed;
   --violet-soft: rgba(124, 58, 237, 0.1);
+  --command-prompt: #0284c7;
+  --command-prompt-soft: rgba(2, 132, 199, 0.1);
+  --image-mode: #1677ff;
 
   --sidebar-hover: var(--bg-hover);
   --sidebar-active: var(--bg-active);

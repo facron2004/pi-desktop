@@ -543,3 +543,35 @@ test('model selection merges new providers without losing Pi order, metadata or 
   assert.deepEqual(selectableModels([], catalog, ['added/disabled']), catalog)
   assert.deepEqual(selectableModels(native, [], []), native, 'Pi-managed providers need no desktop catalog')
 })
+
+test('ProviderStore.list reads desktop sidecars, auth credentials, and command keys accurately across many providers', t => {
+  const root = directory(t)
+  writeFileSync(path.join(root, 'models.json'), JSON.stringify({
+    providers: {
+      alpha: { name: 'Alpha', api: 'openai-completions', baseUrl: 'https://a.example/v1', apiKey: 'key-a', models: [{ id: 'a1' }, { id: 'a2' }] },
+      beta: { name: 'Beta', api: 'anthropic-messages', baseUrl: 'https://b.example/v1', apiKey: '!secret-cmd', models: [{ id: 'b1' }] },
+      gamma: { name: 'Gamma', api: 'openai-responses', baseUrl: 'https://g.example/v1', models: [{ id: 'g1' }] },
+      oauthp: { name: 'OAuthP', api: 'openai-completions', baseUrl: 'https://o.example/v1', models: [{ id: 'o1' }] }
+    }
+  }))
+  writeFileSync(path.join(root, 'auth.json'), JSON.stringify({
+    gamma: { type: 'api_key', key: 'auth-key-g' },
+    oauthp: { type: 'oauth', access: 'tok' }
+  }))
+  writeFileSync(path.join(root, 'models.desktop.json'), JSON.stringify({
+    providers: {
+      alpha: { models: [{ id: 'a1', enabled: false }, { id: 'a2', enabled: true, tools: true }] }
+    }
+  }))
+
+  const listed = new ProviderStore(root).list()
+  const byId = new Map(listed.map(p => [p.id, p]))
+  assert.equal(byId.get('alpha')?.apiKey, 'key-a')
+  assert.equal(byId.get('alpha')?.models.find(m => m.id === 'a1')?.enabled, false)
+  assert.equal(byId.get('alpha')?.models.find(m => m.id === 'a2')?.tools, true)
+  assert.equal(byId.get('beta')?.hasApiKey, true)
+  assert.equal(byId.get('beta')?.apiKey, undefined, 'credential command keys must never be leaked')
+  assert.equal(byId.get('gamma')?.apiKey, 'auth-key-g')
+  assert.equal(byId.get('oauthp')?.external, true)
+  assert.equal(byId.get('oauthp')?.apiKey, undefined)
+})

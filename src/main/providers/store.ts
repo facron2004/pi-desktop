@@ -202,10 +202,16 @@ export class ProviderStore {
   list(): ProviderProfile[] {
     return this.withLock(() => this.withAuthLock(() => {
       const providers = providerMap(readObject(this.file))
-      return Object.entries(providers).map(([id, value]) => {
-        const profile = this.profile(id, record(value))
+      const entries = Object.entries(providers)
+      if (entries.length === 0) return []
+      const desktopDocument = this.desktopDocument()
+      const authDocument = readObject(this.authFile)
+      return entries.map(([id, value]) => {
+        const raw = record(value)
+        const auth = Object.hasOwn(authDocument, id) ? record(authDocument[id]) : {}
+        const profile = this.profileFrom(id, raw, desktopDocument, auth)
         if (profile.external) return profile
-        const apiKey = this.savedKey(id)
+        const apiKey = this.savedKeyFrom(id, raw, auth)
         return apiKey ? { ...profile, apiKey } : profile
       })
     }))
@@ -217,8 +223,11 @@ export class ProviderStore {
     catch { return undefined }
   }
 
-  private withDisabled(id: string, disk: ProviderModel[]): ProviderModel[] {
-    const document = this.desktopDocument()
+  private withDisabled(
+    id: string,
+    disk: ProviderModel[],
+    document: Record<string, unknown> | undefined = this.desktopDocument()
+  ): ProviderModel[] {
     if (!document) return disk
     const providers = record(document.providers)
     if (!Object.hasOwn(providers, id)) return disk
@@ -259,10 +268,18 @@ export class ProviderStore {
   }
 
   private profile(id: string, raw: Record<string, unknown>): ProviderProfile {
+    return this.profileFrom(id, raw, this.desktopDocument(), this.credential(id))
+  }
+
+  private profileFrom(
+    id: string,
+    raw: Record<string, unknown>,
+    desktopDocument: Record<string, unknown> | undefined,
+    auth: Record<string, unknown>
+  ): ProviderProfile {
     const disk = (Array.isArray(raw.models) ? raw.models : []).map(model => parseModel(model, 'saved')).filter((model): model is ProviderModel => model !== null)
       .map(model => ({ ...model, enabled: true }))
-    const models = this.withDisabled(id, disk)
-    const auth = this.credential(id)
+    const models = this.withDisabled(id, disk, desktopDocument)
     const api = typeof raw.api === 'string' ? raw.api : typeof record((raw.models as unknown[] | undefined)?.[0]).api === 'string' ? String(record((raw.models as unknown[])[0]).api) : 'openai-completions'
     return {
       id, name: typeof raw.name === 'string' ? raw.name : id,
@@ -282,6 +299,17 @@ export class ProviderStore {
       if (!key) throw new Error('Enter an API key. Pi sign-in and credential commands remain managed by Pi.')
       return key
     }))
+  }
+
+  private savedKeyFrom(
+    id: string,
+    configured: Record<string, unknown>,
+    auth: Record<string, unknown>
+  ): string {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(id) || ['constructor', 'prototype'].includes(id)) return ''
+    if (auth.type && auth.type !== 'api_key') return ''
+    const key = auth.type === 'api_key' && typeof auth.key === 'string' ? auth.key : resolveKey(configured.apiKey)
+    return key?.trim() ?? ''
   }
 
   /** The key the editor shows. A `!` credential command is left for Pi to run; this UI does not. */

@@ -1,6 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { splitStreamingMarkdown } from '../src/renderer/src/lib/streaming-markdown'
+import {
+  appendStreamingMarkdown,
+  splitStreamingMarkdown,
+  type StreamingMarkdownSplit
+} from '../src/renderer/src/lib/streaming-markdown'
 
 /** A paragraph long enough that several of them cross MIN_SPLIT_CHARS. */
 function paragraph(tag: string): string {
@@ -82,4 +86,29 @@ test('streaming markdown short documents are left to the normal path', () => {
   const split = splitStreamingMarkdown(text)
   assert.deepEqual(split.blocks, [])
   assert.equal(split.tail, text)
+})
+
+test('appendStreamingMarkdown matches whole-document splits across fences, lists, and late ref defs', () => {
+  const doc = [
+    paragraph('Intro'),
+    `\`\`\`ts\n${'const n = 42\n'.repeat(120)}\`\`\`\n\n`,
+    `${'- item\n\n'.repeat(4)}`,
+    paragraph('Outro')
+  ].join('')
+
+  let incremental: StreamingMarkdownSplit = { blocks: [], tail: '' }
+  for (let offset = 0; offset < doc.length; offset += 73) {
+    incremental = appendStreamingMarkdown(incremental, doc.slice(offset, offset + 73))
+  }
+  assert.equal(joined(incremental), doc)
+  assert.ok(incremental.blocks.length > 0)
+  for (const block of incremental.blocks) {
+    const fences = block.match(/^ {0,3}(?:```|~~~)/gm)?.length ?? 0
+    assert.equal(fences % 2, 0)
+  }
+
+  // Appending a reference definition collapses committed blocks back to tail.
+  const collapsed = appendStreamingMarkdown(incremental, '\n[ref]: https://example.com\n')
+  assert.deepEqual(collapsed.blocks, [])
+  assert.equal(collapsed.tail, `${doc}\n[ref]: https://example.com\n`)
 })

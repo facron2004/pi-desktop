@@ -79,6 +79,7 @@ function eventElement(node: EventTarget | null): Element | null {
 function iconOnlyControl(target: Element): HTMLElement | null {
   const button = target.closest<HTMLElement>('button[aria-label]')
   if (!button) return null
+  if (!button.textContent?.trim()) return button
   return button.innerText.trim() ? null : button
 }
 
@@ -88,9 +89,9 @@ function findTipHost(node: EventTarget | null): HTMLElement | null {
   const el =
     target.closest<HTMLElement>(`[title], [${NATIVE_TITLE_STASH}]`) ?? iconOnlyControl(target)
   if (!(el instanceof HTMLElement)) return null
-  // A control that opts out keeps its aria-label but draws no bubble: the
-  // message copy/edit row is already explained by its icons, and a card there
-  // would cover the message it belongs to.
+  // A control can opt out of the bubble while keeping its aria-label. It is
+  // reserved for controls that draw their own explanation, or where a bubble
+  // would cover content the reader is actively working with.
   if (el.closest('[data-pi-tip-ignore]')) return null
   if (el.closest('.hover-tip, .sidebar-tip')) return null
   if (el instanceof HTMLOptionElement || el instanceof HTMLOptGroupElement) return null
@@ -104,6 +105,7 @@ function overflows(el: HTMLElement): boolean {
 }
 
 function labelState(host: HTMLElement): { text: string; truncated: boolean } {
+  if (!host.textContent?.trim()) return { text: '', truncated: false }
   if (host.childElementCount > 40) return { text: '', truncated: true }
   let truncated = overflows(host)
   if (!truncated) {
@@ -301,7 +303,7 @@ export function HoverTip() {
           state.dismissed = null
           state.dismissedText = ''
           clearTimer()
-          if (text && !skipVisual(host, text)) {
+          if (text) {
             state.openTimer = window.setTimeout(show, OPEN_DELAY)
           }
           return

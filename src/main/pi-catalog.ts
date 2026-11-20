@@ -1,3 +1,5 @@
+import { promises as fs, readFileSync } from 'node:fs'
+import path from 'node:path'
 import type {
   MarketplaceEntry,
   MarketplaceKind,
@@ -15,13 +17,18 @@ import type {
  * reads the attributes first and only falls back to the visible text — so a
  * small markup change loses a field rather than the whole catalog.
  *
- * Pages are cached for five minutes in memory. Search and type filters are sent
- * to the server: the catalog has thousands of packages, and filtering only the
- * first page locally would hide most of them.
+ * The server takes seconds to answer a cold page, and search and type filters
+ * must be sent to it: the catalog has thousands of packages, and filtering only
+ * the first page locally would hide most of them. So a page is cached twice —
+ * in memory and on disk — and a cached page older than the five-minute TTL is
+ * still painted immediately while a fresh copy is fetched in the background.
  */
 const PI_CATALOG_URL = 'https://pi.dev/packages'
 const PAGE_SIZE = 50
 const CACHE_TTL_MS = 5 * 60 * 1000
+/** How long a page may be painted from disk after it stops being fresh. */
+const MAX_STALE_MS = 24 * 60 * 60 * 1000
+const MAX_CACHE_ENTRIES = 24
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const REQUEST_TIMEOUT_MS = 15_000
 const USER_AGENT = 'pi-desktop-marketplace/1.0'
@@ -32,6 +39,16 @@ interface CacheEntry {
 }
 
 const pageCache = new Map<string, CacheEntry>()
+const inFlight = new Map<string, Promise<PiCatalogPage>>()
+let cacheFile: string | null = null
+let diskLoaded = false
+let writeChain: Promise<void> = Promise.resolve()
+
+/** Point the disk cache at the app's own data folder; null turns it off. */
+export function configurePiCatalogCache(file: string | null): void {
+  cacheFile = file
+  diskLoaded = false
+}
 
 const ENTITIES: Record<string, string> = {
   amp: '&',
@@ -209,37 +226,127 @@ async function downloadPage(url: string): Promise<string> {
 /**
  * One page of the official catalog, with search, type and sort applied.
  *
- * Network failures fall back to a cached page when one exists: a marketplace
- * that shows the last response is more useful than an empty error screen.
+ * A page younger than the TTL is returned as is. An older page is still
+ * returned — instantly — while a fresh copy is fetched for the next reader; a
+ * manual refresh (`force`) waits for the network instead. Network failures fall
+ * back to the cached page when one exists: a marketplace that shows the last
+ * response is more useful than an empty error screen.
  */
 export async function fetchPiCatalog(query: PiCatalogQuery = {}): Promise<PiCatalogPage> {
+  loadDiskCache()
   const page = Math.max(1, Math.floor(query.page ?? 1))
-  const key = JSON.stringify({
+  const key = cacheKey(query, page)
+  const cached = pageCache.get(key)
+  if (!query.force) {
+    if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.page
+    if (cached) {
+      // Yesterday's catalog opens at once; the fresh copy lands in the cache
+      // for the next open instead of making this one wait.
+      void sharedFetch(key, query, page).catch(() => {})
+      return cached.page
+    }
+  }
+  try {
+    return await sharedFetch(key, query, page)
+  } catch (error) {
+    if (cached) return cached.page
+    throw error
+  }
+}
+
+function cacheKey(query: PiCatalogQuery, page: number): string {
+  return JSON.stringify({
     query: query.query?.trim() ?? '',
     kind: query.kind ?? 'plugin',
     sort: query.sort ?? 'downloads',
     page
   })
-  const cached = pageCache.get(key)
-  if (!query.force && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.page
+}
 
-  try {
-    const html = await downloadPage(pageUrl({ ...query, page }))
-    const parsed = parsePiCatalogHtml(html)
-    const entries =
-      query.kind === 'plugin'
-        ? parsed.entries.filter((entry) => isPluginType(entry.packageType ?? ''))
-        : parsed.entries
-    const result: PiCatalogPage = {
-      entries,
-      total: parsed.total,
-      page,
-      pageSize: PAGE_SIZE
-    }
-    pageCache.set(key, { at: Date.now(), page: result })
-    return result
-  } catch (error) {
-    if (cached) return cached.page
-    throw error
+/** One request per page even when a prefetch and a click ask at once. */
+function sharedFetch(key: string, query: PiCatalogQuery, page: number): Promise<PiCatalogPage> {
+  const running = inFlight.get(key)
+  if (running) return running
+  const request = loadPageFromNetwork(key, query, page)
+  inFlight.set(key, request)
+  const settle = () => {
+    if (inFlight.get(key) === request) inFlight.delete(key)
   }
+  void request.then(settle, settle)
+  return request
+}
+
+async function loadPageFromNetwork(
+  key: string,
+  query: PiCatalogQuery,
+  page: number
+): Promise<PiCatalogPage> {
+  const html = await downloadPage(pageUrl({ ...query, page }))
+  const parsed = parsePiCatalogHtml(html)
+  const entries =
+    query.kind === 'plugin'
+      ? parsed.entries.filter((entry) => isPluginType(entry.packageType ?? ''))
+      : parsed.entries
+  const result: PiCatalogPage = {
+    entries,
+    total: parsed.total,
+    page,
+    pageSize: PAGE_SIZE
+  }
+  pageCache.set(key, { at: Date.now(), page: result })
+  trimCache()
+  persistCache()
+  return result
+}
+
+function trimCache(): void {
+  if (pageCache.size <= MAX_CACHE_ENTRIES) return
+  const oldest = [...pageCache.entries()].sort((a, b) => a[1].at - b[1].at)
+  for (const [key] of oldest.slice(0, pageCache.size - MAX_CACHE_ENTRIES)) pageCache.delete(key)
+}
+
+/**
+ * Read the last session's pages once, before the first request. The file is
+ * only a warm start: an unreadable or oversized cache is ignored and the next
+ * network page rewrites it.
+ */
+function loadDiskCache(): void {
+  if (diskLoaded) return
+  diskLoaded = true
+  if (!cacheFile) return
+  try {
+    const parsed = JSON.parse(readFileSync(cacheFile, 'utf8')) as {
+      entries?: Array<{ key?: unknown; at?: unknown; page?: PiCatalogPage }>
+    }
+    if (!Array.isArray(parsed.entries)) return
+    const now = Date.now()
+    for (const entry of parsed.entries) {
+      if (!entry || typeof entry.key !== 'string' || typeof entry.at !== 'number') continue
+      if (!entry.page || !Array.isArray(entry.page.entries)) continue
+      if (now - entry.at > MAX_STALE_MS) continue
+      pageCache.set(entry.key, { at: entry.at, page: entry.page })
+    }
+    trimCache()
+  } catch {
+    // No cache yet, or it was written by a different version: start cold.
+  }
+}
+
+/** Write the cache in the background; the response never waits on the disk. */
+function persistCache(): void {
+  if (!cacheFile) return
+  const file = cacheFile
+  const entries = [...pageCache.entries()]
+    .sort((a, b) => b[1].at - a[1].at)
+    .slice(0, MAX_CACHE_ENTRIES)
+    .map(([key, entry]) => ({ key, at: entry.at, page: entry.page }))
+  const payload = JSON.stringify({ version: 1, entries })
+  writeChain = writeChain
+    .then(async () => {
+      await fs.mkdir(path.dirname(file), { recursive: true })
+      const temp = `${file}.tmp`
+      await fs.writeFile(temp, payload, 'utf8')
+      await fs.rename(temp, file)
+    })
+    .catch(() => {})
 }

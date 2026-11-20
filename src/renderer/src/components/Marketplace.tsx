@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -238,7 +238,7 @@ function MarketplaceSkeleton() {
   )
 }
 
-function MarketplaceCard({
+const MarketplaceCard = memo(function MarketplaceCard({
   entry,
   language,
   installed,
@@ -432,7 +432,7 @@ function MarketplaceCard({
       </div>
     </article>
   )
-}
+})
 
 export function Marketplace() {
   const t = useT()
@@ -447,6 +447,7 @@ export function Marketplace() {
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [appendFailed, setAppendFailed] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [installProgress, setInstallProgress] = useState('')
   const [installElapsed, setInstallElapsed] = useState(0)
@@ -464,6 +465,10 @@ export function Marketplace() {
   const [toast, setToast] = useState<ToastState | null>(null)
   // A slow page from the mount must not overwrite a newer search.
   const requestSeq = useRef(0)
+  // The bottom sentinel scrolls into view; a page that failed once is not
+  // retried until the user scrolls away and back.
+  const moreRef = useRef<HTMLDivElement | null>(null)
+  const failedAppendPage = useRef(0)
 
   const catalog = window.pi?.marketplace?.piCatalog
   const canInstall = typeof window.pi?.marketplace?.installNpm === 'function'
@@ -524,10 +529,15 @@ export function Marketplace() {
         setPage(nextPage)
         setTotal(result.total)
         setStatus('ready')
+        failedAppendPage.current = 0
+        setAppendFailed(false)
       } catch (cause) {
         if (seq !== requestSeq.current) return false
-        if (append) showToast('error', t('Could not load more packages'), truncateOutput(errorMessage(cause)))
-        else {
+        if (append) {
+          failedAppendPage.current = nextPage
+          setAppendFailed(true)
+          showToast('error', t('Could not load more packages'), truncateOutput(errorMessage(cause)))
+        } else {
           setError(errorMessage(cause))
           setStatus('error')
         }
@@ -727,6 +737,29 @@ export function Marketplace() {
       : snapshot.entries
   }, [snapshot.entries, mineOnly, installedIds])
 
+  const hasNextPage =
+    status === 'ready' && !mineOnly && visible.length > 0 && page * PAGE_SIZE < total
+
+  useEffect(() => {
+    if (!hasNextPage || loadingMore) return
+    const sentinel = moreRef.current
+    if (!sentinel) return
+    // The desk page is the scroll container above this grid.
+    const root = sentinel.closest('.desk-page')
+    const observer = new IntersectionObserver(
+      (records) => {
+        if (!records.some((record) => record.isIntersecting)) return
+        if (failedAppendPage.current === page + 1) return
+        void loadPage(page + 1, true)
+      },
+      // Start fetching before the sentinel is actually visible so the grid
+      // rarely shows a gap while the next page is in flight.
+      { root: root instanceof HTMLElement ? root : null, rootMargin: '480px 0px' }
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [hasNextPage, loadingMore, loadPage, page])
+
   const kindTotal = total
   const updatedLabel = snapshot.entries.length
     ? relativeFromIso(snapshot.generatedAt, language)
@@ -921,21 +954,19 @@ export function Marketplace() {
               </button>
             ))}
           </div>
-        </div>
-      </div>
 
-      <div className="marketplace-categories" role="group" aria-label={t('Filters')}>
-        <button
-          type="button"
-          className="pill marketplace-mine"
-          data-active={mineOnly}
-          aria-pressed={mineOnly}
-          onClick={() => setMineOnly((value) => !value)}
-        >
-          <UserRound size={13} />
-          {t('Mine')}
-          {mineCount > 0 ? <span className="marketplace-mine__count">{mineCount}</span> : null}
-        </button>
+          <button
+            type="button"
+            className="pill marketplace-mine"
+            data-active={mineOnly}
+            aria-pressed={mineOnly}
+            onClick={() => setMineOnly((value) => !value)}
+          >
+            <UserRound size={13} />
+            {t('Mine')}
+            {mineCount > 0 ? <span className="marketplace-mine__count">{mineCount}</span> : null}
+          </button>
+        </div>
       </div>
 
       {error && !(status === 'error' && snapshot.entries.length === 0) ? (
@@ -1012,17 +1043,18 @@ export function Marketplace() {
         </div>
       )}
 
-      {status === 'ready' && !mineOnly && visible.length > 0 && page * PAGE_SIZE < total ? (
-        <div className="marketplace-more">
-          <button
-            type="button"
-            className="btn btn--sm"
-            disabled={loadingMore}
-            onClick={() => void loadPage(page + 1, true)}
-          >
-            {loadingMore ? <Loader2 size={13} className="spin" /> : <ChevronDown size={13} />}
-            {loadingMore ? t('Loading…') : t('Load more')}
-          </button>
+      {hasNextPage ? (
+        <div className="marketplace-more" ref={moreRef} aria-live="polite">
+          {loadingMore ? (
+            <>
+              <Loader2 size={13} className="spin" />
+              {t('Loading…')}
+            </>
+          ) : appendFailed ? (
+            <button type="button" className="btn btn--sm" onClick={() => void loadPage(page + 1, true)}>
+              {t('Retry')}
+            </button>
+          ) : null}
         </div>
       ) : null}
 

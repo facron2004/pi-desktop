@@ -1,13 +1,14 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, Target, WandSparkles, Workflow, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { useT } from '../lib/i18n'
-import { mermaidTemplateList } from '../lib/mermaid-templates'
+import type { mermaidTemplateList } from '../lib/mermaid-templates'
 import { useAppStore } from '../store/useAppStore'
 import { Popover } from './Popover'
 import '../styles/add-menu.css'
 
 type AddMenuPage = 'actions' | 'skills' | 'plugins' | 'diagrams'
+type DiagramTemplateItem = ReturnType<typeof mermaidTemplateList>[number]
 
 const MODES = [
   { value: 'goal', label: 'Goal Mode', icon: Target, description: 'Continue until the goal is complete or blocked' },
@@ -22,7 +23,7 @@ const PAGES = [
   { page: 'skills', label: 'Skills', icon: Sparkles }
 ] as const
 
-export function AddMenu({ ready, busy, mode, imageMode, skillCommands, pluginCommands, onModeChange, onPickFiles, onInsertCommand, onEnterImageMode }: {
+export const AddMenu = memo(function AddMenu({ ready, busy, mode, imageMode, skillCommands, pluginCommands, onModeChange, onPickFiles, onInsertCommand, onEnterImageMode }: {
   ready: boolean
   busy: boolean
   mode: AgentMode
@@ -37,12 +38,23 @@ export function AddMenu({ ready, busy, mode, imageMode, skillCommands, pluginCom
   const t = useT()
   const language = useAppStore((state) => state.settings.language ?? 'en')
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
-  const diagramTemplates = useMemo(() => mermaidTemplateList(language), [language])
+  const [diagramTemplates, setDiagramTemplates] = useState<DiagramTemplateItem[]>([])
   const [page, setPage] = useState<AddMenuPage>('actions')
   const panelRef = useRef<HTMLDivElement>(null)
   const returnPage = useRef<AddMenuPage>('actions')
   const commands = page === 'skills' ? skillCommands : pluginCommands
   const pageLabel = page === 'skills' ? 'Skills' : page === 'plugins' ? 'Plugins' : 'Diagrams'
+
+  useEffect(() => {
+    if (page !== 'diagrams') return
+    let active = true
+    void import('../lib/mermaid-templates').then((mod) => {
+      if (active) setDiagramTemplates(mod.mermaidTemplateList(language))
+    })
+    return () => {
+      active = false
+    }
+  }, [page, language])
 
   const navigate = (next: AddMenuPage) => {
     if (next !== 'actions') returnPage.current = next
@@ -173,4 +185,4 @@ export function AddMenu({ ready, busy, mode, imageMode, skillCommands, pluginCom
       )}
     </Popover>
   )
-}
+})

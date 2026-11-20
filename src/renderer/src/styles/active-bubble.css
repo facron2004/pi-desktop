@@ -1,0 +1,125 @@
+/* ------------------------------------------------------------------ *
+ * Active-state bubbles
+ *
+ * A "bubble" is the rounded highlight painted behind an active control —
+ * a pill, a chip, an icon button, a list row's selected background. The app
+ * keeps those at the small radius steps; here we open them up one notch so
+ * the active state reads as a softer, fuller shape. Loaded last in main.tsx
+ * so these win over both global.css and component CSS of equal specificity.
+ *
+ * Structural radii are deliberately left alone: full pills (--r-full),
+ * circles (50%), and the asymmetric half-rounded tab/row edges keep their
+ * shape. Only symmetric small/medium bubbles are included. A control that is
+ * already a full pill at rest — the scheduled-task filter, 28px tall with a
+ * 14px radius — is structural: opening its active state to 8px left a pill
+ * and a rounded rectangle side by side, so it keeps its pill shape. The
+ * composer image chips are a fixed 6px control, and the quality/count
+ * segments sit inside a 10px track: growing either one when it activates
+ * changes the control instead of just painting the highlight.
+ * ------------------------------------------------------------------ */
+
+:root {
+  --r-active-bubble: 8px;
+  --r-active-bubble-md: 12px;
+}
+
+/* Small bubbles: 6px → 8px. */
+.icon-btn[data-active='true'],
+.ghost-btn[data-active='true'],
+.btn[data-active='true'],
+.project-chip[data-active='true'],
+.git-chip[data-active='true'],
+.session-bar__item[data-active='true'],
+.palette__item[data-active='true'],
+.launcher__item[data-active='true'],
+.popover__item[data-active='true'],
+.mention__item[data-active='true'],
+.tool-panel__action[data-active='true'],
+.settings-nav button[data-active='true'],
+.sidebar__foot-btn[data-active='true'],
+.project__action-btn[data-active='true'],
+.project__icon-control[data-active='true'],
+.code-block__tool[data-active='true'],
+.mermaid-diagram__tool[data-active='true'],
+.image-viewer__thumb[data-active='true'],
+.commit__template[data-active='true'],
+.appearance-mode-btn[data-active='true'],
+.image-params__ratio[data-active='true'],
+.tree__index-row[data-active='true'],
+.session-search__hit[data-active='true'],
+.session-search__recent[data-active='true'],
+.session-tree__row[data-active='true'],
+.modal__option[data-active='true'],
+.modal__switcher-tab[data-active='true'],
+.provider-card[data-active='true'],
+.settings-card[data-active='true'],
+.change-file[data-active],
+.viewer .ghost-btn[data-active='true'] {
+  border-radius: var(--r-active-bubble);
+}
+
+/* Medium bubbles: 10px → 12px. */
+.pill[data-active='true'],
+.model-chip[data-active='true']:not(.composer__image-chip),
+.effort-chip[data-active='true'],
+.app-rail__button[data-active='true'],
+.app-rail__branch .git-chip--icon[data-active='true'] {
+  border-radius: var(--r-active-bubble-md);
+}
+
+/* The tools-panel corner toggle is the one the reader pointed at: give its
+   icon box a slightly softer corner than the default icon button. */
+.shell__panel-toggle .icon-btn {
+  border-radius: var(--r-md);
+}
+
+/* --- In-icon direction arrow --------------------------------------- *
+ * The panel outline is drawn at rest; the small arrow inside it
+ * (PanelRightOpen / Close) fades in under the pointer and turns with
+ * the panel's state, with a short horizontal slide. */
+
+.shell__panel-toggle__icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.shell__panel-toggle__glyph {
+  grid-area: 1 / 1;
+  transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease);
+}
+
+/* Both arrows wait off-stage until the pointer arrives. */
+.shell__panel-toggle__glyph--closed {
+  opacity: 0;
+  transform: translateX(6px);
+}
+
+.shell__panel-toggle__glyph--open {
+  opacity: 0;
+  transform: translateX(-6px);
+}
+
+/* Closed panel: hover reveals the arrow that offers to open it. A click mutes
+   this until the pointer leaves, so the arrow does not reappear under a resting
+   cursor. */
+.shell__panel-toggle:not([data-hover-muted='true']):hover .shell__panel-toggle__btn:not([data-active='true']) .shell__panel-toggle__glyph--closed,
+.shell__panel-toggle .shell__panel-toggle__btn:not([data-active='true']):focus-visible .shell__panel-toggle__glyph--closed {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* Open panel: hover reveals the arrow that offers to close it. */
+.shell__panel-toggle:not([data-hover-muted='true']):hover .shell__panel-toggle__btn[data-active='true'] .shell__panel-toggle__glyph--open,
+.shell__panel-toggle .shell__panel-toggle__btn[data-active='true']:focus-visible .shell__panel-toggle__glyph--open {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell__panel-toggle__glyph {
+    transition: none;
+  }
+}

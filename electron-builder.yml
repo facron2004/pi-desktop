@@ -16,6 +16,7 @@ files:
   - out/preload/**/*
   - out/remote/**/*
   - out/renderer/**/*
+  - setup/**/*
   - package.json
   - '!**/*.map'
   - '!**/node_modules/*/{test,tests,__tests__,example,examples,docs,doc}/**'
@@ -41,7 +42,10 @@ asarUnpack:
 win:
   icon: build/icon-geometric.ico
   target:
-    - target: nsis
+    # The setup UI is drawn by the app itself, so the installer is a silent
+    # self-extractor: it unpacks the app to a temp folder and opens the setup
+    # window. No NSIS wizard pages are shown.
+    - target: portable
       arch: [x64, arm64]
     # A folder that is unpacked and zipped: the portable copy. It needs no
     # installation, so it can live on a stick or in a folder that is not the
@@ -50,14 +54,10 @@ win:
       arch: [x64]
   artifactName: ${productName}-${version}-${arch}.${ext}
 
-nsis:
-  # Keep the v2-derived installer GUID; appId v3 is only for the refreshed Windows AUMID/icon.
-  guid: 8cddbf46-9994-5396-9c61-1e6d6be69598
-  oneClick: false
-  perMachine: false
-  allowToChangeInstallationDirectory: true
-  createDesktopShortcut: always
-  shortcutName: Pi Desktop
+portable:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  # Keep the extracted app separate from the setup window's profile.
+  unpackDirName: true
 
 mac:
   target:

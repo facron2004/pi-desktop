@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ModelInfo } from '@shared/types'
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Search, X } from 'lucide-react'
 import { selectableModels, resolveSavedModel } from '@shared/provider-models'
@@ -9,6 +9,7 @@ import { useT } from '../lib/i18n'
 import { filterModels } from '../lib/model-search'
 import { modelRecencyKey, readModelRecency, sortModelsByRecency } from '../lib/model-recency'
 import { resolveThinkingLevel } from '../lib/thinking'
+import { SidebarTip, useHoverTip, type SidebarTipRow } from './SidebarTip'
 import '../styles/model-picker.css'
 
 /** The picker prints context windows short; `0` means Pi did not report one. */
@@ -74,7 +75,7 @@ function acceptsImages(model: ModelInfo): boolean {
 }
 
 /** The model and its reasoning effort share one composer control. */
-export function ModelPicker() {
+export const ModelPicker = memo(function ModelPicker() {
   const pickerA11yId = useId().replace(/[^a-zA-Z0-9_-]/g, '')
   const modelListId = `${pickerA11yId}-model-list`
   const threadModels = useAppStore((state) => state.models)
@@ -87,6 +88,10 @@ export function ModelPicker() {
 
   const [configuredThinkingLevels, setConfiguredThinkingLevels] = useState<string[]>([])
   const [configuredLevelsLoading, setConfiguredLevelsLoading] = useState(false)
+  // A row is one line now; its parameters live only in this card. The global
+  // title-tip is suppressed inside an open popover, so a native title cannot
+  // carry them — a card owned by this picker is the only place they show.
+  const modelTip = useHoverTip<{ title: string; rows: SidebarTipRow[] }>()
   const setModel = useAppStore((state) => state.setModel)
   const starting = useAppStore(
     (state) => state.status.phase === 'starting' && !state.cwdWait
@@ -296,16 +301,17 @@ export function ModelPicker() {
     const selected = currentModel?.id === model.id && currentModel.provider === model.provider
     const key = modelRecencyKey(model)
     const modelIndex = displayIndexByKey.get(key) ?? 0
-    const rowTitle = [
-      model.name || model.id,
-      model.provider,
-      modelContext ? `${modelContext} ${t('ctx')}` : null,
-      price?.title ?? null,
-      model.reasoning ? t('Reasoning') : null,
-      images ? t('Image input') : null
-    ]
-      .filter((part): part is string => Boolean(part))
-      .join(' · ')
+    const tipPayload = {
+      title: model.name || model.id,
+      rows: [
+        { label: t('Provider'), value: model.provider },
+        modelContext ? { label: t('Context'), value: `${modelContext} ${t('ctx')}` } : null,
+        price ? { label: t('Price'), value: price.text } : null,
+        model.reasoning ? { label: t('Reasoning'), value: t('Supported') } : null,
+        images ? { label: t('Image input'), value: t('Supported') } : null
+      ].filter((row): row is SidebarTipRow => row !== null)
+    }
+    const enter = modelTip.enter(tipPayload)
 
     return (
       <button
@@ -317,36 +323,17 @@ export function ModelPicker() {
         data-highlighted={highlighted === modelIndex}
         aria-selected={highlighted === modelIndex}
         aria-disabled={updating}
-        title={rowTitle}
-        onMouseEnter={() => setHighlighted(modelIndex)}
+        onMouseEnter={(event) => {
+          setHighlighted(modelIndex)
+          enter(event)
+        }}
+        onMouseLeave={modelTip.leave}
+        onFocus={enter}
+        onBlur={modelTip.leave}
         onClick={() => void pickModel(model)}
       >
         <span className="model-picker__row-body">
           <span className="model-picker__row-name">{model.name || model.id}</span>
-          {modelContext || price || model.reasoning || images ? (
-            <span className="model-picker__row-meta">
-              {modelContext ? (
-                <span className="model-picker__meta-item">
-                  {modelContext} {t('ctx')}
-                </span>
-              ) : null}
-              {price ? (
-                <span className="model-picker__price" title={price.title}>
-                  {price.text}
-                </span>
-              ) : null}
-              {model.reasoning ? (
-                <span className="model-picker__badge" data-kind="reasoning">
-                  {t('Reasoning')}
-                </span>
-              ) : null}
-              {images ? (
-                <span className="model-picker__badge" data-kind="image">
-                  {t('Images')}
-                </span>
-              ) : null}
-            </span>
-          ) : null}
         </span>
         {selected ? <Check size={13} className="model-picker__check" /> : null}
       </button>
@@ -368,8 +355,9 @@ export function ModelPicker() {
     : undefined
 
   return (
-    <Popover
-      placement="top"
+    <>
+      <Popover
+        placement="top"
       align="right"
       width={showModels ? 340 : 240}
       className="model-picker"
@@ -540,6 +528,14 @@ export function ModelPicker() {
           )}
         </div>
       )}
-    </Popover>
+      </Popover>
+      {modelTip.tip ? (
+        <SidebarTip
+          anchor={modelTip.tip.anchor}
+          title={modelTip.tip.payload.title}
+          rows={modelTip.tip.payload.rows}
+        />
+      ) : null}
+    </>
   )
-}
+})

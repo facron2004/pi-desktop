@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { constants, createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { appendFile, chmod, lstat, mkdir, open, readdir, realpath, rename, stat, unlink, type FileHandle } from 'node:fs/promises'
 import type { Stats } from 'node:fs'
+import { performance } from 'node:perf_hooks'
 import { StringDecoder } from 'node:string_decoder'
 import os from 'node:os'
 import path from 'node:path'
@@ -247,6 +248,8 @@ const inFlightSearchIndexes = new Map<string, {
   cancellation: { cancelled: boolean }
 }>()
 let searchIndexPruneQueue = Promise.resolve()
+let autoPruneWritesSinceLastPrune = 0
+let lastAutoPruneAt = 0
 const activeSearchIndexTemps = new Set<string>()
 
 function removeCachedSearchIndex(indexPath: string): void {
@@ -260,6 +263,7 @@ function clearSearchIndexCache(): void {
   searchIndexCache.clear()
   searchIndexCacheWeights.clear()
   searchIndexCacheBytes = 0
+  autoPruneWritesSinceLastPrune = 0
 }
 
 function estimateSearchIndexMemory(snapshot: SearchIndexSnapshot): number {
@@ -517,7 +521,8 @@ function isBelowDirectory(root: string, target: string): boolean {
 export async function openSessionFile(
   file: unknown,
   sessionRoot: string | readonly string[] = resolveSessionRoots(),
-  writable = false
+  writable = false,
+  preResolvedRoot?: string
 ): Promise<{ target: string; handle: FileHandle } | null> {
   if (Array.isArray(sessionRoot)) {
     for (const root of sessionRoot) {
@@ -541,7 +546,9 @@ export async function openSessionFile(
   if (!isBelowDirectory(root, target)) return null
   let handle: FileHandle | undefined
   try {
-    const [realRoot, realTarget] = await Promise.all([realpath(root), realpath(target)])
+    const [realRoot, realTarget] = preResolvedRoot
+      ? [preResolvedRoot, await realpath(target)]
+      : await Promise.all([realpath(root), realpath(target)])
     if (
       !isBelowDirectory(realRoot, realTarget) ||
       path.extname(realTarget).toLowerCase() !== '.jsonl'
@@ -552,7 +559,8 @@ export async function openSessionFile(
     handle = await open(realTarget, writable ? SESSION_FILE_WRITE_FLAGS : SESSION_FILE_FLAGS)
     const opened = await handle.stat({ bigint: true })
     if (!opened.isFile() || opened.nlink > 1n) return null
-    const [currentRoot, currentTarget] = await Promise.all([realpath(root), realpath(target)])
+    const currentTarget = await realpath(target)
+    const currentRoot = preResolvedRoot ?? await realpath(root)
     if (
       currentRoot !== realRoot ||
       currentTarget !== realTarget ||
@@ -1030,18 +1038,76 @@ export async function getSessionMetaFromHandle(
   return meta
 }
 
+/** Verify containment & regular single-link status using one `lstat` when directory is already verified. */
+async function statCachedSessionFile(
+  file: string,
+  sessionRoot?: string | readonly string[],
+  dirAlreadyVerified = false
+): Promise<Stats | null> {
+  if (path.extname(file).toLowerCase() !== '.jsonl') return null
+  if (sessionRoot && !dirAlreadyVerified) {
+    if (!path.isAbsolute(file)) return null
+    const roots = Array.isArray(sessionRoot) ? sessionRoot : [sessionRoot]
+    const target = path.resolve(file)
+    try {
+      const parentReal = await realpath(path.dirname(target))
+      let inside = false
+      for (const root of roots) {
+        if (typeof root !== 'string' || !root.trim()) continue
+        const rootReal = await realpath(path.resolve(root)).catch(() => null)
+        if (rootReal && isBelowDirectory(rootReal, path.join(parentReal, path.basename(target)))) {
+          inside = true
+          break
+        }
+      }
+      if (!inside) return null
+    } catch {
+      return null
+    }
+  }
+  try {
+    const s = await lstat(file)
+    if (s.isSymbolicLink() || !s.isFile() || s.nlink > 1) return null
+    return s
+  } catch {
+    return null
+  }
+}
+
 /**
  * Returns metadata for a session file, reusing the incremental (mtime, size) cache
  * when valid and coalescing in-flight concurrent reads.
  */
-export async function getSessionMeta(file: string, sessionRoot?: string | readonly string[]): Promise<SessionMeta | null> {
+export async function getSessionMeta(
+  file: string,
+  sessionRoot?: string | readonly string[],
+  preResolvedRoot?: string,
+  dirAlreadyVerified = false
+): Promise<SessionMeta | null> {
   const key = canonicalSessionFile(file)
   const inFlightKey = sessionRoot ? `${key}\0${JSON.stringify(sessionRoot)}` : key
   const existing = inFlightReads.get(inFlightKey)
   if (existing) return existing
 
   const task = (async (): Promise<SessionMeta | null> => {
-    const opened = sessionRoot ? await openSessionFile(file, sessionRoot) : null
+    const cached = sessionMetaCache.get(key)
+    if (cached) {
+      const fastStats = await statCachedSessionFile(file, sessionRoot, dirAlreadyVerified)
+      if (
+        fastStats &&
+        cached.identity === fileIdentity(fastStats) &&
+        cached.mtime === fastStats.mtimeMs &&
+        cached.size === fastStats.size
+      ) {
+        sessionMetaCache.delete(key)
+        sessionMetaCache.set(key, cached)
+        return cached.meta
+      }
+    }
+
+    const opened = sessionRoot
+      ? await openSessionFile(file, sessionRoot, false, typeof sessionRoot === 'string' ? preResolvedRoot : undefined)
+      : null
     if (sessionRoot && !opened) {
       sessionMetaCache.delete(key)
       return null
@@ -1049,11 +1115,11 @@ export async function getSessionMeta(file: string, sessionRoot?: string | readon
     try {
       const s = opened ? await opened.handle.stat() : await stat(file)
       const identity = fileIdentity(s)
-      const cached = sessionMetaCache.get(key)
-      if (cached && cached.identity === identity && cached.mtime === s.mtimeMs && cached.size === s.size) {
+      const latestCached = sessionMetaCache.get(key)
+      if (latestCached && latestCached.identity === identity && latestCached.mtime === s.mtimeMs && latestCached.size === s.size) {
         sessionMetaCache.delete(key)
-        sessionMetaCache.set(key, cached)
-        return cached.meta
+        sessionMetaCache.set(key, latestCached)
+        return latestCached.meta
       }
 
       const meta = await withMetaParseSlot(() =>
@@ -1566,7 +1632,9 @@ export async function parseSession(
   }
 
   let header: SessionHeader | null = null
+  const cacheMessages = options.cacheMessages === true
   const entries: BaseEntry[] = []
+  let lastEntryTimestamp: string | undefined
   let scannedLines = 0
 
   for await (const raw of readJsonlLines(file, MAX_SESSION_BYTES, 0, false, handle)) {
@@ -1581,12 +1649,48 @@ export async function parseSession(
       continue
     }
     if (!parsed || typeof parsed !== 'object') continue
-    const record = parsed as BaseEntry & { message?: { role?: string; content?: unknown } }
+    const record = parsed as BaseEntry & {
+      name?: string
+      provider?: string
+      modelId?: string
+      message?: { role?: string; content?: unknown; model?: string }
+    }
     if (!header && record.type === 'session') {
       header = record as unknown as SessionHeader
       continue
     }
-    entries.push(record)
+    if (record.timestamp) lastEntryTimestamp = record.timestamp
+    if (cacheMessages) {
+      entries.push(record)
+      continue
+    }
+
+    // Metadata scans only inspect branch shape, session name, model changes,
+    // message count, and the first user preview. Shedding bulky tool arguments
+    // and tool output immediately avoids holding megabytes of JSON in memory.
+    const slim: BaseEntry & Record<string, unknown> = {
+      type: record.type,
+      id: record.id,
+      parentId: record.parentId,
+      timestamp: record.timestamp
+    }
+    if (record.type === 'session_info') {
+      if (record.name) slim.name = record.name
+    } else if (record.type === 'model_change') {
+      if (record.provider) slim.provider = record.provider
+      if (record.modelId) slim.modelId = record.modelId
+    } else if (record.type === 'message' && record.message) {
+      const msg = record.message
+      const role = msg.role
+      if (role === 'user') {
+        slim.message = { role, content: extractText(msg.content).trim() }
+      } else if (role === 'assistant') {
+        slim.message = msg.model ? { role, model: msg.model } : { role }
+      } else if (role === 'toolResult' || role === 'bashExecution') {
+        slim.message = { role }
+      }
+    }
+    entries.push(slim)
   }
 
   if (!header) return null
@@ -1619,7 +1723,7 @@ export async function parseSession(
   branch.reverse()
   // Decouple background metadata scans (listSessions, startupScan) from
   // evicting active conversations out of the 12-entry sessionMessagesCache.
-  if (options.cacheMessages === true) {
+  if (cacheMessages) {
     if (stats.size <= MAX_CACHED_SESSION_MESSAGE_BYTES) {
       const externalContext = hasExternalContext(branch)
       const contextChecked = !hasExternalContextUnknown(branch) && (
@@ -1662,7 +1766,9 @@ export async function parseSession(
     if (message.role === 'user') {
       messageCount += 1
       if (!preview) {
-        preview = extractText(message.content).trim()
+        preview = typeof message.content === 'string'
+          ? message.content
+          : extractText(message.content).trim()
       }
     } else if (message.role === 'assistant') {
       messageCount += 1
@@ -1678,7 +1784,7 @@ export async function parseSession(
   // A fork copies the entries of the original branch, so their timestamps are
   // old. The file itself was just written, and that is what the sidebar has
   // to sort by.
-  const entryTime = Date.parse(entries[entries.length - 1]?.timestamp ?? header.timestamp ?? '') || 0
+  const entryTime = Date.parse(lastEntryTimestamp ?? entries[entries.length - 1]?.timestamp ?? header.timestamp ?? '') || 0
   const updatedAt = Math.max(entryTime, stats.mtimeMs)
 
   return {
@@ -1711,21 +1817,27 @@ export async function listSessions(cwd?: string, customRoot?: string): Promise<S
 }
 
 async function listSessionsInRoot(cwd: string | undefined, root: string): Promise<SessionMeta[]> {
+  let realRoot: string
   try {
     const rootStat = await stat(root)
     if (!rootStat.isDirectory()) return []
+    realRoot = await realpath(root)
   } catch {
     return []
   }
 
   const results: SessionMeta[] = []
-  const readMetas = async (files: string[], expectedCwd?: string): Promise<SessionMeta[]> => {
+  const readMetas = async (
+    files: string[],
+    expectedCwd?: string,
+    dirVerified = false
+  ): Promise<SessionMeta[]> => {
     const metas: (SessionMeta | null)[] = new Array(files.length).fill(null)
     let next = 0
     const worker = async () => {
       while (next < files.length) {
         const index = next++
-        metas[index] = await getSessionMeta(files[index]!, root)
+        metas[index] = await getSessionMeta(files[index]!, root, realRoot, dirVerified)
       }
     }
     const workerCount = Math.min(MAX_CONCURRENT_SESSION_META_READS, files.length)
@@ -1743,14 +1855,16 @@ async function listSessionsInRoot(cwd: string | undefined, root: string): Promis
     }
 
     let files: string[]
+    let dirVerified = false
     try {
-      const names = await readdir(targetDir)
+      const [names, dirReal] = await Promise.all([readdir(targetDir), realpath(targetDir)])
+      dirVerified = isBelowDirectory(realRoot, dirReal)
       files = names.filter((f) => f.endsWith('.jsonl')).map((f) => path.join(targetDir, f))
     } catch {
       return []
     }
 
-    for (const meta of await readMetas(files, cwd)) results.push(meta)
+    for (const meta of await readMetas(files, cwd, dirVerified)) results.push(meta)
   } else {
     // Global listing across all workspaces. Directories are independent, so
     // they are read with a small worker pool instead of one after another: a
@@ -1767,13 +1881,15 @@ async function listSessionsInRoot(cwd: string | undefined, root: string): Promis
     const readDirectory = async (dir: string): Promise<SessionMeta[]> => {
       const dirPath = path.join(root, dir)
       let files: string[]
+      let dirVerified = false
       try {
-        const names = await readdir(dirPath)
+        const [names, dirReal] = await Promise.all([readdir(dirPath), realpath(dirPath)])
+        dirVerified = isBelowDirectory(realRoot, dirReal)
         files = names.filter((f) => f.endsWith('.jsonl')).map((f) => path.join(dirPath, f))
       } catch {
         return []
       }
-      return await readMetas(files)
+      return await readMetas(files, undefined, dirVerified)
     }
 
     const perDirectory: SessionMeta[][] = new Array(workspaceDirs.length)
@@ -1813,7 +1929,7 @@ export async function searchSessions(
   const budget = Math.max(0, options.budgetBytes ?? MAX_SEARCH_TOTAL_BYTES)
   const shouldStop = () => options.shouldStop?.() === true
   if (shouldStop()) return []
-  const candidatesByFile = new Map<string, { file: string; mtime: number; size: number; root: string }>()
+  const candidatesByFile = new Map<string, { file: string; mtime: number; size: number; root: string; realRoot: string }>()
   for (const root of options.sessionRoots ?? resolveSessionRoots()) {
     if (shouldStop()) return []
     let realRoot: string
@@ -1877,7 +1993,7 @@ export async function searchSessions(
           }
           if (!metadata) continue
           const canonical = process.platform === 'win32' ? path.resolve(target).toLowerCase() : path.resolve(target)
-          candidatesByFile.set(canonical, { file, ...metadata, root })
+          candidatesByFile.set(canonical, { file, ...metadata, root, realRoot })
         }
       }
       const workers = Math.min(MAX_CONCURRENT_SEARCH_CANDIDATE_READS, names.length)
@@ -1896,7 +2012,7 @@ export async function searchSessions(
     // burst of keystrokes does not leave several scans running at once.
     if (shouldStop()) break
     if (hits.length >= ceiling) break
-    const opened = await openSessionFile(candidate.file, candidate.root)
+    const opened = await openSessionFile(candidate.file, candidate.root, false, candidate.realRoot)
     if (!opened) continue
     try {
       if (shouldStop()) continue
@@ -1993,6 +2109,13 @@ async function searchSessionFile(
     if (shouldStop()) break
     const line = raw.trim()
     if (!line) continue
+    // Skip toolResult, bashExecution, custom, compaction, etc. before JSON.parse.
+    if (
+      !line.includes('"session') &&
+      !line.includes('"user"') &&
+      !line.includes('"assistant"') &&
+      !line.includes('\\u')
+    ) continue
     let record: Record<string, unknown>
     try {
       record = JSON.parse(line) as Record<string, unknown>
@@ -2222,7 +2345,14 @@ async function readSearchIndexFile(
 
     const decoder = new StringDecoder('utf8')
     const pendingParts: string[] = []
-    let processedLines = 0
+    let lastYieldAt = performance.now()
+    const maybeYield = async (): Promise<void> => {
+      const now = performance.now()
+      if (now - lastYieldAt >= 4) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        lastYieldAt = performance.now()
+      }
+    }
     const consumeText = async (text: string): Promise<boolean> => {
       let cursor = 0
       while (true) {
@@ -2232,11 +2362,8 @@ async function readSearchIndexFile(
         const line = pendingParts.join('')
         pendingParts.length = 0
         if (!parseLine(line)) return false
-        processedLines += 1
         cursor = newline + 1
-        if (processedLines % 128 === 0) {
-          await new Promise<void>((resolve) => setImmediate(resolve))
-        }
+        await maybeYield()
       }
       if (cursor < text.length) pendingParts.push(text.slice(cursor))
       return true
@@ -2253,7 +2380,7 @@ async function readSearchIndexFile(
       if (!(await consumeText(decoder.write(buffer.subarray(0, bytesRead))))) {
         return { snapshot: null, indexBytesRead, skipped: false }
       }
-      await new Promise<void>((resolve) => setImmediate(resolve))
+      await maybeYield()
     }
     const finalText = decoder.end()
     if (!(await consumeText(finalText))) return { snapshot: null, indexBytesRead, skipped: false }
@@ -2344,7 +2471,13 @@ async function writeSearchIndexFile(
     handle = undefined
     assertCurrent()
     await rename(temp, indexPath)
-    await pruneSessionSearchIndexFiles()
+    autoPruneWritesSinceLastPrune += 1
+    const now = Date.now()
+    if (autoPruneWritesSinceLastPrune >= 16 || now - lastAutoPruneAt >= 15_000) {
+      autoPruneWritesSinceLastPrune = 0
+      lastAutoPruneAt = now
+      await pruneSessionSearchIndexFiles()
+    }
   } catch (error) {
     if (handle) await handle.close().catch(() => {})
     // An index is an optimization: a read-only or full folder must not fail a search.
@@ -2832,11 +2965,14 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
   }
 
   const seenUsageFiles = new Set<string>()
+  const usageTasks: Array<{ fullPath: string; root: string; realRoot: string; dirVerified: boolean; sessionId: string; key: string }> = []
+
   for (const root of resolveSessionRoots(customRoot)) {
-    let rootStat: Stats
+    let realRoot: string
     try {
-      rootStat = await stat(root)
+      const rootStat = await stat(root)
       if (!rootStat.isDirectory()) continue
+      realRoot = await realpath(root)
     } catch {
       continue
     }
@@ -2849,34 +2985,73 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
       workspaceDirs = []
     }
 
-    for (const dir of workspaceDirs) {
-    const dirPath = path.join(root, dir)
-    let files: string[] = []
-    try {
-      const names = await readdir(dirPath)
-      files = names.filter((f) => f.endsWith('.jsonl'))
-    } catch {
-      continue
-    }
+    await Promise.all(workspaceDirs.map(async (dir) => {
+      const dirPath = path.join(root, dir)
+      let names: string[] = []
+      let dirReal: string | undefined
+      try {
+        const [dirNames, resolvedDir] = await Promise.all([readdir(dirPath), realpath(dirPath)])
+        names = dirNames
+        dirReal = resolvedDir
+      } catch {
+        return
+      }
+      const dirVerified = isBelowDirectory(realRoot, dirReal)
+      for (const file of names) {
+        if (!file.endsWith('.jsonl')) continue
+        const fullPath = path.join(dirPath, file)
+        const key = canonicalSessionFile(fullPath)
+        if (seenUsageFiles.has(key)) continue
+        seenUsageFiles.add(key)
+        usageTasks.push({
+          fullPath,
+          root,
+          realRoot,
+          dirVerified,
+          sessionId: file.replace(/\.jsonl$/, ''),
+          key
+        })
+      }
+    }))
+  }
 
-    for (const file of files) {
-      const fullPath = path.join(dirPath, file)
-      const opened = await openSessionFile(fullPath, root)
+  let nextTask = 0
+  const usageWorker = async () => {
+    while (nextTask < usageTasks.length) {
+      const task = usageTasks[nextTask++]!
+      const { fullPath, root, realRoot, dirVerified, sessionId, key } = task
+
+      const cached = usageCache.get(key)
+      if (cached) {
+        const fastStats = await statCachedSessionFile(fullPath, root, dirVerified)
+        if (
+          fastStats &&
+          fastStats.size <= MAX_USAGE_CACHE_SOURCE_BYTES &&
+          cached.identity === fileIdentity(fastStats) &&
+          cached.mtime === fastStats.mtimeMs &&
+          cached.size === fastStats.size
+        ) {
+          usageCache.delete(key)
+          usageCache.set(key, cached)
+          applyUsageData(cached)
+          continue
+        }
+      }
+
+      const opened = await openSessionFile(fullPath, root, false, realRoot)
       if (!opened) continue
-
-      const key = canonicalSessionFile(fullPath)
-      if (seenUsageFiles.has(key)) {
+      const targetKey = canonicalSessionFile(opened.target)
+      if (targetKey !== key && seenUsageFiles.has(targetKey)) {
         await opened.handle.close().catch(() => {})
         continue
       }
-      seenUsageFiles.add(key)
-      const sessionId = file.replace(/\.jsonl$/, '')
-      let usageData = usageCache.get(key)
+      seenUsageFiles.add(targetKey)
 
+      let usageData = usageCache.get(targetKey) ?? (targetKey === key ? cached : undefined)
       try {
         const s = await opened.handle.stat()
         if (!s.isFile()) {
-          deleteCachedUsage(key)
+          deleteCachedUsage(targetKey)
           continue
         }
 
@@ -2888,10 +3063,10 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
           usageData.mtime === s.mtimeMs &&
           usageData.size === s.size
         ) {
-          usageCache.delete(key)
-          usageCache.set(key, usageData)
+          usageCache.delete(targetKey)
+          usageCache.set(targetKey, usageData)
         } else {
-          deleteCachedUsage(key)
+          deleteCachedUsage(targetKey)
           usageData = undefined
           const timestamps: number[] | undefined = cacheable ? [] : undefined
           const metrics: CachedFileUsage['metrics'] | undefined = cacheable ? [] : undefined
@@ -2975,7 +3150,7 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
               timestamps: timestamps!,
               metrics: metrics!
             }
-            cacheUsage(key, usageData)
+            cacheUsage(targetKey, usageData)
           } else {
             activeInAllTime.add(sessionId)
           }
@@ -2989,7 +3164,8 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
       if (usageData) applyUsageData(usageData)
     }
   }
-  }
+  const usageWorkers = Math.min(MAX_CONCURRENT_SESSION_META_READS, usageTasks.length)
+  await Promise.all(Array.from({ length: usageWorkers }, () => usageWorker()))
 
   today.conversationsCount = activeInToday.size
   week.conversationsCount = activeInWeek.size

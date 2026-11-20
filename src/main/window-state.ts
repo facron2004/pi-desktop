@@ -20,10 +20,16 @@ function stateFile(): string {
   return path.join(app.getPath('userData'), 'window-state.json')
 }
 
+let cachedRead: { file: string; state: WindowState | null } | undefined
+
 function read(): WindowState | null {
+  const file = stateFile()
+  if (cachedRead && cachedRead.file === file) return cachedRead.state
   try {
-    const file = stateFile()
-    if (!existsSync(file)) return null
+    if (!existsSync(file)) {
+      cachedRead = { file, state: null }
+      return null
+    }
     const parsed = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) as WindowState
     // A process killed before its first frame can leave a zero-sized state
     // behind; clamping that to the minimum would open the next run as a tiny
@@ -36,10 +42,13 @@ function read(): WindowState | null {
       parsed.width < MIN_WIDTH ||
       parsed.height < MIN_HEIGHT
     ) {
+      cachedRead = { file, state: null }
       return null
     }
+    cachedRead = { file, state: parsed }
     return parsed
   } catch {
+    cachedRead = { file, state: null }
     return null
   }
 }
@@ -51,6 +60,7 @@ function write(state: WindowState): void {
     const tmp = `${file}.tmp`
     writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8')
     renameSync(tmp, file)
+    cachedRead = { file, state }
   } catch (error) {
     console.error('[pi-desktop] could not save the window state:', error)
   }

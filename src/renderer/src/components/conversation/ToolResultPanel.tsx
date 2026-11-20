@@ -1,17 +1,18 @@
-import { memo, useMemo } from 'react'
+import { lazy, memo, Suspense, useMemo } from 'react'
 import type { ToolItem } from '../../lib/thread'
 import { diffableEdits, writtenContent } from '../../lib/tool-renderers'
 import { buildDiff, type DiffBlock } from '../../lib/diff-fold'
 import { languageOf } from '../../lib/files'
 import { basename } from '../../lib/path'
 import { countLines, LOG_PAGE_LINES } from '../../lib/log-output'
-import { useAppStore } from '../../store/useAppStore'
 import { CodeSnippet } from '../CodeSnippet'
-import { DiffView } from '../DiffView'
 import { Markdown } from '../Markdown'
 import { ImageButton } from '../Lightbox'
 import { LogOutput } from './LogOutput'
+import { useThreadEnv } from './ThreadEnvContext'
 import { useT } from '../../lib/i18n'
+
+const DiffView = lazy(() => import('../DiffView').then((m) => ({ default: m.DiffView })))
 
 /** Result characters shown before the "show more" control. */
 export const RESULT_PREVIEW = 1200
@@ -29,6 +30,8 @@ export interface ToolResultPanelProps {
   content?: string
   /** Opens one line of an edit diff in the file inspector. */
   onOpenLine?: (line: number) => void
+  /** The reply already quotes this image prompt; do not print it a second time. */
+  hideImagePrompt?: boolean
 }
 
 /**
@@ -47,9 +50,10 @@ export const ToolResultPanel = memo(function ToolResultPanel({
   onFullChange,
   diffs: providedDiffs,
   content: providedContent,
-  onOpenLine
+  onOpenLine,
+  hideImagePrompt = false
 }: ToolResultPanelProps) {
-  const diffSplit = useAppStore((state) => state.settings.diffSplit === true)
+  const { diffSplit } = useThreadEnv()
   const t = useT()
 
   const diffs = useMemo(
@@ -99,7 +103,7 @@ export const ToolResultPanel = memo(function ToolResultPanel({
         <LogOutput text={visibleResult} className="tool__error" />
       ) : null}
 
-      {imagePrompt ? (
+      {imagePrompt && !hideImagePrompt ? (
         <div className="tool__image-prompt">
           <span className="tool__image-prompt-label">{t('Prompt')}</span>
           <p>{imagePrompt}</p>
@@ -121,11 +125,13 @@ export const ToolResultPanel = memo(function ToolResultPanel({
       ) : null}
 
       {diffs.length > 0 ? (
-        <DiffView
-          diffs={diffs}
-          mode={diffSplit ? 'split' : 'unified'}
-          onOpenLine={onOpenLine}
-        />
+        <Suspense fallback={null}>
+          <DiffView
+            diffs={diffs}
+            mode={diffSplit ? 'split' : 'unified'}
+            onOpenLine={onOpenLine}
+          />
+        </Suspense>
       ) : null}
 
       {content ? (

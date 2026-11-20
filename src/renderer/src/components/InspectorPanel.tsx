@@ -24,7 +24,6 @@ import { formatChanges } from '../lib/diff-text'
 import { basename, relativePath, resolveAgainst } from '../lib/path'
 import { languageOf } from '../lib/files'
 import { countLines, LOG_PAGE_LINES } from '../lib/log-output'
-import type { ThreadItem } from '../lib/thread'
 import { useAppStore } from '../store/useAppStore'
 import { diffStats } from '../lib/diff-fold'
 import { CodeSnippet } from './CodeSnippet'
@@ -49,7 +48,6 @@ type Tab = 'changes' | 'files' | 'review' | 'browser' | 'images'
 
 const MIN_WIDTH = 300
 const MAX_WIDTH = 920
-const EMPTY_ITEMS: ThreadItem[] = []
 const EMPTY_CHANGES: FileChange[] = []
 
 export function InspectorPanel({
@@ -91,8 +89,7 @@ export function InspectorPanel({
     onOpenFile(null)
   }
   const showingChanges = tab === 'changes' && file === null
-  const items = useAppStore((state) => (showingChanges ? state.items : EMPTY_ITEMS))
-  const changedFileCount = useAppStore((state) => countChangedFiles(state.items))
+  const activeToolsRevision = useAppStore((state) => state.activeToolsRevision)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const workspace = useAppStore((state) => state.workspace)
   const settings = useAppStore((state) => state.settings)
@@ -104,9 +101,13 @@ export function InspectorPanel({
   const refreshGit = useAppStore((state) => state.refreshGit)
   const t = useT()
   const diffSplit = settings.diffSplit === true
+  const changedFileCount = useMemo(
+    () => countChangedFiles(useAppStore.getState().items),
+    [activeToolsRevision]
+  )
   const changes = useMemo(
-    () => (showingChanges ? collectChanges(items) : EMPTY_CHANGES),
-    [items, showingChanges]
+    () => (showingChanges ? collectChanges(useAppStore.getState().items) : EMPTY_CHANGES),
+    [activeToolsRevision, showingChanges]
   )
   const showingGitFallback =
     tab === 'changes' && Boolean(git?.isRepo) &&

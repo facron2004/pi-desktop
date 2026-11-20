@@ -1445,3 +1445,128 @@ test('submitting a prompt or receiving a user message pins scroll memory to bott
     useAppStore.setState(previous)
   }
 })
+
+test('threadsMetaVersion and activeToolsRevision ignore text deltas and increment on meta/tool/switch transitions', async () => {
+  const previous = useAppStore.getState()
+  const originalHydrate = (bridge.sessions as unknown as { hydrate?: unknown }).hydrate
+  try {
+    await useAppStore.getState().newChat()
+    const key = useAppStore.getState().draftId!
+    const vStartMeta = useAppStore.getState().threadsMetaVersion
+    const vStartTools = useAppStore.getState().activeToolsRevision
+
+    emit({ type: 'agent_start' })
+    const afterStartMeta = useAppStore.getState().threadsMetaVersion
+    assert.ok(afterStartMeta > vStartMeta, 'agent_start flips isStreaming and bumps threadsMetaVersion')
+    assert.equal(useAppStore.getState().activeToolsRevision, vStartTools, 'agent_start alone does not bump activeToolsRevision')
+
+    emit({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'First prompt' }], timestamp: 1 } })
+    const afterUserMeta = useAppStore.getState().threadsMetaVersion
+    assert.ok(afterUserMeta > afterStartMeta, 'first user prompt changes firstPrompt and bumps threadsMetaVersion')
+    assert.equal(useAppStore.getState().activeToolsRevision, vStartTools)
+
+    emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 2 } })
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
+    const preStreamMeta = useAppStore.getState().threadsMetaVersion
+    const preStreamTools = useAppStore.getState().activeToolsRevision
+
+    for (let i = 0; i < 10; i += 1) {
+      emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: `chunk-${i} ` } })
+      emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 1, delta: `thought-${i}` } })
+    }
+    assert.equal(useAppStore.getState().threadsMetaVersion, preStreamMeta, 'text/thinking deltas never bump threadsMetaVersion')
+    assert.equal(useAppStore.getState().activeToolsRevision, preStreamTools, 'text/thinking deltas never bump activeToolsRevision')
+
+    emit({
+      type: 'message_update',
+      assistantMessageEvent: {
+        type: 'toolcall_end',
+        contentIndex: 2,
+        toolCall: { type: 'toolCall', id: 'tool-rev-1', name: 'read', arguments: { path: 'a.ts' } }
+      }
+    })
+    assert.ok(useAppStore.getState().activeToolsRevision > preStreamTools, 'adding a tool bumps activeToolsRevision')
+    const afterToolAdd = useAppStore.getState().activeToolsRevision
+    emit({ type: 'tool_execution_end', toolCallId: 'tool-rev-1', toolName: 'read', isError: false, result: 'ok' })
+    assert.ok(useAppStore.getState().activeToolsRevision > afterToolAdd, 'completing a tool bumps activeToolsRevision')
+
+    emit({ type: 'agent_settled', aborted: false })
+    assert.ok(useAppStore.getState().threadsMetaVersion > preStreamMeta, 'agent_settled clears isStreaming and bumps threadsMetaVersion')
+
+    const beforeSwitchTools = useAppStore.getState().activeToolsRevision
+    ;(bridge.sessions as unknown as { hydrate?: (file: string) => Promise<SessionHydrationResult> }).hydrate = async () => ({
+      messages: [],
+      historyTruncated: false
+    })
+    await useAppStore.getState().selectSession({
+      id: 'rev-session',
+      file: `C:/tmp/rev-${Date.now()}.jsonl`,
+      cwd: '',
+      preview: 'empty',
+      updatedAt: 1,
+      messageCount: 0
+    })
+    assert.ok(useAppStore.getState().activeToolsRevision > beforeSwitchTools, 'selecting another session bumps activeToolsRevision')
+    assert.equal(typeof key, 'string')
+  } finally {
+    if (originalHydrate === undefined) delete (bridge.sessions as unknown as { hydrate?: unknown }).hydrate
+    else (bridge.sessions as unknown as { hydrate?: unknown }).hydrate = originalHydrate
+    useAppStore.setState(previous)
+  }
+})
+
+test('updateDraft debounces localStorage writes on typing and flushes on clear/switch, and refreshGit/refreshSessions dedupe in-flight calls', async () => {
+  const previous = useAppStore.getState()
+  const originalSetItem = window.localStorage.setItem
+  const originalGitStatus = bridge.git.status
+  const originalSessionsList = bridge.sessions.list
+  let draftWrites = 0
+  let gitCalls = 0
+  let sessionCalls = 0
+
+  try {
+    window.localStorage.setItem = (key: string, value: string) => {
+      if (key === 'pi-desktop.composer-drafts.v1') draftWrites += 1
+      localValues.set(key, value)
+    }
+    await useAppStore.getState().newChat()
+    const key = useAppStore.getState().draftId!
+    draftWrites = 0
+
+    for (let i = 0; i < 20; i += 1) {
+      useAppStore.getState().updateDraft(key, { text: `typing-${i}` })
+    }
+    assert.equal(useAppStore.getState().drafts[key]?.text, 'typing-19')
+    assert.equal(draftWrites, 0, 'keystrokes debounce localStorage serialization')
+
+    await useAppStore.getState().newChat()
+    assert.ok(draftWrites >= 1, 'newChat flushes the pending draft snapshot immediately')
+
+    let resolveGit!: (value: { isRepo: boolean }) => void
+    let resolveSessions!: (value: []) => void
+    bridge.git.status = () => {
+      gitCalls += 1
+      return new Promise((resolve) => { resolveGit = resolve })
+    }
+    bridge.sessions.list = () => {
+      sessionCalls += 1
+      return new Promise((resolve) => { resolveSessions = resolve })
+    }
+
+    const g1 = useAppStore.getState().refreshGit()
+    const g2 = useAppStore.getState().refreshGit()
+    const s1 = useAppStore.getState().refreshSessions()
+    const s2 = useAppStore.getState().refreshSessions()
+    assert.equal(gitCalls, 1, 'concurrent refreshGit calls reuse the in-flight request')
+    assert.equal(sessionCalls, 1, 'concurrent refreshSessions calls reuse the in-flight request')
+
+    resolveGit({ isRepo: false })
+    resolveSessions([])
+    await Promise.all([g1, g2, s1, s2])
+  } finally {
+    window.localStorage.setItem = originalSetItem
+    bridge.git.status = originalGitStatus
+    bridge.sessions.list = originalSessionsList
+    useAppStore.setState(previous)
+  }
+})

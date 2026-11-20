@@ -4,6 +4,7 @@ export const APP_RELEASE_PAGE_URL = 'https://github.com/facron2004/pi-desktop/re
 
 const LATEST_RELEASE_URL = APP_RELEASE_PAGE_URL
 const LATEST_RELEASE_TAG_PATH = /^\/facron2004\/pi-desktop\/releases\/tag\/v?(\d+\.\d+\.\d+)$/
+const RELEASES_API = 'https://api.github.com/repos/facron2004/pi-desktop/releases/tags/'
 const SEMVER_PATTERN = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
 interface ParsedVersion {
@@ -72,13 +73,56 @@ export async function fetchLatestAppVersion(fetcher: typeof fetch = fetch): Prom
   return match[1]!
 }
 
+/** The asset names an electron-builder release may use for this version. */
+export function installerAssetNames(version: string, arch: string): string[] {
+  return ['Pi.Desktop', 'Pi Desktop', 'Pi-Desktop'].flatMap((prefix) => [
+    `${prefix}-${version}-${arch}.exe`,
+    `${prefix}-${version}.exe`
+  ])
+}
+
+/**
+ * Size of the release installer, so an update card can say how large the
+ * download is before it starts. A missing answer is not an error: the version
+ * check still stands on its own.
+ */
+export async function fetchInstallerBytes(
+  version: string,
+  arch: string,
+  fetcher: typeof fetch = fetch
+): Promise<number | undefined> {
+  try {
+    const response = await fetcher(`${RELEASES_API}v${version}`, {
+      headers: { Accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(8_000)
+    })
+    if (!response.ok) return undefined
+    const release = await response.json() as { assets?: { name?: string; size?: number }[] }
+    if (!Array.isArray(release.assets)) return undefined
+    const names = installerAssetNames(version, arch)
+    const asset = release.assets.find(
+      (entry) => names.includes(entry.name ?? '') && entry.name?.endsWith(`-${arch}.exe`)
+    ) ?? release.assets.find((entry) => names.includes(entry.name ?? ''))
+    return typeof asset?.size === 'number' && Number.isSafeInteger(asset.size) && asset.size > 0
+      ? asset.size
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export async function checkAppVersion(
   current: string,
   fetcher: typeof fetch = fetch
 ): Promise<VersionItemStatus> {
   try {
     const latest = await fetchLatestAppVersion(fetcher)
-    return { current, latest, hasUpdate: isNewerVersion(latest, current) }
+    const hasUpdate = isNewerVersion(latest, current)
+    if (!hasUpdate) return { current, latest, hasUpdate }
+    const installerBytes = await fetchInstallerBytes(latest, process.arch, fetcher)
+    return installerBytes
+      ? { current, latest, hasUpdate, installerBytes }
+      : { current, latest, hasUpdate }
   } catch (err: unknown) {
     return {
       current,

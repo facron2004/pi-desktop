@@ -3,11 +3,20 @@ import { randomUUID } from 'node:crypto'
 import { execFile, execFileSync } from 'node:child_process'
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import type { AppSettings, Workspace } from '@shared/types'
+import type {
+  AppSettings,
+  SidebarArchiveFilter,
+  SidebarGroupBy,
+  SidebarSortBy,
+  Workspace
+} from '@shared/types'
 import {
   DEFAULT_IMAGE_OUTPUT_DIR,
   DEFAULT_IMAGE_QUALITY,
-  DEFAULT_IMAGE_SIZE
+  DEFAULT_IMAGE_SIZE,
+  SIDEBAR_ARCHIVE_FILTERS,
+  SIDEBAR_GROUP_MODES,
+  SIDEBAR_SORT_MODES
 } from '@shared/types'
 import { normalizeFontScale } from '@shared/font-scale'
 import { forgetDefaultModel, rememberDefaultModel, rememberDefaultThinkingLevel } from './pi/retry-policy'
@@ -265,11 +274,24 @@ function mergeRecord<T>(
   return result
 }
 
+/** A persisted enum keeps its default when the file holds a value we never shipped. */
+function normalizeChoice<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+    ? value as T
+    : fallback
+}
+
+/** Where a link in the conversation opens. */
+const URL_OPEN_TARGETS = ['external', 'internal'] as const
+
 const DEFAULT_SETTINGS: AppSettings = {
   workspaces: [],
   projectOrder: [],
   pinnedSessions: [],
   archivedSessions: [],
+  sidebarGroupBy: 'workspace',
+  sidebarSortBy: 'manual',
+  sidebarArchiveFilter: 'hidden',
   theme: 'dark',
   language: 'en',
   fontScale: 1,
@@ -279,6 +301,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   permissionMode: 'ask',
   desktopNotifications: true,
   defaultFileOpener: 'vscode',
+  urlOpenTarget: 'external',
   agentEnvironment: 'windows',
   terminalShell: 'powershell',
   compactChatHistory: true,
@@ -455,17 +478,33 @@ function markAclChildrenSecured(directory: string, userSid: string): void {
   }
 }
 
-function windowsUserSid(systemDirectory: string): string | undefined {
+interface WindowsUserIdentity {
+  account: string
+  userSid: string
+}
+
+let cachedWindowsIdentity: WindowsUserIdentity | undefined
+
+function windowsUserIdentity(systemDirectory: string): WindowsUserIdentity | undefined {
+  if (cachedWindowsIdentity) return cachedWindowsIdentity
   try {
     const userOutput = execFileSync(
       path.join(systemDirectory, 'whoami.exe'),
       ['/user', '/fo', 'csv', '/nh'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }
     )
-    return parseWindowsUserSid(userOutput)
+    const account = parseWindowsUserName(userOutput)
+    const userSid = parseWindowsUserSid(userOutput)
+    if (!account || !userSid) return undefined
+    cachedWindowsIdentity = { account, userSid }
+    return cachedWindowsIdentity
   } catch {
     return undefined
   }
+}
+
+function windowsUserSid(systemDirectory: string): string | undefined {
+  return windowsUserIdentity(systemDirectory)?.userSid
 }
 
 /** Parse the account name from `whoami /user /fo csv /nh`. */
@@ -527,20 +566,14 @@ function windowsUserDataAclAlreadySecured(
   systemDirectory: string
 ): boolean {
   try {
-    const userOutput = execFileSync(
-      path.join(systemDirectory, 'whoami.exe'),
-      ['/user', '/fo', 'csv', '/nh'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }
-    )
-    const account = parseWindowsUserName(userOutput)
-    const userSid = parseWindowsUserSid(userOutput)
-    if (!account || !userSid) return false
+    const identity = windowsUserIdentity(systemDirectory)
+    if (!identity) return false
     const acl = execFileSync(path.join(systemDirectory, 'icacls.exe'), [directory, '/L'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true
     })
-    return windowsUserDataAclSecure(acl, account, userSid, directory)
+    return windowsUserDataAclSecure(acl, identity.account, identity.userSid, directory)
   } catch {
     return false
   }
@@ -683,6 +716,10 @@ export class SettingsStore {
       pinnedSessions: normalizePathList(saved.pinnedSessions),
       archivedSessions: normalizePathList(saved.archivedSessions),
       hiddenProjects: normalizePathList(saved.hiddenProjects),
+      sidebarGroupBy: normalizeChoice<SidebarGroupBy>(saved.sidebarGroupBy, SIDEBAR_GROUP_MODES, 'workspace'),
+      sidebarSortBy: normalizeChoice<SidebarSortBy>(saved.sidebarSortBy, SIDEBAR_SORT_MODES, 'manual'),
+      sidebarArchiveFilter: normalizeChoice<SidebarArchiveFilter>(saved.sidebarArchiveFilter, SIDEBAR_ARCHIVE_FILTERS, 'hidden'),
+      urlOpenTarget: normalizeChoice(saved.urlOpenTarget, URL_OPEN_TARGETS, 'external'),
       shortcutBindings: normalizeShortcutBindings(saved.shortcutBindings)
     }
   }

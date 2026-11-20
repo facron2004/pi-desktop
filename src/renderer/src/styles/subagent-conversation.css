@@ -69,27 +69,17 @@
   color: var(--status-danger);
 }
 
-.subagent-conversation__live {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  min-width: 0;
-}
-
-.subagent-conversation__live-label {
-  color: var(--text-tertiary);
-  font-size: var(--text-assist);
-  line-height: var(--leading-assist);
-}
-
+/* The body keeps the conversation's reading rhythm: one turn per group, the
+   same column gap the main thread uses, and the same message components
+   inside. Only the panel's narrower gutters differ. */
 .subagent-conversation__body {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: var(--sp-3);
+  gap: var(--sp-6);
   min-height: 0;
   overflow: auto;
-  padding: var(--sp-4);
+  padding: var(--sp-5) var(--sp-4) var(--sp-6);
 }
 
 .subagent-conversation__truncated {
@@ -98,34 +88,10 @@
   text-align: center;
 }
 
-.subagent-conversation__user {
-  align-self: flex-end;
-  max-width: min(100%, 85%);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--bubble-radius) var(--bubble-radius) var(--r-sm) var(--bubble-radius);
-  background: var(--accent-soft);
-  color: var(--text-primary);
-  font-size: var(--text-sm);
-  line-height: var(--leading-reading);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
 .subagent-conversation__empty {
   margin: auto;
   padding: var(--sp-6) var(--sp-4);
   color: var(--text-tertiary);
   font-size: var(--text-sm);
   text-align: center;
-}
-
-.subagent-conversation__assistant {
-  max-width: 100%;
-  color: var(--text-primary);
-  font-size: var(--text-sm);
-}
-
-.subagent-conversation__assistant .md {
-  font-size: var(--text-sm);
 }

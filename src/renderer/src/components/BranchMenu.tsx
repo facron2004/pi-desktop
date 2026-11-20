@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useMemo, useRef, useState } from 'react'
 import { Check, FileDiff, GitFork, Loader2, Plus, Search, Trash2, X } from 'lucide-react'
 import type { GitBranches, GitWorktree } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
@@ -20,7 +20,7 @@ import '../styles/branch-menu.css'
  *   Checking the box only arms the next session. The worktree is created when
  *   that empty conversation sends its first prompt, not when the box is ticked.
  */
-export function BranchMenu({
+export const BranchMenu = memo(function BranchMenu({
   onOpenChanges,
   placement = 'top',
   align = 'left'
@@ -472,4 +472,4 @@ export function BranchMenu({
       />
     ) : null
   ]
-}
+})

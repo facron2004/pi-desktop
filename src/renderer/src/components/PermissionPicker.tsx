@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, CircleHelp, ShieldCheck, TriangleAlert, type LucideIcon } from 'lucide-react'
 import type { PermissionMode } from '@shared/types'
@@ -14,7 +14,7 @@ const MODES: { value: PermissionMode; label: string; description: string; icon: 
   { value: 'full', label: 'Full access', description: 'Allow all agent tools without approval.', icon: TriangleAlert }
 ]
 
-export function PermissionPicker() {
+export const PermissionPicker = memo(function PermissionPicker() {
   const mode = useAppStore((state) => state.settings.permissionMode ?? 'ask')
   const updateSettings = useAppStore((state) => state.updateSettings)
   const showToast = useAppStore((state) => state.showToast)
@@ -112,4 +112,4 @@ export function PermissionPicker() {
       ) : null}
     </>
   )
-}
+})

@@ -1,5 +1,5 @@
 import type { ThreadItem } from './thread'
-import { subagentCalls } from './subagents'
+import { subagentCallOf, type SubagentCall } from './subagents'
 
 /**
  * The tokens and cost the subagents of one conversation reported.
@@ -23,29 +23,31 @@ export interface SubagentUsage {
 /** A task status that means the child stopped reporting progress. */
 const SETTLED: ReadonlySet<string> = new Set(['completed', 'failed', 'aborted', 'timed_out'])
 
+export function accumulateSubagentCall(usage: SubagentUsage, call: SubagentCall): void {
+  for (const task of call.tasks) {
+    usage.tasks += 1
+    usage.tokens += task.tokens ?? 0
+    // `subagentCalls` only sets a cost when the child reported a number;
+    // a non-finite report is not a cost and must not poison the sum.
+    if (typeof task.cost === 'number' && Number.isFinite(task.cost)) {
+      usage.cost = (usage.cost ?? 0) + task.cost
+    }
+    if (SETTLED.has(task.status)) usage.settled += 1
+  }
+}
+
 /**
  * Derive the subagent usage from the tool nodes, through the same projection
  * the tree and the rail use. No second parser: `subagentCalls` already reads
  * `details.results[].usage` and applies the token arithmetic.
  */
 export function subagentUsage(items: readonly ThreadItem[]): SubagentUsage {
-  let tokens = 0
-  let cost: number | undefined
-  let tasks = 0
-  let settled = 0
+  const usage: SubagentUsage = { tokens: 0, cost: undefined, tasks: 0, settled: 0 }
 
-  for (const call of subagentCalls(items)) {
-    for (const task of call.tasks) {
-      tasks += 1
-      tokens += task.tokens ?? 0
-      // `subagentCalls` only sets a cost when the child reported a number;
-      // a non-finite report is not a cost and must not poison the sum.
-      if (typeof task.cost === 'number' && Number.isFinite(task.cost)) {
-        cost = (cost ?? 0) + task.cost
-      }
-      if (SETTLED.has(task.status)) settled += 1
-    }
+  for (const item of items) {
+    if (item.kind !== 'tool' || item.toolName !== 'subagent') continue
+    accumulateSubagentCall(usage, subagentCallOf(item))
   }
 
-  return { tokens, cost, tasks, settled }
+  return usage
 }

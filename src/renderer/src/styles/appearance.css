@@ -974,6 +974,9 @@
 
 .popover.settings-picker__popover {
   z-index: var(--z-overlay);
+  /* The menu paints its own inset; the base popover's 8px padding would double
+     it and leave a wide blank frame around the options. */
+  padding: 0;
 }
 
 .popover.settings-icon-select__popover {
@@ -1424,25 +1427,72 @@
   font-weight: 600;
 }
 
-/* Model distribution: a column per model over the full width, with the token
-   count printed above each bar. The count and the bar share one glance, which
-   is the comparison the section is for. */
+/* Model distribution: a column per model over the full width, scaled against
+   a round scale on the left. The side ticks carry the reading, so no number is
+   printed on the bars themselves; exact values stay in the hover bubble. */
 .usage-model-chart {
+  --usage-axis-w: 46px;
   display: flex;
   min-width: 0;
   flex-direction: column;
+  gap: var(--sp-2);
 }
 
 .usage-model-chart__plot {
   display: flex;
   align-items: stretch;
   gap: var(--sp-2);
-  height: 208px;
-  min-height: 208px;
-  /* The strip above the tallest bar carries its value label. */
-  padding: calc(var(--sp-5) + var(--sp-1)) var(--sp-3) 0;
-  border-bottom: 1px solid var(--border-soft);
+  height: 186px;
+  min-height: 186px;
+  /* Headroom for the top tick, which is centred on the plot's top edge. */
+  padding: var(--sp-2) var(--sp-3) 0;
   box-sizing: border-box;
+}
+
+.usage-model-chart__yaxis {
+  position: relative;
+  flex: 0 0 var(--usage-axis-w);
+  width: var(--usage-axis-w);
+}
+
+.usage-model-chart__tick {
+  position: absolute;
+  right: var(--sp-1);
+  transform: translateY(50%);
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.usage-model-chart__area {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.usage-model-chart__grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.usage-model-chart__grid > span {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px dashed var(--border-soft);
+}
+
+.usage-model-chart__columns {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: stretch;
+  gap: var(--sp-2);
 }
 
 .usage-model-chart__column {
@@ -1451,7 +1501,6 @@
   flex: 1 1 0;
   flex-direction: column;
   align-items: center;
-  gap: var(--sp-2);
 }
 
 .usage-model-chart__bar-area {
@@ -1472,23 +1521,15 @@
   transition: height var(--dur-base) var(--ease);
 }
 
-/* The number sits on top of the bar it measures. Out of the flow, so bars of
-   different heights still line up on the baseline. */
-.usage-model-chart__value {
-  position: absolute;
-  bottom: calc(100% + var(--sp-1));
-  left: 50%;
-  color: var(--text-muted);
-  font-size: var(--text-2xs);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  line-height: var(--leading-assist);
-  white-space: nowrap;
-  transform: translateX(-50%);
+.usage-model-chart__xlabels {
+  display: flex;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) 0 calc(var(--sp-3) + var(--usage-axis-w) + var(--sp-2));
 }
 
 .usage-model-chart__xlabel {
-  width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
   font-family: var(--font-mono);

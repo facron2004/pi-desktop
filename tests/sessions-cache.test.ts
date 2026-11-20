@@ -1825,3 +1825,39 @@ test('readSessionHeadMessages reads first exchange on large files and reuses war
   assert.equal(full.length, 4)
   assert.strictEqual(await readSessionHeadMessages(file), full, 'warm cache hit returns cached full thread')
 })
+
+test('getSessionMeta fast cache check still rejects an escaping directory link or external hardlink', async (t) => {
+  clearSessionCache()
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-meta-cache-symlink-'))
+  const root = path.join(parent, 'sessions')
+  const wsDir = path.join(root, '--C--proj--')
+  const file = path.join(wsDir, 's.jsonl')
+  const outsideDir = path.join(parent, 'outside-dir')
+  const outsideFile = path.join(outsideDir, 's.jsonl')
+  t.after(() => {
+    clearSessionCache()
+    rmSync(parent, { recursive: true, force: true })
+  })
+  mkdirSync(wsDir, { recursive: true })
+  mkdirSync(outsideDir, { recursive: true })
+  writeCacheTestSession(file, 'C:\\proj', [['hi', 'hello']])
+  writeCacheTestSession(outsideFile, 'C:\\proj', [['secret', 'hidden']])
+
+  const warm = await getSessionMeta(file, root)
+  assert.equal(warm?.preview, 'hi')
+  assert.strictEqual(await getSessionMeta(file, root), warm)
+
+  // Replace the workspace session folder with a directory link/junction pointing outside root
+  rmSync(wsDir, { recursive: true, force: true })
+  try {
+    symlinkSync(outsideDir, wsDir, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') {
+      t.skip(`directory links are unavailable (${code})`)
+      return
+    }
+    throw error
+  }
+  assert.equal(await getSessionMeta(file, root), null, 'cached file behind an escaping folder link must be rejected')
+})

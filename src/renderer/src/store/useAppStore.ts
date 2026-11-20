@@ -34,6 +34,7 @@ import { loadSessionNotices, saveSessionNotices } from '../lib/session-notices'
 import {
   applyEventBatch,
   applyEvent,
+  changedThreadItemsFrom,
   clearPendingPrompts,
   itemsFromMessages,
   lastAssistantText,
@@ -46,11 +47,13 @@ import {
 import { basename, resolveAgainst, samePath } from '../lib/path'
 import {
   activeConversationTitle,
+  conversationRows,
   listPendingUiSessions,
   updateThreadSessionName,
   type PendingUiSession
 } from '../lib/live-sessions'
 import { stripAnsi } from '../lib/ansi'
+import { trayConversations } from '../lib/tray-conversations'
 import { translate } from '../lib/i18n'
 import { collectProjects, type Project } from '../lib/projects'
 import { APP_COMMANDS, normalizeAppCommandInput } from '../lib/app-commands'
@@ -79,6 +82,7 @@ import {
   saveComposerDrafts
 } from '../lib/composer-drafts'
 import type { ComposerDraft, ComposerImageOptions } from '../lib/composer-drafts'
+import { FONT_STACK_PROPERTIES, uiFontStack } from '../lib/ui-font'
 
 export { listPendingUiSessions, type PendingUiSession }
 export type {
@@ -381,11 +385,46 @@ function draftWorkspaceKey(workspace: Workspace | undefined): string {
 }
 
 let draftPersistenceWarning: 'text-only' | 'failed' | undefined
+const DRAFT_SAVE_DEBOUNCE_MS = 350
+const cachedLastDraftKeysByStorage = new WeakMap<Storage, Record<string, string>>()
+let draftSaveTimer: ReturnType<typeof setTimeout> | null = null
+let pendingDraftSnapshotWrite: {
+  state: AppStore
+  drafts: Record<string, ComposerDraft>
+  lastDraftKeys: Record<string, string>
+} | null = null
+
+function cachedDraftStorage(): Storage | undefined {
+  try {
+    if (typeof localStorage !== 'undefined') return localStorage
+    if (typeof window !== 'undefined') return window.localStorage
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
+function readCachedLastDraftKeys(): Record<string, string> {
+  const storage = cachedDraftStorage()
+  if (storage) {
+    const cached = cachedLastDraftKeysByStorage.get(storage)
+    if (cached) return { ...cached }
+  }
+  const saved = loadComposerDrafts()
+  if (storage) cachedLastDraftKeysByStorage.set(storage, { ...saved.lastDraftKeys })
+  return { ...saved.lastDraftKeys }
+}
+
+function rememberCachedLastDraftKeys(lastDraftKeys: Record<string, string>): void {
+  const storage = cachedDraftStorage()
+  if (storage) cachedLastDraftKeysByStorage.set(storage, { ...lastDraftKeys })
+}
 
 function writeDraftSnapshot(
   state: AppStore,
   snapshot: { drafts: Record<string, ComposerDraft>; lastDraftKeys: Record<string, string> }
 ): void {
+  rememberCachedLastDraftKeys(snapshot.lastDraftKeys)
   const result = saveComposerDrafts(snapshot)
   if (result === 'saved') {
     draftPersistenceWarning = undefined
@@ -406,22 +445,71 @@ function writeDraftSnapshot(
   queueMicrotask(() => state.showToast(message, 'warning'))
 }
 
+function flushPendingDraftWrite(): void {
+  if (draftSaveTimer !== null) {
+    globalThis.clearTimeout(draftSaveTimer)
+    draftSaveTimer = null
+  }
+  const pending = pendingDraftSnapshotWrite
+  if (!pending) return
+  pendingDraftSnapshotWrite = null
+  writeDraftSnapshot(pending.state, {
+    drafts: pending.drafts,
+    lastDraftKeys: pending.lastDraftKeys
+  })
+}
+
 function persistDraftSnapshot(
   state: AppStore,
   drafts: Record<string, ComposerDraft>,
-  lastDraftKey?: string | null
+  lastDraftKey?: string | null,
+  options?: { debounce?: boolean }
 ): void {
-  const saved = loadComposerDrafts()
-  const lastDraftKeys = { ...saved.lastDraftKeys }
+  const lastDraftKeys = readCachedLastDraftKeys()
   const workspaceKey = draftWorkspaceKey(state.workspace)
   if (lastDraftKey === null) delete lastDraftKeys[workspaceKey]
   else if (lastDraftKey) lastDraftKeys[workspaceKey] = lastDraftKey
+  rememberCachedLastDraftKeys(lastDraftKeys)
+
+  if (options?.debounce) {
+    pendingDraftSnapshotWrite = { state, drafts, lastDraftKeys }
+    if (draftSaveTimer !== null) globalThis.clearTimeout(draftSaveTimer)
+    draftSaveTimer = globalThis.setTimeout(() => {
+      draftSaveTimer = null
+      flushPendingDraftWrite()
+    }, DRAFT_SAVE_DEBOUNCE_MS)
+    ;(draftSaveTimer as unknown as { unref?: () => void }).unref?.()
+    return
+  }
+
+  if (draftSaveTimer !== null) {
+    globalThis.clearTimeout(draftSaveTimer)
+    draftSaveTimer = null
+  }
+  pendingDraftSnapshotWrite = null
   writeDraftSnapshot(state, { drafts, lastDraftKeys })
 }
 
 function persistPromotedDraft(state: AppStore, from: string, drafts: Record<string, ComposerDraft>): void {
-  const saved = loadComposerDrafts()
-  writeDraftSnapshot(state, forgetLastDraftKey({ ...saved, drafts }, from))
+  if (draftSaveTimer !== null) {
+    globalThis.clearTimeout(draftSaveTimer)
+    draftSaveTimer = null
+  }
+  pendingDraftSnapshotWrite = null
+  const lastDraftKeys = readCachedLastDraftKeys()
+  const updated = forgetLastDraftKey({ drafts, lastDraftKeys }, from)
+  writeDraftSnapshot(state, updated)
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('pagehide', flushPendingDraftWrite)
+  window.addEventListener('beforeunload', flushPendingDraftWrite)
+  window.addEventListener('blur', flushPendingDraftWrite)
+}
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPendingDraftWrite()
+  })
 }
 
 export interface AppStore {
@@ -457,6 +545,17 @@ export interface AppStore {
   historyTruncated?: boolean
   /** Transcript and run of every conversation, keyed by file path or draft id. */
   threads: Record<string, SessionThread>
+  /**
+   * Monotonic counter bumped only when thread keys change or a thread's
+   * sidebar/dialog metadata changes (`isStreaming`, `notice`, `pendingUiRequests.length`,
+   * `firstPrompt`, `sessionFile`) — never on pure text/thinking stream deltas.
+   */
+  threadsMetaVersion: number
+  /**
+   * Monotonic counter bumped only when the active thread changes/hydrates/clears
+   * or a tool item in the active thread changes — never on pure text/thinking deltas.
+   */
+  activeToolsRevision: number
   /**
    * Unread/failed marks that outlive the in-memory thread, keyed by session
    * file. A background run's notice must survive a restart so the sidebar can
@@ -619,7 +718,7 @@ export interface AppStore {
   setSteeringMode: (mode: 'all' | 'one-at-a-time') => Promise<void>
   /** How follow-up messages are delivered: one at a time or all at once. */
   setFollowUpMode: (mode: 'all' | 'one-at-a-time') => Promise<void>
-  refreshState: (sessionKey?: string) => Promise<void>
+  refreshState: (sessionKey?: string, options?: { includeCatalog?: boolean }) => Promise<void>
   /**
    * Ask Pi for `get_session_stats` right now.
    *
@@ -754,6 +853,8 @@ let projectTransitionTarget: string | null | undefined
  */
 let projectEpoch = 0
 let sessionListRequest = 0
+let sessionMutationSeq = 0
+let sessionsRefreshInFlight: { epoch: number; mutation: number; promise: Promise<void> } | null = null
 /** Prevent older Pi state reads from overwriting a newer snapshot per thread. */
 let refreshStateRequestSequence = 0
 const refreshStateRequests = new Map<string, number>()
@@ -795,6 +896,8 @@ const GIT_REFRESH_DEBOUNCE_MS = 700
 let gitRefreshTimer: number | null = null
 const HIDDEN_EVENT_FLUSH_MS = 100
 let gitStatusRequest = 0
+let gitMutationSeq = 0
+let gitRefreshInFlight: { epoch: number; mutation: number; promise: Promise<void> } | null = null
 
 /** A project switch: the view and the project both move. */
 function beginProjectChange(target: string | null): number {
@@ -1149,7 +1252,182 @@ async function createWorktreeForSessionStart(get: GetState): Promise<boolean> {
   }
 }
 
-export const useAppStore = create<AppStore>((set, get) => ({
+interface ThreadMetaDigest {
+  isStreaming: boolean
+  notice: SessionNotice | undefined
+  pendingUiCount: number
+  firstPrompt: string
+  firstPromptIndex: number
+  itemsRef: readonly ThreadItem[]
+  sessionFile: string | undefined
+}
+
+const threadMetaDigests = new WeakMap<SessionThread, ThreadMetaDigest>()
+
+function threadFirstPrompt(
+  items: readonly ThreadItem[],
+  previous?: ThreadMetaDigest
+): { text: string; index: number } {
+  if (
+    previous &&
+    previous.firstPromptIndex >= 0 &&
+    items.length > previous.firstPromptIndex &&
+    items[previous.firstPromptIndex] === previous.itemsRef[previous.firstPromptIndex]
+  ) {
+    if (previous.firstPromptIndex === 0) {
+      return { text: previous.firstPrompt, index: 0 }
+    }
+    const diff = changedThreadItemsFrom(items as ThreadItem[], previous.itemsRef as ThreadItem[])
+    if (diff !== undefined && diff > previous.firstPromptIndex) {
+      return { text: previous.firstPrompt, index: previous.firstPromptIndex }
+    }
+  }
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index]
+    if (item.kind === 'user' && item.text.trim()) {
+      return { text: item.text, index }
+    }
+  }
+  return { text: '', index: -1 }
+}
+
+function digestOfThread(thread: SessionThread, previousThread?: SessionThread): ThreadMetaDigest {
+  const cached = threadMetaDigests.get(thread)
+  if (cached) return cached
+  const prevDigest = previousThread ? threadMetaDigests.get(previousThread) : undefined
+  const firstPrompt =
+    prevDigest && prevDigest.itemsRef === thread.items
+      ? { text: prevDigest.firstPrompt, index: prevDigest.firstPromptIndex }
+      : threadFirstPrompt(thread.items, prevDigest)
+  const digest: ThreadMetaDigest = {
+    isStreaming: thread.isStreaming,
+    notice: thread.notice,
+    pendingUiCount: pendingDialogsFor(thread).length,
+    firstPrompt: firstPrompt.text,
+    firstPromptIndex: firstPrompt.index,
+    itemsRef: thread.items,
+    sessionFile: thread.piState?.sessionFile
+  }
+  threadMetaDigests.set(thread, digest)
+  return digest
+}
+
+function hasThreadsMetaChange(
+  prevThreads: Readonly<Record<string, SessionThread>>,
+  nextThreads: Readonly<Record<string, SessionThread>>
+): boolean {
+  if (prevThreads === nextThreads) return false
+  const prevKeys = Object.keys(prevThreads)
+  const nextKeys = Object.keys(nextThreads)
+  if (prevKeys.length !== nextKeys.length) return true
+  for (let index = 0; index < nextKeys.length; index += 1) {
+    const key = nextKeys[index]
+    if (!(key in prevThreads)) return true
+    const prevThread = prevThreads[key]
+    const nextThread = nextThreads[key]
+    if (prevThread === nextThread) continue
+    const prevDigest = digestOfThread(prevThread)
+    const nextDigest = digestOfThread(nextThread, prevThread)
+    if (
+      prevDigest.isStreaming !== nextDigest.isStreaming ||
+      prevDigest.notice !== nextDigest.notice ||
+      prevDigest.pendingUiCount !== nextDigest.pendingUiCount ||
+      prevDigest.firstPrompt !== nextDigest.firstPrompt ||
+      prevDigest.sessionFile !== nextDigest.sessionFile
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+function hasToolItemChange(
+  prevItems: readonly ThreadItem[],
+  nextItems: readonly ThreadItem[]
+): boolean {
+  if (prevItems === nextItems) return false
+  const firstDiff = changedThreadItemsFrom(nextItems as ThreadItem[], prevItems as ThreadItem[])
+  if (firstDiff !== undefined) {
+    const end = Math.max(prevItems.length, nextItems.length)
+    for (let index = firstDiff; index < end; index += 1) {
+      if (prevItems[index]?.kind === 'tool' || nextItems[index]?.kind === 'tool') {
+        return true
+      }
+    }
+    return false
+  }
+  let prevTools = 0
+  for (let index = 0; index < prevItems.length; index += 1) {
+    if (prevItems[index]?.kind === 'tool') prevTools += 1
+  }
+  let nextTools = 0
+  let cursor = 0
+  for (let index = 0; index < nextItems.length; index += 1) {
+    const nextItem = nextItems[index]
+    if (nextItem?.kind !== 'tool') continue
+    nextTools += 1
+    while (cursor < prevItems.length && prevItems[cursor]?.kind !== 'tool') {
+      cursor += 1
+    }
+    if (cursor >= prevItems.length || prevItems[cursor] !== nextItem) {
+      return true
+    }
+    cursor += 1
+  }
+  return prevTools !== nextTools
+}
+
+interface RevisionOptions {
+  activeThreadHydrated?: boolean
+  toolChangedHint?: boolean
+}
+
+function withRevisions(
+  prev: AppStore,
+  patch: Partial<AppStore>,
+  options?: RevisionOptions
+): Partial<AppStore> {
+  if (!patch || patch === prev) return patch
+  let hasKey = false
+  for (const _key in patch) {
+    hasKey = true
+    break
+  }
+  if (!hasKey && !options?.activeThreadHydrated) return patch
+  const bumpMeta =
+    'threads' in patch && patch.threads !== undefined && hasThreadsMetaChange(prev.threads, patch.threads)
+
+  const nextActiveFile = 'activeSessionFile' in patch ? patch.activeSessionFile : prev.activeSessionFile
+  const nextDraftId = 'draftId' in patch ? patch.draftId : prev.draftId
+  const prevViewKey = viewKeyOf(prev)
+  const nextViewKey = viewKeyOf({ activeSessionFile: nextActiveFile, draftId: nextDraftId })
+  const viewChanged = prevViewKey !== nextViewKey
+
+  let bumpTools = viewChanged || Boolean(options?.activeThreadHydrated)
+  if (!bumpTools && 'items' in patch && patch.items !== undefined && patch.items !== prev.items) {
+    bumpTools =
+      options?.toolChangedHint !== undefined
+        ? options.toolChangedHint
+        : hasToolItemChange(prev.items, patch.items)
+  }
+
+  if (!bumpMeta && !bumpTools) return patch
+  return {
+    ...patch,
+    ...(bumpMeta ? { threadsMetaVersion: prev.threadsMetaVersion + 1 } : {}),
+    ...(bumpTools ? { activeToolsRevision: prev.activeToolsRevision + 1 } : {})
+  }
+}
+
+export const useAppStore = create<AppStore>((rawSet, get) => {
+  const commit = (
+    partial: Partial<AppStore> | ((state: AppStore) => Partial<AppStore>),
+    options?: RevisionOptions
+  ): void => {
+    rawSet((state) => withRevisions(state, typeof partial === 'function' ? partial(state) : partial, options))
+  }
+  const set: SetState = (partial, options) => commit(partial, options)
+  return {
   settings: DEFAULT_SETTINGS,
   sessions: [],
   status: { phase: 'stopped' },
@@ -1164,6 +1442,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   pendingWorktree: false,
   setPendingWorktree: (armed) => set({ pendingWorktree: armed }),
   threads: {},
+  threadsMetaVersion: 0,
+  activeToolsRevision: 0,
   sessionNotices: loadSessionNotices(),
   rememberSessionNotice: (file, notice) => {
     const key = threadKey(file)
@@ -1193,6 +1473,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const empty =
         !nextDraft.text &&
         !nextDraft.command &&
+        !nextDraft.image &&
         nextDraft.images.length === 0 &&
         (nextDraft.files?.length ?? 0) === 0 &&
         (!nextDraft.pastedRefs || Object.keys(nextDraft.pastedRefs).length === 0) &&
@@ -1201,14 +1482,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
         if (!(key in state.drafts)) return state
         const drafts = { ...state.drafts }
         delete drafts[key]
-        persistDraftSnapshot(state, drafts)
+        persistDraftSnapshot(state, drafts, undefined, { debounce: true })
         return { drafts }
       }
       const drafts = {
         ...state.drafts,
         [key]: nextDraft
       }
-      persistDraftSnapshot(state, drafts)
+      persistDraftSnapshot(state, drafts, undefined, { debounce: true })
       return { drafts }
     })
   },
@@ -1216,7 +1497,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const key = threadKey(sessionKey.trim())
     if (!key) return
     set((state) => {
-      if (!(key in state.drafts)) return state
+      if (!(key in state.drafts)) {
+        flushPendingDraftWrite()
+        return state
+      }
       const drafts = { ...state.drafts }
       delete drafts[key]
       persistDraftSnapshot(state, drafts)
@@ -1233,10 +1517,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
       if (deskPage !== null) return { deskPage }
       const key = viewKeyOf(state)
       const current = key ? state.threads[key] : undefined
-      if (!current?.notice && !state.notice) return { deskPage: null }
+      const canonical = key ? threadKey(key) : ''
+      const hasPersistedNotice = Boolean(canonical && canonical in state.sessionNotices)
+      if (!current?.notice && !state.notice && !hasPersistedNotice) return { deskPage: null }
+      let nextNotices = state.sessionNotices
+      if (hasPersistedNotice && canonical) {
+        nextNotices = { ...state.sessionNotices }
+        delete nextNotices[canonical]
+        saveSessionNotices(nextNotices)
+      }
       return {
         deskPage: null,
         notice: undefined,
+        ...(hasPersistedNotice ? { sessionNotices: nextNotices } : {}),
         ...(current?.notice && key
           ? {
               threads: {
@@ -1247,10 +1540,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
           : {})
       }
     })
-    if (deskPage === null) {
-      const key = viewKeyOf(get())
-      if (key) get().forgetSessionNotice(key)
-    }
   },
   forkTargets: [],
   forking: false,
@@ -1368,23 +1657,27 @@ export const useAppStore = create<AppStore>((set, get) => ({
   bootstrap() {
     if (bootstrapPromise) return bootstrapPromise
     const work = (async () => {
-      const settings = await window.pi.settings.get()
-      set({ settings })
       const startupTheme = new URLSearchParams(window.location.search).get('piDesktopTheme')
-      applyAppearance(
-        settings,
+      const startupForcedTheme =
         startupTheme === 'light' || startupTheme === 'dark' ? startupTheme : undefined
-      )
+      let settingsApplied = false
 
-      // The About page needs a Pi process for its version only; keep that load
-      // out of the first conversation's cold start.
+      // Launch startup metadata, model catalog, and settings together so cold start
+      // pays one IPC round trip instead of a waterfall.
       void window.pi.app.info({ includePiVersion: false }).then((info) => {
         set({ info })
-        applyAppearance(get().settings, info.forcedTheme)
+        if (settingsApplied && info.forcedTheme !== startupForcedTheme) {
+          applyAppearance(get().settings, info.forcedTheme)
+        }
       }).catch((error: unknown) => {
         console.warn('[pi-desktop] could not load app info:', error)
       })
       void get().refreshModelCatalog()
+
+      const settings = await window.pi.settings.get()
+      set({ settings })
+      settingsApplied = true
+      applyAppearance(settings, get().info?.forcedTheme ?? startupForcedTheme)
 
       // StrictMode replays effects in development. bootstrapPromise above makes
       // this single startup transaction idempotent across that replay.
@@ -1501,6 +1794,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
         if (target) void get().selectSession(target, 'notification-open')
       })
 
+      // The tray bridge is added by the preload; a renderer hot-reload can land
+      // before a dev process is rebuilt with that bridge, so tolerate its absence.
+      const offTrayOpen = window.pi.tray?.onOpenConversation?.(({ key }) => {
+        if (!key) return
+        const state = get()
+        // The key is a thread key (a file path or a draft id). Match through the
+        // same projection the sidebar uses so a live, unflushed chat is found.
+        const target = conversationRows(state.sessions, state.threads, state.workspace?.path)
+          .find((row) => threadKey(row.file) === threadKey(key))
+        if (target) void get().selectSession(target, 'tray-open')
+      })
+
       unsubscribeRuntime = () => {
         offEvent()
         offRekey?.()
@@ -1508,6 +1813,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         offStatus()
         offSessionsChanged?.()
         offNotificationOpen?.()
+        offTrayOpen?.()
       }
 
       const active = settings.workspaces.find((w) => w.id === settings.activeWorkspaceId)
@@ -1549,6 +1855,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async closeWorkspace() {
+    flushPendingDraftWrite()
     const epoch = beginProjectChange(null)
     drainPending()
     pendingProjectPath = undefined
@@ -1564,6 +1871,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async switchProject(path, options) {
+    flushPendingDraftWrite()
     const current = get().workspace
     const same = path === null
       ? !current && get().settings.activeWorkspaceId === null
@@ -1587,9 +1895,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         if (epoch !== workspaceEpoch) return
         set({ workspace, settings: next })
         applyAppearance(next, get().info?.forcedTheme)
-        await get().refreshSessions()
-        if (epoch !== workspaceEpoch) return
-        await get().refreshGit()
+        await Promise.all([get().refreshSessions(), get().refreshGit()])
       }
       return
     }
@@ -1629,6 +1935,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async openWorkspace(workspace, sessionFile, sourceAction = 'project-open') {
     void sourceAction
+    flushPendingDraftWrite()
     const currentKey = viewKeyOf(get())
     if (currentKey) touchSessionLru(currentKey)
     stopPrewarmOnlyRuntime(currentKey)
@@ -1640,6 +1947,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const shouldHydrate = Boolean(sessionFile && (!cached || cached.version === 0) && !cached?.isStreaming)
     const hydratingSessionFile = shouldHydrate ? sessionFile : undefined
     const savedDrafts = loadComposerDrafts()
+    rememberCachedLastDraftKeys(savedDrafts.lastDraftKeys)
     const drafts = { ...savedDrafts.drafts, ...get().drafts }
     const restoredDraftId = savedDrafts.lastDraftKeys[draftWorkspaceKey(workspace)]
     const draftId = sessionFile ? undefined : restoredDraftId || mintDraft()
@@ -1647,7 +1955,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const thread = cached
       ? { ...cached, clientKey: cached.clientKey || mintClientKey(), notice: undefined }
       : emptyThread(workspace?.path, draftMode(get().settings))
-    if (sessionFile) get().forgetSessionNotice(sessionFile)
+    const noticeKey = sessionFile ? threadKey(sessionFile) : ''
+    let nextSessionNotices = get().sessionNotices
+    if (noticeKey && noticeKey in nextSessionNotices) {
+      nextSessionNotices = { ...nextSessionNotices }
+      delete nextSessionNotices[noticeKey]
+      saveSessionNotices(nextSessionNotices)
+    }
     if (sessionFile) {
       deletedSessionKeys.delete(sessionFile)
       deletedSessionKeys.delete(threadKey(sessionFile))
@@ -1666,6 +1980,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       draftId,
       activeSessionFile: sessionFile,
       hydratingSessionFile,
+      ...(nextSessionNotices !== get().sessionNotices ? { sessionNotices: nextSessionNotices } : {}),
       deskPage: null,
       error: undefined,
       composerText: undefined,
@@ -1680,12 +1995,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (!sessionFile && draftId) persistDraftSnapshot(get(), drafts, draftId)
     if (shouldHydrate && sessionFile) void get().hydrateSession(sessionFile)
     if (epoch !== workspaceEpoch) return
-    await get().refreshSessions()
-    if (epoch !== workspaceEpoch) return
-    // The branch and the change counts are a reading of the folder, not part
-    // of restoring the conversation. Reading Git here would put a git process
-    // in front of the first frame, so it lands just after the window is up.
+    const sessionsTask = get().refreshSessions()
+    // Start the folder's Git read alongside the session index instead of serializing
+    // the git subprocess behind disk scans.
     void get().refreshGit()
+    await sessionsTask
   },
 
   async removeWorkspace(target) {
@@ -1727,18 +2041,33 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   async refreshSessions() {
     const epoch = projectEpoch
+    const mutation = sessionMutationSeq
+    if (
+      sessionsRefreshInFlight &&
+      sessionsRefreshInFlight.epoch === epoch &&
+      sessionsRefreshInFlight.mutation === mutation
+    ) {
+      return sessionsRefreshInFlight.promise
+    }
     const request = ++sessionListRequest
-    const sessions = await window.pi.sessions.list()
-    // The list belongs to the project, not the conversation on screen, so a
-    // view change must not invalidate it. The project epoch rejects reads
-    // across project switches; the request sequence rejects older same-project
-    // scans. A view epoch here made new conversations vanish from the sidebar.
-    if (epoch !== projectEpoch || request !== sessionListRequest) return
-    set({ sessions })
+    const promise = (async () => {
+      const sessions = await window.pi.sessions.list()
+      // The list belongs to the project, not the conversation on screen, so a
+      // view change must not invalidate it. The project epoch rejects reads
+      // across project switches; the request sequence rejects older same-project
+      // scans. A view epoch here made new conversations vanish from the sidebar.
+      if (epoch !== projectEpoch || request !== sessionListRequest) return
+      set({ sessions })
+    })().finally(() => {
+      if (sessionsRefreshInFlight?.promise === promise) sessionsRefreshInFlight = null
+    })
+    sessionsRefreshInFlight = { epoch, mutation, promise }
+    return promise
   },
 
   async selectSession(session, sourceAction = 'sidebar-select') {
     void sourceAction
+    flushPendingDraftWrite()
     const targetFile = threadKey(session.file)
     const currentKey = viewKeyOf(get())
     if (currentKey && currentKey !== targetFile) touchSessionLru(currentKey)
@@ -1757,7 +2086,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const thread = cached
       ? { ...cached, clientKey: cached.clientKey || mintClientKey(), notice: undefined }
       : emptyThread(session.cwd)
-    get().forgetSessionNotice(targetFile)
+    let nextSessionNotices = get().sessionNotices
+    if (targetFile && targetFile in nextSessionNotices) {
+      nextSessionNotices = { ...nextSessionNotices }
+      delete nextSessionNotices[targetFile]
+      saveSessionNotices(nextSessionNotices)
+    }
     // A conversation Pi has not written to disk yet is still keyed by its
     // draft id (or by the path Pi assigned before flushing). It is a
     // conversation, not a file, so the view follows its own key and nothing
@@ -1783,6 +2117,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       draftId: live ? targetFile : undefined,
       activeSessionFile: live ? undefined : targetFile,
       hydratingSessionFile: shouldHydrate ? targetFile : undefined,
+      ...(nextSessionNotices !== get().sessionNotices ? { sessionNotices: nextSessionNotices } : {}),
       deskPage: null,
       error: undefined,
       composerText: undefined,
@@ -1891,8 +2226,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
         const rawThreads = { ...get().threads, [file]: next }
         const threads = enforceSessionLru(rawThreads, viewKeyOf(get()))
-        if (get().activeSessionFile === file) set({ threads, ...projectThread(next) })
-        else set({ threads })
+        const isActive = get().activeSessionFile === file
+        const clearHydrating = get().hydratingSessionFile === file ? { hydratingSessionFile: undefined } : {}
+        if (isActive) {
+          commit({ threads, ...projectThread(next), ...clearHydrating }, { activeThreadHydrated: true })
+        } else {
+          commit({ threads, ...clearHydrating })
+        }
       } catch (error) {
         // `openWorkspace` fires this read without awaiting it; a rejected read
         // must surface on the conversation instead of becoming an unhandled
@@ -1944,6 +2284,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         set({ error: 'Could not rename that conversation' })
         return
       }
+      sessionMutationSeq += 1
       const renamed = await window.pi.sessions.rename(file, trimmed)
       if (!renamed) {
         set({ error: 'Could not rename that conversation' })
@@ -1993,6 +2334,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           /* a cold conversation has no process */
         }
       }
+      sessionMutationSeq += 1
       const removed = await window.pi.sessions.remove(file)
       if (!removed) {
         await get().refreshSessions().catch(() => {})
@@ -2184,6 +2526,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   async send(text, images, kind = 'steer', image) {
+    flushPendingDraftWrite()
     const trimmed = normalizeAppCommandInput(text.trim())
     if (!trimmed && !images.length) return
     // `!cmd` and `!!cmd` run a shell command inline via Pi's `bash` RPC.
@@ -3073,33 +3416,38 @@ export const useAppStore = create<AppStore>((set, get) => ({
     liveStatsInFlight.set(key, task)
   },
 
-  async refreshState(sessionKey = viewKeyOf(get())) {
+  async refreshState(sessionKey = viewKeyOf(get()), options) {
     if (!sessionKey) return
     const key = threadKey(sessionKey)
     const request = ++refreshStateRequestSequence
     refreshStateRequests.set(key, request)
     const update = bindSet(set, get, key)
+    const includeCatalog = options?.includeCatalog !== false
     try {
       const [state, models, levels, stats] = await Promise.all([
         tracedRpc<PiState>(key, 'get_state', undefined, undefined, 'refresh-state'),
-        tracedRpc<{ models: ModelInfo[] }>(
-          key,
-          'get_available_models',
-          undefined,
-          undefined,
-          'refresh-state'
-        )
-          .then((data) => data?.models ?? [])
-          .catch(() => undefined as ModelInfo[] | undefined),
-        tracedRpc<{ levels: string[] }>(
-          key,
-          'get_available_thinking_levels',
-          undefined,
-          undefined,
-          'refresh-state'
-        )
-          .then((data) => data?.levels ?? [])
-          .catch(() => undefined as string[] | undefined),
+        includeCatalog
+          ? tracedRpc<{ models: ModelInfo[] }>(
+              key,
+              'get_available_models',
+              undefined,
+              undefined,
+              'refresh-state'
+            )
+              .then((data) => data?.models ?? [])
+              .catch(() => undefined as ModelInfo[] | undefined)
+          : Promise.resolve(undefined as ModelInfo[] | undefined),
+        includeCatalog
+          ? tracedRpc<{ levels: string[] }>(
+              key,
+              'get_available_thinking_levels',
+              undefined,
+              undefined,
+              'refresh-state'
+            )
+              .then((data) => data?.levels ?? [])
+              .catch(() => undefined as string[] | undefined)
+          : Promise.resolve(undefined as string[] | undefined),
         tracedRpc<SessionStats>(key, 'get_session_stats', undefined, undefined, 'refresh-state')
           .catch(() => undefined as SessionStats | undefined)
       ])
@@ -3209,7 +3557,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         'reload-messages'
       )
       if (ownGet().isStreaming) return
-      bindSet(set, get, sessionKey)({
+      const activeCanonical = viewKeyOf(get()) ? threadKey(viewKeyOf(get())) : ''
+      const isViewed = !sessionKey || threadKey(sessionKey) === activeCanonical
+      bindSet(set, get, sessionKey, { activeThreadHydrated: isViewed })({
         items: itemsFromMessages(data?.messages ?? []),
         contextBreakdown: ownGet().contextBreakdown?.source === 'request'
           ? ownGet().contextBreakdown
@@ -3543,7 +3893,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
           text: mergedText
         }
       }
-      persistDraftSnapshot(state, nextDrafts)
+      persistDraftSnapshot(state, nextDrafts, undefined, { debounce: true })
       return {
         drafts: nextDrafts,
         ...(isViewed
@@ -3571,6 +3921,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       'Conversation'
     try {
       const source = await get().ensureRuntime(owner, 'session-clone')
+      sessionMutationSeq += 1
       const result = await tracedRpc<{ cancelled?: boolean; sessionFile?: string }>(
         source,
         'clone',
@@ -3631,6 +3982,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ forking: true })
     try {
       const source = await get().ensureRuntime(owner, 'session-fork')
+      sessionMutationSeq += 1
       const result = await tracedRpc<{ text?: string; cancelled?: boolean; sessionFile?: string }>(
         source,
         'fork',
@@ -3748,16 +4100,30 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async refreshGit() {
     // Git describes the open folder, not the conversation on screen.
     const epoch = projectEpoch
-    const request = ++gitStatusRequest
-    try {
-      const git = await window.pi.git.status()
-      if (epoch !== projectEpoch || request !== gitStatusRequest) return
-      set({ git })
-    } catch {
-      if (epoch !== projectEpoch || request !== gitStatusRequest) return
-      // A folder that is not a repository is a normal state, not an error.
-      set({ git: undefined })
+    const mutation = gitMutationSeq
+    if (
+      gitRefreshInFlight &&
+      gitRefreshInFlight.epoch === epoch &&
+      gitRefreshInFlight.mutation === mutation
+    ) {
+      return gitRefreshInFlight.promise
     }
+    const request = ++gitStatusRequest
+    const promise = (async () => {
+      try {
+        const git = await window.pi.git.status()
+        if (epoch !== projectEpoch || request !== gitStatusRequest) return
+        set({ git })
+      } catch {
+        if (epoch !== projectEpoch || request !== gitStatusRequest) return
+        // A folder that is not a repository is a normal state, not an error.
+        set({ git: undefined })
+      }
+    })().finally(() => {
+      if (gitRefreshInFlight?.promise === promise) gitRefreshInFlight = null
+    })
+    gitRefreshInFlight = { epoch, mutation, promise }
+    return promise
   },
 
   scheduleGitRefresh(delayMs = GIT_REFRESH_DEBOUNCE_MS) {
@@ -3767,6 +4133,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (gitRefreshTimer !== null) return
     gitRefreshTimer = window.setTimeout(() => {
       gitRefreshTimer = null
+      gitMutationSeq += 1
       void get().refreshGit()
     }, delayMs)
   },
@@ -3774,6 +4141,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   async commitChanges(message, includeUnstaged = false) {
     const result = await window.pi.git.commit(message, includeUnstaged)
     if (result.ok) {
+      gitMutationSeq += 1
       get().showToast(result.hash ? `Committed ${result.hash}` : 'Changes committed')
       // The dialog closes on the commit itself; the branch chip and the
       // review panel catch up in the background rather than holding it open.
@@ -3790,6 +4158,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       get().showToast(result.error ?? 'The file could not be staged', 'error')
       return result
     }
+    gitMutationSeq += 1
     await get().refreshGit()
     return result
   },
@@ -3800,6 +4169,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       get().showToast(result.error ?? 'The file could not be unstaged', 'error')
       return result
     }
+    gitMutationSeq += 1
     await get().refreshGit()
     return result
   },
@@ -3810,6 +4180,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       get().showToast(result.error ?? 'The files could not be staged', 'error')
       return result
     }
+    gitMutationSeq += 1
     await get().refreshGit()
     return result
   },
@@ -3820,6 +4191,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       get().showToast(result.error ?? 'The files could not be unstaged', 'error')
       return result
     }
+    gitMutationSeq += 1
     await get().refreshGit()
     return result
   },
@@ -3830,6 +4202,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       get().showToast(result.error ?? 'Could not push branch', 'error')
       return result
     }
+    gitMutationSeq += 1
     await get().refreshGit()
     get().showToast('Pushed to remote')
     return result
@@ -3841,6 +4214,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       get().showToast(result.error ?? 'Could not pull branch', 'error')
       return result
     }
+    gitMutationSeq += 1
     await get().refreshGit()
     get().showToast('Pulled latest changes')
     return result
@@ -3891,13 +4265,40 @@ export const useAppStore = create<AppStore>((set, get) => ({
   consumeJump() {
     set({ pendingJump: undefined })
   }
-}))
+} })
 
 // Development aid: the screenshot harness drives the store to reach states
 // that are hard to produce on purpose, such as a retry in progress.
 if (typeof window !== 'undefined' && (window as { __piDesktopDev?: unknown }).__piDesktopDev) {
   ;(window as unknown as { __piDesktopStore?: typeof useAppStore }).__piDesktopStore = useAppStore
 }
+
+/**
+ * Keep the tray's right-click menu in sync with the conversations on screen.
+ * Only the fields the menu shows are signed, so the burst of text/thinking
+ * deltas during a stream does not rebuild the native menu on every frame.
+ */
+let lastTraySessions: readonly SessionMeta[] | undefined
+let lastTrayMetaVersion = -1
+let lastTrayWorkspace: string | undefined
+function pushTrayConversations(state: AppStore): void {
+  // `threadsMetaVersion` bumps on isStreaming / name / first-prompt changes but
+  // not on text deltas, so the menu is rebuilt only when its content can differ.
+  if (
+    state.sessions === lastTraySessions &&
+    state.threadsMetaVersion === lastTrayMetaVersion &&
+    state.workspace?.path === lastTrayWorkspace
+  ) return
+  lastTraySessions = state.sessions
+  lastTrayMetaVersion = state.threadsMetaVersion
+  lastTrayWorkspace = state.workspace?.path
+  if (!window.pi?.tray) return
+  const list = trayConversations(state.sessions, state.threads, state.workspace?.path)
+  window.pi.tray.setConversations(list)
+}
+useAppStore.subscribe((state) => {
+  pushTrayConversations(state)
+})
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -3975,12 +4376,27 @@ let chromeDark = false
 const CHROME_OVERLAYS = '.modal-layer, .lightbox-layer, .mermaid-layer'
 
 /**
+ * The native title-bar buttons sit above the web content, so a full-window
+ * scrim cannot swallow their clicks. Gate them on the same overlay count the
+ * strip colour watches: while a modal or lightbox covers the app, maximize /
+ * minimize / close must not act on the window behind it.
+ */
+function syncWindowControls(): void {
+  if (typeof window.pi?.app?.setWindowControlsEnabled !== 'function') return
+  const count = typeof document !== 'undefined' && typeof document.querySelectorAll === 'function'
+    ? document.querySelectorAll(CHROME_OVERLAYS).length
+    : 0
+  void window.pi.app.setWindowControlsEnabled(count === 0)
+}
+
+/**
  * The native window controls are drawn by the OS over the top-right corner of
  * the web content, so their colour has to be what the page actually paints
  * there. The strip is the chrome token — and while a dialog is open it is the
  * scrim over that chrome, because the modal layer covers the whole window.
  */
 function syncWindowChrome(dark: boolean): void {
+  syncWindowControls()
   // The store also runs in the unit tests, where there is no layout engine
   // to read a computed style from. The native controls then keep the theme
   // default instead of a colour that was never measured.
@@ -4050,6 +4466,8 @@ function watchChromeOverlays(): void {
   chromeWatcher.observe(document.documentElement, { childList: true, subtree: true })
 }
 
+const appearanceSignatureByRoot = new WeakMap<Element, string>()
+
 export function applyAppearance(
   settings: AppSettings,
   forcedTheme?: 'light' | 'dark' | 'system'
@@ -4060,6 +4478,20 @@ export function applyAppearance(
   // stays untouched, so the app goes back to the user's theme afterwards.
   const theme = forcedTheme ?? settings.theme
   const dark = theme === 'dark' || (theme === 'system' && prefersDark)
+  const signature = [
+    dark ? '1' : '0',
+    settings.fontScale ?? 1,
+    settings.themeTone ?? '',
+    settings.accentColor ?? '',
+    settings.customBg ?? '',
+    settings.customFg ?? '',
+    settings.fontFamily ?? 'system'
+  ].join('\u0000')
+  if (appearanceSignatureByRoot.get(root) === signature) {
+    watchChromeOverlays()
+    return
+  }
+  appearanceSignatureByRoot.set(root, signature)
   root.dataset.theme = dark ? 'dark' : 'light'
   root.style.setProperty('--font-scale', String(settings.fontScale ?? 1))
 
@@ -4139,38 +4571,11 @@ export function applyAppearance(
   }
 
   // Custom Font
-  if (settings.fontFamily && settings.fontFamily !== 'system') {
-    const fontMap: Record<string, string> = {
-      sans: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      chinese: "'PingFang SC', '苹方', '苹方-简', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif",
-      mono: "'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace",
-      serif: "'Newsreader', 'Georgia', serif"
-    }
-    const mapped = fontMap[settings.fontFamily]
-    // The installed copy is registered as 苹方; keep both names so either one resolves.
-    // YaHei has to follow: a bare "PingFang SC Regular" often misses on Windows,
-    // and the next generic sans-serif is then drawn as SimSun.
-    const pingfang = `"PingFang SC", "苹方", "苹方-简", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif`
-    const pingfangWeights: Record<string, string> = {
-      'PingFang SC': pingfang,
-      'PingFang SC Regular': `"PingFang SC Regular", ${pingfang}`,
-      'PingFang SC Medium': `"PingFang SC Medium", ${pingfang}`,
-      'PingFang SC Bold': `"PingFang SC Bold", ${pingfang}`
-    }
-    const fontVal =
-      mapped ??
-      pingfangWeights[settings.fontFamily] ??
-      (settings.fontFamily.includes(',') || settings.fontFamily.includes('"') || settings.fontFamily.includes("'")
-        ? settings.fontFamily
-        : `"${settings.fontFamily}", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif`)
-    const fontWithCjkFallback = `var(--font-cjk), ${fontVal}`
-    root.style.setProperty('--font-ui', fontWithCjkFallback)
-    root.style.setProperty('--font-sidebar', fontWithCjkFallback)
-    root.style.setProperty('--font-reading', fontWithCjkFallback)
+  const fontStack = uiFontStack(settings.fontFamily)
+  if (fontStack) {
+    for (const property of FONT_STACK_PROPERTIES) root.style.setProperty(property, fontStack)
   } else {
-    remove('--font-ui')
-    remove('--font-sidebar')
-    remove('--font-reading')
+    for (const property of FONT_STACK_PROPERTIES) remove(property)
   }
 
   // Hand the browser's resolved colours to the main process: a custom
@@ -4206,9 +4611,13 @@ function phaseAfterDialog(
   return 'working'
 }
 
+const projectedThreadCache = new WeakMap<SessionThread, Pick<AppStore, (typeof THREAD_KEYS)[number]>>()
+
 function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEYS)[number]> {
+  const cached = projectedThreadCache.get(thread)
+  if (cached) return cached
   const uiRequests = pendingDialogsFor(thread)
-  return {
+  const projected = {
     items: thread.items,
     historyTruncated: thread.historyTruncated === true,
     run: thread.run,
@@ -4236,7 +4645,11 @@ function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEY
     submitSeq: thread.submitSeq ?? 0,
     notice: thread.notice
   }
+  projectedThreadCache.set(thread, projected)
+  return projected
 }
+
+const EMPTY_THREAD_PROJECTION = projectThread(emptyThread())
 
 function threadFromPatch(base: SessionThread, patch: Partial<AppStore>): SessionThread {
   const next = { ...base, version: base.version + 1 } as SessionThread
@@ -4251,34 +4664,52 @@ function threadFromPatch(base: SessionThread, patch: Partial<AppStore>): Session
 const deletedSessionKeys = new Set<string>()
 
 function bindGet(get: GetState, owner: string): GetState {
+  let lastState: AppStore | undefined
+  let lastKey: string | undefined
+  let lastProjected: AppStore | undefined
   return () => {
     const state = get()
     const key = threadKey(owner)
+    if (lastState === state && lastKey === key && lastProjected !== undefined) {
+      return lastProjected
+    }
     const thread = state.threads[key]
+    let result: AppStore
     if (!thread) {
       const viewCanonical = viewKeyOf(state) ? threadKey(viewKeyOf(state)) : ''
       if (key && (deletedSessionKeys.has(key) || key !== viewCanonical)) {
         // Isolate uncreated/deleted background keys from the currently viewed session's state.
-        return {
+        result = {
           ...state,
-          ...projectThread(emptyThread()),
+          ...EMPTY_THREAD_PROJECTION,
           activeSessionFile: key.startsWith('draft:') ? undefined : key,
           draftId: key.startsWith('draft:') ? key : undefined
         }
+      } else {
+        result = state
       }
-      return state
+    } else {
+      result = {
+        ...state,
+        ...projectThread(thread),
+        activeSessionFile: key.startsWith('draft:') ? undefined : key,
+        draftId: key.startsWith('draft:') ? key : undefined
+      }
     }
-    return {
-      ...state,
-      ...projectThread(thread),
-      activeSessionFile: key.startsWith('draft:') ? undefined : key,
-      draftId: key.startsWith('draft:') ? key : undefined
-    }
+    lastState = state
+    lastKey = key
+    lastProjected = result
+    return result
   }
 }
 
-function bindSet(set: SetState, get: GetState, owner: string): SetState {
-  return (partial) => {
+function bindSet(
+  set: SetState,
+  get: GetState,
+  owner: string,
+  options?: RevisionOptions
+): SetState {
+  return (partial, callOptions) => {
     const state = get()
     const key = threadKey(owner)
     const base = state.threads[key]
@@ -4292,10 +4723,11 @@ function bindSet(set: SetState, get: GetState, owner: string): SetState {
     const threads = { ...state.threads, ...(key ? { [key]: next } : {}) }
     const viewKey = viewKeyOf(state)
     const viewCanonical = viewKey ? threadKey(viewKey) : ''
+    const mergedOptions = callOptions ?? options
     if (!key || key === viewKey || (viewCanonical && key === viewCanonical)) {
-      set({ ...patch, threads })
+      set({ ...patch, threads }, mergedOptions)
     } else {
-      set({ threads })
+      set({ threads }, mergedOptions)
     }
   }
 }
@@ -4393,7 +4825,10 @@ function rekeyThread(
   })
 }
 
-type SetState = (partial: Partial<AppStore> | ((state: AppStore) => Partial<AppStore>)) => void
+type SetState = (
+  partial: Partial<AppStore> | ((state: AppStore) => Partial<AppStore>),
+  options?: RevisionOptions
+) => void
 type GetState = () => AppStore
 
 function applyRuntimeStatus(set: SetState, status: RuntimeStatus): void {
@@ -4644,6 +5079,7 @@ function drainPending(onlyKey?: string): void {
     const currentViewCanonical = currentViewKey ? threadKey(currentViewKey) : ''
     let nextThreads: Record<string, SessionThread> | undefined
     let activeItemsPatch: { items: ThreadItem[] } | undefined
+    let toolChangedHint: boolean | undefined
 
     for (const [key, batch] of entries) {
       if (batch.events.length === 0) continue
@@ -4663,15 +5099,20 @@ function drainPending(onlyKey?: string): void {
 
       if (!key || key === currentViewKey || (currentViewCanonical && threadKey(key) === currentViewCanonical)) {
         activeItemsPatch = { items: nextItems }
+        toolChangedHint = hasToolItemChange(state.items, nextItems)
       }
     }
 
     if (!nextThreads && !activeItemsPatch) return state
 
-    return {
-      ...(activeItemsPatch ?? {}),
-      ...(nextThreads ? { threads: nextThreads } : {})
-    }
+    return withRevisions(
+      state,
+      {
+        ...(activeItemsPatch ?? {}),
+        ...(nextThreads ? { threads: nextThreads } : {})
+      },
+      { toolChangedHint }
+    )
   })
 }
 
@@ -4724,10 +5165,13 @@ function forgetDeletedThread(file: string): void {
 
 function scheduleFlush(): void {
   if (flushHandle !== null) return
-  flushHandle = requestAnimationFrame(() => {
+  let completed = false
+  const handle = requestAnimationFrame(() => {
+    completed = true
     flushHandle = null
     drainPending()
   })
+  if (!completed) flushHandle = handle
 }
 
 /**
@@ -5055,7 +5499,12 @@ function handleEvent(
         if (threads !== current.threads) realSet({ threads })
       }
       const key = viewKeyOf(get())
-      if (!event.runtimeStopped && !crashed) void get().refreshState(key)
+      if (!event.runtimeStopped && !crashed) {
+        const currentThread = get()
+        void get().refreshState(key, {
+          includeCatalog: currentThread.models.length === 0 || currentThread.thinkingLevels.length === 0
+        })
+      }
       void get().refreshSessions()
       // The agent just edited files, so the branch chip and the review panel
       // should hear about the new working tree.
@@ -5382,9 +5831,10 @@ function handleEvent(
           // not depend on which of the two shapes the provider chose.
           get().refreshLiveStats(owner ? threadKey(owner) : undefined)
         }
-        const needsFirstToken = contentDelta && get().run.firstTokenAt === undefined
-        const needsWindowStart = generatingDelta && get().run.messageGenerationStartedAt === undefined
-        const needsPhase = textDelta && get().run.phase !== phaseFor(get(), 'generating')
+        const currentState = get()
+        const needsFirstToken = contentDelta && currentState.run.firstTokenAt === undefined
+        const needsWindowStart = generatingDelta && currentState.run.messageGenerationStartedAt === undefined
+        const needsPhase = textDelta && currentState.run.phase !== phaseFor(currentState, 'generating')
         if (needsFirstToken || needsWindowStart || needsPhase) {
           const now = Date.now()
           const monotonic = monotonicNow()
@@ -5585,7 +6035,7 @@ function handleExtensionUi(
         realSet((state) => {
           const previous = state.drafts[targetKey] ?? { text: '', images: [] }
           const nextDrafts = { ...state.drafts, [targetKey]: { ...previous, text: nextText } }
-          persistDraftSnapshot(state, nextDrafts)
+          persistDraftSnapshot(state, nextDrafts, undefined, { debounce: true })
           return {
             drafts: nextDrafts,
             ...(isViewed ? { composerText: nextText } : {})

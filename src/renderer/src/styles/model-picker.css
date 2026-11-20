@@ -111,39 +111,6 @@
   color: var(--accent);
 }
 
-.model-picker__row-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--sp-hair) var(--sp-3);
-  min-width: 0;
-  font-size: var(--text-2xs);
-  line-height: 1.5;
-  color: var(--text-faint);
-}
-
-.model-picker__meta-item {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-}
-
-.model-picker__price {
-  flex: 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-muted);
-}
-
-.model-picker__badge {
-  flex: 0 0 auto;
-  font-size: var(--text-2xs);
-  font-weight: 500;
-  line-height: 15px;
-  letter-spacing: 0.02em;
-  color: var(--text-muted);
-}
-
 .model-picker__check {
   flex: 0 0 auto;
   color: var(--accent);
@@ -495,6 +462,12 @@ button.effort-card__point:disabled {
 .model-picker__search .project-menu__search {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* The model search is the widest field in the popover; give its focus ring a
+   softer, roomier corner than the compact project-menu default. */
+.model-picker__search .project-menu__search:focus-within {
+  border-radius: 8px;
 }
 
 .model-picker__back {
