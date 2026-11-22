@@ -265,6 +265,21 @@ held — it must not use `shell.trashItem`, because a deleted conversation must
 not leave a recoverable copy in the OS Recycle Bin. The confirmation body says
 the session file will be permanently deleted; keep that copy explicit.
 
+### The name in the sidebar head
+
+The app's name is a **drawing, not text**. `PiWordmark`
+(`components/PiWordmark.tsx`) fills "Pi Desktop" one pixel at a time on a
+5-column cell, so it reads like a terminal (TUI) font: no pixel font ships with
+the app, and the system UI font does not read as a terminal. The grid is 56x8
+(7:1 — the `p` descends into the eighth row) and the glyph table is duplicated
+in `scripts/make-wordmark.mjs`, which writes `build/wordmark-pixel.svg`; the two
+are the same drawing and must stay byte-identical. The mark inherits
+`currentColor` so it follows `--sidebar-text`, `shape-rendering: crispEdges`
+keeps the steps square, and only the dot of the `i` wears the logo's coral.
+Do not "fix" it back into a `<span>`: the sidebar head has no font-size rule for
+the name any more, and nothing ellipsises it — at the 200px minimum width the
+mark leaves ~22px of slack before the search button.
+
 ### What a row says about itself
 
 A conversation row carries **one** mark, and the mark is derived, never

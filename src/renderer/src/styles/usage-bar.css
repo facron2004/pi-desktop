@@ -45,9 +45,16 @@
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
-.usage-bar__summary,
-.usage-bar__generation {
+.usage-bar__summary {
   gap: var(--sp-3);
+}
+
+/* The dot here is a separator, not a reading of its own: it takes half a
+   reading's gap on each side, so "40步 · 111.2 tok/s" reads as one phrase
+   instead of three separate ones. The summary control has no dot — its two
+   readings keep the wider gap. */
+.usage-bar__generation {
+  gap: var(--sp-1);
 }
 
 .usage-bar__control:hover,

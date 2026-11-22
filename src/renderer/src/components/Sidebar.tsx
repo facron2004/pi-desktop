@@ -40,6 +40,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { Popover } from './Popover'
 import { SidebarTip, SIDEBAR_TIP_ID, useHoverTip, type SidebarTipRow } from './SidebarTip'
 import { PiLogo } from './PiLogo'
+import { PiWordmark } from './PiWordmark'
 import { projectIconColor, projectIconEmoji } from '../lib/project-icons'
 import { subscribeAvailableAppUpdate, type AvailableAppUpdate } from '../lib/app-update'
 
@@ -1135,7 +1136,7 @@ export const Sidebar = memo(function Sidebar({
       <div className="sidebar__head drag-region">
         <div className="sidebar__brand no-drag" title="Pi Desktop">
           <PiLogo size={16} />
-          <span>Pi Desktop</span>
+          <PiWordmark height={14} />
         </div>
         <div className="sidebar__head-actions no-drag">
           <button

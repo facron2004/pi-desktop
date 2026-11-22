@@ -354,10 +354,19 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     passed.push('task modes round-trip through the bundled Pi CLI')
 
     await store.getState().updateSettings({ permissionMode: 'ask' })
+    // Each round asks the same question with the same options, so a dialog left
+    // over from the previous round satisfies every content check below — and its
+    // list is not the one that will take focus. Hold this round's own dialog:
+    // the wait refuses a node it already saw.
+    let previousDialog = null
     for (const [round, mode] of [['normal', 'default'], ['plan', 'plan'], ['cancel', 'goal']]) {
       if (store.getState().agentMode !== mode) await store.getState().setAgentMode(mode)
       await store.getState().send(questionFixture.prompts[round], [])
-      const choice = await until(() => document.querySelector('.modal--prompt'), 'The user question did not open')
+      const choice = await until(() => {
+        const dialog = document.querySelector('.modal--prompt')
+        return dialog && dialog !== previousDialog ? dialog : null
+      }, 'The user question did not open')
+      previousDialog = choice
       const options = choice.querySelector('[role="listbox"]')
       check(options && choice.querySelector('.modal__title').textContent === questionFixture.question,
         'The user question was replaced by a different dialog')
@@ -370,11 +379,17 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
         await until(() => !choice.isConnected && !store.getState().isStreaming, 'Cancelling the question did not settle the run')
         check(document.querySelector('.goal-bar[data-status="blocked"]'), 'The cancelled question did not pause the goal')
       } else {
-        await until(() => document.activeElement === options, 'The choice list did not receive keyboard focus')
-        options.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
-        await until(() => options.querySelector('[aria-selected="true"]')?.textContent.trim() === questionFixture.options[1],
+        // Re-read the list on every poll: a re-render hands focus to the node
+        // that is on screen now, which is not always the one captured above.
+        const focusedOptions = await until(() => {
+          const dialog = document.querySelector('.modal--prompt')
+          const list = dialog?.querySelector('[role="listbox"]')
+          return list && document.activeElement === list ? list : null
+        }, 'The choice list did not receive keyboard focus')
+        focusedOptions.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+        await until(() => focusedOptions.querySelector('[aria-selected="true"]')?.textContent.trim() === questionFixture.options[1],
           'Keyboard navigation did not select the second option')
-        options.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+        focusedOptions.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
         await until(() => !choice.isConnected && !store.getState().isStreaming && store.getState().items.some((item) =>
           item.kind === 'assistant' && item.blocks.some((block) => block.type === 'text' && block.text.includes(questionFixture.reply))
         ), 'The selected answer did not resume the requesting conversation')
@@ -391,10 +406,15 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     await store.getState().send(planFixture.original, [])
     const planReview = () => document.querySelector('.modal--plan-review')
     const review = await until(planReview, 'Pi did not open the plan review')
-    const planBody = review.querySelector('.modal__plan')
-    await until(() => document.activeElement === planBody, 'The plan document did not receive keyboard focus')
+    // Re-read on every poll, like the question dialog above: focus lands on the
+    // node that is on screen, and a re-render can hand the review a new one.
+    const planBody = await until(() => {
+      const body = planReview()?.querySelector('.modal__plan')
+      return body && document.activeElement === body ? body : null
+    }, 'The plan document did not receive keyboard focus')
     check(planBody.scrollHeight > planBody.clientHeight && planBody.textContent.includes('Check section 40'), 'The long plan did not scroll inside the review')
-    const footer = review.querySelector('.modal__foot').getBoundingClientRect()
+    const reviewDialog = planBody.closest('.modal--plan-review')
+    const footer = reviewDialog.querySelector('.modal__foot').getBoundingClientRect()
     check(footer.top >= planBody.getBoundingClientRect().bottom - 1 && footer.bottom <= innerHeight, 'The review actions fell outside the window')
     planBody.scrollTop = planBody.scrollHeight
     check(planBody.scrollTop > 0, 'The plan content cannot be scrolled')

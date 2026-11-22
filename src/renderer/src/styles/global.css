@@ -445,29 +445,17 @@ transition: background var(--dur-fast) var(--ease);
   color: var(--sidebar-text);
 }
 
+/* The name is a pixel wordmark (`PiWordmark`), not a string of text: it carries
+   no font size or weight of its own, and `currentColor` is what tints it. */
 .sidebar__brand {
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 0;
-  font-weight: var(--weight-semibold);
-  letter-spacing: 0;
-  font-size: var(--text-body);
-  line-height: var(--leading-body);
-  white-space: nowrap;
   min-width: 0;
   color: var(--sidebar-text);
   user-select: none;
   cursor: default;
-}
-
-.sidebar__brand > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: var(--text-body);
-  font-weight: var(--weight-semibold);
-  color: var(--sidebar-text);
 }
 
 .sidebar__brand svg {

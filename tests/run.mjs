@@ -116,6 +116,7 @@ const suites = [
   'highlight-languages.test.ts',
   'hover-tip.test.ts',
   'sidebar-tip.test.ts',
+  'wordmark.test.ts',
   'marketplace.test.ts',
   'pi-catalog.test.ts',
   'composer-files.test.ts',
