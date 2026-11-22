@@ -1181,16 +1181,18 @@ export function registerIpc(context: IpcContext): void {
     }
   )
 
-  ipcMain.handle('app:setWindowControlsEnabled', (_event, enabled: boolean) => {
+  ipcMain.handle('app:setWindowClosable', (_event, closable: boolean) => {
     const window = getWindow()
     if (!window || window.isDestroyed()) return
     try {
       // Native title-bar buttons are drawn over the web content (Windows) or as
       // traffic lights (macOS), so a modal scrim cannot intercept their clicks.
-      // Grey them out for the lifetime of a full-window layer instead.
-      window.setClosable(enabled)
-      window.setMinimizable(enabled)
-      window.setMaximizable(enabled)
+      // Only close is gated: a full-window layer is waiting on an answer, and
+      // closing the window would hide the surface that can give it. Minimize
+      // and maximize are left alone — moving the window aside never abandons a
+      // dialog, and greying them out made the window impossible to minimize
+      // whenever a settings or confirm page was open.
+      window.setClosable(closable)
     } catch {
       /* the platform may not expose these toggles */
     }

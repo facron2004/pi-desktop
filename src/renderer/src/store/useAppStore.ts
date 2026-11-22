@@ -4437,16 +4437,17 @@ const CHROME_OVERLAYS = '.modal-layer, .lightbox-layer, .mermaid-layer'
 
 /**
  * The native title-bar buttons sit above the web content, so a full-window
- * scrim cannot swallow their clicks. Gate them on the same overlay count the
- * strip colour watches: while a modal or lightbox covers the app, maximize /
- * minimize / close must not act on the window behind it.
+ * scrim cannot swallow their clicks. Only the close button is gated on the same
+ * overlay count the strip colour watches: a layer that waits on an answer must
+ * not be hidden behind its own scrim. Minimize and maximize keep working — the
+ * reader can move the window aside while a settings page or a dialog is open.
  */
 function syncWindowControls(): void {
-  if (typeof window.pi?.app?.setWindowControlsEnabled !== 'function') return
+  if (typeof window.pi?.app?.setWindowClosable !== 'function') return
   const count = typeof document !== 'undefined' && typeof document.querySelectorAll === 'function'
     ? document.querySelectorAll(CHROME_OVERLAYS).length
     : 0
-  void window.pi.app.setWindowControlsEnabled(count === 0)
+  void window.pi.app.setWindowClosable(count === 0)
 }
 
 /**

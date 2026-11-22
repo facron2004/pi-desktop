@@ -1184,11 +1184,15 @@ export interface PiDesktopBridge {
      */
     setTheme(theme: 'dark' | 'light', colors?: { color: string; symbolColor: string }): Promise<void>
     /**
-     * Disable the native title-bar controls while a full-window layer (a modal
-     * or lightbox) covers the app, so a click on its scrim cannot close or
-     * maximize the window underneath. Restore them when the layer unmounts.
+     * Gate the native close button while a full-window layer (a modal or
+     * lightbox) covers the app: those layers wait on an answer, and closing the
+     * window behind the scrim would hide the only surface that can give it.
+     *
+     * Minimize and maximize stay live — moving the window aside never abandons
+     * a dialog, and greying them out is what made a settings page impossible to
+     * minimize.
      */
-    setWindowControlsEnabled(enabled: boolean): Promise<void>
+    setWindowClosable(closable: boolean): Promise<void>
     /** Query the font families installed on the operating system. */
     getSystemFonts(): Promise<string[]>
     /**

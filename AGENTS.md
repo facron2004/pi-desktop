@@ -563,6 +563,19 @@ hard-code the strip colour in the main process: the user's background is arbitra
 That overlay is drawn outside the web content, so a screenshot cannot show it —
 `PI_DESKTOP_SCREENSHOT` makes the handler log what it was told to use.
 
+**A full-window layer gates the close button and nothing else.** The native
+buttons sit above the content, so a scrim cannot swallow their clicks; the
+`watchChromeOverlays` count is pushed through `app:setWindowClosable`, and the
+main process touches only `setClosable`. Minimize and maximize stay live: moving
+the window aside never abandons a dialog, and greying them out made the window
+impossible to minimize whenever the settings page — which is a `.modal-layer`
+like every other dialog — was open. Close stays gated because a layer that waits
+on an answer would otherwise be hidden behind its own scrim, leaving the agent
+blocked with nothing on screen to answer. `tests/window-controls.test.ts` pins
+the rule at the handler; `output/audit/window-controls-check.cjs` reads
+`WS_MINIMIZEBOX` / `WS_MAXIMIZEBOX` from a real window with the settings page
+open.
+
 ## The tray and the taskbar icon
 
 Two things belong to the main process and nowhere else: the system tray and
