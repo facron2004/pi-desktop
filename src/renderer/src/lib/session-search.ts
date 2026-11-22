@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { SessionMeta, SessionSearchHit } from '@shared/types'
+import type { SessionMeta, SessionSearchHit, SidebarArchiveFilter } from '@shared/types'
 import { basename } from './path'
 
 /** A query shorter than this searches titles only; the text scan is heavier. */
@@ -24,9 +24,15 @@ export interface SessionSearchState {
   hits: SessionSearchHit[]
 }
 
-/** A finished scan, remembered together with the query that produced it. */
+interface SearchScope {
+  archiveFilter: SidebarArchiveFilter
+  archivedFiles: ReadonlySet<string>
+}
+
+/** A finished scan, remembered together with the query and archive scope that produced it. */
 interface SearchResult {
   query: string
+  scope: SearchScope
   status: 'done' | 'failed'
   hits: SessionSearchHit[]
 }
@@ -78,8 +84,8 @@ export function rememberSearch(query: string, history: readonly string[]): strin
  * the query the user just replaced. The sequence number does the same for
  * answers that arrive out of order.
  */
-export function useSessionSearch(query: string, enabled = true): SessionSearch {
-  const [result, setResult] = useState<SearchResult>({ query: '', status: 'done', hits: [] })
+export function useSessionSearch(query: string, enabled: boolean, scope: SearchScope): SessionSearch {
+  const [result, setResult] = useState<SearchResult>()
   const [history, setHistory] = useState<string[]>(() => readRecentSearches())
   const sequence = useRef(0)
   const recorded = useRef('')
@@ -98,12 +104,12 @@ export function useSessionSearch(query: string, enabled = true): SessionSearch {
         try {
           const hits = await window.pi.sessions.search(trimmed, MAX_SESSION_HITS)
           if (sequence.current !== ticket) return
-          setResult({ query: trimmed, status: 'done', hits: hits.slice(0, MAX_SESSION_HITS) })
+          setResult({ query: trimmed, scope, status: 'done', hits: hits.slice(0, MAX_SESSION_HITS) })
         } catch {
           // A failed scan is not worth an error in the sidebar — the title
           // filter below still works, so the section just stays out of the way.
           if (sequence.current !== ticket) return
-          setResult({ query: trimmed, status: 'failed', hits: [] })
+          setResult({ query: trimmed, scope, status: 'failed', hits: [] })
         }
       })()
     }, DEBOUNCE_MS)
@@ -113,12 +119,12 @@ export function useSessionSearch(query: string, enabled = true): SessionSearch {
       // Anything still in flight for this query is stale once it is cleaned up.
       sequence.current += 1
     }
-  }, [trimmed, enabled])
+  }, [trimmed, enabled, scope])
 
   // Only a search that found something is worth offering again; a query with
   // no hits is one the reader probably did not mean to keep.
   useEffect(() => {
-    if (result.status !== 'done' || result.hits.length === 0 || !result.query) return
+    if (result?.status !== 'done' || result.hits.length === 0 || !result.query) return
     const key = result.query.toLowerCase()
     if (recorded.current === key) return
     recorded.current = key
@@ -137,7 +143,7 @@ export function useSessionSearch(query: string, enabled = true): SessionSearch {
 
   let state: SessionSearchState = IDLE
   if (active) {
-    if (result.query !== trimmed) state = SEARCHING
+    if (result?.query !== trimmed || result.scope !== scope) state = SEARCHING
     else if (result.status === 'failed') state = IDLE
     else state = { status: 'done', hits: result.hits }
   }

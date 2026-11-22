@@ -294,7 +294,7 @@ export function AgentSettings() {
 
         <SettingsItemRow
           title={t('Default plan mode')}
-          description={t('Open a brand-new conversation in Plan Mode, which begins read-only: read, grep, find, ls and the plan tool. Reviewing and executing the plan leaves Plan Mode and begins implementation; /plan off leaves without approval. A conversation already open or resumed from disk keeps the mode it stored.')}
+          description={t('Start new conversations in Plan Mode with read-only file tools, user questions, and plan review. Approving a plan starts implementation. Use /plan off to leave Plan Mode. Open and resumed conversations keep their saved mode.')}
         >
           <Switch
             checked={settings.defaultPlanMode === true}
@@ -349,7 +349,7 @@ export function AgentSettings() {
       <SettingsGroup title={t('Message folding')}>
         <SettingsItemRow
           title={t('Auto-fold the working process')}
-          description={t('Keep a finished turn’s tools and thinking folded so the answer is what stays on screen. Turn this off to leave the work visible.')}
+          description={t('Keep completed tool groups folded under a summary. Click the summary to see commands, results, and edits.')}
         >
           <Switch
             checked={settings.autoFoldProcess !== false}
@@ -362,10 +362,10 @@ export function AgentSettings() {
             while the agent works, not about a turn that has already settled. */}
         <SettingsItemRow
           title={t('Tool call summary')}
-          description={t('While the agent is working, gather consecutive tool calls into one summary line instead of a list that keeps growing. This is not the folding of a finished turn.')}
+          description={t('Gather consecutive tool calls into one expandable summary while they run.')}
         >
           <Switch
-            checked={settings.toolCallSummary === true}
+            checked={settings.toolCallSummary !== false}
             onChange={(checked) => void updateSettings({ toolCallSummary: checked })}
             label={t('Tool call summary')}
           />

@@ -30,7 +30,7 @@ MCode's own, read from that package:
 
 | Thing | MCode | Pi Desktop (before) | Pi Desktop (now) |
 |---|---|---|---|
-| Sections | 环境信息 / 后台任务 / 进度 / 交付物 | Changes / Background tasks / Progress / Deliverables | the same four, in the same order |
+| Sections | 环境信息 / 后台任务 / 进度 / 交付物 | Changes / Background tasks / Progress / Deliverables | Environment info / Background tasks / Subagents / Progress / Deliverables |
 | Section title | `text-sm font-normal leading-5 text-text_default_secondary`, no icon | an icon plus the title, 11px semibold | plain title, 14px, `--text-secondary` |
 | Caret | 14px, `rotate` over 180ms, on the right | 12px, 120ms, on the right | 14px, 180ms (`--dur-base`), on the right |
 | Section body | `grid-template-rows` 1fr ↔ 0fr, 180ms | `hidden` — it snapped shut | the same grid fold, 180ms |
@@ -52,15 +52,16 @@ they moved onto the Changes row, right-aligned and in the success and error
 colours. The other two rows — commit and change graph — were already there and
 keep their doors: the commit dialog and the history dialog.
 
-### The rail says four things, in one order
+### The rail's sections
 
-环境信息 → 后台任务 → 进度 → 交付物. Every one of them is a projection of
+环境信息 → 后台任务 → 子智能体 → 进度 → 交付物. Each section reads from
 what the app already knows:
 
 - the environment section reads `git` from the store;
-- background tasks are the in-flight tool calls of the thread (`listBackgroundTasks`
-  in `lib/task-panel.ts`), named by their tool (`bash`, `grep`, `powershell`…) and what
-  they are working on; subagents live in the title badge and the Subagents page, not here;
+- background tasks show running shell commands after two seconds
+  (`listBackgroundCommands` in `lib/task-panel.ts`). Rows are removed as commands end;
+- subagents show recent dispatched children by title and status. Each row opens
+  the child's transcript in the Subagents page;
 - progress is the newest todo list the agent sent with `desktop_todo`
   (`lib/plan.ts`), falling back to the checklist of the newest assistant
   message that carries one;

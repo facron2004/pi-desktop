@@ -1,4 +1,5 @@
 import type { SidebarArchiveFilter, SidebarSortBy, SessionMeta } from '@shared/types'
+import { archiveSessionKey } from '@shared/session-archive'
 import { normalisePathKey } from './path'
 
 /** The newest activity a project has, from its own metadata or its conversations. */
@@ -24,9 +25,8 @@ export function filterByArchive<Session extends SessionMeta>(
   if (mode === 'all') return [...sessions]
   // Settings keeps the original spelling; compare canonicalised keys on both
   // sides so a backslash or drive-letter difference cannot hide an archive.
-  const archivedKeys = new Set(Array.from(archived, normalisePathKey))
-  if (mode === 'archived') return sessions.filter((session) => archivedKeys.has(normalisePathKey(session.file)))
-  return sessions.filter((session) => !archivedKeys.has(normalisePathKey(session.file)))
+  const archivedKeys = new Set(Array.from(archived, archiveSessionKey))
+  return sessions.filter((session) => archivedKeys.has(archiveSessionKey(session.file)) === (mode === 'archived'))
 }
 
 /**

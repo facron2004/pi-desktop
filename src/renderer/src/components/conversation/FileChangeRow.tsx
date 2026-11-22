@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { relativePath, resolveAgainst } from '../../lib/path'
 import type { InspectorRequest } from '@shared/types'
@@ -7,6 +7,8 @@ import { diffStats, type DiffRow } from '../../lib/diff-fold'
 import { useT } from '../../lib/i18n'
 import { LOG_PAGE_LINES } from '../../lib/log-output'
 import { useAppStore } from '../../store/useAppStore'
+
+const PREVIEW_HOVER_DELAY_MS = 400
 
 /** Line count of a written file, without the synthetic empty tail of a final newline. */
 function countContentLines(content: string): number {
@@ -75,9 +77,8 @@ function pushRow(row: DiffRow, out: PreviewLine[]) {
 /**
  * One changed file.
  *
- * Hovering the row floats the changed lines beside it. Clicking opens that
- * file in the side panel — the diff stays a glance, the file itself is the
- * thing you go read.
+ * Resting on the row floats the changed lines beside it. Clicking opens the
+ * file in the side panel.
  */
 export function FileChangeRow({
   change,
@@ -87,14 +88,34 @@ export function FileChangeRow({
   onHover: (change: FileChange, row: HTMLDivElement) => void
 }) {
   const workspace = useAppStore((state) => state.workspace?.path)
-  const rowRef = useRef<HTMLDivElement>(null)
+  const cancelPendingPreview = useRef<(() => void) | null>(null)
   const shownPath = useMemo(
     () => relativePath(workspace ?? '', change.path).replace(/\\/g, '/'),
     [workspace, change.path]
   )
   const stats = useMemo(() => changeStats(change), [change])
 
+  useEffect(() => () => cancelPendingPreview.current?.(), [])
+
+  const schedulePreview = (row: HTMLDivElement) => {
+    cancelPendingPreview.current?.()
+    const timer = window.setTimeout(() => {
+      cancel()
+      if (row.isConnected) onHover(change, row)
+    }, PREVIEW_HOVER_DELAY_MS)
+    const cancel = () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('scroll', cancel, true)
+      window.removeEventListener('resize', cancel)
+      cancelPendingPreview.current = null
+    }
+    cancelPendingPreview.current = cancel
+    window.addEventListener('scroll', cancel, { capture: true, passive: true })
+    window.addEventListener('resize', cancel)
+  }
+
   const openInPanel = () => {
+    cancelPendingPreview.current?.()
     const file = resolveAgainst(workspace, change.path)
     window.dispatchEvent(
       new CustomEvent<InspectorRequest>('pi:open-inspector', {
@@ -107,11 +128,8 @@ export function FileChangeRow({
     <div
       className="file-change"
       data-kind={change.kind}
-      ref={rowRef}
-      onMouseEnter={() => {
-        const row = rowRef.current
-        if (row) onHover(change, row)
-      }}
+      onMouseEnter={(event) => schedulePreview(event.currentTarget)}
+      onMouseLeave={() => cancelPendingPreview.current?.()}
     >
       <div className="file-change__head">
         <button type="button" className="file-change__main" onClick={openInPanel}>

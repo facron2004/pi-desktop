@@ -1,4 +1,5 @@
 import type { PiEvent, RuntimeStatus, RuntimeStatusEvent } from '@shared/types'
+import type { SessionThread } from '../store/useAppStore'
 
 export interface ScopedPiEvent {
   ownerId: string
@@ -30,21 +31,10 @@ export function scopeStatus(payload: unknown, viewKey: string): RuntimeStatusEve
   return { ownerId: typeof record.ownerId === 'string' ? record.ownerId : viewKey, status: status as RuntimeStatus }
 }
 
-/**
- * A history read that started at `versionAtStart` is stale once the runtime
- * has folded anything newer, or while that conversation is still streaming.
- */
-export function hydrationStale(versionAtStart: number, versionNow: number, streaming: boolean): boolean {
-  return streaming || versionNow !== versionAtStart
-}
-
-/** A transcript with disk messages but no cached items still needs hydration. */
+/** A file can have saved history before the sidebar index has caught up. */
 export function needsSessionHydration(
-  messageCount: number,
-  cachedVersion: number | undefined,
-  cachedItemCount: number,
-  streaming: boolean
+  file: string,
+  cached?: Pick<SessionThread, 'historyLoaded' | 'items'>
 ): boolean {
-  return messageCount > 0 && !streaming &&
-    (cachedVersion === undefined || cachedVersion === 0 || cachedItemCount === 0)
+  return !file.startsWith('draft:') && (!cached?.historyLoaded || cached.items.length === 0)
 }

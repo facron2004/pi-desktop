@@ -1861,3 +1861,94 @@ test('getSessionMeta fast cache check still rejects an escaping directory link o
   }
   assert.equal(await getSessionMeta(file, root), null, 'cached file behind an escaping folder link must be rejected')
 })
+
+test('session hydration reads goals on the active branch through both the disk and cache paths', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-goal-hydration-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const file = path.join(root, 'goal.jsonl')
+  const goal = {
+    text: 'Verify the original fix\n  Include the integration test',
+    status: 'blocked',
+    summary: 'The test fixture is missing.'
+  }
+  const entries = [
+    { type: 'session', version: 3, id: 'goal-hydration', cwd: root },
+    { type: 'custom', id: 'g1', parentId: null, customType: 'pi-desktop-mode', data: { mode: 'goal', goal } },
+    { type: 'custom', id: 'other', parentId: 'g1', customType: 'pi-desktop-mode', data: { mode: 'default' } },
+    { type: 'message', id: 'u1', parentId: 'g1', message: { role: 'user', content: 'Verify the fix', timestamp: 1 } }
+  ]
+  const writeEntries = () => writeFileSync(file, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n')
+  writeEntries()
+
+  assert.deepEqual((await readSessionConversation(file)).taskMode, { mode: 'goal', goal })
+  assert.deepEqual((await readSessionConversation(file)).taskMode, { mode: 'goal', goal })
+  invalidateSessionCache(file)
+  await parseSession(file, undefined, undefined, { cacheMessages: true })
+  assert.deepEqual((await readSessionConversation(file)).taskMode, { mode: 'goal', goal })
+
+  entries.push({
+    type: 'custom', id: 'clear', parentId: 'u1', customType: 'pi-desktop-mode', data: { mode: 'default' }
+  })
+  writeEntries()
+  assert.deepEqual((await readSessionConversation(file)).taskMode, { mode: 'default' })
+})
+
+test('readSessionConversation projects desktop-goal-continue custom_message without changing meta counts', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-goal-conv-'))
+  const wsDir = path.join(root, 'ws-a')
+  mkdirSync(wsDir, { recursive: true })
+  const sessionFile = path.join(wsDir, 'goal.jsonl')
+  const entries = [
+    { type: 'session', version: 3, id: 's-goal', timestamp: '2026-01-01T00:00:00.000Z', cwd: 'E:/repo' },
+    {
+      type: 'message',
+      id: 'm1',
+      parentId: null,
+      timestamp: '2026-01-01T00:00:01.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'Run goal' }], timestamp: 1767225601000 },
+    },
+    {
+      type: 'message',
+      id: 'm2',
+      parentId: 'm1',
+      timestamp: '2026-01-01T00:00:02.000Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Round 1 done' }], timestamp: 1767225602000 },
+    },
+    {
+      type: 'custom_message',
+      id: 'c1',
+      parentId: 'm2',
+      timestamp: '2026-01-01T00:00:03.000Z',
+      customType: 'desktop-goal-continue',
+      content: 'Continue goal',
+      display: false,
+    },
+    {
+      type: 'message',
+      id: 'm3',
+      parentId: 'c1',
+      timestamp: '2026-01-01T00:00:04.000Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Round 2 done' }], timestamp: 1767225604000 },
+    },
+  ]
+  writeFileSync(sessionFile, entries.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8')
+
+  try {
+    const meta = await getSessionMeta(sessionFile, root)
+    assert.ok(meta)
+    assert.equal(meta.messageCount, 3)
+
+    const conv = await readSessionConversation(sessionFile)
+    assert.ok(conv)
+    const roles = conv.messages.map((m) => m.role)
+    assert.deepEqual(roles, ['user', 'assistant', 'custom', 'assistant'])
+    const custom = conv.messages[2]
+    assert.equal(custom.role, 'custom')
+    if (custom.role !== 'custom') throw new Error('expected custom message')
+    assert.equal(custom.customType, 'desktop-goal-continue')
+    assert.equal(custom.entryId, 'c1')
+    assert.equal(custom.timestamp, Date.parse('2026-01-01T00:00:03.000Z'))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

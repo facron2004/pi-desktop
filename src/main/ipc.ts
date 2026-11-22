@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { languageForFilePath } from '@shared/file-languages'
+import { archiveSessionKey } from '@shared/session-archive'
 import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import { decodeBoundedTextBuffer } from './text-decode'
 import { randomUUID } from 'node:crypto'
@@ -38,6 +39,7 @@ import type {
   TextSearchHit,
   TextSearchResult,
   TrayConversation,
+  UpdateState,
   UpgradeResult,
   VersionCheckResult,
   VersionItemStatus,
@@ -51,6 +53,7 @@ import {
   isNewerVersion
 } from './app-updates'
 import { downloadAppInstaller, launchAppInstaller, supportsAppUpdate } from './app-update-installer'
+import { clearUpdateState, readUpdateStateForVersion, writeUpdateState } from './update-state'
 import { beginBundledPiCliMaintenance, checkAuth, killProcessTree, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
 import { spawn } from './pi/spawn'
@@ -58,7 +61,7 @@ import { discoverSkillCommands, invalidateSkillCommandsCache } from './pi/comman
 import { getModelThinkingLevels } from './pi/model-catalog'
 import { readTraceHint } from './pi/trace'
 import type { SessionSupervisor } from './pi/supervisor'
-import { showDesktopNotification } from './desktop-notification'
+import { describeRunCompletion, showDesktopNotification } from './desktop-notification'
 import { readMcpConfig, removeMcpServer, setMcpServerEnabled } from './mcp'
 import {
   createResource,
@@ -1223,10 +1226,43 @@ export function registerIpc(context: IpcContext): void {
 
     const appStatus = await checkAppVersion(currentAppVersion)
 
+    // A check that reached the network leaves a reading on disk, so a restart
+    // on an offline machine still shows the release it found yesterday. A
+    // failed check writes nothing: the stored reading stays the last good one.
+    //
+    // The stored snapshot is anchored to the running app version, which is what
+    // lets a later launch decide it still applies; the Pi CLI half rides along
+    // so the About page restores the pair the check actually reported instead
+    // of inventing one.
+    if (!appStatus.error) {
+      const userDataDir = app.getPath('userData')
+      if (appStatus.hasUpdate) {
+        writeUpdateState(userDataDir, {
+          app: appStatus,
+          ...(piCliStatus.error ? {} : { piCli: piCliStatus }),
+          checkedAt: Date.now()
+        })
+      } else {
+        // The running version is the newest one, so there is nothing to
+        // remember.
+        clearUpdateState(userDataDir)
+      }
+    }
+
     return {
       app: appStatus,
       piCli: piCliStatus
     }
+  })
+
+  // The reading kept from the last check that reached the network. The
+  // renderer reads it once at startup, before its own check answers, so the
+  // update notice is there even when the machine is offline.
+  ipcMain.handle('app:updateState', (): UpdateState | null => {
+    // The reading is only offered when it still applies to the version that
+    // is running now: after an update the stored release is the one already
+    // installed, so restoring it would claim an update that does not exist.
+    return readUpdateStateForVersion(app.getPath('userData'), app.getVersion())
   })
 
   ipcMain.handle('app:installUpdate', async (_event, version: unknown): Promise<UpgradeResult> => {
@@ -1515,7 +1551,11 @@ export function registerIpc(context: IpcContext): void {
             return true
           }
         })
-        return { messages: result.messages, historyTruncated: result.historyTruncated }
+        return {
+          messages: result.messages,
+          historyTruncated: result.historyTruncated,
+          ...(result.taskMode ? { taskMode: result.taskMode } : {})
+        }
       } finally {
         if (inflightHydrations.get(cacheKey) === entry) {
           inflightHydrations.delete(cacheKey)
@@ -1546,8 +1586,15 @@ export function registerIpc(context: IpcContext): void {
     const token = (sessionSearchSequence += 1)
     latestSessionSearches.set(event.sender, token)
     if (typeof query !== 'string' || query.length > MAX_SEARCH_QUERY_LENGTH) return []
+    const current = settings.get()
+    const archiveFilter = current.sidebarArchiveFilter ?? 'hidden'
+    const archived = new Set(current.archivedSessions?.map(archiveSessionKey))
+    if (archiveFilter === 'archived' && archived.size === 0) return []
     const hits = await searchSessions(query, limit, {
-      sessionRoots: resolveSessionRoots(settings.get().externalChatFolder),
+      sessionRoots: resolveSessionRoots(current.externalChatFolder),
+      includeFile: archiveFilter === 'all' || archived.size === 0
+        ? undefined
+        : (file) => archived.has(archiveSessionKey(file)) === (archiveFilter === 'archived'),
       shouldStop: () => event.sender.isDestroyed?.() === true || latestSessionSearches.get(event.sender) !== token
     })
     return hits.map(withoutProjectFolder)
@@ -2500,7 +2547,13 @@ function tryCoalesceEvent(entry: CoalescedEventEntry, next: PiEvent): boolean {
       typeof lastSub.delta === 'string' &&
       typeof nextSub.delta === 'string'
     ) {
-      lastSub.delta = (lastSub.delta as string) + (nextSub.delta as string)
+      const delta = lastSub.delta + nextSub.delta
+      if (lastSub.type === 'thinking_delta') {
+        // The newest snapshot can mark the block as redacted.
+        entry.event = { ...next, assistantMessageEvent: { ...nextSub, delta } }
+      } else {
+        lastSub.delta = delta
+      }
       return true
     }
   }
@@ -2679,6 +2732,9 @@ export function bridgeRuntime(context: IpcContext): void {
 
   activeWindow()
 
+  // Pi may retry after agent_end. Keep a preview per owner and publish it at settle.
+  const runCompletions = new Map<string, ReturnType<typeof describeRunCompletion>>()
+
   /**
    * The conversation a desktop notification is about.
    *
@@ -2712,47 +2768,59 @@ export function bridgeRuntime(context: IpcContext): void {
     const window = activeWindow()
     sendToWindow(window, 'runtime:event', payload)
 
-    if (
-      window &&
-      !window.isDestroyed() &&
-      !window.isFocused() &&
-      settings.getCached().desktopNotifications !== false
-    ) {
-      let body: string | null = null
-      let heading: string | null = null
-      if (event.type === 'agent_settled') {
-        // A run the reader stopped, or a retired process, is not news.
-        if (!event.aborted && !event.runtimeStopped) {
-          body = 'Run finished'
-          heading = 'Run finished'
-        }
-      } else if (
-        event.type === 'extension_ui_request' &&
-        ['select', 'confirm', 'input', 'editor'].includes(String(event.method ?? ''))
-      ) {
-        const ask = String(event.title ?? event.message ?? '').trim()
-        body = ask ? `Needs your input: ${ask}` : 'Needs your input'
-        heading = ask || 'Needs your input'
-      }
-      if (body) {
-        const sessionKey = payload.ownerId
-        const message = body
-        void describeNotificationSession(sessionKey).then((name) => {
-          if (window.isDestroyed()) return
-          // The conversation is the heading, so overlapping runs stay
-          // distinguishable; the body keeps the event that happened.
-          showDesktopNotification(window, name || heading!, message, () => {
-            sendToWindow(window, 'notification:open', { sessionKey })
-          })
-        })
-      }
+    const sessionKey = payload.ownerId
+    if (event.type === 'agent_start') runCompletions.delete(sessionKey)
+    if (event.type === 'agent_end') runCompletions.set(sessionKey, describeRunCompletion(event.messages))
+
+    const settled = event.type === 'agent_settled'
+    const completion = settled ? runCompletions.get(sessionKey) : undefined
+    if (settled) runCompletions.delete(sessionKey)
+    const needsInput = event.type === 'extension_ui_request' &&
+      ['select', 'confirm', 'input', 'editor'].includes(String(event.method ?? ''))
+    if (!settled && !needsInput) return
+
+    const preferences = settings.getCached()
+    if (!window || window.isDestroyed() || window.isFocused() || preferences.desktopNotifications === false) return
+
+    const chinese = preferences.language === 'zh-CN'
+    let heading: string
+    let body: string
+    if (settled) {
+      if (event.aborted || event.runtimeStopped) return
+      const failed = event.crashed || completion?.failed
+      heading = failed ? (chinese ? '任务失败' : 'Run failed') : (chinese ? '任务已完成' : 'Run finished')
+      body = event.crashed
+        ? (chinese ? 'Pi 在任务完成前退出' : 'Pi stopped before the run finished')
+        : completion?.body || heading
+    } else {
+      const ask = String(event.title ?? event.message ?? '').trim()
+      heading = ask || 'Needs your input'
+      body = ask ? `Needs your input: ${ask}` : heading
     }
+
+    void describeNotificationSession(sessionKey).then((name) => {
+      if (window.isDestroyed() || window.isFocused() || settings.getCached().desktopNotifications === false) return
+      showDesktopNotification(window, {
+        title: name || heading,
+        body,
+        onActivate: () => sendToWindow(window, 'notification:open', { sessionKey }),
+        reply: settled ? {
+          placeholder: chinese ? '回复此对话…' : 'Reply to this conversation…',
+          submit: (reply) => sendToWindow(window, 'notification:open', { sessionKey, reply })
+        } : undefined
+      })
+    })
   })
   supervisor.on('status', (payload: { ownerId: string; status: RuntimeStatus }) => {
     flushOwner(payload.ownerId)
     sendToWindow(activeWindow(), 'runtime:status', payload)
   })
   supervisor.on('rekey', (payload: RuntimeRekey) => {
+    const completion = runCompletions.get(payload.from)
+    if (completion && payload.to !== payload.from) {
+      runCompletions.delete(payload.from)
+      runCompletions.set(payload.to, completion)
+    }
     flushOwner(payload.from)
     if (payload.to !== payload.from) flushOwner(payload.to)
     flushStderrOwner(payload.from)

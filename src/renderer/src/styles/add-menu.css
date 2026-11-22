@@ -11,6 +11,57 @@
   padding: var(--sp-1) 0;
 }
 
+.composer__add-modes .popover__item {
+  min-height: 0;
+  align-items: center;
+  padding-block: 6px;
+}
+
+/* A mode switch needs an idle run. While Pi is streaming the rows stay in
+   place but must not look clickable; the hint below says why. */
+.composer__add-modes .popover__item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.composer__add-modes .popover__item:disabled:hover {
+  background: none;
+}
+
+.composer__add-mode-copy {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.composer__add-mode-label {
+  flex: 0 0 auto;
+  color: var(--text);
+  white-space: normal;
+}
+
+.composer__add-mode-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__add-mode-check {
+  flex: 0 0 auto;
+}
+
+.composer__add-hint {
+  padding: 2px var(--sp-3) var(--sp-1);
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+  line-height: 1.45;
+}
+
 .composer__add-modes .popover__label {
   padding: 0 var(--sp-3) var(--sp-1);
 }

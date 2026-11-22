@@ -16,6 +16,7 @@ import {
   List,
   Maximize2,
   Minimize2,
+  Network,
   Plus,
   SquareTerminal,
   X
@@ -33,7 +34,7 @@ import { Popover } from './Popover'
  * The pages follow MCode's workspace panel: the header is a strip of
  * fixed-width page tabs, and `+` creates a new "start from here" tab.
  */
-export type ToolPanelView = 'files' | 'changes' | 'subagents' | 'terminal' | 'browser' | 'images' | 'start'
+export type ToolPanelView = 'files' | 'changes' | 'subagents' | 'swarm' | 'terminal' | 'browser' | 'images' | 'start'
 
 interface ToolTab {
   id: string
@@ -52,6 +53,7 @@ const TABS: {
   { view: 'terminal', label: 'Terminal', description: 'Run commands in a real shell', icon: SquareTerminal, shortcut: 'Ctrl+`' },
   { view: 'changes', label: 'File changes', description: 'Review the files this conversation changed', icon: FileDiff },
   { view: 'subagents', label: 'Subagents', description: 'Subagent tasks and their status', icon: Bot },
+  { view: 'swarm', label: 'Swarm', description: 'The worker team of this conversation', icon: Network },
   { view: 'images', label: 'Images', description: 'Pictures in this project', icon: Images }
 ]
 
@@ -413,7 +415,6 @@ export const ToolPanel = memo(function ToolPanel({
       style={{ width }}
       hidden={concealed}
       inert={concealed || undefined}
-      aria-hidden={concealed || undefined}
       role={overlay && !concealed ? 'dialog' : undefined}
       aria-modal={overlay && !concealed ? true : undefined}
       tabIndex={overlay ? -1 : undefined}

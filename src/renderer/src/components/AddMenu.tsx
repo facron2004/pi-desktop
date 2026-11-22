@@ -1,5 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, Target, WandSparkles, Workflow, Wrench } from 'lucide-react'
+import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, MessageSquare, Network, Paperclip, Plus, Sparkles, Target, WandSparkles, Workflow, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { useT } from '../lib/i18n'
 import type { mermaidTemplateList } from '../lib/mermaid-templates'
@@ -11,10 +11,12 @@ type AddMenuPage = 'actions' | 'skills' | 'plugins' | 'diagrams'
 type DiagramTemplateItem = ReturnType<typeof mermaidTemplateList>[number]
 
 const MODES = [
-  { value: 'goal', label: 'Goal Mode', icon: Target, description: 'Continue until the goal is complete or blocked' },
-  { value: 'plan', label: 'Plan Mode', icon: ListChecks, description: 'Create a Markdown plan and review it before execution' },
-  { value: 'subagent', label: 'Subagent Mode', icon: Bot, description: 'Delegate self-contained work to isolated subagents' },
-  { value: 'plugin', label: 'Plugin Mode', icon: Wrench, description: 'Build or modify a Pi extension' }
+  { value: 'default', label: 'Default Mode', hint: 'Normal chat', icon: MessageSquare, description: 'Answer and use tools without a task mode' },
+  { value: 'goal', label: 'Goal Mode', hint: 'Keep working', icon: Target, description: 'Continue until the goal is complete or blocked' },
+  { value: 'plan', label: 'Plan Mode', hint: 'Plan first', icon: ListChecks, description: 'Create a Markdown plan and review it before execution' },
+  { value: 'subagent', label: 'Subagent Mode', hint: 'Delegate work', icon: Bot, description: 'Delegate self-contained work to isolated subagents' },
+  { value: 'swarm', label: 'Swarm Mode', hint: 'Worker team', icon: Network, description: 'Lead a team of persistent workers across many turns' },
+  { value: 'plugin', label: 'Plugin Mode', hint: 'Build extension', icon: Wrench, description: 'Build or modify a Pi extension' }
 ] as const
 
 const PAGES = [
@@ -111,13 +113,31 @@ export const AddMenu = memo(function AddMenu({ ready, busy, mode, imageMode, ski
             {MODES.map((entry) => {
               const Icon = entry.icon
               return (
-                <button key={entry.value} type="button" className="popover__item" role="menuitemcheckbox" aria-checked={mode === entry.value} disabled={busy} title={t(entry.description)} onClick={() => { close(); void onModeChange(mode === entry.value ? 'default' : entry.value) }}>
-                  <Icon size={15} />
-                  <span className="popover__item-text">{t(entry.label)}</span>
-                  {mode === entry.value ? <Check size={14} /> : null}
+                <button
+                  key={entry.value}
+                  type="button"
+                  className="popover__item composer__add-mode"
+                  role="menuitemradio"
+                  aria-checked={mode === entry.value}
+                  disabled={busy}
+                  title={t(entry.description)}
+                  onClick={() => {
+                    close()
+                    if (mode !== entry.value) void onModeChange(entry.value)
+                  }}
+                >
+                  <Icon size={15} className="composer__add-mode-icon" />
+                  <span className="composer__add-mode-copy">
+                    <span className="composer__add-mode-label">{t(entry.label)}</span>
+                    <span className="composer__add-mode-hint">{t(entry.hint)}</span>
+                  </span>
+                  {mode === entry.value ? <Check size={14} className="composer__add-mode-check" /> : null}
                 </button>
               )
             })}
+            {busy ? (
+              <div className="composer__add-hint">{t('Stop the current run before changing modes')}</div>
+            ) : null}
           </div>
           <div className="composer__add-sep" role="separator" />
           {page === 'actions' ? (

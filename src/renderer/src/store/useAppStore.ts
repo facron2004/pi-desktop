@@ -2,8 +2,12 @@ import { create } from 'zustand'
 import {
   CONTEXT_BREAKDOWN_STATUS_KEY,
   GENERATION_TIMING_STATUS_KEY,
-  SUBAGENT_EDITOR_CANCEL_STATUS_KEY
+  GOAL_CONTINUE_CUSTOM_TYPE,
+  GOAL_STATUS_KEY,
+  SUBAGENT_EDITOR_CANCEL_STATUS_KEY,
+  TASK_MODE_STATUS_KEY
 } from '@shared/types'
+import { isAgentMode } from '@shared/task-mode-state'
 import type {
   AgentMessage,
   AgentMode,
@@ -39,6 +43,7 @@ import {
   itemsFromMessages,
   lastAssistantText,
   markAborted,
+  mergeHydratedItems,
   nextId,
   nextOrder,
   type ThreadItem,
@@ -59,7 +64,8 @@ import { collectProjects, type Project } from '../lib/projects'
 import { APP_COMMANDS, normalizeAppCommandInput } from '../lib/app-commands'
 import { COMPACTION_EXTENSION_MANAGED_MESSAGE, compactionOwnedByExtension, describeCompactionFailure } from '../lib/compaction-error'
 import { isMcpOrSkillChatter } from '../lib/extension-notices'
-import { hydrationStale, needsSessionHydration, scopeEvent, scopeStatus } from '../lib/session-scope'
+import { SWARM_STATUS_KEY } from '../lib/swarm'
+import { needsSessionHydration, scopeEvent, scopeStatus } from '../lib/session-scope'
 import { clearScrollMemory, migrateScrollMemory, rememberScrollPosition, scrollKeyOf } from '../lib/scroll-memory'
 import { beginStream, finishStream, rekeyStreamState, resetStreamState } from '../lib/stream-events'
 import { estimateContextBreakdown, parseRequestContextBreakdown } from '../lib/context-reading'
@@ -71,6 +77,7 @@ import {
   monotonicNow,
   recordGenerationWindow,
   recordModelDuration,
+  recordRoundDuration,
   recordRunDuration,
   recordToolDuration,
   recordTtftDuration
@@ -157,6 +164,8 @@ export interface RunState {
   turnId?: string
   /** Number of turns the current run has gone through. */
   turns: number
+  /** Number of turns in the active Goal Mode round, or undefined before a continuation. */
+  roundTurns?: number
   /** When the run started, for the elapsed counter. */
   startedAt?: number
   /** Monotonic start time for duration calculations. */
@@ -203,6 +212,8 @@ export interface RetryState {
 /** One conversation's transcript and run, kept even when it is not on screen. */
 export interface SessionThread {
   items: ThreadItem[]
+  /** The transcript has its history, even if live events arrived before the read. */
+  historyLoaded?: boolean
   /** The visible transcript is a bounded tail, not the complete session history. */
   historyTruncated?: boolean
   run: RunState
@@ -227,6 +238,8 @@ export interface SessionThread {
   status: RuntimeStatus
   forkTargets: ForkTarget[]
   agentMode: AgentMode
+  /** Live mode and goal status outrank a read of the same conversation from disk. */
+  hasLiveTaskMode?: boolean
   models: ModelInfo[]
   thinkingLevels: string[]
   commands: PiCommand[]
@@ -243,6 +256,7 @@ export interface SessionThread {
 
 const THREAD_KEYS = [
   'items',
+  'historyLoaded',
   'historyTruncated',
   'run',
   'isStreaming',
@@ -263,6 +277,7 @@ const THREAD_KEYS = [
   'status',
   'forkTargets',
   'agentMode',
+  'hasLiveTaskMode',
   'models',
   'thinkingLevels',
   'commands',
@@ -277,16 +292,17 @@ function mintClientKey(): string {
 function emptyThread(
   cwd?: string,
   agentMode: AgentMode = 'default',
-  clientKey = mintClientKey()
+  historyLoaded = false
 ): SessionThread {
   return {
     items: [],
+    historyLoaded,
     historyTruncated: false,
     run: IDLE_RUN,
     isStreaming: false,
     transport: 'connected',
     uiRequests: [],
-    clientKey,
+    clientKey: mintClientKey(),
     uiStatuses: [],
     uiWidgets: [],
     queue: { steering: [], followUp: [] },
@@ -519,14 +535,20 @@ export interface AppStore {
   sessions: SessionMeta[]
   status: RuntimeStatus
   agentMode: AgentMode
+  hasLiveTaskMode?: boolean
   setAgentMode: (mode: AgentMode) => Promise<void>
   /** Run a task-mode extension command through the live Pi process. */
-  runTaskCommand: (command: string) => Promise<void>
+  runTaskCommand: (command: string) => Promise<string | undefined>
   /**
    * Stop one running or queued subagent task. The id is the `toolCallId:index`
    * the subagent tree shows; a session that is not on screen is targeted by key.
    */
   cancelSubagentTask: (taskId: string, sessionKey?: string) => Promise<void>
+  /**
+   * Stop one swarm worker in the visible conversation. The lead turn is
+   * blocked inside a swarm tool call, so this travels as an extension command.
+   */
+  stopSwarmWorker: (name: string, sessionKey?: string) => Promise<void>
   isStreaming: boolean
   piState?: PiState
   models: ModelInfo[]
@@ -541,6 +563,7 @@ export interface AppStore {
   stats?: SessionStats
   contextBreakdown?: ContextBreakdown
   items: ThreadItem[]
+  historyLoaded?: boolean
   /** True when the active transcript was hydrated from a bounded disk tail. */
   historyTruncated?: boolean
   /** Transcript and run of every conversation, keyed by file path or draft id. */
@@ -693,6 +716,13 @@ export interface AppStore {
     text: string,
     images: { data: string; mimeType: string }[],
     kind?: QueueKind,
+    image?: ComposerImageOptions
+  ) => Promise<void>
+  sendPrompt: (
+    sessionKey: string,
+    text: string,
+    images: { data: string; mimeType: string }[],
+    kind: QueueKind,
     image?: ComposerImageOptions
   ) => Promise<void>
   /** Execute a shell command inline in the thread via Pi's `bash` RPC. */
@@ -1070,6 +1100,7 @@ export function enforceSessionLru(
       nextThreads[key] = {
         ...thread,
         items: [],
+        historyLoaded: false,
         version: 0
       }
       changed = true
@@ -1632,6 +1663,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       await get().ensureRuntime(key, 'task-command')
       await tracedRpc(threadKey(key), 'prompt', { message: command }, 900_000, 'task-command')
       await get().refreshState(threadKey(key))
+      // Pi acknowledges handled commands even if their handler raised an error.
+      // Return the owning conversation's published goal so edits can be confirmed.
+      return bindGet(get, key)().uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text
     } catch (error) {
       bindSet(set, get, key)({ error: messageOf(error) })
     }
@@ -1649,6 +1683,20 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       // extension command immediately even while the session is streaming.
       await get().ensureRuntime(key, 'subagent-cancel')
       await tracedRpc(threadKey(key), 'prompt', { message: `/desktop-subagent-cancel ${taskId}` }, 30_000, 'subagent-cancel')
+    } catch (error) {
+      get().showToast(messageOf(error), 'warning')
+    }
+  },
+
+  async stopSwarmWorker(name, sessionKey) {
+    const key = sessionKey || viewKeyOf(get())
+    if (!key) {
+      get().showToast('Start a conversation first', 'warning')
+      return
+    }
+    try {
+      await get().ensureRuntime(key, 'swarm-stop')
+      await tracedRpc(threadKey(key), 'prompt', { message: `/desktop-swarm-stop ${name}` }, 30_000, 'swarm-stop')
     } catch (error) {
       get().showToast(messageOf(error), 'warning')
     }
@@ -1731,6 +1779,15 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         const scoped = scopeStatus(incoming, viewKeyOf(get()))
         if (!scoped) return
         const { ownerId: owner, status } = scoped
+        // A stopped or failed process takes its live readings with it, before
+        // any rewrite below turns "stopped" into a usable cold conversation.
+        // Nothing else retracts them: a crash writes no `session_shutdown`.
+        if (status.phase === 'stopped' || status.phase === 'error') {
+          bindSet(set, get, owner)((state) => {
+            const kept = state.uiStatuses.filter((entry) => !PROCESS_LIVE_STATUS_KEYS.includes(entry.key))
+            return kept.length === state.uiStatuses.length ? {} : { uiStatuses: kept }
+          })
+        }
         // Auto-retry is process-local. A newly starting process must be armed
         // again, and a stopped process must not leave a stale session marker.
         if (status.phase === 'starting' || status.phase === 'stopped') retryArmed.delete(owner)
@@ -1784,14 +1841,20 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         void get().refreshSessions()
       })
 
-      const offNotificationOpen = window.pi.app.onNotificationOpen?.(({ sessionKey }) => {
+      const offNotificationOpen = window.pi.app.onNotificationOpen?.(({ sessionKey, reply }) => {
         if (!sessionKey) return
         const state = get()
         const key = threadKey(sessionKey)
-        const target =
-          state.sessions.find((entry) => threadKey(entry.file) === key) ??
-          state.sessions.find((entry) => entry.file === sessionKey)
-        if (target) void get().selectSession(target, 'notification-open')
+        if (deletedSessionKeys.has(key)) return
+        const target = conversationRows(state.sessions, state.threads, state.workspace?.path)
+          .find((row) => threadKey(row.file) === key)
+        if (!target) return
+        if (reply === undefined) {
+          void state.selectSession(target, 'notification-open')
+        } else {
+          const text = reply.trim()
+          if (text) void state.sendPrompt(key, text, [], 'followUp')
+        }
       })
 
       // The tray bridge is added by the preload; a renderer hot-reload can land
@@ -1935,6 +1998,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
 
   async openWorkspace(workspace, sessionFile, sourceAction = 'project-open') {
     void sourceAction
+    if (sessionFile) sessionFile = threadKey(sessionFile)
     flushPendingDraftWrite()
     const currentKey = viewKeyOf(get())
     if (currentKey) touchSessionLru(currentKey)
@@ -1944,7 +2008,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     drainPending()
     pendingProjectPath = undefined
     const cached = sessionFile ? get().threads[sessionFile] : undefined
-    const shouldHydrate = Boolean(sessionFile && (!cached || cached.version === 0) && !cached?.isStreaming)
+    const shouldHydrate = Boolean(sessionFile && needsSessionHydration(sessionFile, cached))
     const hydratingSessionFile = shouldHydrate ? sessionFile : undefined
     const savedDrafts = loadComposerDrafts()
     rememberCachedLastDraftKeys(savedDrafts.lastDraftKeys)
@@ -1954,7 +2018,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     // Opening a conversation is what clears its mark: the reader has seen it.
     const thread = cached
       ? { ...cached, clientKey: cached.clientKey || mintClientKey(), notice: undefined }
-      : emptyThread(workspace?.path, draftMode(get().settings))
+      : emptyThread(workspace?.path, draftMode(get().settings), !sessionFile && !restoredDraftId)
     const noticeKey = sessionFile ? threadKey(sessionFile) : ''
     let nextSessionNotices = get().sessionNotices
     if (noticeKey && noticeKey in nextSessionNotices) {
@@ -2092,17 +2156,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       delete nextSessionNotices[targetFile]
       saveSessionNotices(nextSessionNotices)
     }
-    // A conversation Pi has not written to disk yet is still keyed by its
-    // draft id (or by the path Pi assigned before flushing). It is a
-    // conversation, not a file, so the view follows its own key and nothing
-    // here may read that key as a session file.
+    // Only a draft id has no file to read. Pi can persist an assigned path
+    // before the sidebar has a saved row for it.
     const live = targetFile.startsWith('draft:')
-    const shouldHydrate = !live && needsSessionHydration(
-      session.messageCount,
-      cached?.version,
-      thread.items.length,
-      thread.isStreaming
-    )
+    const shouldHydrate = needsSessionHydration(targetFile, thread)
     deletedSessionKeys.delete(session.file)
     deletedSessionKeys.delete(targetFile)
     touchSessionLru(targetFile)
@@ -2166,62 +2223,55 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   },
 
   async hydrateSession(file) {
-    deletedSessionKeys.delete(file)
-    const canonical = threadKey(file)
-    deletedSessionKeys.delete(canonical)
-    const existingHydration = hydrationInFlight.get(canonical)
+    file = threadKey(file)
+    const existingHydration = hydrationInFlight.get(file)
     if (existingHydration) return existingHydration
 
     const hydrate = window.pi.sessions.hydrate
-    if (typeof hydrate !== 'function') {
+    const thread = get().threads[file]
+    if (typeof hydrate !== 'function' || !thread || !needsSessionHydration(file, thread)) {
       if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
       return
     }
-    const threadAtStart = get().threads[file]
-    const versionAtStart = threadAtStart?.version ?? 0
-    const itemCountAtStart = threadAtStart?.items.length ?? 0
-    const streaming = threadAtStart?.isStreaming ?? false
-    if (streaming) {
-      if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
-      return
-    }
+    const clientKey = thread.clientKey
+    const historyWasLoaded = thread.historyLoaded
 
     const work = (async () => {
       try {
-        const { messages, historyTruncated } = await hydrate(file)
+        let viewEpoch = workspaceEpoch
+        let result = await hydrate(file)
+        // The main process can cancel A's read when B opens. If the reader
+        // already came back to A, restart the read shared by both A selections.
+        while (
+          !result.messages.length && !result.taskMode &&
+          get().hydratingSessionFile === file && viewEpoch !== workspaceEpoch
+        ) {
+          viewEpoch = workspaceEpoch
+          result = await hydrate(file)
+        }
+        const { messages, historyTruncated, taskMode } = result
+        if (!messages.length && !taskMode) return
+
+        drainPending(file)
         const current = get().threads[file]
-        if (!current) return
-        const stale = hydrationStale(versionAtStart, current.version, current.isStreaming)
-        // If the user submitted a prompt while an empty cache was hydrating,
-        // keep the live turn items at the tail and prepend the older disk history.
-        const shouldMergeLiveTail = stale && itemCountAtStart === 0 && current.items.length > 0
-        if (stale && !shouldMergeLiveTail && (current.isStreaming || current.items.length > 0)) {
-          return
-        }
-
-        const hydratedItems = itemsFromMessages(messages ?? [])
-        let nextItems = hydratedItems
-        if (shouldMergeLiveTail) {
-          const firstLive = current.items[0]
-          let prefixEnd = hydratedItems.length
-          if (firstLive?.kind === 'user') {
-            const liveText = firstLive.text.trim()
-            const lastItem = hydratedItems[hydratedItems.length - 1]
-            if (lastItem?.kind === 'user' && lastItem.text.trim() === liveText) {
-              prefixEnd = hydratedItems.length - 1
-            }
-          }
-          const prefix = prefixEnd < hydratedItems.length ? hydratedItems.slice(0, prefixEnd) : hydratedItems
-          nextItems = [...prefix, ...current.items]
-        }
-
+        if (!current || current.clientKey !== clientKey || (!historyWasLoaded && current.historyLoaded)) return
+        const savedMode = current.hasLiveTaskMode ? undefined : taskMode
         const next: SessionThread = {
           ...current,
-          items: nextItems,
+          ...(savedMode ? {
+            agentMode: savedMode.mode,
+            uiStatuses: replaceUiStatus(
+              current.uiStatuses,
+              GOAL_STATUS_KEY,
+              savedMode.goal ? JSON.stringify(savedMode.goal) : ''
+            )
+          } : {}),
+          items: mergeHydratedItems(itemsFromMessages(messages), current.items),
+          historyLoaded: true,
           historyTruncated,
           contextBreakdown: current.contextBreakdown?.source === 'request'
             ? current.contextBreakdown
-            : estimateContextBreakdown(messages ?? [], current.stats?.contextUsage?.tokens),
+            : estimateContextBreakdown(messages, current.stats?.contextUsage?.tokens),
           version: current.version + 1
         }
         const rawThreads = { ...get().threads, [file]: next }
@@ -2239,12 +2289,12 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         // rejection in the renderer.
         if (get().activeSessionFile === file) set({ error: messageOf(error) })
       } finally {
-        hydrationInFlight.delete(canonical)
+        hydrationInFlight.delete(file)
         if (get().hydratingSessionFile === file) set({ hydratingSessionFile: undefined })
       }
     })()
 
-    hydrationInFlight.set(canonical, work)
+    hydrationInFlight.set(file, work)
     return work
   },
 
@@ -2351,7 +2401,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       const sessions = get().sessions.filter((entry) => entry.file !== file)
       if (get().activeSessionFile === file) {
         const draftId = mintDraft()
-        const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
+        const thread = emptyThread(get().workspace?.path, draftMode(get().settings), true)
         threads[draftId] = thread
         persistDraftSnapshot(get(), drafts, draftId)
         set({
@@ -2451,7 +2501,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     beginViewChange()
     drainPending()
     const draftId = mintDraft()
-    const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
+    const thread = emptyThread(get().workspace?.path, draftMode(get().settings), true)
     const prunedThreads = pruneIdleDraftThreads(get().threads, draftId)
     const threads = enforceSessionLru(
       { ...prunedThreads, [draftId]: thread },
@@ -2584,7 +2634,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     let key = viewKeyOf(get())
     if (!key) {
       const draftId = mintDraft()
-      const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
+      const thread = emptyThread(get().workspace?.path, draftMode(get().settings), true)
       persistDraftSnapshot(get(), get().drafts, draftId)
       set({
         draftId,
@@ -2595,8 +2645,14 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       })
       key = draftId
     }
+    await get().sendPrompt(key, trimmed, images, kind, image)
+  },
+
+  async sendPrompt(key, trimmed, images, kind, image) {
     const update = bindSet(set, get, key)
     const ownGet = bindGet(get, key)
+    const view = get()
+    const cwd = threadKey(viewKeyOf(view)) === threadKey(key) ? view.workspace?.path : undefined
     const payload: Record<string, unknown> = { message: trimmed, streamingBehavior: kind }
     if (images.length) payload.images = images
     pinScrollToBottom(key)
@@ -2619,7 +2675,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       isStreaming: true,
       submitSeq: (state.submitSeq ?? 0) + 1,
       run: state.run.settled ? { phase: 'queued', turns: 0, settled: false } : state.run,
-      status: { ...state.status, cwd: state.status.cwd ?? get().workspace?.path }
+      status: { ...state.status, cwd: state.status.cwd ?? cwd }
     }))
     try {
       await get().ensureRuntime(key, 'prompt-send')
@@ -2761,7 +2817,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     let owner = viewKeyOf(get())
     if (!owner) {
       const draftId = mintDraft()
-      const thread = emptyThread(get().workspace?.path, draftMode(get().settings))
+      const thread = emptyThread(get().workspace?.path, draftMode(get().settings), true)
       persistDraftSnapshot(get(), get().drafts, draftId)
       set({
         draftId,
@@ -3561,6 +3617,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       const isViewed = !sessionKey || threadKey(sessionKey) === activeCanonical
       bindSet(set, get, sessionKey, { activeThreadHydrated: isViewed })({
         items: itemsFromMessages(data?.messages ?? []),
+        ...(Array.isArray(data?.messages) ? { historyLoaded: true } : {}),
         contextBreakdown: ownGet().contextBreakdown?.source === 'request'
           ? ownGet().contextBreakdown
           : estimateContextBreakdown(data?.messages ?? [], ownGet().stats?.contextUsage?.tokens)
@@ -3699,6 +3756,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         break
       case 'subagent':
         await get().setAgentMode(get().agentMode === 'subagent' ? 'default' : 'subagent')
+        break
+      case 'swarm':
+        await get().setAgentMode(get().agentMode === 'swarm' ? 'default' : 'swarm')
         break
       case 'plugin':
         await get().setAgentMode(get().agentMode === 'plugin' ? 'default' : 'plugin')
@@ -4611,6 +4671,12 @@ function phaseAfterDialog(
   return 'working'
 }
 
+function replaceUiStatus(statuses: UiStatusEntry[], key: string, text: string): UiStatusEntry[] {
+  const remaining = statuses.filter((entry) => entry.key !== key)
+  if (text) remaining.push({ key, text })
+  return remaining
+}
+
 const projectedThreadCache = new WeakMap<SessionThread, Pick<AppStore, (typeof THREAD_KEYS)[number]>>()
 
 function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEYS)[number]> {
@@ -4619,6 +4685,7 @@ function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEY
   const uiRequests = pendingDialogsFor(thread)
   const projected = {
     items: thread.items,
+    historyLoaded: thread.historyLoaded,
     historyTruncated: thread.historyTruncated === true,
     run: thread.run,
     isStreaming: thread.isStreaming,
@@ -4639,6 +4706,7 @@ function projectThread(thread: SessionThread): Pick<AppStore, (typeof THREAD_KEY
     status: thread.status,
     forkTargets: thread.forkTargets,
     agentMode: thread.agentMode ?? 'default',
+    hasLiveTaskMode: thread.hasLiveTaskMode,
     models: thread.models ?? [],
     thinkingLevels: thread.thinkingLevels ?? [],
     commands: thread.commands ?? APP_COMMANDS,
@@ -4831,6 +4899,19 @@ type SetState = (
 ) => void
 type GetState = () => AppStore
 
+/**
+ * Status entries that describe the *process* rather than the conversation.
+ *
+ * The swarm roster is the worker processes of one Pi process, published over
+ * the status channel. When that process stops, the workers stop with it — but
+ * the last roster it published would otherwise stay in the thread for the rest
+ * of the app's life, and the Swarm page would keep a spinner (and a duration
+ * that only grows) for work that is already gone. The mode and goal entries are
+ * deliberately not here: they are persisted in the session and are restored
+ * from disk, so they outlive the process that published them.
+ */
+const PROCESS_LIVE_STATUS_KEYS = [SWARM_STATUS_KEY]
+
 function applyRuntimeStatus(set: SetState, status: RuntimeStatus): void {
   if (status.phase === 'error') {
     set({
@@ -4994,10 +5075,11 @@ function mergeTextDelta(
   // same block, so leave them separate rather than risk merging two blocks.
   if (previous.contentIndex === undefined || next.contentIndex === undefined) return null
   if (previous.contentIndex !== next.contentIndex) return null
+  const useLatestSnapshot = next.type === 'thinking_delta'
   return {
-    ...previousEvent,
+    ...(useLatestSnapshot ? nextEvent : previousEvent),
     assistantMessageEvent: {
-      ...previous,
+      ...(useLatestSnapshot ? next : previous),
       delta: (previous.delta ?? '') + (next.delta ?? '')
     }
   }
@@ -5271,6 +5353,33 @@ function closeGenerationWindow(set: SetState): void {
   })
 }
 
+function recordActiveRoundDuration(
+  timingKey: string,
+  items: readonly ThreadItem[],
+  durationMs: number
+): void {
+  let userOrdinal = 0
+  let roundOrdinal = 0
+  let starter:
+    | { kind: 'user'; timestamp: number; ordinal: number }
+    | { kind: 'roundBreak'; timestamp: number; ordinal: number }
+    | undefined
+  for (const item of items) {
+    if (item.kind === 'user') {
+      starter = { kind: 'user', timestamp: item.timestamp, ordinal: userOrdinal }
+      userOrdinal += 1
+    } else if (item.kind === 'roundBreak') {
+      starter = { kind: 'roundBreak', timestamp: item.timestamp, ordinal: roundOrdinal }
+      roundOrdinal += 1
+    }
+  }
+  if (starter?.kind === 'user') {
+    recordRunDuration(timingKey, starter.timestamp, durationMs, starter.ordinal)
+  } else if (starter?.kind === 'roundBreak') {
+    recordRoundDuration(timingKey, starter.timestamp, durationMs, starter.ordinal)
+  }
+}
+
 function handleEvent(
   set: SetState,
   get: GetState,
@@ -5316,6 +5425,7 @@ function handleEvent(
               phase: phaseFor(state, 'working'),
               runId: nextId('run'),
               turns: 0,
+              roundTurns: 0,
               startedAt,
               startedMonotonicAt,
               generationMs: 0,
@@ -5345,6 +5455,7 @@ function handleEvent(
               ...state.run,
               turnId: nextId('turn'),
               turns: state.run.turns + 1,
+              roundTurns: (state.run.roundTurns ?? state.run.turns) + 1,
               modelTurnStartedAt,
               firstTokenAt: undefined,
               phase: phaseFor(state, 'working'),
@@ -5359,6 +5470,42 @@ function handleEvent(
       // continue on its own. The run stays open until it settles.
       set((state) => ({ isStreaming: true, run: { ...state.run, settled: false } }))
       break
+    case 'entry_appended': {
+      const entry = (event as {
+        entry?: { type?: unknown; customType?: unknown }
+      }).entry
+      if (entry?.type === 'custom_message' && entry.customType === GOAL_CONTINUE_CUSTOM_TYPE) {
+        const key = viewKeyOf(get())
+        const timingKey = owner ? threadKey(owner) : key
+        drainPending(key || (owner ? threadKey(owner) : undefined))
+        const state = get()
+        const durationMs =
+          state.run.startedMonotonicAt !== undefined
+            ? Math.max(0, monotonicNow() - state.run.startedMonotonicAt)
+            : state.run.startedAt !== undefined
+              ? Math.max(0, Date.now() - state.run.startedAt)
+              : undefined
+        if (durationMs !== undefined) {
+          recordActiveRoundDuration(timingKey, state.items, durationMs)
+        }
+        const now = Date.now()
+        const monotonic = monotonicNow()
+        set((current) => ({
+          run: {
+            ...current.run,
+            startedAt: now,
+            startedMonotonicAt: monotonic,
+            roundTurns: 0,
+            modelTurnStartedAt: undefined,
+            firstTokenAt: undefined,
+            phase: phaseFor(current, 'working'),
+            settled: false
+          }
+        }))
+        scheduleItems(set, get, event, true)
+      }
+      break
+    }
     case 'agent_settled': {
       // The one authoritative "the runtime is done" signal.
       const aborted = Boolean(event.aborted)
@@ -5403,15 +5550,17 @@ function handleEvent(
           (count, item) => count + Number(item.kind === 'user'),
           0
         )
-      if (!aborted && !failed && runUser?.kind === 'user') {
+      if (!aborted && !failed) {
         if (durationMs !== undefined) {
-          recordRunDuration(timingKey, runUser.timestamp, durationMs, runUserOrdinal)
+          recordActiveRoundDuration(timingKey, state.items, durationMs)
         }
-        // The summed windows of the answers in this turn. A tool gap between
-        // them is not generation time and must not slow the restored TPS.
-        const generatedMs = state.run.generationMs ?? 0
-        if (generatedMs > 0) {
-          recordGenerationWindow(timingKey, runUser.timestamp, generatedMs, runUserOrdinal)
+        if (runUser?.kind === 'user') {
+          // The summed windows of the answers in this turn. A tool gap between
+          // them is not generation time and must not slow the restored TPS.
+          const generatedMs = state.run.generationMs ?? 0
+          if (generatedMs > 0) {
+            recordGenerationWindow(timingKey, runUser.timestamp, generatedMs, runUserOrdinal)
+          }
         }
       }
       // A mark means "there is something in this conversation the reader has
@@ -5622,6 +5771,7 @@ function handleEvent(
                   phase: 'working',
                   runId: nextId('run'),
                   turns: 0,
+                  roundTurns: 0,
                   startedAt,
                   startedMonotonicAt,
                   generationMs: 0,
@@ -5985,18 +6135,17 @@ function handleExtensionUi(
         }
         break
       }
-      if (key === 'pi-desktop-mode') {
+      if (key === TASK_MODE_STATUS_KEY) {
         const mode = request.statusText
-        if (mode === 'default' || mode === 'goal' || mode === 'plan' || mode === 'subagent' || mode === 'plugin') set({ agentMode: mode })
+        if (isAgentMode(mode)) set({ agentMode: mode, hasLiveTaskMode: true })
         break
       }
-      const text = request.statusText
-        ? stripAnsi(request.statusText).replace(/\s+/g, ' ').trim()
-        : ''
+      const text = key === GOAL_STATUS_KEY
+        ? request.statusText ?? ''
+        : request.statusText ? stripAnsi(request.statusText).replace(/\s+/g, ' ').trim() : ''
       set((state) => ({
-        uiStatuses: text
-          ? [...state.uiStatuses.filter((entry) => entry.key !== key), { key, text }]
-          : state.uiStatuses.filter((entry) => entry.key !== key)
+        uiStatuses: replaceUiStatus(state.uiStatuses, key, text),
+        ...(key === GOAL_STATUS_KEY ? { hasLiveTaskMode: true } : {})
       }))
       break
     }

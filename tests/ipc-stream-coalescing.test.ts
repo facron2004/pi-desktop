@@ -110,6 +110,32 @@ test('IPC: multi-session interleaved streaming token coalescing across distinct 
   }
 })
 
+test('IPC: coalesced thinking deltas keep the latest redaction snapshot', async () => {
+  const window = new MockBrowserWindow()
+  const supervisor = new EventEmitter()
+  bridgeRuntime(createTestContext(window, supervisor))
+
+  for (const redacted of [false, true]) {
+    const thinking = redacted ? 'Redacted' : 'Before'
+    const partial = { role: 'assistant', content: [{ type: 'thinking', thinking, redacted }] }
+    supervisor.emit('event', {
+      ownerId: 'session-thinking',
+      event: {
+        type: 'message_update',
+        message: partial,
+        assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: thinking, partial }
+      }
+    })
+  }
+
+  await flushBatch()
+  const deliveries = unwrapRuntimeEvents(window.sent)
+  assert.equal(deliveries.length, 1)
+  const payload = deliveries[0].event.assistantMessageEvent as { delta: string; partial: { content: { redacted: boolean }[] } }
+  assert.equal(payload.delta, 'BeforeRedacted')
+  assert.equal(payload.partial.content[0].redacted, true)
+})
+
 test('IPC: synchronous flush ahead of structural events guarantees zero event-order inversion and preserves other sessions', async () => {
   const window = new MockBrowserWindow()
   const supervisor = new EventEmitter()

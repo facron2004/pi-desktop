@@ -1,7 +1,7 @@
 import { lstatSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
-import type { ToolApproval } from '@shared/types'
+import { ASK_USER_TOOL_NAME, type ToolApproval } from '@shared/types'
 
 /** Resolve existing ancestors too, so a new file beneath a symlink cannot escape. */
 function realPath(target: string): string {
@@ -70,29 +70,62 @@ export function canAutoApprove(approval: ToolApproval, cwd: string, env: NodeJS.
   }
 }
 
-/** A private dialog title keeps ordinary extension confirmations out of this gate. */
-export function permissionExtension(title: string, exemptDesktopTools = true): string {
-  const exemptTools = exemptDesktopTools
-    ? ['desktop_goal_finish', 'exit_plan_mode', 'desktop_todo', 'computer', 'generate_image']
-    : []
+/**
+ * A private dialog title keeps ordinary extension confirmations out of this gate.
+ *
+ * `taskModeExtensionPath` and `swarmExtensionPath` are the generated files this
+ * app writes for its own extensions. A tool is exempt by **source**, never by
+ * name alone: any other extension — a global Pi package, a project extension —
+ * may register a tool called `swarm_task` or `desktop_todo`, and an exemption
+ * matched on the name would let it run without the confirmation every other
+ * tool needs. A name that resolves to another source falls through to `decide`,
+ * so a squatted name costs a dialog instead of a silent approval.
+ */
+export function permissionExtension(
+  title: string,
+  exemptDesktopTools = true,
+  taskModeExtensionPath?: string,
+  swarmExtensionPath?: string
+): string {
+  const ownedTools: Record<string, string> = {}
+  if (exemptDesktopTools) {
+    for (const name of ['desktop_goal_finish', 'exit_plan_mode', 'desktop_todo', ASK_USER_TOOL_NAME]) {
+      if (taskModeExtensionPath) ownedTools[name] = taskModeExtensionPath
+    }
+    // The swarm roster tools only move work between this app's own processes;
+    // each worker's own tool calls are approved separately in its child.
+    for (const name of ['swarm_spawn', 'swarm_task', 'swarm_collect', 'swarm_message', 'swarm_status', 'swarm_disband']) {
+      if (swarmExtensionPath) ownedTools[name] = swarmExtensionPath
+    }
+  }
+  // Switches the user turned on deliberately. `computer` is only offered after
+  // the Settings switch, and a per-click dialog would make the observe/act loop
+  // unusable; an image call is the composer's own action.
+  const settingTools = exemptDesktopTools ? ['computer', 'generate_image'] : []
   return `export default function (pi) {
     let pending = Promise.resolve();
-    const exemptTools = new Set(${JSON.stringify(exemptTools)});
+    const ownedTools = new Map(Object.entries(${JSON.stringify(ownedTools)}));
+    const settingTools = new Set(${JSON.stringify(settingTools)});
     function freeze(value, seen = new WeakSet()) {
       if (!value || typeof value !== 'object' || seen.has(value)) return;
       seen.add(value);
       for (const child of Object.values(value)) freeze(child, seen);
       if (!Object.isFrozen(value)) Object.freeze(value);
     }
+    function sourcePathOf(name) {
+      // The first registration wins here, so a squatted name resolves to the
+      // foreign tool and the call is confirmed instead of exempted.
+      return pi.getAllTools().find(tool => tool.name === name)?.sourceInfo?.path;
+    }
     pi.on('session_start', (_event, ctx) => ctx.ui.setStatus(${JSON.stringify(title)}, 'ready'));
     pi.on('tool_call', (event, ctx) => {
       // Mode tools record session state or run their own approval.
       // exit_plan_mode asks through its own dialog. desktop_todo only records
       // the checklist in the session, so asking on every update would stop the
-      // agent for a bookkeeping step. computer is only offered after the user
-      // turns it on in Settings, and a per-click dialog would make the
-      // observe/act loop unusable, so that switch is the approval.
-      if (exemptTools.has(event.toolName)) return;
+      // agent for a bookkeeping step.
+      if (settingTools.has(event.toolName)) return;
+      const ownedPath = ownedTools.get(event.toolName);
+      if (ownedPath && sourcePathOf(event.toolName) === ownedPath) return;
       const decide = async () => {
         if (ctx.signal?.aborted || !ctx.hasUI) return { block: true, reason: 'Tool approval is unavailable', terminate: true };
         try {

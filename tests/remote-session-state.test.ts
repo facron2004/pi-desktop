@@ -228,3 +228,45 @@ test('remote send completion only clears the request owned by its conversation',
   assert.equal(finishRemoteSendRequest(afterA, 'conversation-B', 99), afterA)
   assert.deepEqual(finishRemoteSendRequest(afterA, 'conversation-B', 2), {})
 })
+
+test('restoreRemoteSessionItems skips buffered round.continued already present in snapshot items', () => {
+  const restored = restoreRemoteSessionItems(
+    [
+      { role: 'user', content: [{ type: 'text', text: 'goal' }], timestamp: 1000 },
+      { role: 'assistant', content: [{ type: 'text', text: 'r1' }], timestamp: 1500 },
+      { role: 'custom', customType: 'desktop-goal-continue', content: '', display: false, entryId: 'entry-rb-1', timestamp: 2000 },
+    ],
+    [
+      {
+        type: 'entry_appended',
+        entry: {
+          id: 'entry-rb-1',
+          type: 'custom_message',
+          customType: 'desktop-goal-continue',
+          display: false,
+          content: '',
+          timestamp: '1970-01-01T00:00:02.000Z',
+        },
+      },
+      {
+        type: 'entry_appended',
+        entry: {
+          id: 'entry-rb-2',
+          type: 'custom_message',
+          customType: 'desktop-goal-continue',
+          display: false,
+          content: '',
+          timestamp: '1970-01-01T00:00:04.000Z',
+        },
+      },
+    ],
+    'conversation-goal',
+    [],
+  )
+  const breaks = restored.filter((item) => item.kind === 'roundBreak')
+  assert.equal(breaks.length, 2)
+  assert.deepEqual(
+    breaks.map((b) => b.timestamp),
+    [2000, 4000],
+  )
+})

@@ -1,5 +1,5 @@
-import type { AgentMessage, ContentBlock, ForkTarget, PiEvent, Usage } from '@shared/types'
-import { normalizePiEvent, type StreamContext, type StreamEvent, type StreamEventStatus } from './stream-events'
+import { GOAL_CONTINUE_CUSTOM_TYPE, type AgentMessage, type ContentBlock, type ForkTarget, type PiEvent, type Usage } from '@shared/types'
+import { goalResumeTime, normalizePiEvent, type StreamContext, type StreamEvent, type StreamEventStatus } from './stream-events'
 
 export type { StreamContext } from './stream-events'
 
@@ -20,7 +20,7 @@ export type { StreamContext } from './stream-events'
 
 export type AssistantBlock =
   | { type: 'text'; text: string }
-  | { type: 'thinking'; text: string }
+  | { type: 'thinking'; text: string; redacted?: true }
   | { type: 'image'; data: string; mimeType: string }
   | { type: 'toolCall'; id: string; name: string; argsText?: string; args?: Record<string, unknown> }
 
@@ -143,7 +143,20 @@ export interface NoticeItem {
   status?: StreamEventStatus
 }
 
-export type ThreadItem = UserItem | AssistantItem | ToolItem | BashItem | NoticeItem
+export interface RoundBreakItem {
+  id: string
+  kind: 'roundBreak'
+  entryId?: string
+  resumed?: boolean
+  timestamp: number
+  order: number
+  runId?: string
+  turnId?: string
+  threadId?: string
+  sequence?: number
+}
+
+export type ThreadItem = UserItem | AssistantItem | ToolItem | BashItem | NoticeItem | RoundBreakItem
 
 interface ThreadItemsChange {
   base: WeakRef<ThreadItem[]>
@@ -391,7 +404,9 @@ function blocksFromContent(content: unknown): AssistantBlock[] {
     if (block.type === 'text') {
       blocks.push({ type: 'text', text: block.text ?? '' })
     } else if (block.type === 'thinking') {
-      blocks.push({ type: 'thinking', text: block.thinking ?? '' })
+      blocks.push(block.redacted
+        ? { type: 'thinking', text: '', redacted: true }
+        : { type: 'thinking', text: block.thinking ?? '' })
     } else if (block.type === 'image') {
       // A model that can draw hands the picture back as an image block.
       blocks.push({ type: 'image', data: block.data ?? '', mimeType: block.mimeType ?? 'image/png' })
@@ -713,11 +728,94 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
         items.push(notice('info', `Branch summary — ${summary?.summary ?? ''}`))
         break
       }
+      case 'custom': {
+        const custom = message as AgentMessage & { customType?: unknown; entryId?: unknown }
+        if (custom.customType !== GOAL_CONTINUE_CUSTOM_TYPE) break
+        const entryId = typeof custom.entryId === 'string' && custom.entryId ? custom.entryId : undefined
+        const resumedAt = goalResumeTime(message)
+        items.push({
+          id: nextId('round'),
+          kind: 'roundBreak',
+          ...(entryId ? { entryId } : {}),
+          ...(resumedAt !== undefined ? { resumed: true } : {}),
+          timestamp: resumedAt ?? message.timestamp ?? Date.now(),
+          order: nextOrder()
+        })
+        break
+      }
       default:
         break
     }
   }
   return items
+}
+
+function replayKey(item: ThreadItem): string | undefined {
+  switch (item.kind) {
+    case 'user': return item.pending ? undefined : `user:${item.timestamp}:${item.text}`
+    case 'assistant': return `assistant:${item.timestamp}`
+    case 'tool': return item.toolCallId ? `tool:${item.toolCallId}` : undefined
+    case 'bash': return `bash:${item.timestamp}:${item.command}`
+    case 'roundBreak': return `roundBreak:${item.timestamp}`
+  }
+}
+
+function mergeReplayedItem(saved: ThreadItem, live: ThreadItem): ThreadItem {
+  if (saved.kind === 'tool' && live.kind === 'tool') {
+    const tool = isFinishedTool(saved) && !isFinishedTool(live)
+      ? { ...live, ...saved, id: live.id, progress: undefined }
+      : { ...saved, ...live }
+    return {
+      ...tool,
+      toolName: live.toolName === 'tool' ? saved.toolName : live.toolName,
+      args: Object.keys(live.args).length ? live.args : saved.args,
+      durationMs: live.durationMs ?? saved.durationMs
+    }
+  }
+  if (saved.kind === 'assistant' && live.kind === 'assistant' && live.streaming) {
+    return { ...live, ...saved, id: live.id }
+  }
+  return live
+}
+
+/** Fill missing history while keeping the identities and progress of live items. */
+export function mergeHydratedItems(saved: ThreadItem[], live: ThreadItem[]): ThreadItem[] {
+  if (!live.length) return saved
+  if (!saved.length) return live
+
+  const positions = new Map<string, number[]>()
+  for (const [index, item] of saved.entries()) {
+    const key = replayKey(item)
+    if (key === undefined) continue
+    const matches = positions.get(key)
+    if (matches) matches.push(index)
+    else positions.set(key, [index])
+  }
+
+  const replay = saved.slice()
+  const before = new Map<number, ThreadItem[]>()
+  let nextPosition = replay.length
+  // Work back from the live tail so repeated timestamps match the most recent
+  // persisted occurrence first. Live-only rows stay before their next match.
+  for (let i = live.length - 1; i >= 0; i -= 1) {
+    const key = replayKey(live[i])
+    const position = key === undefined ? undefined : positions.get(key)?.pop()
+    if (position !== undefined) {
+      replay[position] = mergeReplayedItem(replay[position], live[i])
+      nextPosition = Math.min(position, nextPosition)
+    } else {
+      const items = before.get(nextPosition)
+      if (items) items.push(live[i])
+      else before.set(nextPosition, [live[i]])
+    }
+  }
+
+  const merged: ThreadItem[] = []
+  for (let i = 0; i <= replay.length; i += 1) {
+    for (const item of before.get(i)?.reverse() ?? []) merged.push({ ...item, order: nextOrder() })
+    if (i < replay.length) merged.push({ ...replay[i], order: nextOrder() })
+  }
+  return merged
 }
 
 /* ------------------------------------------------------------------ *
@@ -864,6 +962,8 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
           }
         )
       }
+      const previous = blocks[index]
+      if (previous?.type === 'thinking' && previous.redacted) return items
       blocks[index] = { type: event.blockType, text: '' }
       return replaceItem(items, assistant.id, { ...assistant, blocks })
     }
@@ -875,12 +975,12 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       const index = event.contentIndex ?? blocks.length
       let block = blocks[index]
       if (!block) {
-        block = { type: 'text', text: '' }
+        block = { type: event.blockType, text: '' }
         blocks[index] = block
       }
       if (event.blockType === 'text' && block.type === 'text') {
         blocks[index] = { ...block, text: block.text + event.delta }
-      } else if (event.blockType === 'thinking' && block.type === 'thinking') {
+      } else if (event.blockType === 'thinking' && block.type === 'thinking' && !block.redacted) {
         blocks[index] = { ...block, text: block.text + event.delta }
       }
       return replaceItem(items, assistant.id, { ...assistant, blocks })
@@ -891,16 +991,20 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
       if (!assistant) return items
       const blocks = assistant.blocks.slice()
       const index = event.contentIndex ?? blocks.length
+      if (event.redacted) {
+        blocks[index] = { type: 'thinking', text: '', redacted: true }
+        return replaceItem(items, assistant.id, { ...assistant, blocks })
+      }
       let block = blocks[index]
       if (!block) {
-        block = { type: 'text', text: '' }
+        block = { type: event.blockType, text: '' }
         blocks[index] = block
       }
       // The completed block is the authority, so the deltas are replaced
       // rather than added to.
       if (event.blockType === 'text' && block.type === 'text') {
         blocks[index] = { ...block, text: event.content ?? block.text }
-      } else if (event.blockType === 'thinking' && block.type === 'thinking') {
+      } else if (event.blockType === 'thinking' && block.type === 'thinking' && !block.redacted) {
         blocks[index] = { ...block, text: event.content ?? block.text }
       }
       return replaceItem(items, assistant.id, { ...assistant, blocks })
@@ -1144,6 +1248,29 @@ export function applyStreamEvent(items: ThreadItem[], event: StreamEvent): Threa
 
     case 'error': {
       return appendThreadItem(items, noticeFor(event, 'error', event.text))
+    }
+
+    case 'round.continued': {
+      if (
+        (event.entryId || event.resumed) &&
+        items.some((item) => item.kind === 'roundBreak' && (
+          (event.entryId && item.entryId === event.entryId) ||
+          (event.resumed && item.resumed && item.timestamp === event.timestamp)
+        ))
+      ) {
+        return items
+      }
+      return appendThreadItem(items, {
+        id: nextId('round'),
+        kind: 'roundBreak',
+        ...(event.entryId ? { entryId: event.entryId } : {}),
+        ...(event.resumed ? { resumed: true } : {}),
+        timestamp: event.timestamp,
+        order: nextOrder(),
+        runId: event.runId,
+        turnId: event.turnId,
+        ...identityOf(event)
+      })
     }
 
     default:

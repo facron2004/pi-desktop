@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { downloadAppInstaller, launchAppInstaller, supportsAppUpdate } from '../src/main/app-update-installer'
@@ -12,10 +13,12 @@ import {
   checkForAppUpdates,
   lastAppUpdateCheck,
   noteAppUpdateCheck,
+  restorePersistedAppUpdate,
   showAppUpdate,
   subscribeAppUpdateCheck,
   subscribeAvailableAppUpdate
 } from '../src/renderer/src/lib/app-update'
+import { clearUpdateState, readUpdateState, readUpdateStateForVersion, writeUpdateState } from '../src/main/update-state'
 import {
   APP_RELEASE_PAGE_URL,
   checkAppVersion,
@@ -236,6 +239,53 @@ test('launches the verified setup file without a shell and with restart flags', 
   await assert.rejects(launchAppInstaller('C:/verified update/installer.exe', failed), /EACCES/)
 })
 
+test('a restart with no stored reading adds nothing', async () => {
+  const previousWindow = globalThis.window
+  const target = new EventTarget()
+  Object.assign(globalThis, { window: Object.assign(target, { pi: { app: { updateState: async () => null } } }) })
+  try {
+    await restorePersistedAppUpdate()
+    assert.equal(lastAppUpdateCheck(), null)
+    assert.equal(availableAppUpdate(), null)
+  } finally {
+    Object.assign(globalThis, { window: previousWindow })
+  }
+})
+
+test('the startup cache restores a release and a late cache read preserves a newer check', async () => {
+  const previousWindow = globalThis.window
+  const target = new EventTarget()
+  const state = {
+    app: { current: '0.11.1', latest: '0.11.2', hasUpdate: true },
+    checkedAt: 1730000000000
+  }
+  let resolveDelayed!: (value: typeof state) => void
+  const delayedState = new Promise<typeof state>((resolve) => { resolveDelayed = resolve })
+  let reads = 0
+  const bridge = { app: { updateState: async () => ++reads === 1 ? delayedState : state } }
+  Object.assign(globalThis, { window: Object.assign(target, { pi: bridge }) })
+  try {
+    const delayedRestore = restorePersistedAppUpdate()
+    await restorePersistedAppUpdate()
+    assert.deepEqual(availableAppUpdate(), { current: '0.11.1', latest: '0.11.2' })
+    assert.deepEqual(lastAppUpdateCheck()?.app, state.app)
+
+    const fresh = {
+      app: { current: '0.11.1', latest: '0.11.3', hasUpdate: true },
+      piCli: { current: '1.5.0', latest: '1.5.2', hasUpdate: true }
+    }
+    noteAppUpdateCheck(fresh)
+    resolveDelayed(state)
+    await delayedRestore
+    assert.equal(lastAppUpdateCheck(), fresh)
+    assert.equal(availableAppUpdate()?.latest, '0.11.3')
+    await restorePersistedAppUpdate()
+    assert.equal(reads, 2)
+  } finally {
+    Object.assign(globalThis, { window: previousWindow })
+  }
+})
+
 test('manual checks share one request and one card; failures remain retryable', async () => {
   const previousWindow = globalThis.window
   const target = new EventTarget()
@@ -324,5 +374,99 @@ test('an app release is remembered for the sidebar and a failed check keeps it',
     assert.deepEqual(seen, [{ latest: '0.12.0' }, null])
   } finally {
     stop()
+  }
+})
+
+
+test('the update reading survives a restart on disk', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-desktop-update-state-'))
+  try {
+    // Nothing checked yet: no reading.
+    assert.equal(readUpdateState(dir), null)
+
+    writeUpdateState(dir, {
+      app: { current: '0.11.1', latest: '0.11.2', hasUpdate: true, installerBytes: 42 },
+      checkedAt: 1730000000000
+    })
+    const stored = readUpdateState(dir)
+    assert.deepEqual(stored?.app, { current: '0.11.1', latest: '0.11.2', hasUpdate: true, installerBytes: 42 })
+    assert.equal(stored?.checkedAt, 1730000000000)
+
+    // A corrupt file is treated as no reading at all, so a broken file never
+    // keeps the app from checking again.
+    writeFileSync(path.join(dir, 'update-state.json'), '{ not json', 'utf8')
+    assert.equal(readUpdateState(dir), null)
+
+    // A reading without a version is not a reading.
+    writeFileSync(path.join(dir, 'update-state.json'), JSON.stringify({ checkedAt: 1 }), 'utf8')
+    assert.equal(readUpdateState(dir), null)
+
+    // The running version being the newest one clears the stored reading.
+    writeUpdateState(dir, { app: { current: '0.11.1', latest: '0.11.1', hasUpdate: false }, checkedAt: 1 })
+    clearUpdateState(dir)
+    assert.equal(readUpdateState(dir), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the stored reading keeps both halves the check reported', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-desktop-update-pair-'))
+  try {
+    writeUpdateState(dir, {
+      app: { current: '0.11.1', latest: '0.11.2', hasUpdate: true },
+      piCli: { current: '1.5.0', latest: '1.5.2', hasUpdate: true },
+      checkedAt: 1730000000000
+    })
+    const restored = readUpdateStateForVersion(dir, '0.11.1')
+    // A restored app release must not be paired with an invented Pi CLI
+    // reading: the About page shows both, and only one of them is a guess.
+    assert.deepEqual(restored?.piCli, { current: '1.5.0', latest: '1.5.2', hasUpdate: true })
+    // A malformed Pi CLI half is dropped without discarding the app half.
+    writeFileSync(
+      path.join(dir, 'update-state.json'),
+      JSON.stringify({
+        app: { current: '0.11.1', latest: '0.11.2', hasUpdate: true },
+        piCli: { hasUpdate: true },
+        checkedAt: 1
+      }),
+      'utf8'
+    )
+    const partial = readUpdateStateForVersion(dir, '0.11.1')
+    assert.equal(partial?.app?.latest, '0.11.2')
+    assert.equal(partial?.piCli, undefined)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a reading from another version is not restored', () => {  const dir = mkdtempSync(path.join(tmpdir(), 'pi-desktop-update-version-'))
+  try {
+    // A reading taken while 0.11.1 was running.
+    writeUpdateState(dir, {
+      app: { current: '0.11.1', latest: '0.11.2', hasUpdate: true },
+      checkedAt: 1730000000000
+    })
+    // The same version is still running: the reading applies.
+    assert.equal(readUpdateStateForVersion(dir, '0.11.1')?.app?.latest, '0.11.2')
+    // The app was updated to 0.11.2: the stored release is now the running
+    // one, so there is nothing to offer and the reading must not be restored.
+    assert.equal(readUpdateStateForVersion(dir, '0.11.2'), null)
+    assert.equal(readUpdateStateForVersion(dir, '0.12.0'), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a reading that is not newer than the running version is not restored', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-desktop-update-stale-'))
+  try {
+    writeUpdateState(dir, {
+      app: { current: '0.11.1', latest: '0.11.1', hasUpdate: false },
+      checkedAt: 1730000000000
+    })
+    assert.equal(readUpdateStateForVersion(dir, '0.11.1'), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

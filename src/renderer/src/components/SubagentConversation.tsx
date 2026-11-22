@@ -50,8 +50,7 @@ function useCopy() {
  *
  * The projection already matches the parent session (`buildTurns` over the
  * same items), so only the run chrome is missing here: the reply keeps the
- * column, commentary and tool calls fold into a process row, and a turn that
- * is still being written stays open.
+ * column, with the same inline tool groups between commentary paragraphs.
  */
 const SubagentTurn = memo(function SubagentTurn({
   turn,
@@ -110,9 +109,7 @@ const SubagentTurn = memo(function SubagentTurn({
               <ProcessTrail
                 key="process-orphans"
                 tools={orphanTools}
-                thoughts={0}
-                searchText=""
-                live={liveTail && orphanTools.some((tool) => tool.status === 'running')}
+                live={liveTail}
               >
                 {orphanTools.map((tool) => (
                   <ToolCard key={tool.id} item={tool} presentation="link" />

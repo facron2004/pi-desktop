@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { appendSessionName, readSessionMessages } from '../src/main/sessions'
-import { hydrationStale, needsSessionHydration, scopeEvent } from '../src/renderer/src/lib/session-scope'
+import { needsSessionHydration, scopeEvent } from '../src/renderer/src/lib/session-scope'
 
 test('a bare event belongs to the view, a scoped event keeps its owner', () => {
   const bare = scopeEvent({ type: 'agent_start' }, 'view.jsonl')
@@ -12,16 +12,13 @@ test('a bare event belongs to the view, a scoped event keeps its owner', () => {
   assert.equal(bare?.event.type, 'agent_start')
   const scoped = scopeEvent({ ownerId: 'other.jsonl', event: { type: 'text' } }, 'view.jsonl')
   assert.equal(scoped?.ownerId, 'other.jsonl')
-  assert.equal(hydrationStale(1, 1, false), false)
-  assert.equal(hydrationStale(1, 2, false), true)
-  assert.equal(hydrationStale(1, 1, true), true)
+  assert.equal(scoped?.event.type, 'text')
 })
 
-test('a disk conversation with no cached messages can retry hydration', () => {
-  assert.equal(needsSessionHydration(2, 1, 0, false), true)
-  assert.equal(needsSessionHydration(2, 1, 1, false), false)
-  assert.equal(needsSessionHydration(2, 1, 0, true), false)
-  assert.equal(needsSessionHydration(0, 0, 0, false), false)
+test('a session file can be read until its history is cached', () => {
+  assert.equal(needsSessionHydration('chat.jsonl'), true)
+  assert.equal(needsSessionHydration('chat.jsonl', { historyLoaded: true, items: [] }), true)
+  assert.equal(needsSessionHydration('draft:chat'), false)
 })
 
 test('cold history is the active branch and a rename appends session_info', async () => {

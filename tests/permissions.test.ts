@@ -103,9 +103,86 @@ test('permission messages reject malformed requests', () => {
   assert.equal(parseToolApproval('{"toolName":"write","input":{"path":"a.txt"},"cwd":"relative"}'), undefined)
 })
 
-test('subagent permission extensions do not exempt desktop-only tools', () => {
+test('desktop exemptions are matched by extension source, not by tool name', async () => {
+  // A subagent's own permission extension gets no desktop exemptions at all.
   assert.match(permissionExtension('private-title', false), /new Set\(\[\]\)/)
-  assert.match(permissionExtension('private-title'), /desktop_goal_finish/)
+
+  type ToolCall = (event: { toolName: string; input: Record<string, unknown> }, ctx: unknown) => Promise<unknown>
+  type Handler = (name: string, handler: ToolCall) => void
+  const modePath = path.resolve('bundled-mode.mjs')
+  const swarmPath = path.resolve('bundled-swarm.mjs')
+  const { default: extension } = await import(`data:text/javascript,${encodeURIComponent(
+    permissionExtension('private-title', true, modePath, swarmPath)
+  )}`)
+  let registered: { name: string; sourcePath: string }[] = []
+  let onToolCall: ToolCall | undefined
+  let approvals = 0
+  extension({
+    on: ((name: string, handler: ToolCall) => {
+      if (name === 'tool_call') onToolCall = handler
+    }) as unknown as Handler,
+    getAllTools: () => registered.map((entry) => ({
+      name: entry.name,
+      sourceInfo: { path: entry.sourcePath, source: 'local' }
+    }))
+  })
+  const ctx = {
+    cwd: process.cwd(),
+    hasUI: true,
+    signal: undefined,
+    ui: { confirm: async () => { approvals += 1; return false } }
+  }
+  const call = (toolName: string) => onToolCall!({ toolName, input: {} }, ctx) as Promise<{ block?: boolean } | undefined>
+
+  // The app's own tools, loaded from the extensions this app wrote, run without
+  // a second dialog: each one either runs its own approval or only records state.
+  for (const [name, sourcePath] of [
+    ['desktop_goal_finish', modePath],
+    ['desktop_todo', modePath],
+    ['exit_plan_mode', modePath],
+    ['desktop_ask_user', modePath],
+    ['swarm_task', swarmPath],
+    ['swarm_disband', swarmPath]
+  ] as const) {
+    registered = [{ name, sourcePath }]
+    assert.equal(await call(name), undefined, name + ' from its own extension is exempt')
+  }
+  assert.equal(approvals, 0)
+
+  // A tool wearing a bundled name from anywhere else is confirmed: an extension
+  // cannot borrow the exemption to run without the gate.
+  registered = [{ name: 'swarm_task', sourcePath: path.resolve('workspace-extension.mjs') }]
+  assert.equal((await call('swarm_task'))?.block, true)
+  assert.equal(approvals, 1)
+
+  registered = [{ name: 'desktop_todo', sourcePath: path.resolve('global-package.mjs') }]
+  assert.equal((await call('desktop_todo'))?.block, true)
+  assert.equal(approvals, 2)
+})
+
+test('only the bundled question tool opens its choice dialog without a separate approval', async () => {
+  const modePath = path.resolve('bundled-mode.mjs')
+  const toolName = 'desktop_ask_user'
+  let sourcePath = modePath
+  const { default: extension } = await import(`data:text/javascript,${encodeURIComponent(permissionExtension('private-title', true, modePath))}`)
+  const event = { toolName, input: { question: 'Choose a scope', options: ['One module', 'All modules'] } }
+  let approvals = 0
+  const ctx = {
+    cwd: process.cwd(),
+    hasUI: true,
+    ui: { confirm: async () => { approvals += 1; return false } }
+  }
+  let onToolCall: (input: typeof event, context: typeof ctx) => unknown
+  extension({
+    on: (name: string, handler: typeof onToolCall) => { if (name === 'tool_call') onToolCall = handler },
+    getAllTools: () => [{ name: toolName, sourceInfo: { path: sourcePath, source: 'local' } }]
+  })
+
+  assert.equal(await onToolCall!(event, ctx), undefined)
+  assert.equal(approvals, 0)
+  sourcePath = path.resolve('workspace-extension.mjs')
+  assert.equal((await onToolCall!(event, ctx) as { block: boolean }).block, true)
+  assert.equal(approvals, 1)
 })
 
 test('the real extension serializes confirmations and blocks denied or aborted tool calls', async () => {

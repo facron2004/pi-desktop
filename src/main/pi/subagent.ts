@@ -87,7 +87,8 @@ export function subagentExtension(
   permissionTitle = '',
   trustProject = false,
   fallbackInvocation: { command: string; prefixArgs: string[] } = { command: 'pi', prefixArgs: [] },
-  agents: AgentPreset[] = []
+  agents: AgentPreset[] = [],
+  workspaceToolsExtensionPath = ''
 ): string {
   const settingsModel = bounded(defaults.model, MODEL_PATTERN)
   const settingsThinking = bounded(defaults.thinking, THINKING_PATTERN)
@@ -160,6 +161,7 @@ const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SUBAGENT_EDITOR_PENDING_STATUS_KEY = ${JSON.stringify(SUBAGENT_EDITOR_PENDING_STATUS_KEY)};
 const SUBAGENT_EDITOR_CANCEL_STATUS_KEY = ${JSON.stringify(SUBAGENT_EDITOR_CANCEL_STATUS_KEY)};
 const APPROVAL_EXTENSION_PATH = ${JSON.stringify(permissionExtensionPath)};
+const WORKSPACE_TOOLS_EXTENSION_PATH = ${JSON.stringify(workspaceToolsExtensionPath)};
 const PERMISSION_TITLE = ${JSON.stringify(permissionTitle)};
 const FALLBACK_INVOCATION = ${JSON.stringify(fallbackInvocation)};
 const AGENTS = ${JSON.stringify(sanitizedAgents)};
@@ -917,6 +919,7 @@ function resultOutput(result) {
 
 function buildArgs(params) {
   const args = ['--mode', 'rpc', '--no-session', ${JSON.stringify(trustProject ? '--approve' : '--no-approve')}];
+  if (WORKSPACE_TOOLS_EXTENSION_PATH) args.push('--extension', WORKSPACE_TOOLS_EXTENSION_PATH);
   if (APPROVAL_EXTENSION_PATH) args.push('--extension', APPROVAL_EXTENSION_PATH);
   if (params.model) args.push('--model', params.model);
   if (params.thinking) args.push('--thinking', params.thinking);

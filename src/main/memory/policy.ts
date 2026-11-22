@@ -1,3 +1,5 @@
+import { ASK_USER_TOOL_NAME } from '@shared/types'
+
 /**
  * Tools known to stay inside the local Pi session and Pi Desktop bookkeeping.
  * Unknown extension tools are external by default: their results may include
@@ -25,6 +27,7 @@ export const LOCAL_TOOL_NAMES = [
   ...LOCAL_BUILTIN_TOOL_NAMES,
   'desktop_goal_finish',
   'desktop_todo',
+  ASK_USER_TOOL_NAME,
   'exit_plan_mode'
 ] as const
 

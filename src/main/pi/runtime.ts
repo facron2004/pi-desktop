@@ -26,6 +26,7 @@ import { canAutoApprove, parseToolApproval, permissionExtension } from './permis
 import { prepareLaunchAgentSettings } from './retry-policy'
 import { taskModesExtension } from './task-modes'
 import { subagentExtension } from './subagent'
+import { swarmExtension } from './swarm'
 import type { AgentPreset } from './agents'
 import { computerUseExtension } from './computer-use'
 import { imageToolExtension } from './image-tool'
@@ -33,6 +34,7 @@ import { contextBreakdownExtension } from './context-breakdown'
 import { generationTimingExtension } from './generation-timing'
 import { mermaidPolicyExtension } from './mermaid'
 import { providerControlsExtension } from './provider-controls'
+import { workspaceToolsExtension } from './workspace-tools'
 import {
   allowlistedEnv,
   callerFrames,
@@ -164,14 +166,16 @@ export class PiRuntime extends EventEmitter {
     const customInstructionsFile = path.join(userData, `pi-desktop-instructions-${scratchId}.md`)
     const permissionFile = path.join(userData, `pi-desktop-permissions-${scratchId}.mjs`)
     const subagentPermissionFile = path.join(userData, `pi-desktop-subagent-permissions-${scratchId}.mjs`)
+    const subagentToolsFile = path.join(userData, `pi-desktop-workspace-tools-${scratchId}.mjs`)
     const modeFile = path.join(userData, `pi-desktop-task-modes-${scratchId}.mjs`)
     const subagentFile = path.join(userData, `pi-desktop-subagent-${scratchId}.mjs`)
+    const swarmFile = path.join(userData, `pi-desktop-swarm-${scratchId}.mjs`)
     const permissionTitle = `pi-desktop-permissions-${scratchId}`
     const files: string[] = []
     let staticFiles: StaticExtensionFilePaths
     try {
       await mkdir(userData, { recursive: true })
-      files.push(permissionFile, subagentPermissionFile, modeFile, subagentFile)
+      files.push(permissionFile, subagentPermissionFile, subagentToolsFile, modeFile, subagentFile, swarmFile)
       // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
       // is the one moment "a brand-new conversation starts in Plan Mode" is true.
       const defaultMode =
@@ -180,8 +184,9 @@ export class PiRuntime extends EventEmitter {
         ensureStaticExtensionFiles(userData),
         (async () => {
           const writes: [string, string][] = [
-            [permissionFile, permissionExtension(permissionTitle)],
+            [permissionFile, permissionExtension(permissionTitle, true, modeFile, swarmFile)],
             [subagentPermissionFile, permissionExtension(permissionTitle, false)],
+            [subagentToolsFile, workspaceToolsExtension()],
             [modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile)],
             [
               subagentFile,
@@ -194,8 +199,19 @@ export class PiRuntime extends EventEmitter {
                 // Named agent presets are project data, not Settings, but they cross
                 // the same boundary: read here once per process, verified and bounded
                 // by the loader, so the generated extension never re-opens a file.
-                this.options.getAgentPresets?.(options.cwd) ?? []
+                this.options.getAgentPresets?.(options.cwd) ?? [],
+                subagentToolsFile
               )
+            ],
+            [
+              swarmFile,
+              swarmExtension({
+                permissionExtensionPath: subagentPermissionFile,
+                permissionTitle,
+                trustProject: this.options.trustProject === true,
+                fallbackInvocation: { command: launch.command, prefixArgs: launch.prefixArgs },
+                workspaceToolsExtensionPath: subagentToolsFile
+              })
             ]
           ]
           if (options.customInstructions?.trim()) {
@@ -233,7 +249,8 @@ export class PiRuntime extends EventEmitter {
         staticFiles.contextBreakdown,
         staticFiles.generationTiming,
         staticFiles.mermaid,
-        staticFiles.image
+        staticFiles.image,
+        swarmFile
       )
     ]
     const sessionDir = this.options.getSessionDir?.(options.cwd)?.trim()

@@ -108,8 +108,9 @@ What that buys, and what it costs:
   must not turn it back into a spinner or a proposal. Replay creates a
   `proposed` node for a tool call that never produced a `toolResult`, so
   "not run" survives reopening.
-- The model's raw thinking text is never rendered. `ThinkingBlock` shows only
-  that a thought happened, its duration and a "Reasoning hidden" label.
+- Readable thinking delivered by Pi is grouped into one `ThinkingBlock` per
+  turn. The "Thinking content" row starts collapsed and mounts its body on
+  demand. Provider-redacted thinking and signatures stay out of the transcript.
 - `tool_execution_update.partialResult` is the tool's **newest** partial
   result, not an increment. It replaces the previous one; appending it
   repeats the whole output on every update.
@@ -169,11 +170,10 @@ paged by lines (200 per page) — never render a whole build log at once.
 `RunSummary` is the completed turn's top row (label, duration, chevron), not a
 divider at the end. Its chevron folds the tool/thinking process; the answer
 stays visible. `AssistantMessage` receives `processOpen` so hiding the process
-never hides the reply. Retry, compaction and other stream notices are process
-too, not answer: `hasProcess` counts them and they render only while
-`processVisible`, so a settled turn folds them away instead of leaving a stack
-of "retry succeeded" lines outside the fold. A turn with nothing but notices is
-still foldable, so the reader can always expand to read them.
+never hides the reply. Retry and compaction notices fold with the tools. The
+reason a run failed stays below its summary, including when the process is
+folded. With auto-fold enabled, opening a failed run shows its group summaries
+first. Each group can then be expanded to inspect the individual tool results.
 
 `Thread` remembers the scroll position per conversation (session file or draft
 key) in a process-level map so switching to an empty chat cannot forget it;
@@ -810,23 +810,21 @@ appear in the conversation as the tool's result.
 
 ## The task rail
 
-The rail beside the conversation answers four questions about the session on
-screen, in this order: the environment of the folder, the tasks running in the
-background, how far the plan has come, and the files the run produced. Its
-sections are 环境信息 / 后台任务 / 进度 / 交付物 (Environment info, Background
-tasks, Progress, Deliverables) — the same four the reference app carries.
+The rail beside the conversation takes its task data from the session on screen.
+Its sections appear in this order: 环境信息 / 后台任务 / 子智能体 / 进度 / 交付物
+(Environment info, Background tasks, Subagents, Progress, Deliverables).
 
 Every part of it is a projection, not state:
 
 - the environment section reads `git` from the store: the branch is the
   subtitle under the title, the line counts sit on the right of the Changes
   row, and the other two rows open the commit dialog and the change graph;
-- background tasks are the **in-flight tool calls** of the thread (`listBackgroundTasks` in
-  `lib/task-panel.ts`): a shell command, a search, a fetch, named by its tool
-  (`bash`, `grep`, `powershell`…) and its one-line object. Subagents are not listed
-  there — they have their own badge beside the title and their own page in the workspace
-  panel — and the section is live: a call enters while `running` and leaves when it
-  finishes;
+- background tasks show Pi's running shell commands by command name after two
+  seconds (`listBackgroundCommands` in `lib/task-panel.ts`). A row leaves when
+  the command finishes;
+- subagents show the thread's recent dispatched children through their outcomes
+  (`listSubagentTasks`). A row opens the child's live transcript in the
+  Subagents page;
 - progress is the newest todo list the agent sent with `desktop_todo`
   (`lib/plan.ts`), or the checklist of the newest assistant message that
   carries one (ignoring a list shorter than two entries) when the agent never
@@ -1097,8 +1095,10 @@ the active tool loadout and publishes the mode on `pi-desktop-mode` and the goal
 on `pi-desktop-goal` (JSON `{text,status,summary}`). `GoalBar` only projects that
 status and sends `/desktop-goal pause|resume|clear|edit` back through the store.
 
-Plan Mode is read-only: `read`, `grep`, `find`, `ls` plus `exit_plan_mode`. The
-plan tool asks for approval through Pi's dialog protocol; approving restores the
+Plan Mode explores with `read`, `grep`, `find`, and `ls`. The `desktop_ask_user`
+tool is available in every desktop task mode. It uses Pi's `select` dialog and
+returns the chosen option to the requesting conversation. `exit_plan_mode` asks
+for approval through Pi's dialog protocol. Approving restores the
 previous tool loadout. Its `tool_call` is exempt from the generic permission
 gate because that dialog is already the approval. The `subagent` tool is in the
 normal, Goal and Subagent loadouts (and blocked in Plan Mode); Subagent Mode adds

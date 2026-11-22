@@ -13,6 +13,8 @@ import {
   applyEvent,
   applyEvents,
   applyStreamEvent,
+  itemsFromMessages,
+  mergeHydratedItems,
   type ThreadItem
 } from '../src/renderer/src/lib/thread'
 
@@ -515,6 +517,40 @@ test('message update sub-types normalize to their semantic block events', () => 
   )
 })
 
+test('provider-redacted thinking stays out of both the live projection and replay', () => {
+  resetStreamState()
+  const context = contextOf('thread-redacted-thinking')
+  const redacted = {
+    type: 'thinking' as const, thinking: 'Provider-redacted bytes',
+    thinkingSignature: 'signature', redacted: true
+  }
+  const visible = {
+    type: 'thinking' as const, thinking: 'Readable thinking',
+    thinkingSignature: 'signed readable block'
+  }
+  const final = { role: 'assistant', timestamp: 1, content: [redacted, visible] }
+  const live = applyEvents([], [
+    { type: 'message_start', message: { ...final, content: [] } },
+    update({ type: 'thinking_start', contentIndex: 0 }),
+    update({ type: 'thinking_delta', contentIndex: 0, delta: 'Old readable text' }),
+    update({ type: 'thinking_delta', contentIndex: 0, delta: redacted.thinking, partial: final }),
+    update({ type: 'thinking_end', contentIndex: 0, content: redacted.thinking }),
+    update({ type: 'thinking_start', contentIndex: 1 }),
+    update({ type: 'thinking_delta', contentIndex: 1, delta: visible.thinking })
+  ], context)
+  const expected = [
+    { type: 'thinking', text: '', redacted: true },
+    { type: 'thinking', text: 'Readable thinking' }
+  ]
+  for (const items of [
+    live,
+    applyEvent(live, { type: 'message_end', message: final }, context),
+    itemsFromMessages([final])
+  ]) {
+    assert.deepEqual(items.find((item) => item.kind === 'assistant')?.blocks, expected)
+  }
+})
+
 test('text_end and message_end are authoritative in the semantic projection', () => {
   resetStreamState()
   const context = contextOf('thread-authority')
@@ -772,4 +808,56 @@ test('unknown Pi records become unknown events without touching the thread', () 
   assert.equal(normalized.type, 'unknown')
   assert.equal(normalized.type === 'unknown' && normalized.sourceType, 'entry_appended')
   assert.deepEqual(applyStreamEvent([], normalized), [])
+})
+
+test('Goal Mode entry_appended custom_message normalizes to round.continued and dedupes by entryId', () => {
+  resetStreamState()
+  const event: PiEvent = {
+    type: 'entry_appended',
+    entry: {
+      id: 'rb-entry-1',
+      type: 'custom_message',
+      customType: 'desktop-goal-continue',
+      display: false,
+      content: 'Continue goal',
+      timestamp: '2026-01-01T00:00:05.000Z',
+    },
+  }
+  const normalized = normalizeOne(event)
+  assert.equal(normalized.type, 'round.continued')
+  if (normalized.type !== 'round.continued') throw new Error('expected round.continued')
+  assert.equal(normalized.entryId, 'rb-entry-1')
+  assert.equal(normalized.timestamp, Date.parse('2026-01-01T00:00:05.000Z'))
+
+  const first = applyStreamEvent([], normalized)
+  assert.equal(first.length, 1)
+  assert.equal(first[0].kind, 'roundBreak')
+  if (first[0].kind !== 'roundBreak') throw new Error('expected roundBreak')
+  assert.equal(first[0].entryId, 'rb-entry-1')
+  assert.equal(first[0].timestamp, Date.parse('2026-01-01T00:00:05.000Z'))
+
+  const duplicate = applyStreamEvent(first, normalized)
+  assert.equal(duplicate, first)
+})
+
+test('a manually resumed goal starts the same round in the live stream and replay', () => {
+  resetStreamState()
+  const resumedAt = 5_000
+  const message = {
+    role: 'custom',
+    customType: 'desktop-goal-continue',
+    content: 'Continue goal',
+    display: false,
+    details: { resumedAt },
+    timestamp: resumedAt + 1
+  }
+  const start = { type: 'message_start', message }
+  const live = applyEvents([], [start, start, { type: 'message_end', message }], contextOf('resumed-goal'))
+  const replay = itemsFromMessages([{ ...message, timestamp: resumedAt + 2, entryId: 'resume-entry' }])
+  for (const items of [live, replay, mergeHydratedItems(replay, live)]) {
+    assert.equal(items.length, 1)
+    assert.equal(items[0].kind, 'roundBreak')
+    assert.equal(items[0].timestamp, resumedAt)
+    assert.equal(items[0].kind === 'roundBreak' && items[0].resumed, true)
+  }
 })

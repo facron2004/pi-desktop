@@ -1,7 +1,7 @@
 /** Run after npm run build; exercises the real renderer with isolated app data. */
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -31,7 +31,71 @@ writeFileSync(
 )
 const agent = path.join(profile, 'home', '.pi', 'agent')
 mkdirSync(agent, { recursive: true })
+const searchFixtureDir = path.join(agent, 'sessions', `--${workspace.replace(/^[\\/]+/, '').replace(/[\\/:]/g, '-')}--`)
+mkdirSync(searchFixtureDir, { recursive: true })
+const archivedFixtureFile = path.join(searchFixtureDir, 'archive-search-archived.jsonl')
+const savedGoal = {
+  text: 'Check the saved objective\n  Keep the original indentation',
+  status: 'blocked',
+  summary: 'The verification file is missing.\n  Attach the original fixture, then resume.'
+}
+for (const scope of ['active', 'archived']) {
+  const timestamp = new Date(Date.now() - (scope === 'archived' ? 60_000 : 0))
+  const name = `Archive scope fixture ${scope}`
+  const file = path.join(searchFixtureDir, `archive-search-${scope}.jsonl`)
+  const records = [
+    { type: 'session', version: 3, id: `archive-search-${scope}`, cwd: workspace, timestamp: timestamp.toISOString() },
+    { type: 'session_info', id: 'session-name', parentId: null, name },
+    { type: 'message', id: 'prompt', parentId: 'session-name', message: { role: 'user', content: `${name} text`, timestamp: +timestamp } }
+  ]
+  if (scope === 'active') records.push({
+    type: 'custom', id: 'saved-goal', parentId: 'prompt', timestamp: timestamp.toISOString(),
+    customType: 'pi-desktop-mode', data: { mode: 'goal', goal: savedGoal }
+  })
+  writeFileSync(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`)
+  utimesSync(file, timestamp, timestamp)
+}
 const requests = []
+const questionFixture = {
+  prompts: {
+    normal: 'UI_QUESTION_NORMAL Arrange the report',
+    plan: 'UI_QUESTION_PLAN Plan the report',
+    cancel: 'UI_QUESTION_CANCEL Continue the report'
+  },
+  question: 'Which report should I prepare?',
+  options: ['Summary only', 'Summary and verification'],
+  prematureFile: 'should-wait-for-an-answer.txt',
+  reply: 'Report choice applied'
+}
+const questionRequests = { normal: 0, plan: 0, cancel: 0 }
+const planFixture = {
+  original: 'UI_PLAN_REVIEW Draft a verification plan',
+  revision: 'UI_PLAN_REVIEW Revise the verification plan',
+  plan: '# Verification plan\n\n' + Array.from({ length: 40 }, (_, index) => `- [ ] Check section ${index + 1}`).join('\n'),
+  revisedPlan: '# Revised verification plan\n\n- [ ] Write the result\n- [ ] Verify the file',
+  file: 'plan-implementation.txt',
+  result: 'Implemented after plan approval'
+}
+const planRequests = { original: 0, revision: 0, implementation: 0 }
+const goalFixture = {
+  original: 'UI_GOAL_FLOW Original objective',
+  revised: 'UI_GOAL_FLOW Revised  objective\n  Verify both branches',
+  started: 'Working on the original objective',
+  automatic: 'Verified the revised objective in the automatic round',
+  summary: 'Updated objective verified',
+  saved: savedGoal
+}
+const thinkingFixture = {
+  prompt: 'Check the thinking disclosure',
+  first: 'Read the fixture before answering.\n  Keep the original line break.',
+  second: 'The read confirms the fixture.',
+  reply: 'The fixture has been checked.'
+}
+const backgroundFixture = {
+  prompt: 'UI_TASK_RAIL_COMMAND',
+  tool: process.platform === 'win32' ? 'powershell' : 'bash',
+  command: process.platform === 'win32' ? 'Start-Sleep -Seconds 5' : 'sleep 5'
+}
 const fixture = createServer(async (req, res) => {
   let body = ''
   for await (const chunk of req) body += chunk
@@ -50,14 +114,96 @@ const fixture = createServer(async (req, res) => {
       send({}, 'stop')
       res.end('data: [DONE]\n\n')
     }
-    if (prompt?.includes('UI_TREE_CHILD')) {
-      setTimeout(() => finish('Child task verified'), 1500)
-    } else if (prompt?.includes('UI_TREE_PARENT') && !payload.messages.some((message) => message.role === 'tool')) {
-      send({ role: 'assistant', tool_calls: [{ index: 0, id: 'ui-live-agents', type: 'function', function: {
-        name: 'subagent', arguments: JSON.stringify({ tasks: [{ task: 'UI_TREE_CHILD inspect' }, { task: 'UI_TREE_CHILD verify' }] })
-      } }] })
+    const callTools = (calls) => {
+      send({ role: 'assistant', tool_calls: calls.map(({ id, name, args }, index) => ({
+        index, id, type: 'function', function: { name, arguments: JSON.stringify(args) }
+      })) })
       send({}, 'tool_calls')
       res.end('data: [DONE]\n\n')
+    }
+    const callTool = (id, name, args) => callTools([{ id, name, args }])
+    const holdResponse = (text, duration) => {
+      send({ role: 'assistant', content: text })
+      const timer = setTimeout(() => {
+        send({}, 'stop')
+        res.end('data: [DONE]\n\n')
+      }, duration)
+      res.once('close', () => clearTimeout(timer))
+    }
+    const userHistory = (payload.messages ?? []).filter((message) => message.role === 'user')
+      .map(({ content }) => Array.isArray(content) ? content.map((part) => part.text).join('\n') : content)
+      .join('\n')
+    const latestUserText = Array.isArray(user?.content) ? user.content.map((part) => part.text).join('\n') : user?.content
+    const planRound = userHistory.includes(planFixture.revision) ? 'revision'
+      : userHistory.includes(planFixture.original) ? 'original' : undefined
+    const questionRound = Object.keys(questionFixture.prompts).find((round) =>
+      userHistory.includes(questionFixture.prompts[round]))
+    if (questionRound) {
+      const activeTools = new Set(payload.tools?.map((tool) => tool.function.name))
+      assert.ok(activeTools.has('desktop_ask_user'), 'The model did not receive the question tool')
+      if (questionRound === 'plan') assert.equal(activeTools.has('write'), false)
+      if (++questionRequests[questionRound] === 1) {
+        const args = { question: questionFixture.question, options: questionFixture.options }
+        if (questionRound === 'normal') {
+          callTools([
+            { id: 'ui-premature-write', name: 'write', args: { path: questionFixture.prematureFile, content: 'Premature work' } },
+            { id: 'ui-ask', name: 'desktop_ask_user', args },
+            { id: 'ui-ask-duplicate', name: 'desktop_ask_user', args }
+          ])
+        } else callTool('ui-ask', 'desktop_ask_user', args)
+      } else {
+        assert.ok(payload.messages.some((message) => message.role === 'tool' &&
+          JSON.stringify(message.content).includes(`The user selected: ${questionFixture.options[1]}`)), 'Pi continued without the selected answer')
+        finish(questionFixture.reply)
+      }
+    } else if (planRound) {
+      const tools = new Set(payload.tools?.map((tool) => tool.function.name))
+      if (tools.has('exit_plan_mode')) {
+        assert.equal(tools.has('write'), false, 'Planning exposed the write tool')
+        assert.equal(userHistory.split('Plan Mode is active.').length - 1, 1, 'The request repeated its planning guidance')
+        if (++planRequests[planRound] === 1) {
+          const markdown = planRound === 'revision' ? planFixture.revisedPlan : planFixture.plan
+          send({ role: 'assistant', content: markdown })
+          callTool(`ui-plan-${planRound}`, 'exit_plan_mode', { plan: markdown })
+        } else finish('Unexpected planning request')
+      } else {
+        assert.equal(planRound, 'revision', 'Pi left Plan Mode before approval')
+        assert.doesNotMatch(userHistory, /Plan Mode is active\./)
+        assert.ok(tools.has('write'), 'Approval did not restore the write tool')
+        if (++planRequests.implementation === 1) {
+          callTool('ui-plan-write', 'write', { path: planFixture.file, content: planFixture.result })
+        } else finish(planFixture.result)
+      }
+    } else if (latestUserText === thinkingFixture.prompt) {
+      const readFinished = payload.messages.some((message) => message.role === 'tool')
+      if (readFinished) {
+        send({ role: 'assistant', reasoning_content: thinkingFixture.second })
+        finish(thinkingFixture.reply)
+      } else {
+        send({ role: 'assistant', reasoning_content: thinkingFixture.first })
+        const timer = setTimeout(() => callTool('ui-thinking-read', 'read', { path: 'note.txt' }), 3000)
+        res.once('close', () => clearTimeout(timer))
+      }
+    } else if (userHistory.includes(goalFixture.original)) {
+      const finished = payload.messages.some((message) => message.role === 'tool' && JSON.stringify(message.content).includes(goalFixture.summary))
+      if (finished) {
+        finish('Goal complete')
+      } else if (userHistory.includes('Goal Mode is still active.')) {
+        assert.ok(userHistory.includes('Goal: ' + goalFixture.revised), 'The automatic round used a stale objective')
+        holdResponse(goalFixture.automatic, 20_000)
+      } else if (userHistory.includes('Continue toward the active goal.')) {
+        assert.ok(userHistory.includes('Goal: ' + goalFixture.revised), 'The resumed round used a stale objective')
+        callTool('ui-finish-goal', 'desktop_goal_finish', { status: 'complete', summary: goalFixture.summary })
+      } else {
+        assert.ok(userHistory.includes('Goal: ' + goalFixture.original), 'The first request omitted the goal')
+        holdResponse(goalFixture.started, 5_000)
+      }
+    } else if (latestUserText === backgroundFixture.prompt && !payload.messages.some((message) => message.role === 'tool')) {
+      callTool('ui-background-command', backgroundFixture.tool, { command: backgroundFixture.command })
+    } else if (prompt?.includes('UI_TREE_CHILD')) {
+      setTimeout(() => finish('Child task verified'), 1500)
+    } else if (prompt?.includes('UI_TREE_PARENT') && !payload.messages.some((message) => message.role === 'tool')) {
+      callTool('ui-live-agents', 'subagent', { tasks: [{ task: 'UI_TREE_CHILD inspect' }, { task: 'UI_TREE_CHILD verify' }] })
     } else finish('All delegated work verified')
   } catch (error) {
     if (!res.headersSent) res.writeHead(500)
@@ -70,13 +216,15 @@ writeFileSync(path.join(agent, 'models.json'), JSON.stringify({ providers: { fix
   models: [{ id: 'sidebar-test', contextWindow: 32000, maxTokens: 1024, reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }]
 } } }))
 writeFileSync(path.join(profile, 'settings.json'), JSON.stringify({
-  model: 'fixture/sidebar-test', thinkingLevel: 'off', permissionMode: 'full', trustProject: false, desktopNotifications: false
+  model: 'fixture/sidebar-test', thinkingLevel: 'off', permissionMode: 'full', trustProject: false, desktopNotifications: false,
+  archivedSessions: [process.platform === 'win32' ? archivedFixtureFile.replaceAll('\\', '/').toLowerCase() : archivedFixtureFile]
 }))
 
-async function checkRenderer(markerFile, nestedWorkspace, workspace) {
+async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture, thinkingFixture, backgroundFixture, planFixture, questionFixture) {
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   const setInputValue = (input, value) => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value)
+    const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+    Object.getOwnPropertyDescriptor(prototype, 'value').set.call(input, value)
     input.dispatchEvent(new Event('input', { bubbles: true }))
   }
   const check = (condition, message) => { if (!condition) throw new Error(message) }
@@ -96,6 +244,9 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   const store = window.__piDesktopStore
   await store.getState().updateSettings({ language: 'en', terminalShell: 'cmd' })
   const passed = []
+  const railSection = (title) => [...document.querySelectorAll('.task-panel__section')].find((section) =>
+    section.querySelector('.task-panel__section-title')?.textContent === title
+  )
 
   await until(() => !document.getElementById('startup-screen'), 'The startup screen did not leave after bootstrap')
   check(!document.getElementById('root').inert, 'The interface stayed inert after startup')
@@ -201,6 +352,172 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
       check(state.status.phase === 'ready' && state.agentMode === mode && modes.at(-1) === mode, `Pi did not confirm ${mode}`)
     }
     passed.push('task modes round-trip through the bundled Pi CLI')
+
+    await store.getState().updateSettings({ permissionMode: 'ask' })
+    for (const [round, mode] of [['normal', 'default'], ['plan', 'plan'], ['cancel', 'goal']]) {
+      if (store.getState().agentMode !== mode) await store.getState().setAgentMode(mode)
+      await store.getState().send(questionFixture.prompts[round], [])
+      const choice = await until(() => document.querySelector('.modal--prompt'), 'The user question did not open')
+      const options = choice.querySelector('[role="listbox"]')
+      check(options && choice.querySelector('.modal__title').textContent === questionFixture.question,
+        'The user question was replaced by a different dialog')
+      check([...options.querySelectorAll('[role="option"]')].map((option) => option.textContent.trim()).join('|') === questionFixture.options.join('|'),
+        'The dialog did not show the model’s choices')
+      check(store.getState().run.phase === 'waiting_approval', 'Pi did not pause while waiting for an answer')
+      if (round === 'cancel') {
+        const cancel = [...choice.querySelectorAll('.modal__foot button')].find((button) => button.textContent.trim() === 'Cancel')
+        cancel.click()
+        await until(() => !choice.isConnected && !store.getState().isStreaming, 'Cancelling the question did not settle the run')
+        check(document.querySelector('.goal-bar[data-status="blocked"]'), 'The cancelled question did not pause the goal')
+      } else {
+        await until(() => document.activeElement === options, 'The choice list did not receive keyboard focus')
+        options.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+        await until(() => options.querySelector('[aria-selected="true"]')?.textContent.trim() === questionFixture.options[1],
+          'Keyboard navigation did not select the second option')
+        options.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+        await until(() => !choice.isConnected && !store.getState().isStreaming && store.getState().items.some((item) =>
+          item.kind === 'assistant' && item.blocks.some((block) => block.type === 'text' && block.text.includes(questionFixture.reply))
+        ), 'The selected answer did not resume the requesting conversation')
+        check(store.getState().items.some((item) => item.kind === 'tool' && item.toolName === 'desktop_ask_user' &&
+          item.details?.answer === questionFixture.options[1]), 'The conversation did not record the selected option')
+      }
+      check(store.getState().agentMode === mode, 'The question changed the conversation’s mode')
+      await store.getState().newChat()
+    }
+    await store.getState().updateSettings({ permissionMode: 'full' })
+    passed.push('user questions wait, route choices to Pi and settle cleanly when cancelled')
+
+    await store.getState().setAgentMode('plan')
+    await store.getState().send(planFixture.original, [])
+    const planReview = () => document.querySelector('.modal--plan-review')
+    const review = await until(planReview, 'Pi did not open the plan review')
+    const planBody = review.querySelector('.modal__plan')
+    await until(() => document.activeElement === planBody, 'The plan document did not receive keyboard focus')
+    check(planBody.scrollHeight > planBody.clientHeight && planBody.textContent.includes('Check section 40'), 'The long plan did not scroll inside the review')
+    const footer = review.querySelector('.modal__foot').getBoundingClientRect()
+    check(footer.top >= planBody.getBoundingClientRect().bottom - 1 && footer.bottom <= innerHeight, 'The review actions fell outside the window')
+    planBody.scrollTop = planBody.scrollHeight
+    check(planBody.scrollTop > 0, 'The plan content cannot be scrolled')
+    const action = (label) => [...planReview().querySelectorAll('.modal__foot button')].find((button) => button.textContent.trim() === label)
+    action('Keep planning').click()
+    await until(() => !planReview() && !store.getState().isStreaming, 'Continuing planning did not settle the turn')
+    check(store.getState().agentMode === 'plan', 'Continuing planning left Plan Mode')
+    await until(() => document.activeElement === document.querySelector('.composer__input'), 'Revision focus did not return to the composer')
+
+    await store.getState().send(planFixture.revision, [])
+    await until(() => planReview()?.querySelector('.modal__plan')?.textContent.includes('Revised verification plan'), 'The revised plan was not submitted for review')
+    check(planReview().querySelector('.modal__plan').scrollTop === 0, 'The revised plan inherited the previous scroll position')
+    action('Start implementation').click()
+    await until(() => !store.getState().isStreaming && store.getState().items.some((item) =>
+      item.kind === 'tool' && item.toolCallId === 'ui-plan-write' && item.status === 'ok'
+    ), 'Pi did not implement the approved revision')
+    check(store.getState().agentMode === 'default', 'Approval did not leave Plan Mode')
+    passed.push('plan review supports reading, revision and explicit approval through the bundled Pi CLI')
+    await store.getState().newChat()
+
+    const goalButton = (title) => document.querySelector(`.goal-bar__actions button[title="${title}"]`)
+    const goalReplyIncludes = (text) => store.getState().items.some((item) =>
+      item.kind === 'assistant' && item.blocks.some((block) => block.type === 'text' && block.text.includes(text))
+    )
+    await store.getState().setAgentMode('goal')
+    await store.getState().send(goalFixture.original, [])
+    await until(() => goalReplyIncludes(goalFixture.started), 'The first goal request did not reach the model')
+    const activeEdit = await until(() => store.getState().isStreaming && goalButton('Edit'), 'A running goal could not be edited')
+    activeEdit.click()
+    const goalEditor = await until(() => document.querySelector('.goal-bar__input'), 'Goal editor did not open while running')
+    setInputValue(goalEditor, goalFixture.revised)
+    document.querySelector('.goal-bar__action[data-tone="primary"]').click()
+    await until(() => document.querySelector('.goal-bar__objective')?.textContent === goalFixture.revised, 'Pi did not confirm the exact multiline edit')
+    await until(() => goalReplyIncludes(goalFixture.automatic), 'The edited objective did not reach the automatic round', 15000)
+    goalButton('Pause').click()
+    await until(() => !store.getState().isStreaming && document.querySelector('.goal-bar[data-status="paused"]'), 'Pausing did not settle the goal')
+    await until(() => goalButton('Resume') && !goalButton('Resume').disabled, 'Resume stayed disabled after pause')
+    goalButton('Resume').click()
+    await until(() => !store.getState().isStreaming && document.querySelector('.goal-bar[data-status="complete"]'), 'The resumed goal did not complete')
+    await until(() => [...document.querySelectorAll('.run-outcome__label')].some((label) => label.textContent.includes('Resumed goal')), 'The manually resumed round did not have its own summary')
+
+    const goalFile = store.getState().activeSessionFile
+    const originalPrompt = await until(() => store.getState().forkTargets.find(({ text }) => text === goalFixture.original), 'Pi did not offer the original goal prompt for editing')
+    await until(() => goalButton('Edit') && !goalButton('Edit').disabled, 'The completed goal could not be edited')
+    goalButton('Edit').click()
+    const laterEditor = await until(() => document.querySelector('.goal-bar__input'), 'The later goal editor did not open')
+    setInputValue(laterEditor, 'Unsaved draft for the later objective')
+    await store.getState().editMessageFrom(originalPrompt.entryId, goalFixture.original)
+    await until(() => document.querySelector('.goal-bar__objective')?.textContent === goalFixture.original, 'Rewinding kept the goal or edit draft from the branch that was left')
+    check(store.getState().activeSessionFile === goalFile && store.getState().agentMode === 'goal', 'Rewinding failed to restore Goal Mode in the same conversation')
+    await store.getState().setAgentMode('plan')
+    goalButton('Clear').click()
+    await until(() => !document.querySelector('.goal-bar'), 'The retained goal did not clear')
+    check(store.getState().agentMode === 'plan', 'Clearing the goal left Plan Mode')
+    passed.push('the bundled Pi CLI edits, continues, pauses, resumes and rewinds a goal')
+
+    const cold = await until(() => store.getState().sessions.find(({ name }) => name === 'Archive scope fixture active'), 'The saved goal fixture was missing')
+    // Skip speculative prewarming here so this exercises the verified disk read.
+    await store.getState().selectSession({ ...cold, messageCount: 0 })
+    const detailTrigger = await until(() => document.querySelector('.goal-bar[data-status="blocked"] .goal-bar__details-trigger'), 'The saved blocker did not render')
+    check(!(await window.pi.runtime.has(cold.file)), 'Reading goal details started a Pi process')
+    detailTrigger.focus()
+    detailTrigger.click()
+    const details = await until(() => document.querySelector('.goal-details[role="dialog"]'), 'Goal details did not open')
+    check(document.activeElement === details && detailTrigger.getAttribute('aria-expanded') === 'true', 'Goal details did not receive accessible focus')
+    check([...details.querySelectorAll('.goal-details__text')].map((node) => node.textContent).join('\n') ===
+      [goalFixture.saved.text, goalFixture.saved.summary].join('\n'), 'Goal details lost the full objective or blocker')
+    const detailsRect = details.getBoundingClientRect()
+    check(detailsRect.left >= 0 && detailsRect.right <= innerWidth, 'Goal details overflowed the window')
+    details.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await until(() => !document.querySelector('.goal-details'), 'Escape did not close the goal details')
+    check(document.activeElement === detailTrigger, 'Closing goal details did not return focus to the trigger')
+    passed.push('cold goals show their full blocker before Pi starts and return keyboard focus on close')
+
+    await store.getState().newChat()
+    await store.getState().send(thinkingFixture.prompt, [])
+    const thinkingHead = () => document.querySelector('.thinking__head')
+    const liveThinking = await until(thinkingHead, 'Readable streamed thinking has no disclosure')
+    check(liveThinking.textContent.trim() === 'Thinking content' && liveThinking.querySelectorAll('svg').length === 1,
+      'The thinking header has extra text or icons')
+    check(liveThinking.getAttribute('aria-expanded') === 'false' && !document.querySelector('.thinking__body'),
+      'The thinking body was visible by default')
+    liveThinking.click()
+    await until(() => document.querySelector('.thinking__body')?.textContent.includes(thinkingFixture.first),
+      'The disclosure did not show the live thinking')
+    const joinedThinking = [thinkingFixture.first, thinkingFixture.second].join('\n\n')
+    await until(() => !store.getState().isStreaming && document.querySelector('.thinking__body')?.textContent === joinedThinking,
+      'The thought fold did not survive the tool call with both fragments in order')
+    check(document.querySelectorAll('.thinking__head').length === 1, 'One turn rendered multiple thinking headers')
+    const thinkingFile = await until(() => store.getState().activeSessionFile, 'Pi did not assign the thinking session a file')
+    await window.pi.runtime.stop(thinkingFile)
+    await store.getState().newChat()
+    store.setState((state) => {
+      const threads = { ...state.threads }
+      delete threads[thinkingFile]
+      return { threads }
+    })
+    await store.getState().selectSession({
+      id: 'thinking-replay', file: thinkingFile, cwd: workspace,
+      preview: thinkingFixture.prompt, updatedAt: Date.now(), messageCount: 0
+    })
+    const replayedThinking = await until(thinkingHead, 'Replayed thinking has no disclosure')
+    check(replayedThinking.getAttribute('aria-expanded') === 'false' && !document.querySelector('.thinking__body'),
+      'Replayed thinking did not start folded')
+    replayedThinking.click()
+    await until(() => document.querySelector('.thinking__body')?.textContent === joinedThinking,
+      'Replayed thinking lost a fragment')
+    passed.push('one folded thinking row keeps readable content through live tool calls and replay')
+
+    await store.getState().newChat()
+    await store.getState().send(backgroundFixture.prompt, [])
+    const liveCommand = await until(() => store.getState().items.find((item) =>
+      item.toolCallId === 'ui-background-command' && item.status === 'running'
+    ), 'Pi did not start the shell command')
+    await until(() => railSection('Background tasks')?.querySelector('.task-panel__task-label')?.textContent === backgroundFixture.command,
+      'The quiet shell command did not appear by name while running')
+    check(Date.now() - liveCommand.startedAt >= 2000, 'A shell command appeared during its grace period')
+    await until(() => !railSection('Background tasks') && store.getState().items.some((item) =>
+      item.toolCallId === 'ui-background-command' && item.status === 'ok'
+    ), 'Finishing the real shell command did not clear its row')
+    passed.push('background tasks show a quiet live shell command by name and remove it on exit')
+
+    await store.getState().newChat()
     await openSubagentsPage()
     await store.getState().send('UI_TREE_PARENT delegate the two independent checks', [])
     await until(() => document.querySelectorAll('.subagent-tree__task').length === 2, 'Real child processes did not appear in the right panel', 45000)
@@ -282,11 +599,22 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
 
   const calls = []
   const goal = (text) => [{ key: 'pi-desktop-goal', text: JSON.stringify({ text, status: 'active' }) }]
+  const runTaskCommand = store.getState().runTaskCommand
+  let acceptGoalEdit = false
   store.setState({
     activeSessionFile: 'ui-goal-A',
     uiStatuses: goal('Goal A'),
-    runTaskCommand: async (command) => calls.push({ owner: store.getState().activeSessionFile, command })
+    agentMode: 'goal',
+    isStreaming: false,
+    runTaskCommand: async (command) => {
+      calls.push({ owner: store.getState().activeSessionFile, command })
+      await pause(50)
+      if (acceptGoalEdit) store.setState({ uiStatuses: goal(command.slice('/desktop-goal edit '.length)) })
+      return store.getState().uiStatuses[0]?.text
+    }
   })
+  const resume = await until(() => document.querySelector('.goal-bar__actions button[title="Resume"]'), 'An idle active goal did not offer Resume')
+  check(!resume.disabled, 'An idle active goal could not resume')
   const edit = await until(() => document.querySelector('.goal-bar__actions button[title="Edit"]'), 'Goal did not render')
   edit.click()
   await until(() => document.querySelector('.goal-bar__input'), 'Goal editor did not open')
@@ -296,10 +624,20 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   document.querySelector('.goal-bar__actions button[title="Edit"]').click()
   const input = await until(() => document.querySelector('.goal-bar__input'), 'Second goal editor did not open')
   check(input.value === 'Goal B', 'Second goal editor used the first conversation text')
-  document.querySelector('.goal-bar__action[data-tone="primary"]').click()
+  const updatedGoal = 'Goal B revised\n  Keep indentation'
+  setInputValue(input, updatedGoal)
+  const saveGoal = document.querySelector('.goal-bar__action[data-tone="primary"]')
+  saveGoal.click()
+  await until(() => saveGoal.disabled, 'Goal save accepted a second submission while pending')
   await until(() => calls.length === 1, 'Goal was not saved')
-  check(calls[0].owner === 'ui-goal-B' && calls[0].command === '/desktop-goal edit Goal B', 'Goal saved to the wrong conversation')
-  passed.push('goal drafts stay in their conversation')
+  check(calls[0].owner === 'ui-goal-B' && calls[0].command === '/desktop-goal edit ' + updatedGoal, 'Goal saved to the wrong conversation')
+  await until(() => !saveGoal.disabled, 'Goal save did not become retryable')
+  check(input.isConnected && input.value === updatedGoal, 'An unconfirmed save discarded the goal draft')
+  acceptGoalEdit = true
+  saveGoal.click()
+  await until(() => !document.querySelector('.goal-bar__input'), 'The confirmed save did not close the goal editor')
+  store.setState({ runTaskCommand })
+  passed.push('idle goals offer Resume and goal drafts stay in their conversation until Pi confirms the save')
 
   await store.getState().newChat()
   localStorage.removeItem('pi-desktop.plan-strip')
@@ -422,8 +760,25 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   // The change summary is a turn's closing statement, so the previews below it
   // only exist once the run has settled.
   store.setState((state) => ({ run: { ...state.run, phase: 'idle', settled: true } }))
-  const row = await until(() => document.querySelector('.file-change'), 'File change did not render')
+  const fileChanges = await until(() => document.querySelector('.file-changes'), 'The file change card did not render')
+  const head = fileChanges.querySelector('.file-changes__head')
+  check(head?.querySelector('.file-changes__count')?.textContent === 'Edited 2 files', 'The card header lost its file count')
+  check(head.querySelector('.file-changes__review') && head.querySelector('.file-changes__undo'), 'File actions moved outside the card header')
+  const row = await until(() => fileChanges.querySelector('.file-changes__list .file-change'), 'The card did not show its files directly')
   const hover = (node) => node.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+  hover(row)
+  await pause(100)
+  check(!document.querySelector('.file-change__preview'), 'File preview opened during a brief hover')
+  row.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: head }))
+  await pause(450)
+  check(!document.querySelector('.file-change__preview'), 'Leaving the file row did not cancel its preview')
+
+  hover(row)
+  await pause(100)
+  fileChanges.dispatchEvent(new Event('scroll'))
+  await pause(450)
+  check(!document.querySelector('.file-change__preview'), 'Scrolling did not cancel the pending file preview')
+
   hover(row)
   await until(() => document.querySelector('.file-change__preview-line'), 'File preview did not open')
   check(document.querySelectorAll('.file-change__preview-line').length === 200, 'Large preview rendered more than one page')
@@ -436,10 +791,10 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   await until(() => document.querySelector('.file-change__preview-text')?.textContent === 'small', 'File switch did not reset the preview page')
   hover(row)
   await until(() => document.querySelector('.file-change__preview-text')?.textContent === 'line 0', 'Returning to the file did not reset paging')
-  passed.push('file previews page by 200 lines and reset between files')
+  passed.push('file previews wait for a deliberate hover and page by 200 lines')
 
-  // A turn folds its progress prose and tools together, keeping only the
-  // final reply on the reading column. The same fold survives a view switch.
+  // Finished tool groups stay beside their commentary. The group and the
+  // individual tool remember their expansions across a view switch.
   const beforeStream = store.getState()
   await store.getState().newChat()
   const streamItems = [
@@ -457,21 +812,23 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   const showStream = (draftId, items = streamItems, run = streamRun, extra = {}) => store.setState((state) => ({
     draftId, activeSessionFile: undefined, items, run, isStreaming: !run.settled,
     error: undefined, retry: undefined, transport: 'connected',
-    settings: { ...state.settings, autoFoldProcess: true, ...extra },
+    settings: { ...state.settings, autoFoldProcess: true, toolCallSummary: true, ...extra },
     threads: { ...state.threads, [draftId]: { ...baseThread, items, run, isStreaming: !run.settled } }
   }))
   showStream('draft:stream-a')
   await until(() => document.querySelector('.run-outcome[data-foldable="true"]'), 'The stream has no process fold')
   const streamBody = () => document.querySelector('.assistant__body')
-  check(!streamBody().textContent.includes('STREAM_PROGRESS'), 'Folded process leaked progress into the reply')
-  check(streamBody().textContent.includes('STREAM_FINAL'), 'Folded process hid the final reply')
-  document.querySelector('.run-outcome').click()
-  await until(() => streamBody().textContent.includes('STREAM_PROGRESS'), 'Process expansion did not reveal progress')
-  check(document.querySelector('.tool-link'), 'Expanding the process required a second fold to reach the tool row')
+  const readGroup = await until(() => streamBody().querySelector('.process__head'), 'The finished tool summary is missing')
+  check(readGroup.getAttribute('aria-expanded') === 'false', 'The finished tool group opened by default')
+  check(streamBody().textContent.includes('STREAM_PROGRESS'), 'The tool summary lost its commentary')
+  check(streamBody().textContent.includes('STREAM_FINAL'), 'The tool summary hid the final reply')
+  check(!streamBody().querySelector('.tool-link'), 'The finished tool row leaked below its summary')
+  readGroup.click()
+  await until(() => streamBody().querySelector('.tool-link'), 'Expanding the group did not reveal the tool')
   document.querySelector('.tool-link__toggle').click()
   await until(() => streamBody().textContent.includes('STREAM_TOOL_RESULT'), 'The tool result did not expand')
   showStream('draft:stream-b')
-  await until(() => !streamBody().textContent.includes('STREAM_PROGRESS'), 'A different conversation inherited the fold')
+  await until(() => streamBody().querySelector('.process__head[aria-expanded="false"]'), 'A different conversation inherited the expansion')
   showStream('draft:stream-a')
   await until(() => streamBody().textContent.includes('STREAM_TOOL_RESULT'), 'The process/tool fold was forgotten on return')
   document.querySelector('.run-outcome').click()
@@ -526,6 +883,35 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
   await until(() => !streamBody().textContent.includes('STREAM_PROGRESS'), 'Closing search lost the manual fold')
 
+  const waitDraft = 'draft:stream-model-wait'
+  const waitItems = [{ ...streamItems[0], id: 'model-wait-user' }]
+  const waitSummary = () => document.querySelector('[data-turn="model-wait-user"] .run-outcome[data-running="true"]')
+  showStream(waitDraft, waitItems, { phase: 'queued', turns: 0, settled: false })
+  await until(() => waitSummary()?.textContent.includes('Preparing request…'), 'The queued request has no preparation status')
+
+  const modelStartedAt = performance.now()
+  const waitingRun = {
+    phase: 'working', runId: 'model-wait-run', turns: 1, settled: false,
+    startedAt: Date.now() - 13_000, startedMonotonicAt: modelStartedAt - 13_000,
+    modelTurnStartedAt: modelStartedAt
+  }
+  showStream(waitDraft, waitItems, waitingRun)
+  await until(() => waitSummary()?.textContent.startsWith('Waiting for model response…'), 'A fresh model turn inherited the total run wait')
+
+  const slowRun = { ...waitingRun, modelTurnStartedAt: performance.now() - 8_000 }
+  showStream(waitDraft, waitItems, slowRun)
+  await until(() => waitSummary()?.textContent.includes('Still waiting for model response…'), 'The waiting status did not update on its own during model silence')
+  check(waitSummary()?.querySelector('.run-outcome__meta') && !document.querySelector('.run-status'), 'Model waiting did not share the existing elapsed row')
+
+  showStream(waitDraft, waitItems, { ...slowRun, messageGenerationStartedAt: performance.now() })
+  await until(() => waitSummary()?.textContent.startsWith('Working'), 'The waiting status stayed after the model started streaming a block')
+
+  showStream(waitDraft, waitItems, { ...slowRun, phase: 'retrying' })
+  store.setState({ retry: { attempt: 1, maxAttempts: 3, delayMs: 60_000, retryAt: Date.now() + 60_000 } })
+  await until(() => document.querySelector('.run-status[data-phase="retrying"]'), 'The retry status did not appear')
+  check(waitSummary() && !waitSummary().textContent.toLowerCase().includes('waiting for model response'), 'The model wait status conflicted with a retry')
+  passed.push('the live summary shows request preparation and model waiting until the first output or retry')
+
   showStream('draft:stream-live', streamItems.slice(0, 3), {
     phase: 'working', turns: 1, settled: false, startedAt: Date.now() - 2000
   })
@@ -551,7 +937,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
     { id: 'cmd-user', kind: 'user', text: 'Run the check', images: [], timestamp: 1, order: 1 },
     { id: 'cmd-tool', kind: 'tool', toolCallId: 'cmd-tool', toolName: 'bash',
       args: { command: 'cd /e/Program/Coffee && grep -ril pressure' }, status: 'running', timestamp: 2, order: 2 }
-  ], { phase: 'tool_running', turns: 1, settled: false, startedAt: Date.now() - 3000 })
+  ], { phase: 'tool_running', turns: 1, settled: false, startedAt: Date.now() - 3000 }, { toolCallSummary: false })
   const commandRow = await until(
     () => document.querySelector('.tool--link[data-status="running"] .tool-link'),
     'A live command row did not render'
@@ -566,27 +952,174 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   showStream('draft:stream-replay', streamItems, { phase: 'idle', turns: 0, settled: true })
   await until(() => document.querySelector('.run-outcome[data-foldable="true"]'), 'Replayed turn lost its process fold without saved timing')
   check(Boolean(document.querySelector('.run-outcome__meta')), 'Replayed turn lost its worked-for duration')
-  check(!streamBody().textContent.includes('STREAM_PROGRESS') && streamBody().textContent.includes('STREAM_FINAL'), 'Replayed turn does not match the completed stream')
+  check(streamBody().textContent.includes('STREAM_PROGRESS') && streamBody().textContent.includes('STREAM_FINAL'), 'Replayed turn lost its commentary or reply')
+  check(streamBody().querySelector('.process__head[aria-expanded="false"]'), 'Replayed tool group did not start folded')
 
-  // `toolCallSummary` gathers a live stretch into one line even when it holds a
-  // single call: a running command stays out of the flowing output until the
-  // reader opens the fold.
-  showStream('draft:stream-summary', streamItems.slice(0, 3), {
+  showStream('draft:stream-thinking-only', [
+    streamItems[0],
+    { ...streamItems[3], blocks: [
+      { type: 'thinking', text: 'Thinking even without tools' },
+      ...streamItems[3].blocks
+    ] }
+  ])
+  await until(() => streamBody().querySelector('.thinking__head[aria-expanded="false"]'),
+    'A finished response without tools hid the thinking disclosure')
+
+  // The live edit and command share one row below the next commentary. Its
+  // expansion and the edit diff survive the transition to a finished turn.
+  const editArgs = { path: 'note.txt', edits: [{ oldText: 'before the change', newText: 'STREAM_EDIT_DIFF' }] }
+  const commandArgs = { command: 'npm run check' }
+  const commandTool = { id: 'group-command', kind: 'tool', toolCallId: 'group-cmd', toolName: 'bash',
+    args: commandArgs, status: 'running', timestamp: 6, order: 6 }
+  const groupItems = [
+    ...streamItems.slice(0, 3),
+    { ...streamItems[1], id: 'group-progress', timestamp: 4, order: 4, blocks: [
+      { type: 'text', text: 'STREAM_EDIT_PROGRESS updating the workspace' },
+      { type: 'toolCall', id: 'group-edit', name: 'edit', argsText: '{}', args: editArgs },
+      { type: 'toolCall', id: 'group-cmd', name: 'bash', argsText: '{}', args: commandArgs }
+    ] },
+    { id: 'group-edit-row', kind: 'tool', toolCallId: 'group-edit', toolName: 'edit',
+      args: editArgs, status: 'ok', timestamp: 5, order: 5 },
+    commandTool
+  ]
+  showStream('draft:stream-summary', groupItems, {
     phase: 'working', turns: 1, settled: false, startedAt: Date.now() - 2000
-  }, { toolCallSummary: true })
+  })
   const liveSummary = await until(
     () => document.querySelector('.process[data-live] .process__head'),
     'A live tool summary did not render'
   )
   check(!document.querySelector('.run-status'), 'Gathered tool calls left a duplicate working status')
+  check(streamBody().querySelectorAll('.process__head').length === 2, 'Commentary did not split the tool groups')
+  check(liveSummary.closest('.process').previousElementSibling.textContent.includes('STREAM_EDIT_PROGRESS'), 'The tool group moved away from its commentary')
   check(!streamBody().querySelector('.tool-link'), 'A live tool row leaked below its summary')
   liveSummary.click()
-  await until(() => streamBody().querySelector('.tool-link'), 'Opening the live summary did not reveal the tool row')
-  store.setState(beforeStream)
-  passed.push('stream process folds commentary and tools, preserves view state, and reveals search hits')
+  const editToggle = await until(() => streamBody().querySelector('.tool--link[data-tone="edit"] .tool-link__toggle'), 'Opening the group did not reveal the edit')
+  editToggle.click()
+  const editDiff = () => streamBody().querySelector('.tool--link[data-tone="edit"] .tool__body')
+  await until(() => editDiff()?.textContent.includes('STREAM_EDIT_DIFF'), 'The edit diff did not expand')
+  showStream('draft:stream-summary', [
+    ...groupItems.slice(0, -1),
+    { ...commandTool, status: 'ok', result: 'STREAM_COMMAND_OUTPUT' },
+    { ...streamItems[3], timestamp: 7, order: 7 }
+  ])
+  const mixedSummary = await until(
+    () => [...streamBody().querySelectorAll('.process__head')].find((head) => head.textContent.includes('Edited file · Ran command')),
+    'The finished edit and command did not share one action summary'
+  )
+  check(mixedSummary.getAttribute('aria-expanded') === 'true' && editDiff()?.textContent.includes('STREAM_EDIT_DIFF'), 'The edit diff closed when the run finished')
+  streamBody().querySelector('.tool--link[data-tone="command"] .tool-link__toggle').click()
+  await until(() => streamBody().textContent.includes('STREAM_COMMAND_OUTPUT'), 'The command output did not expand')
+  mixedSummary.click()
+  await until(() => !streamBody().querySelector('.tool-link'), 'Refolding left a command or edit visible')
 
-  // The task rail beside the conversation: the environment of the folder, the
-  // tasks running in the background, the plan and the files the run produced.
+  // Reopening a failed run keeps its reason in the conversation and its tool
+  // output in the fold, with the first expansion showing the group summaries.
+  const stopReason = '429: The model request rate limit was reached'
+  const toolError = 'EISDIR: expected a file path'
+  showStream('draft:stream-failed', [
+    ...streamItems.slice(0, 2),
+    { ...streamItems[2], status: 'error', result: toolError },
+    { ...streamItems[3], stopReason: 'error', error: stopReason, blocks: [] }
+  ], { phase: 'idle', turns: 0, settled: true }, { toolCallSummary: true })
+  const failedRun = await until(() => document.querySelector('.run-outcome[data-outcome="failed"]'), 'The failed run has no summary')
+  check(failedRun.getAttribute('aria-expanded') === 'false', 'The failed run did not start folded')
+  const failureNotice = () => streamBody().querySelector('.notice[data-level="error"]')
+  check(failedRun.nextElementSibling === failureNotice() && failureNotice()?.textContent.includes('Model rate limit reached'), 'The run summary lost its rate limit notice')
+  check(failureNotice()?.title === stopReason, 'The original provider error is unavailable')
+  check(!streamBody().querySelector('.tool-link'), 'A failed run opened all of its tool calls')
+  failedRun.click()
+  const failedGroup = await until(() => streamBody().querySelector('.process__head'), 'The failed tool group did not appear')
+  check(failedGroup.textContent.includes('1 failed call'), 'The group lost its failure count')
+  check(!streamBody().querySelector('.tool-link'), 'Opening a failed run expanded every tool group')
+  failedGroup.click()
+  const failedTarget = await until(() => streamBody().querySelector('.tool-link__target'), 'The failed tool row did not appear')
+  check(failedTarget.textContent.includes(toolError), 'The failed read has no inline error reason')
+  failedTarget.click()
+  await until(() => streamBody().querySelector('.tool__error')?.textContent.includes(toolError), 'The failed read did not open its output')
+  failedRun.click()
+  await until(() => !streamBody().querySelector('.process__head'), 'The failed run cannot be folded again')
+  check(failureNotice()?.title === stopReason, 'Refolding hid the failure reason')
+
+  showStream('draft:stream-error-only', [
+    { ...streamItems[0], id: 'error-only-user' },
+    { ...streamItems[3], stopReason: 'error', error: stopReason, blocks: [] },
+    { id: 'duplicate-error', kind: 'notice', level: 'error', text: `Provider failed: ${stopReason}`, timestamp: 5, order: 5 }
+  ], { phase: 'idle', turns: 0, settled: true })
+  const errorOnlyRun = await until(
+    () => document.querySelector('[data-turn="error-only-user"] .run-outcome[data-outcome="failed"]'),
+    'The error-only run did not render'
+  )
+  check(errorOnlyRun.disabled && !errorOnlyRun.hasAttribute('aria-expanded'), 'The failed summary offers an empty execution fold')
+  check(failureNotice()?.title === stopReason, 'The error-only run lost its provider failure reason')
+
+  showStream('draft:stream-empty-error', [
+    { ...streamItems[0], id: 'empty-error-user' },
+    { ...streamItems[3], stopReason: 'error', error: ' ', blocks: [] }
+  ], { phase: 'idle', turns: 0, settled: true })
+  await until(() => document.querySelector('[data-turn="empty-error-user"] .notice[data-level="error"]'), 'The blank provider error lost its failure notice')
+  check(failureNotice()?.textContent.includes('This run failed.'), 'A blank provider error produced a blank failure notice')
+
+  showStream('draft:stream-goal-rounds', [
+    { ...streamItems[0], id: 'goal-u1', order: 0, timestamp: 1_000_000 },
+    {
+      id: 'goal-t1',
+      kind: 'tool',
+      toolCallId: 'goal-call-1',
+      toolName: 'edit',
+      args: { path: 'src/scorer.py', oldText: 'a', newText: 'b' },
+      status: 'ok',
+      order: 1,
+      timestamp: 1_002_000,
+      startedAt: 1_002_000,
+      finishedAt: 1_004_000,
+    },
+    {
+      ...streamItems[3],
+      id: 'goal-a1',
+      blocks: [{ type: 'text', text: 'Round 1 improvements applied.' }],
+      streaming: false,
+      stopReason: 'stop',
+      error: undefined,
+      model: 'claude-sonnet-4',
+      usage: { input: 1200, output: 300, cacheRead: 0, cacheWrite: 0, totalTokens: 1500, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      order: 2,
+      timestamp: 1_008_000,
+    },
+    { id: 'goal-rb1', kind: 'roundBreak', entryId: 'goal-entry-rb1', order: 3, timestamp: 1_010_000 },
+    {
+      ...streamItems[3],
+      id: 'goal-a2',
+      blocks: [{ type: 'text', text: 'Round 2 running...' }],
+      streaming: true,
+      stopReason: undefined,
+      error: undefined,
+      model: undefined,
+      usage: undefined,
+      order: 4,
+      timestamp: 1_012_000,
+    },
+  ], {
+    phase: 'generating',
+    turns: 1,
+    roundTurns: 0,
+    settled: false,
+    startedAt: Date.now() - 3_000,
+  })
+  await until(() => document.querySelector('[data-turn="goal-u1"] .run-outcome'), 'Completed Goal Mode round did not render RunSummary')
+  const round1 = document.querySelector('[data-turn="goal-u1"]')
+  const round2 = document.querySelector('[data-turn="goal-rb1"]')
+  check(round1 && !round1.querySelector('.run-outcome[data-running="true"]'), 'Completed Goal Mode round stayed marked as running')
+  check(round1?.querySelector('.file-changes'), 'Completed Goal Mode round did not render edited files summary')
+  check(round1?.querySelector('.assistant__footer .assistant__usage'), 'Completed Goal Mode round did not render token usage footer')
+  check(round2?.querySelector('.run-outcome[data-running="true"]'), 'Active Goal Mode round did not render its live RunSummary')
+  check(!round2?.querySelector('.file-changes'), 'Active Goal Mode round prematurely rendered FileChangeSummary')
+  check(!round2?.querySelector('.assistant__footer'), 'Active Goal Mode round prematurely rendered assistant footer')
+
+  store.setState(beforeStream)
+  passed.push('tool activity stays inline, groups edits with commands, and preserves expansion and search')
+
+  // The task rail beside the conversation, with a command and subagents in separate sections.
   await store.getState().newChat()
   const railItems = [
     { id: 'rail-user', kind: 'user', text: 'Ship the panel', images: [], timestamp: 1, order: 1 },
@@ -667,9 +1200,17 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
       kind: 'tool',
       toolCallId: 'rail-sub',
       toolName: 'subagent',
-      args: { tasks: [{ task: 'Run the gate' }] },
+      args: { tasks: [
+        { task: 'Run the full verification gate and report the output', label: 'Run the gate' },
+        { task: 'Inspect startup' },
+        { task: 'Review screenshots' }
+      ] },
       status: 'running',
-      details: { mode: 'parallel', results: [{ task: 'Run the gate', status: 'running' }] },
+      details: { mode: 'parallel', results: [
+        { status: 'running' },
+        { status: 'completed' },
+        { status: 'failed' }
+      ] },
       timestamp: 9,
       order: 9
     },
@@ -680,21 +1221,30 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
       toolName: 'bash',
       args: { command: 'npm run build' },
       status: 'running',
-      startedAt: Date.now(),
+      startedAt: Date.now() - 3000,
       timestamp: 10,
       order: 10
+    },
+    {
+      id: 'rail-grep',
+      kind: 'tool',
+      toolCallId: 'rail-grep',
+      toolName: 'grep',
+      args: { pattern: 'TODO' },
+      status: 'running',
+      startedAt: Date.now() - 3000,
+      timestamp: 11,
+      order: 11
     }
   ]
-  store.setState({
-    activeSessionFile: undefined,
-    draftId: 'draft:task-rail',
-    uiStatuses: [],
-    items: railItems
-  })
-  await until(() => document.querySelector('.task-panel'), 'Task rail did not render')
-  const titles = [...document.querySelectorAll('.task-panel__section-title')].map((node) => node.textContent)
-  for (const title of ['Environment info', 'Background tasks', 'Progress', 'Deliverables']) {
-    check(titles.includes(title), `The task rail is missing the ${title} section: ${titles.join(' | ')}`)
+  const setRailItems = (items, draftId = 'draft:task-rail') => store.setState((state) => ({
+    activeSessionFile: undefined, draftId, items, uiStatuses: [],
+    activeToolsRevision: state.activeToolsRevision + 1,
+    threads: { ...state.threads, [draftId]: { ...baseThread, items } }
+  }))
+  setRailItems(railItems)
+  for (const title of ['Environment info', 'Background tasks', 'Subagents', 'Progress', 'Deliverables']) {
+    await until(() => railSection(title), `The task rail is missing the ${title} section`)
   }
   // A folder outside Git has nothing to review or commit: the environment
   // section keeps its "No Git repository" subtitle and drops the Git rows.
@@ -708,9 +1258,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
     'The task rail did not read the non-repo status'
   )
   check(!document.querySelector('.task-panel__rows'), 'A non-repo folder still shows the Git rows')
-  const environmentSection = [...document.querySelectorAll('.task-panel__section')].find((node) =>
-    node.querySelector('.task-panel__section-title')?.textContent === 'Environment info'
-  )
+  const environmentSection = railSection('Environment info')
   const environmentToggle = environmentSection?.querySelector('.task-panel__section-toggle')
   const environmentHeadHeight = environmentSection?.querySelector('.task-panel__section-head')?.getBoundingClientRect().height
   environmentToggle?.click()
@@ -733,22 +1281,25 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
     'The repository environment rows changed'
   )
   store.setState({ git: gitBefore })
-  // Background tasks are the running tool calls — the subagent in the same
-  // thread must not appear here (it has its own badge and page), and an
-  // in-flight tool has no per-row stop control.
-  check(document.querySelectorAll('.task-panel__task').length === 1, 'The background task row is missing')
+  const commandRows = [...railSection('Background tasks').querySelectorAll('.task-panel__task')]
+  check(commandRows.length === 1 && commandRows[0].textContent === 'npm run build',
+    'The background section did not show just the running command name')
+  const taskRows = [...railSection('Subagents').querySelectorAll('.task-panel__task')]
   check(
-    document.querySelector('.task-panel__task-tool')?.textContent === 'bash',
-    'The background task is not named by its tool'
+    taskRows.map((row) => row.querySelector('.task-panel__task-label')?.textContent).join('|') ===
+      'Run the gate|Inspect startup|Review screenshots',
+    'The subagent list has tool commands or is missing task titles'
   )
   check(
-    document.querySelector('.task-panel__task-detail')?.textContent?.includes('npm run build'),
-    'The background task did not show what it is doing'
+    taskRows.map((row) => row.dataset.status).join('|') === 'running|completed|failed',
+    'The subagent list lost the task outcomes'
   )
-  check(!document.querySelector('.task-panel__task-stop'), 'A tool row grew a stop control it cannot honour')
   check(
-    ![...document.querySelectorAll('.task-panel__task')].some((node) => node.textContent?.includes('Run the gate')),
-    'A subagent was listed as a background task'
+    [...commandRows, ...taskRows].every((row) =>
+      row.querySelector('.task-panel__dot').getBoundingClientRect().left >=
+        row.querySelector('.task-panel__task-label').getBoundingClientRect().right
+    ),
+    'A task row did not put its status at the end of the row'
   )
   check(document.querySelectorAll('.task-panel__check').length === 3, 'The plan checklist is missing a step')
   check(document.querySelectorAll('.task-panel__check[data-done]').length === 2, 'A finished step is not marked as done')
@@ -805,7 +1356,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
     progress.querySelector('.task-panel__section-body').getAttribute('data-open') !== null,
     'The section did not fold open again'
   )
-  passed.push('the task rail reads the environment, the background tasks, the plan and the deliverables')
+  passed.push('the task rail separates background commands and subagents beside environment, plan and deliverables')
 
   // The workspace panel follows MCode's page strip: fixed-width tabs, an add
   // menu, a start page when nothing is open, a maximized state, and the file
@@ -830,7 +1381,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
     panelToggle()?.click()
   }
   await until(() => document.querySelector('.tool-start'), 'The panel start page did not render')
-  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 6, 'The start page does not list every page')
+  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 7, 'The start page does not list every page')
   const filesCard = [...document.querySelectorAll('.tool-start .tool-menu__card')].find((node) => node.textContent?.includes('Files'))
   check(filesCard, 'The start page has no Files entry')
   check(
@@ -1038,16 +1589,38 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   }
   passed.push('a conversation mark hangs in the indent without moving the title')
 
-  store.setState((state) => ({
-    activeSessionFile: undefined, draftId: 'draft:task-rail', items: railItems,
-    threads: { ...state.threads, 'draft:task-rail': { ...baseThread, items: railItems } }
-  }))
-  // The background list is a glance at what is running, not a door: the tool
-  // row carries no button and opening a child conversation lives on the
-  // Subagents page instead.
-  await until(() => document.querySelector('.task-panel__task'), 'The background task row did not come back')
-  check(!document.querySelector('.task-panel__task button'), 'A background tool row is clickable')
-  passed.push('background tasks are read-only running tool rows')
+  setRailItems([], 'draft:other-task-rail')
+  await until(() => !railSection('Background tasks') && !railSection('Subagents'),
+    'Switching conversations kept the previous conversation tasks')
+  setRailItems(railItems)
+  await until(() => railSection('Background tasks'), 'Returning to the conversation did not restore the running command')
+  const subagentButton = await until(
+    () => railSection('Subagents')?.querySelector('.task-panel__task[data-status="running"] button'),
+    'Returning to the conversation did not restore the running subagent'
+  )
+  subagentButton.click()
+  await until(() => document.querySelector('.subagent-conversation__identity strong')?.textContent === 'Run the gate',
+    'The subagent row did not open its own task')
+  check(store.getState().draftId === 'draft:task-rail', 'Opening a subagent switched the parent conversation')
+  const completedRailItems = railItems.map((item) => item.id === 'rail-sub' ? {
+    ...item,
+    status: 'ok',
+    details: {
+      ...item.details,
+      results: item.details.results.map((result, index) => index === 0
+        ? { status: 'completed', output: 'The verification gate passed.' }
+        : result)
+    }
+  } : item)
+  setRailItems(completedRailItems)
+  await until(() => document.querySelector('.subagent-conversation__body')?.textContent.includes('The verification gate passed.'),
+    'The open task did not receive the finished output')
+  await until(() => [...railSection('Subagents').querySelectorAll('.task-panel__task[data-status="completed"]')].some(
+    (row) => row.querySelector('.task-panel__task-label')?.textContent === 'Run the gate'
+  ), 'The completed subagent disappeared or kept its running status')
+  document.querySelector('.subagent-conversation__back').click()
+  await until(() => !document.querySelector('.subagent-conversation'), 'The subagent detail did not return to the catalog')
+  passed.push('the task rail follows the conversation and subagent rows open live details and retain their outcome')
 
   await openToolPage('files', 'Files')
   const fileSearch = await until(
@@ -1379,6 +1952,49 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace) {
   )
   passed.push('the image preview close control clears the caption buttons and closes')
 
+  const archiveQuery = 'Archive scope fixture'
+  const activeTitle = `${archiveQuery} active`
+  const archivedTitle = `${archiveQuery} archived`
+  async function setArchiveFilter(label, mode) {
+    document.querySelector('button[aria-label="View options"]').click()
+    const option = await until(() => [...document.querySelectorAll('.view-option-menu [role="menuitemradio"]')]
+      .find((node) => node.textContent.trim() === label), `Archive filter option ${label} is missing`)
+    option.click()
+    await until(() => store.getState().settings.sidebarArchiveFilter === mode, `Archive filter did not switch to ${mode}`)
+  }
+  async function checkArchiveSearch(mode, expected) {
+    document.querySelector('button[aria-label="Search projects and conversations"]').click()
+    const dialog = await until(() => document.getElementById('conversation-search-dialog'), 'The conversation search did not open')
+    const titles = (selector) => [...dialog.querySelectorAll(selector)].map((node) => node.textContent.trim()).sort().join(',')
+    setInputValue(dialog.querySelector('input'), archiveQuery)
+    await until(() => titles('section[aria-label="Search conversations"] .search-dialog__result-title') === expected, `Title search ignored the ${mode} archive filter`)
+    await until(() => titles('.session-search__title') === expected, `Full-text search ignored the ${mode} archive filter`)
+    dialog.querySelector('button[aria-label="Close"]').click()
+    await until(() => !dialog.isConnected, 'The conversation search did not close')
+  }
+  for (const [label, mode, expected] of [
+    ['Hide archived', 'hidden', activeTitle],
+    ['All conversations (show archived)', 'all', [activeTitle, archivedTitle].join(',')],
+    ['Archived only', 'archived', archivedTitle]
+  ]) {
+    await setArchiveFilter(label, mode)
+    await checkArchiveSearch(mode, expected)
+  }
+  const limitedHits = await window.pi.sessions.search(archiveQuery, 1)
+  check(limitedHits.length === 1 && limitedHits[0].name === archivedTitle, 'A newer active hit used the archived search result limit')
+  const archivedRow = await until(() => [...document.querySelectorAll('.session-item')].find(
+    (row) => row.querySelector('.session-item__title')?.textContent.trim() === archivedTitle
+  ), 'The archived conversation was not listed')
+  archivedRow.querySelector('.session-item__more').click()
+  const restore = await until(() => [...document.querySelectorAll('.session-actions-menu [role="menuitem"]')]
+    .find((node) => node.textContent.trim() === 'Restore'), 'The archived conversation has no Restore action')
+  restore.click()
+  await until(() => store.getState().settings.archivedSessions?.length === 0, 'Restore did not remove the archive status')
+  await until(() => !archivedRow.isConnected, 'Restoring a conversation left it in the archived list')
+  await setArchiveFilter('Hide archived', 'hidden')
+  await checkArchiveSearch('restored', [activeTitle, archivedTitle].join(','))
+  passed.push('title and text search honor the archive filter, and the sidebar restores archived conversations')
+
   // Leave the environment section folded in the harness screenshot so the
   // collapsed state remains visible for visual review.
   const finalEnvironmentToggle = [...document.querySelectorAll('.task-panel__section')]
@@ -1406,7 +2022,7 @@ Object.assign(env, {
   PI_DESKTOP_SCREENSHOT_DELAY: '1000',
   PI_DESKTOP_EVAL_DELAY: '100',
   PI_DESKTOP_RPC_TRACE: '0',
-  PI_DESKTOP_EVAL: `(${checkRenderer.toString()})(${JSON.stringify(markerFile)}, ${JSON.stringify(nestedWorkspace)}, ${JSON.stringify(workspace)})`
+  PI_DESKTOP_EVAL: `(${checkRenderer.toString()})(${JSON.stringify(markerFile)}, ${JSON.stringify(nestedWorkspace)}, ${JSON.stringify(workspace)}, ${JSON.stringify(goalFixture)}, ${JSON.stringify(thinkingFixture)}, ${JSON.stringify(backgroundFixture)}, ${JSON.stringify(planFixture)}, ${JSON.stringify(questionFixture)})`
 })
 try {
   const { stdout, stderr } = await promisify(execFile)(require('electron'), [root], {
@@ -1414,10 +2030,15 @@ try {
   })
   const rendererErrors = stdout.split(/\r?\n/).filter((line) => line.includes('[pi-desktop] renderer error:'))
   assert.deepEqual(rendererErrors, [], `Renderer console errors:\n${rendererErrors.join('\n')}`)
+  assert.doesNotMatch(`${stdout}\n${stderr}`, /Ancestor with aria-hidden: <aside\.tool-panel>/, 'Closing the tools panel hid an element while its terminal was focused')
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 29 : 28)
+  assert.equal(passed.length, process.platform === 'win32' ? 37 : 36)
+  assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
+  assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
+  assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
+  assert.equal(readFileSync(path.join(workspace, planFixture.file), 'utf8'), planFixture.result)
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')

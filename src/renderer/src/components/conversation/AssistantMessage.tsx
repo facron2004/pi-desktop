@@ -1,4 +1,4 @@
-import { isValidElement, memo, type ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 import type { ToolItem } from '../../lib/thread'
 import { replyStartOf, type Turn } from '../../lib/turns'
 import { AssistantImage, ThinkingBlock } from '../MessageItem'
@@ -10,8 +10,6 @@ import { stripEchoedPrompt } from '../../lib/image-echo'
 interface ProcessBuffer {
   key: string
   tools: ToolItem[]
-  thoughts: number
-  searchText: string
   children: ReactNode[]
 }
 
@@ -20,22 +18,15 @@ type TurnSegment = { kind: 'node'; node: ReactNode } | { kind: 'process'; buffer
 /**
  * The agent's body of one turn.
  *
- * Spoken text keeps the column. Text before the final call is commentary and
- * folds with the process once a reply arrives; a partial reply stays visible.
- * Thinking and tool calls between two stretches
- * of text are one process: open on the reading column while it is the live tail,
- * collapsed to a single line once that stretch has finished — or, when
- * `toolCallSummary` is on, one line while it is still working too. That choice
- * is ProcessTrail's; this component only cuts the turn into stretches.
- * Tools stay grouped inside it until text, thinking or an image interrupts them,
- * even when they span several assistant messages.
+ * Commentary, tool groups and reply text stay in their original order. A group
+ * spans assistant messages until text or an image interrupts it. ProcessTrail
+ * owns the expansion of each group, and the run summary can hide the process.
  */
 export const AssistantMessage = memo(function AssistantMessage({
   turn,
   toolMap,
   liveTail,
-  processOpen = true,
-  processExpanded = false
+  processOpen = true
 }: {
   turn: Turn
   toolMap: Map<string, ToolItem>
@@ -43,10 +34,10 @@ export const AssistantMessage = memo(function AssistantMessage({
   liveTail: boolean
   /** Whether the turn's tool/thinking process is visible. */
   processOpen?: boolean
-  /** Opening the turn's process also reveals its tool rows in one click. */
-  processExpanded?: boolean
 }) {
   const segments: TurnSegment[] = []
+  const thinkingParts: string[] = []
+  let thinkingStreaming = false
   // A generated picture is the answer, and it reads best under the words that
   // explain it. The cards are collected here and appended after the turn's
   // text, so the image always sits at the bottom of the reply.
@@ -66,17 +57,9 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   const ensureProcess = (key: string) => {
     if (!trace) {
-      trace = { key, tools: [], thoughts: 0, searchText: '', children: [] }
+      trace = { key, tools: [], children: [] }
     }
   }
-
-  const isThinkingRow = (node: ReactNode) =>
-    isValidElement(node) && node.type === ThinkingBlock
-
-  const isSettledThinkingRow = (node: ReactNode) =>
-    isValidElement<{ streaming?: boolean }>(node) &&
-    node.type === ThinkingBlock &&
-    !node.props.streaming
 
   const flushTools = () => {
     if (!group.length) return
@@ -85,10 +68,6 @@ export const AssistantMessage = memo(function AssistantMessage({
     ensureProcess(`process-${items[0].id}`)
     if (!trace) return
     trace.tools.push(...items)
-    // A thought before a command is already counted on the process. Leaving
-    // the "Reasoning hidden" row above every call doubled the list and pushed
-    // the reply to the bottom of it.
-    trace.children = trace.children.filter((child) => !isThinkingRow(child))
     // The fold already names the batch. Each call is a link, not another
     // "Activity" row wrapped around a card.
     // The rows are built whether or not they are painted: `toolCallSummary`
@@ -101,12 +80,6 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   const flushProcess = () => {
     flushTools()
-    if (trace && trace.tools.length > 0) {
-      // A completed thought that followed a tool call in the same stretch is
-      // already accounted for by the tool process; only an in-progress live
-      // thought stays visible below the call.
-      trace.children = trace.children.filter((child) => !isSettledThinkingRow(child))
-    }
     if (!trace || trace.children.length === 0 || !processOpen) {
       trace = null
       return
@@ -145,22 +118,10 @@ export const AssistantMessage = memo(function AssistantMessage({
         return
       }
       if (block.type === 'thinking') {
-        if (!block.text.trim()) return
-        flushTools()
-        ensureProcess(`process-${assistant.id}-${index}`)
-        if (!trace) return
-        trace.thoughts += 1
-        trace.searchText += `\n${block.text}`
-        // Only the thought still in progress stays on screen. The ones that
-        // already turned into a command are a count, not a row each.
-        trace.children = trace.children.filter((child) => !isThinkingRow(child))
-        trace.children.push(
-          <ThinkingBlock
-            key={`${assistant.id}-${index}`}
-            text={block.text}
-            streaming={assistant.streaming && index === assistant.blocks.length - 1}
-          />
-        )
+        if (processOpen && !block.redacted && block.text.trim()) {
+          thinkingParts.push(block.text)
+          if (assistant.streaming && index === assistant.blocks.length - 1) thinkingStreaming = true
+        }
         return
       }
       if (block.type === 'image') {
@@ -198,6 +159,9 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   return (
     <>
+      {thinkingParts.length > 0 ? (
+        <ThinkingBlock turnId={turn.id} parts={thinkingParts} streaming={thinkingStreaming} />
+      ) : null}
       {segments.map((segment, index) => {
         if (segment.kind === 'node') return segment.node
         const { buffer } = segment
@@ -205,9 +169,6 @@ export const AssistantMessage = memo(function AssistantMessage({
           <ProcessTrail
             key={buffer.key}
             tools={buffer.tools}
-            thoughts={buffer.thoughts}
-            searchText={buffer.searchText}
-            defaultOpen={processExpanded}
             live={
               liveTail &&
               (index === segments.length - 1 ||

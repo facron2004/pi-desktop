@@ -319,7 +319,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultPlanMode: false,
   pasteMentions: false,
   autoFoldProcess: true,
-  toolCallSummary: false,
+  toolCallSummary: true,
   autoTitle: false,
   automaticUpdates: false,
   trayPersistent: false,

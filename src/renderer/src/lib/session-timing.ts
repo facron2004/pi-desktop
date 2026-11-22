@@ -42,6 +42,7 @@ interface MemoryTimingEntry {
 const MEMORY_LIMIT = 40
 const memoryByStorage = new WeakMap<Storage, Map<string, MemoryTimingEntry>>()
 const userTimingIndexes = new WeakMap<Record<string, number>, Map<string, number | null>>()
+const roundTimingIndexes = new WeakMap<Record<string, number>, Map<string, number | null>>()
 const fieldRevisions = new WeakMap<Record<string, number>, number>()
 const idleCompactions = new WeakMap<Storage, Map<string, number>>()
 
@@ -348,6 +349,7 @@ function recordDuration(
   bumpFieldRevision(record[field])
   if (field === 'runDurationsMs' || field === 'generationWindowMs') {
     userTimingIndexes.delete(record[field])
+    roundTimingIndexes.delete(record[field])
   }
   try {
     const key = storageKey(sessionKey)
@@ -420,7 +422,21 @@ export function recordRunDuration(
   recordDuration(
     sessionKey,
     'runDurationsMs',
-    userTimingKey(userTimestamp, userOrdinal),
+    indexedTimingKey('user:', userTimestamp, userOrdinal, ''),
+    durationMs
+  )
+}
+
+export function recordRoundDuration(
+  sessionKey: string | undefined,
+  roundTimestamp: number | undefined,
+  durationMs: number,
+  roundOrdinal?: number
+): void {
+  recordDuration(
+    sessionKey,
+    'runDurationsMs',
+    indexedTimingKey('round:', roundTimestamp, roundOrdinal, 'round:'),
     durationMs
   )
 }
@@ -434,17 +450,22 @@ export function recordGenerationWindow(
   recordDuration(
     sessionKey,
     'generationWindowMs',
-    userTimingKey(userTimestamp, userOrdinal),
+    indexedTimingKey('user:', userTimestamp, userOrdinal, ''),
     durationMs
   )
 }
 
-function userTimingKey(userTimestamp: number | undefined, userOrdinal?: number): string | undefined {
-  if (userTimestamp === undefined) return undefined
-  if (typeof userOrdinal === 'number' && Number.isInteger(userOrdinal) && userOrdinal >= 0) {
-    return `user:${userOrdinal}:${userTimestamp}`
+function indexedTimingKey(
+  prefix: string,
+  timestamp: number | undefined,
+  ordinal: number | undefined,
+  fallbackPrefix: string
+): string | undefined {
+  if (timestamp === undefined) return undefined
+  if (typeof ordinal === 'number' && Number.isInteger(ordinal) && ordinal >= 0) {
+    return `${prefix}${ordinal}:${timestamp}`
   }
-  return String(userTimestamp)
+  return `${fallbackPrefix}${timestamp}`
 }
 
 /** Prefer collision-safe samples and fall back to records written by older versions. */
@@ -454,39 +475,81 @@ export function userTimingDuration(
   userOrdinal: number | undefined,
   timestampOccurrences: number
 ): number | undefined {
-  if (userTimestamp === undefined) return undefined
-  const key = userTimingKey(userTimestamp, userOrdinal)
+  return indexedTimingDuration(
+    userTimingIndexes,
+    'user:',
+    '',
+    durations,
+    userTimestamp,
+    userOrdinal,
+    timestampOccurrences
+  )
+}
+
+/** Look up a Goal Mode continuation round's recorded duration by ordinal and timestamp. */
+export function roundTimingDuration(
+  durations: Record<string, number>,
+  roundTimestamp: number | undefined,
+  roundOrdinal: number | undefined,
+  timestampOccurrences: number
+): number | undefined {
+  return indexedTimingDuration(
+    roundTimingIndexes,
+    'round:',
+    'round:',
+    durations,
+    roundTimestamp,
+    roundOrdinal,
+    timestampOccurrences
+  )
+}
+
+function indexedTimingDuration(
+  indexes: WeakMap<Record<string, number>, Map<string, number | null>>,
+  prefix: string,
+  fallbackPrefix: string,
+  durations: Record<string, number>,
+  timestamp: number | undefined,
+  ordinal: number | undefined,
+  timestampOccurrences: number
+): number | undefined {
+  if (timestamp === undefined) return undefined
+  const key = indexedTimingKey(prefix, timestamp, ordinal, fallbackPrefix)
   if (!key) return undefined
   const exact = durations[key]
   if (exact !== undefined) return exact
   if (timestampOccurrences !== 1) return undefined
 
-  const timestampKey = String(userTimestamp)
-  const indexed = userTimingIndex(durations).get(timestampKey)
+  const timestampKey = String(timestamp)
+  const indexed = prefixTimingIndex(indexes, prefix, durations).get(timestampKey)
   if (indexed === null) return undefined
-  return indexed ?? durations[timestampKey]
+  return indexed ?? durations[`${fallbackPrefix}${timestampKey}`]
 }
 
 /**
  * Long session transcripts are read from a bounded tail, so their visible
- * user ordinals can change after reopening. Recover a single matching sample
+ * ordinals can change after reopening. Recover a single matching sample
  * by timestamp only when that timestamp occurs once in the loaded transcript.
  * Colliding timestamps remain unresolved unless their ordinal matches exactly.
  */
-function userTimingIndex(durations: Record<string, number>): Map<string, number | null> {
-  const cached = userTimingIndexes.get(durations)
+function prefixTimingIndex(
+  indexes: WeakMap<Record<string, number>, Map<string, number | null>>,
+  prefix: string,
+  durations: Record<string, number>
+): Map<string, number | null> {
+  const cached = indexes.get(durations)
   if (cached) return cached
 
   const index = new Map<string, number | null>()
   for (const [key, duration] of Object.entries(durations)) {
-    if (!key.startsWith('user:')) continue
+    if (!key.startsWith(prefix)) continue
     const separator = key.lastIndexOf(':')
-    if (separator <= 5 || !/^\d+$/.test(key.slice(5, separator))) continue
+    if (separator <= prefix.length || !/^\d+$/.test(key.slice(prefix.length, separator))) continue
     const timestamp = key.slice(separator + 1)
     if (index.has(timestamp)) index.set(timestamp, null)
     else index.set(timestamp, duration)
   }
-  userTimingIndexes.set(durations, index)
+  indexes.set(durations, index)
   return index
 }
 

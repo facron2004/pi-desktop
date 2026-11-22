@@ -68,7 +68,8 @@ export function CommandPalette({
             const meta = COMMAND_SOURCE[command.source] ?? COMMAND_SOURCE.extension
             const Icon = commandIcon(command)
             const desc = command.description ? t(command.description) : undefined
-            const name = command.source === 'app' && language === 'zh-CN'
+            const isLocalizedName = command.source === 'app' && language === 'zh-CN'
+            const name = isLocalizedName
               ? appCommandName(command.name, language)
               : `/${command.name}`
             const tooltip = desc ? `${name} — ${desc}` : name
@@ -88,12 +89,19 @@ export function CommandPalette({
                 <span className="palette__icon" data-source={command.source}>
                   <Icon size={12} />
                 </span>
-                <span className="palette__name">{name}</span>
-                {desc ? (
-                  <span className="palette__desc" title={desc}>
-                    {desc}
+                <span className="palette__text">
+                  <span
+                    className="palette__name"
+                    data-localized={isLocalizedName ? 'true' : undefined}
+                  >
+                    {name}
                   </span>
-                ) : null}
+                  {desc ? (
+                    <span className="palette__desc" title={desc}>
+                      {desc}
+                    </span>
+                  ) : null}
+                </span>
                 <span className={`palette__badge ${meta.className}`}>{t(meta.label)}</span>
               </button>
             )

@@ -25,7 +25,7 @@ export function ThreadEnvStoreProvider({
   const storeThreadKey = useAppStore((state) => state.activeSessionFile ?? state.draftId ?? 'draft')
   const storeWorkspacePath = useAppStore((state) => state.workspace?.path)
   const autoFoldProcess = useAppStore((state) => state.settings.autoFoldProcess !== false)
-  const toolCallSummary = useAppStore((state) => state.settings.toolCallSummary === true)
+  const toolCallSummary = useAppStore((state) => state.settings.toolCallSummary !== false)
   const diffSplit = useAppStore((state) => state.settings.diffSplit === true)
   const language = useAppStore((state) => state.settings.language ?? 'en')
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
@@ -57,7 +57,7 @@ export function useThreadEnv(): ThreadEnvValue {
     threadKey: state.activeSessionFile ?? state.draftId ?? 'draft',
     workspacePath: state.workspace?.path,
     autoFoldProcess: state.settings.autoFoldProcess !== false,
-    toolCallSummary: state.settings.toolCallSummary === true,
+    toolCallSummary: state.settings.toolCallSummary !== false,
     diffSplit: state.settings.diffSplit === true,
     language: state.settings.language ?? 'en',
     insertIntoComposer: state.insertIntoComposer

@@ -236,7 +236,6 @@ const markdownComponents: Components = {
           <button
             type="button"
             className="md-file-link"
-            title={ref.line ? `${ref.path}:${ref.line}` : ref.path}
             onClick={() => {
               const root = useAppStore.getState().workspace?.path
               const resolved = resolveAgainst(root, ref.path)
@@ -247,7 +246,7 @@ const markdownComponents: Components = {
               )
             }}
           >
-            <FileCode2 size={11} />
+            <FileCode2 size={11} aria-hidden="true" />
             <span>
               <Marked>{raw}</Marked>
             </span>

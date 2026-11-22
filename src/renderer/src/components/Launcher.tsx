@@ -19,6 +19,7 @@ import {
   MessageSquarePlus,
   Minimize2,
   Moon,
+  Network,
   PanelLeft,
   Pin,
   RefreshCw,
@@ -77,6 +78,16 @@ const MESSAGE_ACTION_IDS = new Set([
   'pin'
 ])
 
+/**
+ * The pins a conversation without any reads as.
+ *
+ * It is a module constant, not a literal in the selector: `pinnedSessions` is
+ * absent until the first pin, and `?? []` would hand Zustand a fresh array on
+ * every store update — the launcher would then re-render for every streamed
+ * token even though nothing it shows changed.
+ */
+const NO_PINS: readonly string[] = []
+
 /** The parts of the app shell the launcher drives. */
 export interface LauncherShell {
   sidebarOpen: boolean
@@ -123,7 +134,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
         item.blocks.some((block) => block.type === 'text' && Boolean(block.text.trim()))
     )
   )
-  const pinned = useAppStore((state) => state.settings.pinnedSessions ?? [])
+  const pinned = useAppStore((state) => state.settings.pinnedSessions ?? NO_PINS)
   const threadModels = useAppStore((state) => state.models)
   const catalogModels = useAppStore((state) => state.catalogModels)
   const disabledModelSpecs = useAppStore((state) => state.disabledModelSpecs)
@@ -291,6 +302,13 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Mode',
       icon: Bot,
       run: () => setAgentMode(agentMode === 'subagent' ? 'default' : 'subagent')
+    },
+    {
+      id: 'mode-swarm',
+      title: agentMode === 'swarm' ? 'Leave Swarm Mode' : 'Use Swarm Mode',
+      group: 'Mode',
+      icon: Network,
+      run: () => setAgentMode(agentMode === 'swarm' ? 'default' : 'swarm')
     },
     {
       id: 'mode-plugin',

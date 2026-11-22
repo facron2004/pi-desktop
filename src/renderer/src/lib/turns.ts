@@ -1,9 +1,9 @@
 import type { Usage } from '@shared/types'
-import type { AssistantBlock, AssistantItem, NoticeItem, ThreadItem, ToolItem, UserItem } from './thread'
+import type { AssistantBlock, AssistantItem, NoticeItem, RoundBreakItem, ThreadItem, ToolItem, UserItem } from './thread'
 import { changedThreadItemsFrom } from './thread'
 
 /**
- * A user message and everything it produced.
+ * A user message (or Goal Mode continuation round) and everything it produced.
  *
  * The transcript is stored as a flat list of items; the timeline draws turns.
  * A turn is a view-model, not a second source of truth: every array holds the
@@ -13,6 +13,7 @@ import { changedThreadItemsFrom } from './thread'
 export interface Turn {
   id: string
   user?: UserItem
+  roundBreak?: RoundBreakItem
   assistants: AssistantItem[]
   tools: ToolItem[]
   notices: NoticeItem[]
@@ -23,6 +24,11 @@ export interface TurnUserMetadata {
   userCount: number
   timestampCounts: ReadonlyMap<number, number>
   lastUserTurnIndex: number
+}
+
+export interface TurnRoundMetadata {
+  roundCount: number
+  timestampCounts: ReadonlyMap<number, number>
 }
 
 /** Sum a turn only when every assistant request reported token usage. */
@@ -104,6 +110,7 @@ const recentBuilds: TurnBuild[] = []
 const buildByItems = new WeakMap<ThreadItem[], TurnBuild>()
 const turnChanges = new WeakMap<Turn[], { base: WeakRef<Turn[]>; firstChangedIndex: number }>()
 const userMetadataByTurns = new WeakMap<Turn[], TurnUserMetadata>()
+const roundMetadataByTurns = new WeakMap<Turn[], TurnRoundMetadata>()
 
 function rememberBuild(build: TurnBuild): void {
   buildByItems.set(build.items, build)
@@ -140,7 +147,9 @@ function buildFresh(items: ThreadItem[]): TurnBuild {
   const turns: Turn[] = []
   const starts: number[] = []
   const timestampCounts = new Map<number, number>()
+  const roundTimestampCounts = new Map<number, number>()
   let userCount = 0
+  let roundCount = 0
   let lastUserTurnIndex = -1
   let current: Turn | null = null
 
@@ -155,6 +164,14 @@ function buildFresh(items: ThreadItem[]): TurnBuild {
       timestampCounts.set(item.timestamp, (timestampCounts.get(item.timestamp) ?? 0) + 1)
       continue
     }
+    if (item.kind === 'roundBreak') {
+      current = { id: item.id, roundBreak: item, assistants: [], tools: [], notices: [], bash: [] }
+      turns.push(current)
+      starts.push(index)
+      roundCount += 1
+      roundTimestampCounts.set(item.timestamp, (roundTimestampCounts.get(item.timestamp) ?? 0) + 1)
+      continue
+    }
     if (!current) {
       current = { id: `turn-${item.id}`, assistants: [], tools: [], notices: [], bash: [] }
       turns.push(current)
@@ -167,6 +184,7 @@ function buildFresh(items: ThreadItem[]): TurnBuild {
   }
 
   userMetadataByTurns.set(turns, { userCount, timestampCounts, lastUserTurnIndex })
+  roundMetadataByTurns.set(turns, { roundCount, timestampCounts: roundTimestampCounts })
   return { items, turns, starts }
 }
 
@@ -189,17 +207,57 @@ export function userMetadataForTurns(turns: Turn[]): TurnUserMetadata {
   return metadata
 }
 
-function userTimestampsInRange(turns: Turn[], startIndex: number): number[] {
+/** Round-continuation metadata built with the turn list and reused across stream updates. */
+export function roundMetadataForTurns(turns: Turn[]): TurnRoundMetadata {
+  const cached = roundMetadataByTurns.get(turns)
+  if (cached) return cached
+  let roundCount = 0
+  const timestampCounts = new Map<number, number>()
+  for (const turn of turns) {
+    if (!turn.roundBreak) continue
+    roundCount += 1
+    timestampCounts.set(turn.roundBreak.timestamp, (timestampCounts.get(turn.roundBreak.timestamp) ?? 0) + 1)
+  }
+  const metadata = { roundCount, timestampCounts }
+  roundMetadataByTurns.set(turns, metadata)
+  return metadata
+}
+
+function timestampsInRange(
+  turns: Turn[],
+  startIndex: number,
+  pick: (turn: Turn) => { timestamp: number } | undefined
+): number[] {
   const timestamps: number[] = []
   for (let index = startIndex; index < turns.length; index += 1) {
-    const user = turns[index]?.user
-    if (user) timestamps.push(user.timestamp)
+    const item = turns[index] ? pick(turns[index]) : undefined
+    if (item) timestamps.push(item.timestamp)
   }
   return timestamps
 }
 
 function sameTimestamps(left: number[], right: number[]): boolean {
   return left.length === right.length && left.every((timestamp, index) => timestamp === right[index])
+}
+
+function adjustTimestampCounts(
+  previousCounts: ReadonlyMap<number, number>,
+  removed: readonly number[],
+  added: readonly number[]
+): { changed: boolean; timestampCounts: ReadonlyMap<number, number> } {
+  if (sameTimestamps([...removed], [...added])) {
+    return { changed: false, timestampCounts: previousCounts }
+  }
+  const nextCounts = new Map(previousCounts)
+  for (const timestamp of removed) {
+    const count = nextCounts.get(timestamp) ?? 0
+    if (count <= 1) nextCounts.delete(timestamp)
+    else nextCounts.set(timestamp, count - 1)
+  }
+  for (const timestamp of added) {
+    nextCounts.set(timestamp, (nextCounts.get(timestamp) ?? 0) + 1)
+  }
+  return { changed: true, timestampCounts: nextCounts }
 }
 
 /**
@@ -248,10 +306,11 @@ export function buildTurns(items: ThreadItem[]): Turn[] {
   let reuseTurns = 0
   let rebuildFrom = 0
   if (firstDiff >= cache.items.length) {
-    // Items were appended. Anything but a user message continues the old last
-    // turn, so that turn has to be rebuilt; everything before it survives.
+    // Items were appended. Anything other than a user prompt or Goal Mode
+    // continuation continues the old last turn, so that turn has to be
+    // rebuilt; everything before it survives.
     const appended = items[firstDiff]
-    if (appended && appended.kind !== 'user' && cache.turns.length > 0) {
+    if (appended && appended.kind !== 'user' && appended.kind !== 'roundBreak' && cache.turns.length > 0) {
       reuseTurns = cache.turns.length - 1
       rebuildFrom = cache.starts[cache.starts.length - 1]
     } else {
@@ -288,22 +347,13 @@ export function buildTurns(items: ThreadItem[]): Turn[] {
   }
 
   const previousMetadata = userMetadataForTurns(cache.turns)
-  const previousSuffixTimestamps = userTimestampsInRange(cache.turns, reuseTurns)
-  const nextSuffixTimestamps = userTimestampsInRange(suffix.turns, 0)
-  const timestampsChanged = !sameTimestamps(previousSuffixTimestamps, nextSuffixTimestamps)
-  let timestampCounts = previousMetadata.timestampCounts
-  if (timestampsChanged) {
-    const nextTimestampCounts = new Map(previousMetadata.timestampCounts)
-    for (const timestamp of previousSuffixTimestamps) {
-      const count = nextTimestampCounts.get(timestamp) ?? 0
-      if (count <= 1) nextTimestampCounts.delete(timestamp)
-      else nextTimestampCounts.set(timestamp, count - 1)
-    }
-    for (const timestamp of nextSuffixTimestamps) {
-      nextTimestampCounts.set(timestamp, (nextTimestampCounts.get(timestamp) ?? 0) + 1)
-    }
-    timestampCounts = nextTimestampCounts
-  }
+  const previousSuffixTimestamps = timestampsInRange(cache.turns, reuseTurns, (turn) => turn.user)
+  const nextSuffixTimestamps = timestampsInRange(suffix.turns, 0, (turn) => turn.user)
+  const { changed: timestampsChanged, timestampCounts } = adjustTimestampCounts(
+    previousMetadata.timestampCounts,
+    previousSuffixTimestamps,
+    nextSuffixTimestamps
+  )
   let lastUserTurnIndex = -1
   for (let index = turns.length - 1; index >= reuseTurns; index -= 1) {
     if (turns[index]?.user) {
@@ -328,6 +378,20 @@ export function buildTurns(items: ThreadItem[]): Turn[] {
     ? { userCount, timestampCounts, lastUserTurnIndex }
     : previousMetadata
   userMetadataByTurns.set(turns, metadata)
+
+  const previousRoundMetadata = roundMetadataForTurns(cache.turns)
+  const previousRoundTimestamps = timestampsInRange(cache.turns, reuseTurns, (turn) => turn.roundBreak)
+  const nextRoundTimestamps = timestampsInRange(suffix.turns, 0, (turn) => turn.roundBreak)
+  const { changed: roundTimestampsChanged, timestampCounts: roundTimestampCounts } = adjustTimestampCounts(
+    previousRoundMetadata.timestampCounts,
+    previousRoundTimestamps,
+    nextRoundTimestamps
+  )
+  const roundCount = previousRoundMetadata.roundCount - previousRoundTimestamps.length + nextRoundTimestamps.length
+  const roundMetadata = roundTimestampsChanged || roundCount !== previousRoundMetadata.roundCount
+    ? { roundCount, timestampCounts: roundTimestampCounts }
+    : previousRoundMetadata
+  roundMetadataByTurns.set(turns, roundMetadata)
 
   let starts: number[]
   if (

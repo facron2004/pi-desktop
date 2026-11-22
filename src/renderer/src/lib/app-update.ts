@@ -1,4 +1,4 @@
-import type { VersionCheckResult } from '@shared/types'
+import type { UpdateState, VersionCheckResult } from '@shared/types'
 
 export const APP_UPDATE_NOTICE = 'pi:app-update-notice'
 export type AppUpdateNotice = { result: VersionCheckResult } | { error: string }
@@ -75,6 +75,42 @@ export function noteAppUpdateCheck(result: VersionCheckResult): void {
 export function showAppUpdate(result: VersionCheckResult): void {
   noteAppUpdateCheck(result)
   window.dispatchEvent(new CustomEvent<AppUpdateNotice>(APP_UPDATE_NOTICE, { detail: { result } }))
+}
+
+/**
+ * Restore the reading kept from the last check that reached the network.
+ *
+ * The renderer holds its reading in memory, so a restart drops it. The main
+ * process keeps the same reading on disk, and this puts it back before the
+ * app's own check answers: a machine that is offline at startup still shows
+ * the release it found yesterday.
+ *
+ * A stored reading names the version that was running when it was taken, so
+ * it is only restored when that version is still the running one — after an
+ * update the old reading must not claim a new version is waiting.
+ */
+export async function restorePersistedAppUpdate(): Promise<void> {
+  // A check that already answered is the better reading, and it is the only
+  // one that names this run's Pi CLI version. Restoring over it would replace
+  // a live answer with yesterday's snapshot.
+  if (lastCheck) return
+  let state: UpdateState | null = null
+  try {
+    state = await window.pi.app.updateState()
+  } catch {
+    // A missing reading is not an error: the app checks on its own.
+    return
+  }
+  if (!state?.app) return
+  const result: VersionCheckResult = {
+    app: state.app,
+    piCli: state.piCli ?? { current: state.app.current, hasUpdate: false }
+  }
+  // A failed reading never replaces a good one, so restore only what was
+  // actually fetched. The check may also have answered while this read was in
+  // flight, in which case its result wins.
+  if (result.app.error || lastCheck) return
+  noteAppUpdateCheck(result)
 }
 
 /** Both manual entry points share one request and one result card. Background checks stay silent. */

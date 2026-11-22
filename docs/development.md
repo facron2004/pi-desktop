@@ -24,6 +24,7 @@ npm run dev
 | `npm run start` | 预览已构建的应用。 |
 | `npm run dist` | 按 electron-builder 配置生成发布包到 `release/`。 |
 | `npm run dist:dir` | 生成解包应用目录。 |
+| `pwsh -File scripts/prepare-release-assets.ps1 -Version <版本>` | 把 `release/` 里的产物整理成发布资产：免安装 zip、发布用文件名和 `SHA256SUMS.txt`。 |
 | `npm run icon` | 重新生成应用图标。 |
 | `npm run installer-art` | 重新生成旧 NSIS 向导的页眉与侧栏位图（当前发布流程已不再使用）。 |
 
@@ -109,3 +110,25 @@ npx electron .
 发布时同步 `package.json` 与 `package-lock.json` 的版本，更新 [`CHANGELOG.md`](../CHANGELOG.md) 和版本说明。构建后的 EXE、ZIP 与校验文件通过 GitHub Release 分发，不提交到 Git。
 
 发布包应在独立配置与会话目录中实际启动，检查应用版本、内置 Pi、关键页面与正常退出，并核对包中构建文件。ARM64 构建成功与在 ARM64 设备实际运行是不同的验证范围，发布说明应分别记录。
+
+## 用 GitHub Actions 发布
+
+`.github/workflows/release.yml` 在推上 `v*` 标签时自动打包并发布 Windows 版：
+
+1. 核对标签与 `package.json` 的版本一致，然后跑类型检查、单元测试和 `npm run dist`。
+2. 用 `scripts/prepare-release-assets.ps1` 整理产物：免安装 zip、发布用的文件名（`Pi.Desktop-<版本>-x64.exe` 这种不带空格的名字）和 `SHA256SUMS.txt`。
+3. 用 `gh release create` 建 Release，版本说明取 `docs/releases/<标签>.md`；没有这份文件就用 GitHub 生成的说明。同名 Release 已存在时改成覆盖上传。
+4. 单独一个 job 把 README 里的下载链接改到新版本，并提交回默认分支。
+
+发布本身不做代码签名。应用内更新读的是 `releases/latest`，所以 Release 不能是草稿或预发布，否则旧版本收不到更新提示。
+
+发布步骤：
+
+```bash
+# 先改好 package.json、package-lock.json、CHANGELOG.md 和 docs/releases/v<版本>.md
+git tag v0.11.7
+git push origin v0.11.7
+```
+
+也可以在 Actions 页面手动触发这个工作流，填上版本号，并选择建草稿还是预发布。
+

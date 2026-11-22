@@ -10,11 +10,26 @@ import {
 import type { TrayPopupState } from '@shared/types'
 import { trayIconImage } from './app-icon'
 import { resolveRendererEntry } from './navigation-policy'
+import { popupPlacement, hasUsableBounds } from './tray-placement'
 
 let tray: Tray | null = null
 let popup: BrowserWindow | null = null
 let quitting = false
 let lockHeld = false
+/** The popup has painted its first frame and may be shown. */
+let ready = false
+/** The popup has held the focus at least once; only then may blur close it. */
+let everFocused = false
+/** A right-click arrived before the page was ready. */
+let showPending = false
+/** When the popup was last shown, so an early blur cannot close it at once. */
+let shownAt = 0
+/**
+ * How long after `show()` a blur is ignored while the popup has not been
+ * focused. Focus is granted within a frame or two; a menu that never receives
+ * it must still close when the reader clicks away.
+ */
+const BLUR_GRACE_MS = 250
 
 /** Cap each section so the popup keeps a predictable, modest height. */
 const MAX_RUNNING = 3
@@ -80,6 +95,9 @@ export function isQuitting(): boolean {
 function destroyTray(): void {
   if (popup && !popup.isDestroyed()) popup.destroy()
   popup = null
+  ready = false
+  everFocused = false
+  showPending = false
   if (!tray) return
   tray.destroy()
   tray = null
@@ -153,26 +171,15 @@ function popupUrl(theme: 'dark' | 'light'): { load: () => Promise<void> } {
 function positionPopup(): void {
   if (!popup || popup.isDestroyed() || !tray || tray.isDestroyed()) return
   const bounds = tray.getBounds()
-  if (!bounds || bounds.width === 0) return
-  const display = screen.getDisplayMatching(bounds)
+  // An icon in the overflow flyout reports no rectangle; the pointer is then
+  // the anchor, so the popup still opens where the reader clicked.
+  const anchor = hasUsableBounds(bounds) ? bounds : null
+  const cursor = screen.getCursorScreenPoint()
+  const display = screen.getDisplayMatching(anchor ?? { x: cursor.x, y: cursor.y, width: 1, height: 1 })
   const area = display.workArea
   const [width, height] = popup.getContentSize()
-
-  let x = Math.round(bounds.x + bounds.width / 2 - width / 2)
-  x = Math.max(area.x, Math.min(x, area.x + area.width - width))
-
-  // Prefer opening above the icon (taskbar is usually at the bottom); fall
-  // back below when there is more room there.
-  const spaceAbove = bounds.y - area.y
-  const spaceBelow = area.y + area.height - (bounds.y + bounds.height)
-  let y: number
-  if (spaceBelow >= height + 8 || spaceBelow >= spaceAbove) {
-    y = bounds.y + bounds.height + 8
-  } else {
-    y = bounds.y - height - 8
-  }
-  y = Math.max(area.y, Math.min(y, area.y + area.height - height))
-  popup.setPosition(x, y)
+  const point = popupPlacement(anchor, cursor, { width, height }, area)
+  popup.setPosition(point.x, point.y)
 }
 
 function createPopup(): boolean {
@@ -201,15 +208,39 @@ function createPopup(): boolean {
       sandbox: true
     }
   }
-  popup = new BrowserWindow(options)
+  const created = new BrowserWindow(options)
+  popup = created
+  ready = false
+  everFocused = false
   // A transparent frameless window with no drag region: it lives briefly by
   // the tray icon and closes on blur/Escape, so the OS drag strip is moot.
-  popup.on('closed', () => {
-    popup = null
+  created.on('closed', () => {
+    if (popup === created) popup = null
+    ready = false
+    everFocused = false
   })
-  popup.on('blur', () => {
-    // Clicking the icon again or elsewhere dismisses the transient popup.
-    if (popup && !popup.isDestroyed() && popup.isVisible()) popup.hide()
+  created.on('focus', () => {
+    everFocused = true
+  })
+  created.on('blur', () => {
+    // Clicking the icon again or elsewhere dismisses the transient popup — but
+    // only once it has actually had a chance to hold the focus. A window shown
+    // from a process that is not in the foreground can report `blur` before it
+    // ever receives `focus`, and hiding on that would close the menu in the
+    // same frame it appeared: the icon looks dead. Focus arrives within a few
+    // milliseconds when it arrives at all, so a short grace period keeps a
+    // popup that never got focus from staying on screen forever.
+    if (!everFocused && Date.now() - shownAt < BLUR_GRACE_MS) return
+    if (popup === created && !created.isDestroyed() && created.isVisible()) created.hide()
+  })
+  created.once('ready-to-show', () => {
+    ready = true
+    // A right-click that arrived while the page was still loading asked for the
+    // popup; it is ready now, so honour it instead of swallowing the click.
+    if (showPending) {
+      showPending = false
+      showPopup()
+    }
   })
   const loader = popupUrl(theme)
   void loader.load()
@@ -224,8 +255,15 @@ function showPopup(): void {
     popup.hide()
     return
   }
+  if (!ready) {
+    // Showing a transparent window before its first paint composites an empty
+    // rectangle: the menu is "open" but nothing is drawn. Wait for the page.
+    showPending = true
+    return
+  }
   sendToPopup('tray-popup:state', currentState())
   positionPopup()
+  shownAt = Date.now()
   popup.show()
   popup.focus()
 }

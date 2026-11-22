@@ -14,23 +14,37 @@ export type ActivityStatus = 'error' | 'running' | 'aborted' | 'proposed' | 'ok'
 /**
  * One line for a batch of calls.
  *
- * The title is the kind of work (explored, activity, still running) and the
- * summary is the counts. Both the grouped row and the settled process fold
- * speak this way, so a batch does not change its name when it collapses — and
- * neither does a live stretch gathered by the `toolCallSummary` setting, which
- * borrows this headline and this row's `group-<first call id>` key.
+ * The card shows counts. The inline conversation fold uses the action label
+ * to describe a finished batch without exposing arguments or output.
  */
 export function activityHeadline(
   items: ToolItem[],
   t: (text: string) => string
-): { title: string; summary: string; status: ActivityStatus } {
-  const failed = items.some((item) => item.status === 'error')
-  const running = items.some((item) => item.status === 'running')
-  const aborted = items.some((item) => item.status === 'aborted')
+): {
+  title: string
+  summary: string
+  status: ActivityStatus
+  failedCount: number
+  tone: 'edit' | 'command' | 'search' | 'read' | 'generic'
+  label: string
+  busy: boolean
+} {
+  const counts = { read: 0, search: 0, edit: 0, command: 0, subagent: 0, plan: 0, computer: 0, image: 0, generic: 0 }
+  let failedCount = 0
+  let proposedCount = 0
+  let running = false
+  let aborted = false
+  for (const item of items) {
+    if (item.status === 'error') failedCount += 1
+    if (item.status === 'proposed') proposedCount += 1
+    if (item.status === 'running') running = true
+    if (item.status === 'aborted') aborted = true
+    counts[summarizeTool(item).tone] += 1
+  }
   // A mixed batch is not "Not run": only a batch in which every call never
   // started gets that label. Individual proposed rows still say so.
-  const proposed = items.length > 0 && items.every((item) => item.status === 'proposed')
-  const status: ActivityStatus = failed
+  const proposed = items.length > 0 && proposedCount === items.length
+  const status: ActivityStatus = failedCount > 0
     ? 'error'
     : running
       ? 'running'
@@ -39,8 +53,6 @@ export function activityHeadline(
         : proposed
           ? 'proposed'
           : 'ok'
-  const counts = { read: 0, search: 0, edit: 0, command: 0, subagent: 0, plan: 0, computer: 0, image: 0, generic: 0 }
-  for (const item of items) counts[summarizeTool(item).tone] += 1
   // Delegation, plan review, desktop actions and image calls are tool calls
   // too; the batch summary only distinguishes the work it can describe
   // precisely.
@@ -55,8 +67,21 @@ export function activityHeadline(
     .filter(Boolean)
     .join(' · ')
   const explored = items.length > 0 && counts.read + counts.search === items.length
-  const title = t(running ? 'Working…' : explored && status === 'ok' ? 'Explored' : 'Activity')
-  return { title, summary, status }
+  const title = t(running ? 'Working…' : explored && status === 'ok' && proposedCount === 0 ? 'Explored' : 'Activity')
+  const tone = counts.edit ? 'edit' : counts.command ? 'command' : counts.search ? 'search' : counts.read ? 'read' : 'generic'
+  const label = status === 'ok' && proposedCount === 0
+    ? [
+        counts.read || counts.search ? t('Explored') : '',
+        counts.edit ? t(counts.edit === 1 ? 'Edited file' : 'File edits') : '',
+        counts.command ? t(counts.command === 1 ? 'Ran command' : 'Ran commands') : '',
+        genericCount ? t('Used tools') : ''
+      ].filter(Boolean).join(' · ')
+    : status === 'running' && counts.command === items.length
+      ? t(counts.command === 1 ? 'Running command' : 'Running commands')
+      : status === 'running' && counts.edit === 1 && items.length === 1
+        ? t('Editing file')
+        : title
+  return { title, summary, status, failedCount, tone, label, busy: running || proposedCount > 0 }
 }
 
 /** Consecutive calls share an activity summary; full records stay one click away. */

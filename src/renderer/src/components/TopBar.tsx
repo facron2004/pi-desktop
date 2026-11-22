@@ -195,9 +195,13 @@ export const ModelPicker = memo(function ModelPicker() {
       list.scrollTop += selectedRect.top - listRect.top - (list.clientHeight - selectedRect.height) / 2
     }
   }, [])
-  const attachList = useCallback((list: HTMLDivElement | null) => {
-    listRef.current = list
-  }, [])
+  const attachList = useCallback(
+    (list: HTMLDivElement | null) => {
+      listRef.current = list
+      if (!list) modelTip.dismiss()
+    },
+    [modelTip.dismiss]
+  )
 
   const needle = modelQuery.trim()
   const visibleModels = useMemo(() => filterModels(models, needle), [models, needle])
@@ -254,7 +258,10 @@ export const ModelPicker = memo(function ModelPicker() {
   }, [visibleRegularModels])
 
   useEffect(() => {
-    if (!showModels) return
+    if (!showModels) {
+      modelTip.dismiss()
+      return
+    }
     setHighlighted(activeIndex >= 0 ? activeIndex : 0)
     setOtherModelsExpanded(false)
     // Another surface (the keyboard cycle) may have picked a model since the
@@ -277,6 +284,7 @@ export const ModelPicker = memo(function ModelPicker() {
   }, [highlighted, showModels, displayModels.length])
 
   const pickModel = async (model: ModelInfo): Promise<void> => {
+    modelTip.dismiss()
     if (updating) return
     const selected = currentModel?.id === model.id && currentModel.provider === model.provider
     if (selected) {
@@ -510,6 +518,14 @@ export const ModelPicker = memo(function ModelPicker() {
                   </div>
                 ))}
               </div>
+              {modelTip.tip ? (
+                <SidebarTip
+                  anchor={modelTip.tip.anchor}
+                  title={modelTip.tip.payload.title}
+                  rows={modelTip.tip.payload.rows}
+                  onDismiss={modelTip.dismiss}
+                />
+              ) : null}
             </>
           ) : (
             <EffortSlider
@@ -529,13 +545,6 @@ export const ModelPicker = memo(function ModelPicker() {
         </div>
       )}
       </Popover>
-      {modelTip.tip ? (
-        <SidebarTip
-          anchor={modelTip.tip.anchor}
-          title={modelTip.tip.payload.title}
-          rows={modelTip.tip.payload.rows}
-        />
-      ) : null}
     </>
   )
 })

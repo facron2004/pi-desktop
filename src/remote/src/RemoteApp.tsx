@@ -725,5 +725,6 @@ const RemoteMessage = memo(function RemoteMessage({ item }: { item: ThreadItem }
   if (item.kind === 'bash') {
     return <details className="remote-tool"><summary><strong>命令行</strong><span className="remote-tool__state">已完成</span></summary><pre>{item.command}{item.output ? `\n${item.output.slice(0, 8_000)}` : ''}</pre></details>
   }
+  if (item.kind === 'roundBreak') return null
   return <div className={`remote-notice remote-notice--${item.level}`}>{item.text}</div>
 })

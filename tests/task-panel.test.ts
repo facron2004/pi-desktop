@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { listBackgroundTasks, listDeliverables, summariseDiff } from '../src/renderer/src/lib/task-panel'
+import { listBackgroundCommands, listDeliverables, listSubagentTasks, summariseDiff } from '../src/renderer/src/lib/task-panel'
 import { isImageName } from '../src/renderer/src/lib/files'
 import type { GitStatus } from '../src/shared/types'
 import type { ToolItem } from '../src/renderer/src/lib/thread'
@@ -119,58 +119,73 @@ test('a folder that is not a repository has no diff to summarise', () => {
   assert.equal(summariseDiff(undefined), null)
 })
 
-test('background tasks are the running tool calls, named by their tool', () => {
-  const rows = listBackgroundTasks([
-    tool({ id: 'b1', toolName: 'bash', args: { command: 'npm run build' }, startedAt: 10 }),
+test('a live shell command is listed by command name after a two-second grace period', () => {
+  const bashCommand = 'cd "C:/project" && npm run build'
+  assert.deepEqual(listBackgroundCommands([
+    tool({ id: 'b1', toolName: 'bash', args: { command: bashCommand }, startedAt: 10 }),
+    tool({ id: 'p1', toolName: 'powershell', args: { command: 'pnpm test' }, startedAt: 12 })
+  ]), [
+    { id: 'b1', command: bashCommand, label: 'npm run build', visibleAt: 2010 },
+    { id: 'p1', command: 'pnpm test', label: 'pnpm test', visibleAt: 2012 }
+  ])
+})
+
+test('background commands omit proposed, finished and non-shell tools', () => {
+  const command = { command: 'npm run build' }
+  assert.deepEqual(listBackgroundCommands([
+    tool({ id: 'proposed', toolName: 'bash', args: command, status: 'proposed' }),
+    tool({ id: 'completed', toolName: 'bash', args: command, status: 'ok', startedAt: 10 }),
+    tool({ id: 'failed', toolName: 'powershell', args: command, status: 'error', startedAt: 10 }),
+    tool({ id: 'stopped', toolName: 'bash', args: command, status: 'aborted', startedAt: 10 }),
+    tool({ id: 'missing-command', toolName: 'bash', startedAt: 11 }),
     tool({ id: 'g1', toolName: 'grep', args: { pattern: 'TODO' }, startedAt: 11 }),
-    tool({ id: 'p1', toolName: 'powershell', args: { command: 'Get-ChildItem' }, startedAt: 12 })
-  ])
-  assert.deepEqual(
-    rows.map((row) => row.toolName),
-    ['bash', 'grep', 'powershell']
-  )
-  assert.deepEqual(
-    rows.map((row) => row.label),
-    ['Bash', 'Grep', 'PowerShell']
-  )
-  assert.equal(rows[0].detail, 'npm run build')
-  assert.equal(rows[1].detail, 'TODO')
+    tool({ id: 's1', toolName: 'subagent', args: { task: 'Verify startup' }, startedAt: 11 })
+  ]), [])
 })
 
-test('subagents are not background tasks, and finished calls are gone', () => {
-  const rows = listBackgroundTasks([
-    tool({ id: 's1', toolName: 'subagent', args: { tasks: [{ task: 'inspect' }] } }),
-    tool({ id: 'b1', toolName: 'bash', args: { command: 'sleep 1' }, status: 'ok' }),
-    tool({ id: 'b2', toolName: 'bash', args: { command: 'npm test' } })
+test('subagent rows preserve child identities, titles and separate outcomes in one parallel call', () => {
+  const rows = listSubagentTasks([
+    tool({
+      id: 's1',
+      toolName: 'subagent',
+      args: { tasks: [
+        { task: 'Run the full test suite', label: 'Run tests' },
+        { task: 'Inspect startup' },
+        { task: 'Review screenshots' },
+        { task: 'Check mobile layout' }
+      ] },
+      details: { results: [{ status: 'running' }, { status: 'completed' }, { status: 'failed' }] }
+    }),
+    tool({ id: 'b1', toolName: 'bash', args: { command: 'npm test' } })
   ])
-  assert.deepEqual(
-    rows.map((row) => row.toolName),
-    ['bash']
-  )
+  assert.deepEqual(rows.map(({ id, label, task, status }) => [id, label || task, status]), [
+    ['s1:0', 'Run tests', 'running'],
+    ['s1:1', 'Inspect startup', 'completed'],
+    ['s1:2', 'Review screenshots', 'failed'],
+    ['s1:3', 'Check mobile layout', 'queued']
+  ])
 })
 
-test('an unknown tool still names its subject from the usual argument fields', () => {
-  const rows = listBackgroundTasks([
-    tool({ id: 'g1', toolName: 'glob', args: { pattern: '**/*.ts' } }),
-    tool({ id: 'c1', toolName: 'shell', args: { command: 'npm test' } }),
-    tool({ id: 'm1', toolName: 'mcp__server__fetch', args: { url: 'https://example.com' } })
+test('only dispatched subagents count and recorded results from older sessions still appear', () => {
+  const rows = listSubagentTasks([
+    tool({ id: 's1', toolName: 'subagent', args: { task: 'Planned' }, status: 'proposed' }),
+    tool({ id: 's2', toolName: 'subagent', args: { task: 'Verified' }, status: 'ok',
+      details: { results: [{ exitCode: 0 }] }
+    }),
+    tool({ id: 's3', toolName: 'subagent', args: { task: 'Cancelled' }, status: 'aborted' })
   ])
-  assert.deepEqual(
-    rows.map((row) => row.detail),
-    ['**/*.ts', 'npm test', 'https://example.com']
-  )
+  assert.deepEqual(rows.map(({ id, status }) => [id, status]), [
+    ['s2:0', 'completed'], ['s3:0', 'aborted']
+  ])
 })
 
-test('bookkeeping tools are not listed as background work', () => {
-  const rows = listBackgroundTasks([
-    tool({ id: 't1', toolName: 'todo', args: { items: [] } }),
-    tool({ id: 't2', toolName: 'desktop_todo', args: { items: [] } }),
-    tool({ id: 't3', toolName: 'exit_plan_mode', args: {} }),
-    tool({ id: 'b1', toolName: 'bash', args: { command: 'ls' } })
-  ])
+test('the task rail keeps the eight most recent dispatched subagents in transcript order', () => {
+  const items = Array.from({ length: 10 }, (_, index) =>
+    tool({ id: `sub-${index}`, toolName: 'subagent', args: { task: `Task ${index}` }, status: 'ok' })
+  )
   assert.deepEqual(
-    rows.map((row) => row.toolName),
-    ['bash']
+    listSubagentTasks(items).map(({ task }) => task),
+    items.slice(-8).map(({ args }) => args.task)
   )
 })
 

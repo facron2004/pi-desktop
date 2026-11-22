@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { PiEvent } from '@shared/types'
-import { buildTurns, changedTurnsFrom, replyStartOf, usageForTurn } from '../src/renderer/src/lib/turns'
+import { buildTurns, changedTurnsFrom, replyStartOf, roundMetadataForTurns, usageForTurn } from '../src/renderer/src/lib/turns'
+import type { RoundBreakItem } from '../src/renderer/src/lib/thread'
 import { applyEvent, changedThreadItemsFrom, type AssistantItem, type NoticeItem, type ThreadItem, type ToolItem, type UserItem } from '../src/renderer/src/lib/thread'
 
 function user(id: string): UserItem {
@@ -249,4 +250,52 @@ test('buildTurns preserves recent turn builds across multi-thread interleaving',
   const builtB = buildTurns(threadB)
   assert.equal(buildTurns(threadA), builtA)
   assert.equal(buildTurns(threadB), builtB)
+})
+
+test('buildTurns splits Goal Mode rounds at RoundBreakItem and keeps earlier rounds stable', () => {
+  const rb1: RoundBreakItem = {
+    id: 'rb1',
+    kind: 'roundBreak',
+    entryId: 'entry-rb-1',
+    order: 2,
+    timestamp: 2000,
+  }
+  const a1 = {
+    ...assistant('a1'),
+    timestamp: 1500,
+    usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 120, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  }
+  const a2 = {
+    ...assistant('a2'),
+    timestamp: 2500,
+    usage: { input: 50, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 60, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  }
+
+  const base: ThreadItem[] = [user('u1'), a1, rb1, a2]
+  const first = buildTurns(base)
+  assert.equal(first.length, 2)
+  assert.equal(first[0].user?.id, 'u1')
+  assert.equal(first[0].roundBreak, undefined)
+  assert.equal(first[1].user, undefined)
+  assert.equal(first[1].roundBreak?.id, 'rb1')
+  assert.equal(usageForTurn(first[0])?.totalTokens, 120)
+  assert.equal(usageForTurn(first[1])?.totalTokens, 60)
+
+  const roundMeta = roundMetadataForTurns(first)
+  assert.equal(roundMeta.roundCount, 1)
+  assert.equal(roundMeta.timestampCounts.get(2000), 1)
+
+  const streamed: ThreadItem[] = [
+    base[0],
+    base[1],
+    base[2],
+    {
+      ...a2,
+      blocks: [{ type: 'text', text: 'a2 updated' }],
+    },
+  ]
+  const next = buildTurns(streamed)
+  assert.equal(next.length, 2)
+  assert.equal(next[0], first[0])
+  assert.notEqual(next[1], first[1])
 })

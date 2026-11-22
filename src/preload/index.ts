@@ -61,6 +61,7 @@ import type {
   TrayPopupState,
   SessionSearchHit,
   TextSearchResult,
+  UpdateState,
   UpgradeResult,
   VersionCheckResult,
   Workspace
@@ -100,6 +101,7 @@ const bridge: PiDesktopBridge = {
     getSystemFonts: (): Promise<string[]> => ipcRenderer.invoke('app:getSystemFonts'),
     emojiFont: (): Promise<Uint8Array | null> => ipcRenderer.invoke('app:emojiFont'),
     checkUpdate: (): Promise<VersionCheckResult> => ipcRenderer.invoke('app:checkUpdate'),
+    updateState: (): Promise<UpdateState | null> => ipcRenderer.invoke('app:updateState'),
     installAppUpdate: (version: string): Promise<UpgradeResult> => ipcRenderer.invoke('app:installUpdate', version),
     onAppUpdateProgress: (handler: (progress: AppUpdateProgress) => void) =>
       subscribe<AppUpdateProgress>('app:updateProgress', handler),
@@ -107,8 +109,7 @@ const bridge: PiDesktopBridge = {
     onPiCliUpgradeProgress: (handler: (progress: PiCliUpgradeProgress) => void) =>
       subscribe<PiCliUpgradeProgress>('app:piCliUpgradeProgress', handler),
     openReleasePage: (): Promise<UpgradeResult> => ipcRenderer.invoke('app:openReleasePage'),
-    onNotificationOpen: (handler: (payload: { sessionKey: string }) => void) =>
-      subscribe<{ sessionKey: string }>('notification:open', handler)
+    onNotificationOpen: (handler) => subscribe('notification:open', handler)
   },
   tray: {
     setConversations: (conversations: TrayConversation[]): void =>

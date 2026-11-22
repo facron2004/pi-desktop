@@ -312,6 +312,11 @@ export const CONTEXT_BREAKDOWN_STATUS_KEY = 'pi-desktop-context-breakdown'
 export const GENERATION_TIMING_STATUS_KEY = 'pi-desktop-generation-timing'
 export const SUBAGENT_EDITOR_PENDING_STATUS_KEY = 'pi-desktop-subagent-editor-pending'
 export const SUBAGENT_EDITOR_CANCEL_STATUS_KEY = 'pi-desktop-subagent-editor-cancel'
+export const TASK_MODE_STATUS_KEY = 'pi-desktop-mode'
+export const PLAN_REVIEW_TITLE = 'Plan ready to review'
+export const ASK_USER_TOOL_NAME = 'desktop_ask_user'
+export const GOAL_STATUS_KEY = 'pi-desktop-goal'
+export const GOAL_CONTINUE_CUSTOM_TYPE = 'desktop-goal-continue'
 
 /* ------------------------------------------------------------------ *
  * Extension UI sub-protocol
@@ -435,6 +440,7 @@ export interface SessionHydrationResult {
   messages: AgentMessage[]
   /** True when messages are only the bounded tail of a larger session file. */
   historyTruncated: boolean
+  taskMode?: SessionTaskMode
 }
 
 /** A conversation the tray's right-click popup offers to open. */
@@ -770,10 +776,23 @@ export type PermissionMode = 'ask' | 'auto' | 'full'
  * A conversation's task mode. Plan explores without writing and submits its
  * plan for approval; Goal keeps working until the goal is done or blocked;
  * Subagent makes the model delegate self-contained work to isolated children;
+ * Swarm makes it lead a team of named workers that stay alive across turns;
  * Plugin makes it build or modify a Pi extension.
  * Computer Use is not a mode: it is the `computerUse` setting.
  */
-export type AgentMode = 'default' | 'goal' | 'plan' | 'subagent' | 'plugin'
+export const AGENT_MODES = ['default', 'goal', 'plan', 'subagent', 'swarm', 'plugin'] as const
+export type AgentMode = (typeof AGENT_MODES)[number]
+
+export interface GoalState {
+  text: string
+  status: 'active' | 'paused' | 'blocked' | 'complete'
+  summary?: string
+}
+
+export interface SessionTaskMode {
+  mode: AgentMode
+  goal?: GoalState
+}
 
 export type SubagentTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'aborted' | 'timed_out'
 
@@ -937,9 +956,9 @@ export interface AppSettings {
   subagentThinking?: string
   /** Reference a pasted picture in the message, not only attach it. */
   pasteMentions?: boolean
-  /** Fold a settled turn's working process so the answer is what stays on screen. */
+  /** Start completed tool groups folded under their summaries. */
   autoFoldProcess?: boolean
-  /** Gather a run of consecutive tool calls into one summary line. */
+  /** Gather consecutive tool calls into one summary while they are running. */
   toolCallSummary?: boolean
   /** Name a new conversation from its first exchange with a throwaway model call. */
   autoTitle?: boolean
@@ -1003,6 +1022,19 @@ export interface VersionItemStatus {
 export interface VersionCheckResult {
   app: VersionItemStatus
   piCli: VersionItemStatus
+}
+
+/**
+ * The last version check that reached the network, kept on disk so a restart
+ * still shows the release it found.
+ */
+export interface UpdateState {
+  /** The application release that was found. */
+  app?: VersionItemStatus
+  /** The bundled Pi CLI release that was found. */
+  piCli?: VersionItemStatus
+  /** When the check ran. */
+  checkedAt: number
 }
 
 export interface AppUpdateProgress {
@@ -1166,6 +1198,8 @@ export interface PiDesktopBridge {
     emojiFont(): Promise<Uint8Array | null>
     /** Check for updates for the application and Pi CLI. */
     checkUpdate(): Promise<VersionCheckResult>
+    /** The last check that reached the network, kept across restarts. */
+    updateState(): Promise<UpdateState | null>
     /** Download a verified app release and restart through the Windows installer. */
     installAppUpdate(version: string): Promise<UpgradeResult>
     onAppUpdateProgress(handler: (progress: AppUpdateProgress) => void): () => void
@@ -1176,11 +1210,10 @@ export interface PiDesktopBridge {
     /** Open the latest Pi Desktop release page for a manual update. */
     openReleasePage(): Promise<UpgradeResult>
     /**
-     * The reader clicked a desktop notification. The event names the
-     * conversation that raised it, so the window can open that one instead of
-     * whichever was last on screen.
+     * The reader opened a desktop notification or submitted an inline reply.
+     * The event names the conversation that raised the notification.
      */
-    onNotificationOpen(handler: (payload: { sessionKey: string }) => void): () => void
+    onNotificationOpen(handler: (payload: { sessionKey: string; reply?: string }) => void): () => void
   }
   tray: {
     /** Publish the conversations the right-click menu should list (renderer → main). */
@@ -1255,7 +1288,7 @@ export interface PiDesktopBridge {
     hydrate(file: string): Promise<SessionHydrationResult>
     /** Name a conversation. A hot one is renamed in its own process. */
     rename(file: string, name: string): Promise<boolean>
-    /** Search the text of every conversation on disk. */
+    /** Search conversation text on disk within the sidebar's archive filter. */
     search(query: string, limit?: number): Promise<SessionSearchHit[]>
     /** Aggregate token consumption and conversation records across all sessions. */
     usageStats(): Promise<AggregatedUsageStats>

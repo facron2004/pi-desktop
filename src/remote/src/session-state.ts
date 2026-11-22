@@ -171,6 +171,12 @@ export function restoreRemoteSessionItems(
     }
   }
 
+  const snapshotRoundBreaks = new Map<number, number>()
+  for (const item of items) {
+    if (item.kind !== 'roundBreak') continue
+    snapshotRoundBreaks.set(item.timestamp, (snapshotRoundBreaks.get(item.timestamp) ?? 0) + 1)
+  }
+
   const eventsToReplay: StreamEvent[] = []
   for (const event of normalized) {
     const duplicateMessageLifecycle =
@@ -181,6 +187,13 @@ export function restoreRemoteSessionItems(
       event.type === 'message.completed'
     if (duplicateMessageLifecycle && event.messageId && representedMessageIds.has(event.messageId)) {
       continue
+    }
+    if (event.type === 'round.continued') {
+      const remaining = snapshotRoundBreaks.get(event.timestamp) ?? 0
+      if (remaining > 0) {
+        snapshotRoundBreaks.set(event.timestamp, remaining - 1)
+        continue
+      }
     }
     eventsToReplay.push(event)
   }

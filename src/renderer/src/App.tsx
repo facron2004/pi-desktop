@@ -37,7 +37,7 @@ import type { TerminalRunRequest } from './components/TerminalPanel'
 import { GoalBar } from './components/GoalBar'
 import { FeatureLoading } from './components/FeatureLoading'
 import { Popover } from './components/Popover'
-import { APP_UPDATE_NOTICE, noteAppUpdateCheck, type AppUpdateNotice } from './lib/app-update'
+import { APP_UPDATE_NOTICE, noteAppUpdateCheck, restorePersistedAppUpdate, type AppUpdateNotice } from './lib/app-update'
 import { matchesAnyShortcut, type ShortcutId } from './lib/shortcuts'
 import { activeConversationTitle } from './lib/live-sessions'
 import { useT } from './lib/i18n'
@@ -52,6 +52,7 @@ const AppUpdateDialog = lazy(() => import('./components/AppUpdateDialog').then((
 const BrowserView = lazy(() => import('./components/BrowserView').then((m) => ({ default: m.BrowserView })))
 const ImageViewer = lazy(() => import('./components/ImageViewer').then((m) => ({ default: m.ImageViewer })))
 const SubagentPanel = lazy(() => import('./components/SubagentPanel').then((m) => ({ default: m.SubagentPanel })))
+const SwarmPanel = lazy(() => import('./components/SwarmPanel').then((m) => ({ default: m.SwarmPanel })))
 const ShortcutsDialog = lazy(() => import('./components/ShortcutsDialog').then((m) => ({ default: m.ShortcutsDialog })))
 const ExtensionDialog = lazy(() => import('./components/ExtensionDialog').then((m) => ({ default: m.ExtensionDialog })))
 const LauncherDialog = lazy(() => import('./components/Launcher').then((m) => ({ default: m.LauncherDialog })))
@@ -199,6 +200,12 @@ export default function App() {
     const handleResize = () => setWindowWidth(window.innerWidth)
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  useEffect(() => {
+    // Owned by its own effect: the update check below re-runs whenever a run
+    // starts or stops, and a restore is a startup read, not a per-run one.
+    void restorePersistedAppUpdate()
   }, [])
 
   useEffect(() => {
@@ -1034,7 +1041,7 @@ export default function App() {
               aria-label={t('Task status')}
             >
               <div className="task-rail__body">
-                {taskPanelMounted ? <TaskPanel /> : null}
+                {taskPanelMounted ? <TaskPanel onOpenTask={openSubagentTask} /> : null}
               </div>
             </aside>
           ) : null}
@@ -1075,6 +1082,8 @@ export default function App() {
                 <ImageViewer request={imageRequest} />
               ) : panelView === 'subagents' ? (
                 <SubagentPanel selected={subagentSelection} onSelectTask={setSubagentSelection} />
+              ) : panelView === 'swarm' ? (
+                <SwarmPanel />
               ) : panelView === 'files' || panelView === 'changes' ? (
                 <InspectorPanel
                   embedded

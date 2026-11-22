@@ -83,6 +83,7 @@ const responseFile = path.join(dir, 'responses.jsonl')
 const childPidFile = path.join(dir, 'child.pid')
 const childStartedFile = path.join(dir, 'child-started')
 const permissionExtensionFile = path.join(dir, 'permission-extension.mjs')
+const workspaceToolsFile = path.join(dir, 'workspace-tools.mjs')
 const permissionTitle = 'test-private-permission-title'
 const counterFile = path.join(dir, 'attempts.count')
 
@@ -275,7 +276,9 @@ writeFileSync(
 )
 writeFileSync(permissionExtensionFile, permissionExtension(permissionTitle, false), 'utf8')
 const approvalExtensionFile = path.join(dir, 'subagent-extension-approval.mjs')
-writeFileSync(approvalExtensionFile, subagentExtension({}, permissionExtensionFile, permissionTitle), 'utf8')
+writeFileSync(approvalExtensionFile, subagentExtension(
+  {}, permissionExtensionFile, permissionTitle, false, undefined, [], workspaceToolsFile
+), 'utf8')
 const trustedExtensionFile = path.join(dir, 'subagent-extension-trusted.mjs')
 writeFileSync(trustedExtensionFile, subagentExtension({}, '', '', true), 'utf8')
 // The same tool with the Settings choices baked in: the spawn contract must show
@@ -1148,7 +1151,9 @@ test('child permission requests use the parent UI and serialize across parallel 
   const args = readArgs()
   assert.equal(args.length, 2)
   assert.ok(args.every((entry) => entry.slice(0, 4).join(' ') === '--mode rpc --no-session --no-approve'))
-  assert.ok(args.every((entry) => entry.includes('--extension') && entry.includes(permissionExtensionFile)))
+  for (const entry of args) {
+    assert.deepEqual(entry.slice(4, 8), ['--extension', workspaceToolsFile, '--extension', permissionExtensionFile])
+  }
 })
 
 test('a subagent never receives its task if the permission extension does not become ready', async () => {

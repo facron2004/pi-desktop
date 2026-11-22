@@ -70,6 +70,12 @@ export const APP_COMMANDS: PiCommand[] = [
     source: 'app'
   },
   {
+    name: 'swarm',
+    description: 'Switch to Swarm Mode — lead a team of persistent workers',
+    source: 'app',
+    takesArgument: true
+  },
+  {
     name: 'plugin',
     description: 'Switch to Plugin Mode — build or modify a Pi extension',
     source: 'app'

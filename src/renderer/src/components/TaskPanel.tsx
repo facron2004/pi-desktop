@@ -7,11 +7,13 @@ import { changedFilePaths } from '../lib/changes'
 import { relativePath, resolveAgainst } from '../lib/path'
 import { isImageName } from '../lib/files'
 import { extractPlan } from '../lib/plan'
+import type { SubagentTreeTask } from '../lib/subagents'
 import {
-  listBackgroundTasks,
+  listBackgroundCommands,
   listDeliverables,
+  listSubagentTasks,
   summariseDiff,
-  type BackgroundTask,
+  type BackgroundCommand,
   type Deliverable
 } from '../lib/task-panel'
 import { useT } from '../lib/i18n'
@@ -84,29 +86,68 @@ const TaskSection = memo(function TaskSection({
   )
 })
 
-/**
- * One in-flight tool call.
- *
- * The row names the tool (`bash`, `grep`, `powershell`…) and what it is doing;
- * the dot on the left is the only state there is, because the section only
- * lists calls that are running. Clicking does nothing — the real body lives in
- * the transcript card above, and the rail is a glance, not a second transcript.
- */
-const BackgroundTaskRow = memo(function BackgroundTaskRow({ task }: { task: BackgroundTask }) {
+const BackgroundTasksSection = memo(function BackgroundTasksSection({ commands }: {
+  commands: readonly BackgroundCommand[]
+}) {
   const t = useT()
+  const [now, setNow] = useState(Date.now)
+  const next = commands.reduce((earliest, { visibleAt }) =>
+    visibleAt > now ? Math.min(earliest, visibleAt) : earliest, Infinity
+  )
+  useEffect(() => {
+    if (next === Infinity) return
+    const timer = window.setTimeout(() => setNow(Math.max(next, Date.now())), Math.max(0, next - Date.now()))
+    return () => window.clearTimeout(timer)
+  }, [next])
+
+  const visible = commands.filter(({ visibleAt }) => visibleAt <= now)
+  if (!visible.length) return null
+  const running = t('Running')
   return (
-    <li className="task-panel__task" data-status="running">
-      <div className="task-panel__task-line">
-        <div
-          className="task-panel__task-action task-panel__task-action--static"
-          title={task.detail ? `${task.label} · ${task.detail}` : task.label}
-        >
-          <span className="task-panel__dot" data-tone="active" aria-hidden="true" />
-          <span className="task-panel__task-tool">{task.toolName}</span>
-          <span className="task-panel__task-detail">{task.detail}</span>
-        </div>
-        <span className="task-panel__task-state">{t('Running')}</span>
-      </div>
+    <TaskSection title={t('Background tasks')} meta={<span className="task-panel__count">{visible.length}</span>}>
+      <ul className="task-panel__list">
+        {visible.map(({ id, command, label }) => (
+          <li key={id} className="task-panel__task" data-status="running">
+            <div className="task-panel__task-line" title={command}>
+              <span className="task-panel__task-label">{label}</span>
+              <span className="task-panel__dot" role="img" aria-label={running} />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </TaskSection>
+  )
+})
+
+const SUBAGENT_STATUS_LABEL: Record<SubagentTreeTask['status'], string> = {
+  proposed: 'Not run',
+  queued: 'Queued',
+  running: 'Running',
+  completed: 'Completed',
+  failed: 'Failed',
+  aborted: 'Stopped',
+  timed_out: 'Timed out'
+}
+
+const SubagentTaskRow = memo(function SubagentTaskRow({ task, onOpenTask }: {
+  task: SubagentTreeTask
+  onOpenTask: (taskId: string) => void
+}) {
+  const t = useT()
+  const label = (task.label?.trim() || task.task).replace(/\s+/g, ' ').trim() || t('Subagent')
+  const description = `${label} · ${t(SUBAGENT_STATUS_LABEL[task.status])}`
+  return (
+    <li className="task-panel__task" data-status={task.status}>
+      <button
+        type="button"
+        className="task-panel__task-line task-panel__task-action"
+        title={description}
+        aria-label={description}
+        onClick={() => onOpenTask(task.id)}
+      >
+        <span className="task-panel__task-label">{label}</span>
+        <span className="task-panel__dot" aria-hidden="true" />
+      </button>
     </li>
   )
 })
@@ -139,11 +180,8 @@ const DeliverableRow = memo(function DeliverableRow({
 })
 
 /**
- * The task rail: what the folder looks like from the outside, what is running
- * in the background, how far the plan has come and what the run produced.
- *
- * Every part of it is a projection of the thread and the Git state, so the rail
- * keeps no state of its own at all.
+ * The plan renders from its own deferred view so streaming text does not
+ * invalidate the Git, command, subagent or deliverable sections.
  */
 const TaskProgressSection = memo(function TaskProgressSection() {
   const t = useT()
@@ -181,7 +219,9 @@ const TaskProgressSection = memo(function TaskProgressSection() {
   )
 })
 
-export const TaskPanel = memo(function TaskPanel() {
+export const TaskPanel = memo(function TaskPanel({ onOpenTask }: {
+  onOpenTask: (taskId: string) => void
+}) {
   const t = useT()
   const activeToolsRevision = useAppStore((state) => state.activeToolsRevision)
   const git = useAppStore((state) => state.git)
@@ -191,10 +231,8 @@ export const TaskPanel = memo(function TaskPanel() {
     () => useAppStore.getState().items.filter((item) => item.kind === 'tool'),
     [activeToolsRevision]
   )
-  const backgroundTasks = useMemo(
-    () => listBackgroundTasks(toolItems, workspacePath),
-    [toolItems, workspacePath]
-  )
+  const backgroundCommands = useMemo(() => listBackgroundCommands(toolItems), [toolItems])
+  const subagents = useMemo(() => listSubagentTasks(toolItems), [toolItems])
   const deliverables = useMemo(() => {
     const files = changedFilePaths(toolItems).map((change) => {
       const relative = relativePath(workspacePath ?? '', change.path).replace(/\\/g, '/')
@@ -307,14 +345,16 @@ export const TaskPanel = memo(function TaskPanel() {
           ) : null}
         </TaskSection>
 
-        {backgroundTasks.length > 0 ? (
+        <BackgroundTasksSection commands={backgroundCommands} />
+
+        {subagents.length > 0 ? (
           <TaskSection
-            title={t('Background tasks')}
-            meta={<span className="task-panel__count">{backgroundTasks.length}</span>}
+            title={t('Subagents')}
+            meta={<span className="task-panel__count">{subagents.length}</span>}
           >
             <ul className="task-panel__list">
-              {backgroundTasks.map((task) => (
-                <BackgroundTaskRow key={task.id} task={task} />
+              {subagents.map((task) => (
+                <SubagentTaskRow key={task.id} task={task} onOpenTask={onOpenTask} />
               ))}
             </ul>
           </TaskSection>

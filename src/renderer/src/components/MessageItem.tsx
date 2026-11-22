@@ -1,7 +1,7 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useId, useState } from 'react'
 import {
-  Brain,
   Check,
+  ChevronRight,
   Copy,
   CircleAlert,
   CircleCheck,
@@ -15,6 +15,8 @@ import { formatClock } from '../lib/format'
 import { Markdown } from './Markdown'
 import { ImageButton } from './Lightbox'
 import { useT } from '../lib/i18n'
+import { readProcessOpen, writeProcessOpen } from '../lib/view-state'
+import { useThreadEnv } from './conversation/ThreadEnvContext'
 
 export const UserMessage = memo(function UserMessage({
   item,
@@ -137,51 +139,42 @@ export const AssistantImage = memo(function AssistantImage({ data, mimeType }: {
 })
 
 export const ThinkingBlock = memo(function ThinkingBlock({
-  text,
+  turnId,
+  parts,
   streaming
 }: {
-  text: string
+  turnId: string
+  parts: string[]
   streaming?: boolean
 }) {
-  const startedAtRef = useRef<number | null>(null)
-  const [elapsedSec, setElapsedSec] = useState(0)
   const t = useT()
+  const { threadKey } = useThreadEnv()
+  const disclosureKey = `thinking-${turnId}`
+  const bodyId = useId()
+  const [open, setOpen] = useState(() => readProcessOpen(threadKey, disclosureKey) === true)
 
   useEffect(() => {
-    if (!streaming) return
-    if (startedAtRef.current === null) {
-      startedAtRef.current = Date.now()
-    }
-    const tick = () => {
-      if (startedAtRef.current !== null) {
-        setElapsedSec(Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000)))
-      }
-    }
-    tick()
-    const timer = window.setInterval(tick, 1000)
-    return () => window.clearInterval(timer)
-  }, [streaming])
+    setOpen(readProcessOpen(threadKey, disclosureKey) === true)
+  }, [threadKey, disclosureKey])
 
-  if (!text.trim()) return null
+  const toggle = () => {
+    const next = !open
+    setOpen(next)
+    writeProcessOpen(threadKey, disclosureKey, next ? true : undefined)
+  }
   return (
-    <div className="thinking" data-open="false" data-streaming={streaming ? 'true' : undefined}>
-      {/* The model's raw reasoning is not conversation content. The row says
-          that a thought happened and how long it took; it never prints the
-          private chain of thought. */}
-      <div className="thinking__head" role="status">
-        <Brain size={13} />
-        <span className="thinking__title">
-          {streaming
-            ? t('Thinking')
-            : elapsedSec > 0
-              ? `${t('Thought for')} ${elapsedSec}${t('s')}`
-              : t('Thought')}
-        </span>
-        {streaming && elapsedSec > 0 ? (
-          <span className="thinking__duration">{elapsedSec}{t('s')}</span>
-        ) : null}
-        <span className="thinking__private">{t('Reasoning hidden')}</span>
-      </div>
+    <div className="thinking" data-open={open} data-streaming={streaming ? 'true' : undefined}>
+      <button
+        type="button"
+        className="thinking__head"
+        aria-expanded={open}
+        aria-controls={open ? bodyId : undefined}
+        onClick={toggle}
+      >
+        <ChevronRight size={13} className="caret" data-open={open} aria-hidden="true" />
+        <span className="thinking__title">{t('Thinking content')}</span>
+      </button>
+      {open ? <div className="thinking__body" id={bodyId} tabIndex={0}>{parts.join('\n\n')}</div> : null}
     </div>
   )
 })

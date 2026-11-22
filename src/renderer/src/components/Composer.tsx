@@ -6,6 +6,7 @@ import {
   Image as ImageIcon,
   ListChecks,
   Loader2,
+  Network,
   Plus,
   Sparkles,
   Target,
@@ -32,7 +33,7 @@ import {
   MAX_IMAGE_DATA_BYTES,
   MAX_SEARCH_QUERY_LENGTH
 } from '@shared/types'
-import type { AppLanguage, FileEntry, PiCommand } from '@shared/types'
+import type { AgentMode, AppLanguage, FileEntry, PiCommand } from '@shared/types'
 import { appCommandName } from '../lib/app-commands'
 import { commandIcon } from '../lib/command-source'
 import {
@@ -77,6 +78,24 @@ interface MentionMatch {
 const EMPTY_IMAGES: ComposerDraftImage[] = []
 const EMPTY_FILES: ComposerDraftFile[] = []
 const EMPTY_HISTORY: string[] = []
+
+/** What each task mode asks the user to type, so the box says what the mode does. */
+const MODE_COMPOSER_PROMPTS: Partial<Record<AgentMode, string>> = {
+  goal: 'Describe the goal to work toward…',
+  plan: 'Describe the task to plan…',
+  subagent: 'Describe the work to delegate…',
+  swarm: 'Describe the mission for the team…',
+  plugin: 'Describe the extension to build…'
+}
+
+/** The chip above the composer names the active mode and how to leave it. */
+const MODE_CHIPS: Record<Exclude<AgentMode, 'default'>, { label: string; leave: string }> = {
+  goal: { label: 'Goal Mode', leave: 'Leave Goal Mode' },
+  plan: { label: 'Plan Mode', leave: 'Leave Plan Mode' },
+  subagent: { label: 'Subagent Mode', leave: 'Leave Subagent Mode' },
+  swarm: { label: 'Swarm Mode', leave: 'Leave Swarm Mode' },
+  plugin: { label: 'Plugin Mode', leave: 'Leave Plugin Mode' }
+}
 
 interface EnterImageModeDetail {
   prompt?: string
@@ -458,6 +477,8 @@ export const Composer = memo(function Composer() {
 
   const canCompose = status.phase === 'ready' || status.phase === 'starting'
   const hasContent = Boolean(command || text.trim() || images.length > 0 || files.length > 0)
+  const modeChip = agentMode === 'default' ? null : MODE_CHIPS[agentMode]
+  const modePrompt = MODE_COMPOSER_PROMPTS[agentMode]
   const inputPrompt = command
     ? t('Add command arguments…')
     : image
@@ -465,8 +486,8 @@ export const Composer = memo(function Composer() {
       : canCompose
         ? cwdWait
           ? t('Waiting for another conversation in this folder…')
-          : agentMode === 'plan'
-            ? t('Describe the task to plan…')
+          : modePrompt
+            ? t(modePrompt)
             : workspace
               ? t('Describe a task, or use @ to reference project files…')
               : t('Describe a task…')
@@ -1672,12 +1693,12 @@ export const Composer = memo(function Composer() {
               onInsertCommand={insertMenuCommand}
               onEnterImageMode={toggleImageMode}
             />
-            {agentMode !== 'default' ? (
+            {modeChip ? (
               <button
                 type="button"
                 className="composer__mode"
-                title={t('Exit task mode')}
-                aria-label={t('Exit task mode')}
+                title={isStreaming ? t('Stop the current run before changing modes') : t(modeChip.leave)}
+                aria-label={t(modeChip.leave)}
                 disabled={isStreaming || !canCompose}
                 onClick={() => void setAgentMode('default')}
               >
@@ -1687,20 +1708,12 @@ export const Composer = memo(function Composer() {
                   <ListChecks size={13} />
                 ) : agentMode === 'subagent' ? (
                   <Bot size={13} />
+                ) : agentMode === 'swarm' ? (
+                  <Network size={13} />
                 ) : (
                   <Wrench size={13} />
                 )}
-                <span>
-                  {t(
-                    agentMode === 'goal'
-                      ? 'Goal Mode'
-                      : agentMode === 'plan'
-                        ? 'Plan Mode'
-                        : agentMode === 'subagent'
-                          ? 'Subagent Mode'
-                          : 'Plugin Mode'
-                  )}
-                </span>
+                <span>{t(modeChip.label)}</span>
                 <X size={11} />
               </button>
             ) : null}

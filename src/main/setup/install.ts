@@ -20,6 +20,15 @@ const LEGACY_KEYS = [
 const RETRY_DELAYS = 40
 const RETRY_INTERVAL = 750
 
+/**
+ * An asar archive is one file, but the install process runs inside Electron,
+ * whose patched `fs` reports it as a directory and lists the archive's
+ * contents. Descending into it makes the copy try to read virtual entries and
+ * fail with `ENOENT, not found in …app.asar`, which aborted every silent update
+ * after the old app had already quit. The archive is copied as one opaque file.
+ */
+const ASAR_ARCHIVE = /\.asar$/i
+
 interface Marker {
   version: string
   installDir: string
@@ -128,23 +137,31 @@ interface SourceEntry {
   size: number
 }
 
-async function listSource(root: string): Promise<{ entries: SourceEntry[]; total: number }> {
+/**
+ * Every file the install has to copy, without ever entering an asar archive.
+ * Exported so the skip rule can be tested without an Electron process.
+ */
+export async function listSource(root: string): Promise<{ entries: SourceEntry[]; files: number }> {
   const entries: SourceEntry[] = []
   const walk = async (directory: string): Promise<void> => {
     const items = await readdir(directory, { withFileTypes: true })
     for (const item of items) {
       const absolute = path.join(directory, item.name)
       const relative = path.relative(root, absolute)
+      if (ASAR_ARCHIVE.test(item.name)) {
+        // One opaque file, whatever `isDirectory()` claims.
+        entries.push({ relative, size: 0 })
+        continue
+      }
       if (item.isDirectory()) {
         await walk(absolute)
       } else if (item.isFile()) {
-        const size = statSync(absolute).size
-        entries.push({ relative, size })
+        entries.push({ relative, size: statSync(absolute).size })
       }
     }
   }
   await walk(root)
-  return { entries, total: entries.reduce((sum, entry) => sum + entry.size, 0) }
+  return { entries, files: entries.length }
 }
 
 /** Install programs are in use while the previous copy exits; retry briefly. */
@@ -162,6 +179,99 @@ async function copyFileWhenFree(from: string, to: string): Promise<void> {
   }
 }
 
+/**
+ * The copy command for one payload.
+ *
+ * A separate process is what makes `app.asar` copyable: robocopy sees the
+ * archive as the file it is, while the installer's own Electron `fs` would try
+ * to walk into it. It also retries locked files itself (`/R`), which is what an
+ * update over a still-exiting app needs.
+ */
+export function payloadCopyCommand(source: string, target: string): { file: string; args: string[] } {
+  return {
+    file: 'robocopy.exe',
+    args: [
+      source,
+      target,
+      '/E',
+      `/R:${RETRY_DELAYS}`,
+      `/W:${Math.round(RETRY_INTERVAL / 1000)}`,
+      '/NP',
+      '/NDL',
+      '/NJH',
+      '/NJS',
+      '/NC',
+      '/NS'
+    ]
+  }
+}
+
+/**
+ * Copy the payload into `target`.
+ *
+ * On Windows robocopy does the work in a plain process; elsewhere the files are
+ * copied one by one, which only has to serve the development entry point.
+ * `onCopied(files, detail)` reports how far the copy has come.
+ */
+export async function copyPayload(options: {
+  source: string
+  target: string
+  entries: readonly SourceEntry[]
+  onCopied: (files: number, detail: string) => void
+}): Promise<void> {
+  const { source, target, entries, onCopied } = options
+  await mkdir(target, { recursive: true })
+  if (process.platform === 'win32') {
+    await copyWithRobocopy(source, target, entries.length, onCopied)
+    return
+  }
+  let copied = 0
+  for (const entry of entries) {
+    await copyFileWhenFree(path.join(source, entry.relative), path.join(target, entry.relative))
+    copied += 1
+    onCopied(copied, entry.relative)
+  }
+}
+
+function copyWithRobocopy(
+  source: string,
+  target: string,
+  files: number,
+  onCopied: (files: number, detail: string) => void
+): Promise<void> {
+  const { file, args } = payloadCopyCommand(source, target)
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { windowsHide: true })
+    let copied = 0
+    let pending = ''
+    const flush = (): void => {
+      const lines = pending.split(/\r?\n/)
+      pending = lines.pop() ?? ''
+      for (const line of lines) {
+        const detail = line.trim()
+        if (!detail) continue
+        copied += 1
+        onCopied(Math.min(copied, files), detail)
+      }
+    }
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      pending += chunk
+      flush()
+    })
+    child.once('error', (error) => reject(error))
+    child.once('close', (code) => {
+      flush()
+      // robocopy reports 0 (nothing to do) through 7 (several copies) as success.
+      if (code === null || code >= 8) {
+        reject(new Error(`复制安装文件失败（robocopy 返回 ${code ?? 'unknown'}）。请关闭正在运行的 Pi Desktop 后重试。`))
+        return
+      }
+      resolve()
+    })
+  })
+}
+
 export async function installApp(options: InstallOptions): Promise<void> {
   const report = (progress: SetupProgress) => options.onProgress?.(progress)
   const target = path.resolve(options.targetDir)
@@ -174,24 +284,23 @@ export async function installApp(options: InstallOptions): Promise<void> {
 
   report({ phase: 'copying', percent: 0, detail: '正在准备文件…' })
 
-  const { entries, total } = await listSource(source)
-  let copied = 0
+  const { entries, files } = await listSource(source)
   let lastPercent = -1
   let lastReport = 0
-
-  for (const entry of entries) {
-    const from = path.join(source, entry.relative)
-    const to = path.join(target, entry.relative)
-    await copyFileWhenFree(from, to)
-    copied += entry.size
-    const percent = total > 0 ? Math.min(99, Math.floor(copied / total * 100)) : 50
-    const now = Date.now()
-    if (percent !== lastPercent && now - lastReport > 40) {
-      lastPercent = percent
-      lastReport = now
-      report({ phase: 'copying', percent, detail: entry.relative })
+  await copyPayload({
+    source,
+    target,
+    entries,
+    onCopied: (copied, detail) => {
+      const percent = files > 0 ? Math.min(99, Math.floor((copied / files) * 100)) : 50
+      const now = Date.now()
+      if (percent !== lastPercent && now - lastReport > 40) {
+        lastPercent = percent
+        lastReport = now
+        report({ phase: 'copying', percent, detail })
+      }
     }
-  }
+  })
 
   report({ phase: 'shortcuts', percent: 99, detail: '正在创建快捷方式…' })
   await createShortcuts(target)

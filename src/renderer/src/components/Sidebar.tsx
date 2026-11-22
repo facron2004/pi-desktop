@@ -2,6 +2,7 @@ import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState
 import { createPortal } from 'react-dom'
 import {
   Archive,
+  ArchiveRestore,
   ArrowDown,
   ArrowUp,
   Check,
@@ -26,6 +27,7 @@ import {
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
+import { archiveSessionKey } from '@shared/session-archive'
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { AppLanguage, AppUpdateProgress, ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from '@shared/types'
 import { formatBytes, formatDateTime, formatRelativeTime } from '../lib/format'
@@ -250,8 +252,12 @@ export const Sidebar = memo(function Sidebar({
     [sessions, threadsMetaVersion, workspace?.path, sessionNotices]
   )
   const archivedFiles = useMemo(
-    () => new Set(archivedSessions ?? []),
+    () => new Set((archivedSessions ?? []).map(archiveSessionKey)),
     [archivedSessions]
+  )
+  const searchScope = useMemo(
+    () => ({ archiveFilter: sidebarArchiveFilter, archivedFiles }),
+    [sidebarArchiveFilter, archivedFiles]
   )
   const openProjectDialog = useAppStore((state) => state.openProjectDialog)
   const pendingProject = useAppStore((state) => state.pendingProject)
@@ -264,6 +270,7 @@ export const Sidebar = memo(function Sidebar({
   const renameSessionFile = useAppStore((state) => state.renameSessionFile)
   const deleteSession = useAppStore((state) => state.deleteSession)
   const archiveSession = useAppStore((state) => state.archiveSession)
+  const restoreSession = useAppStore((state) => state.restoreSession)
   const togglePin = useAppStore((state) => state.togglePin)
   const openSearchHit = useAppStore((state) => state.openSearchHit)
   const updateSettings = useAppStore((state) => state.updateSettings)
@@ -360,6 +367,27 @@ export const Sidebar = memo(function Sidebar({
     return { title: `v${appUpdate.latest}`, rows }
   }
   const updateTipContent = updateTipAnchor && appUpdate ? getUpdateTip() : null
+
+  useEffect(() => {
+    if (!updateTipAnchor) return
+    const clear = () => setUpdateTipAnchor(null)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') clear()
+    }
+    const onVisibility = () => {
+      if (document.hidden) clear()
+    }
+    window.addEventListener('blur', clear)
+    document.addEventListener('keydown', onKeyDown, true)
+    document.addEventListener('visibilitychange', onVisibility)
+    document.documentElement.addEventListener('mouseleave', clear)
+    return () => {
+      window.removeEventListener('blur', clear)
+      document.removeEventListener('keydown', onKeyDown, true)
+      document.removeEventListener('visibilitychange', onVisibility)
+      document.documentElement.removeEventListener('mouseleave', clear)
+    }
+  }, [updateTipAnchor])
 
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus()
@@ -469,12 +497,8 @@ export const Sidebar = memo(function Sidebar({
 
   // The input filters titles and projects at once; full text is a different,
   // slower question, so it is asked separately and debounced.
-  const contentSearch = useSessionSearch(trimmedQuery, sessions.length > 0)
-  // Archived conversations are hidden from every list, including full-text hits.
-  const contentHits = useMemo(
-    () => contentSearch.hits.filter((hit) => !archivedFiles.has(hit.file)),
-    [contentSearch.hits, archivedFiles]
-  )
+  const contentSearch = useSessionSearch(trimmedQuery, searchOpen && sessions.length > 0, searchScope)
+  const contentHits = contentSearch.hits
   const contentHitLimit =
     contentHitWindow.query === trimmedQuery
       ? contentHitWindow.count
@@ -537,10 +561,14 @@ export const Sidebar = memo(function Sidebar({
     () => sessions.map((session) => ({ ...session, onDisk: true })),
     [sessions]
   )
-  const listed = useMemo(
-    () => filterByArchive([...liveRows, ...diskRows], archivedFiles, sidebarArchiveFilter),
+  const { live: listedLiveRows, disk: listedDiskRows } = useMemo(
+    () => ({
+      live: filterByArchive(liveRows, archivedFiles, sidebarArchiveFilter),
+      disk: filterByArchive(diskRows, archivedFiles, sidebarArchiveFilter)
+    }),
     [liveRows, diskRows, archivedFiles, sidebarArchiveFilter]
   )
+  const listed = useMemo(() => [...listedLiveRows, ...listedDiskRows], [listedLiveRows, listedDiskRows])
 
   const projects = useMemo(() => {
     const list = collectProjects(
@@ -669,20 +697,20 @@ export const Sidebar = memo(function Sidebar({
 
     // Both inputs are newest-first, and liveRows excludes sessions already on
     // disk. Cache the merged matches so expanding a page does not rescan them.
-    while (liveIndex < liveRows.length || diskIndex < diskRows.length) {
-      const live = liveRows[liveIndex]
-      const disk = diskRows[diskIndex]
+    while (liveIndex < listedLiveRows.length || diskIndex < listedDiskRows.length) {
+      const live = listedLiveRows[liveIndex]
+      const disk = listedDiskRows[diskIndex]
       const session = !disk || (live && live.updatedAt >= disk.updatedAt) ? live : disk
       if (!session) break
       if (session === live) liveIndex += 1
       else diskIndex += 1
 
-      if (archivedFiles.has(session.file) || !matches(session, searchNeedle)) continue
+      if (!matches(session, searchNeedle)) continue
       results.push(session)
     }
 
     return results
-  }, [searchOpen, liveRows, diskRows, archivedFiles, searchNeedle])
+  }, [searchOpen, listedLiveRows, listedDiskRows, searchNeedle])
   const conversationSearchResults = conversationSearchMatches.slice(0, conversationSearchCount)
 
   const persistOrder = async (next: Project<ConversationRow>[]) => {
@@ -927,14 +955,7 @@ export const Sidebar = memo(function Sidebar({
     const currentActive = state.activeSessionFile ?? state.draftId
     if (file === currentActive) {
       const cached = state.threads[file]
-      const canRetryHistory = session.onDisk === true &&
-        state.hydratingSessionFile !== file &&
-        needsSessionHydration(
-          session.messageCount,
-          cached?.version,
-          cached?.items.length ?? 0,
-          cached?.isStreaming ?? false
-        )
+      const canRetryHistory = state.hydratingSessionFile !== file && needsSessionHydration(file, cached)
       if (!canRetryHistory) return
     }
     // Opening a conversation only changes the view. The one that is
@@ -959,9 +980,15 @@ export const Sidebar = memo(function Sidebar({
     setPendingDelete(session)
   }, [])
 
-  const handleArchiveSession = useCallback((file: string) => {
-    void archiveSession(file)
-  }, [archiveSession])
+  const handleToggleArchiveSession = useCallback((file: string, archived: boolean) => {
+    if (!archived) {
+      void archiveSession(file)
+      return
+    }
+    const key = archiveSessionKey(file)
+    const saved = useAppStore.getState().settings.archivedSessions?.find((entry) => archiveSessionKey(entry) === key)
+    if (saved) void restoreSession(saved)
+  }, [archiveSession, restoreSession])
 
   const handleStopSession = useCallback((file: string) => {
     const state = useAppStore.getState()
@@ -986,6 +1013,7 @@ export const Sidebar = memo(function Sidebar({
         session={session}
         active={session.file === (activeSessionFile ?? draftId)}
         pinned={pinned.has(session.file)}
+        archived={archivedFiles.has(archiveSessionKey(session.file))}
         renaming={renaming === session.file}
         draft={renaming === session.file ? draft : ''}
         project={showProject && session.cwd ? basename(session.cwd) : undefined}
@@ -996,7 +1024,7 @@ export const Sidebar = memo(function Sidebar({
         onCommitRename={handleCommitRename}
         onCancelRename={handleCancelRename}
         onDelete={handleDeleteSession}
-        onArchive={handleArchiveSession}
+        onToggleArchive={handleToggleArchiveSession}
         onStop={handleStopSession}
         onTogglePin={handleTogglePinSession}
       />
@@ -1276,6 +1304,7 @@ export const Sidebar = memo(function Sidebar({
                   anchor={projectTip.tip.anchor}
                   title={projectTip.tip.payload.title}
                   rows={projectTip.tip.payload.rows}
+                  onDismiss={projectTip.dismiss}
                 />
               ) : null}
               {dropLineTop !== null ? (
@@ -1756,6 +1785,7 @@ export const Sidebar = memo(function Sidebar({
           anchor={updateTipAnchor}
           title={updateTipContent.title}
           rows={updateTipContent.rows}
+          onDismiss={() => setUpdateTipAnchor(null)}
         />
       ) : null}
 
@@ -2075,6 +2105,7 @@ interface SessionRowProps {
   /** The one mark the row carries. */
   indicator: SessionIndicator
   pinned: boolean
+  archived: boolean
   renaming: boolean
   draft: string
   /** The project the conversation belongs to, when it is pinned. */
@@ -2086,7 +2117,7 @@ interface SessionRowProps {
   onCommitRename: (file: string) => void
   onCancelRename: () => void
   onDelete: (session: ConversationRow) => void
-  onArchive: (file: string) => void
+  onToggleArchive: (file: string, archived: boolean) => void
   onStop: (file: string) => void
   onTogglePin: (file: string) => void
 }
@@ -2097,6 +2128,7 @@ const SessionRow = memo(function SessionRow({
   running,
   indicator,
   pinned,
+  archived,
   renaming,
   draft,
   project,
@@ -2107,7 +2139,7 @@ const SessionRow = memo(function SessionRow({
   onCommitRename,
   onCancelRename,
   onDelete,
-  onArchive,
+  onToggleArchive,
   onStop,
   onTogglePin
 }: SessionRowProps) {
@@ -2156,7 +2188,14 @@ const SessionRow = memo(function SessionRow({
       // worked on, and it has no file to rename, delete or pin.
       data-live={session.onDisk ? undefined : 'true'}
     >
-      {tip.tip ? <SidebarTip anchor={tip.tip.anchor} title={title} rows={tip.tip.payload} /> : null}
+      {tip.tip ? (
+        <SidebarTip
+          anchor={tip.tip.anchor}
+          title={title}
+          rows={tip.tip.payload}
+          onDismiss={tip.dismiss}
+        />
+      ) : null}
       {renaming ? (
         <input
           className="session-item__input"
@@ -2305,11 +2344,11 @@ const SessionRow = memo(function SessionRow({
                     role="menuitem"
                     onClick={() => {
                       close()
-                      onArchive(session.file)
+                      onToggleArchive(session.file, archived)
                     }}
                   >
-                    <Archive size={12} />
-                    {t('Archive conversation')}
+                    {archived ? <ArchiveRestore size={12} /> : <Archive size={12} />}
+                    {t(archived ? 'Restore' : 'Archive conversation')}
                   </button>
                 ) : null}
                 {session.onDisk ? (
@@ -2339,6 +2378,7 @@ const SessionRowItem = memo(function SessionRowItem({
   session,
   active,
   pinned,
+  archived,
   renaming,
   draft,
   project,
@@ -2349,7 +2389,7 @@ const SessionRowItem = memo(function SessionRowItem({
   onCommitRename,
   onCancelRename,
   onDelete,
-  onArchive,
+  onToggleArchive,
   onStop,
   onTogglePin
 }: Omit<SessionRowProps, 'running' | 'indicator'>) {
@@ -2386,6 +2426,7 @@ const SessionRowItem = memo(function SessionRowItem({
       running={isStreaming}
       indicator={indicator}
       pinned={pinned}
+      archived={archived}
       renaming={renaming}
       draft={draft}
       project={project}
@@ -2396,7 +2437,7 @@ const SessionRowItem = memo(function SessionRowItem({
       onCommitRename={onCommitRename}
       onCancelRename={onCancelRename}
       onDelete={onDelete}
-      onArchive={onArchive}
+      onToggleArchive={onToggleArchive}
       onStop={onStop}
       onTogglePin={onTogglePin}
     />

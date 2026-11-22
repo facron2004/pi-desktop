@@ -17,11 +17,12 @@
  * `source` is kept on every normalized event, unchanged. Nothing in the
  * protocol is invented here: when Pi has no id, the adapter mints one.
  */
-import type {
-  AgentMessage,
-  ExtensionUiRequest,
-  ExtensionUiResponse,
-  PiEvent
+import {
+  GOAL_CONTINUE_CUSTOM_TYPE,
+  type AgentMessage,
+  type ExtensionUiRequest,
+  type ExtensionUiResponse,
+  type PiEvent
 } from '@shared/types'
 import { isRateLimitError } from './provider-error'
 import { describeCompactionFailure } from './compaction-error'
@@ -104,6 +105,7 @@ export interface MessageBlockCompletedStreamEvent extends StreamEventBase {
   blockType: 'text' | 'thinking'
   contentIndex?: number
   content?: string
+  redacted?: true
 }
 
 export interface MessageCompletedStreamEvent extends StreamEventBase {
@@ -180,6 +182,13 @@ export interface RunFinishedStreamEvent extends StreamEventBase {
   aborted: boolean
 }
 
+export interface RoundContinuedStreamEvent extends StreamEventBase {
+  type: 'round.continued'
+  timestamp: number
+  entryId?: string
+  resumed?: boolean
+}
+
 /* ------------------------------------------------------------------ *
  * Extension UI events
  * ------------------------------------------------------------------ */
@@ -241,6 +250,7 @@ export type StreamEvent =
   | RunTurnStartedStreamEvent
   | RunStatusStreamEvent
   | RunFinishedStreamEvent
+  | RoundContinuedStreamEvent
   | ApprovalRequestedStreamEvent
   | ApprovalResolvedStreamEvent
   | CommandOutputDeltaStreamEvent
@@ -332,6 +342,7 @@ interface AssistantMessageEventPayload {
   reason?: string
   error?: { message?: string } | string
   message?: AgentMessage
+  partial?: AgentMessage
   toolCall?: { id: string; name: string; arguments: Record<string, unknown> }
 }
 
@@ -341,6 +352,12 @@ function messageOf(event: PiEvent): AgentMessage | undefined {
   const message = event.message
   if (!message || typeof message !== 'object') return undefined
   return message as AgentMessage
+}
+
+export function goalResumeTime(message?: AgentMessage): number | undefined {
+  if (message?.role !== 'custom' || message.customType !== GOAL_CONTINUE_CUSTOM_TYPE) return
+  const timestamp = (message.details as { resumedAt?: unknown } | undefined)?.resumedAt
+  return typeof timestamp === 'number' && Number.isFinite(timestamp) ? timestamp : undefined
 }
 
 function argsOf(value: unknown): Record<string, unknown> {
@@ -467,10 +484,45 @@ export function normalizePiEvent(
         status: aborted ? 'aborted' : 'completed'
       }
     }
+    case 'entry_appended': {
+      const entry = event.entry as {
+        type?: unknown
+        customType?: unknown
+        id?: unknown
+        timestamp?: unknown
+      } | undefined
+      if (entry?.type !== 'custom_message' || entry.customType !== GOAL_CONTINUE_CUSTOM_TYPE) {
+        return {
+          ...base(next()),
+          type: 'unknown',
+          sourceType: 'entry_appended'
+        }
+      }
+      const parsedTimestamp = typeof entry.timestamp === 'number'
+        ? entry.timestamp
+        : typeof entry.timestamp === 'string'
+          ? Date.parse(entry.timestamp)
+          : NaN
+      const timestamp = Number.isFinite(parsedTimestamp) ? parsedTimestamp : Date.now()
+      const entryId = typeof entry.id === 'string' && entry.id ? entry.id : undefined
+      return {
+        ...base(next()),
+        type: 'round.continued',
+        timestamp,
+        ...(entryId ? { entryId } : {}),
+        status: 'working'
+      }
+    }
 
     /* ---------------------------- messages ---------------------------- */
     case 'message_start': {
       const message = messageOf(event)
+      const resumedAt = goalResumeTime(message)
+      if (resumedAt !== undefined) {
+        return {
+          ...base(next()), type: 'round.continued', timestamp: resumedAt, resumed: true, status: 'working'
+        }
+      }
       const role = typeof message?.role === 'string' ? message.role : undefined
       // A repeated start for the message that is already open is a replay,
       // not a second message: reuse the id so the projection can dedupe it.
@@ -500,6 +552,22 @@ export function normalizePiEvent(
       state.messageId = messageId
       const contentIndex =
         typeof payload.contentIndex === 'number' ? payload.contentIndex : undefined
+
+      if (payload.type.startsWith('thinking_') && contentIndex !== undefined) {
+        const content = (payload.partial ?? messageOf(event))?.content
+        const block = Array.isArray(content) ? content[contentIndex] : undefined
+        if (block?.type === 'thinking' && block.redacted) {
+          return {
+            ...base(next()),
+            type: 'message.block.completed',
+            messageId,
+            blockType: 'thinking',
+            contentIndex,
+            redacted: true,
+            status: 'completed'
+          }
+        }
+      }
 
       switch (payload.type) {
         case 'text_start':

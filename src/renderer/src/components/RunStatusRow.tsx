@@ -154,7 +154,7 @@ export const CwdWaitDetail = memo(function CwdWaitDetail({
  *
  * The words come from the run state, which is derived from the events that
  * actually arrived — never from a guess about what the model is thinking.
- * "Working" covers waiting for the model; `tool_running` means at least one
+ * The live summary describes model waits; `tool_running` means at least one
  * tool call is executing right now.
  */
 export const RunStatusRow = memo(function RunStatusRow({
@@ -214,7 +214,8 @@ export const RunStatusRow = memo(function RunStatusRow({
     (run.phase === 'queued' ||
       run.phase === 'working' ||
       run.phase === 'generating' ||
-      run.phase === 'tool_running') &&
+      run.phase === 'tool_running' ||
+      (run.phase === 'idle' && !run.settled)) &&
     transport === 'connected' &&
     !retry &&
     !compacting
@@ -314,7 +315,7 @@ export function statusLabel(
   if (retrying || run.phase === 'retrying') return 'Retrying'
   switch (run.phase) {
     case 'queued':
-      return 'Queued'
+      return 'Preparing request…'
     case 'tool_running':
       return hasActivity ? 'Running a tool' : 'Running tools'
     case 'generating':

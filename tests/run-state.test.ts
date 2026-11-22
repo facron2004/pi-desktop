@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import type { AgentMessage, AppSettings, ModelInfo, PiEvent, PiState, RuntimeRekey, RuntimeStartOptions, RuntimeStatus, SessionHydrationResult } from '@shared/types'
 import { forgetSessionTiming, readSessionTiming } from '../src/renderer/src/lib/session-timing'
 import { readScrollMemory, rememberScrollPosition } from '../src/renderer/src/lib/scroll-memory'
@@ -1446,6 +1448,29 @@ test('submitting a prompt or receiving a user message pins scroll memory to bott
   }
 })
 
+test('redaction survives coalescing thinking deltas in the same animation frame', async () => {
+  const previous = useAppStore.getState()
+  const originalRaf = globalThis.requestAnimationFrame
+  try {
+    await useAppStore.getState().newChat()
+    globalThis.requestAnimationFrame = () => 1
+    emit({ type: 'agent_start' })
+    emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 1 } })
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } })
+    for (const redacted of [false, true]) {
+      const delta = redacted ? 'Redacted' : 'Before'
+      const partial = { role: 'assistant', content: [{ type: 'thinking', thinking: delta, redacted }] }
+      emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta, partial } })
+    }
+    emit({ type: 'agent_settled', aborted: false })
+    const assistant = useAppStore.getState().items.find((item) => item.kind === 'assistant')
+    assert.deepEqual(assistant?.blocks, [{ type: 'thinking', text: '', redacted: true }])
+  } finally {
+    globalThis.requestAnimationFrame = originalRaf
+    useAppStore.setState(previous)
+  }
+})
+
 test('threadsMetaVersion and activeToolsRevision ignore text deltas and increment on meta/tool/switch transitions', async () => {
   const previous = useAppStore.getState()
   const originalHydrate = (bridge.sessions as unknown as { hydrate?: unknown }).hydrate
@@ -1567,6 +1592,165 @@ test('updateDraft debounces localStorage writes on typing and flushes on clear/s
     window.localStorage.setItem = originalSetItem
     bridge.git.status = originalGitStatus
     bridge.sessions.list = originalSessionsList
+    useAppStore.setState(previous)
+  }
+})
+
+test('Thread keys liveRunSummaryAtTop on visibleTurns and shares isLiveRunSummary with RunSummary', () => {
+  const threadSource = readFileSync(
+    path.resolve(process.cwd(), 'src/renderer/src/components/Thread.tsx'),
+    'utf8'
+  )
+  const summarySource = readFileSync(
+    path.resolve(process.cwd(), 'src/renderer/src/components/conversation/RunSummary.tsx'),
+    'utf8'
+  )
+  assert.match(summarySource, /export function isLiveRunSummary\(/)
+  assert.match(threadSource, /const liveRunSummaryAtTop = isLiveRunSummary\(run\) && visibleTurns\.length > 0/)
+  assert.match(threadSource, /const liveOutcome = isLastTurn && isLiveRunSummary\(run\)/)
+  assert.equal(threadSource.includes('sessionTurns.length > 0'), false)
+})
+
+test('Goal Mode entry_appended records separate per-round timings, resets roundTurns, and keeps total turns/generationMs', async () => {
+  const previous = useAppStore.getState()
+  const originalNow = Date.now
+  const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+  let now = 1_000
+  let monotonic = 100
+  Date.now = () => now
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => monotonic } })
+  let sessionKey: string | undefined
+
+  try {
+    await previous.newChat()
+    startRun()
+    sessionKey = useAppStore.getState().activeSessionFile ?? useAppStore.getState().draftId
+    assert.ok(sessionKey)
+
+    emit({
+      type: 'message_start',
+      message: { role: 'user', content: [{ type: 'text', text: 'Goal prompt' }], timestamp: 1000 },
+    })
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    monotonic = 300
+    emit({
+      type: 'message_start',
+      message: { role: 'assistant', content: [], timestamp: 1100 },
+    })
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Round 1' } })
+    monotonic = 1_500
+    now = 2_000
+    emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Round 1 answer' }],
+        timestamp: 1500,
+        usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      },
+    })
+    emit({ type: 'turn_end' })
+    emit({ type: 'agent_end', messages: [] })
+
+    const beforeContinue = useAppStore.getState().run
+    assert.equal(beforeContinue.turns, 1)
+    assert.equal(beforeContinue.roundTurns, 1)
+
+    emit({
+      type: 'entry_appended',
+      entry: {
+        id: 'goal-rb-1',
+        type: 'custom_message',
+        customType: 'desktop-goal-continue',
+        display: false,
+        content: 'Continue',
+        timestamp: '1970-01-01T00:00:02.000Z',
+      },
+    })
+
+    const afterRb1 = useAppStore.getState()
+    assert.equal(afterRb1.run.turns, 1)
+    assert.equal(afterRb1.run.roundTurns, 0)
+    assert.equal(afterRb1.items.some((i) => i.kind === 'roundBreak' && i.entryId === 'goal-rb-1'), true)
+
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    monotonic = 3_200
+    now = 3_000
+    emit({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Round 2 answer' }], timestamp: 2500 },
+    })
+    emit({ type: 'turn_end' })
+    emit({ type: 'agent_end', messages: [] })
+    emit({
+      type: 'entry_appended',
+      entry: {
+        id: 'goal-rb-2',
+        type: 'custom_message',
+        customType: 'desktop-goal-continue',
+        display: false,
+        content: 'Continue again',
+        timestamp: '1970-01-01T00:00:03.000Z',
+      },
+    })
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    monotonic = 5_100
+    now = 5_000
+    emit({
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Round 3 answer' }], timestamp: 3500 },
+    })
+    emit({ type: 'turn_end' })
+    emit({ type: 'agent_end', messages: [] })
+    emit({ type: 'agent_settled', aborted: false })
+
+    const timing = readSessionTiming(sessionKey)
+    assert.equal(timing.runDurationsMs['user:0:1000'], 1_400)
+    assert.equal(timing.runDurationsMs['round:0:2000'], 1_700)
+    assert.equal(timing.runDurationsMs['round:1:3000'], 1_900)
+    assert.equal(typeof timing.generationWindowMs['user:0:1000'], 'number')
+  } finally {
+    if (sessionKey) forgetSessionTiming(sessionKey)
+    Date.now = originalNow
+    if (performanceDescriptor) Object.defineProperty(globalThis, 'performance', performanceDescriptor)
+    useAppStore.setState(previous)
+  }
+})
+
+test('a stopped process retracts its live status readings but keeps the persisted task mode', () => {
+  const previous = useAppStore.getState()
+  const status = (key: string, text: string) =>
+    emit({ type: 'extension_ui_request', id: `status-${key}`, method: 'setStatus', statusKey: key, statusText: text })
+  const find = (key: string) => useAppStore.getState().uiStatuses.find((entry) => entry.key === key)
+  try {
+    startRun()
+    status('pi-desktop-mode', 'goal')
+    status('pi-desktop-goal', JSON.stringify({ text: 'Ship the fix', status: 'active' }))
+    status('pi-desktop-swarm', JSON.stringify([
+      { name: 'coder', status: 'working', task: 'Edit the reducer', startedAt: Date.now() },
+      { name: 'reviewer', status: 'idle' }
+    ]))
+    assert.equal(find('pi-desktop-swarm') !== undefined, true)
+
+    emitStatus({ phase: 'stopped' })
+
+    // The roster is evidence of worker processes, so it dies with the process
+    // that hosted them; a stale "working" card would tick forever.
+    assert.equal(find('pi-desktop-swarm'), undefined)
+    // The mode and its goal are persisted in the session and are restored from
+    // disk, so an idle-stop must not flip the conversation back to Default.
+    assert.equal(useAppStore.getState().agentMode, 'goal')
+    assert.equal(find('pi-desktop-goal')?.text?.includes('Ship the fix'), true)
+
+    // A crash takes the same readings with it, and reports the failure.
+    startRun()
+    status('pi-desktop-swarm', JSON.stringify([{ name: 'coder', status: 'working' }]))
+    emitStatus({ phase: 'error', error: 'Pi exited unexpectedly' })
+    assert.equal(find('pi-desktop-swarm'), undefined)
+  } finally {
     useAppStore.setState(previous)
   }
 })

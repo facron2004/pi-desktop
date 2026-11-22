@@ -6,7 +6,8 @@ import { performance } from 'node:perf_hooks'
 import { StringDecoder } from 'node:string_decoder'
 import os from 'node:os'
 import path from 'node:path'
-import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
+import { GOAL_CONTINUE_CUSTOM_TYPE, MAX_SEARCH_QUERY_LENGTH, TASK_MODE_STATUS_KEY } from '@shared/types'
+import { isAgentMode, readGoalState } from '@shared/task-mode-state'
 import type {
   AgentMessage,
   AggregatedUsageStats,
@@ -15,6 +16,7 @@ import type {
   PeriodUsage,
   SessionMeta,
   SessionSearchHit,
+  SessionTaskMode,
   TokenUsageMetrics
 } from '@shared/types'
 import { canonicalSessionFile } from './pi/session-file'
@@ -129,13 +131,10 @@ const inFlightReads = new Map<string, Promise<SessionMeta | null>>()
 // Reuse messages parsed for the sidebar, while keeping memory bounded.
 const sessionMessagesCache = new Map<
   string,
-  {
+  SessionConversationRead & {
     identity: string
     mtime: number
     size: number
-    messages: AgentMessage[]
-    externalContext: boolean
-    contextChecked: boolean
   }
 >()
 let sessionMessagesCacheBytes = 0
@@ -929,13 +928,11 @@ function deleteCachedSessionMessages(key: string): void {
 function cacheSessionMessages(
   file: string,
   fileStats: SessionFileStats,
-  messages: AgentMessage[],
-  externalContext = false,
-  contextChecked = true
+  conversation: SessionConversationRead
 ): void {
   const key = canonicalSessionFile(file)
   deleteCachedSessionMessages(key)
-  if (!fileStats.identity || !messages.length || fileStats.size > MAX_CACHED_SESSION_MESSAGE_BYTES) return
+  if (!fileStats.identity || !conversation.messages.length || fileStats.size > MAX_CACHED_SESSION_MESSAGE_BYTES) return
 
   while (
     sessionMessagesCache.size >= MAX_CACHED_SESSION_MESSAGE_FILES ||
@@ -947,12 +944,10 @@ function cacheSessionMessages(
   }
 
   sessionMessagesCache.set(key, {
+    ...conversation,
     identity: fileStats.identity,
     mtime: fileStats.mtimeMs,
-    size: fileStats.size,
-    messages,
-    externalContext,
-    contextChecked
+    size: fileStats.size
   })
   sessionMessagesCacheBytes += fileStats.size
 }
@@ -1194,6 +1189,26 @@ function activeBranch(lines: string[]): TreeEntry[] {
 function messagesFromBranch(entries: BaseEntry[]): AgentMessage[] {
   const messages: AgentMessage[] = []
   for (const entry of entries) {
+    if (entry.type === 'custom_message') {
+      const custom = entry as BaseEntry & {
+        customType?: unknown
+        content?: AgentMessage['content']
+        display?: unknown
+        details?: unknown
+      }
+      if (custom.customType !== GOAL_CONTINUE_CUSTOM_TYPE) continue
+      const timestamp = custom.timestamp
+      messages.push({
+        role: 'custom',
+        customType: GOAL_CONTINUE_CUSTOM_TYPE,
+        content: custom.content ?? '',
+        display: typeof custom.display === 'boolean' ? custom.display : false,
+        ...(custom.details !== undefined ? { details: custom.details } : {}),
+        ...(custom.id ? { entryId: custom.id } : {}),
+        timestamp: typeof timestamp === 'number' ? timestamp : Date.parse(String(timestamp ?? '')) || Date.now()
+      })
+      continue
+    }
     if (entry.type !== 'message') continue
     const message = (entry as BaseEntry & { message?: AgentMessage }).message
     if (!message) continue
@@ -1267,6 +1282,7 @@ export interface SessionConversationRead {
   messages: AgentMessage[]
   externalContext: boolean
   contextChecked: boolean
+  taskMode?: SessionTaskMode
 }
 
 export interface SessionConversationWindowRead extends SessionConversationRead {
@@ -1275,6 +1291,17 @@ export interface SessionConversationWindowRead extends SessionConversationRead {
 
 export interface ReadSessionOptions {
   shouldStop?: () => boolean
+}
+
+function taskModeFromBranch(branch: BaseEntry[]): SessionTaskMode | undefined {
+  const entry = branch.findLast((item) =>
+    item.type === 'custom' && (item as { customType?: unknown }).customType === TASK_MODE_STATUS_KEY
+  )
+  const data = (entry as { data?: unknown } | undefined)?.data
+  if (!data || typeof data !== 'object') return
+  const { mode, goal: savedGoal } = data as Record<string, unknown>
+  const goal = readGoalState(savedGoal)
+  return { mode: isAgentMode(mode) ? mode : 'default', ...(goal ? { goal } : {}) }
 }
 
 /** Active-branch messages plus Pi Desktop's persisted tool-source classification. */
@@ -1307,6 +1334,7 @@ export async function readSessionConversation(
       messages: cached.messages,
       externalContext: cached.externalContext,
       contextChecked: cached.contextChecked,
+      ...(cached.taskMode ? { taskMode: cached.taskMode } : {}),
       historyTruncated: fileStats.size > MAX_SESSION_BYTES
     }
   }
@@ -1375,14 +1403,10 @@ export async function readSessionConversation(
   const contextChecked = !hasExternalContextUnknown(branch) && (
     hasExternalContextChecked(branch) || (fileStats.size <= MAX_SESSION_BYTES && !hasLocalToolCall(branch))
   )
-  cacheSessionMessages(
-    file,
-    { size: fileStats.size, mtimeMs: fileStats.mtimeMs, identity },
-    messages,
-    externalContext,
-    contextChecked
-  )
-  return { messages, externalContext, contextChecked, historyTruncated: windowStart > 0 }
+  const taskMode = taskModeFromBranch(branch)
+  const conversation = { messages, externalContext, contextChecked, ...(taskMode ? { taskMode } : {}) }
+  cacheSessionMessages(file, { size: fileStats.size, mtimeMs: fileStats.mtimeMs, identity }, conversation)
+  return { ...conversation, historyTruncated: windowStart > 0 }
 }
 
 export async function readSessionMessages(
@@ -1729,13 +1753,13 @@ export async function parseSession(
       const contextChecked = !hasExternalContextUnknown(branch) && (
         hasExternalContextChecked(branch) || !hasLocalToolCall(branch)
       )
-      cacheSessionMessages(
-        file,
-        stats,
-        messagesFromBranch(branch),
+      const taskMode = taskModeFromBranch(branch)
+      cacheSessionMessages(file, stats, {
+        messages: messagesFromBranch(branch),
         externalContext,
-        contextChecked
-      )
+        contextChecked,
+        ...(taskMode ? { taskMode } : {})
+      })
     } else {
       deleteCachedSessionMessages(canonicalSessionFile(file))
     }
@@ -1919,7 +1943,12 @@ async function listSessionsInRoot(cwd: string | undefined, root: string): Promis
 export async function searchSessions(
   query: string,
   limit = 30,
-  options: { budgetBytes?: number; shouldStop?: () => boolean; sessionRoots?: readonly string[] } = {}
+  options: {
+    budgetBytes?: number
+    shouldStop?: () => boolean
+    sessionRoots?: readonly string[]
+    includeFile?: (file: string) => boolean
+  } = {}
 ): Promise<SessionSearchHit[]> {
   if (typeof query !== 'string' || query.length > MAX_SEARCH_QUERY_LENGTH) return []
   const needle = query.trim()
@@ -1972,6 +2001,7 @@ export async function searchSessions(
           if (name === undefined) return
           if (!name.endsWith('.jsonl')) continue
           const file = path.join(folder, name)
+          if (options.includeFile && !options.includeFile(file)) continue
           let metadata: { mtime: number; size: number } | undefined
           let target = path.join(realFolder, name)
           try {

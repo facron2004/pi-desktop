@@ -910,8 +910,10 @@ transition: background var(--dur-fast) var(--ease);
 }
 
 .project__show-more {
-  min-height: 32px;
-  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sidebar-session-indent);
+  align-self: flex-start;
+  min-height: var(--ctl-sm);
+  margin-left: calc(var(--sidebar-session-indent) - var(--sp-2));
+  padding: var(--sp-1) var(--sp-2);
   border-radius: var(--r-md);
   color: var(--sidebar-muted);
   font-size: var(--text-xs);
@@ -2506,6 +2508,11 @@ transition: background var(--dur-fast) var(--ease);
   transform: translateY(-2px);
 }
 
+.scroll-jump[data-running='true']:not(:hover, :focus-visible) .scroll-jump__arrow,
+.scroll-jump:is(:hover, :focus-visible) .scroll-jump__activity {
+  display: none;
+}
+
 .user-msg__images {
   display: flex;
   gap: var(--sp-3);
@@ -2586,6 +2593,10 @@ transition: background var(--dur-fast) var(--ease);
   min-width: 0;
 }
 
+.thinking[data-open='true'] {
+  width: 100%;
+}
+
 .thinking__head {
   display: inline-flex;
   align-items: center;
@@ -2599,22 +2610,18 @@ transition: background var(--dur-fast) var(--ease);
   color: var(--text-tertiary);
 }
 
+.thinking__head:hover {
+  color: var(--text);
+}
+
+.thinking__head:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
 .thinking__title {
   font-weight: var(--weight-ui);
-  color: var(--text-tertiary);
-}
-
-.thinking__private {
-  margin-left: 0;
-  font-size: var(--text-assist);
-  line-height: var(--leading-assist);
-  color: var(--text-disabled);
-}
-
-.thinking__private::before {
-  content: '·';
-  margin-right: var(--sp-2);
-  color: var(--text-disabled);
 }
 
 .thinking__body {
@@ -2624,10 +2631,11 @@ transition: background var(--dur-fast) var(--ease);
   overflow: auto;
   overscroll-behavior: contain;
   overflow-wrap: anywhere;
-  font-size: var(--text-2xs);
+  font-size: var(--text-small);
   line-height: 1.7;
   color: var(--text-tertiary);
   white-space: pre-wrap;
+  user-select: text;
   /* A quote mark in the gutter is what separates a reasoning step from the
      answer without giving it a box of its own. */
   border-left: 2px solid var(--border-default);
@@ -3043,6 +3051,64 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 
 .tool__plan .md {
   font-size: var(--text-sm);
+}
+
+/* The choice a question call offered. The options are a record, not a control:
+   the dialog is where the reader picks, so this only marks what was taken. */
+.tool__question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.tool__question-text {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-small);
+}
+
+.tool__question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool__question-option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary, var(--text-primary));
+  font-size: var(--text-xs);
+  line-height: var(--leading-small);
+}
+
+.tool__question-option[data-answer] {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-weight: var(--weight-medium, 500);
+}
+
+.tool__question-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  color: var(--accent);
+}
+
+.tool__question-none {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-2xs);
+  font-style: italic;
 }
 
 .tool__pre {
@@ -3540,7 +3606,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .palette__item {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   width: 100%;
   padding: 6px var(--sp-3);
   min-height: 32px;
@@ -3593,26 +3659,57 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--green);
 }
 
-.palette__name {
-  flex: 0 0 auto;
+/* Lock the command name and description to one shared text baseline while
+   keeping the text pair centered beside the icon and badge. `overflow: clip`
+   (unlike `overflow: hidden`) keeps ellipsis truncation without turning the
+   span into a scroll container whose baseline snaps to its bottom edge. */
+.palette__text {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  flex: 1 1 auto;
   min-width: 0;
+}
+
+.palette__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-weight: 500;
+  font-size: var(--text-small);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-small);
   color: var(--text);
   white-space: nowrap;
+  overflow: clip;
+  text-overflow: ellipsis;
+}
+
+/* Reserve a shared minimum column across standard commands so descriptions
+   start on one vertical line, while letting longer skill/extension names
+   expand without truncating unless they approach half the row. */
+.palette__name:not(:only-child) {
+  flex: 0 0 auto;
+  min-width: min(6em, 45%);
+  max-width: 45%;
+}
+
+/* Chinese app aliases are UI labels rather than monospace `/tokens`: drawing
+   them in `--font-mono` pulls in `--font-cjk` (Microsoft YaHei) with JetBrains
+   Mono metrics, shifting them vertically against the `--font-ui` description. */
+.palette__name[data-localized='true'] {
+  font-family: var(--font-ui);
 }
 
 .palette__desc {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: var(--text-xs);
-  line-height: 1.4;
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
   color: var(--text-secondary);
   white-space: nowrap;
-  overflow: hidden;
+  overflow: clip;
   text-overflow: ellipsis;
-  margin-left: 6px;
 }
 
 .palette__item[data-active='true'] .palette__desc {
@@ -3630,9 +3727,12 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .palette__badge {
+  display: inline-flex;
+  align-items: center;
   flex: 0 0 auto;
-  font-size: var(--text-2xs);
+  font-size: var(--text-assist);
   font-weight: 600;
+  line-height: var(--leading-assist);
   letter-spacing: 0.05em;
   text-transform: uppercase;
   padding: var(--sp-hair) var(--sp-2);
@@ -3894,7 +3994,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 /* The command chip lives inside the input, on the input's own first line:
-   [icon command] argument… — a soft tonal capsule aligned to the first
+   [icon command] argument — a soft tonal capsule aligned to the first
    line's optical centre, removed with two Backspaces. */
 .composer__input-row {
   display: flex;
@@ -4747,8 +4847,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 /* The chip is a container: the glyph and the name are separate buttons (a
-   button inside a button is not valid markup). The glyph is also the way out —
-   hover the chip or open the menu and the folder turns into an X that drops
+   button inside a button is not valid markup). The glyph is also the way out —   hover the chip or open the menu and the folder turns into an X that drops
    back to working without a project. */
 .project-chip {
   cursor: default;
@@ -6146,7 +6245,7 @@ transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--
   /* The UA stylesheet gives <code> its own `font-family: monospace`, which
      wins over inheritance from <pre> — and on Windows that generic family
      is NSimSun, a serif face. The highlighted text lives in here, so the
-     guarded mono stack (JetBrains Mono … Pi Desktop CJK … monospace) has to
+     guarded mono stack (JetBrains Mono — Pi Desktop CJK — monospace) has to
      be applied here too, not only on <pre>. */
   font-family: var(--font-mono);
 }
@@ -7133,7 +7232,7 @@ animation: fade var(--dur-fast) var(--ease);
 
 .modal--plan-review {
   width: min(780px, 100%);
-  max-height: min(90vh, 960px);
+  max-height: min(100%, 90vh, 960px);
 }
 
 .modal__context {
@@ -7268,6 +7367,7 @@ animation: fade var(--dur-fast) var(--ease);
 
 .modal__headings {
   min-width: 0;
+  overflow-wrap: anywhere;
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
@@ -7301,6 +7401,12 @@ animation: fade var(--dur-fast) var(--ease);
 
 .modal--plan-review .modal__plan {
   max-height: min(64vh, 680px);
+  overscroll-behavior: contain;
+}
+
+.modal__plan:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .modal__options {
@@ -7329,6 +7435,7 @@ animation: fade var(--dur-fast) var(--ease);
   color: var(--text);
   font-size: var(--text-xs);
   text-align: left;
+  overflow-wrap: anywhere;
 transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 
@@ -9154,37 +9261,27 @@ button:focus-visible,
   flex: 0 0 auto;
 }
 
-.thinking__duration {
-  font-size: var(--text-small);
-  line-height: var(--leading-small);
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-  flex: 0 0 auto;
-}
-
 .md-file-link {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
+  gap: var(--sp-1);
+  padding: 0;
   margin: 0 1px;
-  border-radius: var(--r-xs);
-  border: 0;
-  background: var(--bg-raised);
-  color: var(--text-pure);
+  color: var(--accent);
   font-family: var(--font-mono);
   font-size: 0.92em;
   line-height: 1.4;
-  cursor: pointer;
   vertical-align: baseline;
-  transition:
-    background var(--dur-fast) var(--ease),
-    color var(--dur-fast) var(--ease);
+  transition: color var(--dur-fast) var(--ease);
 }
 
-.md-file-link:hover {
-  background: var(--bg-hover);
-  color: var(--text-pure);
+.md-file-link:is(:hover, :focus-visible, :active) {
+  color: var(--accent-hover);
+}
+
+.md-file-link:is(:hover, :focus-visible, :active) > span {
+  text-decoration: underline dotted 1px;
+  text-underline-offset: 2px;
 }
 
 .code-block__tool[data-active='true'] {

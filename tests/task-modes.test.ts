@@ -23,7 +23,9 @@ type Entry = {
 type StatusValue = string | undefined
 type GoalStatus = { text: string; status: 'active' | 'paused' | 'blocked' | 'complete'; summary?: string }
 type Context = {
+  hasUI: boolean
   isIdle: () => boolean
+  abort: () => void
   sessionManager: { getBranch: () => Entry[] }
   navigateTree: (
     targetId: string,
@@ -31,47 +33,63 @@ type Context = {
   ) => Promise<{ cancelled: boolean }>
   ui: {
     setStatus: (key: string, value: StatusValue) => void
-    confirm: (title: string, message: string) => Promise<boolean | undefined>
+    confirm: (title: string, message: string, options?: { signal?: AbortSignal }) => Promise<boolean | undefined>
+    select: (title: string, labels: string[], options?: { signal?: AbortSignal }) => Promise<string | undefined>
   }
 }
 type Handler = (event: Record<string, unknown>, ctx: Context) => unknown
-type ToolResult = { content: { type: string; text: string }[]; details?: unknown; isError?: boolean }
+type ToolResult = { content: { type: string; text: string }[]; details?: unknown; isError?: boolean; terminate?: boolean }
 type Tool = {
   name: string
   promptGuidelines?: string[]
   execute: (
     id: string,
     input: Record<string, unknown>,
-    signal: undefined,
+    signal: AbortSignal | undefined,
     update: undefined,
     ctx: Context
   ) => Promise<ToolResult>
 }
 type Command = { handler: (value: string, ctx: Context) => Promise<void> }
 
-function fixture(entries: Entry[] = [], computerUse = false, defaultMode: TaskModeSeed = 'default') {
+function fixture(
+  entries: Entry[] = [],
+  computerUse = false,
+  defaultMode: TaskModeSeed = 'default',
+  toolSettings: { active?: string[]; defaultTools?: string[] } = {}
+) {
   const handlers = new Map<string, Handler>()
   const commands = new Map<string, Command>()
   const tools = new Map<string, Tool>()
-  const base = ['read', 'write', 'edit', 'powershell', 'mcp__custom']
-  const registeredExtras = ['grep', 'find', 'ls', 'subagent', 'computer']
+  const base = toolSettings.active ?? ['read', 'write', 'edit', 'powershell', 'mcp__custom']
+  const builtin = [...new Set([...base, 'grep', 'find', 'ls', 'powershell'])]
+  const registered = [...builtin, 'subagent', 'computer']
   const modeExtensionPath = 'pi-desktop-task-modes-test'
   let active = [...base]
   let idle = true
-  let confirmResult: boolean | undefined = true
+  let aborts = 0
+  let confirmResult: boolean | undefined | Promise<boolean | undefined> = true
+  let selectResult: string | undefined | Promise<string | undefined>
   const statuses = new Map<string, StatusValue>()
   const toolSources = new Map<string, string>([
-    ...[...base, 'grep', 'find', 'ls'].map((name) => [name, 'builtin'] as const),
+    ...builtin.map((name) => [name, 'builtin'] as const),
     ...['subagent', 'computer'].map((name) => [name, 'cli'] as const)
   ])
   const toolPaths = new Map<string, string>(
-    [...base, 'grep', 'find', 'ls'].map((name) => [name, `builtin:${name}`] as const)
+    builtin.map((name) => [name, `builtin:${name}`] as const)
   )
   const sent: string[] = []
-  const confirms: { title: string; message: string }[] = []
+  const sentMessages: {
+    message: { customType?: string; content?: string; display?: boolean }
+    options?: { triggerTurn?: boolean }
+  }[] = []
+  const confirms: { title: string; message: string; signal?: AbortSignal }[] = []
+  const selections: { question: string; options: string[]; signal?: AbortSignal }[] = []
   const navigations: { targetId: string; options?: { summarize?: boolean } }[] = []
   const ctx: Context = {
+    hasUI: true,
     isIdle: () => idle,
+    abort: () => { aborts += 1 },
     sessionManager: { getBranch: () => entries },
     navigateTree: async (targetId, options) => {
       navigations.push({ targetId, options })
@@ -79,17 +97,22 @@ function fixture(entries: Entry[] = [], computerUse = false, defaultMode: TaskMo
     },
     ui: {
       setStatus: (key, value) => { statuses.set(key, value) },
-      confirm: async (title, message) => {
-        confirms.push({ title, message })
+      confirm: async (title, message, options) => {
+        confirms.push({ title, message, ...(options?.signal ? { signal: options.signal } : {}) })
         return confirmResult
+      },
+      select: async (question, options, control) => {
+        selections.push({ question, options, signal: control?.signal })
+        return selectResult
       }
     }
   }
   const api = {
     on: (name: string, handler: Handler) => handlers.set(name, handler),
     getActiveTools: () => active,
+    getSettings: () => ({ defaultTools: toolSettings.defaultTools }),
     setActiveTools: (names: string[]) => { active = [...names] },
-    getAllTools: () => [...base, ...registeredExtras, ...tools.keys()].map(name => {
+    getAllTools: () => [...registered, ...tools.keys()].map(name => {
       const source = toolSources.get(name) ?? (tools.has(name) ? 'local' : 'project')
       return {
         name,
@@ -107,7 +130,10 @@ function fixture(entries: Entry[] = [], computerUse = false, defaultMode: TaskMo
       active.push(tool.name)
     },
     appendEntry: (customType: string, data: unknown) => entries.push({ type: 'custom', customType, data }),
-    sendUserMessage: (text: string) => sent.push(text)
+    sendUserMessage: (text: string) => sent.push(text),
+    sendMessage: (message: { customType?: string; content?: string; display?: boolean }, options?: { triggerTurn?: boolean }) => {
+      sentMessages.push({ message, options })
+    }
   }
   const source = taskModesExtension(computerUse, defaultMode, modeExtensionPath)
     .replace("import { Type } from 'typebox';", '')
@@ -123,17 +149,21 @@ function fixture(entries: Entry[] = [], computerUse = false, defaultMode: TaskMo
     base,
     entries,
     sent,
+    sentMessages,
     confirms,
+    selections,
     navigations,
     active: () => active,
     mode: () => statuses.get('pi-desktop-mode'),
     goal: () => parseGoal(),
+    aborts: () => aborts,
     idle: (value: boolean) => { idle = value },
     toolSource: (name: string, source: string) => {
       toolSources.set(name, source)
       toolPaths.set(name, `${source}:${name}`)
     },
-    confirm: (value: boolean | undefined) => { confirmResult = value },
+    confirm: (value: typeof confirmResult) => { confirmResult = value },
+    select: (value: string | undefined | Promise<string | undefined>) => { selectResult = value },
     emit: (name: string, event: Record<string, unknown> = {}) => handlers.get(name)?.(event, ctx),
     command: (name: string, value: string) => {
       const command = commands.get(name)
@@ -141,7 +171,9 @@ function fixture(entries: Entry[] = [], computerUse = false, defaultMode: TaskMo
       return command.handler(value, ctx)
     },
     modeCommand: (value: string) => commands.get('desktop-mode')!.handler(value, ctx),
-    exitPlan: (plan: string) => tools.get('exit_plan_mode')!.execute('exit-plan', { plan }, undefined, undefined, ctx),
+    askUser: (question: string, options: string[], signal?: AbortSignal) =>
+      tools.get('desktop_ask_user')!.execute('ask', { question, options }, signal, undefined, ctx),
+    exitPlan: (plan: string, signal?: AbortSignal) => tools.get('exit_plan_mode')!.execute('exit-plan', { plan }, signal, undefined, ctx),
     finish: (status: 'complete' | 'blocked') =>
       tools.get('desktop_goal_finish')!.execute('goal', { status, summary: 'Verified outcome' }, undefined, undefined, ctx),
     todo: (items: { text: string; status: string }[]) =>
@@ -152,21 +184,156 @@ function fixture(entries: Entry[] = [], computerUse = false, defaultMode: TaskMo
 
 // A completed assistant response needs the new custom message before Pi can continue.
 const boundary = { outcome: 'completed', continue: false, context: { canContinue: false } }
+const PLAN_TOOLS = ['read', 'grep', 'find', 'ls', 'exit_plan_mode', 'desktop_ask_user']
+const DESKTOP_TOOLS = ['desktop_todo', 'desktop_ask_user']
 
-test('Plan Mode exposes only read tools plus exit_plan_mode, blocks writes and restores the prior loadout', async () => {
+test('the user question is available in every desktop task mode and returns the exact selected option', async () => {
   const f = fixture()
   f.emit('session_start')
-  assert.deepEqual(f.active(), [...f.base, 'desktop_todo'])
+  for (const mode of ['default', 'plan', 'goal', 'subagent', 'swarm', 'plugin']) {
+    await f.modeCommand(mode)
+    assert.ok(f.active().includes('desktop_ask_user'), `missing question tool in ${mode}`)
+  }
   await f.modeCommand('plan')
-  assert.deepEqual(f.active(), ['read', 'grep', 'find', 'ls', 'exit_plan_mode'])
+  const question = 'Which scope should the plan cover?'
+  const options = ['Current module', 'Whole workspace']
+  const controller = new AbortController()
+  f.select('Whole workspace')
+  const result = await f.askUser(question, options, controller.signal)
+  assert.deepEqual(f.selections, [{ question, options, signal: controller.signal }])
+  assert.deepEqual(result.details, { question, options, answer: 'Whole workspace' })
+  assert.match(result.content[0].text, /Whole workspace/)
+  assert.equal(result.terminate, undefined)
+  assert.equal(f.mode(), 'plan')
+})
+
+test('a user question holds the other tool calls and duplicate questions in its batch', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  f.emit('message_end', { message: { role: 'assistant', content: [
+    { type: 'toolCall', id: 'sibling-write', name: 'write' },
+    { type: 'toolCall', id: 'ask', name: 'desktop_ask_user' },
+    { type: 'toolCall', id: 'ask-twice', name: 'desktop_ask_user' }
+  ] } })
+  assert.equal(f.emit('tool_call', { toolCallId: 'ask', toolName: 'desktop_ask_user' }), undefined)
+  for (const [toolCallId, toolName] of [['sibling-write', 'write'], ['ask-twice', 'desktop_ask_user']]) {
+    const result = f.emit('tool_call', { toolCallId, toolName }) as { block: boolean; terminate: boolean }
+    assert.equal(result.block, true)
+    assert.equal(result.terminate, true)
+  }
+  f.emit('turn_end')
+  assert.equal(f.emit('tool_call', { toolCallId: 'next-turn', toolName: 'write' }), undefined)
+})
+
+test('cancelling a user question settles the turn and pauses an active goal for a human reply', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('goal')
+  f.emit('input', { source: 'rpc', text: 'Review the fixture' })
+  const question = 'Which scope should I use?'
+  const options = ['Review one test', 'Review all tests']
+  const result = await f.askUser(question, options)
+  assert.deepEqual(result.details, { question, options, answer: null })
+  assert.equal(result.terminate, true)
+  assert.equal(f.goal()?.status, 'blocked')
+  assert.equal(f.goal()?.summary, question)
+  assert.equal(f.emit('agent_before_settle', boundary), undefined)
+  assert.equal((f.emit('tool_call', { toolCallId: 'retry', toolName: 'desktop_ask_user' }) as { block: boolean }).block, true)
+  f.emit('agent_settled', { aborted: false })
+  f.emit('input', { source: 'rpc', text: 'Review one test' })
+  assert.equal(f.goal()?.status, 'active')
+})
+
+test('a user question rejects blank or duplicate choices and cannot answer after abort', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await assert.rejects(() => f.askUser(' ', ['A', 'B']), /question/i)
+  await assert.rejects(() => f.askUser('Which?', ['A', ' A ']), /distinct/i)
+  await assert.rejects(() => f.askUser('Which?', ['A', ' ']), /distinct/i)
+  assert.deepEqual(f.selections, [])
+
+  const controller = new AbortController()
+  const selection = Promise.withResolvers<string>()
+  f.select(selection.promise)
+  const asking = f.askUser('Which?', ['A', 'B'], controller.signal)
+  controller.abort()
+  selection.resolve('B')
+  const result = await asking
+  assert.equal(result.terminate, true)
+  assert.equal((result.details as { answer: string | null }).answer, null)
+})
+
+test('Plan Mode exposes read tools, questions and plan review, then restores the prior loadout', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS])
+  await f.modeCommand('plan')
+  assert.deepEqual(f.active(), PLAN_TOOLS)
   for (const toolName of ['write', 'edit', 'powershell', 'mcp__custom', 'subagent']) {
     assert.equal((f.emit('tool_call', { toolName }) as { block: boolean }).block, true)
   }
   assert.equal(f.emit('tool_call', { toolName: 'read' }), undefined)
   assert.equal(f.emit('tool_call', { toolName: 'exit_plan_mode' }), undefined)
+  assert.equal(f.emit('tool_call', { toolName: 'desktop_ask_user' }), undefined)
   await f.modeCommand('default')
-  assert.deepEqual(f.active(), [...f.base, 'desktop_todo'])
+  assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS])
   assert.equal(f.mode(), 'default')
+})
+
+test('desktop search and PowerShell defaults survive opening and leaving a saved Plan Mode', async () => {
+  const stock = ['read', 'bash', 'edit', 'write']
+  const f = fixture([
+    { type: 'custom', customType: 'pi-desktop-mode', data: { mode: 'plan', originalTools: stock } }
+  ], false, 'default', { active: stock })
+  f.emit('session_start')
+  assert.deepEqual(f.active(), PLAN_TOOLS)
+  const promptGuidelines: string[] = []
+  f.emit('before_agent_start', { systemPromptOptions: { selectedTools: f.active(), promptGuidelines } })
+  assert.match(promptGuidelines.join('\n'), /find to locate files by glob pattern/)
+  assert.doesNotMatch(promptGuidelines.join('\n'), /powershell tool|bash tool/)
+
+  await f.modeCommand('default')
+  const shells = process.platform === 'win32' ? ['powershell'] : []
+  assert.deepEqual(f.active(), [...stock, 'grep', 'find', 'ls', ...shells, ...DESKTOP_TOOLS])
+  promptGuidelines.length = 0
+  f.emit('before_agent_start', { systemPromptOptions: { selectedTools: f.active(), promptGuidelines } })
+  assert.equal(promptGuidelines.some((line) => line.includes('powershell tool') && line.includes('-Encoding utf8')), shells.length > 0)
+})
+
+test('workspace defaults honor an explicit Pi tool selection and skip overrides', () => {
+  const stock = ['read', 'bash', 'edit', 'write']
+  const explicit = fixture([], false, 'default', { active: stock, defaultTools: stock })
+  explicit.emit('session_start')
+  assert.deepEqual(explicit.active(), [...stock, ...DESKTOP_TOOLS])
+
+  const custom = fixture([], false, 'default', { active: stock })
+  custom.toolSource('grep', 'project')
+  custom.emit('session_start')
+  assert.ok(custom.active().includes('find'))
+  assert.ok(!custom.active().includes('grep'))
+})
+
+test('built-in search fixes path glob syntax while keeping file roots and escaped globs', () => {
+  const f = fixture()
+  const find = { pattern: './src/**/*.ts', path: 'work space' }
+  f.emit('tool_call', { toolName: 'find', input: find })
+  assert.deepEqual(find, { pattern: 'src/**/*.ts', path: 'work space' })
+  find.pattern = './/src/**/*.ts'
+  f.emit('tool_call', { toolName: 'find', input: find })
+  assert.equal(find.pattern, 'src/**/*.ts')
+
+  const windowsGlob = 'src\\**\\*.ts'
+  const grep = { pattern: 'literal[x]', literal: true, glob: windowsGlob }
+  f.emit('tool_call', { toolName: 'grep', input: grep })
+  assert.deepEqual(grep, { pattern: 'literal[x]', literal: true, glob: process.platform === 'win32' ? 'src/**/*.ts' : windowsGlob })
+  const escaped = { pattern: 'test', glob: 'src\\[x\\]\\*.ts' }
+  f.emit('tool_call', { toolName: 'grep', input: escaped })
+  assert.equal(escaped.glob, 'src\\[x\\]\\*.ts')
+
+  f.toolSource('find', 'project')
+  find.pattern = './src/**/*.ts'
+  f.emit('tool_call', { toolName: 'find', input: find })
+  assert.equal(find.pattern, './src/**/*.ts')
 })
 
 test('image options ride on the prompt they were sent with, once', async () => {
@@ -217,7 +384,7 @@ test('image options include reference guidance and allow generate_image even in 
   }))
 
   const sections: Record<string, string> = {}
-  const selectedTools = ['read', 'grep', 'find', 'ls', 'exit_plan_mode']
+  const selectedTools = [...PLAN_TOOLS]
   const result = f.emit('before_agent_start', {
     prompt: 'turn this sketch into a watercolour',
     systemPromptOptions: { sections, selectedTools }
@@ -258,17 +425,22 @@ test('image options reject malformed requests', async () => {
   await assert.rejects(() => f.command('desktop-image', '{}'))
 })
 
-test('Plan Mode blocks extension tools that shadow a built-in read tool', async () => {
+test('Plan Mode hides and blocks tools that shadow its read, question and review tools', async () => {
   const f = fixture()
   f.toolSource('read', 'project')
   f.emit('session_start')
+  f.toolSource('exit_plan_mode', 'project')
+  f.toolSource('desktop_ask_user', 'project')
   await f.modeCommand('plan')
 
-  assert.deepEqual(f.emit('tool_call', { toolName: 'read' }), {
-    block: true,
-    reason: 'Plan Mode only allows read-only file tools and exit_plan_mode',
-    terminate: true
-  })
+  assert.deepEqual(f.active(), ['grep', 'find', 'ls'])
+  for (const toolName of ['read', 'exit_plan_mode', 'desktop_ask_user']) {
+    assert.deepEqual(f.emit('tool_call', { toolName }), {
+      block: true,
+      reason: 'Plan Mode only allows read-only file tools, user questions, and exit_plan_mode',
+      terminate: true
+    })
+  }
 })
 
 test('memory records an executed extension that overrides a local built-in tool', () => {
@@ -403,9 +575,10 @@ test('exit_plan_mode asks for approval and leaves Plan Mode only when the plan i
   f.confirm(true)
   const approved = await f.exitPlan('1. Edit the file\n2. Run the tests')
   assert.equal(approved.content[0].text, 'The user approved this plan. Start implementation now, following the reviewed plan.')
+  assert.equal(approved.terminate, undefined)
   assert.deepEqual(f.confirms.at(-1), { title: 'Plan ready to review', message: '1. Edit the file\n2. Run the tests' })
   assert.equal(f.mode(), 'default')
-  assert.deepEqual(f.active(), [...f.base, 'desktop_todo'])
+  assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS])
   assert.equal((f.entries.at(-1)!.data as { mode: string }).mode, 'default')
 
   const rejected = fixture()
@@ -414,8 +587,9 @@ test('exit_plan_mode asks for approval and leaves Plan Mode only when the plan i
   rejected.confirm(false)
   const answer = await rejected.exitPlan('The plan')
   assert.match(answer.content[0].text, /keep planning/i)
+  assert.equal(answer.terminate, true)
   assert.equal(rejected.mode(), 'plan')
-  assert.deepEqual(rejected.active(), ['read', 'grep', 'find', 'ls', 'exit_plan_mode'])
+  assert.deepEqual(rejected.active(), PLAN_TOOLS)
 
   const cancelled = fixture()
   cancelled.emit('session_start')
@@ -423,7 +597,72 @@ test('exit_plan_mode asks for approval and leaves Plan Mode only when the plan i
   cancelled.confirm(undefined)
   const cancelledAnswer = await cancelled.exitPlan('The plan')
   assert.match(cancelledAnswer.content[0].text, /keep planning/i)
+  assert.equal(cancelledAnswer.terminate, true)
   assert.equal(cancelled.mode(), 'plan')
+})
+
+test('one review is shown at a time, and declining waits for the next user prompt', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('plan')
+  const confirmation = Promise.withResolvers<boolean>()
+  f.confirm(confirmation.promise)
+  const review = f.exitPlan('First proposal')
+  const duplicate = f.exitPlan('Second proposal in the same batch')
+  assert.equal(f.confirms.length, 1)
+
+  confirmation.resolve(false)
+  assert.equal((await review).terminate, true)
+  assert.equal((await duplicate).terminate, true)
+  const blocked = f.emit('tool_call', { toolName: 'read' }) as { terminate?: boolean }
+  assert.equal(blocked.terminate, true)
+  f.emit('input', { source: 'extension', text: 'Background status' })
+  await f.exitPlan('Automatic resubmission')
+  assert.equal(f.confirms.length, 1)
+
+  f.emit('input', { source: 'rpc', text: 'Please revise the proposal' })
+  f.confirm(true)
+  assert.deepEqual((await f.exitPlan('Revised proposal')).details, { approved: true })
+  assert.equal(f.confirms.length, 2)
+  assert.equal(f.mode(), 'default')
+})
+
+test('an aborted review stays in Plan Mode even when approval arrives late', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('plan')
+  const controller = new AbortController()
+  const confirmation = Promise.withResolvers<boolean>()
+  f.confirm(confirmation.promise)
+  const review = f.exitPlan('Proposal to cancel', controller.signal)
+  controller.abort()
+  confirmation.resolve(true)
+
+  assert.equal(f.confirms[0]?.signal, controller.signal)
+  assert.equal((await review).terminate, true)
+  assert.equal(f.mode(), 'plan')
+  assert.deepEqual(f.active(), PLAN_TOOLS)
+})
+
+test('a blank plan cannot open the approval dialog', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('plan')
+  await assert.rejects(() => f.exitPlan('  \n\t '), /plan text/i)
+  assert.deepEqual(f.confirms, [])
+})
+
+test('Plan Mode sends only the newest planning guidance to the model', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('plan')
+  const previous = { customType: 'desktop-plan-context', content: 'Earlier planning guidance' }
+  const current = { customType: 'desktop-plan-context', content: 'Current planning guidance' }
+  const prompt = { role: 'user', content: 'Please revise the plan.' }
+  const messages = [previous, prompt, current]
+  assert.deepEqual(f.emit('context', { messages }), { messages: [prompt, current] })
+  await f.exitPlan('Approved plan')
+  assert.deepEqual(f.emit('context', { messages }), { messages: [prompt] })
 })
 
 test('exit_plan_mode is only available in Plan Mode', async () => {
@@ -438,17 +677,219 @@ test('Goal Mode requests continuation until the goal is explicitly completed or 
   await f.modeCommand('goal')
   f.emit('input', { source: 'rpc', text: 'Finish and verify the task' })
   assert.equal(f.goal()?.status, 'active')
+  f.emit('turn_end', { toolResults: [{ isError: false, content: [] }] })
   const next = f.emit('agent_before_settle', boundary) as { continue: boolean; entries: { display: boolean; content: string }[] }
   assert.equal(next.continue, true)
   assert.equal(next.entries[0].display, false)
-  assert.match(next.entries[0].content, /Finish and verify the task/)
+  assert.match(next.entries[0].content, /Continue toward the active goal/)
+  assert.doesNotMatch(next.entries[0].content, /Finish and verify the task/)
   assert.equal(f.emit('agent_before_settle', { ...boundary, continue: true }), undefined)
   await f.finish('complete')
   assert.equal(f.goal()?.status, 'complete')
+  assert.equal(f.mode(), 'default')
   assert.equal(f.emit('agent_before_settle', boundary), undefined)
-  f.emit('input', { source: 'rpc', text: 'A new goal' })
-  await f.finish('blocked')
+  // The finished goal stays on screen, but an ordinary follow-up no longer
+  // becomes a new goal just because Goal Mode was used earlier.
+  f.emit('input', { source: 'rpc', text: 'An ordinary follow-up' })
+  assert.equal(f.goal()?.status, 'complete')
+  assert.equal(f.mode(), 'default')
+})
+
+test('Goal Mode stops instead of repeating a round that made no tool calls', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('goal')
+  f.emit('input', { source: 'rpc', text: 'Investigate the failure' })
+  // The model only wrote prose: it gets one explicit chance to report the
+  // outcome, and a second prose-only round ends the goal instead of looping.
+  f.emit('turn_end', { toolResults: [] })
+  const grace = f.emit('agent_before_settle', boundary) as {
+    continue: boolean
+    entries: { content: string }[]
+  }
+  assert.equal(grace.continue, true)
+  assert.match(grace.entries[0].content, /call desktop_goal_finish with status complete now/)
+  f.emit('turn_end', { toolResults: [] })
   assert.equal(f.emit('agent_before_settle', boundary), undefined)
+  assert.equal(f.goal()?.status, 'blocked')
+  assert.match(f.goal()?.summary ?? '', /no progress with tools/i)
+
+  await f.command('desktop-goal', 'resume')
+  assert.equal(f.goal()?.status, 'active')
+  assert.equal(f.sentMessages.at(-1)?.message.customType, 'desktop-goal-continue')
+  assert.equal(f.sentMessages.at(-1)?.message.display, false)
+  assert.equal(f.sentMessages.at(-1)?.options?.triggerTurn, true)
+  assert.match(f.sentMessages.at(-1)?.message.content ?? '', /Continue toward the active goal/)
+  assert.deepEqual(f.sent, [])
+})
+
+test('Goal Mode tolerates a turn boundary without tool results', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('goal')
+  f.emit('input', { source: 'rpc', text: 'Investigate the failure' })
+  // An older or retried event may carry no results at all; that is an empty
+  // round, not a reason for the extension to throw.
+  assert.doesNotThrow(() => f.emit('turn_end', {}))
+  assert.equal(f.goal()?.status, 'active')
+})
+
+test('Goal Mode sends the current objective on every request, including after a running edit', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('goal')
+  f.emit('input', { source: 'rpc', text: 'A long goal' })
+  const messages = [
+    { role: 'user', content: 'A long goal' },
+    { role: 'custom', customType: 'desktop-goal-context', content: 'Goal: A long goal' },
+    { role: 'custom', customType: 'desktop-goal-continue', content: 'Previous continuation' },
+    { role: 'custom', customType: 'desktop-goal-context', content: 'Goal: A long goal' },
+    { role: 'custom', customType: 'desktop-goal-continue', content: 'Current continuation' }
+  ]
+  f.emit('context', { messages })
+  f.idle(false)
+  await f.command('desktop-goal', 'edit Verify  both branches\n  Keep the tests')
+  await assert.rejects(f.finish('complete'), /goal was edited/i)
+  const result = f.emit('context', { messages }) as { messages: typeof messages }
+  const goals = result.messages.filter((message) => message.customType === 'desktop-goal-context')
+  assert.equal(goals.length, 1)
+  assert.ok(goals[0].content.endsWith('Verify  both branches\n  Keep the tests'))
+  assert.deepEqual(result.messages.filter((message) => message.customType === 'desktop-goal-continue'), [messages[4]])
+  assert.equal(messages[1].content, 'Goal: A long goal', 'the saved history is untouched')
+
+  const fresh = f.emit('context', { messages: [messages[0]] }) as { messages: typeof messages }
+  assert.equal(fresh.messages.at(-1)?.content, goals[0].content)
+
+  await f.command('desktop-goal', 'pause')
+  const paused = f.emit('context', { messages }) as { messages: typeof messages }
+  assert.deepEqual(paused.messages, [messages[0]])
+})
+
+test('the automatic continuation limit includes the rounds that ask the model to report its outcome', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('goal')
+  f.emit('input', { source: 'rpc', text: 'A very long running goal' })
+  const worked = { toolResults: [{ toolName: 'read', isError: false, content: [] }] }
+  for (let round = 0; round < 40; round += 1) {
+    f.emit('turn_end', round % 2 ? worked : { toolResults: [] })
+    const next = f.emit('agent_before_settle', boundary) as { continue: boolean } | undefined
+    assert.equal(next?.continue, true)
+  }
+  f.emit('turn_end', { toolResults: [] })
+  assert.equal(f.emit('agent_before_settle', boundary), undefined)
+  assert.equal(f.goal()?.status, 'blocked')
+  assert.match(f.goal()?.summary ?? '', /continuation limit/i)
+})
+
+test('failed tools and checklist updates do not extend automatic continuation on their own', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('goal')
+  f.emit('input', { source: 'rpc', text: 'Verify the changes' })
+  const noProgress = { toolResults: [
+    { toolName: 'read', isError: true, content: [{ type: 'text', text: 'File was not found' }] },
+    { toolName: 'desktop_todo', isError: false, content: [] }
+  ] }
+  f.emit('turn_end', noProgress)
+  assert.ok(f.emit('agent_before_settle', boundary))
+  f.emit('turn_end', noProgress)
+  assert.equal(f.emit('agent_before_settle', boundary), undefined)
+  assert.equal(f.goal()?.status, 'blocked')
+  assert.match(f.goal()?.summary ?? '', /no progress with tools/i)
+})
+
+test('the user can complete a goal without waiting for the model', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('goal')
+  f.emit('input', { source: 'rpc', text: 'Ship the feature' })
+  f.idle(false)
+  await f.command('desktop-goal', 'complete')
+  assert.equal(f.aborts(), 1)
+  assert.equal(f.goal()?.status, 'complete')
+  assert.equal(f.goal()?.summary, 'Completed by the user')
+  assert.equal(f.mode(), 'default')
+  assert.equal(f.emit('agent_before_settle', boundary), undefined)
+
+  const g = fixture()
+  g.emit('session_start')
+  await g.modeCommand('goal')
+  g.emit('input', { source: 'rpc', text: 'Another goal' })
+  await g.command('goal', 'complete')
+  assert.equal(g.goal()?.status, 'complete')
+  assert.equal(g.mode(), 'default')
+})
+
+test('pausing or completing a retained goal leaves unrelated runs alone', async () => {
+  for (const action of ['pause', 'complete']) {
+    const f = fixture()
+    f.emit('session_start')
+    await f.command('goal', 'Review the implementation')
+    await f.modeCommand('plan')
+    f.idle(false)
+    await f.command('desktop-goal', action)
+    assert.equal(f.aborts(), 0)
+    assert.equal(f.mode(), 'plan')
+  }
+})
+
+test('clearing a retained goal preserves Plan Mode and its read-only tools', async () => {
+  for (const [command, action] of [['desktop-goal', 'clear'], ['goal', 'off']]) {
+    const f = fixture()
+    f.emit('session_start')
+    await f.command('goal', 'Review the implementation')
+    await f.modeCommand('plan')
+    const planTools = f.active()
+    await f.command(command, action)
+    assert.equal(f.goal(), undefined)
+    assert.equal(f.mode(), 'plan')
+    assert.deepEqual(f.active(), planTools)
+  }
+})
+
+test('Goal Mode keeps one objective across active, paused and blocked messages', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('goal')
+  f.emit('input', { source: 'rpc', text: 'Ship the feature' })
+  // A later message is conversation the model already sees, not a new line of
+  // the goal: folding it in would grow the objective on every turn.
+  const persisted = f.entries.length
+  f.emit('input', { source: 'rpc', text: 'Start with the API layer' })
+  assert.equal(f.goal()?.text, 'Ship the feature')
+  assert.equal(f.goal()?.status, 'active')
+  assert.equal(f.entries.length, persisted, 'an unchanged goal is not persisted again')
+
+  await f.command('desktop-goal', 'pause')
+
+  f.emit('input', { source: 'rpc', text: 'What does this error mean?' })
+  assert.equal(f.goal()?.text, 'Ship the feature')
+  assert.equal(f.goal()?.status, 'paused')
+
+  await f.command('desktop-goal', 'resume')
+  f.emit('agent_settled', { aborted: true })
+  assert.equal(f.goal()?.status, 'blocked')
+
+  f.emit('input', { source: 'rpc', text: 'Try again with the other provider' })
+  assert.equal(f.goal()?.text, 'Ship the feature')
+  assert.equal(f.goal()?.status, 'active')
+  assert.equal(f.goal()?.summary, undefined)
+})
+
+test('pausing a running goal stops the current run', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await f.modeCommand('goal')
+  f.emit('input', { source: 'rpc', text: 'Ship it' })
+  f.idle(false)
+  await f.command('desktop-goal', 'pause')
+  assert.equal(f.goal()?.status, 'paused')
+  assert.equal(f.aborts(), 1)
+
+  f.idle(true)
+  await f.command('desktop-goal', 'pause')
+  assert.equal(f.aborts(), 1)
 })
 
 test('Goal Mode never resumes an aborted, failed or unapproved operation', async () => {
@@ -488,7 +929,8 @@ test('Goal state survives mode switches and can be paused, edited, resumed and c
   await f.command('desktop-goal', 'resume')
   assert.equal(f.mode(), 'goal')
   assert.equal(f.goal()?.status, 'active')
-  assert.equal(f.sent.at(-1), 'Continue toward the active goal: Ship it well')
+  assert.equal(f.sentMessages.at(-1)?.message.customType, 'desktop-goal-continue')
+  assert.match(f.sentMessages.at(-1)?.message.content ?? '', /Continue toward the active goal/)
 
   await f.command('desktop-goal', 'clear')
   assert.equal(f.goal(), undefined)
@@ -519,7 +961,7 @@ test('Computer Use is a setting: on in the normal loadout, off in Plan Mode, and
   const f = fixture([], true)
   f.emit('session_start')
   assert.equal(f.mode(), 'default')
-  assert.deepEqual(f.active(), [...f.base, 'desktop_todo', 'computer'])
+  assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS, 'computer'])
   const next = f.emit('before_agent_start') as { message: { customType: string; content: string } }
   assert.equal(next.message.customType, 'desktop-computer-context')
   assert.match(next.message.content, /screenshot/i)
@@ -537,7 +979,7 @@ test('Computer Use is a setting: on in the normal loadout, off in Plan Mode, and
   assert.equal(f.active().includes('computer'), false)
   assert.equal(f.emit('before_agent_start'), undefined)
   await f.command('desktop-computer', 'on')
-  assert.deepEqual(f.active(), [...f.base, 'desktop_todo', 'computer'])
+  assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS, 'computer'])
 })
 
 test('the edit command rewinds the active branch instead of forking a conversation', async () => {
@@ -547,16 +989,43 @@ test('the edit command rewinds the active branch instead of forking a conversati
   assert.deepEqual(f.navigations, [{ targetId: 'entry-1', options: { summarize: false } }])
 })
 
+test('rewinding restores the selected branch goal and tool restrictions without appending state', async () => {
+  const goal = { text: 'Investigate the original issue', status: 'blocked', summary: 'Waiting for input' }
+  const branch: Entry[] = [{
+    type: 'custom', customType: 'pi-desktop-mode',
+    data: { mode: 'plan', goal, originalTools: ['read', 'write', 'edit', 'powershell'] }
+  }]
+  const f = fixture(branch)
+  f.emit('session_start')
+  const originalTools = f.active()
+  await f.command('goal', 'Follow the later objective')
+  assert.equal(f.goal()?.text, 'Follow the later objective')
+
+  branch.splice(1)
+  f.emit('session_tree', { type: 'session_tree' })
+  assert.deepEqual(f.goal(), goal)
+  assert.equal(f.mode(), 'plan')
+  assert.deepEqual(f.active(), originalTools)
+  assert.equal(branch.length, 1)
+
+  branch.length = 0
+  f.emit('session_tree', { type: 'session_tree' })
+  assert.equal(f.goal(), undefined)
+  assert.equal(f.mode(), 'default')
+  assert.ok(f.active().includes('write'))
+  assert.deepEqual(branch, [])
+})
+
 test('Subagent Mode adds the subagent tool and a delegation instruction', async () => {
   const f = fixture()
   f.emit('session_start')
   await f.modeCommand('subagent')
-  assert.deepEqual(f.active(), [...f.base, 'subagent', 'desktop_todo'])
+  assert.deepEqual(f.active(), [...f.base, 'subagent', ...DESKTOP_TOOLS])
   const next = f.emit('before_agent_start') as { message: { content: string } }
   assert.match(next.message.content, /delegate/i)
   assert.match(next.message.content, /subagent/i)
   await f.modeCommand('default')
-  assert.deepEqual(f.active(), [...f.base, 'desktop_todo'])
+  assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS])
 })
 
 test('Plugin Mode keeps the working tools and adds the extension-authoring instruction', async () => {
@@ -564,7 +1033,7 @@ test('Plugin Mode keeps the working tools and adds the extension-authoring instr
   f.emit('session_start')
   await f.modeCommand('plugin')
   assert.equal(f.mode(), 'plugin')
-  assert.deepEqual(f.active(), [...f.base, 'desktop_todo'])
+  assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS])
   const next = f.emit('before_agent_start') as { message: { customType: string; content: string } }
   assert.equal(next.message.customType, 'desktop-plugin-context')
   assert.match(next.message.content, /extension/i)
@@ -613,18 +1082,18 @@ test('Modes restore from the session branch and a new chat starts with the origi
   const resumed = fixture([...first.entries])
   resumed.emit('session_start')
   assert.equal(resumed.mode(), 'plan')
-  assert.deepEqual(resumed.active(), ['read', 'grep', 'find', 'ls', 'exit_plan_mode'])
+  assert.deepEqual(resumed.active(), PLAN_TOOLS)
   resumed.entries.length = 0
   resumed.emit('session_start', { reason: 'new' })
   assert.equal(resumed.mode(), 'default')
-  assert.deepEqual(resumed.active(), [...resumed.base, 'desktop_todo'])
+  assert.deepEqual(resumed.active(), [...resumed.base, ...DESKTOP_TOOLS])
 })
 
 test('a seeded Plan Mode starts a new conversation read-only and writes the mode down', () => {
   const f = fixture([], false, 'plan')
   f.emit('session_start')
   assert.equal(f.mode(), 'plan')
-  assert.deepEqual(f.active(), ['read', 'grep', 'find', 'ls', 'exit_plan_mode'])
+  assert.deepEqual(f.active(), PLAN_TOOLS)
   assert.equal((f.emit('tool_call', { toolName: 'write' }) as { block: boolean }).block, true)
   const next = f.emit('before_agent_start') as { message: { customType: string } }
   assert.equal(next.message.customType, 'desktop-plan-context')
@@ -637,7 +1106,7 @@ test('a session entry still decides the mode when Plan Mode is the default', () 
   const f = fixture([{ type: 'custom', customType: 'pi-desktop-mode', data: { mode: 'default' } }], false, 'plan')
   f.emit('session_start')
   assert.equal(f.mode(), 'default')
-  assert.deepEqual(f.active(), [...f.base, 'desktop_todo'])
+  assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS])
   // Default is the absence of a mode, so session_start writes nothing.
   assert.equal(f.entries.length, 1)
 
@@ -657,14 +1126,14 @@ test('a conversation seeded into Plan Mode keeps it after the setting is turned 
   const reopened = fixture([...started.entries], false, 'default')
   reopened.emit('session_start')
   assert.equal(reopened.mode(), 'plan')
-  assert.deepEqual(reopened.active(), ['read', 'grep', 'find', 'ls', 'exit_plan_mode'])
+  assert.deepEqual(reopened.active(), PLAN_TOOLS)
 })
 
 test('the default seed leaves a new conversation in Default Mode with its original tools', () => {
   const f = fixture()
   f.emit('session_start')
   assert.equal(f.mode(), 'default')
-  assert.deepEqual(f.active(), [...f.base, 'desktop_todo'])
+  assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS])
   assert.equal(f.entries.length, 0)
 })
 

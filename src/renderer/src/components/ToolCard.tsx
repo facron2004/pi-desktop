@@ -310,6 +310,9 @@ export const ToolCard = memo(function ToolCard({
   )
 
   if (presentation === 'link') {
+    const failure = state === 'error' && result.length <= 180 ? result.trim() : ''
+    const failurePreview = /^[^\r\n]+$/.test(failure) ? failure : ''
+    const targetText = failurePreview || linkText
     return (
       <ErrorBoundary inline scope="tool card">
         <div className="tool tool--link" data-tone={summary.tone} data-status={state}>
@@ -326,7 +329,7 @@ export const ToolCard = memo(function ToolCard({
               </span>
               <span className="tool-link__verb">{linkVerb}</span>
             </button>
-            {linkText ? viewedFile && !subagentTasks.length && !commandTool ? (
+            {targetText ? viewedFile && state !== 'error' && !subagentTasks.length && !commandTool ? (
               <button
                 type="button"
                 className="tool-link__target"
@@ -339,17 +342,17 @@ export const ToolCard = memo(function ToolCard({
               <button
                 type="button"
                 className="tool-link__target"
-                data-monospace={subagentTasks.length ? 'false' : undefined}
+                data-monospace={subagentTasks.length || failurePreview ? 'false' : undefined}
                 title={
                   subagentTasks.length
                     ? taskNamesTitle
                     : commandTool
                       ? String(item.args?.command ?? linkText)
-                      : linkText
+                      : viewedFile || linkText || targetText
                 }
                 onClick={toggleOpen}
               >
-                {linkText}
+                {targetText}
               </button>
             ) : null}
             {StateIcon ? (

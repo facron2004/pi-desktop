@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUpRight, Check, ListChecks, MessageSquareText, TriangleAlert } from 'lucide-react'
+import { PLAN_REVIEW_TITLE } from '@shared/types'
 import { draftKeyOf, useAppStore, type SessionThread } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
@@ -7,8 +8,6 @@ import { activeConversationTitle, listPendingUiSessions } from '../lib/live-sess
 import { basename } from '../lib/path'
 import { Markdown } from './Markdown'
 import { findSessionMeta } from './RunStatusRow'
-
-const PLAN_REVIEW_TITLE = 'Plan ready to review'
 
 function pendingUiSignature(threads: Readonly<Record<string, SessionThread>>): string {
   let sig = ''
@@ -72,6 +71,8 @@ export function ExtensionDialog() {
   const optionsRef = useRef<HTMLDivElement>(null)
   const declineRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
+  const planRef = useRef<HTMLDivElement>(null)
+  const planReview = request?.method === 'confirm' && request.title === PLAN_REVIEW_TITLE
 
   const uiTarget = targetSessionKey
     ? { sessionKey: targetSessionKey, requestId: request?.id }
@@ -79,7 +80,20 @@ export function ExtensionDialog() {
       ? { requestId: request.id }
       : undefined
 
-  useDialogFocus(dialogRef, () => void dismissUi(uiTarget), Boolean(request))
+  const keepPlanning = async (cancelled = false) => {
+    await respondUi(cancelled ? { cancelled: true } : { confirmed: false }, uiTarget)
+    requestAnimationFrame(() => {
+      const current = useAppStore.getState()
+      if (targetSessionKey && draftKeyOf(current) === targetSessionKey && !current.uiRequest) {
+        window.dispatchEvent(new CustomEvent('pi:focus-composer'))
+      }
+    })
+  }
+
+  useDialogFocus(dialogRef, () => {
+    if (planReview) void keepPlanning(true)
+    else void dismissUi(uiTarget)
+  }, Boolean(request))
 
   useEffect(() => {
     if (!activeUiRequest) {
@@ -93,7 +107,11 @@ export function ExtensionDialog() {
     if (!request) return
     setValue(request.method === 'editor' ? (request.prefill ?? '') : '')
     setSelected(request.options?.length ? request.options[0] : null)
-    requestAnimationFrame(() => {
+    const frame = requestAnimationFrame(() => {
+      if (planReview && planRef.current) {
+        planRef.current.focus({ preventScroll: true })
+        return
+      }
       if (request.method === 'select') {
         optionsRef.current?.focus()
         return
@@ -106,7 +124,8 @@ export function ExtensionDialog() {
       }
       inputRef.current?.focus()
     })
-  }, [request?.id, request?.method, request?.prefill, request?.options])
+    return () => cancelAnimationFrame(frame)
+  }, [request?.id, request?.method, request?.prefill, request?.options, planReview])
 
   // Pi resolves the request on its own once the timeout expires, so the
   // countdown has to run in the client too.
@@ -136,8 +155,6 @@ export function ExtensionDialog() {
   if (!request) return null
 
   const title = t(request.title ?? 'Pi is asking for input')
-  // Plan review has two outcomes: keep editing the plan or explicitly execute it.
-  const planReview = request.method === 'confirm' && request.title === PLAN_REVIEW_TITLE
   const selectedIndex = (request.options ?? []).indexOf(selected ?? '')
   const originLabel =
     selectedPending?.title ||
@@ -179,7 +196,7 @@ export function ExtensionDialog() {
         role="dialog"
         aria-modal="true"
         aria-labelledby="extension-dialog-title"
-        aria-describedby={planReview && request.message ? 'extension-dialog-message' : undefined}
+        aria-describedby={planReview ? 'extension-dialog-plan-note' : undefined}
       >
         <div className="modal__context">
           <span className="modal__context-session" title={selectedPending?.cwd || originLabel}>
@@ -241,24 +258,31 @@ export function ExtensionDialog() {
           </span>
           <div className="modal__headings">
             <h2 id="extension-dialog-title" className="modal__title">{title}</h2>
-            {request.message ? (
-              planReview ? (
-                null
-              ) : (
-                <p
-                  id="extension-dialog-message"
-                  className="modal__message"
-                  data-long={request.message.length > 600 ? 'true' : undefined}
-                >
-                  {request.approval ? t(request.message) : request.message}
-                </p>
-              )
+            {planReview ? (
+              <p id="extension-dialog-plan-note" className="modal__message">
+                {t('Approval restores the working tools for this conversation.')}
+              </p>
+            ) : request.message ? (
+              <p
+                id="extension-dialog-message"
+                className="modal__message"
+                data-long={request.message.length > 600 ? 'true' : undefined}
+              >
+                {request.approval ? t(request.message) : request.message}
+              </p>
             ) : null}
           </div>
         </header>
 
         {planReview && request.message ? (
-          <div id="extension-dialog-message" className="modal__plan" role="region" aria-label={t('Implementation plan')}>
+          <div
+            key={request.id}
+            ref={planRef}
+            className="modal__plan"
+            role="region"
+            aria-label={t('Implementation plan')}
+            tabIndex={0}
+          >
             <Markdown>{request.message}</Markdown>
           </div>
         ) : null}
@@ -373,7 +397,10 @@ export function ExtensionDialog() {
               <button
                 ref={declineRef}
                 className="btn"
-                onClick={() => void respondUi({ confirmed: false }, uiTarget)}
+                onClick={() => {
+                  if (planReview) void keepPlanning()
+                  else void respondUi({ confirmed: false }, uiTarget)
+                }}
               >
                 {t(planReview ? 'Keep planning' : request.approval ? 'Deny' : 'No')}
               </button>

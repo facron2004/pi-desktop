@@ -1,3 +1,4 @@
+import { ASK_USER_TOOL_NAME } from '@shared/types'
 import { relativePath } from './path'
 
 export type ToolTone = 'read' | 'edit' | 'exec' | 'write' | 'search' | 'generic'
@@ -152,6 +153,12 @@ const DESCRIPTORS: Record<string, ToolDescriptor> = {
     plural: 'plans',
     tone: 'generic',
     summary: (args) => brief(str(args.plan))
+  },
+  [ASK_USER_TOOL_NAME]: {
+    label: 'Question',
+    plural: 'questions',
+    tone: 'generic',
+    summary: (args) => brief(str(args.question))
   },
   computer: {
     label: 'Computer',

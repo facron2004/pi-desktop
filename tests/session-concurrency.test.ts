@@ -1,6 +1,7 @@
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  GOAL_STATUS_KEY,
   SUBAGENT_EDITOR_CANCEL_STATUS_KEY,
   type ExtensionUiResponse,
   type PiEvent,
@@ -25,6 +26,7 @@ const eventListeners = new Set<(payload: EventPayload) => void>()
 const rekeyListeners = new Set<(change: RekeyPayload) => void>()
 const statusListeners = new Set<(payload: { ownerId: string; status: RuntimeStatus }) => void>()
 const queueListeners = new Set<(payload: RuntimeQueueEvent) => void>()
+const notificationListeners = new Set<(payload: { sessionKey: string; reply?: string }) => void>()
 const emit = (payload: EventPayload) => eventListeners.forEach(handler => handler(payload))
 const rekey = (change: RekeyPayload) => rekeyListeners.forEach(handler => handler(change))
 const emitQueue = (payload: RuntimeQueueEvent) => queueListeners.forEach(handler => handler(payload))
@@ -39,7 +41,12 @@ let customRespondUi: ((requestId: string, response: ExtensionUiResponse, key?: s
 const stopped: string[] = []
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
 const bridge = {
-  app: { info: async () => ({}), setTheme: async () => {} },
+  app: {
+    info: async () => ({}),
+    setTheme: async () => {},
+    onNotificationOpen: (handler: (payload: { sessionKey: string; reply?: string }) => void) =>
+      subscribe(notificationListeners, handler)
+  },
   settings: { get: async () => ({ workspaces: [] }), patch: async (patch: object) => ({ workspaces: [], ...patch }) },
   workspaces: {
     remove: async (id?: string, hiddenPath?: string) => {
@@ -1123,6 +1130,32 @@ test('background warning/error notifications attribute their conversation title'
   useAppStore.getState().clearToast()
 })
 
+test('a native notification reply continues its own conversation in the background', async () => {
+  const foreground = session('notification-foreground.jsonl')
+  const background = { ...session('notification-background.jsonl'), cwd: 'E:/background' }
+  await useAppStore.getState().selectSession(foreground)
+  useAppStore.setState({ sessions: [foreground, background], composerText: 'Foreground draft' })
+
+  for (const listener of notificationListeners) {
+    listener({ sessionKey: background.file, reply: '  Continue with the next step  ' })
+    listener({ sessionKey: foreground.file, reply: '   ' })
+    listener({ sessionKey: 'missing.jsonl', reply: 'Do not redirect this reply' })
+  }
+  await tick()
+
+  assert.deepEqual(calls.filter((call) => call.command === 'prompt'), [{
+    command: 'prompt', key: background.file,
+    payload: { message: 'Continue with the next step', streamingBehavior: 'followUp' }
+  }])
+  assert.ok(ensureCalls.some(({ sessionKey, cwd }) => sessionKey === background.file && cwd === background.cwd))
+  assert.equal(useAppStore.getState().activeSessionFile, foreground.file)
+  assert.equal(useAppStore.getState().composerText, 'Foreground draft')
+
+  for (const listener of notificationListeners) listener({ sessionKey: background.file })
+  await tick()
+  assert.equal(useAppStore.getState().activeSessionFile, background.file)
+})
+
 test('fork rekey clones non-draft threads with a fresh clientKey while keeping the parent intact', async () => {
   await useAppStore.getState().selectSession(session('fork-parent.jsonl'))
   emit({ ownerId: 'fork-parent.jsonl', event: { type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'parent msg' }], timestamp: 1 } } })
@@ -1201,6 +1234,124 @@ test('hydrateSession deduplicates concurrent loads and preserves live prompt ite
   assert.equal(items[1]?.kind, 'assistant')
   assert.equal(lastAssistantText([items[1]]), 'historical answer')
   assert.equal(items[2]?.kind === 'user' ? items[2].text : '', 'live tail')
+})
+
+test('opening a cold conversation shows the saved mode and goal before Pi starts', async () => {
+  const goal = { text: 'Verify the saved goal', status: 'paused' as const }
+  const disk: SessionHydrationResult = {
+    messages: [{ role: 'user', content: goal.text, timestamp: 1 }],
+    historyTruncated: false,
+    taskMode: { mode: 'goal', goal }
+  }
+  bridge.sessions.hydrate = async () => disk
+  await useAppStore.getState().selectSession(session('cold-goal.jsonl'))
+
+  const state = useAppStore.getState()
+  assert.equal(state.agentMode, 'goal')
+  assert.deepEqual(state.uiStatuses.find(({ key }) => key === GOAL_STATUS_KEY), {
+    key: GOAL_STATUS_KEY, text: JSON.stringify(goal)
+  })
+  assert.equal(ensureCalls.length, 0)
+})
+
+test('late history hydration cannot restore a goal already cleared by Pi', async () => {
+  const ownerId = 'live-goal-clear.jsonl'
+  let finishRead!: (result: SessionHydrationResult) => void
+  bridge.sessions.hydrate = async () => new Promise((resolve) => { finishRead = resolve })
+  const selected = useAppStore.getState().selectSession(session(ownerId))
+  emit({
+    ownerId,
+    event: { type: 'extension_ui_request', id: 'live-mode', method: 'setStatus', statusKey: 'pi-desktop-mode', statusText: 'default' }
+  })
+  emit({
+    ownerId,
+    event: { type: 'extension_ui_request', id: 'live-clear', method: 'setStatus', statusKey: GOAL_STATUS_KEY }
+  })
+  finishRead({
+    messages: [{ role: 'user', content: 'Old goal', timestamp: 1 }],
+    historyTruncated: false,
+    taskMode: { mode: 'goal', goal: { text: 'Old goal', status: 'active' } }
+  })
+  await selected
+  assert.equal(useAppStore.getState().agentMode, 'default')
+  assert.equal(useAppStore.getState().uiStatuses.some(({ key }) => key === GOAL_STATUS_KEY), false)
+})
+
+for (const entry of ['sidebar', 'workspace'] as const) {
+  test(`${entry} opens the saved history of a conversation already streaming`, async () => {
+    const workspace = { id: 'reconnect', path: 'E:/repo', name: 'Repo', lastOpenedAt: 1 }
+    const ownerId = `reconnect-${entry}.jsonl`
+    const meta = { ...session(ownerId), cwd: workspace.path }
+    const call = { type: 'toolCall' as const, id: 'reconnected-tool', name: 'bash', arguments: { command: 'echo ok' } }
+    const assistant = { role: 'assistant', content: [{ type: 'text' as const, text: 'Running the check' }, call], timestamp: 4 }
+    const disk: SessionHydrationResult = {
+      messages: [
+        { role: 'user', content: 'Continue', timestamp: 1 },
+        { role: 'assistant', content: 'Previous answer', timestamp: 2 },
+        { role: 'user', content: 'Continue', timestamp: 3 },
+        assistant
+      ],
+      historyTruncated: false
+    }
+    let calls = 0
+    bridge.sessions.hydrate = async () => { calls += 1; return disk }
+    const send = (event: PiEvent) => emit({ ownerId, event })
+    send({ type: 'agent_start' })
+    send({ type: 'turn_start' })
+    send({ type: 'message_start', message: { ...assistant, content: [] } })
+    send({ type: 'message_end', message: assistant })
+    send({ type: 'tool_execution_start', toolName: 'bash', toolCallId: call.id, args: call.arguments })
+    send({ type: 'tool_execution_update', toolCallId: call.id, partialResult: { content: [{ type: 'text', text: 'still working' }] } })
+    const liveItems = useAppStore.getState().threads[ownerId].items
+    assert.deepEqual(liveItems.map(({ kind }) => kind), ['assistant', 'tool'])
+
+    // The sidebar can still have a live row with no count from disk.
+    if (entry === 'sidebar') await useAppStore.getState().selectSession(meta)
+    else await useAppStore.getState().openWorkspace(workspace, ownerId)
+
+    const state = useAppStore.getState()
+    assert.equal(calls, 1)
+    assert.equal(state.isStreaming, true)
+    assert.deepEqual(state.items.map(({ kind }) => kind), ['user', 'assistant', 'user', 'assistant', 'tool'])
+    assert.deepEqual(state.items.filter(item => item.kind === 'user').map(({ timestamp }) => timestamp), [1, 3])
+    assert.equal(lastAssistantText(state.items.slice(0, 2)), 'Previous answer')
+    assert.equal(state.items[3].id, liveItems[0].id)
+    const tool = state.items[4]
+    assert.ok(tool.kind === 'tool')
+    assert.equal(tool.id, liveItems[1].id)
+    assert.equal(tool.status, 'running')
+    assert.equal(tool.progress, 'still working')
+
+    await useAppStore.getState().selectSession(meta)
+    assert.equal(calls, 1, 'reselecting with history already loaded should use the cache')
+    send({ type: 'tool_execution_end', toolCallId: call.id, result: { content: [{ type: 'text', text: 'ok' }] }, isError: false })
+    const tools = useAppStore.getState().items.filter(item => item.kind === 'tool')
+    assert.deepEqual(tools.map(({ id, status, result }) => [id, status, result]), [[tool.id, 'ok', 'ok']])
+  })
+}
+
+test('returning to a conversation whose history read was superseded retries the load', async () => {
+  const a = { ...session('hydrate-reselect-a.jsonl'), messageCount: 2 }
+  const b = { ...session('hydrate-reselect-b.jsonl'), messageCount: 1 }
+  let readsA = 0
+  let finishFirstRead!: (result: SessionHydrationResult) => void
+  bridge.sessions.hydrate = async (file?: string) => {
+    if (file === a.file && ++readsA === 1) {
+      return new Promise<SessionHydrationResult>(resolve => { finishFirstRead = resolve })
+    }
+    return { messages: [{ role: 'user', content: file ?? '', timestamp: 1 }], historyTruncated: false }
+  }
+  const first = useAppStore.getState().selectSession(a)
+  await useAppStore.getState().selectSession(b)
+  const back = useAppStore.getState().selectSession(a)
+  finishFirstRead({ messages: [], historyTruncated: false })
+  await Promise.all([first, back])
+
+  const state = useAppStore.getState()
+  assert.equal(state.activeSessionFile, a.file)
+  assert.equal(state.hydratingSessionFile, undefined)
+  assert.equal(readsA, 2)
+  assert.equal(state.items[0]?.kind === 'user' && state.items[0].text, a.file)
 })
 
 test('deskPage unread mark, hadError settlement, idle draft pruning, prewarm flag, and per-owner drainPending', async () => {

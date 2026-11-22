@@ -9,7 +9,7 @@ export interface ErrorNoticeProps {
 }
 
 /**
- * The inline error row under an answer.
+ * The inline error row for an answer.
  *
  * It keeps the `notice` class so the existing notice stylesheet applies,
  * and it is deliberately one row: the failure belongs to the answer that

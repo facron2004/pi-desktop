@@ -1,64 +1,41 @@
 import type { GitStatus } from '@shared/types'
 import type { ThreadItem } from './thread'
-import { describeTool } from './tools'
+import { subagentTasks } from './subagents'
+import { commandSummary } from './tools'
 
-/**
- * The task rail reads four things: the Git state of the folder, the background
- * tasks a run is executing, the plan the agent is working through and the files
- * it produced.
- *
- * Everything here is a projection: the rail keeps no state of its own, so a
- * conversation switch shows the state of whatever is on screen and nothing has
- * to keep two copies of it in step.
- */
+const BACKGROUND_COMMAND_DELAY_MS = 2_000
+const SUBAGENT_TASK_LIMIT = 8
 
-/** One tool call the run is still executing. */
-export interface BackgroundTask {
+export interface BackgroundCommand {
   id: string
-  /** The tool's own name, e.g. `bash`, `grep`, `powershell`. */
-  toolName: string
-  /** The readable verb from the tool registry, e.g. `Bash`, `Grep`. */
+  command: string
   label: string
-  /** What it is working on: a command, a pattern, a path. */
-  detail: string
-  startedAt?: number
+  visibleAt: number
 }
 
-/** How many in-flight tool calls the rail shows before it stops listing. */
-const BACKGROUND_TASK_LIMIT = 8
-
-/** Tools that are bookkeeping rather than work the reader waits on. */
-const NOT_BACKGROUND = new Set(['subagent', 'todo', 'desktop_todo', 'exit_plan_mode'])
-
-/**
- * The tools the current run is executing right now.
- *
- * A "background task" here is an in-flight tool call — a shell command, a
- * search, a fetch. Subagents are not one: they have their own badge beside the
- * conversation title and their own page in the workspace panel, and listing
- * them here made the rail describe the same work twice under the wrong name.
- * The section is live by construction: a call enters it while `running` and
- * leaves it when the tool finishes, so the rail answers "what is going on now".
- */
-export function listBackgroundTasks(
-  items: readonly ThreadItem[],
-  root?: string
-): BackgroundTask[] {
-  const tasks: BackgroundTask[] = []
+/** Use Pi's live shell tool lifecycle and delay the row to avoid flashing quick commands. */
+export function listBackgroundCommands(items: readonly ThreadItem[]): BackgroundCommand[] {
+  const commands: BackgroundCommand[] = []
   for (const item of items) {
-    if (item.kind !== 'tool') continue
-    if (item.status !== 'running') continue
-    if (NOT_BACKGROUND.has(item.toolName)) continue
-    const descriptor = describeTool(item.toolName)
-    tasks.push({
-      id: item.toolCallId || item.id,
-      toolName: item.toolName,
-      label: descriptor.label,
-      detail: descriptor.summary(item.args ?? {}, root),
-      startedAt: item.startedAt
+    if (item.kind !== 'tool' || item.status !== 'running' || item.startedAt === undefined) continue
+    if (item.toolName !== 'bash' && item.toolName !== 'powershell') continue
+    const { command } = item.args
+    if (typeof command !== 'string' || !command.trim()) continue
+    commands.push({
+      id: item.id,
+      command,
+      label: commandSummary(command),
+      visibleAt: item.startedAt + BACKGROUND_COMMAND_DELAY_MS
     })
   }
-  return tasks.slice(-BACKGROUND_TASK_LIMIT)
+  return commands
+}
+
+/** Recent dispatched subagents, including their outcomes on session replay. */
+export function listSubagentTasks(items: readonly ThreadItem[]) {
+  return subagentTasks(items)
+    .filter((task) => task.status !== 'proposed')
+    .slice(-SUBAGENT_TASK_LIMIT)
 }
 
 /** One file the agent produced, addressed relative to the workspace root. */

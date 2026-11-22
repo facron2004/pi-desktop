@@ -1,4 +1,6 @@
 import { lazy, memo, Suspense, useMemo } from 'react'
+import { Check } from 'lucide-react'
+import { ASK_USER_TOOL_NAME } from '@shared/types'
 import type { ToolItem } from '../../lib/thread'
 import { diffableEdits, writtenContent } from '../../lib/tool-renderers'
 import { buildDiff, type DiffBlock } from '../../lib/diff-fold'
@@ -85,6 +87,10 @@ export const ToolResultPanel = memo(function ToolResultPanel({
     ? item.args.plan
     : ''
   const shot = computerShot(item.details)
+  // A question tool call is a choice the reader made — or dismissed. The
+  // options are part of the record: after a replay the answer alone does not
+  // say what the alternatives were.
+  const question = questionDetail(item)
   // The prompt belongs to the picture's fold: the card keeps its one-line
   // header for the verb, and this is where the reader finds the words again.
   const imagePrompt =
@@ -93,7 +99,10 @@ export const ToolResultPanel = memo(function ToolResultPanel({
       : ''
   // A successful image call already renders its pictures in the card strip and
   // its prompt above; the tool's text summary of saved paths is for the model.
-  const suppressResult = item.toolName === 'generate_image' && item.status !== 'error'
+  // A question's result is addressed to the model ("The user selected: …") and
+  // would only repeat the marked option below it.
+  const suppressResult =
+    (item.toolName === 'generate_image' && item.status !== 'error') || question !== null
 
   if (!open) return null
 
@@ -113,6 +122,30 @@ export const ToolResultPanel = memo(function ToolResultPanel({
       {plan ? (
         <div className="tool__plan">
           <Markdown>{plan}</Markdown>
+        </div>
+      ) : null}
+
+      {question ? (
+        <div className="tool__question">
+          {question.question ? <p className="tool__question-text">{question.question}</p> : null}
+          {question.options.length ? (
+            <ul className="tool__question-options">
+              {question.options.map((option) => {
+                const chosen = question.answer === option
+                return (
+                  <li key={option} className="tool__question-option" data-answer={chosen || undefined}>
+                    <span className="tool__question-mark" aria-hidden="true">
+                      {chosen ? <Check size={11} /> : null}
+                    </span>
+                    <span>{option}</span>
+                  </li>
+                )
+              })}
+            </ul>
+          ) : null}
+          {question.answered && !question.answer ? (
+            <p className="tool__question-none">{t('No option was selected')}</p>
+          ) : null}
         </div>
       ) : null}
 
@@ -189,4 +222,41 @@ function computerShot(details: unknown): { data: string; mimeType: string } | nu
     ? image.mimeType
     : 'image/png'
   return { data: image.data, mimeType }
+}
+
+/**
+ * The choice a `desktop_ask_user` call offered, and the one that was taken.
+ *
+ * The options are read from the call's own arguments when the result carries no
+ * details yet — a call that is still waiting, or one whose process died before
+ * it answered. `answered` says whether a result exists at all, so a pending
+ * question is never described as one the reader declined.
+ */
+function questionDetail(
+  item: ToolItem
+): { question: string; options: string[]; answer: string | null; answered: boolean } | null {
+  if (item.toolName !== ASK_USER_TOOL_NAME) return null
+  const details = item.details && typeof item.details === 'object'
+    ? (item.details as { question?: unknown; options?: unknown; answer?: unknown })
+    : undefined
+  const rawOptions = Array.isArray(details?.options)
+    ? details.options
+    : Array.isArray(item.args?.options)
+      ? item.args.options
+      : []
+  const options = rawOptions.filter(
+    (option): option is string => typeof option === 'string' && Boolean(option.trim())
+  )
+  const question = typeof details?.question === 'string'
+    ? details.question.trim()
+    : typeof item.args?.question === 'string'
+      ? item.args.question.trim()
+      : ''
+  if (!question && options.length === 0) return null
+  return {
+    question,
+    options,
+    answer: typeof details?.answer === 'string' && details.answer ? details.answer : null,
+    answered: details !== undefined && 'answer' in details
+  }
 }

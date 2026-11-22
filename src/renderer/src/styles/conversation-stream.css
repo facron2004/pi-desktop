@@ -412,8 +412,7 @@
   max-width: 100%;
 }
 
-/* A fold toggle, not a link: the caret and the accent ink already say it can
-   be opened, and a dotted rule under the row read as an underline in prose. */
+/* An inline disclosure with the same spacing as the individual tool links. */
 .process__head {
   display: inline-flex;
   align-items: center;
@@ -435,21 +434,8 @@
 }
 
 .process__head:hover,
-.process__head:focus-visible,
-.process__head:active {
+.process__head:focus-visible {
   background: none;
-  color: var(--accent);
-}
-
-.process__head:hover .process__label,
-.process__head:hover .process__summary,
-.process__head:hover .caret,
-.process__head:focus-visible .process__label,
-.process__head:focus-visible .process__summary,
-.process__head:focus-visible .caret,
-.process__head:active .process__label,
-.process__head:active .process__summary,
-.process__head:active .caret {
   color: var(--accent);
 }
 
@@ -458,39 +444,36 @@
   outline-offset: 2px;
 }
 
+.process__icon,
 .process__head .caret {
   flex: 0 0 auto;
+}
+
+.process__head .caret {
   color: var(--text-faint);
 }
 
-.process__label {
-  flex: 0 0 auto;
-  font-weight: var(--weight-ui);
-  line-height: var(--leading-small);
-  color: var(--text-secondary);
+.process__head:hover .caret,
+.process__head:focus-visible .caret {
+  color: currentColor;
 }
 
-.process__summary {
+.process__label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  line-height: var(--leading-small);
-  color: var(--text-muted);
 }
 
-.process[data-status='error'] .process__label,
-.process[data-status='error'] .process__summary {
+.process__failure {
+  flex: 0 0 auto;
+  white-space: nowrap;
   color: var(--status-danger);
 }
 
 .process[data-status='aborted'] .process__label {
   color: var(--status-warning);
 }
-
-/* A live batch gathered by `toolCallSummary` is this same head, so it borrows
-   the same words, caret, ink and status colours: `data-live` only marks that
-   the line is still working, and the spinner above it says so too. */
 
 .process__body {
   display: flex;
@@ -521,7 +504,7 @@
 
 .tool-link {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--sp-2);
   width: fit-content;
   max-width: 100%;
@@ -530,7 +513,9 @@
 }
 
 .tool-link__toggle {
-  display: inline-flex;
+  display: inline-grid;
+  grid-auto-flow: column;
+  align-content: center;
   align-items: center;
   gap: var(--sp-2);
   flex: 0 0 auto;
@@ -543,7 +528,6 @@
 .tool-link__icon {
   display: inline-grid;
   place-items: center;
-  flex: 0 0 auto;
   width: 14px;
   height: 14px;
   color: var(--text-tertiary);
@@ -556,6 +540,7 @@
 }
 
 .tool-link__verb {
+  align-self: baseline;
   min-width: 0;
   overflow: hidden;
   font-size: var(--text-small);
@@ -628,10 +613,8 @@
   color: var(--status-warning);
 }
 
-.tool--link[data-status='error'] .tool-link__verb,
-.tool--link[data-status='error'] .tool-link__target,
-.tool--link[data-status='error'] .tool-link__icon {
-  color: var(--status-danger);
+.tool-link > svg {
+  align-self: center;
 }
 
 .tool--link[data-status='aborted'] .tool-link__verb,
@@ -1336,15 +1319,12 @@
   color: var(--text-secondary);
 }
 
-.thinking[data-streaming='true'] .thinking__title,
-.thinking[data-streaming='true'] .thinking__duration {
+.thinking[data-streaming='true'] .thinking__title {
   color: var(--text-secondary);
 }
 
 .thinking[data-streaming='true'] .thinking__title,
-.thinking[data-streaming='true'] .thinking__duration,
 .process[data-status='running'] .process__label,
-.process[data-status='running'] .process__summary,
 .tool--link[data-status='running'] .tool-link__verb,
 .tool--link[data-status='running'] .tool-link__target,
 .tool--link[data-status='running'] .tool-link__icon,
@@ -1367,9 +1347,7 @@
   .run-status__icon .spin,
   .run-status__icon .pulse,
   .thinking[data-streaming='true'] .thinking__title,
-  .thinking[data-streaming='true'] .thinking__duration,
   .process[data-status='running'] .process__label,
-  .process[data-status='running'] .process__summary,
   .tool--link[data-status='running'] .tool-link__verb,
   .tool--link[data-status='running'] .tool-link__target,
   .tool--link[data-status='running'] .tool-link__icon,

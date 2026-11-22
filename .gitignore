@@ -17,6 +17,7 @@ output/
 .playwright-cli/
 .playwright-mcp/
 /.tmp/
+/.tmp-*
 /.pi-desktop-build/
 
 # Agent teamwork scratch: handoffs and dispatches are working files, not

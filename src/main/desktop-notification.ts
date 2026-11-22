@@ -1,5 +1,32 @@
 import { Notification, type BrowserWindow } from 'electron'
+import type { AgentMessage } from '@shared/types'
 import { windowIconImage } from './app-icon'
+
+/** Pi's agent_end contains the messages produced by this run. */
+export function describeRunCompletion(messages: unknown): { body: string; failed: boolean } {
+  const assistant = Array.isArray(messages)
+    ? (messages as AgentMessage[]).findLast((message) => message?.role === 'assistant')
+    : undefined
+  const failed = assistant?.stopReason === 'error'
+  const content = assistant?.content
+  let text = ''
+  if (failed) {
+    text = assistant.errorMessage ?? ''
+  } else if (typeof content === 'string' && assistant?.stopReason !== 'toolUse') {
+    text = content
+  } else if (Array.isArray(content)) {
+    const lastTool = content.findLastIndex((block) => block.type === 'toolCall')
+    text = content.slice(lastTool + 1)
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join(' ')
+  }
+  const preview = text.replace(/[\s\u0000-\u001f]+/g, ' ').trim()
+  const body = preview.length > 480
+    ? `${preview.slice(0, 479).replace(/[\uD800-\uDBFF]$/, '').trimEnd()}…`
+    : preview
+  return { body, failed }
+}
 
 /**
  * A system notification, with the app mark and the click-to-focus behaviour.
@@ -30,17 +57,22 @@ import { windowIconImage } from './app-icon'
  */
 export function showDesktopNotification(
   mainWindow: BrowserWindow,
-  title: string,
-  body: string,
-  onActivate?: () => void
+  { title, body, onActivate, reply }: {
+    title: string
+    body: string
+    onActivate: () => void
+    reply?: { placeholder: string; submit: (message: string) => void }
+  }
 ): void {
   if (mainWindow.isDestroyed() || !Notification.isSupported()) return
 
   const icon = windowIconImage()
+  const inlineReply = process.platform === 'win32' || process.platform === 'darwin' ? reply : undefined
   const notification = new Notification({
     title,
     body,
-    ...(icon ? { icon } : {})
+    ...(icon ? { icon } : {}),
+    ...(inlineReply ? { hasReply: true, replyPlaceholder: inlineReply.placeholder } : {})
   })
 
   notification.on('click', () => {
@@ -48,8 +80,14 @@ export function showDesktopNotification(
     if (mainWindow.isMinimized()) mainWindow.restore()
     if (!mainWindow.isVisible()) mainWindow.show()
     mainWindow.focus()
-    onActivate?.()
+    onActivate()
   })
+  if (inlineReply) {
+    notification.once('reply', (event) => {
+      const message = event.reply.trim()
+      if (message && !mainWindow.isDestroyed()) inlineReply.submit(message)
+    })
+  }
   notification.on('failed', (_event, error) => {
     console.error('[pi-desktop] could not show system notification:', error)
   })

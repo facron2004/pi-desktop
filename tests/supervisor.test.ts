@@ -1057,11 +1057,27 @@ test('separate supervisors share overlapping shared runs and serialize exclusive
 
   // Exclusive lock across supervisors waits until both shared runs settle.
   await assert.rejects(first.withCwdLock('C:/shared', async () => {}), /conversation is working/)
+  // A settle reaches the gate asynchronously, so the lock is polled instead of
+  // slept for: a fixed delay is what made this test fail on a busy machine,
+  // where the event had not been folded in yet and the exclusive lock below
+  // rejected instead of waiting.
+  const waitUntilExclusive = async (): Promise<void> => {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      try {
+        await first.withCwdLock('C:/shared', async () => {})
+        return
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+    }
+    assert.fail('both shared runs did not settle')
+  }
   firstRuntime.emit('event', { type: 'agent_settled' } as PiEvent)
   await new Promise((resolve) => setTimeout(resolve, 25))
+  // Only the first conversation settled: the other one still holds the folder.
   await assert.rejects(first.withCwdLock('C:/shared', async () => {}), /conversation is working/)
   secondRuntime.emit('event', { type: 'agent_settled' } as PiEvent)
-  await new Promise((resolve) => setTimeout(resolve, 25))
+  await waitUntilExclusive()
 
   let releaseExclusive!: () => void
   const exclusive = first.withCwdLock('C:/shared', () => new Promise<void>((resolve) => {
@@ -1090,7 +1106,9 @@ test('separate supervisors share overlapping shared runs and serialize exclusive
   assert.equal(secondRuntime.isRunning, false)
   const probe = new InterprocessCwdGate(lockDirectory)
   let acquired = false
-  for (let attempt = 0; attempt < 20 && !acquired; attempt += 1) {
+  // A released cross-process lease is visible to another gate a moment later;
+  // the budget is generous so a busy machine cannot decide this assertion.
+  for (let attempt = 0; attempt < 80 && !acquired; attempt += 1) {
     acquired = await probe.acquire('C:/shared', 'probe', 'exclusive')
     if (!acquired) await new Promise((resolve) => setTimeout(resolve, 50))
   }

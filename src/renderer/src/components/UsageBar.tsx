@@ -1,3 +1,4 @@
+import { Database, Gauge } from 'lucide-react'
 import { memo, useEffect, useMemo, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { sessionMetrics } from '../lib/session-metrics'
@@ -86,7 +87,10 @@ export const UsageBar = memo(function UsageBar() {
             title={t('Session statistics')}
             onClick={toggle}
           >
-            <span title={t('Session statistics')}>{countLabel}</span>
+            <span className="usage-bar__item" title={t('Session statistics')}>
+              <Gauge className="usage-bar__icon" size={12} aria-hidden="true" />
+              {countLabel}
+            </span>
             <span aria-hidden="true">·</span>
             <span title={t('Output tokens per second')}>
               {displayMetrics.tps !== null ? (
@@ -119,6 +123,7 @@ export const UsageBar = memo(function UsageBar() {
             onClick={toggle}
           >
             <span className="usage-bar__item" title={t('Tokens used in this conversation')}>
+              <Database className="usage-bar__icon" size={12} aria-hidden="true" />
               <span className="usage-bar__label">{t('Tokens')}</span>
               <strong>{formatTokens(displayMetrics.totalTokens)}</strong>
             </span>

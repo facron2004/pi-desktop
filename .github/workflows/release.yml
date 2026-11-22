@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本（可带 v 前缀）。留空则用 package.json 里的版本'
+        required: false
+        type: string
+      draft:
+        description: '先建草稿，不对外发布'
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: '标记为预发布'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: 打包并发布 Windows 版
+    runs-on: windows-latest
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 核对版本
+        id: version
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "v$version" }
+          if ($env:INPUT_VERSION) {
+            $tag = 'v' + ($env:INPUT_VERSION -replace '^v', '')
+          }
+          if ($tag -ne "v$version") {
+            throw "标签 $tag 与 package.json 的版本 $version 不一致：先改版本号，再打标签"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Output "发布版本：$tag"
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 单元测试
+        run: npm test
+
+      - name: 打包
+        run: npm run dist
+
+      - name: 校验打包结果
+        run: node scripts/verify-package.cjs
+
+      - name: 整理发布产物
+        shell: pwsh
+        run: |
+          & scripts/prepare-release-assets.ps1 -Version '${{ steps.version.outputs.version }}' -OutDir 'release/publish'
+          Get-ChildItem release/publish -File | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: 创建或更新 Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_DRAFT: ${{ inputs.draft }}
+          RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          $assets = @(Get-ChildItem -Path 'release/publish' -File | ForEach-Object { $_.FullName })
+          if ($assets.Count -eq 0) { throw '没有可上传的发布产物' }
+          $notesFile = "docs/releases/$env:TAG.md"
+          $hasNotes = Test-Path -LiteralPath $notesFile
+          $title = "Pi Desktop $env:TAG"
+          $flags = @()
+          if ($env:RELEASE_DRAFT -eq 'true') { $flags += '--draft' }
+          if ($env:RELEASE_PRERELEASE -eq 'true') { $flags += '--prerelease' }
+
+          $exists = $false
+          try {
+            gh release view $env:TAG --json tagName | Out-Null
+            if ($LASTEXITCODE -eq 0) { $exists = $true }
+          } catch {
+            $exists = $false
+          }
+
+          if ($exists) {
+            Write-Output "Release $env:TAG 已存在，覆盖上传产物"
+            gh release upload $env:TAG @assets --clobber
+            if ($hasNotes) {
+              gh release edit $env:TAG --title $title --notes-file $notesFile
+            } else {
+              gh release edit $env:TAG --title $title
+            }
+          } else {
+            if ($hasNotes) {
+              gh release create $env:TAG @assets --target '${{ github.sha }}' --title $title --notes-file $notesFile @flags
+            } else {
+              gh release create $env:TAG @assets --target '${{ github.sha }}' --title $title --generate-notes @flags
+            }
+          }
+          gh release view $env:TAG --json tagName,url,assets
+
+  update-readme:
+    name: 更新 README 下载链接
+    needs: publish
+    if: needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 检出默认分支
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 改写 README
+        run: node scripts/update-readme-release.mjs '${{ needs.publish.outputs.version }}'
+
+      - name: 提交
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md
+          if git diff --cached --quiet; then
+            echo 'README 的下载链接已经指向这个版本了'
+            exit 0
+          fi
+          git commit -m 'docs: update download links to ${{ needs.publish.outputs.version }}'
+          git push origin HEAD:${{ github.event.repository.default_branch }}

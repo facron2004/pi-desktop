@@ -1,3 +1,4 @@
+import { ASK_USER_TOOL_NAME } from '@shared/types'
 import type { ToolItem } from './thread'
 import { imageModelName, imageRatioLabel } from './image-options'
 
@@ -15,8 +16,10 @@ export type ToolRendererKind =
   | 'search'
   | 'mcp'
   | 'todo'
+  | 'goal'
   | 'subagent'
   | 'plan'
+  | 'question'
   | 'computer'
   | 'image'
   | 'generic'
@@ -31,7 +34,16 @@ const REGISTRY: Record<string, ToolRendererKind> = {
   find: 'search',
   ls: 'search',
   subagent: 'subagent',
+  swarm_spawn: 'subagent',
+  swarm_task: 'subagent',
+  swarm_message: 'subagent',
+  swarm_collect: 'subagent',
+  swarm_status: 'subagent',
+  swarm_disband: 'subagent',
+  desktop_goal_finish: 'goal',
+  desktop_todo: 'todo',
   exit_plan_mode: 'plan',
+  [ASK_USER_TOOL_NAME]: 'question',
   computer: 'computer',
   generate_image: 'image'
 }
@@ -82,6 +94,13 @@ const TONES: Record<string, ToolSummaryTone> = {
   find: 'search',
   ls: 'search',
   subagent: 'subagent',
+  swarm_spawn: 'subagent',
+  swarm_task: 'subagent',
+  swarm_message: 'subagent',
+  swarm_collect: 'subagent',
+  swarm_status: 'subagent',
+  swarm_disband: 'subagent',
+  desktop_goal_finish: 'plan',
   exit_plan_mode: 'plan',
   computer: 'computer',
   generate_image: 'image'
@@ -128,11 +147,44 @@ export function summarizeTool(tool: ToolItem): ToolSummary {
       label = 'MCP'
       detail = oneLine(tool.toolName.replace(/^mcp__/, '').replace(/__/g, ' · '))
       break
-    case 'todo':
+    case 'todo': {
+      const items = Array.isArray(args.items)
+        ? args.items
+        : Array.isArray(args.todos)
+          ? args.todos
+          : []
+      const steps = items.filter((item) => Boolean(item) && typeof item === 'object')
       label = 'Todo'
-      detail = oneLine(str(args.content) || str(args.todos))
+      // Counts only: the card's verb already says what the numbers are, and a
+      // word here would have to be translated at render time, where this
+      // projection is not recomputed when the language changes.
+      detail = steps.length
+        ? `${steps.filter((item) => (item as { status?: unknown }).status === 'completed').length}/${steps.length}`
+        : oneLine(str(args.content) || str(args.todos))
       break
+    }
+    case 'goal': {
+      // The outcome is the card's verb: "Complete" alone would read as a
+      // nameless status on a tool that is not obviously Goal Mode's.
+      const status = str(args.status)
+      label = status === 'complete' ? 'Goal complete' : status === 'blocked' ? 'Goal blocked' : 'Goal'
+      detail = oneLine(str(args.summary))
+      break
+    }
     case 'subagent': {
+      if (tool.toolName.startsWith('swarm_')) {
+        // One card per swarm action. The worker name is the object; a task call
+        // adds the first line of its briefing so two dispatches read apart.
+        const name = str(args.name)
+        label = tool.toolName === 'swarm_spawn' ? 'Spawn worker'
+          : tool.toolName === 'swarm_task' ? 'Assign worker'
+            : tool.toolName === 'swarm_message' ? 'Message worker'
+              : tool.toolName === 'swarm_collect' ? 'Collect workers'
+                : tool.toolName === 'swarm_disband' ? 'Disband worker'
+                  : 'Swarm'
+        detail = oneLine([name, str(args.task) || str(args.message)].filter(Boolean).join(' · '))
+        break
+      }
       const tasks = Array.isArray(args.tasks) ? args.tasks : []
       label = 'Subagent'
       detail = tasks.length
@@ -143,6 +195,10 @@ export function summarizeTool(tool: ToolItem): ToolSummary {
     case 'plan':
       label = 'Plan'
       detail = oneLine(str(args.plan).split('\n')[0].replace(/^#+\s*/, ''))
+      break
+    case 'question':
+      label = 'Question'
+      detail = oneLine(str(args.question))
       break
     case 'computer': {
       label = 'Computer'

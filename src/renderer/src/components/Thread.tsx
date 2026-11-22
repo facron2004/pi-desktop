@@ -1,9 +1,9 @@
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, Database, List, Search, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, Database, Ellipsis, List, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
 import type { Turn } from '../lib/turns'
-import { buildTurns, changedTurnsFrom, usageForTurn, userMetadataForTurns } from '../lib/turns'
+import { buildTurns, changedTurnsFrom, roundMetadataForTurns, usageForTurn, userMetadataForTurns } from '../lib/turns'
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
@@ -14,7 +14,7 @@ import { describeTool } from '../lib/tools'
 import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
 import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition, scrollTopForTurnTop } from '../lib/scroll-memory'
-import { readSessionTiming, userTimingDuration } from '../lib/session-timing'
+import { readSessionTiming, roundTimingDuration, userTimingDuration } from '../lib/session-timing'
 import { readHistoryFirstVisibleTurn, readProcessOpen, writeHistoryFirstVisibleTurn, writeProcessOpen } from '../lib/view-state'
 import { matchesAnyShortcut } from '../lib/shortcuts'
 import { SearchContext, useSearchQuery } from '../lib/search-context'
@@ -24,7 +24,7 @@ import { ProcessTrail } from './ProcessTrail'
 import { FileChangeSummary } from './FileChangeSummary'
 import { RunStatusRow } from './RunStatusRow'
 import { AssistantMessage } from './conversation/AssistantMessage'
-import { RunSummary } from './conversation/RunSummary'
+import { isLiveRunSummary, RunSummary } from './conversation/RunSummary'
 import { ErrorNotice, ThreadErrorBanner } from './conversation/ErrorNotice'
 import { ThreadEnvStoreProvider, useThreadEnv } from './conversation/ThreadEnvContext'
 import { SessionRail } from './SessionRail'
@@ -241,7 +241,7 @@ export const Thread = memo(function Thread() {
   const settledDurationKey = run.settled ? run.durationMs : undefined
   const runDurationsMs = useMemo(
     () => readSessionTiming(sessionKey).runDurationsMs,
-    [sessionKey, run.settled, settledDurationKey]
+    [sessionKey, run.settled, settledDurationKey, items]
   )
   const previousClientKeyRef = useRef(clientKey)
   /** A conversation switch that still has to place the viewport. */
@@ -288,6 +288,8 @@ export const Thread = memo(function Thread() {
   const turns = useMemo(() => buildTurns(items), [items])
   const userMetadata = userMetadataForTurns(turns)
   const userTimestampCounts = userMetadata.timestampCounts
+  const roundMetadata = roundMetadataForTurns(turns)
+  const roundTimestampCounts = roundMetadata.timestampCounts
   const sessionTurnsCacheRef = useRef<{
     sessionKey: string
     turns: Turn[]
@@ -323,14 +325,6 @@ export const Thread = memo(function Thread() {
   const lastSessionTurn = userMetadata.lastUserTurnIndex >= 0
     ? turns[userMetadata.lastUserTurnIndex] as SessionTurn
     : undefined
-  const liveRunSummaryAtTop = Boolean(
-    !run.settled &&
-      (run.startedAt !== undefined ||
-        run.startedMonotonicAt !== undefined ||
-        run.phase !== 'idle' ||
-        Boolean(run.compaction)) &&
-      sessionTurns.length > 0
-  )
   const lastSessionTurnId = sessionTurns.at(-1)?.id ?? null
   const activeTurnId = atBottom ? lastSessionTurnId : scrolledTurnId
   const syncActiveTurn = useCallback((container: HTMLDivElement) => {
@@ -392,6 +386,10 @@ export const Thread = memo(function Thread() {
   const historyCollapsed = firstVisibleTurn > 0
   const hiddenMessageCount = historyCollapsed ? messagesBeforeTurn(firstVisibleTurn) : 0
   const visibleTurns = historyCollapsed ? turns.slice(firstVisibleTurn) : turns
+  // Any rendered last turn — including a synthetic leading turn with no user
+  // message — mounts the live RunSummary at its top. Keying off visibleTurns
+  // keeps RunStatusRow from repeating a second elapsed timer at the bottom.
+  const liveRunSummaryAtTop = isLiveRunSummary(run) && visibleTurns.length > 0
   const revealOlderHistory = useCallback(() => {
     if (firstVisibleTurn === 0) return
     writeHistoryFirstVisibleTurn(sessionKey, Math.max(0, firstVisibleTurn - HISTORY_PAGE_TURNS))
@@ -406,6 +404,12 @@ export const Thread = memo(function Thread() {
     : userMetadata.userCount
   let visibleUserOrdinal = firstVisibleTurn > 0
     ? userMetadata.userCount - visibleUserCount
+    : 0
+  const visibleRoundCount = firstVisibleTurn > 0
+    ? visibleTurns.reduce((count, turn) => count + Number(Boolean(turn.roundBreak)), 0)
+    : roundMetadata.roundCount
+  let visibleRoundOrdinal = firstVisibleTurn > 0
+    ? roundMetadata.roundCount - visibleRoundCount
     : 0
   const hasSearchQuery = searchOpen && Boolean(query.trim())
   const searchRoot = workspacePath
@@ -1123,6 +1127,7 @@ export const Thread = memo(function Thread() {
             const turnIndex = firstVisibleTurn + index
             const userId = turn.user?.id
             const userOrdinal = turn.user ? visibleUserOrdinal++ : undefined
+            const roundOrdinal = turn.roundBreak ? visibleRoundOrdinal++ : undefined
             const isLastTurn = turnIndex === turns.length - 1
             return (
               <ErrorBoundary key={`${clientKey}:${turn.id}`} scope="turn">
@@ -1145,9 +1150,17 @@ export const Thread = memo(function Thread() {
                         userOrdinal,
                         userTimestampCounts.get(turn.user.timestamp) ?? 0
                       )
-                      : undefined
+                      : turn.roundBreak
+                        ? roundTimingDuration(
+                          runDurationsMs,
+                          turn.roundBreak.timestamp,
+                          roundOrdinal,
+                          roundTimestampCounts.get(turn.roundBreak.timestamp) ?? 0
+                        )
+                        : undefined
                   }
                   isLastTurn={isLastTurn}
+                  showWaitStatus={isLastTurn && transport === 'connected' && !retry && !cwdWait}
                   statusRow={
                     isLastTurn && runOpen ? (
                       <RunStatusRow
@@ -1191,11 +1204,17 @@ export const Thread = memo(function Thread() {
           <button
             type="button"
             className="scroll-jump"
+            data-running={runOpen || undefined}
             onClick={jumpTarget === 'top' ? scrollToTop : scrollToBottom}
             title={t(jumpTarget === 'top' ? 'Scroll to the top' : 'Scroll to the latest')}
             aria-label={t(jumpTarget === 'top' ? 'Scroll to the top' : 'Scroll to the latest')}
           >
-            {jumpTarget === 'top' ? <ArrowUp size={15} /> : <ArrowDown size={15} />}
+            {runOpen ? <Ellipsis className="scroll-jump__activity" size={15} aria-hidden="true" /> : null}
+            {jumpTarget === 'top' ? (
+              <ArrowUp className="scroll-jump__arrow" size={15} aria-hidden="true" />
+            ) : (
+              <ArrowDown className="scroll-jump__arrow" size={15} aria-hidden="true" />
+            )}
           </button>
         </div>
       ) : null}
@@ -1217,6 +1236,7 @@ interface ThreadTurnViewProps {
   runDurationMs?: number
   /** The turn that is last in the conversation, where a run summary belongs. */
   isLastTurn: boolean
+  showWaitStatus: boolean
   statusRow?: ReactNode
 }
 
@@ -1234,7 +1254,7 @@ function sameReferences<T>(left: T[], right: T[]): boolean {
  * summary then says "Worked for 32m 3s" instead of only "Finished".
  */
 function turnElapsedMs(turn: Turn): number | undefined {
-  const start = turn.user?.timestamp
+  const start = turn.roundBreak?.timestamp ?? turn.user?.timestamp
   if (start !== undefined) {
     let end = start
     for (const assistant of turn.assistants) {
@@ -1264,6 +1284,7 @@ function sameTurnContent(left: Turn, right: Turn): boolean {
   return (
     left.id === right.id &&
     left.user === right.user &&
+    left.roundBreak === right.roundBreak &&
     sameReferences(left.assistants, right.assistants) &&
     sameReferences(left.tools, right.tools) &&
     sameReferences(left.notices, right.notices) &&
@@ -1276,7 +1297,10 @@ function equalThreadTurnViewProps(
   next: ThreadTurnViewProps
 ): boolean {
   if (previous.isLastTurn !== next.isLastTurn) return false
-  if (next.isLastTurn && (previous.run !== next.run || previous.statusRow !== next.statusRow)) return false
+  if (
+    next.isLastTurn &&
+    (previous.run !== next.run || previous.statusRow !== next.statusRow || previous.showWaitStatus !== next.showWaitStatus)
+  ) return false
 
   return (
     sameTurnContent(previous.turn, next.turn) &&
@@ -1305,6 +1329,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
   run,
   runDurationMs,
   isLastTurn,
+  showWaitStatus,
   statusRow
 }: ThreadTurnViewProps) {
   const toolMap = useMemo(
@@ -1327,14 +1352,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
   const turnUsage = usageForTurn(turn)
   const incompleteTokenUsage = turn.assistants.some((assistant) => !assistant.usage)
   const incompleteCost = turn.assistants.some((assistant) => !assistant.usage?.cost)
-  const liveOutcome = Boolean(
-    isLastTurn &&
-      !run.settled &&
-      (run.startedAt !== undefined ||
-        run.startedMonotonicAt !== undefined ||
-        run.phase !== 'idle' ||
-        Boolean(run.compaction))
-  )
+  const liveOutcome = isLastTurn && isLiveRunSummary(run)
   const recordedOutcome = lastAssistant?.stopReason === 'stop'
     ? 'completed'
     : lastAssistant?.stopReason === 'error'
@@ -1354,6 +1372,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
         : settledDurationMs !== undefined || recordedOutcome
           ? {
               ...run,
+              compaction: undefined,
               phase: 'idle',
               settled: true,
               outcome: recordedOutcome ?? 'completed',
@@ -1361,8 +1380,6 @@ const ThreadTurnView = memo(function ThreadTurnView({
             }
           : undefined
   const replySettled = lastAssistant && !lastAssistant.streaming && (!isLastTurn || run.settled)
-  // The tail stays open only while this turn is the one still being written.
-  // A finished turn, including every earlier stretch of a long run, folds.
   const liveTail = isLastTurn && !run.settled
   const { autoFoldProcess } = useThreadEnv()
   const processId = `turn-${turn.id}`
@@ -1372,61 +1389,62 @@ const ThreadTurnView = memo(function ThreadTurnView({
   }, [threadKey, processId])
   const query = useSearchQuery().trim().toLowerCase()
   const searchMatch = Boolean(query) && findMatches(searchableChunks([turn]), query, 1).length > 0
-  const processOpen = searchMatch || (manualProcessOpen ?? !autoFoldProcess)
+  const failed = outcome?.outcome === 'failed'
+  // Successful turns show their tool summaries and the folded thinking row.
+  // The run summary still controls disclosure of the whole process.
+  const hasToolGroups = turn.tools.some((tool) => tool.toolName !== 'generate_image')
+  const hasThinking = turn.assistants.some((assistant) =>
+    assistant.blocks.some((block) => block.type === 'thinking' && !block.redacted && block.text.trim())
+  )
+  const processOpen = searchMatch || (manualProcessOpen ?? (!autoFoldProcess || (!failed && (hasToolGroups || hasThinking))))
   const toggleProcess = () => {
     const next = !processOpen
     setManualProcessOpen(next)
     writeProcessOpen(threadKey, processId, next)
   }
-  const hasProcess = useMemo(
-    () =>
-      turn.tools.length > 0 ||
-      // Retry, compaction and other stream notices are part of the process,
-      // not part of the answer. They fold with the tools so a settled turn does
-      // not leave a stack of "retry succeeded" lines outside the fold.
-      turn.notices.length > 0 ||
-      turn.assistants.some((assistant) =>
-        assistant.blocks.some((block) => block.type === 'thinking')
-      ),
-    [turn.tools, turn.notices, turn.assistants]
-  )
-  // A completed turn follows the reader's fold setting; a live, failed or
-  // stopped turn must keep its process visible, because hiding it there would
-  // hide the only evidence of what happened.
-  const processVisible =
-    liveTail || !outcome || outcome.outcome !== 'completed' || processOpen
+  const processVisible = liveTail || !outcome || outcome.outcome === 'aborted' || processOpen
   // The closing card is not painted while the run is live, so there is no
   // reason to build every file diff on every streamed pixel.
   const turnChanges = useMemo(
     () => (liveTail ? [] : collectChanges(turn.tools)),
     [liveTail, turn.tools]
   )
-  const showAssistantError = Boolean(
-    lastAssistant?.stopReason === 'error' &&
-      !(isLastTurn && (run.outcome === 'aborted' || (!run.settled && isRateLimitError(lastAssistant.error))))
+  const assistantErrorText = lastAssistant?.stopReason === 'error' &&
+    !(isLastTurn && (run.outcome === 'aborted' || (!run.settled && isRateLimitError(lastAssistant.error))))
+    ? lastAssistant.error?.trim()
+    : undefined
+  // A runtime notice may be the only reason recorded for a failed run.
+  const failureNotice = failed && !assistantErrorText
+    ? turn.notices.findLast((notice) =>
+        notice.level === 'error' &&
+        notice.status !== 'compacting' &&
+        notice.status !== 'retrying' &&
+        notice.text.trim()
+      )
+    : undefined
+  const processNotices = useMemo(
+    () => turn.notices.filter((notice) => {
+      if (notice === failureNotice || !notice.text.trim()) return false
+      if (notice.status === 'compacting' || (!liveTail && notice.status === 'retrying')) return false
+      return !(assistantErrorText && notice.level === 'error' && notice.text.includes(assistantErrorText))
+    }),
+    [turn.notices, failureNotice, liveTail, assistantErrorText]
   )
-  const assistantErrorText = lastAssistant?.error?.trim()
-  const visibleNotices = processVisible
-    ? turn.notices.filter((notice) => {
-        if (notice.status === 'compacting') return false
-        if (!liveTail && notice.status === 'retrying') return false
-        if (
-          showAssistantError &&
-          assistantErrorText &&
-          notice.level === 'error' &&
-          notice.text.includes(assistantErrorText)
-        ) {
-          return false
-        }
-        return true
-      })
-    : []
-  const showFallbackFailure = Boolean(
-    isLastTurn &&
-      outcome?.outcome === 'failed' &&
-      !showAssistantError &&
-      !turn.notices.some((notice) => notice.level === 'error')
-  )
+  const hasProcess = turn.tools.length > 0 || processNotices.length > 0 || hasThinking
+  const failureDetails = failureNotice ? (
+    <NoticeMessage item={failureNotice} />
+  ) : assistantErrorText ? (
+    <ErrorNotice
+      title={lastAssistant?.error}
+      message={
+        isRateLimitError(assistantErrorText)
+          ? t('Model rate limit reached. Try again later.')
+          : assistantErrorText
+      }
+    />
+  ) : failed ? (
+    <ErrorNotice message={t(hasProcess ? 'This run failed. See the execution record for details.' : 'This run failed.')} />
+  ) : null
 
   return (
     <section
@@ -1457,17 +1475,19 @@ const ThreadTurnView = memo(function ThreadTurnView({
             {outcome ? (
               <RunSummary
                 run={outcome}
+                showWaitStatus={showWaitStatus && turn.bash.length === 0}
                 foldable={hasProcess}
                 open={processOpen}
                 onToggle={toggleProcess}
+                continuation={turn.roundBreak?.resumed ? 'resumed' : turn.roundBreak ? 'automatic' : undefined}
               />
             ) : null}
+            {failed ? failureDetails : null}
             <AssistantMessage
               turn={turn}
               toolMap={toolMap}
               liveTail={liveTail}
               processOpen={processVisible}
-              processExpanded={Boolean(outcome?.settled && processVisible)}
             />
 
             {turn.bash.map((item) => (
@@ -1478,10 +1498,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
               <ProcessTrail
                 key="process-orphans"
                 tools={orphanTools}
-                thoughts={0}
-                searchText=""
-                defaultOpen={Boolean(outcome?.settled && processVisible)}
-                live={liveTail && orphanTools.some((tool) => tool.status === 'running')}
+                live={liveTail}
               >
                 {orphanTools.map((tool) => (
                   <ToolCard key={tool.id} item={tool} presentation="link" />
@@ -1489,9 +1506,9 @@ const ThreadTurnView = memo(function ThreadTurnView({
               </ProcessTrail>
             ) : null}
 
-            {visibleNotices.map((notice) => (
+            {processVisible ? processNotices.map((notice) => (
               <NoticeMessage key={notice.id} item={notice} />
-            ))}
+            )) : null}
             {turnChanges.length > 0 && !liveTail ? (
               <FileChangeSummary
                 changes={turnChanges}
@@ -1505,18 +1522,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
               />
             ) : null}
 
-            {showAssistantError && lastAssistant ? (
-              <ErrorNotice
-                title={lastAssistant.error}
-                message={
-                  isRateLimitError(lastAssistant.error)
-                    ? t('Rate limit reached. This conversation is paused until the limit resets — it was not discarded.')
-                    : (lastAssistant.error ?? t('error'))
-                }
-              />
-            ) : showFallbackFailure ? (
-              <ErrorNotice message={t('This run failed. See the details above.')} />
-            ) : null}
+            {!failed ? failureDetails : null}
 
             {statusRow}
 
