@@ -1455,3 +1455,89 @@ test('stopping a task that is not running reports that there is nothing to stop'
     rmSync(userData, { recursive: true, force: true })
   }
 })
+
+/** The quarantined copies of an unreadable task file, newest first. */
+const quarantined = (userData: string): string[] =>
+  readdirSync(userData).filter((name) => name.startsWith('scheduled-tasks.corrupt-')).sort()
+
+test('an unreadable task file is set aside so the page can recover', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-corrupt-start-'))
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'provider/model',
+      thinkingLevel: 'off'
+    })
+  } as unknown as SettingsStore
+  const file = path.join(userData, 'scheduled-tasks.json')
+  writeFileSync(file, '{ this is not json', 'utf8')
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: new FakeSupervisor() as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    // The page starts empty rather than wedged.
+    assert.deepEqual(service.list(), [])
+
+    // Nothing is thrown away: the exact bytes live under a name a reader can find.
+    const [backup] = quarantined(userData)
+    assert.ok(backup, 'the unreadable file was not preserved')
+    assert.equal(readFileSync(path.join(userData, backup), 'utf8'), '{ this is not json')
+    assert.equal(readdirSync(userData).includes('scheduled-tasks.json'), false, 'the bad file is still in the way')
+
+    // And the service works again — this is what the pinned fingerprint blocked.
+    const created = service.create({
+      title: 'Fresh task',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '09:00' }
+    })
+    assert.equal(created.length, 1)
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).length, 1)
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('a file that turns unreadable while the app runs clears the list and is set aside', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-corrupt-live-'))
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'provider/model',
+      thinkingLevel: 'off'
+    })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: new FakeSupervisor() as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    service.create({
+      title: 'Survivor',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '09:00' }
+    })
+    assert.equal(service.list().length, 1)
+
+    const published: number[] = []
+    service.on('changed', (tasks: unknown[]) => published.push(tasks.length))
+
+    // Something outside the app truncated the file.
+    writeFileSync(path.join(userData, 'scheduled-tasks.json'), '[{"id":', 'utf8')
+    assert.deepEqual(service.list(), [], 'the page kept records no file backs')
+    assert.equal(quarantined(userData).length, 1, 'the unreadable file was not preserved')
+    assert.deepEqual(published.slice(-1), [0], 'the page was not told the list is gone')
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})

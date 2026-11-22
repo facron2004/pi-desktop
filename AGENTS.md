@@ -384,6 +384,15 @@ lock and slot, and the schedule is untouched (`enabled` and `nextRunAt` survive)
 Removing a task stops its run for the same reason: a deleted task must not leave
 an agent working where nothing can see it.
 
+**An unreadable `scheduled-tasks.json` is set aside, not pinned.**
+`quarantineInvalidFile` renames it to `scheduled-tasks.corrupt-<stamp>.json` and
+continues from an empty list. Pinning the bad version's fingerprint (the old
+behaviour) left the page empty for good: every write still started from a list
+that could never load, so a new task could not be created either and the only
+clue was a console line. Only a *content* error is quarantined — a file with no
+id, title or usable schedule is dropped per record with a count in the log, and
+an I/O error keeps the old pinning because the bytes may still be fine.
+
 A scheduled task carries its own project, prompt, schedule, **model and
 reasoning effort**. Empty model/effort fields mean "follow the app's saved
 default" and must stay absent from `scheduled-tasks.json`; a pinned choice is
@@ -1116,10 +1125,15 @@ serializes model calls. The Pi extension persists external-context checks on
 the active branch; an oversized session without a complete check is skipped
 until Pi opens and classifies it, unless that filter is disabled.
 `memories.json` is canonical; `memory_summary.md` and
-`rollout_summaries/` are projections. Never inject the raw entries file — the
-prompt gets a project-scoped, 10,000-byte summary plus the decision-boundary
-header in `MemoryService.promptFor`. Extraction runs in a throwaway
-`pi --print --no-session --no-tools --no-extensions --no-skills --no-mcp
+`rollout_summaries/` are projections. Both are capped: the summary at 10,000
+bytes, and the notes at 200 files / 8 MiB, oldest first
+(`selectRolloutNotesToPrune` in `store.ts`). A note is one file per learned
+session, so without a cap a year of conversations would leave thousands of files
+behind; a single note larger than the whole byte budget is dropped on its own
+rather than taking the smaller notes behind it down too. Never inject the raw
+entries file — the prompt gets a project-scoped, 10,000-byte summary plus the
+decision-boundary header in `MemoryService.promptFor`. Extraction runs in a
+throwaway `pi --print --no-session --no-tools --no-extensions --no-skills --no-mcp
 --no-context-files` process; memory text is data, never instructions, and
 secrets are redacted before storage and again at merge time. The settings page
 is `MemorySettings.tsx`; tests are `tests/memory.test.ts`. See

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -23,6 +24,42 @@ const MAX_MEMORY_LEDGER_SESSIONS = 2_000
 export const MAX_SUMMARY_BYTES = 10_000
 /** Kept as a character ceiling for callers that want a stricter prose budget. */
 export const MAX_SUMMARY_CHARS = 8000
+
+/**
+ * The rollout notes are one file per learned session, so they grow with use.
+ * Everything else in this folder is capped (entries, ledger, summary) — a year
+ * of conversations would otherwise leave thousands of notes behind.
+ */
+export const MAX_ROLLOUT_NOTES = 200
+export const MAX_ROLLOUT_BYTES = 8 * 1024 * 1024
+
+/**
+ * Which rollout notes to delete so the folder stays inside its limits.
+ *
+ * The newest notes are the ones a reader is likeliest to want, so they stay and
+ * the oldest fall off first. A note is doomed as soon as keeping it would push
+ * the folder past either the file count or the byte total.
+ */
+export function selectRolloutNotesToPrune(
+  notes: readonly { file: string; mtimeMs: number; size: number }[],
+  limits: { files: number; bytes: number } = { files: MAX_ROLLOUT_NOTES, bytes: MAX_ROLLOUT_BYTES }
+): string[] {
+  const newestFirst = [...notes].sort((left, right) => right.mtimeMs - left.mtimeMs)
+  const doomed: string[] = []
+  let kept = 0
+  let bytes = 0
+  for (const note of newestFirst) {
+    // A note larger than the whole budget can never fit, and dropping it must
+    // not take the smaller notes behind it down as well.
+    if (note.size > limits.bytes || kept + 1 > limits.files || bytes + note.size > limits.bytes) {
+      doomed.push(note.file)
+      continue
+    }
+    kept += 1
+    bytes += note.size
+  }
+  return doomed
+}
 
 const KIND_ORDER: MemoryKind[] = ['preference', 'environment', 'knowledge', 'failure']
 const KIND_LABEL: Record<MemoryKind, string> = {
@@ -616,6 +653,39 @@ export class MemoryStore {
       lines.push('## Model output', '', '```text', raw, '```', '')
     }
     writeTextAtomic(file, lines.join('\n'))
+    this.pruneRolloutSummaries()
+  }
+
+  /**
+   * Bound the rollout folder: the newest notes stay, the oldest fall off.
+   *
+   * A prune failure must never fail the extraction that just succeeded, so a
+   * broken folder listing only costs the cap.
+   */
+  private pruneRolloutSummaries(): void {
+    try {
+      const notes = readdirSync(this.rolloutDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+        .map((entry) => {
+          const file = path.join(this.rolloutDir, entry.name)
+          try {
+            const stats = statSync(file)
+            return { file, mtimeMs: stats.mtimeMs, size: stats.size }
+          } catch {
+            // The entry vanished between listing and stat: it is already gone.
+            return { file, mtimeMs: 0, size: 0 }
+          }
+        })
+      for (const file of selectRolloutNotesToPrune(notes)) {
+        try {
+          rmSync(file, { force: true })
+        } catch {
+          /* a note another reader still has open is pruned next time */
+        }
+      }
+    } catch (error) {
+      console.error('[pi-desktop] could not prune the memory rollout notes:', error)
+    }
   }
 
   async commitExtraction(

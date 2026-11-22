@@ -92,7 +92,16 @@ function parseStoredTasks(raw: string): ScheduledTask[] {
   if (parsed.length > MAX_SCHEDULED_TASKS) {
     throw new InvalidScheduledTaskFileError(`The scheduled task file contains more than ${MAX_SCHEDULED_TASKS} tasks.`)
   }
-  return parsed.filter(isStoredTask).map((task) => {
+  const kept = parsed.filter(isStoredTask)
+  if (kept.length !== parsed.length) {
+    // A record with no id, title or usable schedule cannot be shown or run, so it
+    // is dropped — but the drop has to be visible somewhere, because the next
+    // write persists the pruned list.
+    console.error(
+      `[pi-desktop] ignored ${parsed.length - kept.length} unusable scheduled task record(s)`
+    )
+  }
+  return kept.map((task) => {
     const lastError = limitScheduledTaskError(task.lastError)
     const lastSessionFile = task.lastSessionFile !== undefined &&
       task.lastSessionFile.length > MAX_SCHEDULED_TASK_SESSION_FILE_CHARS
@@ -453,6 +462,46 @@ export class ScheduledTaskService extends EventEmitter {
     if (active) this.finish(active.taskId, 'error', payload.status.error ?? 'Pi could not start.', active.sessionFile)
   }
 
+  /**
+   * Preserve an unreadable scheduled-task file and start clean.
+   *
+   * The old behaviour pinned the fingerprint of the bad version so it was not
+   * re-read, which left the page empty for good: every write still started from
+   * a list that could never load, so a new task could not be created either and
+   * the only clue was a console line. Moving the file aside keeps every byte
+   * under a name the reader can find, and lets the service carry on.
+   *
+   * Only a content error is quarantined. An I/O error (the file being rewritten
+   * by another instance, a locked handle) keeps the old pinning: the bytes may
+   * still be fine, so nothing is moved on a guess.
+   */
+  private quarantineInvalidFile(error: unknown): boolean {
+    if (!(error instanceof InvalidScheduledTaskFileError)) return false
+    const extension = path.extname(this.file)
+    const stem = path.basename(this.file, extension)
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const target = path.join(path.dirname(this.file), `${stem}.corrupt-${stamp}${extension}`)
+    try {
+      renameSync(this.file, target)
+      this.fileFingerprint = 'missing'
+      this.pendingTasks = undefined
+      const hadTasks = this.tasks.length > 0
+      // The file is gone, so the list it described is gone with it — keeping the
+      // old records in memory would answer `list()` with tasks nothing backs.
+      this.tasks = []
+      console.error(
+        `[pi-desktop] the scheduled task file could not be read (${error.message}) and was moved to ${target}`
+      )
+      return hadTasks
+    } catch (moveError) {
+      // Nothing could be preserved: keep the bad version pinned so the failure
+      // is not retried and re-logged on every poll.
+      this.fileFingerprint = undefined
+      console.error('[pi-desktop] could not set the invalid scheduled task file aside:', moveError)
+      return false
+    }
+  }
+
   private read(): ScheduledTask[] {
     let fingerprint: string | undefined
     try {
@@ -467,15 +516,7 @@ export class ScheduledTaskService extends EventEmitter {
         : undefined
       return tasks
     } catch (error) {
-      if (fingerprint && error instanceof InvalidScheduledTaskFileError) {
-        try {
-          this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
-            ? fingerprint
-            : undefined
-        } catch {
-          this.fileFingerprint = undefined
-        }
-      }
+      this.quarantineInvalidFile(error)
       console.error('[pi-desktop] could not read scheduled tasks:', error)
       return []
     }
@@ -562,14 +603,10 @@ export class ScheduledTaskService extends EventEmitter {
         ? fingerprint
         : undefined
     } catch (error) {
-      if (fingerprint && error instanceof InvalidScheduledTaskFileError) {
-        try {
-          this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
-            ? fingerprint
-            : undefined
-        } catch {
-          this.fileFingerprint = undefined
-        }
+      if (this.quarantineInvalidFile(error)) {
+        // The page has to stop showing records the file no longer holds.
+        this.emit('changed', this.cloneTasks(this.tasks))
+        this.scheduleNext()
       }
       return false
     }

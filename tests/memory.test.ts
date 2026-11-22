@@ -28,9 +28,11 @@ import {
   MAX_ENTRIES,
   MAX_ENTRY_CHARS,
   MAX_PROJECT_ENTRIES,
+  MAX_ROLLOUT_NOTES,
   MemoryStore,
   memoryPathKey,
   renderMemorySummary,
+  selectRolloutNotesToPrune,
   type MemoryCandidate
 } from '../src/main/memory/store'
 import { containsSecret, redactSecrets } from '../src/main/memory/redact'
@@ -1546,4 +1548,58 @@ test('MemoryService canonicalizes pending keys across path variants and handles 
 
   assert.ok(extractedFiles.length >= 1)
   await delay(50)
+})
+
+test('the rollout notes keep the newest and drop the oldest past the cap', () => {
+  const note = (index: number, size = 1000) => ({
+    file: `note-${index}.md`,
+    mtimeMs: 1_000 + index,
+    size
+  })
+  const notes = Array.from({ length: 10 }, (_value, index) => note(index))
+
+  // Under both limits nothing is dropped, whatever the order.
+  assert.deepEqual(selectRolloutNotesToPrune(notes.slice(0, 3), { files: 3, bytes: 10_000 }), [])
+
+  // Over the file count: exactly the oldest ones go, newest kept.
+  const byCount = selectRolloutNotesToPrune(notes, { files: 4, bytes: 10_000_000 })
+  assert.deepEqual(byCount.sort(), ['note-0.md', 'note-1.md', 'note-2.md', 'note-3.md', 'note-4.md', 'note-5.md'])
+
+  // Over the byte total only: the same rule, counted in bytes.
+  const byBytes = selectRolloutNotesToPrune(notes, { files: 100, bytes: 3_500 })
+  assert.deepEqual(byBytes.sort(), ['note-0.md', 'note-1.md', 'note-2.md', 'note-3.md', 'note-4.md', 'note-5.md', 'note-6.md'])
+
+  // One oversized note is dropped on its own, whatever its age.
+  const mixed = [note(0, 100), { file: 'huge.md', mtimeMs: 5_000, size: 9_000_000 }, note(1, 100)]
+  assert.deepEqual(selectRolloutNotesToPrune(mixed, { files: 10, bytes: 8_000_000 }), ['huge.md'])
+
+  // Empty input is not a special case anywhere else, so it is not here either.
+  assert.deepEqual(selectRolloutNotesToPrune([], { files: 1, bytes: 1 }), [])
+})
+
+test('writing one rollout note prunes the folder back to its cap', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-memory-rollout-cap-'))
+  const store = new MemoryStore(root)
+  try {
+    store.ensure()
+    // Seed a folder that is already over the cap, oldest first.
+    const seeded = MAX_ROLLOUT_NOTES + 12
+    for (let index = 0; index < seeded; index += 1) {
+      const file = path.join(store.rolloutDir, `seeded-${String(index).padStart(3, '0')}.md`)
+      writeFileSync(file, `# note ${index}\n`, 'utf8')
+      utimesSync(file, new Date(1_000_000 + index * 1000), new Date(1_000_000 + index * 1000))
+    }
+    assert.equal(readdirSync(store.rolloutDir).length, seeded)
+
+    await store.writeRolloutSummary(path.join(root, 'session-fresh.jsonl'), { candidates: [] })
+
+    const after = readdirSync(store.rolloutDir)
+    assert.equal(after.length, MAX_ROLLOUT_NOTES, 'the rollout folder grew past its cap')
+    // The newest note (the one just written) survived, and so did the newest seeds.
+    assert.ok(after.includes('session-fresh.md'), 'the note just written was pruned')
+    assert.ok(after.includes(`seeded-${String(seeded - 1).padStart(3, '0')}.md`), 'the newest seed was pruned')
+    assert.equal(after.includes('seeded-000.md'), false, 'the oldest seed survived the prune')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
