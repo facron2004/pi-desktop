@@ -9,7 +9,7 @@
  *   node tests/run.mjs
  */
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -141,7 +141,27 @@ const suites = [
 ]
 const debug = process.argv[2] === '--debug'
 
-const out = mkdtempSync(path.join(tmpdir(), 'pi-desktop-tests-'))
+/**
+ * The temp root every suite runs against, in canonical long form.
+ *
+ * A Windows CI runner hands its temp folder out as an 8.3 short name
+ * (`C:\Users\RUNNER~1\AppData\Local\Temp`), while every path the app resolves
+ * comes back long (`C:\Users\runneradmin\AppData\Local\Temp`). Suites that
+ * compare a `tmpdir()`-derived path with a `realpath()`-derived one then fail on
+ * nothing but spelling, which is how the first release workflow run failed ten
+ * path tests. Canonicalising once here — and handing the same root to the test
+ * process — makes the two spellings agree on any machine.
+ */
+const tempRoot = (() => {
+  const raw = tmpdir()
+  try {
+    return realpathSync.native(raw)
+  } catch {
+    return raw
+  }
+})()
+
+const out = mkdtempSync(path.join(tempRoot, 'pi-desktop-tests-'))
 const mockElectron = path.join(out, 'mock-electron.mjs')
 writeFileSync(
   mockElectron,
@@ -180,12 +200,18 @@ try {
     })
     built.push(path.join(out, bundle))
   }
+  // The suites create their scratch folders through `os.tmpdir()`, so the child
+  // process is handed the canonical root. Without this a runner whose `%TEMP%`
+  // is an 8.3 alias makes `tmpdir()` and `realpath()` disagree about the same
+  // folder.
+  const childEnv = { ...process.env, TMPDIR: tempRoot, TMP: tempRoot, TEMP: tempRoot }
   if (debug) {
-    execFileSync(process.execPath, [built[0]], { stdio: 'inherit' })
+    execFileSync(process.execPath, [built[0]], { stdio: 'inherit', env: childEnv })
   } else {
     // Bound child-process tests so Windows startup probes do not starve each other.
     execFileSync(process.execPath, ['--test', '--test-concurrency=4', ...built], {
-      stdio: 'inherit'
+      stdio: 'inherit',
+      env: childEnv
     })
   }
 } finally {

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
@@ -22,6 +22,19 @@ const workspace = (id: string, path: string, lastOpenedAt: number): Workspace =>
   name: id,
   lastOpenedAt
 })
+
+/**
+ * The folder the mocked `app.getPath('userData')` points at.
+ *
+ * It is created rather than assumed: a clean CI runner has no `C:\tmp`, and the
+ * settings tests failed there with ENOENT before this. Nothing else depends on
+ * the folder existing up front, so creating it is all the tests need.
+ */
+const SETTINGS_DIRECTORY = 'C:/tmp'
+mkdirSync(SETTINGS_DIRECTORY, { recursive: true })
+
+/** A settings file inside {@link SETTINGS_DIRECTORY}. */
+const settingsFile = (fileName: string): string => path.join(SETTINGS_DIRECTORY, fileName)
 
 test('user data directory permissions are restricted on POSIX', () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'pi-user-data-permissions-'))
@@ -137,7 +150,7 @@ test('Windows user-data ACL repair removes an extra Everyone full-control ACE', 
 
 test('project trust defaults off and legacy trust is re-enabled only after an explicit choice', () => {
   const fileName = `settings-project-trust-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   try {
     writeFileSync(file, JSON.stringify({ trustProject: true, theme: 'light' }), 'utf8')
     const migrated = new SettingsStore(fileName)
@@ -156,7 +169,7 @@ test('project trust defaults off and legacy trust is re-enabled only after an ex
 
 test('an invalid settings file is preserved before defaults are written', () => {
   const fileName = `settings-invalid-recovery-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   const original = '{"theme":'
   try {
     writeFileSync(file, original, 'utf8')
@@ -181,7 +194,7 @@ test('an invalid settings file is preserved before defaults are written', () => 
 
 test('valid JSON with malformed workspace and path settings falls back without crashing', () => {
   const fileName = `settings-malformed-values-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   try {
     writeFileSync(file, JSON.stringify({
       workspaces: [{ id: 'broken', path: { value: 'C:/project' }, name: 'Broken' }],
@@ -276,13 +289,13 @@ test('an unrelated settings save keeps the workspace order', () => {
       ['alpha', 'beta', 'gamma']
     )
   } finally {
-    rmSync(path.join('C:/tmp', fileName), { force: true })
+    rmSync(settingsFile(fileName), { force: true })
   }
 })
 
 test('workspace authorization sees a removal persisted by another settings store', () => {
   const fileName = `settings-workspace-auth-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   const first = new SettingsStore(fileName)
   try {
     first.patch({ workspaces: [workspace('alpha', 'C:/workspace', 100)] })
@@ -300,7 +313,7 @@ test('workspace authorization sees a removal persisted by another settings store
 
 test('independent settings stores merge partial updates against the latest file', () => {
   const fileName = `settings-cross-process-patch-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   const first = new SettingsStore(fileName)
   const second = new SettingsStore(fileName)
   try {
@@ -318,7 +331,7 @@ test('independent settings stores merge partial updates against the latest file'
 
 test('workspace mutations from independent settings stores retain both folders', () => {
   const fileName = `settings-cross-process-workspaces-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   const first = new SettingsStore(fileName)
   const second = new SettingsStore(fileName)
   try {
@@ -336,7 +349,7 @@ test('workspace mutations from independent settings stores retain both folders',
 
 test('stale settings stores keep independent scalar, list and keyed updates', () => {
   const fileName = `settings-cross-process-patch-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   const first = new SettingsStore(fileName)
   const second = new SettingsStore(fileName)
   try {
@@ -367,7 +380,7 @@ test('stale settings stores keep independent scalar, list and keyed updates', ()
 
 test('stale workspace writes keep new folders and merge separate project edits', () => {
   const fileName = `settings-cross-process-workspaces-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   const first = new SettingsStore(fileName)
   const second = new SettingsStore(fileName)
   try {
@@ -391,7 +404,7 @@ test('stale workspace writes keep new folders and merge separate project edits',
 
 test('workspace removal is atomic with hiding and keeps another process addition', () => {
   const fileName = `settings-cross-process-remove-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   const first = new SettingsStore(fileName)
   const second = new SettingsStore(fileName)
   try {
@@ -425,13 +438,13 @@ test('projectOrder keeps the display order and drops duplicate paths', () => {
     assert.deepEqual(store.get().projectOrder, expected)
     assert.deepEqual(new SettingsStore(fileName).get().projectOrder, expected)
   } finally {
-    rmSync(path.join('C:/tmp', fileName), { force: true })
+    rmSync(settingsFile(fileName), { force: true })
   }
 })
 
 test('malformed shortcut patches preserve saved bindings while an empty object clears them', () => {
   const fileName = `settings-shortcut-patch-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   try {
     const store = new SettingsStore(fileName)
     const bindings = { 'new-chat': [['Ctrl', 'N']] }
@@ -447,7 +460,7 @@ test('malformed shortcut patches preserve saved bindings while an empty object c
 
 test('shortcutBindings persists multi-chord, legacy, and unbound entries while stripping malformed data', () => {
   const fileName = `settings-shortcuts-${process.pid}.json`
-  const file = path.join('C:/tmp', fileName)
+  const file = settingsFile(fileName)
   try {
     writeFileSync(
       file,
