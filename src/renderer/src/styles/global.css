@@ -2627,19 +2627,29 @@ transition: background var(--dur-fast) var(--ease);
 .thinking__body {
   max-height: 260px;
   margin-left: var(--sp-2);
-  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  /* Steps are paragraphs with a real gap between them, so the vertical air is
+     a token instead of a full blank line inside pre-wrapped text. */
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-3) var(--sp-2);
   overflow: auto;
   overscroll-behavior: contain;
   overflow-wrap: anywhere;
   font-size: var(--text-small);
-  line-height: 1.7;
+  line-height: 1.6;
   color: var(--text-tertiary);
-  white-space: pre-wrap;
   user-select: text;
   /* A quote mark in the gutter is what separates a reasoning step from the
      answer without giving it a box of its own. */
   border-left: 2px solid var(--border-default);
   border-radius: 0 var(--r-xs) var(--r-xs) 0;
+}
+
+.thinking__text {
+  margin: 0;
+  /* A single newline inside one step is still the model's own line break. */
+  white-space: pre-wrap;
 }
 
 .thinking__body:focus-visible {

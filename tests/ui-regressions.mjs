@@ -480,10 +480,31 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     liveThinking.click()
     await until(() => document.querySelector('.thinking__body')?.textContent.includes(thinkingFixture.first),
       'The disclosure did not show the live thinking')
+    // Each reasoning step is its own paragraph; the fold must keep both, in
+    // order, with the gap between them carried by the paragraph spacing.
+    const thinkingSteps = () => [...document.querySelectorAll('.thinking__body .thinking__text')]
+      .map((node) => node.textContent)
     const joinedThinking = [thinkingFixture.first, thinkingFixture.second].join('\n\n')
-    await until(() => !store.getState().isStreaming && document.querySelector('.thinking__body')?.textContent === joinedThinking,
+    await until(() => !store.getState().isStreaming && thinkingSteps().join('\n\n') === joinedThinking,
       'The thought fold did not survive the tool call with both fragments in order')
     check(document.querySelectorAll('.thinking__head').length === 1, 'One turn rendered multiple thinking headers')
+    // The gap between two reasoning steps is the paragraph spacing, not the
+    // blank line a pre-wrapped "\n\n" used to reserve.
+    const stepGap = (() => {
+      const steps = [...document.querySelectorAll('.thinking__body .thinking__text')]
+      if (steps.length < 2) return null
+      const first = steps[0].getBoundingClientRect()
+      const second = steps[1].getBoundingClientRect()
+      return Math.round(second.top - first.bottom)
+    })()
+    check(stepGap !== null && stepGap >= 0 && stepGap <= 14,
+      `Thinking steps are spaced like blank lines, not paragraphs (gap ${stepGap}px)`)
+    const stepLineHeight = (() => {
+      const step = document.querySelector('.thinking__body .thinking__text')
+      return step ? Number.parseFloat(getComputedStyle(step).lineHeight) : 0
+    })()
+    check(stepGap !== null && stepLineHeight > 0 && stepGap < stepLineHeight,
+      `Thinking steps are farther apart than their own line height (${stepGap}px vs ${stepLineHeight}px)`)
     const thinkingFile = await until(() => store.getState().activeSessionFile, 'Pi did not assign the thinking session a file')
     await window.pi.runtime.stop(thinkingFile)
     await store.getState().newChat()
@@ -500,7 +521,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     check(replayedThinking.getAttribute('aria-expanded') === 'false' && !document.querySelector('.thinking__body'),
       'Replayed thinking did not start folded')
     replayedThinking.click()
-    await until(() => document.querySelector('.thinking__body')?.textContent === joinedThinking,
+    await until(() => thinkingSteps().join('\n\n') === joinedThinking,
       'Replayed thinking lost a fragment')
     passed.push('one folded thinking row keeps readable content through live tool calls and replay')
 

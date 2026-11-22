@@ -162,6 +162,14 @@ export const ThinkingBlock = memo(function ThinkingBlock({
     setOpen(next)
     writeProcessOpen(threadKey, disclosureKey, next ? true : undefined)
   }
+  // Each reasoning step is its own paragraph, so the gap between steps is the
+  // block's own spacing instead of the full blank line a `pre-wrap` `\n\n`
+  // reserves. Blank lines inside one step are split too: Pi sometimes delivers
+  // a whole stretch of reasoning as one block.
+  const paragraphs = parts
+    .flatMap((part) => part.split(/\n[ \t]*\n/))
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
   return (
     <div className="thinking" data-open={open} data-streaming={streaming ? 'true' : undefined}>
       <button
@@ -174,7 +182,13 @@ export const ThinkingBlock = memo(function ThinkingBlock({
         <ChevronRight size={13} className="caret" data-open={open} aria-hidden="true" />
         <span className="thinking__title">{t('Thinking content')}</span>
       </button>
-      {open ? <div className="thinking__body" id={bodyId} tabIndex={0}>{parts.join('\n\n')}</div> : null}
+      {open ? (
+        <div className="thinking__body" id={bodyId} tabIndex={0}>
+          {paragraphs.map((paragraph, index) => (
+            <p key={index} className="thinking__text">{paragraph}</p>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 })
