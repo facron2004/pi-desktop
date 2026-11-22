@@ -1262,6 +1262,8 @@ export interface PiDesktopBridge {
     setEnabled(id: string, enabled: boolean): Promise<ScheduledTask[]>
     remove(id: string): Promise<ScheduledTask[]>
     runNow(id: string): Promise<ScheduledTask[]>
+    /** Stop the run a task is doing now; the schedule itself is left alone. */
+    stopRun(id: string): Promise<boolean>
     onChanged(handler: (tasks: ScheduledTask[]) => void): () => void
   }
   memory: {

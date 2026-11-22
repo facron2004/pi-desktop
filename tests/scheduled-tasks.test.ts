@@ -1344,3 +1344,114 @@ test('unusable persisted model values fall back to the app defaults', () => {
     rmSync(userData, { recursive: true, force: true })
   }
 })
+
+/** Starts runs that keep running until it is told to stop. */
+class StoppableRunSupervisor extends FakeSupervisor {
+  running = false
+  stopCalls: string[] = []
+
+  async request<T>(_key: string, command: string): Promise<T> {
+    if (command === 'prompt') this.running = true
+    return (command === 'prompt' ? { disposition: 'started' } : {}) as T
+  }
+
+  async stop(key: string): Promise<void> {
+    this.stopCalls.push(key)
+    this.running = false
+  }
+
+  sessionInfo(): { cwd: string; externalContext: boolean; running: boolean } {
+    return { cwd: '', externalContext: false, running: this.running }
+  }
+}
+
+test('a running task can be stopped without touching its schedule', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-stop-run-'))
+  const supervisor = new StoppableRunSupervisor()
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'provider/model',
+      thinkingLevel: 'off'
+    })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const task = service.create({
+      title: 'Stop me',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '23:59' }
+    })[0]
+    assert.ok(task)
+    await service.runNow(task.id)
+    assert.equal(service.list()[0]?.lastStatus, 'running')
+    const scheduledFor = service.list()[0]?.nextRunAt
+
+    // The detail pane's stop action is the only way out of a run that hangs:
+    // it must reach the run's own Pi process, not just the schedule.
+    assert.equal(await service.stopRun(task.id), true)
+    assert.deepEqual(supervisor.stopCalls, [supervisor.ownerId])
+    assert.equal(supervisor.running, false)
+
+    const stopped = service.list()[0]
+    assert.ok(stopped)
+    assert.equal(stopped.lastStatus, 'aborted')
+    assert.equal(stopped.enabled, true, 'stopping a run must not pause the task')
+    assert.equal(stopped.nextRunAt, scheduledFor, 'the next occurrence is unchanged')
+
+    // A settle that arrives after the stop (or a duplicate) changes nothing.
+    supervisor.emit('event', {
+      ownerId: supervisor.ownerId,
+      event: { type: 'agent_settled', aborted: true }
+    })
+    assert.equal(service.list()[0]?.lastStatus, 'aborted')
+
+    // The run lock was released, so the task can run again.
+    await service.runNow(task.id)
+    assert.equal(service.list()[0]?.lastStatus, 'running')
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('stopping a task that is not running reports that there is nothing to stop', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-stop-idle-'))
+  const supervisor = new StoppableRunSupervisor()
+  const settings = {
+    get: () => ({
+      workspaces: [{ id: 'project', path: userData }],
+      model: 'provider/model',
+      thinkingLevel: 'off'
+    })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const task = service.create({
+      title: 'Idle task',
+      prompt: 'Do nothing',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '23:59' }
+    })[0]
+    assert.ok(task)
+    assert.equal(await service.stopRun(task.id), false)
+    assert.deepEqual(supervisor.stopCalls, [])
+    assert.equal(service.list()[0]?.lastStatus, undefined, 'a task that never ran keeps no outcome')
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})

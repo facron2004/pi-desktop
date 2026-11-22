@@ -862,6 +862,7 @@ const zhCN: Record<string, string> = {
   'Last run': '上次运行',
   Enabled: '已启用',
   'Run now': '立即运行',
+  'Stop the running task': '停止运行中的任务',
   'Delete this scheduled task?': '确定删除这个定时任务吗？',
   'Add a project before creating a scheduled task.': '请先添加项目，再创建定时任务。',
   'Loading scheduled tasks…': '正在加载定时任务…',

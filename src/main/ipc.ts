@@ -1429,6 +1429,7 @@ export function registerIpc(context: IpcContext): void {
   )
   ipcMain.handle('scheduled-tasks:remove', (_event, id: string) => context.scheduledTasks.remove(id))
   ipcMain.handle('scheduled-tasks:runNow', (_event, id: string) => context.scheduledTasks.runNow(id))
+  ipcMain.handle('scheduled-tasks:stopRun', (_event, id: string) => context.scheduledTasks.stopRun(id))
 
   ipcMain.handle('workspaces:pick', async (): Promise<Workspace | null> => {
     try {

@@ -8,6 +8,7 @@ import {
   Play,
   Plus,
   Search,
+  Square,
   X
 } from 'lucide-react'
 import type {
@@ -382,6 +383,25 @@ export function ScheduledTasksDialog() {
     if (removed) closeDetail()
   }
 
+  /**
+   * Stop the run a task is doing now.
+   *
+   * The list is not patched here: the service publishes the finished task, and
+   * `onChanged` repaints it as stopped. Everything else in the detail pane is
+   * gated while a run is going, so this is the one action that has to work.
+   */
+  const stopTaskRun = async (task: ScheduledTask) => {
+    setWorkingId(task.id)
+    setError('')
+    try {
+      await window.pi.scheduledTasks.stopRun(task.id)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setWorkingId(null)
+    }
+  }
+
   const discardDraft = () => {
     if (manualOpen) {
       closeDetail()
@@ -635,6 +655,18 @@ export function ScheduledTasksDialog() {
             <div className="scheduled-detail__actions">
               {!manualOpen && selectedTask ? (
                 <>
+                  {selectedTask.lastStatus === 'running' ? (
+                    <button
+                      type="button"
+                      className="icon-btn scheduled-detail__icon"
+                      aria-label={t('Stop the running task')}
+                      title={t('Stop the running task')}
+                      disabled={workingId === selectedTask.id || saving}
+                      onClick={() => void stopTaskRun(selectedTask)}
+                    >
+                      <Square size={16} />
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="icon-btn scheduled-detail__icon"

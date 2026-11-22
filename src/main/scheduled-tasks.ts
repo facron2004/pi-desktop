@@ -358,7 +358,32 @@ export class ScheduledTaskService extends EventEmitter {
       this.requireTask(id, tasks)
       return tasks.filter((task) => task.id !== id)
     })
+    // A deleted task must not leave its agent running unseen: the run's Pi
+    // process is only reachable through this service.
+    void this.stopRun(id).catch(() => {})
     return this.list()
+  }
+
+  /**
+   * Stop the run a task is doing right now, leaving its schedule intact.
+   *
+   * The run owns a Pi process under a draft session key, so stopping it through
+   * the supervisor aborts the turn and Pi publishes `agent_settled`; the settle
+   * path then records `aborted` and releases the run lock and slot. A process
+   * that is already gone publishes no settle, which is why the record is also
+   * finished here when the supervisor reports the run is over.
+   */
+  async stopRun(id: string): Promise<boolean> {
+    const entry = [...this.activeRuns.entries()].find(([, active]) => active.taskId === id)
+    if (!entry) return false
+    const [sessionKey, active] = entry
+    await this.supervisor.stop(sessionKey).catch(() => {})
+    // The settle event normally finishes the task; this covers the case where
+    // there is nothing left to settle.
+    if (this.activeRuns.get(sessionKey) === active && !this.supervisor.sessionInfo(sessionKey)?.running) {
+      this.finish(id, 'aborted', undefined, active.sessionFile)
+    }
+    return true
   }
 
   async runNow(id: string): Promise<ScheduledTask[]> {

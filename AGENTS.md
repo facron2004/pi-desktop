@@ -359,6 +359,16 @@ scheduled page is a DSH-shaped master-detail: list rows only select, and the
 47% right pane owns the editable rule, run history, pause/more/close controls
 and the inline delete confirmation.
 
+**A running task must be stoppable from that pane.** The run owns a Pi process
+under a draft session key, and the pane disables pause, more and delete while it
+goes — so without a stop action a hung run (a prompt response that timed out
+while the agent kept running) left the task `running` until the app restarted.
+`stopRun(id)` stops that one process through the supervisor; Pi publishes
+`agent_settled`, the usual settle path records `aborted` and releases the run
+lock and slot, and the schedule is untouched (`enabled` and `nextRunAt` survive).
+Removing a task stops its run for the same reason: a deleted task must not leave
+an agent working where nothing can see it.
+
 A scheduled task carries its own project, prompt, schedule, **model and
 reasoning effort**. Empty model/effort fields mean "follow the app's saved
 default" and must stay absent from `scheduled-tasks.json`; a pinned choice is

@@ -156,6 +156,7 @@ const bridge: PiDesktopBridge = {
       ipcRenderer.invoke('scheduled-tasks:setEnabled', id, enabled),
     remove: (id: string): Promise<ScheduledTask[]> => ipcRenderer.invoke('scheduled-tasks:remove', id),
     runNow: (id: string): Promise<ScheduledTask[]> => ipcRenderer.invoke('scheduled-tasks:runNow', id),
+    stopRun: (id: string): Promise<boolean> => ipcRenderer.invoke('scheduled-tasks:stopRun', id),
     onChanged: (handler: (tasks: ScheduledTask[]) => void) =>
       subscribe<ScheduledTask[]>('scheduled-tasks:changed', handler)
   },
