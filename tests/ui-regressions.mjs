@@ -604,6 +604,22 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       tabs[0].click()
       await pause(400)
       passed.push('terminal requests run once in their target tab')
+
+      // A terminal belongs to the project it was opened in. Switching projects
+      // is a view change, so it must not restart (and thereby kill) the shells —
+      // a build or an ssh session has to survive browsing another folder. The
+      // workspace path is moved directly here so this check owns only the view
+      // change, not the process work a real project switch also does.
+      const shellIds = [...outputs.keys()]
+      check(shellIds.length === 2, 'The terminal test lost track of its shells')
+      const workspaceBefore = store.getState().workspace
+      store.setState({ workspace: { ...workspaceBefore, path: nestedWorkspace } })
+      await pause(300)
+      check([...outputs.keys()].join(',') === shellIds.join(','), 'Changing the project restarted the terminal')
+      store.setState({ workspace: workspaceBefore })
+      await pause(300)
+      check([...outputs.keys()].join(',') === shellIds.join(','), 'Changing the project back restarted the terminal')
+      passed.push('terminals survive a project switch without restarting')
     } finally {
       off()
       const panel = visibleToolPanel()
@@ -1354,7 +1370,9 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   check(dirHint('status.md') === '', 'A deliverable shows its path')
   check(dirHint('note.md') === '', 'A file at the project root claims a folder')
-  check(rowNamed('status.md').getAttribute('title') === 'docs/status.md', 'The row lost the path its tooltip carries')
+  const statusTitle = rowNamed('status.md')?.getAttribute('title')
+  check(statusTitle === 'docs/status.md',
+    `The row lost the path its tooltip carries (saw ${JSON.stringify(statusTitle)}, rows ${JSON.stringify(fileRows.map((row) => row.querySelector('.task-panel__file-name')?.textContent))})`)
   // What a turn changed is its closing statement: the summary waits for the run
   // to settle, while the tool rows above already show every edit as it happens.
   store.setState((state) => ({ run: { ...state.run, phase: 'tool_running', settled: false } }))
@@ -2055,7 +2073,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 37 : 36)
+  assert.equal(passed.length, process.platform === 'win32' ? 38 : 37)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

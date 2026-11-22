@@ -163,12 +163,17 @@ export class TerminalManager {
   kill(id: string): void {
     const session = this.sessions.get(id)
     if (!session) return
-    this.sessions.delete(id)
+    // Kill before forgetting: a process whose `kill()` throws is still running,
+    // and dropping the record first would leave no handle for `disposeAll()` to
+    // retry with — an orphaned shell for the rest of the app's life. The exit
+    // handler deletes the record too, so the delete below is also the normal
+    // path for a process that was already gone.
     try {
       session.process.kill()
     } catch {
       /* already gone */
     }
+    this.sessions.delete(id)
   }
 
   disposeAll(): void {

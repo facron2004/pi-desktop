@@ -96,6 +96,17 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const onLabelRef = useRef(onLabel)
   onLabelRef.current = onLabel
 
+  /**
+   * The folder this pane's shell started in, captured once.
+   *
+   * A terminal belongs to the project it was opened in. Switching projects, or
+   * clicking a conversation that lives in another one, is a view change — it
+   * must not kill a shell that is running a build or an ssh session (AGENTS.md:
+   * "Switching projects is also only a view change"). New tabs read the project
+   * on screen when they mount, so this is the only place the folder changes.
+   */
+  const startCwdRef = useRef(cwd)
+
   const [exited, setExited] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [restartKey, setRestartKey] = useState(0)
@@ -223,7 +234,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     observer.observe(container)
 
     void window.pi.terminal
-      .create({ cols: term.cols, rows: term.rows, cwd, shell })
+      .create({ cols: term.cols, rows: term.rows, cwd: startCwdRef.current, shell })
       .then((info) => {
         awaitingCreate = false
         if (disposed) {
@@ -273,7 +284,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       termRef.current = null
       fitRef.current = null
     }
-  }, [cwd, shell, restartKey])
+  }, [shell, restartKey])
 
   // The app theme can change without restarting the shell.
   useEffect(() => {
