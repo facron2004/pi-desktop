@@ -4536,6 +4536,19 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   }
 } })
 
+const rawStoreSetState = useAppStore.setState.bind(useAppStore)
+useAppStore.setState = ((partial, replace) => {
+  if (replace) {
+    rawStoreSetState(partial as AppStore, true)
+    return
+  }
+  rawStoreSetState((state) => {
+    const patch = typeof partial === 'function' ? partial(state) : partial
+    if (!patch || patch === state) return patch
+    return withRevisions(state, patch)
+  })
+}) as typeof useAppStore.setState
+
 // Development aid: the screenshot harness drives the store to reach states
 // that are hard to produce on purpose, such as a retry in progress.
 if (typeof window !== 'undefined' && (window as { __piDesktopDev?: unknown }).__piDesktopDev) {
@@ -5398,7 +5411,7 @@ function drainPending(onlyKey?: string): void {
     }
   }
 
-  useAppStore.setState((state) => {
+  rawStoreSetState((state) => {
     const currentViewKey = viewKeyOf(state)
     const currentViewCanonical = currentViewKey ? threadKey(currentViewKey) : ''
     let nextThreads: Record<string, SessionThread> | undefined
