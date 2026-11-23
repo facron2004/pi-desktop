@@ -1,26 +1,13 @@
 import { useCallback, useEffect, useId, useState } from 'react'
 import { ChevronUp, Pause, Pencil, Play, X } from 'lucide-react'
-import { GOAL_STATUS_KEY, type GoalState } from '@shared/types'
-import { readGoalState } from '@shared/task-mode-state'
+import { GOAL_STATUS_KEY } from '@shared/types'
+import { readGoalStatus } from '@shared/task-mode-state'
 import { goalBadge, goalCanToggleRun } from '@shared/goal-display'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { Popover } from './Popover'
 import { GoalTargetIcon } from './GoalTargetIcon'
 import '../styles/goal.css'
-
-/**
- * The extension publishes the goal as JSON on a status line, so a malformed
- * or partial value is a normal cold-start state, not an error to show.
- */
-function parseGoal(raw: string | undefined): GoalState | undefined {
-  if (!raw) return
-  try {
-    return readGoalState(JSON.parse(raw))
-  } catch {
-    return undefined
-  }
-}
 
 /**
  * Goal Mode's objective, as one line above the composer.
@@ -42,7 +29,7 @@ export function GoalBar() {
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState(false)
 
-  const goal = parseGoal(rawGoal)
+  const goal = readGoalStatus(rawGoal)
   const goalText = goal?.text
 
   // A recalled branch or another command can replace the goal in this chat.
@@ -59,7 +46,7 @@ export function GoalBar() {
   // Two words, because the bar answers one question: is this goal being worked
   // on right now? A goal the extension paused and a goal nobody is running are
   // the same thing to the reader, so both read "Paused". `blocked` and
-  // `complete` keep their own word — they are outcomes, not a run state.
+  // `complete` keep their own word 鈥?they are outcomes, not a run state.
   const badge = goalBadge(goal.status, running)
   const displayStatus = badge.status
   const canToggleRun = goalCanToggleRun(badge)
@@ -99,7 +86,7 @@ export function GoalBar() {
       cancelEdit()
       return
     }
-    const savedGoal = parseGoal(await runGoalAction('edit ' + text))
+    const savedGoal = readGoalStatus(await runGoalAction('edit ' + text))
     if (savedGoal?.text === text) cancelEdit()
   }
 
@@ -238,7 +225,7 @@ export function GoalBar() {
               </button>
             </div>
             <span className="goal-bar__hint">
-              {t('Enter to save · Shift+Enter for a new line · Esc to cancel')}
+              {t('Enter to save 路 Shift+Enter for a new line 路 Esc to cancel')}
             </span>
           </div>
         ) : null}

@@ -470,6 +470,13 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     )
     await store.getState().send(goalFixture.original, [])
     await until(() => goalReplyIncludes(goalFixture.started), 'The first goal request did not reach the model')
+    await until(() => document.querySelector('.goal-bar'), 'The goal bar did not appear for a live goal')
+    // The bar states the goal, its run state and how to pause, edit or clear it,
+    // so the composer must not repeat "Goal Mode" underneath it.
+    check(
+      !document.querySelector('.composer__mode'),
+      'The composer still wears the goal mode chip while the goal bar already says it'
+    )
     const activeEdit = await until(() => store.getState().isStreaming && goalButton('Edit'), 'A running goal could not be edited')
     activeEdit.click()
     const goalEditor = await until(() => document.querySelector('.goal-bar__input'), 'Goal editor did not open while running')

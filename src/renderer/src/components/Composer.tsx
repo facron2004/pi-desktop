@@ -26,6 +26,7 @@ import {
 import {
   DEFAULT_IMAGE_QUALITY,
   DEFAULT_IMAGE_SIZE,
+  GOAL_STATUS_KEY,
   IMAGE_MODELS,
   IMAGE_QUALITIES,
   MAX_COMPOSER_IMAGE_BYTES,
@@ -33,6 +34,7 @@ import {
   MAX_SEARCH_QUERY_LENGTH
 } from '@shared/types'
 import type { AgentMode, AppLanguage, FileEntry, PiCommand } from '@shared/types'
+import { readGoalStatus } from '@shared/task-mode-state'
 import { appCommandName } from '../lib/app-commands'
 import { commandIcon } from '../lib/command-source'
 import { composerDraftAfterSend } from '../lib/composer-drafts'
@@ -476,7 +478,15 @@ export const Composer = memo(function Composer() {
 
   const canCompose = status.phase === 'ready' || status.phase === 'starting'
   const hasContent = Boolean(command || text.trim() || images.length > 0 || files.length > 0)
+  // A goal of its own already fills the bar above the box — mode, state and the
+  // controls that pause, edit or clear it — so the chip that only repeats "Goal
+  // Mode" is redundant there. It comes back the moment the goal is cleared, and
+  // it stays for every other task mode.
+  const goalIsOnScreen = useAppStore((state) =>
+    Boolean(readGoalStatus(state.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text))
+  )
   const modeChip = agentMode === 'default' ? null : MODE_CHIPS[agentMode]
+  const showModeChip = modeChip && !(agentMode === 'goal' && goalIsOnScreen)
   const modePrompt = MODE_COMPOSER_PROMPTS[agentMode]
   const inputPrompt = command
     ? t('Add command arguments…')
@@ -1692,7 +1702,7 @@ export const Composer = memo(function Composer() {
                 pushed 完全访问 sideways the moment a mode was picked. The
                 permission control keeps one position; the chip grows to its
                 right. */}
-            {modeChip ? (
+            {showModeChip ? (
               <button
                 type="button"
                 className="composer__mode"

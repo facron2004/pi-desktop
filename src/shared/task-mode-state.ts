@@ -16,3 +16,20 @@ export function readGoalState(value: unknown): GoalState | undefined {
     ...(typeof summary === 'string' && summary.trim() ? { summary } : {})
   }
 }
+
+/**
+ * The goal published on the extension's status line, or undefined.
+ *
+ * The extension publishes it as JSON, so a malformed or partial value is a
+ * normal cold-start state, not an error to show. Both the goal bar and the
+ * composer read it through here so they cannot disagree about whether a goal
+ * exists.
+ */
+export function readGoalStatus(raw: string | undefined): GoalState | undefined {
+  if (!raw) return
+  try {
+    return readGoalState(JSON.parse(raw))
+  } catch {
+    return undefined
+  }
+}
