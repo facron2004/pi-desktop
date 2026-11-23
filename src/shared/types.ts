@@ -1181,6 +1181,122 @@ export interface RemoteSession {
   isRunning: boolean
 }
 
+/** The blocking extension dialog methods a paired phone can answer. */
+export type RemoteDialogMethod = 'select' | 'confirm' | 'input' | 'editor'
+
+/**
+ * A blocking extension dialog forwarded to a paired phone.
+ *
+ * The desktop stays able to answer it too — whoever answers first wins, and
+ * the phone stream is told through `remote_dialog_closed`.
+ */
+export interface RemoteDialogRequest {
+  type: 'remote_dialog_request'
+  /** Pi's own request id; the answer carries it back unchanged. */
+  id: string
+  method: RemoteDialogMethod
+  title?: string
+  message?: string
+  options?: string[]
+  placeholder?: string
+  prefill?: string
+}
+
+/** Broadcast to a phone stream when its dialog was answered anywhere. */
+export interface RemoteDialogClosed {
+  type: 'remote_dialog_closed'
+  id: string
+}
+
+/* ------------------------------------------------------------------ *
+ * IM channels
+ * ------------------------------------------------------------------ */
+
+export type ImChannelKind = 'feishu' | 'wechat'
+
+/** The conversation one channel drives. The `/new` command re-binds it. */
+export interface ImChannelBinding {
+  /** Registered workspace the messages run in. */
+  workspaceId: string
+  /** Pi session id of the bound conversation. */
+  sessionId: string
+}
+
+/**
+ * Feishu credentials for a 自建应用 (custom app) in long-connection mode.
+ * The event subscription itself is configured in the Feishu developer
+ * console; no public URL is needed, which is why this mode is the default.
+ */
+export interface FeishuChannelConfig {
+  appId: string
+  appSecret: string
+  /** chat_id allowlist; empty receives every chat the bot is in. */
+  allowedChatIds: string[]
+}
+
+/**
+ * WeChat local bridge speaking the wechatbot-webhook contract. The bridge
+ * POSTs received messages to our listener; replies go back through the
+ * bridge's `webhook/msg/v2` API. Pi Desktop never hooks WeChat itself.
+ */
+export interface WechatChannelConfig {
+  /** Base URL of the running bridge, e.g. `http://127.0.0.1:3001`. */
+  bridgeUrl: string
+  /** The bridge's personal token (query parameter). */
+  bridgeToken: string
+  /** Local port our receive listener binds. */
+  listenPort: number
+  /** Token the bridge must present when POSTing to our listener. */
+  receiveToken: string
+  /** Explicit reply target (contact or group name). Empty tracks the last sender. */
+  sendTo: string
+  /** The reply target is a group chat. */
+  sendToIsRoom: boolean
+}
+
+export interface ImChannelConfig {
+  id: string
+  kind: ImChannelKind
+  enabled: boolean
+  binding: ImChannelBinding
+  feishu?: FeishuChannelConfig
+  wechat?: WechatChannelConfig
+}
+
+/** Settings-page view of a channel. Secrets are masked, never returned. */
+export interface ImChannelStatus {
+  id: string
+  kind: ImChannelKind
+  enabled: boolean
+  /** Connection lifecycle for this launch. */
+  state: 'connecting' | 'connected' | 'error' | 'disabled'
+  error?: string
+  binding: ImChannelBinding
+  /** When the last message was routed through this channel, ms epoch. */
+  lastMessageAt?: number
+  feishu?: {
+    appId: string
+    appSecretSet: boolean
+    allowedChatIds: string[]
+  }
+  wechat?: {
+    bridgeUrl: string
+    listenPort: number
+    receiveTokenSet: boolean
+    /** The URL the bridge must POST received messages to. */
+    callbackUrl: string
+    sendTo: string
+    sendToIsRoom: boolean
+    /** Last `/healthz` answer; `null` before the first check. */
+    bridgeHealthy: boolean | null
+  }
+}
+
+export interface ImChannelTestResult {
+  ok: boolean
+  error?: string
+}
+
 export interface PiDesktopBridge {
   modelCatalog: {
     /** Supported effort levels for a configured Pi model, without starting a conversation. */
@@ -1292,6 +1408,21 @@ export interface PiDesktopBridge {
     setEnabled(enabled: boolean): Promise<RemoteAccessStatus>
     newPairing(): Promise<RemoteAccessStatus>
     revokeDevice(id: string): Promise<RemoteAccessStatus>
+  }
+  imChannels: {
+    /** Channel list with secrets masked. */
+    status(): Promise<ImChannelStatus[]>
+    /**
+     * Create or update one channel. An empty `appSecret` / `bridgeToken` /
+     * `receiveToken` keeps the stored one, so the settings page never
+     * needs a secret back for an unchanged credential.
+     */
+    save(config: ImChannelConfig): Promise<ImChannelStatus[]>
+    remove(id: string): Promise<ImChannelStatus[]>
+    /** Round-trip a test message through the channel's own transport. */
+    test(id: string): Promise<ImChannelTestResult>
+    /** Fires after any channel config or connection-state change. */
+    onChanged(handler: (channels: ImChannelStatus[]) => void): () => void
   }
   scheduledTasks: {
     list(): Promise<ScheduledTask[]>

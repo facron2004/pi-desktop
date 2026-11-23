@@ -36,6 +36,9 @@ import type {
   GeneratedImage,
   ImageGenerationRequest,
   ImageListResult,
+  ImChannelConfig,
+  ImChannelStatus,
+  ImChannelTestResult,
   McpConfig,
   MemoryGenerateOptions,
   MemoryState,
@@ -151,6 +154,15 @@ const bridge: PiDesktopBridge = {
     newPairing: (): Promise<RemoteAccessStatus> => ipcRenderer.invoke('remote:newPairing'),
     revokeDevice: (id: string): Promise<RemoteAccessStatus> =>
       ipcRenderer.invoke('remote:revokeDevice', id)
+  },
+  imChannels: {
+    status: (): Promise<ImChannelStatus[]> => ipcRenderer.invoke('imChannels:status'),
+    save: (config: ImChannelConfig): Promise<ImChannelStatus[]> =>
+      ipcRenderer.invoke('imChannels:save', config),
+    remove: (id: string): Promise<ImChannelStatus[]> => ipcRenderer.invoke('imChannels:remove', id),
+    test: (id: string): Promise<ImChannelTestResult> => ipcRenderer.invoke('imChannels:test', id),
+    onChanged: (handler: (channels: ImChannelStatus[]) => void) =>
+      subscribe<ImChannelStatus[]>('imChannels:changed', handler)
   },
   scheduledTasks: {
     list: (): Promise<ScheduledTask[]> => ipcRenderer.invoke('scheduled-tasks:list'),

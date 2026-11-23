@@ -1,9 +1,10 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, MessageSquare, Network, Paperclip, Plus, Sparkles, Target, WandSparkles, Workflow, Wrench } from 'lucide-react'
+import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, MessageSquare, Network, Paperclip, Plus, Sparkles, WandSparkles, Workflow, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { useT } from '../lib/i18n'
 import type { mermaidTemplateList } from '../lib/mermaid-templates'
 import { useAppStore } from '../store/useAppStore'
+import { GoalTargetIcon } from './GoalTargetIcon'
 import { Popover } from './Popover'
 import '../styles/add-menu.css'
 
@@ -12,7 +13,7 @@ type DiagramTemplateItem = ReturnType<typeof mermaidTemplateList>[number]
 
 const MODES = [
   { value: 'default', label: 'Default Mode', hint: 'Normal chat', icon: MessageSquare, description: 'Answer and use tools without a task mode' },
-  { value: 'goal', label: 'Goal Mode', hint: 'Keep working', icon: Target, description: 'Continue until the goal is complete or blocked' },
+  { value: 'goal', label: 'Goal Mode', hint: 'Keep working', icon: GoalTargetIcon, description: 'Continue until the goal is complete or blocked' },
   { value: 'plan', label: 'Plan Mode', hint: 'Plan first', icon: ListChecks, description: 'Create a Markdown plan and review it before execution' },
   { value: 'subagent', label: 'Subagent Mode', hint: 'Delegate work', icon: Bot, description: 'Delegate self-contained work to isolated subagents' },
   { value: 'swarm', label: 'Swarm Mode', hint: 'Worker team', icon: Network, description: 'Lead a team of persistent workers across many turns' },

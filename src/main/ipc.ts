@@ -22,6 +22,8 @@ import type {
   GitCommitResult,
   ImageGenerationRequest,
   ImageListResult,
+  ImChannelConfig,
+  ImChannelStatus,
   MemoryGenerateOptions,
   MemoryState,
   PickedFile,
@@ -92,6 +94,7 @@ import {
 import { fetchPiCatalog, configurePiCatalogCache } from './pi-catalog'
 import type { MemoryService } from './memory/service'
 import type { RemoteAccessService } from './remote-access'
+import type { ImChannelService } from './channels/im-channel-service'
 import { readEmojiFont } from './emoji-font'
 import { nativeAppIcons } from './native-icons'
 import {
@@ -152,6 +155,7 @@ export interface IpcContext {
   remote: RemoteAccessService
   remoteReady: Promise<void>
   scheduledTasks: ScheduledTaskService
+  imChannels: ImChannelService
   /** Rebuild the tray after a setting that changes it. Optional for tests. */
   syncTray?: () => void
 }
@@ -1555,6 +1559,15 @@ export function registerIpc(context: IpcContext): void {
     await context.remoteReady
     return context.remote.revokeDevice(typeof id === 'string' ? id : '')
   })
+
+  ipcMain.handle('imChannels:status', (): ImChannelStatus[] => context.imChannels.status())
+  ipcMain.handle('imChannels:save', (_event, config: ImChannelConfig) => context.imChannels.save(config))
+  ipcMain.handle('imChannels:remove', (_event, id: string) =>
+    context.imChannels.remove(typeof id === 'string' ? id : '')
+  )
+  ipcMain.handle('imChannels:test', (_event, id: string) =>
+    context.imChannels.test(typeof id === 'string' ? id : '')
+  )
 
   ipcMain.handle('memory:get', (): Promise<MemoryState> => context.memory.state())
   ipcMain.handle('memory:remove', (_event, id: string): Promise<MemoryState> => context.memory.remove(id))
@@ -3004,5 +3017,8 @@ export function bridgeRuntime(context: IpcContext): void {
   })
   context.scheduledTasks.on('changed', (tasks: ScheduledTask[]) => {
     sendToWindow(activeWindow(), 'scheduled-tasks:changed', tasks)
+  })
+  context.imChannels.on('changed', (channels: ImChannelStatus[]) => {
+    sendToWindow(activeWindow(), 'imChannels:changed', channels)
   })
 }

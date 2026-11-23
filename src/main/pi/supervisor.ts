@@ -484,6 +484,11 @@ export class SessionSupervisor extends EventEmitter {
       if (targetKey && (!runtime.hasPendingUi || !runtime.hasPendingUi(id))) {
         this.approvals.delete(targetKey)
       }
+      // Every surface that forwarded this dialog — the phone companion, the
+      // IM channels — must learn it was answered, including when the desktop
+      // answered it, so their copy of the dialog can close.
+      const ownerId = targetKey ?? this.ownerOf(runtime)
+      if (ownerId) this.emit('ui-responded', { ownerId, id })
     }
   }
 

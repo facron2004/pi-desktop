@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useId, useState } from 'react'
-import { ChevronUp, Pause, Pencil, Play, Target, X } from 'lucide-react'
+import { ChevronUp, Pause, Pencil, Play, X } from 'lucide-react'
 import { GOAL_STATUS_KEY, type GoalState } from '@shared/types'
 import { readGoalState } from '@shared/task-mode-state'
+import { goalBadge, goalCanToggleRun } from '@shared/goal-display'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { Popover } from './Popover'
+import { GoalTargetIcon } from './GoalTargetIcon'
 import '../styles/goal.css'
-
-const STATUS_LABEL: Record<GoalState['status'], string> = {
-  active: 'Active',
-  paused: 'Paused',
-  blocked: 'Blocked',
-  complete: 'Complete'
-}
 
 /**
  * The extension publishes the goal as JSON on a status line, so a malformed
@@ -113,7 +108,7 @@ export function GoalBar() {
       <div className="goal-bar__inner" data-editing={editing ? 'true' : undefined}>
         <div className="goal-bar__head">
           <span className="goal-bar__label">
-            <Target size={13} className="goal-bar__icon" aria-hidden="true" />
+            <GoalTargetIcon className="goal-bar__icon" />
             <span>{t('Goal')}</span>
           </span>
           <span

@@ -16,6 +16,8 @@ import { fetchPiCatalog } from './pi-catalog'
 import { canonicalPath } from './pi/session-file'
 import { SessionSupervisor } from './pi/supervisor'
 import { RemoteAccessService } from './remote-access'
+import { ImChannelService } from './channels/im-channel-service'
+import { createChannelAdapter } from './channels/adapters'
 import { applyTaskbarIcon, windowIconImage } from './app-icon'
 import { scheduleCapture, scheduleWindowClose } from './screenshot'
 import { didUserDataAclChange, secureUserDataDirectory, scheduleUserDataAclSweep, SettingsStore } from './settings'
@@ -94,6 +96,7 @@ let autoTitleService: AutoTitleService | null = null
 let remoteAccess: RemoteAccessService | null = null
 let remoteInitialization: Promise<void> | null = null
 let scheduledTaskService: ScheduledTaskService | null = null
+let imChannelService: ImChannelService | null = null
 let startupFinished = false
 /** A second launch that arrived before the first window existed. */
 let revealPending = false
@@ -628,6 +631,23 @@ async function start(): Promise<void> {
     }
   })
 
+  imChannelService = new ImChannelService({
+    userData: app.getPath('userData'),
+    settings: settingsStore,
+    supervisor,
+    customInstructions: (cwd) => {
+      const user = settingsStore.get().customInstructions?.trim()
+      const memory = memoryService?.promptFor(cwd).trim() ?? ''
+      return [user, memory].filter(Boolean).join('\n\n---\n\n') || undefined
+    },
+    createAdapter: createChannelAdapter
+  })
+  // Feishu's long connection and the WeChat listener reach the network; do
+  // not let a slow connect gate the window's own startup work.
+  void imChannelService.initialize().catch((error: unknown) => {
+    console.error('[pi-desktop] im channel initialization failed:', error)
+  })
+
   mainWindow = createWindow()
   applyTray()
   // The child ACL pass is a migration, not a launch step: it touches tens of
@@ -644,6 +664,7 @@ async function start(): Promise<void> {
     remote: remoteAccess,
     remoteReady,
     scheduledTasks: scheduledTaskService,
+    imChannels: imChannelService!,
     syncTray: () => applyTray()
   }
   registerIpc(context)
@@ -691,6 +712,7 @@ app.on('before-quit', () => {
   memoryService?.dispose()
   autoTitleService?.dispose()
   scheduledTaskService?.stopScheduling()
+  void imChannelService?.dispose().catch(() => {})
 })
 
 app.on('window-all-closed', () => {

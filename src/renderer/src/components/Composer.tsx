@@ -9,7 +9,6 @@ import {
   Network,
   Plus,
   Sparkles,
-  Target,
   Square,
   Wrench,
   X
@@ -62,6 +61,7 @@ import { BranchMenu } from './BranchMenu'
 import { PermissionPicker } from './PermissionPicker'
 import { AddMenu } from './AddMenu'
 import { Popover } from './Popover'
+import { GoalTargetIcon } from './GoalTargetIcon'
 import { UsageBar } from './UsageBar'
 
 interface SlashMatch {
@@ -1696,7 +1696,7 @@ export const Composer = memo(function Composer() {
                 onClick={() => void setAgentMode('default')}
               >
                 {agentMode === 'goal' ? (
-                  <Target size={13} />
+                  <GoalTargetIcon />
                 ) : agentMode === 'plan' ? (
                   <ListChecks size={13} />
                 ) : agentMode === 'subagent' ? (
