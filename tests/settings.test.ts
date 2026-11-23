@@ -329,6 +329,44 @@ test('independent settings stores merge partial updates against the latest file'
   }
 })
 
+test('a folder that has just been added takes the first row', () => {
+  const fileName = `settings-new-folder-first-${process.pid}.json`
+  const file = settingsFile(fileName)
+  const store = new SettingsStore(fileName)
+  try {
+    store.addWorkspace(workspace('alpha', 'C:/alpha', 100))
+    store.addWorkspace(workspace('beta', 'C:/beta', 200))
+    // The newest folder is the row the reader is looking for.
+    assert.deepEqual(store.get().projectOrder, ['C:/beta', 'C:/alpha'])
+
+    // Re-opening an existing folder must not move it: only a new one does.
+    store.addWorkspace(workspace('alpha', 'C:/alpha', 300))
+    assert.deepEqual(store.get().projectOrder, ['C:/beta', 'C:/alpha'])
+    assert.deepEqual(
+      store.get().workspaces.map((item) => item.path),
+      ['C:/alpha', 'C:/beta']
+    )
+  } finally {
+    rmSync(file, { force: true })
+  }
+})
+
+test('the newest folder keeps the first row when another store adds one too', () => {
+  const fileName = `settings-new-folder-first-cross-${process.pid}.json`
+  const file = settingsFile(fileName)
+  const first = new SettingsStore(fileName)
+  const second = new SettingsStore(fileName)
+  try {
+    first.addWorkspace(workspace('alpha', 'C:/alpha', 100))
+    second.addWorkspace(workspace('beta', 'C:/beta', 200))
+
+    // Both folders survive; the one added last is first.
+    assert.deepEqual(new SettingsStore(fileName).get().projectOrder, ['C:/beta', 'C:/alpha'])
+  } finally {
+    rmSync(file, { force: true })
+  }
+})
+
 test('workspace mutations from independent settings stores retain both folders', () => {
   const fileName = `settings-cross-process-workspaces-${process.pid}.json`
   const file = settingsFile(fileName)

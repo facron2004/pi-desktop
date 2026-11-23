@@ -257,18 +257,30 @@ function mergeProjectOrder(baseline: string[], proposed: string[], current: stri
   const proposedKeys = new Set(proposed.map(workspaceKey))
   const baselineKeys = new Set(baseline.map(workspaceKey))
   const retained = baseline.map(workspaceKey).filter((key) => proposedKeys.has(key))
-  if (sameValue(retained, proposed.slice(0, retained.length).map(workspaceKey))) {
-    return mergeStringSet(baseline, proposed, current)
+  const merged = (() => {
+    if (sameValue(retained, proposed.slice(0, retained.length).map(workspaceKey))) {
+      return mergeStringSet(baseline, proposed, current)
+    }
+    const currentKeys = new Set(current.map(workspaceKey))
+    const reordered = proposed.filter((item) => {
+      const key = workspaceKey(item)
+      return !baselineKeys.has(key) || currentKeys.has(key)
+    })
+    const addedSinceRead = current.filter((item) =>
+      !baselineKeys.has(workspaceKey(item)) && !proposedKeys.has(workspaceKey(item))
+    )
+    return normalizeProjectOrder([...reordered, ...addedSinceRead])
+  })()
+  // A patch that leads with a path the baseline never had is announcing a
+  // folder the reader has just added: it belongs on the first row, which is
+  // also true when another process wrote the order in between (the merge above
+  // then appends). Everything else keeps the place it already had.
+  const lead = proposed[0]
+  if (lead && !baselineKeys.has(workspaceKey(lead))) {
+    const key = workspaceKey(lead)
+    return normalizeProjectOrder([lead, ...merged.filter((item) => workspaceKey(item) !== key)])
   }
-  const currentKeys = new Set(current.map(workspaceKey))
-  const reordered = proposed.filter((item) => {
-    const key = workspaceKey(item)
-    return !baselineKeys.has(key) || currentKeys.has(key)
-  })
-  const addedSinceRead = current.filter((item) =>
-    !baselineKeys.has(workspaceKey(item)) && !proposedKeys.has(workspaceKey(item))
-  )
-  return normalizeProjectOrder([...reordered, ...addedSinceRead])
+  return merged
 }
 
 function mergeRecord<T>(

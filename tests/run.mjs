@@ -61,6 +61,7 @@ const suites = [
   'accent-ink.test.ts',
   'update-notice.test.ts',
   'goal-display.test.ts',
+  'project-order.test.ts',
   'cli-version.test.ts',
   'providers.test.ts',
   'model-catalog.test.ts',

@@ -107,6 +107,20 @@ test('projectOrder keeps a session-only project in place when it becomes registe
   )
 })
 
+test('the order addWorkspace writes is the order the sidebar draws', () => {
+  // `addWorkspace` puts a newly added folder in front of `projectOrder`; the
+  // row list has to follow it, or the row would still look like it had been
+  // appended to the end.
+  const workspaces = [
+    { id: 'alpha', path: 'C:/alpha', name: 'alpha', lastOpenedAt: 10 },
+    { id: 'newest', path: 'C:/newest', name: 'newest', lastOpenedAt: 20 }
+  ]
+  assert.deepEqual(
+    collectProjects(workspaces, [], [], ['C:/newest', 'C:/alpha']).map((project) => project.name),
+    ['newest', 'alpha']
+  )
+})
+
 test('a project missing from projectOrder joins at the end', () => {
   const sessions = [
     { id: 'a', file: 'a.jsonl', cwd: 'C:/alpha', preview: 'a', updatedAt: 30, messageCount: 1 },

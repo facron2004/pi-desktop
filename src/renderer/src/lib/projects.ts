@@ -110,8 +110,10 @@ export function collectProjects<Session extends SessionMeta>(
   }
 
   // `projectOrder` includes projects that are known only from sessions, so a
-  // folder keeps its row when it is registered later. Anything the list has
-  // not seen yet joins at the end instead of jumping above the rest.
+  // folder keeps its row when it is registered later. A folder the reader has
+  // just *added* is placed first by `addWorkspace`; whatever is left here was
+  // only ever discovered from someone else's session, so it joins at the end
+  // instead of jumping above rows the reader arranged.
   const ordered: Project<Session>[] = []
   const placed = new Set<string>()
   for (const item of projectOrder) {
