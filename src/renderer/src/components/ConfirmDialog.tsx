@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
 import { useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 
@@ -13,6 +14,17 @@ interface ConfirmDialogProps {
   onCancel: () => void
 }
 
+/**
+ * One question, asked over whatever is on screen.
+ *
+ * The layer is portalled to `body` instead of rendering where the caller sits.
+ * A `position: fixed` child is laid out against the nearest ancestor that
+ * creates a containing block — a transform, a filter, `will-change` — and
+ * settings pages, panels and menus are exactly the places that grow one, so a
+ * confirmation opened from inside the settings dialog used to be centred on
+ * that card instead of the window. Portalling keeps every confirmation centred
+ * on the window it is asking about.
+ */
 export function ConfirmDialog({
   className,
   title,
@@ -25,7 +37,7 @@ export function ConfirmDialog({
   const dialogRef = useRef<HTMLDivElement>(null)
   const t = useT()
   useDialogFocus(dialogRef, onCancel)
-  return (
+  return createPortal(
     <div className="modal-layer" onMouseDown={onCancel}>
       <div
         ref={dialogRef}
@@ -65,6 +77,7 @@ export function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
