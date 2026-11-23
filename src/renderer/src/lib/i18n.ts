@@ -776,6 +776,7 @@ const zhCN: Record<string, string> = {
   'Enter Plan Mode — explore read-only, review a Markdown plan, then execute it':
     '进入计划模式：只读探索，审阅 Markdown 方案后再执行',
   'Set a goal this conversation keeps working toward': '为当前会话设置一个持续推进的目标',
+  'Generate an image in the composer — follow it with the prompt': '在输入框中生成图片——随后输入提示词',
   'Switch to Subagent Mode — delegate independent work': '切换到子智能体模式：委托独立任务',
   'Switch to Swarm Mode — lead a team of persistent workers': '切换到蜂群模式：指挥一支常驻工作团队',
   'Lead a team of persistent workers across many turns': '指挥一支跨多轮持续工作的智能体团队',
@@ -798,6 +799,7 @@ const zhCN: Record<string, string> = {
   'Generate an image — follow it with the prompt': '生成图片：在命令后输入提示词',
   Goal: '目标',
   'Goal details': '目标详情',
+  'Run duration': '运行时长',
   Blocker: '受阻原因',
   'Completion summary': '完成摘要',
   'Continued automatically': '已自动继续',

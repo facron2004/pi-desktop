@@ -6,6 +6,7 @@ export const APP_COMMAND_ZH_NAMES: Record<string, string> = {
   plan: '计划',
   goal: '目标',
   subagent: '子智能体',
+  swarm: '蜂群',
   plugin: '插件',
   image: '图片',
   export: '导出对话',
