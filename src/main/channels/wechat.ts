@@ -9,14 +9,67 @@ const MAX_BODY_BYTES = 1024 * 1024
 const RATE_WINDOW_MS = 1_000
 const MAX_REQUESTS_PER_WINDOW = 5
 const MAX_RATE_SOURCES = 64
+export const WECHAT_HTTP_LIMITS = {
+  maxConnections: 64,
+  headersTimeoutMs: 15_000,
+  requestTimeoutMs: 30_000
+} as const
+const OUTBOUND_TIMEOUT_MS = 15_000
+const MAX_BRIDGE_RESPONSE_BYTES = 256 * 1024
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
+function scrubBridgeToken(message: string, token: string): string {
+  let clean = message.replace(/([?&]token=)[^&\s"']+/gi, '$1••••')
+  if (token) {
+    clean = clean.split(token).join('••••')
+    const encoded = encodeURIComponent(token)
+    if (encoded !== token) clean = clean.split(encoded).join('••••')
+  }
+  return clean
+}
+
+async function readBoundedText(response: Response, maxBytes = MAX_BRIDGE_RESPONSE_BYTES): Promise<string> {
+  const contentLength = response.headers?.get?.('content-length')
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > maxBytes) {
+    await response.body?.cancel().catch(() => {})
+    throw new Error('桥接服务响应过大')
+  }
+  const reader = response.body?.getReader()
+  if (reader) {
+    const chunks: Buffer[] = []
+    let bytes = 0
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (bytes + value.byteLength > maxBytes) {
+          await reader.cancel().catch(() => {})
+          throw new Error('桥接服务响应过大')
+        }
+        const chunk = Buffer.from(value)
+        chunks.push(chunk)
+        bytes += chunk.length
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    return Buffer.concat(chunks, bytes).toString('utf8')
+  }
+  const text = await response.text().catch(() => '')
+  if (Buffer.byteLength(text, 'utf8') > maxBytes) throw new Error('桥接服务响应过大')
+  return text
+}
+
 function logError(channelId: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error)
   console.error(`[pi-desktop] wechat channel ${channelId}:`, message)
+}
+
+export interface WechatAdapterDeps {
+  fetcher?: typeof fetch
 }
 
 /**
@@ -28,9 +81,14 @@ function logError(channelId: string, error: unknown): void {
  * back through the bridge's `webhook/msg/v2` API and `test()` is its
  * `/healthz` endpoint. The account risk stays with the bridge project.
  */
-export function buildWechatAdapter(channel: ImChannelConfig, context: ChannelAdapterContext): ChannelAdapter {
+export function buildWechatAdapter(
+  channel: ImChannelConfig,
+  context: ChannelAdapterContext,
+  deps?: WechatAdapterDeps
+): ChannelAdapter {
   const config = channel.wechat
   if (!config) throw new Error('WeChat bridge settings are missing.')
+  const fetcher = deps?.fetcher ?? fetch
   const channelId = channel.id
   const receiveTokenHash = sha256(config.receiveToken)
   const rate = new Map<string, { count: number; resetsAt: number }>()
@@ -57,14 +115,17 @@ export function buildWechatAdapter(channel: ImChannelConfig, context: ChannelAda
     return true
   }
 
-  const sendJson = (response: ServerResponse, status: number, value: unknown): void => {
-    response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
+  const sendJson = (response: ServerResponse, status: number, value: unknown, closeConnection = false): void => {
+    if (response.headersSent || response.writableEnded || response.destroyed) return
+    const headers: Record<string, string> = { 'Content-Type': 'application/json; charset=utf-8' }
+    if (closeConnection) headers.Connection = 'close'
+    response.writeHead(status, headers)
     response.end(JSON.stringify(value))
   }
 
   const readBody = async (request: IncomingMessage): Promise<Buffer> => {
     const declared = Number(request.headers['content-length'] ?? 0)
-    if (declared > MAX_BODY_BYTES) throw new Error('too large')
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new Error('too large')
     const chunks: Buffer[] = []
     let length = 0
     for await (const chunk of request) {
@@ -139,15 +200,42 @@ export function buildWechatAdapter(channel: ImChannelConfig, context: ChannelAda
               sendJson(response, 200, { success: true })
             } catch (error) {
               const message = error instanceof Error ? error.message : ''
-              sendJson(response, message === 'too large' ? 413 : 500, { success: false, message: message || 'Request failed.' })
+              const tooLarge = message === 'too large'
+              const badMultipart = /multipart/i.test(message)
+              sendJson(
+                response,
+                tooLarge ? 413 : badMultipart ? 400 : 500,
+                { success: false, message: message || 'Request failed.' },
+                tooLarge
+              )
+              if (tooLarge) {
+                if (response.writableEnded) request.destroy()
+                else response.once('finish', () => request.destroy())
+              }
             }
           })()
         })
-        listening.once('error', reject)
-        listening.once('listening', () => {
-          listening.off('error', reject)
+        listening.maxConnections = WECHAT_HTTP_LIMITS.maxConnections
+        listening.headersTimeout = WECHAT_HTTP_LIMITS.headersTimeoutMs
+        listening.requestTimeout = WECHAT_HTTP_LIMITS.requestTimeoutMs
+        const onStartError = (error: Error) => {
+          listening.off('listening', onListening)
+          if (server === listening) server = null
+          reject(error)
+        }
+        const onListening = () => {
+          listening.off('error', onStartError)
+          listening.on('error', (error: Error) => {
+            logError(channelId, error)
+            if (server === listening) {
+              current = { state: 'error', error: error.message }
+              context.onState('error', error.message)
+            }
+          })
           resolve()
-        })
+        }
+        listening.once('error', onStartError)
+        listening.once('listening', onListening)
         listening.listen(config.listenPort, '0.0.0.0')
         server = listening
       })
@@ -172,27 +260,43 @@ export function buildWechatAdapter(channel: ImChannelConfig, context: ChannelAda
       const isRoom = config.sendTo ? config.sendToIsRoom : lastSenderWasRoom
       const base = config.bridgeUrl.replace(/\/+$/, '')
       const url = `${base}/webhook/msg/v2?token=${encodeURIComponent(config.bridgeToken)}`
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to, isRoom, data: { type: 'text', content: text.slice(0, MAX_IM_MESSAGE_CHARS) } })
-      })
-      if (!response.ok) throw new Error(`桥接服务返回 ${response.status}`)
-      const result = await response.json().catch(() => ({})) as { success?: boolean; message?: string }
-      if (result.success === false) throw new Error(result.message || '桥接服务未能发送消息')
+      try {
+        const response = await fetcher(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to, isRoom, data: { type: 'text', content: text.slice(0, MAX_IM_MESSAGE_CHARS) } }),
+          signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
+          redirect: 'error'
+        })
+        const raw = await readBoundedText(response)
+        if (!response.ok) throw new Error(`桥接服务返回 ${response.status}`)
+        let result: { success?: boolean; message?: string } = {}
+        try {
+          result = raw ? (JSON.parse(raw) as { success?: boolean; message?: string }) : {}
+        } catch {
+          result = {}
+        }
+        if (result.success === false) throw new Error(result.message || '桥接服务未能发送消息')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(scrubBridgeToken(message, config.bridgeToken))
+      }
     },
 
     async test(): Promise<{ ok: boolean; error?: string }> {
       const base = config.bridgeUrl.replace(/\/+$/, '')
       try {
-        const response = await fetch(`${base}/healthz?token=${encodeURIComponent(config.bridgeToken)}`)
-        const body = await response.text().catch(() => '')
+        const response = await fetcher(`${base}/healthz?token=${encodeURIComponent(config.bridgeToken)}`, {
+          signal: AbortSignal.timeout(OUTBOUND_TIMEOUT_MS),
+          redirect: 'error'
+        })
+        const body = await readBoundedText(response)
         const healthy = response.ok && body.includes('healthy') && !body.includes('unHealthy')
         context.onBridgeHealth?.(healthy)
         return healthy ? { ok: true } : { ok: false, error: '桥接服务未就绪（微信可能未登录）' }
       } catch (error) {
         context.onBridgeHealth?.(false)
-        const message = error instanceof Error ? error.message : String(error)
+        const message = scrubBridgeToken(error instanceof Error ? error.message : String(error), config.bridgeToken)
         return { ok: false, error: `无法连接桥接服务：${message}` }
       }
     },

@@ -9,6 +9,9 @@ import {
   type ChannelAdapter,
   type ChannelAdapterContext
 } from '../src/main/channels/im-channel-service'
+import { createFeishuAdapter } from '../src/main/channels/feishu-core'
+import { buildWechatAdapter, WECHAT_HTTP_LIMITS } from '../src/main/channels/wechat'
+import { parseMultipartTextFields } from '../src/main/channels/multipart'
 import type { ImChannelConfig } from '../src/shared/types'
 
 const FEISHU: ImChannelConfig = {
@@ -158,5 +161,187 @@ test('a settled run pushes its answer; an aborted or crashed one does not', asyn
   emit({ type: 'extension_ui_request', method: 'confirm', title: 'Delete the file?' })
   await new Promise<void>((resolve) => setImmediate(resolve))
   assert.match(adapter.sent.at(-1)!, /需要确认/)
+  await instance.dispose()
+})
+
+test('Feishu stop() closes WSClient and blocks late inbound events from stale sockets', async () => {
+  let closeCalls = 0
+  let closedForce = false
+  let registeredHandler: ((data: unknown) => void) | undefined
+  const routed: string[] = []
+  const adapter = createFeishuAdapter(
+    FEISHU,
+    {
+      router: async (_id, text) => { routed.push(text) },
+      onState: () => {}
+    },
+    {
+      createClient: () => ({ sendText: async () => {} }),
+      createWsClient: () => ({
+        async start(onMessage) {
+          registeredHandler = onMessage
+        },
+        close(params) {
+          closeCalls += 1
+          closedForce = params?.force === true
+        }
+      })
+    }
+  )
+
+  await adapter.start()
+  registeredHandler?.({
+    message: { message_id: 'm1', message_type: 'text', chat_id: 'oc_chat', content: JSON.stringify({ text: 'hello' }) }
+  })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(routed, ['hello'])
+
+  await adapter.stop()
+  assert.equal(closeCalls, 1)
+  assert.equal(closedForce, true)
+
+  // A stale socket firing after stop() must not invoke the router.
+  registeredHandler?.({
+    message: { message_id: 'm2', message_type: 'text', chat_id: 'oc_chat', content: JSON.stringify({ text: 'stale' }) }
+  })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.deepEqual(routed, ['hello'])
+})
+
+test('multipart parser enforces MAX_FIELDS, skips files, and uses a null-prototype map', () => {
+  const boundary = '----piBoundary'
+  const part = (name: string, value: string, filename?: string) =>
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"${filename ? `; filename="${filename}"` : ''}\r\n\r\n${value}\r\n`
+  const okBody = Buffer.from(`${part('type', 'text')}${part('file', 'binary', 'a.png')}--${boundary}--\r\n`)
+  const parsed = parseMultipartTextFields(`multipart/form-data; boundary=${boundary}`, okBody)
+  assert.equal(Object.getPrototypeOf(parsed), null)
+  assert.equal(parsed.type, 'text')
+  assert.equal(parsed.file, undefined)
+
+  let tooMany = ''
+  for (let i = 0; i < 21; i += 1) tooMany += part(`f${i}`, 'v')
+  tooMany += `--${boundary}--\r\n`
+  assert.throws(
+    () => parseMultipartTextFields(`multipart/form-data; boundary=${boundary}`, Buffer.from(tooMany)),
+    /field limit/
+  )
+})
+
+test('WeChat adapter uses redirect:error, timeout signal, bounded reads, and scrubs bridge tokens from errors', async () => {
+  assert.equal(WECHAT_HTTP_LIMITS.maxConnections, 64)
+  assert.ok(WECHAT_HTTP_LIMITS.headersTimeoutMs > 0 && WECHAT_HTTP_LIMITS.requestTimeoutMs > 0)
+  const seenInit: RequestInit[] = []
+  const token = 'secret-bridge-token-999'
+  const channel: ImChannelConfig = {
+    id: 'wx-1',
+    kind: 'wechat',
+    enabled: true,
+    binding: { workspaceId: 'ws-1', sessionId: 's-1' },
+    wechat: {
+      bridgeUrl: 'http://127.0.0.1:3001',
+      bridgeToken: token,
+      listenPort: 19876,
+      receiveToken: 'recv-token',
+      sendTo: 'Alice',
+      sendToIsRoom: false
+    }
+  }
+  const adapter = buildWechatAdapter(
+    channel,
+    { router: async () => {}, onState: () => {}, onBridgeHealth: () => {} },
+    {
+      fetcher: async (url, init) => {
+        seenInit.push(init ?? {})
+        throw new Error(`connect ECONNREFUSED ${String(url)}`)
+      }
+    }
+  )
+  const probed = await adapter.test()
+  assert.equal(probed.ok, false)
+  assert.equal(probed.error?.includes(token), false, 'bridgeToken must never leak into test errors')
+  assert.equal(seenInit[0]?.redirect, 'error')
+  assert.ok(seenInit[0]?.signal)
+
+  await assert.rejects(
+    () => adapter.send('hi'),
+    (error: Error) => !error.message.includes(token)
+  )
+  assert.equal(seenInit[1]?.redirect, 'error')
+  assert.ok(seenInit[1]?.signal)
+})
+
+test('IM /new prompts real text (not "/new"), crash settles notify, eviction stops old adapter, and transient workspace loss preserves channels', async (t) => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-im-channels-reg-'))
+  t.after(() => rmSync(userData, { recursive: true, force: true }))
+  const adapters = new Map<string, FakeAdapter>()
+  const calls = { ensures: [] as Record<string, unknown>[], requests: [] as unknown[][] }
+  let workspaces = [
+    { id: 'ws-1', name: 'Project 1', path: 'C:/project-1' },
+    { id: 'ws-2', name: 'Project 2', path: 'C:/project-2' }
+  ]
+  const supervisor = Object.assign(new EventEmitter(), {
+    sessionInfo: () => ({ running: false, waitingForInput: false, cwd: 'C:/project-1', externalContext: false }),
+    ensure: async (options: Record<string, unknown>) => { calls.ensures.push(options); return { ok: true } },
+    request: async (...args: unknown[]) => { calls.requests.push(args); return {} },
+    stop: async () => {},
+    respondUi: () => {}
+  }) as EventEmitter & Record<string, unknown>
+  const instance = new ImChannelService({
+    userData,
+    settings: { get: () => ({ workspaces }), getRegisteredWorkspaces: () => workspaces } as never,
+    supervisor: supervisor as never,
+    customInstructions: () => undefined,
+    createAdapter: (channel, context) => {
+      const a = fakeAdapter()
+      a.contexts.push(context)
+      adapters.set(channel.id, a)
+      return a
+    }
+  })
+
+  await instance.initialize()
+  await instance.save(FEISHU)
+  const adapter1 = adapters.get('channel-1')!
+  const router = adapter1.contexts[0].router
+
+  // Bare /new must not send "/new" to Pi; the next message starts the draft.
+  await router('channel-1', '/new')
+  assert.equal(calls.requests.length, 0)
+  assert.match(adapter1.sent.at(-1)!, /新对话/)
+
+  // Failed ensure must not leak rekey listeners.
+  supervisor.ensure = async () => ({ ok: false, error: 'boot failed' })
+  await router('channel-1', 'first real prompt')
+  assert.equal(supervisor.listenerCount('rekey'), 1, 'only the service onRuntimeRekey listener should remain')
+
+  // /new <prompt> sends only <prompt>, not "/new <prompt>".
+  supervisor.ensure = async (options: Record<string, unknown>) => { calls.ensures.push(options); return { ok: true } }
+  supervisor.request = async (...args: unknown[]) => {
+    calls.requests.push(args)
+    const draftKey = args[0] as string
+    setImmediate(() => supervisor.emit('rekey', { from: draftKey, to: 'C:/project-1/new.jsonl' }))
+    return {}
+  }
+  await router('channel-1', '/new refactor parser')
+  assert.deepEqual(calls.requests.at(-1)?.[2], { message: 'refactor parser', streamingBehavior: 'steer' })
+
+  // A mid-run crash without agent_end must still push a failure notice.
+  adapter1.sent.length = 0
+  ;(instance as unknown as { matchesBinding: () => Promise<boolean> }).matchesBinding = async () => true
+  supervisor.emit('event', { ownerId: 'C:/project-1/session.jsonl', event: { type: 'agent_settled', aborted: false, crashed: true } })
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.match(adapter1.sent.at(-1) ?? '', /任务失败/)
+
+  // Transiently missing workspace for channel-1 must NOT wipe it when channel-2 is saved.
+  workspaces = [{ id: 'ws-2', name: 'Project 2', path: 'C:/project-2' }]
+  await instance.save({ ...FEISHU, id: 'channel-2', binding: { workspaceId: 'ws-2', sessionId: 's-2' } })
+  assert.equal(instance.storedChannels().some((c) => c.id === 'channel-1'), true)
+
+  // Saving 5th channel evicts channel-1 and stops its running adapter.
+  await instance.save({ ...FEISHU, id: 'channel-3', binding: { workspaceId: 'ws-2', sessionId: 's-3' } })
+  await instance.save({ ...FEISHU, id: 'channel-4', binding: { workspaceId: 'ws-2', sessionId: 's-4' } })
+  await instance.save({ ...FEISHU, id: 'channel-5', binding: { workspaceId: 'ws-2', sessionId: 's-5' } })
+  assert.equal(instance.hasRuntime('channel-1'), false)
+  assert.equal(adapter1.stopped, true, 'evicted channel runtime must be stopped')
   await instance.dispose()
 })

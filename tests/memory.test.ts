@@ -407,6 +407,38 @@ test('redactSecrets handles long non-credential identifiers without quadratic sc
   assert.ok(performance.now() - startedAt < 1_000)
 })
 
+test('redactSecrets strips PEM blocks, slash/padded Base64 blobs, Stripe, AWS STS, and npm tokens', () => {
+  // Assemble synthetic credential fixtures at runtime so static secret scanners do not flag test literals.
+  const stripeLive = ['sk', 'live', 'AbCdEf0123456789XyZ12345'].join('_')
+  const stripeRestricted = ['rk', 'test', '9876543210aBcDeFgHiJkLmN'].join('_')
+  const awsSts = ['ASIA', 'IOSFODNN7EXAMPLE'].join('')
+  const npmToken = ['npm', 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'].join('_')
+  const pemBlock = [
+    ['-----BEGIN ', 'RSA PRIVATE KEY-----'].join(''),
+    '/' + 'A'.repeat(63),
+    'shortFinalLine123==',
+    ['-----END ', 'RSA PRIVATE KEY-----'].join('')
+  ].join('\n')
+  const slashBase64 = '/' + 'B'.repeat(63) + '=='
+  const raw = [
+    `Stripe ${stripeLive} and ${stripeRestricted}`,
+    `AWS ${awsSts}`,
+    `NPM ${npmToken}`,
+    pemBlock,
+    `Blob ${slashBase64} end`
+  ].join('\n')
+
+  const clean = redactSecrets(raw)
+  assert.equal(clean.includes(stripeLive), false)
+  assert.equal(clean.includes(stripeRestricted), false)
+  assert.equal(clean.includes(awsSts), false)
+  assert.equal(clean.includes(npmToken), false)
+  assert.equal(clean.includes('PRIVATE KEY'), false)
+  assert.equal(clean.includes('shortFinalLine123'), false)
+  assert.equal(clean.includes('B'.repeat(32)), false)
+  assert.equal(clean.includes('=='), false)
+})
+
 /* ------------------------------------------------------------------ *
  * Transcript building
  * ------------------------------------------------------------------ */

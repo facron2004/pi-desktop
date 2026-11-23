@@ -182,3 +182,85 @@ test('POST /api/message with no sessionId starts a draft and returns the rekeyed
   assert.deepEqual(requests[0].payload, { message: 'hello new chat', streamingBehavior: 'steer' })
   assert.equal((requests[0].trace as { sourceAction: string }).sourceAction, 'remote-send')
 })
+
+test('pendingDialogs survives with no active stream and across SSE disconnects until settled or answered', async (t) => {
+  const h = harness(t)
+  const internals = h.internals as unknown as {
+    onRuntimeEvent: (payload: { ownerId: string; event: Record<string, unknown> }) => void
+    closeStream: (stream: unknown) => void
+    streams: Set<unknown>
+    sessionRefs: Map<string, unknown>
+    handleRequest: (req: unknown, res: unknown) => Promise<void>
+  }
+  const getSession = async (): Promise<{ status: number; body: Record<string, unknown> }> => {
+    let status = 0
+    let payload = ''
+    const query = new URLSearchParams({ workspaceId: 'workspace-1', sessionId: h.sessionId })
+    await internals.handleRequest({
+      method: 'GET',
+      url: `/api/session?${query}`,
+      headers: { host: '127.0.0.1', authorization: `Bearer ${accessToken}` },
+      socket: { remoteAddress: '127.0.0.1' }
+    }, {
+      headersSent: false,
+      setHeader: () => {},
+      writeHead: (code: number) => { status = code },
+      end: (value?: string) => { payload = value ?? '' }
+    })
+    return { status, body: JSON.parse(payload || '{}') as Record<string, unknown> }
+  }
+
+  // Blocking dialog arrives when NO phone stream is connected at all.
+  internals.onRuntimeEvent({
+    ownerId: h.sessionFile,
+    event: { type: 'extension_ui_request', id: 'dlg-offline', method: 'confirm', title: 'Approve?' }
+  })
+  const firstRead = await getSession()
+  assert.equal(firstRead.status, 200)
+  assert.equal((firstRead.body.pendingDialog as { id?: string } | null)?.id, 'dlg-offline')
+
+  // Simulate a phone stream closing (Wi-Fi drop / background tab): pendingDialog must remain.
+  const fileKey = process.platform === 'win32' ? path.resolve(h.sessionFile).toLowerCase() : path.resolve(h.sessionFile)
+  const heartbeat = setInterval(() => {}, 60_000)
+  const fakeStream = {
+    fileKey, deviceId: device.id, workspaceId: 'workspace-1', sessionId: h.sessionId,
+    response: { write: () => true, end: () => {} }, heartbeat
+  }
+  internals.streams.add(fakeStream)
+  internals.sessionRefs.set(fileKey, { workspaceId: 'workspace-1', sessionId: h.sessionId, cwd: h.workspacePath, file: h.sessionFile })
+  internals.closeStream(fakeStream)
+
+  const reconnectRead = await getSession()
+  assert.equal((reconnectRead.body.pendingDialog as { id?: string } | null)?.id, 'dlg-offline')
+
+  const answered = await h.post('/api/dialog', {
+    workspaceId: 'workspace-1', sessionId: h.sessionId, id: 'dlg-offline', response: { confirmed: true }
+  })
+  assert.equal(answered.status, 200)
+
+  // Settling the run clears pendingDialog even without any open stream.
+  internals.onRuntimeEvent({ ownerId: h.sessionFile, event: { type: 'agent_settled', aborted: false } })
+  const settledRead = await getSession()
+  assert.equal(settledRead.body.pendingDialog, null)
+})
+
+test('POST /api/message new conversation cancels rekey listener on failure and enforces beforeDispatch revocation', async (t) => {
+  const h = harness(t)
+  h.supervisor.ensure = async () => ({ ok: false, error: 'boom' })
+  const failed = await h.post('/api/message', { workspaceId: 'workspace-1', message: 'hi' })
+  assert.equal(failed.status, 503)
+  assert.equal(h.supervisor.listenerCount('rekey'), 0, 'failed ensure must not leak a rekey listener')
+
+  h.supervisor.ensure = async () => ({ ok: true })
+  h.supervisor.request = async (...args: unknown[]) => {
+    const beforeDispatch = args[5] as (() => void) | undefined
+    assert.equal(typeof beforeDispatch, 'function', 'new conversation must pass beforeDispatch revocation check')
+    // Revoke device while queued before dispatch.
+    await h.service.revokeDevice(device.id)
+    beforeDispatch?.()
+    return {}
+  }
+  const revoked = await h.post('/api/message', { workspaceId: 'workspace-1', message: 'hi after revoke' })
+  assert.equal(revoked.status, 401)
+  assert.equal(h.supervisor.listenerCount('rekey'), 0)
+})

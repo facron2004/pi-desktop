@@ -15,12 +15,16 @@ import {
   installNpmPackage,
   installSourceKind,
   listInstalledMarketplaceIds,
+  listManagedPackages,
+  listMarketplace,
+  MARKETPLACE_CACHE_FILE,
   mergeMarketplaceSnapshot,
   normaliseGitRepository,
   normaliseInstalledSource,
   MAX_MARKETPLACE_RESPONSE_BYTES,
   resolveSkillInstallTarget,
   refreshMarketplace,
+  setPackageEnabled,
   createResource
 } from '../src/main/marketplace'
 import { MARKETPLACE_SNAPSHOT } from '../src/shared/marketplace-data'
@@ -187,6 +191,58 @@ describe('installSourceKind', () => {
     assert.equal(installSourceKind('skills:github.com/a/..'), null)
     assert.equal(installSourceKind('git:github.com/../b'), null)
     assert.equal(installSourceKind('npm:a b'), null)
+    assert.equal(installSourceKind('npm:@scope/pi-plugin@1.2.3'), 'npm')
+    assert.equal(installSourceKind('npm:file:../../evil'), null)
+    assert.equal(installSourceKind('npm:https://evil.example/pkg.tgz'), null)
+    assert.equal(installSourceKind('npm:--global'), null)
+  })
+})
+
+describe('marketplace cache hardening and managed workspace reset', () => {
+  it('rejects cached entries with non-https URLs or unsafe npm install specifiers', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'marketplace-cache-sec-'))
+    try {
+      writeFileSync(path.join(dir, MARKETPLACE_CACHE_FILE), JSON.stringify({
+        fetchedAt: '2026-04-01T00:00:00.000Z',
+        entries: [
+          entry({ id: 'bad/js-url', url: 'javascript:alert(1)', stars: 500, install: 'npm:safe-pkg' }),
+          entry({ id: 'bad/file-npm', url: 'https://github.com/bad/file-npm', stars: 500, install: 'npm:file:../../evil' }),
+          entry({ id: 'good/live-pkg', url: 'https://github.com/good/live-pkg', stars: 500, install: 'npm:good-live-pkg' })
+        ]
+      }))
+      const listed = await listMarketplace(dir)
+      const ids = new Set(listed.entries.map((item) => item.id))
+      assert.equal(ids.has('bad/js-url'), false)
+      assert.equal(ids.has('bad/file-npm'), false)
+      assert.equal(ids.has('good/live-pkg'), true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('clears sticky managedWorkspacePath when listing without a project cwd', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'marketplace-managed-cwd-'))
+    const previousAgentDirectory = process.env.PI_CODING_AGENT_DIR
+    try {
+      const agentDir = path.join(dir, 'agent')
+      const workspace = path.join(dir, 'workspace')
+      mkdirSync(agentDir, { recursive: true })
+      mkdirSync(path.join(workspace, '.pi'), { recursive: true })
+      writeFileSync(path.join(workspace, '.pi', 'settings.json'), JSON.stringify({ packages: ['npm:demo-pkg'] }))
+      process.env.PI_CODING_AGENT_DIR = agentDir
+
+      const withProject = await listManagedPackages({ cwd: workspace })
+      assert.ok(withProject.some((pkg) => pkg.id === 'project:npm:demo-pkg'))
+
+      // Switching to projectless chat clears managedWorkspacePath.
+      await listManagedPackages({})
+      const result = await setPackageEnabled('project:npm:demo-pkg', false)
+      assert.equal(result.ok, false)
+    } finally {
+      if (previousAgentDirectory === undefined) delete process.env.PI_CODING_AGENT_DIR
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDirectory
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

@@ -42,11 +42,14 @@ function parseParts(contentType: string, body: Buffer): ParsedPart[] {
   const boundary = `--${boundaryMatch[1] ?? boundaryMatch[2]}`
   const parts: ParsedPart[] = []
   let cursor = findAscii(body, boundary, 0)
-  while (cursor >= 0 && parts.length < MAX_FIELDS + 1) {
+  let scanned = 0
+  while (cursor >= 0) {
     const lineEnd = findAscii(body, '\r\n', cursor)
     if (lineEnd < 0) break
     // A closing delimiter carries two extra dashes right after the boundary.
     if (body.subarray(cursor + boundary.length, cursor + boundary.length + 2).toString('ascii') === '--') break
+    scanned += 1
+    if (scanned > MAX_FIELDS * 4) throw new Error('Multipart body exceeds the field limit.')
     const headerStart = lineEnd + 2
     const headerEnd = findAscii(body, '\r\n\r\n', headerStart)
     if (headerEnd < 0) break
@@ -56,7 +59,8 @@ function parseParts(contentType: string, body: Buffer): ParsedPart[] {
       cursor = next
       continue
     }
-    const bodyEnd = next >= 0 ? next - 2 : body.length // strip the trailing \r\n
+    if (parts.length >= MAX_FIELDS) throw new Error('Multipart body exceeds the field limit.')
+    const bodyEnd = next >= 0 ? Math.max(headerEnd + 4, next - 2) : body.length // strip the trailing \r\n
     parts.push({ name: headers.name, filename: headers.filename, body: body.subarray(headerEnd + 4, bodyEnd) })
     cursor = next
   }
@@ -69,7 +73,7 @@ function parseParts(contentType: string, body: Buffer): ParsedPart[] {
  * violations throw and the caller rejects the request.
  */
 export function parseMultipartTextFields(contentType: string, body: Buffer): Record<string, string> {
-  const fields: Record<string, string> = {}
+  const fields: Record<string, string> = Object.create(null) as Record<string, string>
   for (const part of parseParts(contentType, body)) {
     if (part.filename !== undefined) continue
     if (part.body.length > MAX_FIELD_BYTES) throw new Error('Multipart field exceeds the size limit.')

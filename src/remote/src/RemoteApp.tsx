@@ -15,6 +15,7 @@ import { applyEventBatch, itemsFromMessages, type ThreadItem } from '@renderer/l
 import { beginStream } from '@renderer/lib/stream-events'
 import {
   beginRemoteSendRequest,
+  confirmDialogActions,
   finishRemoteSendRequest,
   restoreRemoteSessionItems,
   type RemoteSendRequests
@@ -93,6 +94,8 @@ export function RemoteApp() {
   const [stopping, setStopping] = useState(false)
   const [newChat, setNewChat] = useState(false)
   const [newChatMessage, setNewChatMessage] = useState('')
+  const [creatingChat, setCreatingChat] = useState(false)
+  const creatingChatRef = useRef(false)
   const [loading, setLoading] = useState(false)
   const [sendingRequests, setSendingRequests] = useState<RemoteSendRequests>({})
   const sendingRequestsRef = useRef<RemoteSendRequests>({})
@@ -141,6 +144,8 @@ export function RemoteApp() {
     setSendingRequests({})
     setDialog(null)
     setDialogInput('')
+    creatingChatRef.current = false
+    setCreatingChat(false)
     setLoading(false)
     setView('projects')
   }, [cancelNavigationLoad, replaceItems])
@@ -316,7 +321,6 @@ export function RemoteApp() {
           setDialog((current) => (current && current.id === event.id ? null : current))
           setDialogBusy(false)
         }
-        if (event.type === 'tool_execution_start') setDialog(null)
         if (event.type === 'agent_settled') {
           setRunning(false)
           setDialog(null)
@@ -601,8 +605,10 @@ export function RemoteApp() {
   /** The first message of a brand-new conversation in the open workspace. */
   const startNewConversation = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!workspace || !newChatMessage.trim() || sending) return
+    if (!workspace || !newChatMessage.trim() || creatingChatRef.current) return
     const submitted = newChatMessage.trim()
+    creatingChatRef.current = true
+    setCreatingChat(true)
     const controller = beginNavigationLoad()
     setError('')
     try {
@@ -632,6 +638,8 @@ export function RemoteApp() {
       if ((cause as ApiError).status === 401) clearPairingForToken(token)
       else setError(cause instanceof Error ? cause.message : 'Could not start the conversation.')
     } finally {
+      creatingChatRef.current = false
+      setCreatingChat(false)
       if (navigationLoad.current === controller) navigationLoad.current = null
     }
   }
@@ -745,8 +753,8 @@ export function RemoteApp() {
                 rows={1}
                 autoFocus
               />
-              <button className="remote-send" type="submit" disabled={!newChatMessage.trim()} aria-label="发送">
-                <Send size={18} />
+              <button className="remote-send" type="submit" disabled={!newChatMessage.trim() || creatingChat} aria-label="发送">
+                {creatingChat ? <span className="remote-spinner remote-spinner--light" /> : <Send size={18} />}
               </button>
             </form>
           ) : null}
@@ -798,13 +806,13 @@ export function RemoteApp() {
                 ) : null}
                 {dialog.method === 'confirm' ? (
                   <div className="remote-dialog__actions">
-                    {(dialog.options ?? ['确认', '取消']).map((option) => (
+                    {confirmDialogActions(dialog.options).map((action, index) => (
                       <button
                         className="remote-dialog__option"
-                        key={option}
+                        key={`${action.label}-${index}`}
                         disabled={dialogBusy}
-                        onClick={() => void answerDialog(option === '取消' ? { cancelled: true } : { value: option, confirmed: true })}
-                      >{option}</button>
+                        onClick={() => void answerDialog(action.response)}
+                      >{action.label}</button>
                     ))}
                   </div>
                 ) : null}

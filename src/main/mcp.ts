@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { MarketplaceActionResult } from '@shared/marketplace'
 import type { McpConfig, McpServerInfo } from '@shared/types'
 import { properLockfile } from './proper-lockfile'
+import { openWorkspaceFile, resolveWorkspacePath } from './workspace-files'
 
 const MAX_CONFIG_BYTES = 1024 * 1024
-const configLockWait = new Int32Array(new SharedArrayBuffer(4))
 
 interface RawEntry {
   command?: unknown
@@ -91,6 +91,78 @@ function readConfigDocument(file: string): ConfigDocument {
   }
 }
 
+function isPathWithin(root: string, target: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(target))
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  )
+}
+
+function resolveTrustedProjectMcpSync(workspacePath: string, projectPath: string): string | null {
+  try {
+    const realRoot = realpathSync(workspacePath)
+    const realTarget = realpathSync(projectPath)
+    return isPathWithin(realRoot, realTarget) ? realTarget : null
+  } catch {
+    return null
+  }
+}
+
+async function readWorkspaceConfigDocument(
+  workspacePath: string,
+  relative: string,
+  displayPath: string
+): Promise<{ target: string; document: Record<string, unknown> | null; error?: string } | null> {
+  const opened = await openWorkspaceFile(workspacePath, relative)
+  if (!opened) {
+    try {
+      lstatSync(path.join(workspacePath, relative))
+      return {
+        target: '',
+        document: null,
+        error: `${displayPath}: project MCP config escapes the workspace.`
+      }
+    } catch {
+      return null
+    }
+  }
+  try {
+    const stats = await opened.handle.stat()
+    if (!stats.isFile() || stats.size > MAX_CONFIG_BYTES) {
+      return { target: opened.target, document: null, error: `${displayPath}: the file is too large to read.` }
+    }
+    const chunks: Buffer[] = []
+    const buffer = Buffer.allocUnsafe(64 * 1024)
+    let size = 0
+    while (size <= MAX_CONFIG_BYTES) {
+      const length = Math.min(buffer.length, MAX_CONFIG_BYTES + 1 - size)
+      const { bytesRead } = await opened.handle.read(buffer, 0, length, null)
+      if (bytesRead === 0) break
+      chunks.push(Buffer.from(buffer.subarray(0, bytesRead)))
+      size += bytesRead
+    }
+    if (size > MAX_CONFIG_BYTES) {
+      return { target: opened.target, document: null, error: `${displayPath}: the file is too large to read.` }
+    }
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks, size).toString('utf8').replace(/^\uFEFF/, ''))
+    const document = recordValue(parsed)
+    if (!document) {
+      return { target: opened.target, document: null, error: `${displayPath}: the file does not contain an object.` }
+    }
+    return { target: opened.target, document }
+  } catch (error) {
+    return {
+      target: opened.target,
+      document: null,
+      error: `${displayPath}: ${error instanceof Error ? error.message : 'the file could not be read.'}`
+    }
+  } finally {
+    await opened.handle.close().catch(() => {})
+  }
+}
+
 function writeConfigDocument(file: string, document: Record<string, unknown>): void {
   const target = realpathSync(file)
   const temporary = `${target}.${randomUUID()}.tmp`
@@ -104,42 +176,70 @@ function writeConfigDocument(file: string, document: Record<string, unknown>): v
   }
 }
 
-function withConfigFileLock<T>(file: string, operation: () => T): T {
-  let release: () => void
-  let lockedRetries = 0
+async function writeWorkspaceConfigDocument(
+  workspacePath: string,
+  relative: string,
+  target: string,
+  document: Record<string, unknown>
+): Promise<void> {
+  const currentTarget = await resolveWorkspacePath(workspacePath, relative)
+  if (currentTarget !== target) {
+    throw new Error('The project MCP config changed while it was being updated.')
+  }
+  const temporary = `${target}.${randomUUID()}.tmp`
+  const mode = statSync(target).mode & 0o7777
+  try {
+    writeFileSync(temporary, JSON.stringify(document, null, 2), { encoding: 'utf8', mode })
+    const latestTarget = await resolveWorkspacePath(workspacePath, relative)
+    if (latestTarget !== target) {
+      throw new Error('The project MCP config changed while it was being updated.')
+    }
+    renameSync(temporary, target)
+  } catch (error) {
+    try { unlinkSync(temporary) } catch { /* the temporary file may not exist */ }
+    throw error
+  }
+}
+
+async function withConfigFileLock<T>(file: string, operation: () => Promise<T> | T): Promise<T> {
+  let release: (() => Promise<void>) | undefined
   let permissionRetries = 0
   for (;;) {
     try {
-      release = properLockfile.lockSync(file, { retries: 0 })
+      release = await properLockfile.lock(file, {
+        retries: { retries: 10, minTimeout: 10, maxTimeout: 40, factor: 2 }
+      })
       break
     } catch (error) {
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? String((error as { code?: unknown }).code)
         : undefined
-      if (code === 'ELOCKED' && lockedRetries < 49) lockedRetries += 1
-      else if (process.platform === 'win32' && code === 'EPERM' && permissionRetries < 5) permissionRetries += 1
-      else throw error
-      Atomics.wait(configLockWait, 0, 0, 10)
+      if (process.platform === 'win32' && code === 'EPERM' && permissionRetries < 5) {
+        permissionRetries += 1
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        continue
+      }
+      throw error
     }
   }
   try {
-    return operation()
+    return await operation()
   } finally {
     try {
-      release()
+      await release()
     } catch (error) {
       console.error('[pi-desktop] could not release MCP config lock:', error)
     }
   }
 }
 
-function mutateConfigFile(
+async function mutateUserConfigFile(
   file: string,
   mutate: (document: Record<string, unknown>) => boolean | string
-): { updated: boolean; error?: string } {
+): Promise<{ updated: boolean; error?: string }> {
   if (!existsSync(file)) return { updated: false }
   try {
-    return withConfigFileLock(file, () => {
+    return await withConfigFileLock(file, () => {
       if (!existsSync(file)) return { updated: false }
       const read = readConfigDocument(file)
       if (!read.document) return { updated: false, ...(read.error ? { error: read.error } : {}) }
@@ -154,12 +254,39 @@ function mutateConfigFile(
   }
 }
 
-/** User config first, then the project config of the open workspace. */
-function mcpConfigFiles(workspacePath: string): string[] {
-  const files = [path.join(os.homedir(), '.pi', 'agent', 'mcp.json')]
-  const workspace = workspacePath && workspacePath.trim() ? path.resolve(workspacePath.trim()) : ''
-  if (workspace) files.push(path.join(workspace, '.pi', 'mcp.json'))
-  return files
+async function mutateProjectConfigFile(
+  workspacePath: string,
+  mutate: (document: Record<string, unknown>) => boolean | string
+): Promise<{ updated: boolean; error?: string }> {
+  const workspace = workspacePath.trim() ? path.resolve(workspacePath.trim()) : ''
+  if (!workspace) return { updated: false }
+  const relative = '.pi/mcp.json'
+  const displayPath = path.join(workspace, '.pi', 'mcp.json')
+  try {
+    const initial = await readWorkspaceConfigDocument(workspace, relative, displayPath)
+    if (!initial) return { updated: false }
+    if (!initial.document || !initial.target) {
+      return { updated: false, ...(initial.error ? { error: initial.error } : {}) }
+    }
+    return await withConfigFileLock(initial.target, async () => {
+      const current = await readWorkspaceConfigDocument(workspace, relative, displayPath)
+      if (!current) return { updated: false }
+      if (!current.document || current.target !== initial.target) {
+        return { updated: false, error: current.error ?? `${displayPath}: project MCP config changed.` }
+      }
+      const changed = mutate(current.document)
+      if (typeof changed === 'string') return { updated: false, error: changed }
+      if (!changed) return { updated: false }
+      await writeWorkspaceConfigDocument(workspace, relative, initial.target, current.document)
+      return { updated: true }
+    })
+  } catch (error) {
+    return { updated: false, error: `${displayPath}: ${error instanceof Error ? error.message : String(error)}` }
+  }
+}
+
+function userMcpConfigFile(override?: string): string {
+  return override ?? path.join(os.homedir(), '.pi', 'agent', 'mcp.json')
 }
 
 export function sanitizeUrl(rawUrl?: string): string | undefined {
@@ -224,6 +351,9 @@ const SENSITIVE_FLAG_SPACE_VALUE_REGEX = new RegExp(
 const SENSITIVE_KEY_VALUE_REGEX =
   /^(--?[a-z0-9_.-]*(?:token|secret|key|api[-_]?key|password|passwd|pwd|auth|credential|credentials)[a-z0-9_.-]*=)(.+)$/i
 
+const SENSITIVE_ENV_KEY_VALUE_REGEX =
+  /^((?:[A-Za-z_][A-Za-z0-9_.-]*[_-])?(?:token|secret|api[_-]?key|access[_-]?key(?:[_-]?id)?|private[_-]?key|password|passwd|pwd|auth(?:[_-]?token)?|credential(?:s)?)(?:[_-][A-Za-z0-9_.-]*)?=)(.+)$/i
+
 export function sanitizeArgs(args?: unknown): string[] | undefined {
   if (!args || !Array.isArray(args)) return undefined
 
@@ -245,9 +375,21 @@ export function sanitizeArgs(args?: unknown): string[] | undefined {
       continue
     }
 
+    // Mask bare environment assignments (e.g. 'OPENAI_API_KEY=sk-123')
+    if (SENSITIVE_ENV_KEY_VALUE_REGEX.test(arg)) {
+      sanitized.push(arg.replace(SENSITIVE_ENV_KEY_VALUE_REGEX, '$1***'))
+      continue
+    }
+
     // Mask embedded URLs (e.g. postgresql://user:pass@host/db)
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(arg)) {
       sanitized.push(sanitizeUrl(arg) ?? arg)
+      continue
+    }
+
+    // Mask Bearer tokens (e.g. '-H', 'Authorization: Bearer sk-123')
+    if (/(?:^|\s)Bearer\s+[A-Za-z0-9._~+/=-]{8,}/i.test(arg)) {
+      sanitized.push(arg.replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1***'))
       continue
     }
 
@@ -269,10 +411,15 @@ export function sanitizeCommand(rawCommand?: unknown): string | undefined {
     (url) => sanitizeUrl(url) ?? url
   )
   sanitized = sanitized.replace(
-    /(--?[a-z0-9_.-]*(?:token|secret|key|api[-_]?key|password|passwd|pwd|auth|credential|credentials)[a-z0-9_.-]*=)[^\s"']+/gi,
+    /(--?[a-z0-9_.-]*(?:token|secret|key|api[-_]?key|password|passwd|pwd|auth|credential|credentials)[a-z0-9_.-]*=)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"']+)/gi,
     '$1***'
   )
+  sanitized = sanitized.replace(
+    /(^|\s)((?:[A-Za-z_][A-Za-z0-9_.-]*[_-])?(?:token|secret|api[_-]?key|access[_-]?key(?:[_-]?id)?|private[_-]?key|password|passwd|pwd|auth(?:[_-]?token)?|credential(?:s)?)(?:[_-][A-Za-z0-9_.-]*)?=)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"']+)/gi,
+    '$1$2***'
+  )
   sanitized = sanitized.replace(SENSITIVE_FLAG_SPACE_VALUE_REGEX, '$1$2$3***')
+  sanitized = sanitized.replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1***')
   sanitized = sanitized.replace(/((?:pwd|password)=)[^;'"\s]*/gi, '$1***')
   return sanitized
 }
@@ -338,11 +485,29 @@ export function readMcpConfig(
   const userPath = paths?.userPath ?? path.join(os.homedir(), '.pi', 'agent', 'mcp.json')
   const projectPath = paths?.projectPath ?? (workspacePath ? path.join(workspacePath, '.pi', 'mcp.json') : '')
   const user = readConfigFile(userPath)
-  const projectExists = Boolean(projectPath) && existsSync(projectPath)
-  const project: ParsedFile = projectExists
-    ? readConfigFile(projectPath)
-    : { entries: new Map<string, RawEntry>() }
+  let projectExists = false
+  if (projectPath) {
+    try {
+      lstatSync(projectPath)
+      projectExists = true
+    } catch {
+      projectExists = false
+    }
+  }
   const projectIgnored = projectExists && !trusted
+  let project: ParsedFile = { entries: new Map<string, RawEntry>() }
+  if (projectExists && trusted) {
+    if (paths?.projectPath) {
+      project = readConfigFile(projectPath)
+    } else {
+      const resolvedProject = resolveTrustedProjectMcpSync(workspacePath, projectPath)
+      if (resolvedProject) {
+        project = readConfigFile(resolvedProject)
+      } else {
+        project.error = `${projectPath}: project MCP config escapes the workspace.`
+      }
+    }
+  }
 
   const errors: string[] = []
   if (user.error) errors.push(user.error)
@@ -389,26 +554,36 @@ export function readMcpConfig(
 export async function setMcpServerEnabled(
   name: string,
   enabled: boolean,
-  workspacePath = ''
+  workspacePath = '',
+  trusted = false,
+  paths?: { userPath?: string }
 ): Promise<MarketplaceActionResult> {
   const serverName = typeof name === 'string' ? name.trim() : ''
   if (!serverName) return { ok: false, output: 'Invalid MCP server name.' }
   if (typeof enabled !== 'boolean') return { ok: false, output: 'Invalid MCP enabled state.' }
 
+  const mutate = (file: string) => (document: Record<string, unknown>): boolean | string => {
+    const servers = recordValue(document.mcpServers)
+    if (!servers) return document.mcpServers === undefined ? false : `${file}: mcpServers is not an object.`
+    if (!Object.hasOwn(servers, serverName)) return false
+    const entry = recordValue(servers[serverName])
+    if (!entry) return false
+    entry.enabled = enabled
+    return true
+  }
+
   const updated: string[] = []
   const errors: string[] = []
-  for (const file of mcpConfigFiles(workspacePath)) {
-    const result = mutateConfigFile(file, document => {
-      const servers = recordValue(document.mcpServers)
-      if (!servers) return document.mcpServers === undefined ? false : `${file}: mcpServers is not an object.`
-      if (!Object.hasOwn(servers, serverName)) return false
-      const entry = recordValue(servers[serverName])
-      if (!entry) return false
-      entry.enabled = enabled
-      return true
-    })
-    if (result.error) errors.push(result.error)
-    if (result.updated) updated.push(file)
+  const userFile = userMcpConfigFile(paths?.userPath)
+  const userResult = await mutateUserConfigFile(userFile, mutate(userFile))
+  if (userResult.error) errors.push(userResult.error)
+  if (userResult.updated) updated.push(userFile)
+
+  if (trusted && workspacePath && workspacePath.trim()) {
+    const projectFile = path.join(path.resolve(workspacePath.trim()), '.pi', 'mcp.json')
+    const projectResult = await mutateProjectConfigFile(workspacePath, mutate(projectFile))
+    if (projectResult.error) errors.push(projectResult.error)
+    if (projectResult.updated) updated.push(projectFile)
   }
 
   if (errors.length) return { ok: false, output: errors.join('\n') }
@@ -422,22 +597,32 @@ export async function setMcpServerEnabled(
 /** Remove one MCP server from every config file that declares it. */
 export async function removeMcpServer(
   name: string,
-  workspacePath = ''
+  workspacePath = '',
+  trusted = false,
+  paths?: { userPath?: string }
 ): Promise<MarketplaceActionResult> {
   const serverName = typeof name === 'string' ? name.trim() : ''
   if (!serverName) return { ok: false, output: 'Invalid MCP server name.' }
 
+  const mutate = (document: Record<string, unknown>): boolean => {
+    const servers = recordValue(document.mcpServers)
+    if (!servers || !Object.hasOwn(servers, serverName)) return false
+    delete servers[serverName]
+    return true
+  }
+
   const removed: string[] = []
   const errors: string[] = []
-  for (const file of mcpConfigFiles(workspacePath)) {
-    const result = mutateConfigFile(file, document => {
-      const servers = recordValue(document.mcpServers)
-      if (!servers || !Object.hasOwn(servers, serverName)) return false
-      delete servers[serverName]
-      return true
-    })
-    if (result.error) errors.push(result.error)
-    if (result.updated) removed.push(file)
+  const userFile = userMcpConfigFile(paths?.userPath)
+  const userResult = await mutateUserConfigFile(userFile, mutate)
+  if (userResult.error) errors.push(userResult.error)
+  if (userResult.updated) removed.push(userFile)
+
+  if (trusted && workspacePath && workspacePath.trim()) {
+    const projectFile = path.join(path.resolve(workspacePath.trim()), '.pi', 'mcp.json')
+    const projectResult = await mutateProjectConfigFile(workspacePath, mutate)
+    if (projectResult.error) errors.push(projectResult.error)
+    if (projectResult.updated) removed.push(projectFile)
   }
 
   if (errors.length) return { ok: false, output: errors.join('\n') }

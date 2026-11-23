@@ -3,7 +3,13 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { copyPayload, listSource, payloadCopyCommand } from '../src/main/setup/install'
+import {
+  copyPayload,
+  listSource,
+  payloadCopyCommand,
+  ROBOCOPY_STDIO,
+  uninstallCleanupSpec
+} from '../src/main/setup/install'
 
 /**
  * A staged payload that looks like a packaged app.
@@ -85,4 +91,23 @@ test('copying a payload keeps the archive bytes and the unpacked folders', async
     await rm(root, { recursive: true, force: true })
     await rm(parent, { recursive: true, force: true })
   }
+})
+
+test('robocopy discards stderr to prevent pipe-buffer deadlocks', () => {
+  assert.deepEqual(ROBOCOPY_STDIO, ['ignore', 'pipe', 'ignore'])
+})
+
+test('uninstallCleanupSpec passes target via env var with -LiteralPath and waits on PID', () => {
+  const trickyDir = 'C:\\Users\\测试用户\\%APPDATA%&calc\\Pi Desktop'
+  const spec = uninstallCleanupSpec(trickyDir, 4242)
+  assert.equal(spec.file, 'powershell.exe')
+  const encodedIndex = spec.args.indexOf('-EncodedCommand')
+  assert.ok(encodedIndex >= 0)
+  const decoded = Buffer.from(spec.args[encodedIndex + 1] ?? '', 'base64').toString('utf16le')
+  assert.equal(spec.env.PI_DESKTOP_UNINSTALL_DIR, path.resolve(trickyDir))
+  assert.equal(decoded.includes('%APPDATA%'), false, 'targetDir must never be interpolated into script source')
+  assert.equal(decoded.includes('测试用户'), false)
+  assert.match(decoded, /Wait-Process -Id 4242/)
+  assert.match(decoded, /Remove-Item -LiteralPath \$target -Recurse -Force/)
+  assert.equal(decoded.includes('if not exist'), false)
 })

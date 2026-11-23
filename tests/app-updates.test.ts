@@ -860,13 +860,21 @@ test('a staging folder left by a killed download is swept, a live one is kept', 
   try {
     const stale = path.join(directory, 'download-killed')
     const live = path.join(directory, 'download-running')
+    const slowLive = path.join(directory, 'download-slow-windows')
     mkdirSync(stale)
     mkdirSync(live)
-    writeFileSync(path.join(stale, 'installer.exe'), 'half a setup file', 'utf8')
+    mkdirSync(slowLive)
+    const staleFile = path.join(stale, 'installer.exe')
+    const slowLiveFile = path.join(slowLive, 'installer.exe')
+    writeFileSync(staleFile, 'half a setup file', 'utf8')
     writeFileSync(path.join(live, 'installer.exe'), 'half a setup file', 'utf8')
-    // Two hours old: no process can still be streaming into it.
+    writeFileSync(slowLiveFile, 'streaming bytes', 'utf8')
+    // Two hours old: both folder and partial file have stopped updating.
     const old = new Date(Date.now() - 2 * 60 * 60_000)
+    utimesSync(staleFile, old, old)
     utimesSync(stale, old, old)
+    // Simulate Windows NTFS where folder mtime stays old while installer.exe keeps updating.
+    utimesSync(slowLive, old, old)
     // The pair this sweep must not touch.
     writeFileSync(path.join(directory, 'installer.exe'), 'verified', 'utf8')
 
@@ -874,8 +882,29 @@ test('a staging folder left by a killed download is swept, a live one is kept', 
 
     assert.equal(existsSync(stale), false, 'the killed download left its staging folder behind')
     assert.equal(existsSync(live), true, 'a download still running had its staging folder swept')
+    assert.equal(existsSync(slowLive), true, 'a slow download with a fresh installer.exe mtime must not be swept')
     assert.equal(existsSync(path.join(directory, 'installer.exe')), true, 'the sweep ate the verified installer')
   } finally {
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('concurrent downloadAppInstaller calls serialize via lock and reuse the verified cache', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'pi-app-update-concurrent-'))
+  try {
+    const { fetcher, calls } = downloadFixture()
+    const slowFetcher: typeof fetch = async (url, init) => {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+      return fetcher(url, init)
+    }
+    const [first, second] = await Promise.all([
+      downloadAppInstaller(updateVersion, downloadOptions(directory, slowFetcher)),
+      downloadAppInstaller(updateVersion, downloadOptions(directory, slowFetcher))
+    ])
+    assert.equal(first, second)
+    assert.equal(calls.length, 2, 'second concurrent caller must reuse the verified cache after acquiring the lock')
+    assert.deepEqual(await readdir(directory), ['installer.exe', 'installer.json'])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
   }
 })

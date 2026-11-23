@@ -2,7 +2,6 @@ import { app, shell } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { SetupProgress } from '@shared/setup'
@@ -233,6 +232,8 @@ export async function copyPayload(options: {
   }
 }
 
+export const ROBOCOPY_STDIO: ['ignore', 'pipe', 'ignore'] = ['ignore', 'pipe', 'ignore']
+
 function copyWithRobocopy(
   source: string,
   target: string,
@@ -241,7 +242,9 @@ function copyWithRobocopy(
 ): Promise<void> {
   const { file, args } = payloadCopyCommand(source, target)
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { windowsHide: true })
+    // Discard stderr so heavy retry diagnostics never fill the pipe buffer and
+    // deadlock robocopy while only stdout is drained.
+    const child = spawn(file, args, { windowsHide: true, stdio: ROBOCOPY_STDIO })
     let copied = 0
     let pending = ''
     const flush = (): void => {
@@ -321,9 +324,9 @@ export async function uninstallApp(targetDir: string, removeUserData: boolean): 
   await removeShortcuts(target)
   await deleteRegistry()
   if (removeUserData) await removeAppData()
-  const script = await writeCleanupScript(target)
-  const { spawn } = await import('node:child_process')
-  const child = spawn('cmd.exe', ['/c', script], {
+  const cleanup = uninstallCleanupSpec(target)
+  const child = spawn(cleanup.file, cleanup.args, {
+    env: cleanup.env,
     detached: true,
     stdio: 'ignore',
     windowsHide: true
@@ -411,25 +414,43 @@ async function removeAppData(): Promise<void> {
   await rm(local, { recursive: true, force: true }).catch(() => undefined)
 }
 
-async function writeCleanupScript(targetDir: string): Promise<string> {
-  const file = path.join(os.tmpdir(), `pi-desktop-uninstall-${Date.now()}.cmd`)
-  const exe = path.join(targetDir, APP_EXE)
-  const content = [
-    '@echo off',
-    'setlocal',
-    'set /a tries=0',
-    ':wait',
-    'set /a tries+=1',
-    `if not exist "${exe}" goto remove`,
-    'if %tries% GEQ 120 goto remove',
-    'timeout /t 1 /nobreak >nul',
-    'goto wait',
-    ':remove',
-    `rmdir /s /q "${targetDir}"`,
-    'del /f /q "%~f0"'
-  ].join('\r\n')
-  await writeFile(file, content, 'utf8')
-  return file
+/**
+ * Build a detached PowerShell cleanup invocation for uninstall.
+ *
+ * Passing the install folder via environment variable and `-LiteralPath`
+ * prevents cmd.exe `%VAR%` expansion, quoting injection, and ANSI codepage
+ * corruption on non-ASCII (e.g. CJK) paths, while `Wait-Process` exits as
+ * soon as the uninstaller terminates instead of stalling for 120 seconds.
+ */
+export function uninstallCleanupSpec(
+  targetDir: string,
+  pid = process.pid
+): { file: string; args: string[]; env: NodeJS.ProcessEnv } {
+  const safePid = Number.isSafeInteger(pid) && pid > 0 ? pid : process.pid
+  const script = [
+    '$target = $env:PI_DESKTOP_UNINSTALL_DIR',
+    'if (-not $target) { exit 0 }',
+    `try { Wait-Process -Id ${safePid} -Timeout 120 -ErrorAction SilentlyContinue } catch {}`,
+    'for ($i = 0; $i -lt 30; $i++) {',
+    '  if (-not (Test-Path -LiteralPath $target)) { break }',
+    '  try { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 500 }',
+    '}'
+  ].join('\n')
+  return {
+    file: 'powershell.exe',
+    args: [
+      '-NoProfile',
+      '-NonInteractive',
+      '-WindowStyle',
+      'Hidden',
+      '-EncodedCommand',
+      Buffer.from(script, 'utf16le').toString('base64')
+    ],
+    env: {
+      ...cleanAppEnv(),
+      PI_DESKTOP_UNINSTALL_DIR: path.resolve(targetDir)
+    }
+  }
 }
 
 export function launchInstalled(targetDir: string, args: string[] = []): void {

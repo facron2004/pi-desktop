@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   createReadStream,
   createWriteStream,
@@ -19,6 +19,7 @@ import { pipeline } from 'node:stream/promises'
 import type { ReadableStream } from 'node:stream/web'
 import type { AppUpdateProgress } from '@shared/types'
 import { installerAssetNames, isNewerVersion } from './app-updates'
+import { properLockfile } from './proper-lockfile'
 
 const RELEASES_API = 'https://api.github.com/repos/facron2004/pi-desktop/releases/tags/'
 const DOWNLOAD_ROOT = 'https://github.com/facron2004/pi-desktop/releases/download/'
@@ -110,16 +111,35 @@ export function findDownloadedInstaller(
 
 /** Remember which release the installer belongs to, atomically. */
 function writeInstallerRecord(directory: string, version: string, bytes: number, digest: string): void {
+  const file = installerRecordPath(directory)
+  const temporary = `${file}.${randomUUID()}.tmp`
   try {
     mkdirSync(directory, { recursive: true })
-    const file = installerRecordPath(directory)
-    const temporary = `${file}.tmp`
     writeFileSync(temporary, JSON.stringify({ version, bytes, digest, downloadedAt: Date.now() }, null, 2), 'utf8')
     renameSync(temporary, file)
   } catch (error) {
+    try {
+      rmSync(temporary, { force: true })
+    } catch {
+      /* temporary file may not have been created */
+    }
     // The download still installs from the file just written; only the
     // "already downloaded" state after a restart is lost.
     console.error('[pi-desktop] failed to write installer state:', error)
+  }
+}
+
+async function withInstallerLock<T>(directory: string, action: () => Promise<T>): Promise<T> {
+  await mkdir(directory, { recursive: true })
+  const release = await properLockfile.lock(installerRecordPath(directory), {
+    realpath: false,
+    stale: 120_000,
+    retries: { retries: 25, minTimeout: 20, maxTimeout: 200, factor: 2 }
+  })
+  try {
+    return await action()
+  } finally {
+    await release().catch(() => {})
   }
 }
 
@@ -175,7 +195,15 @@ export function clearStaleDownloads(directory: string, now = Date.now()): void {
     if (!entry.startsWith('download-')) continue
     const target = path.join(directory, entry)
     try {
-      if (now - statSync(target).mtimeMs < STALE_DOWNLOAD_MS) continue
+      let newestMtime = statSync(target).mtimeMs
+      // On Windows, streaming writes into `installer.exe` do not bump the parent
+      // staging directory's mtime; check the file itself so slow downloads stay safe.
+      try {
+        newestMtime = Math.max(newestMtime, statSync(path.join(target, INSTALLER_FILE)).mtimeMs)
+      } catch {
+        /* staging folder may not have created installer.exe yet */
+      }
+      if (now - newestMtime < STALE_DOWNLOAD_MS) continue
       rmSync(target, { recursive: true, force: true })
     } catch {
       // A folder another process still holds is swept the next time round.
@@ -319,38 +347,40 @@ export async function downloadAppInstaller(version: string, options: InstallerOp
   assertUpdatable(version, options)
   const fetcher = options.fetcher ?? fetch
   const releaseOptions = { arch: options.arch, fetcher }
-  const cached = findDownloadedInstaller(options.directory, version, options.currentVersion)
-  // Older records only carry a size. Fetch the published digest once, then
-  // keep it with the verified cache so later retries can work offline.
-  const asset = cached?.digest ? undefined : await selectReleaseAsset(version, releaseOptions)
-  if (cached) {
-    const bytes = asset?.size ?? cached.bytes
-    const digest = asset?.digest ?? cached.digest
-    if (bytes && digest && await matchesInstaller(cached.path, bytes, digest)) {
-      if (!cached.digest) writeInstallerRecord(options.directory, version, bytes, digest)
-      options.onProgress({ version, stage: 'downloading', percent: 100, transferredBytes: bytes, totalBytes: bytes })
-      return cached.path
+  return withInstallerLock(options.directory, async () => {
+    const cached = findDownloadedInstaller(options.directory, version, options.currentVersion)
+    // Older records only carry a size. Fetch the published digest once, then
+    // keep it with the verified cache so later retries can work offline.
+    const asset = cached?.digest ? undefined : await selectReleaseAsset(version, releaseOptions)
+    if (cached) {
+      const bytes = asset?.size ?? cached.bytes
+      const digest = asset?.digest ?? cached.digest
+      if (bytes && digest && await matchesInstaller(cached.path, bytes, digest)) {
+        if (!cached.digest) writeInstallerRecord(options.directory, version, bytes, digest)
+        options.onProgress({ version, stage: 'downloading', percent: 100, transferredBytes: bytes, totalBytes: bytes })
+        return cached.path
+      }
     }
-  }
-  const releaseAsset = asset ?? await selectReleaseAsset(version, releaseOptions)
-  await mkdir(options.directory, { recursive: true })
-  // Clear what a killed attempt left behind before this one adds its own folder.
-  clearStaleDownloads(options.directory)
-  const staging = await mkdtemp(path.join(options.directory, 'download-'))
-  const partial = path.join(staging, 'installer.exe')
-  const installer = path.join(options.directory, INSTALLER_FILE)
-  try {
-    await streamReleaseAsset(partial, version, releaseAsset, { onProgress: options.onProgress, fetcher })
-    // Keep only one complete installer; a failed download never replaces it.
-    await rename(partial, installer)
-    // The record is what lets a restart offer "restart to install" instead of
-    // downloading the same release again.
-    writeInstallerRecord(options.directory, version, releaseAsset.size, releaseAsset.digest)
-    options.onProgress({ version, stage: 'downloading', percent: 100, transferredBytes: releaseAsset.size, totalBytes: releaseAsset.size })
-    return installer
-  } finally {
-    await rm(staging, { recursive: true, force: true })
-  }
+    const releaseAsset = asset ?? await selectReleaseAsset(version, releaseOptions)
+    await mkdir(options.directory, { recursive: true })
+    // Clear what a killed attempt left behind before this one adds its own folder.
+    clearStaleDownloads(options.directory)
+    const staging = await mkdtemp(path.join(options.directory, 'download-'))
+    const partial = path.join(staging, 'installer.exe')
+    const installer = path.join(options.directory, INSTALLER_FILE)
+    try {
+      await streamReleaseAsset(partial, version, releaseAsset, { onProgress: options.onProgress, fetcher })
+      // Keep only one complete installer; a failed download never replaces it.
+      await rename(partial, installer)
+      // The record is what lets a restart offer "restart to install" instead of
+      // downloading the same release again.
+      writeInstallerRecord(options.directory, version, releaseAsset.size, releaseAsset.digest)
+      options.onProgress({ version, stage: 'downloading', percent: 100, transferredBytes: releaseAsset.size, totalBytes: releaseAsset.size })
+      return installer
+    } finally {
+      await rm(staging, { recursive: true, force: true })
+    }
+  })
 }
 
 /** These are the setup app's silent-update flags; no command shell is involved. */

@@ -1829,3 +1829,51 @@ test('corruption recovery waits for the writer and keeps a peer’s replacement 
     rmSync(userData, { recursive: true, force: true })
   }
 })
+
+test('stopping a scheduled task while ensure() is booting stops the newly started Pi process', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-stop-boot-'))
+  let resolveEnsure!: (value: { ok: true }) => void
+  const stoppedKeys: string[] = []
+  let startedKey = ''
+  const supervisor = Object.assign(new EventEmitter(), {
+    ensure: (options: { sessionKey: string }) => {
+      startedKey = options.sessionKey
+      return new Promise<{ ok: true }>((resolve) => { resolveEnsure = resolve })
+    },
+    request: async () => ({}),
+    stop: async (key: string) => { stoppedKeys.push(key) },
+    sessionInfo: () => ({ cwd: userData, externalContext: false, running: false })
+  })
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const task = service.create({
+      title: 'Slow boot',
+      prompt: 'Do work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '23:59' }
+    })[0]
+    const runPromise = service.runNow(task.id)
+    // Wait until ensure() has started, then stop the task before ensure() finishes.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.ok(startedKey.startsWith('draft:'))
+    assert.equal(await service.stopRun(task.id), true)
+    assert.equal(stoppedKeys.length, 1)
+
+    resolveEnsure({ ok: true })
+    await runPromise
+    assert.equal(stoppedKeys.length, 2, 'newly booted runtime must be stopped when cancelled during ensure()')
+    assert.equal(stoppedKeys[1], startedKey)
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})

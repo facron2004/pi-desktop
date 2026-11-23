@@ -9,6 +9,33 @@ import { normalizePiEvent, type StreamEvent } from '@renderer/lib/stream-events'
 
 export type RemoteSendRequests = Record<string, number>
 
+export interface ConfirmDialogAction {
+  label: string
+  response: { confirmed: boolean; cancelled?: boolean }
+}
+
+const NEGATIVE_CONFIRM_LABEL = /^(?:cancel|deny|reject|no|abort|decline|取消|拒绝|否)$/i
+
+/**
+ * Build explicit approve / reject actions for a `confirm` dialog.
+ * Never defaults unknown or non-Chinese cancel/deny labels to `confirmed: true`.
+ */
+export function confirmDialogActions(options?: readonly string[]): ConfirmDialogAction[] {
+  const first = options?.[0]?.trim() || '确认'
+  const second = options?.[1]?.trim() || '取消'
+  const firstIsNegative = NEGATIVE_CONFIRM_LABEL.test(first) && !NEGATIVE_CONFIRM_LABEL.test(second)
+  return [
+    {
+      label: first,
+      response: firstIsNegative ? { confirmed: false, cancelled: true } : { confirmed: true }
+    },
+    {
+      label: second,
+      response: firstIsNegative ? { confirmed: true } : { confirmed: false, cancelled: true }
+    }
+  ]
+}
+
 export function beginRemoteSendRequest(
   current: RemoteSendRequests,
   key: string,

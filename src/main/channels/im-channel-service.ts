@@ -108,6 +108,10 @@ export class ImChannelService extends EventEmitter {
   private readonly stateFile: string
   private channels: StoredChannel[] = []
   private readonly runtimes = new Map<string, ChannelRuntime>()
+  private readonly channelOps = new Map<string, Promise<void>>()
+  private readonly boundFileCache = new Map<string, { workspaceId: string; sessionId: string; fileKey: string }>()
+  private readonly pendingNewConversation = new Set<string>()
+  private readonly activeRekeys = new Set<() => void>()
   private disposed = false
 
   constructor(
@@ -128,6 +132,7 @@ export class ImChannelService extends EventEmitter {
     if (this.disposed) return
     this.loadState()
     this.options.supervisor.on('event', this.onRuntimeEvent)
+    this.options.supervisor.on('rekey', this.onRuntimeRekey)
     for (const channel of this.channels) {
       if (channel.enabled) await this.reconcileChannel(channel.id)
     }
@@ -140,6 +145,13 @@ export class ImChannelService extends EventEmitter {
     }
     this.disposed = true
     this.options.supervisor.off('event', this.onRuntimeEvent)
+    this.options.supervisor.off('rekey', this.onRuntimeRekey)
+    for (const cancel of [...this.activeRekeys]) cancel()
+    this.activeRekeys.clear()
+    this.pendingNewConversation.clear()
+    this.boundFileCache.clear()
+    this.runCompletions.clear()
+    await Promise.allSettled([...this.channelOps.values()])
     await this.stopAll()
   }
 
@@ -151,6 +163,16 @@ export class ImChannelService extends EventEmitter {
     }
   }
 
+  private enqueueChannelOp(id: string, task: () => Promise<void>): Promise<void> {
+    const previous = this.channelOps.get(id) ?? Promise.resolve()
+    const next = previous.then(task, task)
+    const tracked = next.finally(() => {
+      if (this.channelOps.get(id) === tracked) this.channelOps.delete(id)
+    })
+    this.channelOps.set(id, tracked)
+    return next
+  }
+
   status(): ImChannelStatus[] {
     return this.channels.map((channel) => {
       const runtime = this.runtimes.get(channel.id)
@@ -159,15 +181,30 @@ export class ImChannelService extends EventEmitter {
   }
 
   async save(config: unknown): Promise<ImChannelStatus[]> {
-    const parsed = this.validateConfig(config, this.channels)
-    if (!parsed.ok) throw new Error(parsed.error)
+    let savedId = ''
+    let evictedIds: string[] = []
     await this.withStateLock(() => {
       const stored = this.readPersistedState()
+      const parsed = this.validateConfig(config, stored.channels, { requireRegisteredWorkspace: true })
+      if (!parsed.ok) throw new Error(parsed.error)
+      savedId = parsed.channel.id
       const next = this.mergeSecrets(parsed.channel, stored.channels)
+      const keptIds = new Set(next.map((item) => item.id))
+      evictedIds = [...new Set([
+        ...stored.channels.map((item) => item.id),
+        ...this.runtimes.keys()
+      ])].filter((id) => !keptIds.has(id))
       this.channels = next
       this.writeState({ channels: next })
     })
-    await this.reconcileChannel(parsed.channel.id)
+    this.boundFileCache.delete(savedId)
+    this.pendingNewConversation.delete(savedId)
+    for (const evictedId of evictedIds) {
+      this.boundFileCache.delete(evictedId)
+      this.pendingNewConversation.delete(evictedId)
+      await this.reconcileChannel(evictedId)
+    }
+    await this.reconcileChannel(savedId)
     this.emit('changed', this.status())
     return this.status()
   }
@@ -179,9 +216,9 @@ export class ImChannelService extends EventEmitter {
       this.channels = next
       this.writeState({ channels: next })
     })
-    const runtime = this.runtimes.get(id)
-    this.runtimes.delete(id)
-    if (runtime) await runtime.adapter.stop().catch(() => {})
+    this.boundFileCache.delete(id)
+    this.pendingNewConversation.delete(id)
+    await this.reconcileChannel(id)
     this.emit('changed', this.status())
     return this.status()
   }
@@ -203,7 +240,8 @@ export class ImChannelService extends EventEmitter {
 
   private validateConfig(
     config: unknown,
-    existing: StoredChannel[]
+    existing: StoredChannel[],
+    options: { requireRegisteredWorkspace?: boolean } = {}
   ): { ok: true; channel: StoredChannel } | { ok: false; error: string } {
     if (!isPlainObject(config)) return { ok: false, error: 'A channel config object is required.' }
     const kind = config.kind
@@ -224,8 +262,10 @@ export class ImChannelService extends EventEmitter {
     const sessionId = boundedString(bindingRaw.sessionId, 200)
     if (!workspaceId) return { ok: false, error: 'Pick the project this channel drives.' }
     if (!sessionId) return { ok: false, error: 'Pick the conversation this channel drives.' }
-    const workspace = this.registeredWorkspaces().find((item) => item.id === workspaceId)
-    if (!workspace) return { ok: false, error: 'That project is no longer registered.' }
+    if (options.requireRegisteredWorkspace !== false) {
+      const workspace = this.registeredWorkspaces().find((item) => item.id === workspaceId)
+      if (!workspace) return { ok: false, error: 'That project is no longer registered.' }
+    }
 
     const enabled = config.enabled === true
     const base = { id, kind, enabled, binding: { workspaceId, sessionId } } as StoredChannel
@@ -276,62 +316,65 @@ export class ImChannelService extends EventEmitter {
 
   /** Stop or (re)start one channel's adapter so it matches the saved config. */
   private async reconcileChannel(id: string): Promise<void> {
-    const channel = this.channels.find((item) => item.id === id)
-    const runtime = this.runtimes.get(id)
-    if (!channel || !channel.enabled) {
-      if (!runtime) return
-      this.runtimes.delete(id)
-      await runtime.adapter.stop().catch(() => {})
-      return
-    }
-    if (runtime?.adapter.reconfigure?.(channel)) {
+    await this.enqueueChannelOp(id, async () => {
+      const channel = this.channels.find((item) => item.id === id)
+      const runtime = this.runtimes.get(id)
+      if (this.disposed || !channel || !channel.enabled) {
+        if (!runtime) return
+        this.runtimes.delete(id)
+        await runtime.adapter.stop().catch(() => {})
+        return
+      }
+      if (runtime?.adapter.reconfigure?.(channel)) {
+        this.emit('changed', this.status())
+        return
+      }
+      if (runtime) {
+        this.runtimes.delete(id)
+        await runtime.adapter.stop().catch(() => {})
+        if (this.disposed) return
+      }
+      const next: ChannelRuntime = { adapter: null as never, state: 'connecting' }
+      try {
+        next.adapter = this.options.createAdapter(channel, {
+          router: (targetId, text) => this.routeInbound(targetId, text),
+          onState: (state, error) => {
+            const entry = this.runtimes.get(id)
+            if (!entry || entry !== next || this.disposed) return
+            entry.state = state
+            entry.error = error
+            if (!this.disposed) this.emit('changed', this.status())
+          },
+          onBridgeHealth: (healthy) => {
+            const entry = this.runtimes.get(id)
+            if (!entry || entry !== next || this.disposed) return
+            entry.bridgeHealthy = healthy
+            if (!this.disposed) this.emit('changed', this.status())
+          }
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        this.runtimes.set(id, { adapter: { async stop() {}, async send() {}, async test() { return { ok: false, error: message } }, async start() {}, state: () => ({ state: 'error' }) }, state: 'error', error: message })
+        this.emit('changed', this.status())
+        return
+      }
+      this.runtimes.set(id, next)
+      // A failed start is a state, not an exception: the settings page reads it.
+      next.startTask = next.adapter.start()
+        .then(() => {
+          if (this.runtimes.get(id) === next) next.state = 'connected'
+        })
+        .catch((error: unknown) => {
+          if (this.runtimes.get(id) !== next) return
+          next.state = 'error'
+          next.error = error instanceof Error ? error.message : String(error)
+          void next.adapter.stop().catch(() => {})
+        })
+        .finally(() => {
+          if (!this.disposed && this.runtimes.get(id) === next) this.emit('changed', this.status())
+        })
       this.emit('changed', this.status())
-      return
-    }
-    if (runtime) {
-      this.runtimes.delete(id)
-      await runtime.adapter.stop().catch(() => {})
-    }
-    const next: ChannelRuntime = { adapter: null as never, state: 'connecting' }
-    try {
-      next.adapter = this.options.createAdapter(channel, {
-        router: (targetId, text) => this.routeInbound(targetId, text),
-        onState: (state, error) => {
-          const entry = this.runtimes.get(id)
-          if (!entry || this.disposed) return
-          entry.state = state
-          entry.error = error
-          if (!this.disposed) this.emit('changed', this.status())
-        },
-        onBridgeHealth: (healthy) => {
-          const entry = this.runtimes.get(id)
-          if (!entry || this.disposed) return
-          entry.bridgeHealthy = healthy
-          if (!this.disposed) this.emit('changed', this.status())
-        }
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.runtimes.set(id, { adapter: { async stop() {}, async send() {}, async test() { return { ok: false, error: message } }, async start() {}, state: () => ({ state: 'error' }) }, state: 'error', error: message })
-      this.emit('changed', this.status())
-      return
-    }
-    this.runtimes.set(id, next)
-    // A failed start is a state, not an exception: the settings page reads it.
-    next.startTask = next.adapter.start()
-      .then(() => {
-        if (this.runtimes.get(id) === next) next.state = 'connected'
-      })
-      .catch((error: unknown) => {
-        if (this.runtimes.get(id) !== next) return
-        next.state = 'error'
-        next.error = error instanceof Error ? error.message : String(error)
-        void next.adapter.stop().catch(() => {})
-      })
-      .finally(() => {
-        if (!this.disposed && this.runtimes.get(id) === next) this.emit('changed', this.status())
-      })
-    this.emit('changed', this.status())
+    })
   }
 
   private maskChannel(channel: StoredChannel, runtime?: ChannelRuntime): ImChannelStatus {
@@ -397,7 +440,7 @@ export class ImChannelService extends EventEmitter {
     const channels = Array.isArray(parsed.channels) ? parsed.channels : []
     const validated: StoredChannel[] = []
     for (const raw of channels.slice(0, MAX_CHANNELS)) {
-      const result = this.validateConfig(raw, validated)
+      const result = this.validateConfig(raw, validated, { requireRegisteredWorkspace: false })
       if (result.ok) validated.push(result.channel)
     }
     return { channels: validated }
@@ -471,24 +514,38 @@ export class ImChannelService extends EventEmitter {
       return
     }
 
-    const command = /^\/(help|status|stop|new)$/i.exec(message)
+    const command = /^\/(help|status|stop)$/i.exec(message)
     if (command) {
       const verb = command[1].toLowerCase()
       if (verb === 'help') {
-        await this.reply(channelId, '可用命令：/status 查看绑定对话、/stop 停止当前运行、/new 开始新对话。其他文字会作为指令发送给 Pi。')
+        await this.reply(channelId, '可用命令：/status 查看绑定对话、/stop 停止当前运行、/new [消息] 开始新对话。其他文字会作为指令发送给 Pi。')
         return
       }
       if (verb === 'status') {
         await this.replyStatus(channelId, channel)
         return
       }
-      if (verb === 'stop') {
-        const file = await this.resolveBoundFile(channel)
-        if (!file) return // replyStatus already explained the failure
-        await this.options.supervisor.stop(file)
-        await this.reply(channelId, '已停止当前运行。')
+      const file = await this.resolveBoundFile(channel)
+      if (!file) return // resolveBoundFile already explained the failure
+      await this.options.supervisor.stop(file)
+      await this.reply(channelId, '已停止当前运行。')
+      return
+    }
+
+    const newMatch = /^\/new(?:\s+([\s\S]+))?$/i.exec(message)
+    if (newMatch) {
+      const promptText = (newMatch[1] ?? '').trim()
+      if (!promptText) {
+        this.pendingNewConversation.add(channelId)
+        await this.reply(channelId, '已准备新对话，请发送第一条消息（或直接用 /new 消息内容）。')
         return
       }
+      this.pendingNewConversation.delete(channelId)
+      await this.startNewConversation(channelId, channel, promptText)
+      return
+    }
+
+    if (this.pendingNewConversation.delete(channelId)) {
       await this.startNewConversation(channelId, channel, message)
       return
     }
@@ -514,6 +571,11 @@ export class ImChannelService extends EventEmitter {
       await this.reply(channel.id, '绑定的对话已不存在，可用 /new 开始新对话。')
       return null
     }
+    this.boundFileCache.set(channel.id, {
+      workspaceId: workspace.id,
+      sessionId: session.id,
+      fileKey: this.pathKey(session.file)
+    })
     return session.file
   }
 
@@ -573,56 +635,66 @@ export class ImChannelService extends EventEmitter {
     }
     const draftKey = `draft:${randomUUID()}`
     const rekey = this.awaitRekey(draftKey)
-    const started = await this.options.supervisor.ensure({
-      sessionKey: draftKey,
-      cwd: workspace.path,
-      customInstructions: this.options.customInstructions(workspace.path)
-    }).catch((error: unknown) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }))
-    if (!started.ok) {
-      await this.reply(channelId, `Pi 未能启动：${clipText(started.error ?? '', 200)}`)
-      return
-    }
     try {
-      await this.options.supervisor.request(
-        draftKey,
-        'prompt',
-        { message, streamingBehavior: 'steer' },
-        900_000,
-        { sourceAction: 'im-send', uiSessionId: draftKey }
-      )
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      await this.reply(channelId, `消息未能送达：${clipText(detail, 200)}`)
-      return
-    }
-    const rekeyed = await rekey
-    if (rekeyed) {
-      await this.rebind(channel, rekeyed)
-      await this.reply(channelId, '已切换到新对话。')
-    } else {
-      // The conversation exists and is running; only the binding update is
-      // missing. Say so rather than pretending the switch happened.
-      await this.reply(channelId, '新对话已开始，但暂时无法更新频道绑定，请稍后用 /status 查看。')
+      const started = await this.options.supervisor.ensure({
+        sessionKey: draftKey,
+        cwd: workspace.path,
+        customInstructions: this.options.customInstructions(workspace.path)
+      }).catch((error: unknown) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }))
+      if (!started.ok) {
+        await this.reply(channelId, `Pi 未能启动：${clipText(started.error ?? '', 200)}`)
+        return
+      }
+      try {
+        await this.options.supervisor.request(
+          draftKey,
+          'prompt',
+          { message, streamingBehavior: 'steer' },
+          900_000,
+          { sourceAction: 'im-send', uiSessionId: draftKey }
+        )
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        await this.reply(channelId, `消息未能送达：${clipText(detail, 200)}`)
+        return
+      }
+      const rekeyed = await rekey.promise
+      if (rekeyed) {
+        await this.rebind(channel, rekeyed)
+        await this.reply(channelId, '已切换到新对话。')
+      } else {
+        // The conversation exists and is running; only the binding update is
+        // missing. Say so rather than pretending the switch happened.
+        await this.reply(channelId, '新对话已开始，但暂时无法更新频道绑定，请稍后用 /status 查看。')
+      }
+    } finally {
+      rekey.cancel()
     }
   }
 
   /** One bounded wait for the JSONL a draft is about to become. */
-  private awaitRekey(draftKey: string): Promise<string | null> {
-    return new Promise((resolve) => {
+  private awaitRekey(draftKey: string): { promise: Promise<string | null>; cancel: () => void } {
+    let finish!: (value: string | null) => void
+    const promise = new Promise<string | null>((resolve) => {
       let done = false
-      const finish = (value: string | null): void => {
+      finish = (value: string | null): void => {
         if (done) return
         done = true
         clearTimeout(timer)
         this.options.supervisor.off('rekey', listener)
+        this.activeRekeys.delete(cancel)
         resolve(value)
       }
       const listener = (change: RuntimeRekey): void => {
         if (change.from === draftKey) finish(change.to)
       }
       const timer = setTimeout(() => finish(null), REKEY_WAIT_MS)
+      timer.unref?.()
       this.options.supervisor.on('rekey', listener)
     })
+    const cancel = () => finish(null)
+    this.activeRekeys.add(cancel)
+    return { promise, cancel }
   }
 
   /** Persist the new binding for a channel and republish the settings view. */
@@ -640,6 +712,11 @@ export class ImChannelService extends EventEmitter {
       this.channels = next
       this.writeState({ channels: next })
     })
+    this.boundFileCache.set(channel.id, {
+      workspaceId: workspace.id,
+      sessionId: session.id,
+      fileKey: this.pathKey(session.file)
+    })
     if (!this.disposed) this.emit('changed', this.status())
   }
 
@@ -647,17 +724,51 @@ export class ImChannelService extends EventEmitter {
    * Supervisor pushes
    * ---------------------------------------------------------------- */
 
+  private readonly onRuntimeRekey = (change: RuntimeRekey): void => {
+    const fromKey = this.pathKey(change.from)
+    const toKey = this.pathKey(change.to)
+    if (fromKey === toKey) return
+    const pending = this.runCompletions.get(fromKey)
+    if (pending) {
+      this.runCompletions.delete(fromKey)
+      this.runCompletions.set(toKey, pending)
+    }
+  }
+
   /** Final answers and needs-confirmation notices, per bound session file. */
   private readonly onRuntimeEvent = (payload: { ownerId: string; event: PiEvent }): void => {
-    if (this.disposed || this.runtimes.size === 0) return
+    if (this.disposed) return
     const ownerKey = this.pathKey(payload.ownerId)
     const event = payload.event
-    if (event.type === 'agent_end') {
-      this.runCompletions.set(ownerKey, describeRunCompletion(event.messages))
-      return
-    }
     if (event.type === 'agent_start') {
       this.runCompletions.delete(ownerKey)
+      return
+    }
+    if (event.type === 'agent_settled') {
+      const completion = this.runCompletions.get(ownerKey)
+      this.runCompletions.delete(ownerKey)
+      if (this.runtimes.size === 0) return
+      if (event.aborted || event.runtimeStopped) return
+      if (event.crashed) {
+        this.pushToBound(ownerKey, `任务失败：${clipText(completion?.body || 'Pi 在任务完成前退出', 300)}`)
+        return
+      }
+      if (!completion) return
+      if (completion.failed) {
+        this.pushToBound(ownerKey, `任务失败：${clipText(completion.body || 'Pi 在任务完成前退出', 300)}`)
+        return
+      }
+      if (!completion.body) return
+      this.pushToBound(ownerKey, completion.body)
+      return
+    }
+    if (this.runtimes.size === 0) return
+    if (event.type === 'agent_end') {
+      if (this.runCompletions.size >= 256 && !this.runCompletions.has(ownerKey)) {
+        const oldest = this.runCompletions.keys().next().value
+        if (oldest !== undefined) this.runCompletions.delete(oldest)
+      }
+      this.runCompletions.set(ownerKey, describeRunCompletion(event.messages))
       return
     }
     if (event.type === 'extension_ui_request') {
@@ -667,17 +778,6 @@ export class ImChannelService extends EventEmitter {
       this.pushToBound(ownerKey, ask ? `Pi 需要确认：${ask}` : 'Pi 需要在桌面端确认后才能继续。')
       return
     }
-    if (event.type !== 'agent_settled') return
-    const completion = this.runCompletions.get(ownerKey)
-    this.runCompletions.delete(ownerKey)
-    if (!completion) return
-    if (event.aborted || event.runtimeStopped) return
-    if (event.crashed || completion.failed) {
-      this.pushToBound(ownerKey, `任务失败：${clipText(completion.body || 'Pi 在任务完成前退出', 300)}`)
-      return
-    }
-    if (!completion.body) return
-    this.pushToBound(ownerKey, completion.body)
   }
 
   /** Push one text to the channel whose binding currently owns that file. */
@@ -696,12 +796,27 @@ export class ImChannelService extends EventEmitter {
   }
 
   private async matchesBinding(channel: StoredChannel, ownerKey: string): Promise<boolean> {
+    const cached = this.boundFileCache.get(channel.id)
+    if (
+      cached &&
+      cached.workspaceId === channel.binding.workspaceId &&
+      cached.sessionId === channel.binding.sessionId
+    ) {
+      return cached.fileKey === ownerKey
+    }
     const workspace = await this.boundWorkspace(channel)
     if (!workspace) return false
     try {
       const sessions = await listSessions(workspace.path)
       const session = sessions.find((item) => item.id === channel.binding.sessionId)
-      return Boolean(session && this.pathKey(session.file) === ownerKey)
+      if (!session) return false
+      const fileKey = this.pathKey(session.file)
+      this.boundFileCache.set(channel.id, {
+        workspaceId: workspace.id,
+        sessionId: session.id,
+        fileKey
+      })
+      return fileKey === ownerKey
     } catch {
       return false
     }

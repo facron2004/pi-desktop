@@ -5,6 +5,7 @@ import { applyEvent, type ThreadItem } from '../src/renderer/src/lib/thread'
 import { beginStream } from '../src/renderer/src/lib/stream-events'
 import {
   beginRemoteSendRequest,
+  confirmDialogActions,
   finishRemoteSendRequest,
   restoreRemoteSessionItems
 } from '../src/remote/src/session-state'
@@ -269,4 +270,23 @@ test('restoreRemoteSessionItems skips buffered round.continued already present i
     breaks.map((b) => b.timestamp),
     [2000, 4000],
   )
+})
+
+test('confirmDialogActions never sends confirmed:true for non-Chinese deny/cancel options', () => {
+  assert.deepEqual(confirmDialogActions(undefined), [
+    { label: '确认', response: { confirmed: true } },
+    { label: '取消', response: { confirmed: false, cancelled: true } }
+  ])
+  assert.deepEqual(confirmDialogActions(['Allow', 'Deny']), [
+    { label: 'Allow', response: { confirmed: true } },
+    { label: 'Deny', response: { confirmed: false, cancelled: true } }
+  ])
+  assert.deepEqual(confirmDialogActions(['Yes', 'No']), [
+    { label: 'Yes', response: { confirmed: true } },
+    { label: 'No', response: { confirmed: false, cancelled: true } }
+  ])
+  assert.deepEqual(confirmDialogActions(['Cancel', 'Confirm']), [
+    { label: 'Cancel', response: { confirmed: false, cancelled: true } },
+    { label: 'Confirm', response: { confirmed: true } }
+  ])
 })

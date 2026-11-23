@@ -1049,7 +1049,10 @@ export class ScheduledTaskService extends EventEmitter {
         trace: { sourceAction: 'scheduled-task', uiSessionId: sessionKey }
       })
       if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start.')
-      if (this.activeTasks.get(active.taskId) !== active) return
+      if (this.activeTasks.get(active.taskId) !== active) {
+        void this.supervisor.stop(active.sessionFile ?? sessionKey).catch(() => {})
+        return
+      }
       const piPid = this.supervisor.sessionInfo(sessionKey)?.pid
       if (piPid !== undefined) {
         try {
@@ -1070,7 +1073,10 @@ export class ScheduledTaskService extends EventEmitter {
       } catch {
         // The prompt is more important than the optional conversation title.
       }
-      if (this.activeTasks.get(active.taskId) !== active) return
+      if (this.activeTasks.get(active.taskId) !== active) {
+        void this.supervisor.stop(active.sessionFile ?? sessionKey).catch(() => {})
+        return
+      }
       const result = await this.supervisor.request<{ disposition?: string; cancelled?: boolean }>(
         sessionKey,
         'prompt',

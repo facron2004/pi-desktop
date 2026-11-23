@@ -57,7 +57,6 @@ const MAX_MARKETPLACE_SETTINGS_BYTES = 8 * 1024 * 1024
 /** How long `pi install` or a skill collection clone may take. A package with
  *  hundreds of transitive dependencies can spend minutes in npm's reify step. */
 const INSTALL_TIMEOUT_MS = 300000
-const packageSettingsLockWait = new Int32Array(new SharedArrayBuffer(4))
 
 /** The cache file's on-disk shape. */
 export interface MarketplaceCache {
@@ -120,9 +119,48 @@ function isRepoSegment(value: string): boolean {
   return REPO_SEGMENT.test(value) && value !== '.' && value !== '..'
 }
 
+/** npm's own package-name alphabet: lowercase, digits, dot, dash, underscore,
+ *  optionally behind one `@scope/`. This rejects whitespace, backslashes, URLs
+ *  and path traversal before a name can become part of `pi install`'s argv. */
+const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
+const NPM_SAFE_VERSION = /^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/
+
+function isSafeNpmSpecifier(specifier: string): boolean {
+  if (!specifier || specifier.length > 280) return false
+  let name = specifier
+  let version: string | undefined
+  if (specifier.startsWith('@')) {
+    const slash = specifier.indexOf('/')
+    if (slash < 0) return false
+    const at = specifier.indexOf('@', slash + 1)
+    if (at >= 0) {
+      name = specifier.slice(0, at)
+      version = specifier.slice(at + 1)
+    }
+  } else {
+    const at = specifier.indexOf('@')
+    if (at >= 0) {
+      name = specifier.slice(0, at)
+      version = specifier.slice(at + 1)
+    }
+  }
+  if (!name || name.length > 214 || !NPM_PACKAGE_NAME.test(name)) return false
+  if (version !== undefined && !NPM_SAFE_VERSION.test(version)) return false
+  return true
+}
+
+function isSafeHttpsUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  try {
+    return new URL(value).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 export function installSourceKind(source: string): MarketplaceInstallSource | null {
   const value = source.trim()
-  if (/^npm:\S+$/.test(value)) return 'npm'
+  if (value.startsWith('npm:') && isSafeNpmSpecifier(value.slice('npm:'.length))) return 'npm'
   const git = /^git:github\.com\/([^/]+)\/([^/]+)$/.exec(value)
   if (git && isRepoSegment(git[1]) && isRepoSegment(git[2])) return 'git'
   const skills = /^skills:github\.com\/([^/]+)\/([^/]+)$/.exec(value)
@@ -189,7 +227,7 @@ function isMarketplaceEntry(value: unknown): value is MarketplaceEntry {
     (value.kind === 'plugin' || value.kind === 'skill') &&
     typeof value.name === 'string' &&
     typeof value.repo === 'string' &&
-    typeof value.url === 'string' &&
+    isSafeHttpsUrl(value.url) &&
     typeof value.description === 'string' &&
     finiteNumber(value.stars) !== null &&
     finiteNumber(value.forks) !== null &&
@@ -290,10 +328,10 @@ function readMarketplaceCache(userDataDir: string): MarketplaceCache | null {
 }
 
 function writeMarketplaceCache(userDataDir: string, snapshot: MarketplaceSnapshot): void {
+  const file = path.join(userDataDir, MARKETPLACE_CACHE_FILE)
+  const temporary = `${file}.${randomUUID()}.tmp`
   try {
     mkdirSync(userDataDir, { recursive: true })
-    const file = path.join(userDataDir, MARKETPLACE_CACHE_FILE)
-    const temporary = `${file}.tmp`
     const payload: MarketplaceCache = {
       fetchedAt: snapshot.generatedAt,
       entries: snapshot.entries
@@ -301,6 +339,7 @@ function writeMarketplaceCache(userDataDir: string, snapshot: MarketplaceSnapsho
     writeFileSync(temporary, JSON.stringify(payload, null, 2), 'utf8')
     renameSync(temporary, file)
   } catch (error) {
+    try { unlinkSync(temporary) } catch { /* the temporary file may not exist */ }
     // The refreshed snapshot is still useful for this session even when the
     // cache cannot be written (read-only profile, disk full, ...).
     console.error('[pi-desktop] failed to write marketplace cache:', error)
@@ -667,25 +706,16 @@ async function withPackageSettingsLock<T>(
   file: string,
   operation: () => Promise<T> | T
 ): Promise<T> {
-  let release: () => void
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      // Pi's settings manager uses realpath:false for both settings files.
-      release = properLockfile.lockSync(file, { realpath: false, retries: 0 })
-      break
-    } catch (error) {
-      const code = typeof error === 'object' && error !== null && 'code' in error
-        ? String((error as { code?: unknown }).code)
-        : undefined
-      if (code !== 'ELOCKED' || attempt >= 49) throw error
-      Atomics.wait(packageSettingsLockWait, 0, 0, 10)
-    }
-  }
+  // Pi's settings manager uses realpath:false for both settings files.
+  const release = await properLockfile.lock(file, {
+    realpath: false,
+    retries: { retries: 10, minTimeout: 10, maxTimeout: 40, factor: 2 }
+  })
   try {
     return await operation()
   } finally {
     try {
-      release()
+      await release()
     } catch (error) {
       console.error('[pi-desktop] could not release package settings lock:', error)
     }
@@ -693,7 +723,8 @@ async function withPackageSettingsLock<T>(
 }
 
 function workspaceForPackageAction(cwd?: string): string | undefined {
-  return cwd && cwd.trim() ? path.resolve(cwd.trim()) : managedWorkspacePath
+  if (cwd !== undefined) return cwd.trim() ? path.resolve(cwd.trim()) : undefined
+  return managedWorkspacePath
 }
 
 async function withPackageSettingsDocument<T>(
@@ -737,7 +768,7 @@ export async function listManagedPackages(
   options: { cwd?: string } = {}
 ): Promise<ManagedPackage[]> {
   const cwd = options.cwd && options.cwd.trim() ? path.resolve(options.cwd.trim()) : undefined
-  if (cwd) managedWorkspacePath = cwd
+  managedWorkspacePath = cwd
 
   const rows: ManagedPackage[] = []
   const seen = new Set<string>()
@@ -1085,10 +1116,9 @@ function entryFromGitHubRepository(raw: unknown): MarketplaceEntry | null {
     kind: /skill/i.test(`${name} ${description} ${topics.join(' ')}`) ? 'skill' : 'plugin',
     name,
     repo: id,
-    url:
-      typeof raw.html_url === 'string' && raw.html_url
-        ? raw.html_url
-        : `https://github.com/${id}`,
+    url: isSafeHttpsUrl(raw.html_url)
+      ? raw.html_url
+      : `https://github.com/${id}`,
     description,
     stars: finiteNumber(raw.stargazers_count) ?? 0,
     forks: finiteNumber(raw.forks_count) ?? 0,
@@ -1203,8 +1233,13 @@ export async function refreshMarketplace(
   userDataDir: string = app.getPath('userData')
 ): Promise<MarketplaceSnapshot> {
   const collected = new Map<string, MarketplaceEntry>()
-  for (const query of GITHUB_SEARCH_QUERIES) {
-    const found = await searchGitHub(query)
+  const [firstQuery, ...restQueries] = GITHUB_SEARCH_QUERIES
+  // Probe the first query before fanning out so rate limits, offline failures,
+  // or oversized responses fail fast without issuing redundant requests.
+  const batches: MarketplaceEntry[][] = firstQuery
+    ? [await searchGitHub(firstQuery), ...(await Promise.all(restQueries.map((query) => searchGitHub(query))))]
+    : []
+  for (const found of batches) {
     for (const entry of found) {
       const key = entry.id.toLowerCase()
       const existing = collected.get(key)
@@ -1336,11 +1371,6 @@ async function installSkillCollection(source: string): Promise<MarketplaceInstal
       ])
   return { ok: result.ok, output: result.output }
 }
-
-/** npm's own package-name alphabet: lowercase, digits, dot, dash, underscore,
- *  optionally behind one `@scope/`. This rejects whitespace, backslashes and
- *  path traversal before a name can become part of `pi install`'s argv. */
-const NPM_PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
 
 /**
  * Install one npm package by name. The marketplace card for a search result

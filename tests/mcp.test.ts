@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { readMcpConfig, sanitizeArgs, sanitizeCommand, sanitizeUrl } from '../src/main/mcp'
+import {
+  readMcpConfig,
+  removeMcpServer,
+  sanitizeArgs,
+  sanitizeCommand,
+  sanitizeUrl,
+  setMcpServerEnabled
+} from '../src/main/mcp'
 
 test('sanitizeUrl masks Basic Auth credentials in HTTP URLs', () => {
   const input = 'https://admin:superSecret123@mcp.internal.company.com/v1/sse'
@@ -224,5 +231,90 @@ test('readMcpConfig sanitizes server URLs and STDIO args from project config', (
     } catch {
       /* ignore */
     }
+  }
+})
+
+test('sanitizeCommand and sanitizeArgs redact quoted key=value flags, bare env secrets, and Bearer tokens', () => {
+  assert.equal(
+    sanitizeCommand('uvx mcp --api-key="sk-quoted-secret" --token=\'single quoted secret\' --port=8080'),
+    'uvx mcp --api-key=*** --token=*** --port=8080'
+  )
+  assert.equal(
+    sanitizeCommand('docker run -e OPENAI_API_KEY=sk-bare-secret -H "Authorization: Bearer tok_1234567890" img'),
+    'docker run -e OPENAI_API_KEY=*** -H "Authorization: Bearer ***" img'
+  )
+  assert.deepEqual(
+    sanitizeArgs(['-e', 'OPENAI_API_KEY=sk-bare-secret', '-H', 'Authorization: Bearer tok_1234567890', 'NODE_ENV=prod']),
+    ['-e', 'OPENAI_API_KEY=***', '-H', 'Authorization: Bearer ***', 'NODE_ENV=prod']
+  )
+})
+
+test('untrusted project .pi/mcp.json is neither loaded nor mutated, and escaping symlinks are rejected', async (t) => {
+  const temp = realpathSync(os.tmpdir())
+  const dir = mkdtempSync(path.join(temp, 'pi-desktop-mcp-trust-'))
+  try {
+    const workspace = path.join(dir, 'workspace')
+    const piDir = path.join(workspace, '.pi')
+    const userPath = path.join(dir, 'user-mcp.json')
+    mkdirSync(piDir, { recursive: true })
+    writeFileSync(userPath, JSON.stringify({
+      mcpServers: { shared: { command: 'npx', args: ['user-server'], enabled: true } }
+    }), 'utf8')
+    // Corrupt JSON in untrusted project must not be read or surface parse errors.
+    writeFileSync(path.join(piDir, 'mcp.json'), '{not-valid-json', 'utf8')
+
+    const untrustedRead = readMcpConfig(workspace, false, {
+      userPath,
+      projectPath: path.join(piDir, 'mcp.json')
+    })
+    assert.equal(untrustedRead.projectExists, true)
+    assert.equal(untrustedRead.projectIgnored, true)
+    assert.deepEqual(untrustedRead.errors, [])
+    assert.deepEqual(untrustedRead.servers.map((s) => s.name), ['shared'])
+
+    // Valid project config must not be mutated while project trust is off.
+    const projectContent = JSON.stringify({
+      mcpServers: {
+        shared: { command: 'npx', args: ['proj-server'], enabled: true },
+        projectOnly: { command: 'npx', args: ['only'], enabled: true }
+      }
+    }, null, 2)
+    writeFileSync(path.join(piDir, 'mcp.json'), projectContent, 'utf8')
+
+    const disabledUntrusted = await setMcpServerEnabled('shared', false, workspace, false, { userPath })
+    assert.equal(disabledUntrusted.ok, true)
+    assert.equal(readFileSync(path.join(piDir, 'mcp.json'), 'utf8'), projectContent)
+
+    const removedUntrusted = await removeMcpServer('projectOnly', workspace, false, { userPath })
+    assert.equal(removedUntrusted.ok, false)
+    assert.equal(readFileSync(path.join(piDir, 'mcp.json'), 'utf8'), projectContent)
+
+    // When trusted, contained project config updates normally.
+    const disabledTrusted = await setMcpServerEnabled('projectOnly', false, workspace, true, { userPath })
+    assert.equal(disabledTrusted.ok, true)
+    assert.equal(JSON.parse(readFileSync(path.join(piDir, 'mcp.json'), 'utf8')).mcpServers.projectOnly.enabled, false)
+
+    // Symlinked/junctioned .pi escaping workspace must be rejected even when trusted.
+    const outsidePi = path.join(dir, 'outside-pi')
+    mkdirSync(outsidePi, { recursive: true })
+    const outsideConfig = path.join(outsidePi, 'mcp.json')
+    writeFileSync(outsideConfig, JSON.stringify({
+      mcpServers: { escaped: { command: 'npx', enabled: true } }
+    }), 'utf8')
+    const linkWorkspace = path.join(dir, 'link-workspace')
+    mkdirSync(linkWorkspace, { recursive: true })
+    try {
+      symlinkSync(outsidePi, path.join(linkWorkspace, '.pi'), process.platform === 'win32' ? 'junction' : 'dir')
+    } catch {
+      t.skip('directory symlinks are unavailable in this environment')
+      return
+    }
+    const readLinked = readMcpConfig(linkWorkspace, true)
+    assert.ok(readLinked.errors.some((err) => err.includes('escapes the workspace')))
+    const mutatedLinked = await setMcpServerEnabled('escaped', false, linkWorkspace, true, { userPath })
+    assert.equal(mutatedLinked.ok, false)
+    assert.equal(JSON.parse(readFileSync(outsideConfig, 'utf8')).mcpServers.escaped.enabled, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

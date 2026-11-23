@@ -4,8 +4,8 @@ import { archiveSessionKey } from '@shared/session-archive'
 import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import { decodeBoundedTextBuffer } from './text-decode'
 import { randomUUID } from 'node:crypto'
-import { constants, mkdirSync, writeFileSync, type Dirent } from 'node:fs'
-import { lstat, open, opendir, realpath, stat, unlink, type FileHandle } from 'node:fs/promises'
+import { constants, mkdirSync, type Dirent } from 'node:fs'
+import { lstat, open, opendir, realpath, stat, unlink, writeFile, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type {
   SessionHydrationResult,
@@ -2270,7 +2270,7 @@ export function registerIpc(context: IpcContext): void {
         try {
           // `wx` fails on a name that already exists rather than overwriting a
           // file of the project, and a read-only folder answers EROFS or EACCES.
-          writeFileSync(target, buffer, { flag: 'wx' })
+          await writeFile(target, buffer, { flag: 'wx' })
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue
           const code = (error as NodeJS.ErrnoException).code
@@ -2317,7 +2317,7 @@ export function registerIpc(context: IpcContext): void {
       }
       if (result.canceled || !result.filePath) return null
       try {
-        writeFileSync(result.filePath, buffer)
+        await writeFile(result.filePath, buffer)
         return result.filePath
       } catch (error) {
         console.error('[pi-desktop] could not save the picture:', error)
@@ -2472,10 +2472,10 @@ export function registerIpc(context: IpcContext): void {
     readMcpConfig(workspaceRoot(context), settings.get().trustProject)
   )
   ipcMain.handle('mcp:setEnabled', (_event, name: string, enabled: boolean) =>
-    setMcpServerEnabled(name, enabled, workspaceRoot(context))
+    setMcpServerEnabled(name, enabled, workspaceRoot(context), settings.get().trustProject)
   )
   ipcMain.handle('mcp:remove', (_event, name: string) =>
-    removeMcpServer(name, workspaceRoot(context))
+    removeMcpServer(name, workspaceRoot(context), settings.get().trustProject)
   )
 
   // The marketplace snapshot is bundled; refresh and install are the only
