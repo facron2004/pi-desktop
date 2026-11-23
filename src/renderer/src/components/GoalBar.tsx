@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useId, useState } from 'react'
-import { ChevronUp, Pause, Pencil, Play, X } from 'lucide-react'
-import { GOAL_STATUS_KEY } from '@shared/types'
+import { Maximize2, Pause, Play, Trash2 } from 'lucide-react'
+import { GOAL_STATUS_KEY, type AppLanguage } from '@shared/types'
 import { readGoalStatus } from '@shared/task-mode-state'
 import { goalBadge, goalCanToggleRun } from '@shared/goal-display'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
+import { formatElapsed } from './conversation/RunSummary'
 import { Popover } from './Popover'
 import { GoalTargetIcon } from './GoalTargetIcon'
 import '../styles/goal.css'
@@ -20,7 +21,29 @@ export function GoalBar() {
   const rawGoal = useAppStore((state) => state.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text)
   const isStreaming = useAppStore((state) => state.isStreaming)
   const agentMode = useAppStore((state) => state.agentMode)
+  const runStartedAt = useAppStore((state) => state.run.startedAt)
+  const runSettled = useAppStore((state) => state.run.settled)
+  const runDurationMs = useAppStore((state) => state.run.durationMs)
+  const language = useAppStore((state) => state.settings.language ?? 'en') as AppLanguage
   const t = useT()
+  const [now, setNow] = useState(() => Date.now())
+
+  // The elapsed time beside the objective ticks while a run is live and holds
+  // at its settled duration afterwards, the same rule as the run summary.
+  useEffect(() => {
+    if (runSettled || runStartedAt === undefined) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [runStartedAt, runSettled])
+
+  const elapsedMs =
+    runStartedAt === undefined
+      ? undefined
+      : runSettled
+        ? runDurationMs
+        : Math.max(0, now - runStartedAt)
+  const elapsed = elapsedMs === undefined ? undefined : formatElapsed(elapsedMs, language)
   const detailsId = useId()
   const focusDetails = useCallback((panel: HTMLDivElement | null) => {
     panel?.focus({ preventScroll: true })
@@ -50,9 +73,6 @@ export function GoalBar() {
   const badge = goalBadge(goal.status, running)
   const displayStatus = badge.status
   const canToggleRun = goalCanToggleRun(badge)
-  const inactiveHint = agentMode === 'goal'
-    ? 'Resume to keep working toward this goal.'
-    : 'Goal Mode is off. Resume to keep working toward this goal.'
   const summary =
     goal.status === 'blocked' || goal.status === 'complete' ? goal.summary : undefined
   // Extension-authored reasons arrive in English; translate the ones the
@@ -95,59 +115,36 @@ export function GoalBar() {
       <div className="goal-bar__inner" data-editing={editing ? 'true' : undefined}>
         <div className="goal-bar__head">
           <span className="goal-bar__label">
-            <GoalTargetIcon className="goal-bar__icon" />
-            <span>{t('Goal')}</span>
-          </span>
-          <span
-            className="goal-bar__badge"
-            data-status={displayStatus}
-            title={badge.status === 'paused' ? t(inactiveHint) : undefined}
-          >
-            {t(badge.label)}
+            <GoalTargetIcon className="goal-bar__icon" size={15} />
+            <span className="goal-bar__status" data-status={displayStatus}>
+              {t(badge.label)}
+            </span>
           </span>
 
           {editing ? null : (
             <>
-              <Popover
-                placement="top"
-                width={420}
-                className="goal-details-popover"
-                renderTrigger={({ open, toggle }) => (
-                  <button
-                    type="button"
-                    className="goal-bar__details-trigger"
-                    aria-label={t('Goal details')}
-                    aria-haspopup="dialog"
-                    aria-expanded={open}
-                    aria-controls={open ? detailsId : undefined}
-                    onClick={toggle}
-                  >
-                    <span className="goal-bar__objective">{goal.text}</span>
-                    {summaryText ? <span className="goal-bar__summary">{summaryText}</span> : null}
-                    <ChevronUp size={12} aria-hidden="true" />
-                  </button>
-                )}
+              <button
+                type="button"
+                className="goal-bar__objective"
+                title={t('Edit')}
+                onClick={startEdit}
               >
-                {() => (
-                  <div id={detailsId} className="goal-details" role="dialog" aria-label={t('Goal details')}
-                    tabIndex={-1} ref={focusDetails}>
-                    <div className="goal-details__label">{t('Goal')}</div>
-                    <p className="goal-details__text">{goal.text}</p>
-                    {summaryText ? (
-                      <>
-                        <div className="goal-details__label">
-                          {t(goal.status === 'blocked' ? 'Blocker' : 'Completion summary')}
-                        </div>
-                        <p className="goal-details__text">{summaryText}</p>
-                      </>
-                    ) : null}
-                  </div>
-                )}
-              </Popover>
+                {goal.text}
+              </button>
+              {elapsed ? <span className="goal-bar__elapsed">· {elapsed}</span> : null}
+              {summaryText ? <span className="goal-bar__summary" title={summaryText}>· {summaryText}</span> : null}
+
               <div className="goal-bar__actions">
-                {/* One control, two directions: the bar has two states, so the
-                    same button pauses a running goal and resumes a paused one.
-                    Edit and delete stay beside it; nothing else earns a slot. */}
+                <button
+                  type="button"
+                  className="goal-bar__action goal-bar__action--icon"
+                  title={t('Delete')}
+                  aria-label={t('Delete')}
+                  disabled={isStreaming || pending}
+                  onClick={() => void runGoalAction('clear')}
+                >
+                  <Trash2 size={14} aria-hidden="true" />
+                </button>
                 <button
                   type="button"
                   className="goal-bar__action goal-bar__action--icon"
@@ -156,29 +153,46 @@ export function GoalBar() {
                   disabled={!canToggleRun || pending || (!running && isStreaming)}
                   onClick={() => void runGoalAction(running ? 'pause' : 'resume')}
                 >
-                  {running ? <Pause size={13} aria-hidden="true" /> : <Play size={13} aria-hidden="true" />}
+                  {running ? <Pause size={14} aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
                 </button>
-                <button
-                  type="button"
-                  className="goal-bar__action goal-bar__action--icon"
-                  title={t('Edit')}
-                  aria-label={t('Edit')}
-                  disabled={pending}
-                  onClick={startEdit}
+                <Popover
+                  placement="bottom"
+                  width={420}
+                  className="goal-details-popover"
+                  renderTrigger={({ open, toggle }) => (
+                    <button
+                      type="button"
+                      className="goal-bar__action goal-bar__action--icon"
+                      title={t('Goal details')}
+                      aria-label={t('Goal details')}
+                      aria-haspopup="dialog"
+                      aria-expanded={open}
+                      aria-controls={open ? detailsId : undefined}
+                      onClick={toggle}
+                    >
+                      <Maximize2 size={14} aria-hidden="true" />
+                    </button>
+                  )}
                 >
-                  <Pencil size={13} aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="goal-bar__action goal-bar__action--icon"
-                  data-tone="danger"
-                  title={t('Delete')}
-                  aria-label={t('Delete')}
-                  disabled={isStreaming || pending}
-                  onClick={() => void runGoalAction('clear')}
-                >
-                  <X size={13} aria-hidden="true" />
-                </button>
+                  {() => (
+                    <div id={detailsId} className="goal-details" role="dialog" aria-label={t('Goal details')}
+                      tabIndex={-1} ref={focusDetails}>
+                      <div className="goal-details__label">{t('Goal')}</div>
+                      <p className="goal-details__text">{goal.text}</p>
+                      <button type="button" className="goal-bar__action" onClick={startEdit}>
+                        {t('Edit')}
+                      </button>
+                      {summaryText ? (
+                        <>
+                          <div className="goal-details__label">
+                            {t(goal.status === 'blocked' ? 'Blocker' : 'Completion summary')}
+                          </div>
+                          <p className="goal-details__text">{summaryText}</p>
+                        </>
+                      ) : null}
+                    </div>
+                  )}
+                </Popover>
               </div>
             </>
           )}

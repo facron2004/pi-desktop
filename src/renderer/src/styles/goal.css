@@ -1,68 +1,47 @@
 /* ------------------------------------------------------------------ *
  * Goal bar
  *
- * Goal Mode's objective, above the composer. It is the composer's lid: the
- * same column, the same left and right edge, so its corners sit exactly over
- * the box below instead of floating at fit-content width. The status badge is
- * the only colour, because the objective is read and the state is scanned.
+ * Goal Mode's objective, above the composer. It is a card that sits on top of
+ * the input box: a little narrower, with its own full-radius outline, and the
+ * box below tucks under its bottom edge. The single line reads left to right —
+ * mark, bold state word, objective, elapsed time — with delete / play / expand
+ * pinned to the right. The state word is the only colour.
  * ------------------------------------------------------------------ */
 
 .goal-bar {
   flex: 0 0 auto;
+  position: relative;
+  z-index: 2;
   padding: var(--sp-1) var(--sp-6) 0;
-}
-
-.goal-bar + .composer-wrap {
-  padding-top: 0;
-}
-
-.goal-bar:has(+ .composer-wrap .composer__top-selectors) {
-  padding-bottom: var(--sp-1);
+  /* Pull the composer up under this card so the two edges overlap. */
+  margin-bottom: -10px;
 }
 
 .goal-bar__inner {
-  /* The composer's own column (`.composer-stack`): one width for both, so the
-     bar reaches the rounded corners of the box it belongs to. */
-  width: 100%;
-  max-width: var(--content-w);
+  /* A shade narrower than the composer below, so both rounded edges show. */
+  width: calc(100% - var(--sp-8));
+  max-width: calc(var(--content-w) - var(--sp-8));
   margin: 0 auto;
   border: 1px solid var(--border);
-  border-bottom: none;
-  border-radius: var(--composer-radius) var(--composer-radius) 0 0;
+  border-radius: var(--r-full);
   background: color-mix(in srgb, var(--text-primary) 5%, var(--surface-canvas));
-}
-
-.goal-bar:has(+ .composer-wrap .composer__top-selectors) .goal-bar__inner {
-  max-width: var(--content-w);
-  border-bottom: 1px solid var(--border);
-  border-radius: var(--composer-radius);
+  box-shadow: var(--shadow-sm);
 }
 
 .goal-bar__inner[data-editing='true'] {
   width: 100%;
   max-width: var(--content-w);
-  border-radius: var(--composer-radius) var(--composer-radius) 0 0;
+  border-radius: var(--composer-radius);
   box-shadow: var(--border-specular);
-}
-
-.goal-bar:has(+ .composer-wrap .composer__top-selectors) .goal-bar__inner[data-editing='true'] {
-  border-radius: var(--r-lg);
-}
-
-/* A lid has to meet its box: the composer's top corners square off under the
-   bar, exactly as they already do while the goal is being edited. */
-.goal-bar:not(:has(+ .composer-wrap .composer__top-selectors)) + .composer-wrap .composer,
-.goal-bar:not(:has(+ .composer-wrap .composer__top-selectors)) + .composer-wrap .composer__queue {
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
 }
 
 .goal-bar__head {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  min-height: 30px;
-  padding: 3px 6px 3px 12px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 3px var(--sp-3) 3px var(--sp-4);
 }
 
 .goal-bar__inner[data-editing='true'] .goal-bar__head {
@@ -73,101 +52,77 @@
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  color: var(--text-muted);
-  font-size: var(--text-small);
-  font-weight: 500;
+  gap: var(--sp-2);
   white-space: nowrap;
 }
 
 .goal-bar__icon {
   flex: 0 0 auto;
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
-/* The badge has two words for a live goal — running or paused — because that
-   is the only question the bar answers. `blocked` and `complete` are outcomes
-   and keep a colour of their own. */
-.goal-bar__badge {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 var(--sp-2);
-  border-radius: var(--r-full);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: var(--text-assist);
-  font-weight: 600;
-  white-space: nowrap;
+/* The state word is bold ink, not a coloured pill: it is the headline of the
+   line, the same weight as the title in the reference. */
+.goal-bar__status {
+  font-size: var(--text-small);
+  font-weight: 650;
+  color: var(--text);
 }
 
-.goal-bar__badge[data-status='paused'] {
-  background: var(--status-warning-soft);
-  color: var(--status-warning);
+.goal-bar__status[data-status='paused'] {
+  color: var(--text);
 }
 
-.goal-bar__badge[data-status='blocked'] {
-  background: var(--status-danger-soft);
+.goal-bar__status[data-status='blocked'] {
   color: var(--status-danger);
 }
 
-.goal-bar__badge[data-status='complete'] {
-  background: var(--status-success-soft);
+.goal-bar__status[data-status='complete'] {
   color: var(--status-success);
 }
 
-.goal-bar__head > .popover-wrap,
-.goal-bar__details-trigger {
-  min-width: 0;
-}
-
-.goal-bar__details-trigger {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-hair) var(--sp-1);
-  border-radius: var(--r-sm);
-  text-align: left;
-}
-
-.goal-bar__details-trigger svg {
-  flex: 0 0 auto;
-  color: var(--text-faint);
-}
-
-.goal-bar__details-trigger:hover,
-.goal-bar__details-trigger[aria-expanded='true'] {
-  background: var(--bg-hover);
-}
-
-.goal-bar__details-trigger:focus-visible {
-  outline: 2px solid var(--focus-ring);
-}
-
+/* The objective runs on after the bold state word in quieter ink; one click
+   opens the editor. A long one ellipsises, never pushing the controls out. */
 .goal-bar__objective {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: var(--text);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
   font-size: var(--text-small);
+  text-align: left;
+  cursor: text;
+}
+
+.goal-bar__objective:hover {
+  color: var(--text);
+}
+
+.goal-bar__objective:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .goal-bar[data-status='complete'] .goal-bar__objective {
   color: var(--text-faint);
 }
 
+.goal-bar__elapsed,
 .goal-bar__summary {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 30%;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
   color: var(--text-faint);
-  font-size: var(--text-assist);
+  font-size: var(--text-small);
+  white-space: nowrap;
+}
+
+.goal-bar__summary {
+  max-width: 22%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .goal-details-popover.popover {
@@ -202,11 +157,17 @@
   margin-top: var(--sp-1);
 }
 
+.goal-details__text + .goal-bar__action {
+  align-self: flex-start;
+  margin-top: var(--sp-1);
+}
+
 .goal-bar__actions {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: var(--sp-hair);
+  margin-left: auto;
 }
 
 .goal-bar__action {
