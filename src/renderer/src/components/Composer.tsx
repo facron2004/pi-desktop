@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
-  Bot,
   Check,
   Image as ImageIcon,
   ListChecks,
@@ -64,6 +63,7 @@ import { PermissionPicker } from './PermissionPicker'
 import { AddMenu } from './AddMenu'
 import { Popover } from './Popover'
 import { GoalTargetIcon } from './GoalTargetIcon'
+import { GoalBar } from './GoalBar'
 import { UsageBar } from './UsageBar'
 
 interface SlashMatch {
@@ -86,7 +86,6 @@ const EMPTY_HISTORY: string[] = []
 const MODE_COMPOSER_PROMPTS: Partial<Record<AgentMode, string>> = {
   goal: 'Describe the goal to work toward…',
   plan: 'Describe the task to plan…',
-  subagent: 'Describe the work to delegate…',
   swarm: 'Describe the mission for the team…',
   plugin: 'Describe the extension to build…'
 }
@@ -95,7 +94,6 @@ const MODE_COMPOSER_PROMPTS: Partial<Record<AgentMode, string>> = {
 const MODE_CHIPS: Record<Exclude<AgentMode, 'default'>, { label: string; leave: string }> = {
   goal: { label: 'Goal Mode', leave: 'Leave Goal Mode' },
   plan: { label: 'Plan Mode', leave: 'Leave Plan Mode' },
-  subagent: { label: 'Subagent Mode', leave: 'Leave Subagent Mode' },
   swarm: { label: 'Swarm Mode', leave: 'Leave Swarm Mode' },
   plugin: { label: 'Plugin Mode', leave: 'Leave Plugin Mode' }
 }
@@ -195,11 +193,11 @@ export const Composer = memo(function Composer() {
   const refreshSkillCommands = useAppStore((state) => state.refreshSkillCommands)
   const language = useAppStore((state) => state.settings.language ?? 'en')
   const draftKey = useAppStore((state) => draftKeyOf(state))
-  const submitting = useAppStore((state) => {
+  const clientKey = useAppStore((state) => {
     const key = state.activeSessionFile || state.draftId
-    const client = (key && state.threads[key]?.clientKey) || key || state.clientKey || '__fallback__'
-    return Boolean(state.submittingDrafts[client])
+    return (key && state.threads[key]?.clientKey) || key || state.clientKey || '__fallback__'
   })
+  const submitting = useAppStore((state) => Boolean(state.submittingDrafts[clientKey]))
   const draftEntry = useAppStore(
     useCallback((state) => (draftKey ? state.drafts[draftKey] : undefined), [draftKey])
   )
@@ -1427,6 +1425,8 @@ export const Composer = memo(function Composer() {
           </div>
         ) : null}
 
+        <GoalBar key={clientKey} />
+
         <div
           className="composer"
           data-streaming={isStreaming}
@@ -1687,7 +1687,6 @@ export const Composer = memo(function Composer() {
             <AddMenu
               ready={canCompose}
               busy={isStreaming}
-              mode={agentMode}
               imageMode={Boolean(image)}
               skillCommands={skillCommands}
               pluginCommands={pluginCommands}
@@ -1715,8 +1714,6 @@ export const Composer = memo(function Composer() {
                   <GoalTargetIcon />
                 ) : agentMode === 'plan' ? (
                   <ListChecks size={13} />
-                ) : agentMode === 'subagent' ? (
-                  <Bot size={13} />
                 ) : agentMode === 'swarm' ? (
                   <Network size={13} />
                 ) : (

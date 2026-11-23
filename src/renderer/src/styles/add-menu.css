@@ -1,69 +1,54 @@
-.composer__add-popover .popover__item {
-  min-height: var(--ctl-md);
+/* Codex-style wide panel: the trigger sits at the composer's left edge, so a
+   fixed wide card reads as a sheet lifted off the input box above it. */
+.composer__add-popover .popover__label.composer__add-section {
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
-.composer__add-popover .popover__item-text {
-  flex: 1;
-  min-width: 0;
+.composer__add-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 0 var(--sp-1) var(--sp-1);
 }
 
-.composer__add-modes {
-  padding: var(--sp-1) 0;
-}
-
-.composer__add-modes .popover__item {
-  min-height: 0;
-  align-items: center;
-  padding-block: 6px;
-}
-
-/* A mode switch needs an idle run. While Pi is streaming the rows stay in
-   place but must not look clickable; the hint below says why. */
-.composer__add-modes .popover__item:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.composer__add-modes .popover__item:disabled:hover {
-  background: none;
-}
-
-.composer__add-mode-copy {
+.composer__add-popover .composer__add-action {
   display: flex;
-  flex: 1 1 auto;
-  align-items: baseline;
+  align-items: center;
   gap: var(--sp-2);
-  min-width: 0;
-}
-
-.composer__add-mode-label {
-  flex: 0 0 auto;
-  color: var(--text);
+  min-height: 0;
+  padding: var(--sp-2);
   white-space: normal;
 }
 
-.composer__add-mode-hint {
+.composer__add-action-icon {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.composer__add-action-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
   min-width: 0;
+}
+
+.composer__add-action-label {
+  color: var(--text);
+  font-size: var(--text-small);
+  font-weight: 500;
+}
+
+.composer__add-action-description {
   overflow: hidden;
   color: var(--text-faint);
   font-size: var(--text-2xs);
+  line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.composer__add-mode-check {
-  flex: 0 0 auto;
-}
-
-.composer__add-hint {
-  padding: 2px var(--sp-3) var(--sp-1);
-  color: var(--text-faint);
-  font-size: var(--text-2xs);
-  line-height: 1.45;
-}
-
-.composer__add-modes .popover__label {
-  padding: 0 var(--sp-3) var(--sp-1);
 }
 
 .composer__add-sep {
@@ -91,11 +76,24 @@
 }
 
 .composer__add-popover .composer__add-command {
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--sp-1);
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
   white-space: normal;
+}
+
+.composer__add-command-icon {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.composer__add-command-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
 }
 
 .composer__add-command-description,

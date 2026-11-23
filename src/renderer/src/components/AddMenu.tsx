@@ -1,5 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Bot, Check, ChevronLeft, ChevronRight, ListChecks, MessageSquare, Network, Paperclip, Plus, Sparkles, WandSparkles, Workflow, Wrench } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, WandSparkles, Workflow, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { useT } from '../lib/i18n'
 import type { mermaidTemplateList } from '../lib/mermaid-templates'
@@ -11,25 +11,18 @@ import '../styles/add-menu.css'
 type AddMenuPage = 'actions' | 'skills' | 'plugins' | 'diagrams'
 type DiagramTemplateItem = ReturnType<typeof mermaidTemplateList>[number]
 
-const MODES = [
-  { value: 'default', label: 'Default Mode', hint: 'Normal chat', icon: MessageSquare, description: 'Answer and use tools without a task mode' },
-  { value: 'goal', label: 'Goal Mode', hint: 'Keep working', icon: GoalTargetIcon, description: 'Continue until the goal is complete or blocked' },
-  { value: 'plan', label: 'Plan Mode', hint: 'Plan first', icon: ListChecks, description: 'Create a Markdown plan and review it before execution' },
-  { value: 'subagent', label: 'Subagent Mode', hint: 'Delegate work', icon: Bot, description: 'Delegate self-contained work to isolated subagents' },
-  { value: 'swarm', label: 'Swarm Mode', hint: 'Worker team', icon: Network, description: 'Lead a team of persistent workers across many turns' },
-  { value: 'plugin', label: 'Plugin Mode', hint: 'Build extension', icon: Wrench, description: 'Build or modify a Pi extension' }
+const ACTIONS = [
+  { key: 'files', label: 'Add files', description: 'Attach files from this project', icon: Paperclip },
+  { key: 'goal', label: 'Goal', description: 'Set a goal to keep working toward', icon: GoalTargetIcon },
+  { key: 'plan', label: 'Plan Mode', description: 'Explore read-only, then review a plan', icon: ListChecks },
+  { key: 'image', label: 'Image generation', description: 'Generate a picture in the composer', icon: WandSparkles },
+  { key: 'diagrams', label: 'Diagrams', description: 'Insert a Mermaid diagram template', icon: Workflow },
+  { key: 'skills', label: 'Skills', description: 'Insert a Pi skill command', icon: Sparkles }
 ] as const
 
-const PAGES = [
-  { page: 'diagrams', label: 'Diagrams', icon: Workflow },
-  { page: 'plugins', label: 'Plugins', icon: Wrench },
-  { page: 'skills', label: 'Skills', icon: Sparkles }
-] as const
-
-export const AddMenu = memo(function AddMenu({ ready, busy, mode, imageMode, skillCommands, pluginCommands, onModeChange, onPickFiles, onInsertCommand, onEnterImageMode }: {
+export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillCommands, pluginCommands, onModeChange, onPickFiles, onInsertCommand, onEnterImageMode }: {
   ready: boolean
   busy: boolean
-  mode: AgentMode
   imageMode?: boolean
   skillCommands: PiCommand[]
   pluginCommands: PiCommand[]
@@ -76,7 +69,7 @@ export const AddMenu = memo(function AddMenu({ ready, busy, mode, imageMode, ski
   return (
     <Popover
       placement="top"
-      width={280}
+      width={620}
       className="composer__add-popover"
       renderTrigger={({ open, toggle }) => (
         <button
@@ -106,62 +99,59 @@ export const AddMenu = memo(function AddMenu({ ready, busy, mode, imageMode, ski
             navigate('actions')
           }
         }}>
-          {/* Task modes stay at the very top of the Add menu, on every page:
-              switching how the next message runs should not require opening a
-              submenu or scrolling past the file actions. */}
-          <div className="composer__add-modes" role="group" aria-label={t('Modes')}>
-            <div className="popover__label">{t('Modes')}</div>
-            {MODES.map((entry) => {
-              const Icon = entry.icon
-              return (
-                <button
-                  key={entry.value}
-                  type="button"
-                  className="popover__item composer__add-mode"
-                  role="menuitemradio"
-                  aria-checked={mode === entry.value}
-                  disabled={busy}
-                  title={t(entry.description)}
-                  onClick={() => {
-                    close()
-                    if (mode !== entry.value) void onModeChange(entry.value)
-                  }}
-                >
-                  <Icon size={15} className="composer__add-mode-icon" />
-                  <span className="composer__add-mode-copy">
-                    <span className="composer__add-mode-label">{t(entry.label)}</span>
-                    <span className="composer__add-mode-hint">{t(entry.hint)}</span>
-                  </span>
-                  {mode === entry.value ? <Check size={14} className="composer__add-mode-check" /> : null}
-                </button>
-              )
-            })}
-            {busy ? (
-              <div className="composer__add-hint">{t('Stop the current run before changing modes')}</div>
-            ) : null}
-          </div>
-          <div className="composer__add-sep" role="separator" />
           {page === 'actions' ? (
             <>
-              <button type="button" className="popover__item" role="menuitem" onClick={() => { close(); void onPickFiles() }}>
-                <Paperclip size={15} />
-                <span className="popover__item-text">{t('Add files')}</span>
-              </button>
-              <button type="button" className="popover__item" role="menuitemcheckbox" aria-checked={Boolean(imageMode)} onClick={() => { close(); onEnterImageMode() }}>
-                <WandSparkles size={15} />
-                <span className="popover__item-text">{t('Image generation')}</span>
-                {imageMode ? <Check size={14} /> : null}
-              </button>
-              {PAGES.map((entry) => {
-                const Icon = entry.icon
-                return (
-                  <button key={entry.page} type="button" className="popover__item" role="menuitem" data-page={entry.page} onClick={() => navigate(entry.page)}>
-                    <Icon size={15} />
-                    <span className="popover__item-text">{t(entry.label)}</span>
-                    <ChevronRight size={13} />
-                  </button>
-                )
-              })}
+              <div className="popover__label composer__add-section">{t('Add')}</div>
+              <div className="composer__add-actions">
+                {ACTIONS.map((entry) => {
+                  const Icon = entry.icon
+                  return (
+                    <button
+                      key={entry.key}
+                      type="button"
+                      className="popover__item composer__add-action"
+                      role="menuitem"
+                      data-page={entry.key}
+                      disabled={busy && (entry.key === 'goal' || entry.key === 'plan')}
+                      title={t(entry.description)}
+                      onClick={() => {
+                        close()
+                        if (entry.key === 'files') void onPickFiles()
+                        else if (entry.key === 'goal') void onModeChange('goal')
+                        else if (entry.key === 'plan') void onModeChange('plan')
+                        else if (entry.key === 'image') onEnterImageMode()
+                        else navigate(entry.key as AddMenuPage)
+                      }}
+                    >
+                      <Icon size={16} className="composer__add-action-icon" />
+                      <span className="composer__add-action-copy">
+                        <span className="composer__add-action-label">{t(entry.label)}</span>
+                        <span className="composer__add-action-description">{t(entry.description)}</span>
+                      </span>
+                      {(entry.key === 'diagrams' || entry.key === 'skills') ? <ChevronRight size={13} /> : null}
+                      {entry.key === 'image' && imageMode ? <Check size={14} /> : null}
+                    </button>
+                  )
+                })}
+              </div>
+
+              {pluginCommands.length ? (
+                <>
+                  <div className="composer__add-sep" role="separator" />
+                  <div className="popover__label composer__add-section">{t('Plugins')}</div>
+                  <div className="composer__add-list">
+                    {pluginCommands.map((command) => (
+                      <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description ? t(command.description) : undefined} onClick={() => { close(); onInsertCommand(command) }}>
+                        <Wrench size={15} className="composer__add-command-icon" />
+                        <span className="composer__add-command-copy">
+                          <span className="composer__add-command-name">/{command.name}</span>
+                          {command.description ? <span className="composer__add-command-description">{t(command.description)}</span> : null}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
             </>
           ) : (
             <>
