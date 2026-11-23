@@ -26,6 +26,7 @@ import type {
   PiState,
   RuntimeQueueEvent,
   RuntimeStatus,
+  SessionHydrationResult,
   SessionMeta,
   SessionSearchHit,
   SessionStats,
@@ -60,6 +61,7 @@ import {
   type PendingUiSession
 } from '../lib/live-sessions'
 import { stripAnsi } from '../lib/ansi'
+import { accentInk } from '../lib/accent-ink'
 import { trayConversations } from '../lib/tray-conversations'
 import { translate } from '../lib/i18n'
 import { collectProjects, type Project } from '../lib/projects'
@@ -433,7 +435,7 @@ function restoreCancelledPrompts(
   if (prompts.length) state.insertIntoComposer(prompts.join('\n'), 'append', key)
 }
 
-let draftPersistenceWarning: 'text-only' | 'failed' | undefined
+let draftPersistenceWarning: 'partial' | 'failed' | undefined
 const DRAFT_SAVE_DEBOUNCE_MS = 350
 const cachedLastDraftKeysByStorage = new WeakMap<Storage, Record<string, string>>()
 let draftSaveTimer: ReturnType<typeof setTimeout> | null = null
@@ -482,10 +484,10 @@ function writeDraftSnapshot(
   if (draftPersistenceWarning === result) return
   draftPersistenceWarning = result
   const zh = state.settings.language === 'zh-CN'
-  const message = result === 'text-only'
+  const message = result === 'partial'
     ? zh
-      ? '草稿图片过大，重启后只能恢复文字和文件引用。'
-      : 'Draft images are too large to restore after restart; text and file references were saved.'
+      ? '草稿图片超出存储配额，重启后可能不完整。文字和文件引用已保存。'
+      : 'Draft images exceeded the storage limit and may be incomplete after restart. Text and file references were saved.'
     : zh
       ? '草稿无法保存，重启后可能无法恢复。'
       : 'This draft could not be saved for restart recovery.'
@@ -804,7 +806,7 @@ export interface AppStore {
   refreshInfo: () => Promise<void>
   /** Remember the conversation that is open in the current project. */
   rememberSession: (file: string) => Promise<void>
-  reloadMessages: (sessionKey?: string) => Promise<void>
+  reloadMessages: (sessionKey?: string, history?: Pick<SessionHydrationResult, 'messages' | 'historyTruncated'>) => Promise<void>
   refreshCommands: (sessionKey?: string) => Promise<void>
   refreshSkillCommands: (sessionKey?: string) => Promise<void>
   /** Run one of the commands the app itself provides. */
@@ -3676,7 +3678,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     set({ settings })
   },
 
-  async reloadMessages(sessionKey = viewKeyOf(get())) {
+  async reloadMessages(sessionKey = viewKeyOf(get()), history) {
     const ownGet = bindGet(get, sessionKey)
     if (ownGet().isStreaming) return
     try {
@@ -3686,16 +3688,20 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         undefined,
         undefined,
         'reload-messages'
-      )
+      ).catch((error: unknown) => {
+        if (!history) throw error
+        return undefined
+      })
       if (ownGet().isStreaming) return
       const activeCanonical = viewKeyOf(get()) ? threadKey(viewKeyOf(get())) : ''
       const isViewed = !sessionKey || threadKey(sessionKey) === activeCanonical
       bindSet(set, get, sessionKey, { activeThreadHydrated: isViewed })({
-        items: itemsFromMessages(data?.messages ?? []),
-        ...(Array.isArray(data?.messages) ? { historyLoaded: true } : {}),
+        items: itemsFromMessages(history?.messages ?? data?.messages ?? []),
+        ...(history || Array.isArray(data?.messages) ? { historyLoaded: true } : {}),
+        ...(history ? { historyTruncated: history.historyTruncated } : {}),
         contextBreakdown: ownGet().contextBreakdown?.source === 'request'
           ? ownGet().contextBreakdown
-          : estimateContextBreakdown(data?.messages ?? [], ownGet().stats?.contextUsage?.tokens)
+          : data?.messages && estimateContextBreakdown(data.messages, ownGet().stats?.contextUsage?.tokens)
       })
       await get().refreshForkTargets(threadKey(sessionKey))
     } catch (error) {
@@ -4177,12 +4183,15 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }
     set({ forking: true })
     try {
+      // Read the branch before moving its leaf. A match by entry ID gives
+      // the same ancestry even if this read shares an earlier snapshot.
+      const history = owner.startsWith('draft:') ? undefined : await window.pi.sessions.hydrate(owner, 'branch')
+        .catch(() => undefined)
       let entryId = typeof target === 'string' ? target : user?.entryId
-      if (!entryId && user && !owner.startsWith('draft:')) {
+      if (!entryId && user && history) {
         // Live RPC messages have timestamps but no entry id. Read the saved
-        // branch on demand and require a unique identity before rewinding.
-        const { messages } = await window.pi.sessions.hydrate(owner, 'branch')
-        const matches = messages.filter(message =>
+        // branch for a unique identity before rewinding.
+        const matches = history.messages.filter(message =>
           message.role === 'user' && message.timestamp === user.timestamp && textOf(message.content) === user.text
         )
         if (matches.length === 1) entryId = matches[0].entryId
@@ -4229,8 +4238,14 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         get().showToast('Editing was cancelled', 'warning')
         return
       }
+      const editIndex = history?.messages.findIndex(message => message.role === 'user' && message.entryId === entryId) ?? -1
       await get().refreshState(key)
-      await get().reloadMessages(key)
+      // The runtime returns only the compacted model context. Replay the
+      // saved transcript up to the entry Pi just confirmed it could rewind.
+      await get().reloadMessages(key, history && editIndex >= 0 ? {
+        messages: history.messages.slice(0, editIndex),
+        historyTruncated: history.historyTruncated
+      } : undefined)
       if (images.length > 0) {
         const previous = get().drafts[key] ?? { text: '', images: [] }
         get().updateDraft(key, {
@@ -4673,6 +4688,7 @@ export function applyAppearance(
   }
 
   // Accent color
+  const accentInkColor = settings.accentColor ? resolveCssColor(settings.accentColor) : null
   if (settings.accentColor) {
     root.style.setProperty('--accent', settings.accentColor)
     root.style.setProperty('--focus-ring', settings.accentColor)
@@ -4680,6 +4696,11 @@ export function applyAppearance(
     root.style.setProperty('--accent-soft', `color-mix(in srgb, var(--accent) 15%, transparent)`)
     root.style.setProperty('--accent-line', `color-mix(in srgb, var(--accent) 35%, transparent)`)
     root.style.setProperty('--accent-glow', `0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent)`)
+    // The ink written on a filled accent (primary buttons, the update button's
+    // ring) has to follow the accent the reader picked, not the theme's static
+    // one: a pale accent with white ink made the ring vanish into its own fill.
+    if (accentInkColor) root.style.setProperty('--accent-contrast', accentInk(accentInkColor))
+    else remove('--accent-contrast')
   } else {
     remove('--accent')
     remove('--focus-ring')
@@ -4687,6 +4708,7 @@ export function applyAppearance(
     remove('--accent-soft')
     remove('--accent-line')
     remove('--accent-glow')
+    remove('--accent-contrast')
   }
 
   // Custom Background

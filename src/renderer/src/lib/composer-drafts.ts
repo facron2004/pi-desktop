@@ -59,7 +59,7 @@ export function composerDraftHasContent(draft: ComposerDraft | undefined): boole
   ))
 }
 
-export type DraftSaveResult = 'saved' | 'text-only' | 'failed'
+export type DraftSaveResult = 'saved' | 'partial' | 'failed'
 
 export const COMPOSER_DRAFTS_STORAGE_KEY = 'pi-desktop.composer-drafts.v1'
 
@@ -183,30 +183,23 @@ export function loadComposerDrafts(storage = browserStorage()): ComposerDraftSna
   }
 }
 
-function serializableDraft(draft: ComposerDraft, includeImages: boolean): ComposerDraft {
-  return {
-    ...draft,
-    images: includeImages
-      ? draft.images.map(({ previewUrl: _previewUrl, ...image }) => image)
-      : []
-  }
-}
-
 /**
- * Save the whole draft map and each project's new-chat pointer. If large image
- * data exceeds the browser quota, retry once without images and report that
- * degradation so the caller can tell the user what a restart will restore.
+ * Save the whole draft map and each project's new-chat pointer. If image data
+ * exceeds the quota, keep already saved attachments that are still present
+ * before falling back to text and file references.
  */
 export function saveComposerDrafts(
   snapshot: ComposerDraftSnapshot,
   storage = browserStorage()
 ): DraftSaveResult {
   if (!storage) return 'failed'
-  const write = (includeImages: boolean): boolean => {
-    const drafts: Record<string, ComposerDraft> = {}
-    for (const [key, draft] of Object.entries(snapshot.drafts)) {
-      drafts[key] = serializableDraft(draft, includeImages)
-    }
+  const drafts: Record<string, ComposerDraft> = Object.fromEntries(
+    Object.entries(snapshot.drafts).map(([key, draft]) => [key, {
+      ...draft,
+      images: draft.images.map(({ previewUrl: _previewUrl, ...image }) => image)
+    }])
+  )
+  const write = (drafts: Record<string, ComposerDraft>): boolean => {
     const serialized = JSON.stringify({
       version: 1,
       drafts,
@@ -223,8 +216,31 @@ export function saveComposerDrafts(
       return false
     }
   }
-  if (write(true)) return 'saved'
-  if (write(false)) return 'text-only'
+  if (write(drafts)) return 'saved'
+
+  const savedImages = new Map<string, ComposerDraftImage>()
+  for (const draft of Object.values(loadComposerDrafts(storage).drafts)) {
+    for (const image of draft.images) savedImages.set(image.id, image)
+  }
+  if (savedImages.size > 0) {
+    let kept = 0
+    let removed = 0
+    const partial = Object.fromEntries(Object.entries(drafts).map(([key, draft]) => {
+      const images = draft.images.filter(image => {
+        const saved = savedImages.get(image.id)
+        return saved?.data === image.data && saved?.mimeType === image.mimeType
+      })
+      kept += images.length
+      removed += draft.images.length - images.length
+      return [key, { ...draft, images }]
+    }))
+    if (kept && removed && write(partial)) return 'partial'
+  }
+
+  const textOnly = Object.fromEntries(Object.entries(drafts).map(([key, draft]) => [
+    key, { ...draft, images: [] }
+  ]))
+  if (write(textOnly)) return 'partial'
   return 'failed'
 }
 

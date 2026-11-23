@@ -391,6 +391,8 @@ const zhCN: Record<string, string> = {
   'Upgrading...': '正在升级...',
   'Upgrade completed': '升级完成',
   'Upgrade failed': '升级失败',
+  'Update check failed': '更新检查失败',
+  "Don't show this version again": '此版本不再提示',
   'Check failed': '检查失败',
   'Version information and update checking.': '版本信息与更新检查。',
   'Pi version': 'Pi 版本',

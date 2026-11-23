@@ -27,7 +27,7 @@ type Context = {
   hasUI: boolean
   isIdle: () => boolean
   abort: () => void
-  sessionManager: { getBranch: () => Entry[] }
+  sessionManager: { getBranch: () => Entry[]; getLeafId: () => string | null }
   navigateTree: (
     targetId: string,
     options?: { summarize?: boolean }
@@ -91,7 +91,7 @@ function fixture(
     hasUI: true,
     isIdle: () => idle,
     abort: () => { aborts += 1 },
-    sessionManager: { getBranch: () => entries },
+    sessionManager: { getBranch: () => entries, getLeafId: () => null },
     navigateTree: async (targetId, options) => {
       navigations.push({ targetId, options })
       return { cancelled: false }
@@ -983,12 +983,27 @@ test('Computer Use is a setting: on in the normal loadout, off in Plan Mode, and
   assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS, 'computer'])
 })
 
-test('the edit command rewinds the active branch instead of forking a conversation', async () => {
+test('the edit command persists the new leaf of the same conversation', async () => {
   const f = fixture([{ type: 'message', id: 'entry-1', customType: '', data: undefined, message: { role: 'user' } }])
   f.emit('session_start')
+  const entryCount = f.entries.length
   await assert.rejects(f.command('desktop-rewind', 'another-branch'), /active branch/)
+  assert.equal(f.entries.length, entryCount)
+
+  const navigate = f.ctx.navigateTree
+  f.ctx.navigateTree = async () => ({ cancelled: true })
+  await assert.rejects(f.command('desktop-rewind', 'entry-1'), /cancelled/)
+  assert.equal(f.entries.length, entryCount)
+  f.ctx.navigateTree = navigate
+  f.ctx.sessionManager.getLeafId = () => 'entry-1'
+  await assert.rejects(f.command('desktop-rewind', 'entry-1'), /move before this message/)
+  assert.equal(f.entries.length, entryCount)
+  f.ctx.sessionManager.getLeafId = () => null
+
   await f.command('desktop-rewind', 'entry-1')
-  assert.deepEqual(f.navigations, [{ targetId: 'entry-1', options: { summarize: false } }])
+  assert.deepEqual(f.navigations.at(-1), { targetId: 'entry-1', options: { summarize: false } })
+  assert.equal(f.entries.length, entryCount + 1)
+  assert.equal(f.entries.at(-1)?.customType, 'pi-desktop-rewind')
 })
 
 test('rewinding restores the selected branch goal and tool restrictions without appending state', async () => {

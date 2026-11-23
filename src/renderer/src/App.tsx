@@ -839,7 +839,11 @@ export default function App() {
       if (typeof command !== 'string' || !command.trim()) return
       setDeskPage(null)
       terminalSeqRef.current += 1
-      setTerminalRequest({ command, seq: terminalSeqRef.current })
+      setTerminalRequest({
+        command,
+        cwd: useAppStore.getState().workspace?.path ?? '',
+        seq: terminalSeqRef.current
+      })
       setPanelView('terminal')
       setChangesOpen(true)
     }

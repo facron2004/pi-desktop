@@ -1420,6 +1420,20 @@ const ThreadTurnView = memo(function ThreadTurnView({
     [turn.notices, failureNotice, liveTail, assistantErrorText]
   )
   const hasProcess = turn.tools.length > 0 || processNotices.length > 0 || hasThinking
+  /**
+   * Whether the reader already sees something from this turn.
+   *
+   * "Waiting for model response" describes a request that has produced nothing
+   * yet — the label is the only thing on screen, so it tells the reader why the
+   * silence is expected. Once the answer has text, thinking, a tool row or
+   * shell output, that content *is* the progress: a later wait for the next
+   * block (after a tool, say) must not put the label back on top of an answer
+   * that is already readable. Codex draws the line the same way.
+   */
+  const turnHasOutput =
+    turn.bash.length > 0 ||
+    turn.tools.length > 0 ||
+    turn.assistants.some((assistant) => assistant.blocks.length > 0)
   const failureDetails = failureNotice ? (
     <NoticeMessage item={failureNotice} />
   ) : assistantErrorText ? (
@@ -1463,7 +1477,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
             {outcome ? (
               <RunSummary
                 run={outcome}
-                showWaitStatus={showWaitStatus && turn.bash.length === 0}
+                showWaitStatus={showWaitStatus && !turnHasOutput}
                 foldable={hasProcess}
                 open={processOpen}
                 onToggle={toggleProcess}

@@ -732,6 +732,8 @@ export class SettingsStore {
       accentColor: themed.accentColor,
       customBg: themed.customBg,
       customFg: themed.customFg,
+      // A dismissed release is a plain version string, or nothing.
+      dismissedUpdateVersion: optionalString(saved.dismissedUpdateVersion),
       workspaces: dedupeWorkspaces(saved.workspaces),
       projectOrder: normalizeProjectOrder(saved.projectOrder),
       externalChatFolderHistory: normalizeExternalChatFolderHistory(

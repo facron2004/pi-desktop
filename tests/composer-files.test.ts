@@ -122,11 +122,45 @@ test('large draft images degrade to text-only persistence instead of losing the 
     },
     lastDraftKeys: { workspace: 'draft:one' }
   }, storage)
-  assert.equal(result, 'text-only')
+  assert.equal(result, 'partial')
   const stored = JSON.parse(saved)
   assert.equal(stored.drafts['draft:one'].text, 'unfinished thought')
   assert.deepEqual(stored.drafts['draft:one'].images, [])
   assert.equal(writes, 2)
+})
+
+test('an oversized attachment preserves already saved images in other drafts', () => {
+  const storage = memoryStorage()
+  const write = storage.setItem
+  storage.setItem = (key, value) => {
+    if (value.length > 2000) throw new Error('quota exceeded')
+    write(key, value)
+  }
+  const kept = { id: 'kept', type: 'image' as const, name: 'kept.png', bytes: 3, data: 'YWJj', mimeType: 'image/png' }
+  const removed = { ...kept, id: 'removed' }
+  const initial = {
+    drafts: { 'draft:other': { text: 'Old draft', images: [kept, removed] } },
+    lastDraftKeys: { other: 'draft:other' }
+  }
+  assert.equal(saveComposerDrafts(initial, storage), 'saved')
+
+  const file = { id: 'file', path: 'C:/project/example.txt', name: 'example.txt' }
+  const current = {
+    drafts: {
+      'draft:other': { text: 'Updated draft', images: [kept] },
+      'draft:current': {
+        text: 'New draft',
+        images: [{ ...kept, id: 'large', bytes: 3000, data: 'A'.repeat(4000) }],
+        files: [file]
+      }
+    },
+    lastDraftKeys: { ...initial.lastDraftKeys, current: 'draft:current' }
+  }
+  assert.equal(saveComposerDrafts(current, storage), 'partial')
+  assert.deepEqual(loadComposerDrafts(storage), {
+    drafts: { ...current.drafts, 'draft:current': { ...current.drafts['draft:current'], images: [] } },
+    lastDraftKeys: current.lastDraftKeys
+  })
 })
 
 test('a malformed draft store is ignored and a promoted draft loses its new-chat pointer', () => {

@@ -44,6 +44,10 @@ export function AboutSettings({
 
   const appCurrent = info?.version ?? '—'
   const piCliCurrent = info?.pi.version ?? '—'
+  // A check that could not answer used to be dropped on the floor, which made
+  // "the registry never answered" read exactly like "you are up to date" — the
+  // reason the CLI update went missing. Say so instead.
+  const piCliError = piCliStatus?.error?.trim() || null
 
   return (
     <div className="settings-page settings-page--compact">
@@ -103,6 +107,11 @@ export function AboutSettings({
               ) : null}
             </div>
           </div>
+          {piCliError ? (
+            <div className="settings-about-error" role="status" title={piCliError}>
+              {t('Update check failed')}: {piCliError}
+            </div>
+          ) : null}
           {upgradingCli && piCliProgress ? (
             <div
               className="settings-upgrade-progress"

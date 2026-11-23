@@ -636,10 +636,17 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       store.setState({ workspace: { ...workspaceBefore, path: nestedWorkspace } })
       await pause(300)
       check([...outputs.keys()].join(',') === shellIds.join(','), 'Changing the project restarted the terminal')
+      window.dispatchEvent(new CustomEvent('pi:terminal-run', {
+        detail: { command: 'echo scoped>terminal-scope-marker.txt & echo PI_UI_SCOPED_HANDOFF_586' }
+      }))
+      await until(() => [...outputs].some(([id, value]) =>
+        !shellIds.includes(id) && (value.match(/PI_UI_SCOPED_HANDOFF_586/g) ?? []).length >= 2
+      ), 'The hand-off did not open a shell in the new project')
+      const allShellIds = [...outputs.keys()]
       store.setState({ workspace: workspaceBefore })
       await pause(300)
-      check([...outputs.keys()].join(',') === shellIds.join(','), 'Changing the project back restarted the terminal')
-      passed.push('terminals survive a project switch without restarting')
+      check([...outputs.keys()].join(',') === allShellIds.join(','), 'Changing the project back restarted the terminal')
+      passed.push('terminal hand-offs follow the selected project while existing terminals survive')
     } finally {
       off()
       const panel = visibleToolPanel()
@@ -968,6 +975,22 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => document.querySelector('.run-status[data-phase="retrying"]'), 'The retry status did not appear')
   check(waitSummary() && !waitSummary().textContent.toLowerCase().includes('waiting for model response'), 'The model wait status conflicted with a retry')
   passed.push('the live summary shows request preparation and model waiting until the first output or retry')
+
+  // The wait label answers an empty screen. Once the turn has text (or a tool
+  // row), a wait for the *next* block — after a tool, say — must not print the
+  // label back on top of an answer the reader can already read.
+  store.setState({ retry: undefined })
+  const waitWithOutput = () => document.querySelector('.run-outcome[data-running="true"]')
+  showStream(waitDraft, streamItems.slice(0, 2), { ...waitingRun, turns: 2, roundTurns: 2 })
+  await until(
+    () => waitWithOutput() && !waitWithOutput().textContent.toLowerCase().includes('waiting for model response'),
+    'The model wait label outlived the turn first output'
+  )
+  check(
+    waitWithOutput().textContent.includes('Working'),
+    'A turn with output lost its running status instead of reading as work in progress'
+  )
+  passed.push('the wait label only describes a turn that has not produced anything yet')
 
   showStream('draft:stream-live', streamItems.slice(0, 3), {
     phase: 'working', turns: 1, settled: false, startedAt: Date.now() - 2000
@@ -2129,6 +2152,8 @@ try {
   if (process.platform === 'win32') {
     // ConPTY may redraw old output on resize; the file counts actual executions.
     assert.equal(readFileSync(markerFile, 'utf8').trim().split(/\r?\n/).length, 2, 'Terminal replayed a request')
+    assert.equal(readFileSync(path.join(nestedWorkspace, 'terminal-scope-marker.txt'), 'utf8').trim(), 'scoped')
+    assert.equal(existsSync(path.join(workspace, 'terminal-scope-marker.txt')), false, 'The previous project received a terminal command')
   }
   for (const name of passed) console.log(`PASS ${name}`)
 } finally {

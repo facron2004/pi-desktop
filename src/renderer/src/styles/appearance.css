@@ -1115,6 +1115,16 @@
   background: var(--border-soft);
 }
 
+/* A version check that could not answer. Without this the failure looked
+   exactly like "you are up to date", because nothing was drawn at all. */
+.settings-about-error {
+  margin: -4px var(--sp-5) var(--sp-3);
+  color: var(--status-danger);
+  font-size: var(--text-xs);
+  line-height: var(--leading-small);
+  overflow-wrap: anywhere;
+}
+
 .settings-upgrade-progress > span {
   display: block;
   height: 100%;

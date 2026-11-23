@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useState } from 'react'
-import { Check, ChevronUp, Pause, Pencil, Play, Target, X } from 'lucide-react'
+import { ChevronUp, Pause, Pencil, Play, Target, X } from 'lucide-react'
 import { GOAL_STATUS_KEY, type GoalState } from '@shared/types'
 import { readGoalState } from '@shared/task-mode-state'
 import { useAppStore } from '../store/useAppStore'
@@ -61,9 +61,13 @@ export function GoalBar() {
 
   // A restored objective may still say active even though its run is gone.
   const running = goal.status === 'active' && agentMode === 'goal' && isStreaming
-  const inactive = goal.status === 'active' && !running
-  const displayStatus = inactive ? 'inactive' : goal.status
-  const resumable = goal.status === 'paused' || goal.status === 'blocked' || inactive
+  // Two words, because the bar answers one question: is this goal being worked
+  // on right now? A goal the extension paused and a goal nobody is running are
+  // the same thing to the reader, so both read "Paused". `blocked` and
+  // `complete` keep their own word — they are outcomes, not a run state.
+  const badge = goalBadge(goal.status, running)
+  const displayStatus = badge.status
+  const canToggleRun = goalCanToggleRun(badge)
   const inactiveHint = agentMode === 'goal'
     ? 'Resume to keep working toward this goal.'
     : 'Goal Mode is off. Resume to keep working toward this goal.'
@@ -112,15 +116,13 @@ export function GoalBar() {
             <Target size={13} className="goal-bar__icon" aria-hidden="true" />
             <span>{t('Goal')}</span>
           </span>
-          {running ? null : (
-            <span
-              className="goal-bar__badge"
-              data-status={displayStatus}
-              title={inactive ? t(inactiveHint) : undefined}
-            >
-              {inactive ? t('Inactive') : t(STATUS_LABEL[goal.status])}
-            </span>
-          )}
+          <span
+            className="goal-bar__badge"
+            data-status={displayStatus}
+            title={badge.status === 'paused' ? t(inactiveHint) : undefined}
+          >
+            {t(badge.label)}
+          </span>
 
           {editing ? null : (
             <>
@@ -161,42 +163,19 @@ export function GoalBar() {
                 )}
               </Popover>
               <div className="goal-bar__actions">
-                {running ? (
-                  <button
-                    type="button"
-                    className="goal-bar__action goal-bar__action--icon"
-                    title={t('Pause')}
-                    aria-label={t('Pause')}
-                    disabled={pending}
-                    onClick={() => void runGoalAction('pause')}
-                  >
-                    <Pause size={13} aria-hidden="true" />
-                  </button>
-                ) : null}
-                {resumable ? (
-                  <button
-                    type="button"
-                    className="goal-bar__action goal-bar__action--icon"
-                    title={t('Resume')}
-                    aria-label={t('Resume')}
-                    disabled={isStreaming || pending}
-                    onClick={() => void runGoalAction('resume')}
-                  >
-                    <Play size={13} aria-hidden="true" />
-                  </button>
-                ) : null}
-                {goal.status !== 'complete' ? (
-                  <button
-                    type="button"
-                    className="goal-bar__action goal-bar__action--icon"
-                    title={t('Mark complete')}
-                    aria-label={t('Mark complete')}
-                    disabled={pending}
-                    onClick={() => void runGoalAction('complete')}
-                  >
-                    <Check size={13} aria-hidden="true" />
-                  </button>
-                ) : null}
+                {/* One control, two directions: the bar has two states, so the
+                    same button pauses a running goal and resumes a paused one.
+                    Edit and delete stay beside it; nothing else earns a slot. */}
+                <button
+                  type="button"
+                  className="goal-bar__action goal-bar__action--icon"
+                  title={t(running ? 'Pause' : 'Resume')}
+                  aria-label={t(running ? 'Pause' : 'Resume')}
+                  disabled={!canToggleRun || pending || (!running && isStreaming)}
+                  onClick={() => void runGoalAction(running ? 'pause' : 'resume')}
+                >
+                  {running ? <Pause size={13} aria-hidden="true" /> : <Play size={13} aria-hidden="true" />}
+                </button>
                 <button
                   type="button"
                   className="goal-bar__action goal-bar__action--icon"
@@ -211,8 +190,8 @@ export function GoalBar() {
                   type="button"
                   className="goal-bar__action goal-bar__action--icon"
                   data-tone="danger"
-                  title={t('Clear')}
-                  aria-label={t('Clear')}
+                  title={t('Delete')}
+                  aria-label={t('Delete')}
                   disabled={isStreaming || pending}
                   onClick={() => void runGoalAction('clear')}
                 >

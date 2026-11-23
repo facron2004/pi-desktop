@@ -388,6 +388,10 @@ export default function (pi) {
       )) throw new Error('This message is no longer on the active branch');
       const result = await ctx.navigateTree(targetId, { summarize: false });
       if (result.cancelled) throw new Error('Editing was cancelled');
+      if (ctx.sessionManager.getLeafId() === targetId) throw new Error('Could not move before this message');
+      // Navigation only moves Pi's in-memory leaf. Persist a child of the
+      // selected leaf so reopening the JSONL follows the same branch.
+      pi.appendEntry('pi-desktop-rewind');
     }
   });
 

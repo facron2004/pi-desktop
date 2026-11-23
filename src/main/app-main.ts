@@ -326,14 +326,14 @@ function createWindow(): BrowserWindow {
     clearShowFallback()
     if (mainWindow === window) {
       mainWindow = null
-      terminalManager?.disposeAll()
+      void terminalManager?.disposeAll()
     }
   })
 
   // A crashed renderer has lost every terminal session id, so those PTYs no
   // longer have a controllable owner.
   window.webContents.on('render-process-gone', (_event, details) => {
-    if (mainWindow === window) terminalManager?.disposeAll()
+    if (mainWindow === window) void terminalManager?.disposeAll()
     if (!app.isPackaged) {
       console.error('[renderer] process gone:', details.reason)
     }
@@ -687,8 +687,6 @@ if (primaryInstance) {
 app.on('before-quit', () => {
   // Set before any window closes, so the close handler does not hide a quit.
   noteQuitting()
-  // PTY children belong to this process; leaving them behind leaks shells.
-  terminalManager?.disposeAll()
   disposeRemoteAccess()
   memoryService?.dispose()
   autoTitleService?.dispose()
@@ -703,7 +701,7 @@ app.on('window-all-closed', () => {
 let shutdownComplete = false
 let shuttingDown = false
 app.on('before-quit', (event) => {
-  if (shutdownComplete || !supervisor) return
+  if (shutdownComplete || (!supervisor && !terminalManager)) return
   event.preventDefault()
   if (shuttingDown) return
   shuttingDown = true
@@ -719,8 +717,10 @@ app.on('before-quit', (event) => {
   }, 20_000)
   watchdog.unref()
 
-  void supervisor.stop().catch((error: unknown) => {
-    console.error('[pi-desktop] shutdown failed:', error)
+  void Promise.allSettled([supervisor?.stop(), terminalManager?.disposeAll()]).then(results => {
+    for (const result of results) {
+      if (result.status === 'rejected') console.error('[pi-desktop] shutdown failed:', result.reason)
+    }
   }).finally(() => {
     void cleanupStaticExtensionCache().finally(() => {
       clearTimeout(watchdog)

@@ -391,7 +391,7 @@ test('image save IPC rejects payloads above the shared size limit before decodin
     }
 
     assert.equal(await anyIpc._invoke('fs:saveImage', {}, oversizedBase64, 'image/png'), null)
-    assert.equal(await anyIpc._invoke('fs:savePastedImage', {}, oversizedBase64, 'image/png'), null)
+    assert.equal(await anyIpc._invoke('fs:savePastedImage', {}, oversizedBase64, 'image/png', tempDir), null)
     assert.equal(dialogCalls, 0, 'oversized exports must be rejected before opening the save dialog')
     assert.deepEqual(readdirSync(tempDir), [], 'oversized pasted images must not be written')
   } finally {
@@ -416,7 +416,7 @@ test('pasting an image does not recreate a workspace that disappeared', async ()
       terminals: { create: () => {} } as any
     })
 
-    const result = await anyIpc._invoke('fs:savePastedImage', {}, 'AA==', 'image/png')
+    const result = await anyIpc._invoke('fs:savePastedImage', {}, 'AA==', 'image/png', deletedWorkspace)
     assert.equal(result, null)
     assert.equal(existsSync(deletedWorkspace), false)
     assert.deepEqual(readdirSync(parent), [])

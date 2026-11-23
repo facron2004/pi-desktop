@@ -696,6 +696,46 @@ test('editing a repeated live prompt uses the matching saved entry instead of an
   assert.equal(useAppStore.getState().drafts[ownerId]?.text, 'Same prompt')
 })
 
+test('rewinding a compacted conversation keeps the saved transcript before the edited entry', async () => {
+  const ownerId = 'edit-compacted.jsonl'
+  const history: SessionHydrationResult = {
+    messages: [
+      { role: 'user', content: 'Original question', timestamp: 1, entryId: 'first' },
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'earlier-read', name: 'read', arguments: { path: 'notes.md' } }], timestamp: 2 },
+      { role: 'toolResult', toolCallId: 'earlier-read', toolName: 'read', content: 'Original tool output', timestamp: 3 },
+      { role: 'assistant', content: 'Original answer', timestamp: 4 },
+      { role: 'user', content: 'Revise this question', timestamp: 5, entryId: 'edit-me' },
+      { role: 'assistant', content: 'Abandoned answer', timestamp: 6 }
+    ],
+    historyTruncated: true
+  }
+  bridge.sessions.hydrate = async () => history
+  await useAppStore.getState().selectSession(session(ownerId))
+  const before = useAppStore.getState().items
+  const editIndex = before.findIndex(item => item.kind === 'user' && item.entryId === 'edit-me')
+  assert.ok(editIndex > 0)
+  const target = before[editIndex]
+  assert.ok(target.kind === 'user')
+
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'get_commands') return { commands: [{ name: 'desktop-rewind', source: 'extension' }] }
+    if (command === 'prompt') {
+      assert.equal(args[0]?.message, '/desktop-rewind edit-me')
+      return { disposition: 'handled' }
+    }
+    if (command === 'get_messages') return { messages: [{ role: 'compactionSummary', summary: 'Compressed model context' }] }
+    return originalRequest(command, ...args)
+  }
+
+  await useAppStore.getState().editMessageFrom(target)
+  const state = useAppStore.getState()
+  assert.deepEqual(state.items.map(item => item.kind), before.slice(0, editIndex).map(item => item.kind))
+  assert.ok(state.items.some(item => item.kind === 'tool' && item.result === 'Original tool output'))
+  assert.equal(lastAssistantText(state.items), 'Original answer')
+  assert.equal(state.historyTruncated, true)
+  assert.equal(state.drafts[ownerId]?.text, 'Revise this question')
+})
+
 test('a rejected rewind keeps the transcript and composer even if Pi acknowledges the command', async () => {
   const ownerId = 'edit-stale-branch.jsonl'
   bridge.sessions.hydrate = async () => ({

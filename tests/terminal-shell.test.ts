@@ -54,7 +54,7 @@ test('terminal creation does not recreate a missing working directory', () => {
   }
 })
 
-test('terminal output pauses the PTY until the renderer acknowledges buffered data', () => {
+test('terminal output pauses the PTY until the renderer acknowledges buffered data', async () => {
   let emitData: (data: string) => void = () => undefined
   let pauses = 0
   let resumes = 0
@@ -81,7 +81,7 @@ test('terminal output pauses the PTY until the renderer acknowledges buffered da
   const outputs: TerminalDataPayload[] = []
   const manager = new TerminalManager((channel, payload) => {
     if (channel === 'terminal:data') outputs.push(payload as TerminalDataPayload)
-  }, () => fakePty)
+  }, () => fakePty, 'linux')
   const session = manager.create({ cols: 80, rows: 24, cwd: process.cwd() })
 
   emitData('a'.repeat(128 * 1024))
@@ -104,10 +104,10 @@ test('terminal output pauses the PTY until the renderer acknowledges buffered da
   manager.acknowledgeOutput(session.id, 770)
   assert.equal(resumes, 2)
 
-  manager.kill(session.id)
+  await manager.kill(session.id)
 })
 
-test('disposing terminal sessions kills their PTYs and ignores late output', () => {
+test('disposing terminal sessions kills their PTYs and ignores late output', async () => {
   let emitData: (data: string) => void = () => undefined
   let kills = 0
   const outputs: TerminalDataPayload[] = []
@@ -131,12 +131,12 @@ test('disposing terminal sessions kills their PTYs and ignores late output', () 
   } as unknown as IPty
   const manager = new TerminalManager((channel, payload) => {
     if (channel === 'terminal:data') outputs.push(payload as TerminalDataPayload)
-  }, () => fakePty)
+  }, () => fakePty, 'linux')
 
   manager.create({ cols: 80, rows: 24, cwd: process.cwd() })
-  manager.disposeAll()
+  await manager.disposeAll()
   emitData('late output')
-  manager.disposeAll()
+  await manager.disposeAll()
 
   assert.equal(kills, 1)
   assert.deepEqual(outputs, [])
@@ -156,7 +156,7 @@ function disposablePty(): IPty {
   } as unknown as IPty
 }
 
-test('Windows retries only a ConPTY launch failure once with Winpty', () => {
+test('Windows retries only a ConPTY launch failure once with Winpty', async () => {
   const attempts: Array<boolean | undefined> = []
   const manager = new TerminalManager(
     () => undefined,
@@ -165,13 +165,14 @@ test('Windows retries only a ConPTY launch failure once with Winpty', () => {
       if (attempts.length === 1) throw new Error('Cannot launch conpty')
       return disposablePty()
     },
-    'win32'
+    'win32',
+    async () => true
   )
 
   const session = manager.create({ cols: 80, rows: 24, cwd: process.cwd(), shell: 'cmd' })
   assert.ok(session.id)
   assert.deepEqual(attempts, [undefined, false])
-  manager.disposeAll()
+  await manager.disposeAll()
 })
 
 test('terminal startup does not retry other errors or non-Windows platforms', () => {
@@ -194,4 +195,46 @@ test('terminal startup does not retry other errors or non-Windows platforms', ()
     )
     assert.equal(attempts, 1)
   }
+})
+
+test('Windows terminal shutdown joins a pending tab close and waits for the tree cleanup', async () => {
+  const treeFinished = Promise.withResolvers<boolean>()
+  const treeStarts: number[] = []
+  let nativeStops = 0
+  let writes = 0
+  const process = disposablePty()
+  process.kill = () => { nativeStops += 1 }
+  process.write = () => { writes += 1 }
+  const manager = new TerminalManager(() => undefined, () => process, 'win32', pid => {
+    treeStarts.push(pid)
+    return treeFinished.promise
+  })
+  const terminal = manager.create({ cols: 80, rows: 24 })
+  const closing = manager.kill(terminal.id)
+  let disposed = false
+  const shutdown = manager.disposeAll().then(() => { disposed = true })
+  manager.write(terminal.id, 'ignored')
+  await Promise.resolve()
+  assert.deepEqual(treeStarts, [process.pid])
+  assert.equal(writes, 0)
+  assert.equal(nativeStops, 0)
+  assert.equal(disposed, false)
+  treeFinished.resolve(true)
+  await Promise.all([closing, shutdown])
+  assert.equal(nativeStops, 1)
+  assert.equal(disposed, true)
+})
+
+test('a failed terminal close retains its PTY for a later disposal pass', async () => {
+  let attempts = 0
+  const process = disposablePty()
+  process.kill = () => {
+    if (++attempts === 1) throw new Error('PTY is temporarily unavailable')
+  }
+  const manager = new TerminalManager(() => undefined, () => process, 'linux')
+  const terminal = manager.create({ cols: 80, rows: 24 })
+  await manager.kill(terminal.id)
+  await manager.disposeAll()
+  await manager.disposeAll()
+  assert.equal(attempts, 2)
 })

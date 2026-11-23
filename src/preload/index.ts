@@ -335,9 +335,10 @@ const bridge: PiDesktopBridge = {
     reveal: (file: string): Promise<void> => ipcRenderer.invoke('fs:reveal', file),
     savePastedImage: (
       data: string,
-      mimeType: string
+      mimeType: string,
+      cwd: string
     ): Promise<{ path: string; root: string } | null> =>
-      ipcRenderer.invoke('fs:savePastedImage', data, mimeType),
+      ipcRenderer.invoke('fs:savePastedImage', data, mimeType, cwd),
     saveImage: (data: string, mimeType: string): Promise<string | null> =>
       ipcRenderer.invoke('fs:saveImage', data, mimeType),
     pathForFile: (file: File): string => {

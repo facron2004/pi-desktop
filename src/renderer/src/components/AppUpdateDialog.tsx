@@ -29,6 +29,7 @@ function hasAnyStreamingThread(threads: Record<string, { isStreaming?: boolean }
 export function AppUpdateDialog({ initialNotice = null }: { initialNotice?: AppUpdateNotice | null } = {}) {
   const t = useT()
   const supported = useAppStore((state) => state.info?.appUpdateSupported !== false)
+  const updateSettings = useAppStore((state) => state.updateSettings)
   const [notice, setNotice] = useState<AppUpdateNotice | null>(initialNotice)
   const activeWork = useAppStore((state) => notice !== null && hasAnyStreamingThread(state.threads))
   const [busy, setBusy] = useState(false)
@@ -94,6 +95,15 @@ export function AppUpdateDialog({ initialNotice = null }: { initialNotice?: AppU
     if (!result.success) setInstallError(result.error || 'Update failed. Please try again.')
   }
 
+  // Codex remembers the release a reader waved away (`dismissed_version`), so
+  // the sidebar notice stops for that one and returns for the next. The
+  // reading itself is untouched: About still offers this release on request.
+  const dismissVersion = () => {
+    const version = versionRef.current
+    if (version) void updateSettings({ dismissedUpdateVersion: version })
+    close()
+  }
+
   if (!notice) return null
   const result = 'result' in notice ? notice.result : null
   const error = 'error' in notice
@@ -152,6 +162,11 @@ export function AppUpdateDialog({ initialNotice = null }: { initialNotice?: AppU
             </div>
           ) : (
             <div className="app-update-card__foot">
+              {available && !busy ? (
+                <button type="button" className="app-update-card__dismiss" onClick={dismissVersion}>
+                  {t("Don't show this version again")}
+                </button>
+              ) : null}
               <button type="button" className={state === 'current' ? 'btn btn--primary' : 'btn'} onClick={close}>{t(available ? 'Not now' : error ? 'Close' : 'Got it')}</button>
               {available ? <button type="button" className="btn btn--primary" disabled={supported && activeWork} onClick={() => void (supported ? install() : openDownload())}>
                 {t(supported ? 'Restart and update' : 'Open download page')}

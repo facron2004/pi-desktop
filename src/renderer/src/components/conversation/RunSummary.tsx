@@ -32,7 +32,10 @@ export function isLiveRunSummary(run: RunState): boolean {
 
 export interface RunSummaryProps {
   run: RunState
-  /** A live turn's summary has no queue, retry or connection notice taking precedence. */
+  /**
+   * Whether the wait label may be drawn: this live turn has produced nothing
+   * yet, and no queue, retry or connection notice takes precedence.
+   */
   showWaitStatus?: boolean
   /** Whether the turn has a process that the reader can fold away. */
   foldable?: boolean
@@ -65,6 +68,11 @@ export const RunSummary = memo(function RunSummary({
   const describeWait = isRunning && showWaitStatus && !run.compaction
   // A new model turn has its own clock. Reasoning or tool arguments can
   // arrive before visible text, so the first generation block also ends the wait.
+  //
+  // `showWaitStatus` is the caller's "this turn has produced nothing yet": the
+  // label answers an empty screen, so it may not outlive the first block. The
+  // two run checks below are the timing side of the same window — they hold the
+  // counter to this request's own clock rather than the run's.
   const modelWaitingSince = describeWait && run.phase === 'working' &&
     run.firstTokenAt === undefined && run.messageGenerationStartedAt === undefined
     ? run.modelTurnStartedAt

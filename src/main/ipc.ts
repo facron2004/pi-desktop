@@ -4,7 +4,7 @@ import { archiveSessionKey } from '@shared/session-archive'
 import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
 import { decodeBoundedTextBuffer } from './text-decode'
 import { randomUUID } from 'node:crypto'
-import { constants, mkdirSync, readFileSync, writeFileSync, type Dirent } from 'node:fs'
+import { constants, mkdirSync, writeFileSync, type Dirent } from 'node:fs'
 import { lstat, open, opendir, realpath, stat, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type {
@@ -48,7 +48,7 @@ import type {
   Workspace
 } from '@shared/types'
 import { generateImages } from './image-generation'
-import { setTrayConversations } from './tray'
+import { isQuitting, setTrayConversations } from './tray'
 import {
   APP_RELEASE_PAGE_URL,
   checkAppVersion,
@@ -66,6 +66,10 @@ import {
 import { clearUpdateState, readUpdateStateForVersion, writeUpdateState } from './update-state'
 import { beginBundledPiCliMaintenance, checkAuth, killProcessTree, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
+import {
+  CLI_PACKAGE_NAME,
+  fetchLatestCliVersionFromRegistry
+} from './pi/cli-version'
 import { spawn } from './pi/spawn'
 import { discoverSkillCommands, invalidateSkillCommandsCache } from './pi/command-catalog'
 import { getModelThinkingLevels } from './pi/model-catalog'
@@ -840,23 +844,23 @@ async function searchFileText(
   return { hits, bytesRead, budgetExceeded: false, incomplete: false }
 }
 
-const PI_CLI_PACKAGE_NAME = '@earendil-works/pi-coding-agent'
+const PI_CLI_PACKAGE_NAME = CLI_PACKAGE_NAME
 
-function piCliPackageSpec(cwd: string): string {
-  const manifest = JSON.parse(readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
-    dependencies?: Record<string, string>
-    devDependencies?: Record<string, string>
-  }
-  const range = manifest.dependencies?.[PI_CLI_PACKAGE_NAME] ?? manifest.devDependencies?.[PI_CLI_PACKAGE_NAME]
-  if (!range) throw new Error(`No ${PI_CLI_PACKAGE_NAME} dependency range in package.json`)
-  return `${PI_CLI_PACKAGE_NAME}@${range}`
-}
-
-function fetchLatestPiCliVersion(packageSpec: string): Promise<string> {
+/**
+ * The npm fallback: npm alone honours the reader's own registry and proxy
+ * settings. It asks for the package, not a range — upstream's `latest` is the
+ * version to offer, exactly as the registry lookup does.
+ *
+ * npm is slow to start and slower on a cold cache (194 s was measured against
+ * 2.5 s warm), so it gets a budget that can actually finish instead of the 8 s
+ * that used to cut it off — and a cut-off check reads as "up to date", which is
+ * how the CLI update went missing.
+ */
+function fetchLatestPiCliVersionFromNpm(): Promise<string> {
   return runNpmCommand(
-    ['view', packageSpec, 'version', '--json'],
+    ['view', PI_CLI_PACKAGE_NAME, 'version', '--json'],
     process.cwd(),
-    8_000
+    90_000
   ).then(({ stdout }) => {
     let reported: unknown
     try {
@@ -864,12 +868,29 @@ function fetchLatestPiCliVersion(packageSpec: string): Promise<string> {
     } catch {
       throw new Error('npm returned an invalid Pi CLI version')
     }
+    // A plain `npm view <package> version` answers one version; a range would
+    // answer the array of matching ones, and the last is not necessarily latest.
     const versions = (Array.isArray(reported) ? reported : [reported])
       .filter((value): value is string => typeof value === 'string')
     const version = versions.at(-1)
     if (!version) throw new Error('No version returned by npm')
     return version
   })
+}
+
+/**
+ * What upstream publishes as current, whatever this checkout happens to pin.
+ *
+ * The CLI is a component the app drives, not part of its own release, so the
+ * answer must follow the registry's `latest` rather than a `package.json` range
+ * or a lockfile. A checkout whose range lags behind upstream used to be told it
+ * was up to date — the update could never be offered.
+ */
+async function fetchLatestPiCliVersion(): Promise<string> {
+  return (
+    (await fetchLatestCliVersionFromRegistry(PI_CLI_PACKAGE_NAME)) ??
+    (await fetchLatestPiCliVersionFromNpm())
+  )
 }
 
 /**
@@ -890,7 +911,7 @@ async function checkPiCliVersion(piPath: string | undefined): Promise<VersionIte
     return { current, hasUpdate: false }
   }
   try {
-    const latest = await fetchLatestPiCliVersion(piCliPackageSpec(app.getAppPath()))
+    const latest = await fetchLatestPiCliVersion()
     return { current, latest, hasUpdate: isNewerVersion(latest, current) }
   } catch (err: unknown) {
     return {
@@ -1013,8 +1034,12 @@ async function runNpmInstall(
   }, 1_000)
 
   try {
+    // Saved, not `--no-save`: an upgrade that only wrote node_modules would be
+    // undone by the next `npm install` in this checkout, because package.json
+    // and the lockfile would still pin the old version. The manifest is what
+    // this app depends on, so it moves with the install.
     await runNpmCommand(
-      ['install', '--no-save', '--package-lock=true', '--loglevel=http', pkg],
+      ['install', '--package-lock=true', '--loglevel=http', pkg],
       cwd,
       180_000,
       onOutput
@@ -1086,10 +1111,10 @@ export function registerIpc(context: IpcContext): void {
   // A terminal is a real PTY, not a conversation: its output goes straight to
   // the drawer and never into Pi's message stream.
   ipcMain.handle('terminal:create', (_event, options: TerminalCreateOptions) => {
-    const root = workspaceRoot(context)
+    if (isQuitting()) throw new Error('The app is shutting down')
     return terminals.create({
       ...options,
-      cwd: options?.cwd?.trim() || root,
+      cwd: options?.cwd === '' ? projectlessRoot() : options?.cwd?.trim() || workspaceRoot(context),
       shell: options?.shell || settings.get().terminalShell
     })
   })
@@ -1454,8 +1479,7 @@ export function registerIpc(context: IpcContext): void {
           return { success: false, error: 'The bundled Pi CLI is updated with Pi Desktop releases.' }
         }
         const cwd = app.getAppPath()
-        const packageSpec = piCliPackageSpec(cwd)
-        const latestPiCliVersion = await fetchLatestPiCliVersion(packageSpec)
+        const latestPiCliVersion = await fetchLatestPiCliVersion()
         const finishCliMaintenance = await beginBundledPiCliMaintenance()
         let supervisorPrepared = false
         try {
@@ -2211,12 +2235,14 @@ export function registerIpc(context: IpcContext): void {
    */
   ipcMain.handle(
     'fs:savePastedImage',
-    (_event, data: string, mimeType: string): { path: string; root: string } | null => {
-      const root = workspaceRoot(context)
+    async (_event, data: string, mimeType: string, cwd: unknown): Promise<{ path: string; root: string } | null> => {
+      if (typeof cwd !== 'string') return null
       const extension = typeof mimeType === 'string' ? pastedImageExtension(mimeType) : null
       const buffer = decodeImageData(data)
-      if (!root || !extension || !buffer) return null
-      // `workspaceRoot` creates projectless chats; a missing workspace must not be recreated.
+      if (!extension || !buffer) return null
+      const resolved = await resolveRuntimeCwd(context, cwd)
+      if (!resolved || !runtimeCwdStillRegistered(context, resolved)) return null
+      const root = resolved.cwd
       const stamp = Date.now()
       for (let attempt = 0; attempt < 10; attempt += 1) {
         const name = attempt

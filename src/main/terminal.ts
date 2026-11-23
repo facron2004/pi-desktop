@@ -1,4 +1,6 @@
+import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import path from 'node:path'
 import type * as pty from 'node-pty'
 import {
   MAX_TERMINAL_SESSIONS,
@@ -14,6 +16,7 @@ const OUTPUT_HIGH_WATER_BYTES = 256 * 1024
 const OUTPUT_LOW_WATER_BYTES = 64 * 1024
 const OUTPUT_HIGH_WATER_CHUNKS = 1024
 const OUTPUT_LOW_WATER_CHUNKS = 256
+const TERMINAL_TREE_KILL_TIMEOUT_MS = 5_000
 
 interface Session {
   process: pty.IPty
@@ -23,10 +26,22 @@ interface Session {
   pendingOutput: Map<number, number>
   pendingOutputBytes: number
   outputPaused: boolean
+  closing: boolean
+  stopTask?: Promise<void>
 }
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.round(Number.isFinite(value) ? value : min)))
+}
+
+function stopWindowsTerminalTree(pid: number): Promise<boolean> {
+  const taskkill = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
+  return new Promise(resolve => {
+    execFile(taskkill, ['/PID', String(pid), '/T', '/F'], {
+      windowsHide: true,
+      timeout: TERMINAL_TREE_KILL_TIMEOUT_MS
+    }, error => resolve(!error))
+  })
 }
 
 /**
@@ -43,7 +58,8 @@ export class TerminalManager {
   constructor(
     private readonly send: (channel: string, payload: unknown) => void,
     private readonly spawn: typeof pty.spawn,
-    private readonly platform: NodeJS.Platform = process.platform
+    private readonly platform: NodeJS.Platform = process.platform,
+    private readonly stopWindowsTree = stopWindowsTerminalTree
   ) {}
 
   create(options: TerminalCreateOptions): TerminalSessionInfo {
@@ -87,12 +103,13 @@ export class TerminalManager {
       nextOutputSequence: 0,
       pendingOutput: new Map(),
       pendingOutputBytes: 0,
-      outputPaused: false
+      outputPaused: false,
+      closing: false
     }
     this.sessions.set(id, session)
 
     processHandle.onData((data) => {
-      if (this.sessions.get(id) !== session) return
+      if (session.closing || this.sessions.get(id) !== session) return
       const sequence = ++session.nextOutputSequence
       const bytes = Buffer.byteLength(data, 'utf8')
       session.pendingOutput.set(sequence, bytes)
@@ -121,7 +138,7 @@ export class TerminalManager {
 
   write(id: string, data: string): void {
     const session = this.sessions.get(id)
-    if (!session || typeof data !== 'string') return
+    if (!session || session.closing || typeof data !== 'string') return
     try {
       session.process.write(data)
     } catch {
@@ -131,7 +148,7 @@ export class TerminalManager {
 
   acknowledgeOutput(id: string, sequence: number): void {
     const session = this.sessions.get(id)
-    if (!session) return
+    if (!session || session.closing) return
     const bytes = session.pendingOutput.get(sequence)
     if (bytes === undefined) return
     session.pendingOutput.delete(sequence)
@@ -152,7 +169,7 @@ export class TerminalManager {
 
   resize(id: string, cols: number, rows: number): void {
     const session = this.sessions.get(id)
-    if (!session) return
+    if (!session || session.closing) return
     try {
       session.process.resize(clamp(cols, 2, MAX_COLS), clamp(rows, 2, MAX_ROWS))
     } catch {
@@ -160,24 +177,39 @@ export class TerminalManager {
     }
   }
 
-  kill(id: string): void {
+  kill(id: string): Promise<void> {
     const session = this.sessions.get(id)
-    if (!session) return
-    // Kill before forgetting: a process whose `kill()` throws is still running,
-    // and dropping the record first would leave no handle for `disposeAll()` to
-    // retry with — an orphaned shell for the rest of the app's life. The exit
-    // handler deletes the record too, so the delete below is also the normal
-    // path for a process that was already gone.
-    try {
-      session.process.kill()
-    } catch {
-      /* already gone */
-    }
-    this.sessions.delete(id)
+    if (!session) return Promise.resolve()
+    if (session.stopTask) return session.stopTask
+    session.closing = true
+    session.stopTask = Promise.resolve().then(async () => {
+      if (this.sessions.get(id) !== session) return
+      const pid = session.process.pid
+      // Close the tree while its shell still exists. ConPTY's own cleanup
+      // only sees processes attached to the same console.
+      const treeStopped = this.platform === 'win32' && Number.isSafeInteger(pid) && pid > 0
+        ? await this.stopWindowsTree(pid).catch(() => false)
+        : false
+      if (this.sessions.get(id) !== session) return
+      try {
+        // Release the native PTY, also the fallback if taskkill failed.
+        session.process.kill()
+      } catch (error) {
+        if (!treeStopped && this.sessions.get(id) === session) {
+          // Keep the handle for a later cleanup pass if neither attempt worked.
+          console.warn('[pi-desktop] failed to close terminal:', error)
+          return
+        }
+      }
+      this.sessions.delete(id)
+    }).finally(() => {
+      session.stopTask = undefined
+    })
+    return session.stopTask
   }
 
-  disposeAll(): void {
-    for (const id of [...this.sessions.keys()]) this.kill(id)
+  async disposeAll(): Promise<void> {
+    await Promise.all([...this.sessions.keys()].map(id => this.kill(id)))
   }
 }
 

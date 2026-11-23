@@ -1,19 +1,15 @@
 /* ------------------------------------------------------------------ *
  * Goal bar
  *
- * Goal Mode's objective, above the composer. It follows the plan strip's
- * rhythm: same width, same quiet canvas, one compact line. The status badge
- * is the only colour, because the objective is read and the state is
- * scanned.
+ * Goal Mode's objective, above the composer. It is the composer's lid: the
+ * same column, the same left and right edge, so its corners sit exactly over
+ * the box below instead of floating at fit-content width. The status badge is
+ * the only colour, because the objective is read and the state is scanned.
  * ------------------------------------------------------------------ */
 
 .goal-bar {
   flex: 0 0 auto;
   padding: var(--sp-1) var(--sp-6) 0;
-}
-
-.main__stage:has(.task-rail) .goal-bar {
-  padding-right: var(--sp-4);
 }
 
 .goal-bar + .composer-wrap {
@@ -25,19 +21,21 @@
 }
 
 .goal-bar__inner {
-  width: fit-content;
-  max-width: calc(min(100%, var(--content-w)) - var(--composer-radius) * 2);
+  /* The composer's own column (`.composer-stack`): one width for both, so the
+     bar reaches the rounded corners of the box it belongs to. */
+  width: 100%;
+  max-width: var(--content-w);
   margin: 0 auto;
   border: 1px solid var(--border);
   border-bottom: none;
-  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  border-radius: var(--composer-radius) var(--composer-radius) 0 0;
   background: color-mix(in srgb, var(--text-primary) 5%, var(--surface-canvas));
 }
 
 .goal-bar:has(+ .composer-wrap .composer__top-selectors) .goal-bar__inner {
-  max-width: min(100%, var(--content-w));
+  max-width: var(--content-w);
   border-bottom: 1px solid var(--border);
-  border-radius: var(--r-full);
+  border-radius: var(--composer-radius);
 }
 
 .goal-bar__inner[data-editing='true'] {
@@ -51,8 +49,10 @@
   border-radius: var(--r-lg);
 }
 
-.goal-bar:not(:has(+ .composer-wrap .composer__top-selectors)):has(.goal-bar__inner[data-editing='true']) + .composer-wrap .composer,
-.goal-bar:not(:has(+ .composer-wrap .composer__top-selectors)):has(.goal-bar__inner[data-editing='true']) + .composer-wrap .composer__queue {
+/* A lid has to meet its box: the composer's top corners square off under the
+   bar, exactly as they already do while the goal is being edited. */
+.goal-bar:not(:has(+ .composer-wrap .composer__top-selectors)) + .composer-wrap .composer,
+.goal-bar:not(:has(+ .composer-wrap .composer__top-selectors)) + .composer-wrap .composer__queue {
   border-top-left-radius: 0;
   border-top-right-radius: 0;
 }
@@ -85,8 +85,9 @@
   color: var(--text-faint);
 }
 
-/* The badge states the goal's own status, not the run's: paused and blocked
-   both mean "the extension is waiting", but they wait for different things. */
+/* The badge has two words for a live goal — running or paused — because that
+   is the only question the bar answers. `blocked` and `complete` are outcomes
+   and keep a colour of their own. */
 .goal-bar__badge {
   flex: 0 0 auto;
   display: inline-flex;
@@ -104,13 +105,6 @@
 .goal-bar__badge[data-status='paused'] {
   background: var(--status-warning-soft);
   color: var(--status-warning);
-}
-
-/* The goal is kept but Goal Mode is off, so nothing continues it. Neutral,
-   not a warning: the objective is fine, it is simply not running. */
-.goal-bar__badge[data-status='inactive'] {
-  background: var(--bg-active);
-  color: var(--text-muted);
 }
 
 .goal-bar__badge[data-status='blocked'] {

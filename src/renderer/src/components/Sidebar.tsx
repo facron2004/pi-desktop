@@ -39,6 +39,7 @@ import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Popover } from './Popover'
 import { SidebarTip, SIDEBAR_TIP_ID, useHoverTip, type SidebarTipRow } from './SidebarTip'
+import { shouldShowUpdateNotice } from '@shared/update-notice'
 import { PiLogo } from './PiLogo'
 import { PiWordmark } from './PiWordmark'
 import { projectIconColor, projectIconEmoji } from '../lib/project-icons'
@@ -342,6 +343,17 @@ export const Sidebar = memo(function Sidebar({
   // Before the download starts the size comes from the release check; while it
   // runs the progress events carry the exact asset size.
   const updateInstallerBytes = currentInstall?.totalBytes ?? appUpdate?.bytes
+  // Codex's `dismissed_version`: a release the reader waved away stops being
+  // announced, and the control comes back on its own for anything newer. A
+  // download in flight or an installer waiting to be used is never hidden —
+  // a half-finished update the reader cannot see is worse than the notice.
+  const dismissedUpdateVersion = useAppStore((state) => state.settings.dismissedUpdateVersion)
+  const showUpdateControl = shouldShowUpdateNotice({
+    latest: appUpdate?.latest,
+    dismissedVersion: dismissedUpdateVersion,
+    busy: updateBusy,
+    ready: updateReady
+  })
 
   const startAppUpdate = async () => {
     if (!appUpdate || updateBusy) return
@@ -1822,7 +1834,7 @@ export const Sidebar = memo(function Sidebar({
             <Settings size={15} strokeWidth={1.6} />
             <span>{t('Settings')}</span>
           </button>
-          {appUpdate ? (
+          {appUpdate && showUpdateControl ? (
             <button
               type="button"
               className="sidebar__update-btn"

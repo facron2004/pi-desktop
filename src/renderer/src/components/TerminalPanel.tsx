@@ -51,6 +51,8 @@ function terminalTheme(isDark: boolean) {
 /** A command handed to the terminal from somewhere else in the app. */
 export interface TerminalRunRequest {
   command: string
+  /** The workspace visible when the command was handed over. Empty means projectless. */
+  cwd: string
   /** Bumped for every hand-off, so the same command twice still runs twice. */
   seq: number
 }
@@ -65,7 +67,7 @@ export interface TerminalPaneHandle {
 
 interface TerminalPaneProps {
   active: boolean
-  cwd?: string
+  cwd: string
   shell: string
   request?: TerminalRunRequest | null
   /** The shell name, once the PTY reports it, for the tab label. */
@@ -95,17 +97,6 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
   const handledRequestRef = useRef(0)
   const onLabelRef = useRef(onLabel)
   onLabelRef.current = onLabel
-
-  /**
-   * The folder this pane's shell started in, captured once.
-   *
-   * A terminal belongs to the project it was opened in. Switching projects, or
-   * clicking a conversation that lives in another one, is a view change — it
-   * must not kill a shell that is running a build or an ssh session (AGENTS.md:
-   * "Switching projects is also only a view change"). New tabs read the project
-   * on screen when they mount, so this is the only place the folder changes.
-   */
-  const startCwdRef = useRef(cwd)
 
   const [exited, setExited] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -234,7 +225,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
     observer.observe(container)
 
     void window.pi.terminal
-      .create({ cols: term.cols, rows: term.rows, cwd: startCwdRef.current, shell })
+      .create({ cols: term.cols, rows: term.rows, cwd, shell })
       .then((info) => {
         awaitingCreate = false
         if (disposed) {
@@ -284,7 +275,7 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
       termRef.current = null
       fitRef.current = null
     }
-  }, [shell, restartKey])
+  }, [cwd, shell, restartKey])
 
   // The app theme can change without restarting the shell.
   useEffect(() => {
@@ -356,6 +347,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>(function 
 interface TerminalTab {
   key: string
   label: string
+  /** Startup directory, fixed for the life of the tab. */
+  cwd: string
 }
 
 /**
@@ -388,7 +381,7 @@ export function TerminalPanel({
     typeof storedHeight === 'number' ? clampHeight(storedHeight) : defaultTerminalHeight()
   )
   const [tabs, setTabs] = useState<TerminalTab[]>(() => [
-    { key: 'terminal-1', label: '' }
+    { key: 'terminal-1', label: '', cwd: request?.cwd ?? workspace?.path ?? '' }
   ])
   const [activeKey, setActiveKey] = useState('terminal-1')
   const [assignedRequest, setAssignedRequest] = useState<{
@@ -396,18 +389,10 @@ export function TerminalPanel({
     request: TerminalRunRequest
   } | null>(null)
   const nextKeyRef = useRef(2)
+  const assignedSequenceRef = useRef(0)
   const paneApis = useRef(new Map<string, TerminalPaneHandle>())
   const heightRef = useRef(height)
   const draggingRef = useRef(false)
-
-  // A hand-off belongs to the tab that received it, even after another tab
-  // becomes active. Keeping that owner prevents old requests from replaying.
-  useEffect(() => {
-    if (!request) return
-    setAssignedRequest((previous) =>
-      previous?.request.seq === request.seq ? previous : { key: activeKey, request }
-    )
-  }, [request, activeKey])
 
   useEffect(() => {
     heightRef.current = height
@@ -442,13 +427,26 @@ export function TerminalPanel({
     )
   }, [])
 
-  const addTab = useCallback(() => {
-    if (tabs.length >= MAX_TERMINAL_SESSIONS) return
+  const openTab = useCallback((cwd: string) => {
+    if (tabs.length >= MAX_TERMINAL_SESSIONS) return undefined
     const key = `terminal-${nextKeyRef.current}`
     nextKeyRef.current += 1
-    setTabs((previous) => [...previous, { key, label: '' }])
+    setTabs((previous) => [...previous, { key, label: '', cwd }])
     setActiveKey(key)
+    return key
   }, [tabs.length])
+  const addTab = () => openTab(workspace?.path ?? '')
+
+  // Preserve existing shells on project changes, and never hand the command
+  // to a tab opened for a different project.
+  useEffect(() => {
+    if (!request || request.seq === assignedSequenceRef.current) return
+    assignedSequenceRef.current = request.seq
+    const activeTab = tabs.find(tab => tab.key === activeKey)
+    const key = activeTab?.cwd === request.cwd ? activeTab.key : openTab(request.cwd)
+    if (key) setAssignedRequest({ key, request })
+    else showToast(t('Terminal limit reached'), 'warning')
+  }, [request, activeKey, tabs, openTab, showToast, t])
 
   const closeTab = useCallback(
     (key: string) => {
@@ -678,7 +676,7 @@ export function TerminalPanel({
                 else paneApis.current.delete(tab.key)
               }}
               active={tab.key === activeKey}
-              cwd={workspace?.path}
+              cwd={tab.cwd}
               shell={shell}
               request={tab.key === assignedRequest?.key ? assignedRequest.request : null}
               onLabel={(label) => setTabLabel(tab.key, label)}

@@ -967,6 +967,14 @@ export interface AppSettings {
   /** Check for updates in the background and download the installer when one is found. */
   automaticUpdates?: boolean
   /**
+   * The release the reader asked not to be told about again.
+   *
+   * Codex keeps the same field beside its cached latest version
+   * (`dismissed_version` in `version.json`): dismissing silences *that* release
+   * only, and the next one to be published brings the notice back.
+   */
+  dismissedUpdateVersion?: string
+  /**
    * Closing the window hides the app in the system tray instead of quitting.
    * Off leaves the close button as a quit, which is how the app behaved before
    * the switch existed.
@@ -1476,15 +1484,15 @@ export interface PiDesktopBridge {
     /** Show a file in the file manager of the operating system. */
     reveal(file: string): Promise<void>
     /**
-     * Write a picture pasted into the composer into the folder the conversation
-     * runs in, so the reference it becomes resolves like a picked file. `root`
-     * is that folder and `path` the file written. `null` when the type is not a
-     * picture the agent can read, or when the folder refused the write — the
-     * composer then keeps the picture as an attachment only.
+     * Write a picture to the conversation's `cwd` captured at paste time, or
+     * to the projectless chats folder when `cwd` is empty. `root` is the folder
+     * and `path` the file written. On `null`, the composer keeps the picture
+     * as an attachment only.
      */
     savePastedImage(
       data: string,
-      mimeType: string
+      mimeType: string,
+      cwd: string
     ): Promise<{ path: string; root: string } | null>
     /** Write a picture the model produced to a file the user picks. */
     saveImage(data: string, mimeType: string): Promise<string | null>
@@ -1619,7 +1627,7 @@ export const MAX_TERMINAL_SESSIONS = 12
 export interface TerminalCreateOptions {
   cols: number
   rows: number
-  /** The working directory; defaults to the open workspace. */
+  /** The working directory. Omit to use the open workspace, or pass '' for projectless. */
   cwd?: string
   /** A terminalShell setting value: powershell, cmd, gitbash or wsl. */
   shell?: string

@@ -175,6 +175,15 @@ reason a run failed stays below its summary, including when the process is
 folded. With auto-fold enabled, opening a failed run shows its group summaries
 first. Each group can then be expanded to inspect the individual tool results.
 
+**"Waiting for model response" describes an empty screen, not a slow request.**
+The live label is the only thing on screen while a turn has produced nothing, so
+`Thread` passes `showWaitStatus` only while the turn has no output at all —
+`turnHasOutput` (assistant blocks, tool rows, shell output) gates it, and
+`RunSummary` holds the counter to the current request's clock. A wait for the
+*next* block — after a tool, or between text blocks — must not put the label back
+on top of an answer the reader can already read; those stretches read `Working`.
+Codex draws the line the same way, and `tests/ui-regressions.mjs` guards it.
+
 Manual context compaction refreshes session state and keeps the transcript.
 Pi's `compaction_end` supplies the notice. The `get_messages` response is the
 compacted model context, so using it here would remove older messages and tool
@@ -215,8 +224,11 @@ rewinds.
 **Editing a user message is not a fork.** The pencil sends the bundled
 `desktop-rewind` extension command, which calls Pi's `ctx.navigateTree` on the
 message entry: the same session file moves its leaf to the message's parent and
-the prompt returns to the composer. `forkFrom` stays for the session-tree fork
-action only.
+the prompt returns to the composer. The command appends a custom entry there so
+Pi reopens at that position even if the edited prompt has yet to be sent.
+The transcript keeps the saved history before the edited entry, including
+messages and tool results older than the model's most recent compaction.
+`forkFrom` stays for the session-tree fork action only.
 
 A hot conversation is renamed with `set_session_name` on its own process. A cold
 one gets a single `session_info` line appended to its JSONL, and only when no
@@ -463,6 +475,11 @@ and `session-bar__stop` remains available under the box. Both stop controls call
 `stop()`. A submitted draft stays visible and on disk until acceptance.
 Acceptance clears the draft that was submitted if it still matches the editor,
 so an edit made while waiting survives.
+
+If a draft snapshot exceeds browser storage quota, retry with still-attached
+images from the last saved snapshot before falling back to text and file
+references. An oversized new attachment should leave older saved drafts
+recoverable.
 
 The model is a per-conversation choice: picking a model in a session sends
 `set_model` to that process and never writes the app default — only a draft
@@ -1113,8 +1130,14 @@ Git Bash or WSL. Adding a shell means adding it in `resolveShellSpec`
 
 A card in the transcript (the bash tool card, or a bash execution card) can hand
 its command to the terminal by dispatching `pi:terminal-run` with `{ command }`.
-`App` owns the terminal, so it turns the event into a `{ command, seq }` request
-that `TerminalPanel` types into the live shell.
+`App` captures the workspace in a `{ command, cwd, seq }` request. Terminal
+tabs keep the directory they started in. A hand-off to a different project
+opens a new tab in the requested directory and leaves the old PTY running.
+
+On Windows, closing a terminal ends its process tree before releasing the PTY.
+Closing the console alone can leave a background descendant running. Shutdown
+waits for the same in-flight cleanup, and a failed close keeps the PTY handle
+for a later disposal pass.
 
 Pi strips ANSI escape sequences from the bash tool output before it reaches the
 client, but the PTY streams raw escape sequences — that is exactly what xterm
@@ -1393,8 +1416,9 @@ call is one node keyed by `toolCallId` at its first-appearance position.
 `pasteMentions` writes the pasted picture **into the working folder** (`fs:savePastedImage`,
 `projectlessRoot()` when there is no project) before referencing it, because an `@` mention
 resolves against Pi's cwd and `fs:search` walks the project: a temp path would reference a
-file the agent cannot read. It inserts through the same splice as a hand-picked mention and
-degrades to attach-only when the write fails.
+file the agent cannot read. It captures the draft and working folder before reading the image
+so switching projects during the paste preserves both. It inserts through the same splice as
+a hand-picked mention and degrades to attach-only when the folder is removed or the write fails.
 
 `autoTitle` is a second listener on the runtime stream, deliberately not part of
 `MemoryService`: a title is wanted for every new conversation while memory skips sessions

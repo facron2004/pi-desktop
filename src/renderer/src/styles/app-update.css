@@ -210,6 +210,29 @@
   gap: var(--sp-3);
 }
 
+/* Codex's dismissal, as a quiet text action: it must not compete with the
+   button that actually starts the update. Dismissing names the release and
+   only silences that one — a newer release brings the notice back. */
+.app-update-card__dismiss {
+  margin-inline: calc(-1 * var(--sp-3)) 0;
+  padding: var(--sp-1) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.app-update-card__dismiss:hover,
+.app-update-card__dismiss:focus-visible {
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  color: var(--text-primary);
+}
+
 .app-update-card__foot .btn {
   justify-content: center;
   height: auto;

@@ -1153,7 +1153,7 @@ export const Composer = memo(function Composer() {
    * not take — a type outside its allowlist, a read-only folder — silently
    * stays the attachment it always was.
    */
-  const addPicturesInPlace = async (items: File[], targetKey: string): Promise<void> => {
+  const addPicturesInPlace = async (items: File[], targetKey: string, cwd: string): Promise<void> => {
     const mentions: string[] = []
     const attachments: ComposerDraftFile[] = []
     for (const file of items) {
@@ -1188,7 +1188,7 @@ export const Composer = memo(function Composer() {
       if (earlier && targetDraft.text.includes(earlier)) continue
       let saved: { path: string; root: string } | null = null
       try {
-        saved = base64 ? await window.pi.fs.savePastedImage(base64, file.type) : null
+        saved = await window.pi.fs.savePastedImage(base64, file.type, cwd)
       } catch {
         saved = null
       }
@@ -1210,7 +1210,9 @@ export const Composer = memo(function Composer() {
 
   const addFiles = async (files: FileList | null): Promise<void> => {
     if (!files) return
-    const targetKey = draftKeyRef.current
+    const state = useAppStore.getState()
+    const targetKey = draftKeyOf(state)
+    const cwd = state.threads[targetKey]?.status.cwd ?? state.workspace?.path ?? ''
     bumpPendingAdds(targetKey, 1)
     try {
       const items = Array.from(files)
@@ -1218,7 +1220,7 @@ export const Composer = memo(function Composer() {
       // The switch decides whether a pasted picture is also named in the text,
       // and a batch without a picture does not go near the text at all.
       if (pasteMentions && !inImageMode && items.some((file) => file.type.startsWith('image/'))) {
-        await addPicturesInPlace(items, targetKey)
+        await addPicturesInPlace(items, targetKey, cwd)
         return
       }
       const attachments: ComposerDraftFile[] = []

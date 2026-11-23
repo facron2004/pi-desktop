@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -9,6 +9,51 @@ import type { IpcContext } from '../src/main/ipc'
 import { piVersion } from '../src/main/pi/cli'
 import { SettingsStore } from '../src/main/settings'
 import type { RuntimeEnsureOptions } from '../src/shared/types'
+
+test('pasted image uses the original project after switching workspaces', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pi-paste-project-'))
+  const source = path.join(directory, 'source')
+  const other = path.join(directory, 'other')
+  mkdirSync(source)
+  mkdirSync(other)
+  const otherWorkspace = { id: 'other', path: other }
+  let workspaces = [{ id: 'source', path: source }, otherWorkspace]
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  const handleDescriptor = Object.getOwnPropertyDescriptor(ipcMain, 'handle')
+  Object.defineProperty(ipcMain, 'handle', {
+    configurable: true,
+    value: (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => handlers.set(channel, handler)
+  })
+
+  try {
+    registerIpc({
+      supervisor: {},
+      settings: { get: () => ({ activeWorkspaceId: 'other', workspaces }) },
+      getWindow: () => null,
+      terminals: { create: () => ({}) },
+      memory: { promptFor: () => '' }
+    } as unknown as IpcContext)
+
+    const save = handlers.get('fs:savePastedImage')!
+    const saved = await save({}, 'AA==', 'image/png', source) as { path: string; root: string } | null
+    assert.ok(saved)
+    assert.equal(saved.root, realpathSync(source))
+    assert.equal(path.dirname(saved.path), saved.root)
+    assert.deepEqual(readFileSync(saved.path), Buffer.from([0]))
+
+    const pending = save({}, 'AA==', 'image/png', source)
+    workspaces = [otherWorkspace]
+    assert.equal(await pending, null, 'removing the source during validation must prevent the write')
+    assert.equal(await save({}, 'AA==', 'image/png', source), null)
+    assert.equal(await save({}, 'AA==', 'image/png'), null)
+    assert.deepEqual(readdirSync(source), [path.basename(saved.path)])
+    assert.deepEqual(readdirSync(other), [])
+  } finally {
+    if (handleDescriptor) Object.defineProperty(ipcMain, 'handle', handleDescriptor)
+    else delete (ipcMain as unknown as { handle?: unknown }).handle
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('Git writes reject a stale project and registration does not select a folder', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'pi-worktree-project-guard-'))
