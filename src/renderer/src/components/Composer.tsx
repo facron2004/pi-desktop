@@ -1686,6 +1686,12 @@ export const Composer = memo(function Composer() {
               onInsertCommand={insertMenuCommand}
               onEnterImageMode={toggleImageMode}
             />
+            <PermissionPicker />
+            {/* The mode chip sits *after* the permission control: it only
+                exists while a task mode is on, and in front of that control it
+                pushed 完全访问 sideways the moment a mode was picked. The
+                permission control keeps one position; the chip grows to its
+                right. */}
             {modeChip ? (
               <button
                 type="button"
@@ -1710,7 +1716,6 @@ export const Composer = memo(function Composer() {
                 <X size={11} />
               </button>
             ) : null}
-            <PermissionPicker />
             {image ? (
               <>
                 <ImageModelPicker value={image.model} onChange={setImageOption} />

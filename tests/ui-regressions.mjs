@@ -449,7 +449,25 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     const goalReplyIncludes = (text) => store.getState().items.some((item) =>
       item.kind === 'assistant' && item.blocks.some((block) => block.type === 'text' && block.text.includes(text))
     )
+    // The mode chip only exists while a task mode is on, so it must grow to the
+    // right of the permission control instead of pushing 完全访问 sideways.
+    const permissionBeforeMode = document.querySelector('.permission-picker')?.getBoundingClientRect()
+    check(permissionBeforeMode, 'The permission control is missing while checking the composer bar')
     await store.getState().setAgentMode('goal')
+    const modeChipBox = await until(
+      () => document.querySelector('.composer__mode')?.getBoundingClientRect(),
+      'The goal mode chip did not render'
+    )
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    const permissionAfterMode = document.querySelector('.permission-picker')?.getBoundingClientRect()
+    check(
+      permissionAfterMode && Math.abs(permissionAfterMode.left - permissionBeforeMode.left) <= 1,
+      'Picking a mode moved the permission control'
+    )
+    check(
+      modeChipBox.left >= permissionAfterMode.right - 0.5,
+      'The mode chip sits in front of the permission control instead of after it'
+    )
     await store.getState().send(goalFixture.original, [])
     await until(() => goalReplyIncludes(goalFixture.started), 'The first goal request did not reach the model')
     const activeEdit = await until(() => store.getState().isStreaming && goalButton('Edit'), 'A running goal could not be edited')
