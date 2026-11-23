@@ -1,6 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, WandSparkles, Workflow, Wrench } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, WandSparkles, Workflow } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
+import { commandIcon } from '../lib/command-source'
 import { useT } from '../lib/i18n'
 import type { mermaidTemplateList } from '../lib/mermaid-templates'
 import { useAppStore } from '../store/useAppStore'
@@ -69,7 +70,7 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
   return (
     <Popover
       placement="top"
-      width={620}
+      width={336}
       className="composer__add-popover"
       renderTrigger={({ open, toggle }) => (
         <button
@@ -137,18 +138,20 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
 
               {pluginCommands.length ? (
                 <>
-                  <div className="composer__add-sep" role="separator" />
                   <div className="popover__label composer__add-section">{t('Plugins')}</div>
                   <div className="composer__add-list">
-                    {pluginCommands.map((command) => (
-                      <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description ? t(command.description) : undefined} onClick={() => { close(); onInsertCommand(command) }}>
-                        <Wrench size={15} className="composer__add-command-icon" />
-                        <span className="composer__add-command-copy">
-                          <span className="composer__add-command-name">/{command.name}</span>
-                          {command.description ? <span className="composer__add-command-description">{t(command.description)}</span> : null}
-                        </span>
-                      </button>
-                    ))}
+                    {pluginCommands.map((command) => {
+                      const Icon = commandIcon(command)
+                      return (
+                        <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description ? t(command.description) : undefined} onClick={() => { close(); onInsertCommand(command) }}>
+                          <Icon size={15} className="composer__add-command-icon" />
+                          <span className="composer__add-command-copy">
+                            <span className="composer__add-command-name">/{command.name}</span>
+                            {command.description ? <span className="composer__add-command-description">{t(command.description)}</span> : null}
+                          </span>
+                        </button>
+                      )
+                    })}
                   </div>
                 </>
               ) : null}
@@ -180,12 +183,18 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
                 </div>
               ) : commands.length ? (
                 <div className="composer__add-list">
-                  {commands.map((command) => (
-                    <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description ? t(command.description) : undefined} onClick={() => { close(); onInsertCommand(command) }}>
-                      <span className="composer__add-command-name">/{command.name}</span>
-                      {command.description ? <span className="composer__add-command-description">{t(command.description)}</span> : null}
-                    </button>
-                  ))}
+                  {commands.map((command) => {
+                    const Icon = commandIcon(command)
+                    return (
+                      <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description ? t(command.description) : undefined} onClick={() => { close(); onInsertCommand(command) }}>
+                        <Icon size={15} className="composer__add-command-icon" />
+                        <span className="composer__add-command-copy">
+                          <span className="composer__add-command-name">/{command.name}</span>
+                          {command.description ? <span className="composer__add-command-description">{t(command.description)}</span> : null}
+                        </span>
+                      </button>
+                    )
+                  })}
                 </div>
               ) : (
                 <div className="composer__add-empty">{t(page === 'skills' ? 'No skills available' : 'No plugins available')}</div>

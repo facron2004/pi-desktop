@@ -1,16 +1,16 @@
-/* Codex-style wide panel: the trigger sits at the composer's left edge, so a
-   fixed wide card reads as a sheet lifted off the input box above it. */
+/* A narrow list, not a wide sheet: one column of rows, each a single line —
+   icon, name, then what it does in muted text beside it. */
 .composer__add-popover .popover__label.composer__add-section {
-  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+  padding: var(--sp-3) var(--sp-3) var(--sp-1);
   font-size: var(--text-xs);
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-muted);
 }
 
 .composer__add-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   padding: 0 var(--sp-1) var(--sp-1);
 }
 
@@ -18,9 +18,9 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  min-height: 0;
-  padding: var(--sp-2);
-  white-space: normal;
+  min-height: 30px;
+  padding: var(--sp-1) var(--sp-2);
+  white-space: nowrap;
 }
 
 .composer__add-action-icon {
@@ -31,22 +31,25 @@
 .composer__add-action-copy {
   display: flex;
   flex: 1 1 auto;
-  flex-direction: column;
-  gap: 1px;
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--sp-2);
   min-width: 0;
 }
 
 .composer__add-action-label {
+  flex: 0 0 auto;
   color: var(--text);
   font-size: var(--text-small);
   font-weight: 500;
 }
 
 .composer__add-action-description {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: var(--text-faint);
-  font-size: var(--text-2xs);
-  line-height: 1.4;
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -70,17 +73,21 @@
   padding: 0;
 }
 
+/* The list scrolls inside the panel; a long plugin catalog must not push the
+   sections above it out of reach. */
 .composer__add-list {
-  max-height: 260px;
+  max-height: 320px;
   overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .composer__add-popover .composer__add-command {
   flex-direction: row;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  white-space: normal;
+  min-height: 30px;
+  padding: var(--sp-1) var(--sp-2);
+  white-space: nowrap;
 }
 
 .composer__add-command-icon {
@@ -91,9 +98,17 @@
 .composer__add-command-copy {
   display: flex;
   flex: 1 1 auto;
-  flex-direction: column;
-  gap: 1px;
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--sp-2);
   min-width: 0;
+}
+
+.composer__add-command-name {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: var(--text-small);
+  font-weight: 500;
 }
 
 .composer__add-command-description,
@@ -103,12 +118,19 @@
   line-height: 1.5;
 }
 
-/* Template rows are the same two-line shape as command rows, but the name is
-   the thing the reader scans — keep it in the item foreground and the
-   description quiet underneath. */
+.composer__add-command-description {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Template rows keep the same single line, but the name is the thing the reader
+   scans — keep it in the item foreground and the description quiet beside it. */
 .composer__add-popover .composer__add-template {
-  gap: 2px;
-  padding: var(--sp-2) var(--sp-3);
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
 }
 
 .composer__add-template .composer__add-command-name {
