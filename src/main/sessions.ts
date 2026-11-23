@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { constants, createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
-import { appendFile, chmod, lstat, mkdir, open, readdir, realpath, rename, stat, unlink, type FileHandle } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, readdir, realpath, rename, stat, unlink, type FileHandle } from 'node:fs/promises'
 import type { Stats } from 'node:fs'
 import { performance } from 'node:perf_hooks'
 import { StringDecoder } from 'node:string_decoder'
@@ -1215,6 +1215,7 @@ function messagesFromBranch(entries: BaseEntry[]): AgentMessage[] {
     const timestamp = message.timestamp
     messages.push({
       ...message,
+      ...(message.role === 'user' && typeof entry.id === 'string' ? { entryId: entry.id } : {}),
       timestamp: typeof timestamp === 'number' ? timestamp : Date.parse(String(timestamp ?? '')) || Date.now()
     })
   }
@@ -1489,50 +1490,61 @@ export async function appendSessionName(
 ): Promise<boolean> {
   const sanitized = name.replace(/[\r\n]+/g, ' ').trim()
   if (!sanitized) return false
-  let fileStats: Stats
+  const writer = handle ?? await open(file, SESSION_FILE_WRITE_FLAGS).catch(() => null)
+  if (!writer) return false
   try {
-    fileStats = handle ? await handle.stat() : await stat(file)
-    if (!fileStats.isFile()) return false
-  } catch {
-    return false
-  }
-  const size = fileStats.size
-
-  // The new entry's parent is the current leaf, which sits at the end of the
-  // file. Reading a long session's head would attach the rename to a node
-  // from the middle of its history and split the active branch.
-  let windowBytes = size > MAX_SESSION_BYTES ? MAX_META_TAIL_BYTES : MAX_SESSION_BYTES
-  let lines: string[] = []
-  while (true) {
-    const windowStart = Math.max(0, size - windowBytes)
-    lines = []
-    for await (const line of readJsonlLines(file, windowBytes, windowStart, windowStart > 0, handle)) {
-      lines.push(line)
+    const fileStats = await writer.stat().catch(() => null)
+    if (!fileStats?.isFile() || fileStats.size === 0) return false
+    const size = fileStats.size
+    const byte = Buffer.allocUnsafe(1)
+    const maxBytes = Math.min(size, MAX_SESSION_BYTES)
+    let windowBytes = size > MAX_SESSION_BYTES ? MAX_META_TAIL_BYTES : maxBytes
+    let leaf: TreeEntry | undefined
+    let separator = ''
+    while (true) {
+      const start = size - windowBytes
+      if (start > 0 && (await writer.read(byte, 0, 1, start - 1)).bytesRead !== 1) return false
+      const lines: string[] = []
+      let last: JsonlRecord | undefined
+      for await (const record of readJsonlRecords(file, windowBytes, start, start > 0 && byte[0] !== LF, writer)) {
+        lines.push(record.line)
+        last = record
+      }
+      if (last?.endOffset === size) {
+        separator = last.terminated ? '' : '\n'
+        leaf = activeBranch(lines).at(-1)
+        if (leaf) break
+        if (start === 0) {
+          // A header-only session can be named without a parent entry.
+          try {
+            if (JSON.parse(lines.find(line => line.trim())?.trim() ?? 'null')?.type !== 'session') return false
+          } catch {
+            return false
+          }
+          break
+        }
+      }
+      // A torn line or a blank line is not the leaf. Expand until the tail
+      // contains a valid entry, or leave a file beyond the read budget alone.
+      if (windowBytes === maxBytes) return false
+      windowBytes = Math.min(maxBytes, windowBytes * 2)
     }
-    if (lines.length || windowBytes >= MAX_SESSION_BYTES) break
-    windowBytes = Math.min(MAX_SESSION_BYTES, windowBytes * 2)
-  }
-  if (!lines.length) return false
 
-  const branch = activeBranch(lines)
-  const leaf = branch[branch.length - 1]
-  const entry = {
-    type: 'session_info',
-    id: randomBytes(4).toString('hex'),
-    parentId: leaf?.id ?? null,
-    timestamp: new Date().toISOString(),
-    name: sanitized
-  }
-  const serialized = `${JSON.stringify(entry)}\n`
-  if (handle) {
-    const current = await handle.stat()
+    const entry = {
+      type: 'session_info',
+      id: randomBytes(4).toString('hex'),
+      parentId: leaf?.id ?? null,
+      timestamp: new Date().toISOString(),
+      name: sanitized
+    }
+    const current = await writer.stat()
     if (current.size !== fileStats.size || current.mtimeMs !== fileStats.mtimeMs) return false
-    await handle.appendFile(serialized, 'utf8')
-  } else {
-    await appendFile(file, serialized, 'utf8')
+    await writer.appendFile(`${separator}${JSON.stringify(entry)}\n`, 'utf8')
+    invalidateSessionCache(file)
+    return true
+  } finally {
+    if (!handle) await writer.close().catch(() => {})
   }
-  invalidateSessionCache(file)
-  return true
 }
 
 /**

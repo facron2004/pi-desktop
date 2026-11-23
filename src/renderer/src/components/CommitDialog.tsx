@@ -138,7 +138,8 @@ export function CommitDialog({
   /** Open the read-only detail of a commit from the history list. */
   onOpenCommit?: (hash: string) => void
 }) {
-  const git = useAppStore((state) => state.git)
+  const [expectedRoot] = useState(() => useAppStore.getState().workspace?.path ?? '')
+  const git = useAppStore((state) => state.workspace?.path === expectedRoot ? state.git : undefined)
   const commitChanges = useAppStore((state) => state.commitChanges)
   const pushGit = useAppStore((state) => state.pushGit)
   const refreshGit = useAppStore((state) => state.refreshGit)
@@ -170,11 +171,12 @@ export function CommitDialog({
   const copyTimer = useRef<number | null>(null)
 
   const loadHistory = useCallback(async () => {
+    if (!expectedRoot) return
     const request = ++historyRequest.current
     setHistoryLoading(true)
     setHistoryError(false)
     try {
-      const list = await window.pi.git.log(HISTORY_LIMIT)
+      const list = await window.pi.git.log(HISTORY_LIMIT, expectedRoot)
       if (request !== historyRequest.current) return
       setCommits(list)
     } catch {
@@ -184,7 +186,7 @@ export function CommitDialog({
     } finally {
       if (request === historyRequest.current) setHistoryLoading(false)
     }
-  }, [])
+  }, [expectedRoot])
 
   // The panel may have been opened before the working tree was read.
   useEffect(() => {
@@ -383,7 +385,7 @@ export function CommitDialog({
       if (!canPush) return
       setBusyAction('push')
       try {
-        const result = await pushGit()
+        const result = await pushGit(expectedRoot)
         if (result.ok) onClose()
       } catch (cause) {
         setError(cause instanceof Error && cause.message ? cause.message : t('Could not push branch'))
@@ -396,12 +398,12 @@ export function CommitDialog({
     if (!canCommit) return
     setBusyAction(action)
     try {
-      const result = await commitChanges(message.trim(), includeAll)
+      const result = await commitChanges(message.trim(), includeAll, expectedRoot)
       if (result.ok) {
         writeDraft('')
         if (action === 'commit-push') {
           try {
-            await pushGit()
+            await pushGit(expectedRoot)
           } catch (cause) {
             showToast(cause instanceof Error && cause.message ? cause.message : t('Could not push branch'), 'error')
           }

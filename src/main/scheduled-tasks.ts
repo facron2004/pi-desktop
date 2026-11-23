@@ -13,6 +13,7 @@ import type {
 } from '@shared/types'
 import type { SettingsStore } from './settings'
 import type { SessionSupervisor } from './pi/supervisor'
+import { lastRunAssistantMessage } from './pi/run-result'
 import { properLockfile } from './proper-lockfile'
 
 interface ScheduledTaskServiceOptions {
@@ -24,9 +25,20 @@ interface ScheduledTaskServiceOptions {
 
 interface ActiveRun {
   taskId: string
+  draftKey: string
+  lastRunAt: number
   sessionFile?: string
+  modelError?: string
   releaseRunLock: () => void
   releaseRunSlot: () => void
+}
+
+interface PendingRunResult {
+  lastRunAt: number
+  lastStatus: ScheduledTaskStatus
+  lastError?: string
+  lastSessionFile?: string
+  releaseRunLock: () => void
 }
 
 interface TaskRunOwner {
@@ -269,15 +281,16 @@ export class ScheduledTaskService extends EventEmitter {
   private readonly settings: SettingsStore
   private readonly supervisor: SessionSupervisor
   private readonly customInstructions: (cwd: string) => string | undefined
-  private tasks: ScheduledTask[]
+  private tasks: ScheduledTask[] = []
   private timer: ReturnType<typeof setTimeout> | undefined
-  private readonly activeTasks = new Set<string>()
+  private readonly activeTasks = new Map<string, ActiveRun>()
   private readonly activeRuns = new Map<string, ActiveRun>()
   private disposed = false
   private schedulingStopped = false
   private waitingForRunSlot = false
   private refreshTimer: ReturnType<typeof setTimeout> | undefined
-  private pendingTasks: ScheduledTask[] | undefined
+  private readonly pendingRunResults = new Map<string, PendingRunResult>()
+  private tasksAfterFailedLaunch: ScheduledTask[] | undefined
 
   constructor(options: ScheduledTaskServiceOptions) {
     super()
@@ -285,7 +298,7 @@ export class ScheduledTaskService extends EventEmitter {
     this.settings = options.settings
     this.supervisor = options.supervisor
     this.customInstructions = options.customInstructions
-    this.tasks = this.read()
+    this.refreshFromDisk(true)
     this.recoverInterruptedRuns()
     this.supervisor.on('event', this.onRuntimeEvent)
     this.supervisor.on('rekey', this.onRuntimeRekey)
@@ -383,14 +396,13 @@ export class ScheduledTaskService extends EventEmitter {
    * finished here when the supervisor reports the run is over.
    */
   async stopRun(id: string): Promise<boolean> {
-    const entry = [...this.activeRuns.entries()].find(([, active]) => active.taskId === id)
-    if (!entry) return false
-    const [sessionKey, active] = entry
-    await this.supervisor.stop(sessionKey).catch(() => {})
+    const active = this.activeTasks.get(id)
+    if (!active) return false
+    await this.supervisor.stop(active.sessionFile ?? active.draftKey).catch(() => {})
     // The settle event normally finishes the task; this covers the case where
     // there is nothing left to settle.
-    if (this.activeRuns.get(sessionKey) === active && !this.supervisor.sessionInfo(sessionKey)?.running) {
-      this.finish(id, 'aborted', undefined, active.sessionFile)
+    if (this.activeTasks.get(id) === active && !this.supervisor.sessionInfo(active.sessionFile ?? active.draftKey)?.running) {
+      this.finish(active, 'aborted')
     }
     return true
   }
@@ -416,6 +428,8 @@ export class ScheduledTaskService extends EventEmitter {
     if (this.disposed) return
     this.disposed = true
     this.stopScheduling()
+    this.flushPendingRunResults()
+    this.releasePendingRunResults()
     this.supervisor.off('event', this.onRuntimeEvent)
     this.supervisor.off('rekey', this.onRuntimeRekey)
     this.supervisor.off('status', this.onRuntimeStatus)
@@ -428,21 +442,27 @@ export class ScheduledTaskService extends EventEmitter {
   }
 
   private readonly onRuntimeEvent = (payload: { ownerId: string; event: PiEvent }): void => {
-    if (payload.event.type !== 'agent_settled') return
-    const active = this.activeRuns.get(payload.ownerId)
+    const { ownerId, event } = payload
+    if (event.type !== 'agent_end' && event.type !== 'agent_settled') return
+    const active = this.activeRuns.get(ownerId)
     if (!active) return
-    const crashed = payload.event.crashed === true
-    const status: ScheduledTaskStatus = crashed
-      ? 'error'
-      : payload.event.aborted === true
-        ? 'aborted'
-        : 'completed'
-    this.finish(
-      active.taskId,
-      status,
-      crashed ? 'Pi exited unexpectedly before this task finished.' : undefined,
-      active.sessionFile
-    )
+    if (event.type === 'agent_end') {
+      // Pi can still retry. Retain the latest attempt's result until settlement.
+      const assistant = lastRunAssistantMessage(event.messages)
+      if (assistant) {
+        active.modelError = assistant.stopReason === 'error'
+          ? (typeof assistant.errorMessage === 'string' && assistant.errorMessage.trim()) || 'Pi could not complete this task.'
+          : undefined
+      }
+      return
+    }
+
+    const aborted = event.aborted === true
+    const error = event.crashed === true
+      ? 'Pi exited unexpectedly before this task finished.'
+      : aborted ? undefined : active.modelError
+    const status: ScheduledTaskStatus = error ? 'error' : aborted ? 'aborted' : 'completed'
+    this.finish(active, status, error)
   }
 
   private readonly onRuntimeRekey = (change: RuntimeRekey): void => {
@@ -459,92 +479,101 @@ export class ScheduledTaskService extends EventEmitter {
     // task reserved until its settle event or the supervisor confirms exit.
     if (this.supervisor.sessionInfo(payload.ownerId)?.running) return
     const active = this.activeRuns.get(payload.ownerId)
-    if (active) this.finish(active.taskId, 'error', payload.status.error ?? 'Pi could not start.', active.sessionFile)
+    if (active) this.finish(active, 'error', payload.status.error ?? 'Pi could not start.')
   }
 
-  /**
-   * Preserve an unreadable scheduled-task file and start clean.
-   *
-   * The old behaviour pinned the fingerprint of the bad version so it was not
-   * re-read, which left the page empty for good: every write still started from
-   * a list that could never load, so a new task could not be created either and
-   * the only clue was a console line. Moving the file aside keeps every byte
-   * under a name the reader can find, and lets the service carry on.
-   *
-   * Only a content error is quarantined. An I/O error (the file being rewritten
-   * by another instance, a locked handle) keeps the old pinning: the bytes may
-   * still be fine, so nothing is moved on a guess.
-   */
-  private quarantineInvalidFile(error: unknown): boolean {
-    if (!(error instanceof InvalidScheduledTaskFileError)) return false
-    const extension = path.extname(this.file)
-    const stem = path.basename(this.file, extension)
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const target = path.join(path.dirname(this.file), `${stem}.corrupt-${stamp}${extension}`)
-    try {
-      renameSync(this.file, target)
-      this.fileFingerprint = 'missing'
-      this.pendingTasks = undefined
-      const hadTasks = this.tasks.length > 0
-      // The file is gone, so the list it described is gone with it — keeping the
-      // old records in memory would answer `list()` with tasks nothing backs.
-      this.tasks = []
-      console.error(
-        `[pi-desktop] the scheduled task file could not be read (${error.message}) and was moved to ${target}`
-      )
-      return hadTasks
-    } catch (moveError) {
-      // Nothing could be preserved: keep the bad version pinned so the failure
-      // is not retried and re-logged on every poll.
-      this.fileFingerprint = undefined
-      console.error('[pi-desktop] could not set the invalid scheduled task file aside:', moveError)
-      return false
-    }
+  private readTaskSnapshot(fingerprint: string): ScheduledTask[] {
+    const tasks = this.readForMutation()
+    this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
+      ? fingerprint
+      : undefined
+    return tasks
   }
 
-  private read(): ScheduledTask[] {
-    let fingerprint: string | undefined
+  private recoverInvalidTaskFile(): ScheduledTask[] | undefined {
     try {
-      fingerprint = scheduledTaskFileFingerprint(this.file)
-      if (fingerprint === 'missing') {
-        this.fileFingerprint = fingerprint
-        return []
-      }
-      const tasks = parseStoredTasks(readFileSync(this.file, 'utf8'))
-      this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
-        ? fingerprint
-        : undefined
-      return tasks
+      // An unlocked read can see a corrupt version that a peer has since
+      // replaced. Verify the current file under the same lock used for writes.
+      return this.withDataLock(() => {
+        const fingerprint = scheduledTaskFileFingerprint(this.file)
+        try {
+          return this.readTaskSnapshot(fingerprint)
+        } catch (error) {
+          if (!(error instanceof InvalidScheduledTaskFileError)) throw error
+          if (scheduledTaskFileFingerprint(this.file) !== fingerprint) return undefined
+
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+          const target = path.join(path.dirname(this.file), `scheduled-tasks.corrupt-${stamp}-${randomUUID()}.json`)
+          renameSync(this.file, target)
+          this.fileFingerprint = 'missing'
+          this.tasksAfterFailedLaunch = undefined
+          this.releasePendingRunResults()
+          console.error(`[pi-desktop] the scheduled task file could not be read (${error.message}) and was moved to ${target}`)
+          return []
+        }
+      })
     } catch (error) {
-      this.quarantineInvalidFile(error)
-      console.error('[pi-desktop] could not read scheduled tasks:', error)
-      return []
+      // Leave the fingerprint uncommitted so the next refresh can try again.
+      if ((error as NodeJS.ErrnoException).code !== 'ELOCKED') {
+        console.error('[pi-desktop] could not recover the scheduled task file:', error)
+      }
+      return undefined
     }
+  }
+
+  private readStoredTasks(): ScheduledTask[] | undefined {
+    if (scheduledTaskFileFingerprint(this.file) === 'missing') return undefined
+    return parseStoredTasks(readFileSync(this.file, 'utf8'))
   }
 
   private readForMutation(): ScheduledTask[] {
-    if (scheduledTaskFileFingerprint(this.file) === 'missing') {
-      return this.pendingTasks ? this.cloneTasks(this.pendingTasks) : []
+    const tasks = this.readStoredTasks()
+    if (tasks) {
+      this.tasksAfterFailedLaunch = undefined
+      return this.applyPendingRunResults(tasks)
     }
-    const tasks = parseStoredTasks(readFileSync(this.file, 'utf8'))
-    if (!this.pendingTasks) return tasks
+    // A launch that never got to write can be retried after storage recovers.
+    return this.tasksAfterFailedLaunch ? this.cloneTasks(this.tasksAfterFailedLaunch) : []
+  }
 
-    const tasksById = new Map(tasks.map((task) => [task.id, task]))
-    this.pendingTasks = this.pendingTasks.filter((task) =>
-      tasksById.get(task.id)?.lastRunAt === task.lastRunAt
-    )
-    const pendingById = new Map(this.pendingTasks.map((task) => [task.id, task]))
-    return tasks.map((task) => {
-      const pending = pendingById.get(task.id)
-      return pending && task.lastStatus === 'running'
-        ? {
-            ...task,
-            lastStatus: pending.lastStatus,
-            lastError: pending.lastError,
-            lastSessionFile: pending.lastSessionFile
-          }
-        : task
+  private applyPendingRunResults(tasks: ScheduledTask[]): ScheduledTask[] {
+    if (!this.pendingRunResults.size) return tasks
+    let changed = false
+    const next = tasks.map((task) => {
+      const result = this.pendingRunResults.get(task.id)
+      if (!result || task.lastStatus !== 'running' || task.lastRunAt !== result.lastRunAt) return task
+      changed = true
+      return {
+        ...task,
+        lastStatus: result.lastStatus,
+        lastError: result.lastError,
+        lastSessionFile: result.lastSessionFile ?? task.lastSessionFile
+      }
     })
+    return changed ? next : tasks
+  }
+
+  private releasePendingRunResults(): void {
+    for (const result of this.pendingRunResults.values()) result.releaseRunLock()
+    this.pendingRunResults.clear()
+  }
+
+  private flushPendingRunResults(): boolean {
+    if (!this.pendingRunResults.size) return false
+    try {
+      return this.withDataLock(() => {
+        const stored = this.readStoredTasks() ?? []
+        const next = this.applyPendingRunResults(stored)
+        if (next !== stored) this.write(next)
+        else this.releasePendingRunResults()
+        const changed = JSON.stringify(next) !== JSON.stringify(this.tasks)
+        this.tasks = next
+        return changed
+      })
+    } catch (error) {
+      console.error('[pi-desktop] could not persist scheduled task status:', error)
+      return false
+    }
   }
 
   private write(tasks: ScheduledTask[]): void {
@@ -562,7 +591,8 @@ export class ScheduledTaskService extends EventEmitter {
       } catch {
         this.fileFingerprint = undefined
       }
-      this.pendingTasks = undefined
+      this.tasksAfterFailedLaunch = undefined
+      this.releasePendingRunResults()
     } catch (error) {
       try {
         unlinkSync(temp)
@@ -592,25 +622,22 @@ export class ScheduledTaskService extends EventEmitter {
     this.publish()
   }
 
-  private refreshFromDisk(): boolean {
+  private refreshFromDisk(initial = false): boolean {
     let next: ScheduledTask[]
-    let fingerprint: string | undefined
     try {
-      fingerprint = scheduledTaskFileFingerprint(this.file)
+      const fingerprint = scheduledTaskFileFingerprint(this.file)
       if (fingerprint === this.fileFingerprint) return false
-      next = this.readForMutation()
-      this.fileFingerprint = fingerprint === scheduledTaskFileFingerprint(this.file)
-        ? fingerprint
-        : undefined
+      next = this.readTaskSnapshot(fingerprint)
     } catch (error) {
-      if (this.quarantineInvalidFile(error)) {
-        // The page has to stop showing records the file no longer holds.
-        this.emit('changed', this.cloneTasks(this.tasks))
-        this.scheduleNext()
+      if (!(error instanceof InvalidScheduledTaskFileError)) {
+        if (initial) console.error('[pi-desktop] could not read scheduled tasks:', error)
+        return false
       }
-      return false
+      const recovered = this.recoverInvalidTaskFile()
+      if (recovered === undefined) return false
+      next = recovered
     }
-    const changed = next !== this.tasks && JSON.stringify(next) !== JSON.stringify(this.tasks)
+    const changed = !initial && next !== this.tasks && JSON.stringify(next) !== JSON.stringify(this.tasks)
     this.tasks = next
     if (changed) {
       this.emit('changed', this.cloneTasks(next))
@@ -623,8 +650,9 @@ export class ScheduledTaskService extends EventEmitter {
     if (this.schedulingStopped) return
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined
+      const resultsChanged = this.flushPendingRunResults()
       this.refreshFromDisk()
-      if (this.recoverInterruptedRuns()) this.emit('changed', this.cloneTasks(this.tasks))
+      if (this.recoverInterruptedRuns() || resultsChanged) this.emit('changed', this.cloneTasks(this.tasks))
       this.skipOverlappedOccurrences()
       this.waitingForRunSlot = false
       this.scheduleNext()
@@ -877,6 +905,10 @@ export class ScheduledTaskService extends EventEmitter {
   }
 
   private async launch(task: ScheduledTask, manual: boolean): Promise<void> {
+    if (this.pendingRunResults.has(task.id)) {
+      if (manual) throw new Error('The previous run result is still being saved. Try again shortly.')
+      return
+    }
     if (this.activeTasks.has(task.id)) {
       if (!manual && task.schedule.kind !== 'once') {
         this.skipOverlappedOccurrences()
@@ -977,7 +1009,7 @@ export class ScheduledTaskService extends EventEmitter {
         this.tasks = this.tasks.map((entry) => entry.id === task.id
           ? { ...entry, lastStatus: 'error', lastError: message }
           : entry)
-        this.pendingTasks = this.cloneTasks(this.tasks)
+        this.tasksAfterFailedLaunch = this.cloneTasks(this.tasks)
         this.publish()
       }
       throw error
@@ -991,12 +1023,13 @@ export class ScheduledTaskService extends EventEmitter {
       return
     }
 
-    this.activeTasks.add(currentTask.id)
-    this.activeRuns.set(sessionKey, { taskId: currentTask.id, releaseRunLock, releaseRunSlot })
+    const active: ActiveRun = { taskId: currentTask.id, draftKey: sessionKey, lastRunAt: now, releaseRunLock, releaseRunSlot }
+    this.activeTasks.set(currentTask.id, active)
+    this.activeRuns.set(sessionKey, active)
     this.publish()
     const workspace = this.settings.get().workspaces.find((entry) => entry.id === currentTask!.workspaceId)
     if (!workspace) {
-      this.finish(currentTask.id, 'error', 'The selected project is no longer available.')
+      this.finish(active, 'error', 'The selected project is no longer available.')
       return
     }
 
@@ -1016,6 +1049,7 @@ export class ScheduledTaskService extends EventEmitter {
         trace: { sourceAction: 'scheduled-task', uiSessionId: sessionKey }
       })
       if (!ensured.ok) throw new Error(ensured.error ?? 'Pi did not start.')
+      if (this.activeTasks.get(active.taskId) !== active) return
       const piPid = this.supervisor.sessionInfo(sessionKey)?.pid
       if (piPid !== undefined) {
         try {
@@ -1024,7 +1058,7 @@ export class ScheduledTaskService extends EventEmitter {
           this.writeRunLockOwner(runSlot.ownerFile, owner)
         } catch (error) {
           await this.supervisor.stop(sessionKey).catch(() => {})
-          this.finish(currentTask.id, 'error', 'Could not record the Pi process for this scheduled task.')
+          this.finish(active, 'error', 'Could not record the Pi process for this scheduled task.')
           throw error
         }
       }
@@ -1036,6 +1070,7 @@ export class ScheduledTaskService extends EventEmitter {
       } catch {
         // The prompt is more important than the optional conversation title.
       }
+      if (this.activeTasks.get(active.taskId) !== active) return
       const result = await this.supervisor.request<{ disposition?: string; cancelled?: boolean }>(
         sessionKey,
         'prompt',
@@ -1044,78 +1079,47 @@ export class ScheduledTaskService extends EventEmitter {
         { sourceAction: manual ? 'scheduled-task-manual' : 'scheduled-task', uiSessionId: sessionKey }
       )
       if (result?.disposition === 'handled') {
-        const active = this.activeRuns.get(sessionKey)
-        if (active) {
-          this.finish(
-            currentTask.id,
-            result.cancelled === true ? 'aborted' : 'completed',
-            undefined,
-            active.sessionFile
-          )
-        }
+        this.finish(active, result.cancelled === true ? 'aborted' : 'completed')
       }
     } catch (error) {
       // A timed-out RPC response does not prove that Pi stopped executing the
       // prompt. Keep the run reserved until its settle event arrives so a
       // retry cannot overlap the still-running agent.
-      if (!this.supervisor.sessionInfo(sessionKey)?.running && this.activeTasks.has(currentTask.id)) {
-        this.finish(currentTask.id, 'error', error instanceof Error ? error.message : String(error))
+      if (this.activeTasks.get(active.taskId) === active) {
+        if (!this.supervisor.sessionInfo(active.sessionFile ?? active.draftKey)?.running) {
+          this.finish(active, 'error', error instanceof Error ? error.message : String(error))
+        }
+        if (!manual) console.error('[pi-desktop] scheduled task failed:', error)
       }
-      throw error
+      // The schedule was already advanced before this run started. Only
+      // pre-launch failures should reach the timer's retry backoff.
+      if (manual) throw error
     }
   }
 
   private finish(
-    taskId: string,
+    active: ActiveRun,
     status: ScheduledTaskStatus,
-    error?: string,
-    sessionFile?: string
+    error?: string
   ): void {
-    if (!this.activeTasks.has(taskId)) return
-    error = limitScheduledTaskError(error)
+    const { taskId, sessionFile } = active
+    // An RPC response can arrive after this run settled and the task started again.
+    if (this.activeTasks.get(taskId) !== active) return
     this.activeTasks.delete(taskId)
-    let releaseRunLock: (() => void) | undefined
-    let releaseRunSlot: (() => void) | undefined
-    for (const [key, active] of this.activeRuns) {
-      if (active.taskId === taskId) {
-        releaseRunLock = active.releaseRunLock
-        releaseRunSlot = active.releaseRunSlot
-        this.activeRuns.delete(key)
-      }
-    }
-    let next: ScheduledTask[] | undefined
-    try {
-      this.withDataLock(() => {
-        const current = this.readForMutation()
-        next = current.map((task) => task.id === taskId
-          ? {
-              ...task,
-              lastStatus: status,
-              lastError: error,
-              lastSessionFile: sessionFile ?? task.lastSessionFile
-            }
-          : task)
-        if (JSON.stringify(next) !== JSON.stringify(current)) this.write(next)
-        this.tasks = next
-      })
-    } catch (persistError) {
-      // A disk failure must not interrupt the supervisor's event delivery.
-      console.error('[pi-desktop] could not persist scheduled task status:', persistError)
-      next ??= this.tasks.map((task) => task.id === taskId
-        ? {
-            ...task,
-            lastStatus: status,
-            lastError: error,
-            lastSessionFile: sessionFile ?? task.lastSessionFile
-          }
-        : task)
-      this.tasks = next
-      this.pendingTasks = this.cloneTasks(next)
-    } finally {
-      releaseRunLock?.()
-      releaseRunSlot?.()
-      this.waitingForRunSlot = false
-    }
+    this.activeRuns.delete(sessionFile ?? active.draftKey)
+    // Keep the task lease until its outcome is durable. Peers otherwise read
+    // the old running state and recover it as an interrupted run.
+    this.pendingRunResults.set(taskId, {
+      lastRunAt: active.lastRunAt,
+      lastStatus: status,
+      lastError: limitScheduledTaskError(error),
+      lastSessionFile: sessionFile,
+      releaseRunLock: active.releaseRunLock
+    })
+    active.releaseRunSlot()
+    this.waitingForRunSlot = false
+    this.tasks = this.applyPendingRunResults(this.tasks)
+    this.flushPendingRunResults()
     this.emit('changed', this.cloneTasks(this.tasks))
     this.scheduleNext()
   }

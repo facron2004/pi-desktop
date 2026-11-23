@@ -1,17 +1,25 @@
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdirSync, rmSync } from 'node:fs'
+import path from 'node:path'
 import {
   GOAL_STATUS_KEY,
   SUBAGENT_EDITOR_CANCEL_STATUS_KEY,
   type ExtensionUiResponse,
+  type AppSettings,
+  type GitBranches,
+  type GitWorktreeResult,
   type PiEvent,
   type RpcTraceHint,
   type RuntimeEnsureOptions,
   type RuntimeQueueEvent,
   type RuntimeStatus,
   type SessionMeta,
-  type SessionHydrationResult
+  type SessionHydrationResult,
+  type SettingsPatchBaseline,
+  type Workspace
 } from '@shared/types'
+import { SettingsStore } from '../src/main/settings'
 import { lastAssistantText } from '../src/renderer/src/lib/thread'
 import {
   listPendingUiSessions,
@@ -49,6 +57,10 @@ const bridge = {
   },
   settings: { get: async () => ({ workspaces: [] }), patch: async (patch: object) => ({ workspaces: [], ...patch }) },
   workspaces: {
+    add: async (path: string) => {
+      const workspace = { id: path, name: path, path, lastOpenedAt: 0 }
+      return { workspace, settings: { ...useAppStore.getState().settings, workspaces: [workspace] } }
+    },
     remove: async (id?: string, hiddenPath?: string) => {
       const settings = useAppStore.getState().settings
       const workspace = settings.workspaces.find((entry) => entry.id === id)
@@ -63,7 +75,11 @@ const bridge = {
     }
   },
   sessions: { list: async () => [], hydrate: async () => ({ messages: [], historyTruncated: false }), remove: async (_file?: string) => true },
-  git: { status: async () => ({ isRepo: false }) },
+  git: {
+    status: async () => ({ isRepo: false }),
+    branches: async (_expectedRoot?: string): Promise<GitBranches> => ({ detached: false, branches: [], worktrees: [] }),
+    addWorktree: async (_path: string, _branch: string, _create?: boolean, _expectedRoot?: string): Promise<GitWorktreeResult> => ({ ok: false })
+  },
   runtime: {
     ensure: async (options: RuntimeEnsureOptions) => {
       ensureCalls.push(options)
@@ -208,6 +224,73 @@ test('repeated bootstrap processes each runtime event once', async () => {
   assert.equal(useAppStore.getState().items.filter(item => item.kind === 'user').length, 2, 'intentional identical prompts must stay separate')
 })
 
+for (const phase of ['branches', 'create', 'register', 'sessions'] as const) {
+  test(`worktree submission preserves its draft when navigation wins during ${phase}`, { timeout: 5_000 }, async (t) => {
+    const reached = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    const pause = async (stage: typeof phase) => {
+      if (stage !== phase) return
+      reached.resolve()
+      await resume.promise
+    }
+    const source: Workspace = { id: 'source', name: 'Source', path: 'C:/worktree-source', lastOpenedAt: 0 }
+    const target = 'C:/worktree-target'
+    t.mock.method(bridge.git, 'branches', async () => {
+      await pause('branches')
+      return { isRepo: true, current: 'main', detached: false, branches: [], worktrees: [] }
+    })
+    const create = t.mock.method(bridge.git, 'addWorktree', async () => {
+      await pause('create')
+      return { ok: true, path: target }
+    })
+    const add = bridge.workspaces.add
+    const register = t.mock.method(bridge.workspaces, 'add', async (path: string) => {
+      await pause('register')
+      return add(path)
+    })
+    t.mock.method(bridge.sessions, 'list', async () => {
+      if (useAppStore.getState().workspace?.path === target) await pause('sessions')
+      return []
+    })
+
+    await useAppStore.getState().openWorkspace(source)
+    const key = useAppStore.getState().draftId!
+    useAppStore.setState({ git: { isRepo: true, branch: 'main' }, pendingWorktree: true })
+    useAppStore.getState().updateDraft(key, { text: 'Only for the requested worktree' })
+    const draft = useAppStore.getState().drafts[key]
+    const send = useAppStore.getState().submitComposerDraft(key, { draft, text: draft.text, kind: 'steer' })
+
+    await reached.promise
+    await useAppStore.getState().selectSession(session('other-conversation.jsonl'))
+    resume.resolve()
+
+    assert.equal(await send, false)
+    assert.equal(useAppStore.getState().activeSessionFile, 'other-conversation.jsonl')
+    assert.equal(useAppStore.getState().drafts[key]?.text, draft.text)
+    assert.equal(create.mock.callCount(), phase === 'branches' ? 0 : 1)
+    assert.equal(register.mock.callCount(), phase === 'register' || phase === 'sessions' ? 1 : 0)
+    assert.equal(calls.some(({ command }) => command === 'prompt'), false)
+  })
+}
+
+test('worktree submission sends its first prompt to the newly opened checkout', async (t) => {
+  const source: Workspace = { id: 'source', name: 'Source', path: 'C:/worktree-source', lastOpenedAt: 0 }
+  const target = 'C:/worktree-target'
+  const branches = t.mock.method(bridge.git, 'branches', async () => ({
+    isRepo: true, current: 'main', detached: false, branches: [], worktrees: []
+  }))
+  const create = t.mock.method(bridge.git, 'addWorktree', async () => ({ ok: true, path: target }))
+  await useAppStore.getState().openWorkspace(source)
+  useAppStore.setState({ git: { isRepo: true, branch: 'main' }, pendingWorktree: true })
+
+  assert.equal(await useAppStore.getState().send('Start the worktree conversation', []), true)
+  assert.deepEqual(branches.mock.calls[0]?.arguments, [source.path])
+  assert.deepEqual(create.mock.calls[0]?.arguments, ['', 'main-wt', true, source.path])
+  assert.equal(useAppStore.getState().workspace?.path, target)
+  assert.equal(ensureCalls.at(-1)?.cwd, target)
+  assert.equal(calls.find(({ command }) => command === 'prompt')?.key, useAppStore.getState().draftId)
+})
+
 test('a send stays with its draft when the view changes during startup', async () => {
   await useAppStore.getState().newChat()
   const owner = useAppStore.getState().draftId!
@@ -224,6 +307,61 @@ test('a send stays with its draft when the view changes during startup', async (
   assert.equal(useAppStore.getState().draftId, viewing)
   assert.equal(useAppStore.getState().run.phase, 'idle')
   assert.equal(useAppStore.getState().threads['A.jsonl'].run.phase, 'working')
+})
+
+test('composer acceptance clears only the submitted revision across a session rekey', async () => {
+  for (const editWhileWaiting of [false, true]) {
+    const response = Promise.withResolvers<unknown>()
+    const promptStarted = Promise.withResolvers<void>()
+    bridge.runtime.request = async (command, ...args) => {
+      if (command !== 'prompt') return originalRequest(command, ...args)
+      promptStarted.resolve()
+      return response.promise
+    }
+    await useAppStore.getState().newChat()
+    const key = useAppStore.getState().draftId!
+    const file = `composer-sent-${editWhileWaiting}.jsonl`
+    useAppStore.getState().updateDraft(key, { text: 'Submitted draft' })
+    const draft = useAppStore.getState().drafts[key]
+    const input = { draft, text: draft.text, kind: 'steer' as const }
+    const pending = useAppStore.getState().submitComposerDraft(key, input)
+    await promptStarted.promise
+    rekey({ from: key, to: file })
+    assert.equal(await useAppStore.getState().submitComposerDraft(file, input), false, 'a second click cannot resend')
+    if (editWhileWaiting) useAppStore.getState().updateDraft(file, { text: 'New draft started while waiting' })
+    await useAppStore.getState().newChat()
+    response.resolve({ disposition: 'started' })
+    assert.equal(await pending, true)
+    const after = useAppStore.getState().drafts[file]
+    assert.equal(after?.text, editWhileWaiting ? 'New draft started while waiting' : '')
+    if (!editWhileWaiting) assert.deepEqual(after?.history, [draft.text])
+  }
+})
+
+test('cancelling a queued composer submission restores a single copy', async () => {
+  const response = Promise.withResolvers<unknown>()
+  const promptStarted = Promise.withResolvers<void>()
+  await useAppStore.getState().selectSession(session('cancel-composer.jsonl'))
+  const key = useAppStore.getState().activeSessionFile!
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'prompt') {
+      promptStarted.resolve()
+      return response.promise
+    }
+    if (command === 'clear_queue') {
+      response.resolve({ disposition: 'handled', cancelled: true })
+      return { steering: ['Still in the composer'], followUp: ['Earlier queued message'] }
+    }
+    return originalRequest(command, ...args)
+  }
+  useAppStore.getState().updateDraft(key, { text: 'Still in the composer' })
+  const draft = useAppStore.getState().drafts[key]
+  const pending = useAppStore.getState().submitComposerDraft(key, { draft, text: draft.text, kind: 'steer' })
+  await promptStarted.promise
+  await useAppStore.getState().clearQueue(true)
+
+  assert.equal(await pending, false)
+  assert.equal(useAppStore.getState().drafts[key]?.text, 'Still in the composer\nEarlier queued message')
 })
 
 test('a late prompt response updates its own thread', async () => {
@@ -443,6 +581,153 @@ test('a fork finishing in the background cannot rename the chat on screen', asyn
   assert.ok(useAppStore.getState().threads['fork.jsonl'])
   assert.equal(calls.find(({ command }) => command === 'set_session_name')?.key, 'fork.jsonl')
   assert.equal(useAppStore.getState().composerInsert, undefined)
+})
+
+for (const operation of ['fork', 'clone'] as const) {
+  test(`${operation} restores the new branch transcript after context compaction`, async () => {
+    const source = `${operation}-compacted-source.jsonl`
+    const target = `${operation}-compacted-target.jsonl`
+    const history: SessionHydrationResult['messages'] = [
+      { role: 'user', content: 'Older original prompt', timestamp: 1 },
+      { role: 'assistant', content: 'Older original answer', timestamp: 2 },
+      { role: 'user', content: 'Prompt at the fork point', timestamp: 3 }
+    ]
+    let finishTargetRead!: (value: SessionHydrationResult) => void
+    const startedTargetRead = Promise.withResolvers<void>()
+    bridge.sessions.hydrate = async (file) => {
+      if (file === source) return { messages: history, historyTruncated: false }
+      assert.equal(file, target)
+      startedTargetRead.resolve()
+      return new Promise((resolve) => { finishTargetRead = resolve })
+    }
+    await useAppStore.getState().selectSession(session(source))
+    const parent = useAppStore.getState().items
+    bridge.runtime.request = async (command, ...args) => {
+      if (command === operation) {
+        rekey({ from: source, to: target })
+        return { sessionFile: target, cancelled: false, text: 'Prompt at the fork point' }
+      }
+      if (command === 'get_messages') {
+        return { messages: [{ role: 'compactionSummary', summary: 'Only model context' }] }
+      }
+      return originalRequest(command, ...args)
+    }
+
+    const open = operation === 'fork'
+      ? useAppStore.getState().forkFrom('fork-point')
+      : useAppStore.getState().duplicateSession()
+    await Promise.race([startedTargetRead.promise, open])
+    assert.equal(typeof finishTargetRead, 'function', 'the new JSONL supplies the transcript')
+    assert.equal(useAppStore.getState().items.length, 0, 'source items must not appear in the new branch')
+    emit({
+      ownerId: target,
+      event: { type: 'message_start', message: { role: 'user', content: 'Live prompt', timestamp: 4 } }
+    })
+    const saved = operation === 'fork' ? history.slice(0, 2) : history
+    finishTargetRead({ messages: saved, historyTruncated: true })
+    await open
+
+    const state = useAppStore.getState()
+    assert.equal(state.activeSessionFile, target)
+    assert.equal(state.historyTruncated, true)
+    assert.equal(lastAssistantText(state.items), 'Older original answer')
+    assert.deepEqual(state.items.flatMap(item => item.kind === 'user' ? [item.text] : []), [
+      'Older original prompt',
+      ...(operation === 'clone' ? ['Prompt at the fork point'] : []),
+      'Live prompt'
+    ])
+    assert.deepEqual(state.threads[source]?.items, parent)
+  })
+}
+
+test('an unpersisted fork restores shell output from before the first prompt', async () => {
+  const source = 'fork-shell-source.jsonl'
+  const target = 'fork-shell-target.jsonl'
+  await useAppStore.getState().selectSession(session(source))
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'fork') {
+      rekey({ from: source, to: target })
+      return { sessionFile: target, cancelled: false, text: 'First prompt' }
+    }
+    if (command === 'get_messages' && args[3] === target) {
+      return { messages: [{ role: 'bashExecution', command: 'echo fixture', output: 'fixture', timestamp: 1 }] }
+    }
+    return originalRequest(command, ...args)
+  }
+
+  await useAppStore.getState().forkFrom('first-prompt')
+  const state = useAppStore.getState()
+  assert.equal(state.activeSessionFile, target)
+  assert.equal(state.items.length, 1)
+  assert.equal(state.items[0]?.kind === 'bash' && state.items[0].output, 'fixture')
+  assert.equal(state.drafts[target]?.text, 'First prompt')
+})
+
+test('editing a repeated live prompt uses the matching saved entry instead of an older branch', async () => {
+  const ownerId = 'edit-repeated-prompt.jsonl'
+  await useAppStore.getState().selectSession(session(ownerId))
+  emit({ ownerId, event: {
+    type: 'message_start', message: { role: 'user', content: 'Same prompt', timestamp: 200 }
+  } })
+  emit({ ownerId, event: { type: 'agent_settled', aborted: false } })
+  const prompt = useAppStore.getState().items.find(item => item.kind === 'user')
+  assert.ok(prompt)
+  let ambiguous = true
+  bridge.sessions.hydrate = async () => ({
+    historyTruncated: false,
+    messages: [
+      { role: 'user', content: 'Same prompt', timestamp: 100, entryId: 'older' },
+      { role: 'user', content: 'Same prompt', timestamp: 200, entryId: 'chosen' },
+      ...(ambiguous ? [{ role: 'user', content: 'Same prompt', timestamp: 200, entryId: 'ambiguous' }] : [])
+    ]
+  })
+  let rewind: unknown
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'get_commands') return { commands: [{ name: 'desktop-rewind', source: 'extension' }] }
+    if (command === 'prompt') rewind = args[0]?.message
+    return originalRequest(command, ...args)
+  }
+
+  await useAppStore.getState().editMessageFrom(prompt)
+  assert.equal(rewind, undefined, 'identical text and timestamps are ambiguous')
+  ambiguous = false
+  await useAppStore.getState().editMessageFrom(prompt)
+  assert.equal(rewind, '/desktop-rewind chosen')
+  assert.equal(useAppStore.getState().drafts[ownerId]?.text, 'Same prompt')
+})
+
+test('a rejected rewind keeps the transcript and composer even if Pi acknowledges the command', async () => {
+  const ownerId = 'edit-stale-branch.jsonl'
+  bridge.sessions.hydrate = async () => ({
+    messages: [{ role: 'user', content: 'Old branch prompt', timestamp: 100, entryId: 'old' }],
+    historyTruncated: false
+  })
+  await useAppStore.getState().selectSession(session(ownerId))
+  useAppStore.getState().insertIntoComposer('Current draft', 'replace')
+  const prompt = useAppStore.getState().items.find(item => item.kind === 'user')
+  assert.ok(prompt)
+
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'get_commands') return { commands: [{ name: 'desktop-rewind', source: 'extension' }] }
+    if (command === 'prompt') {
+      assert.equal(args[0]?.message, '/desktop-rewind old')
+      emit({ ownerId, event: {
+        type: 'extension_error',
+        extensionPath: 'command:desktop-rewind',
+        event: 'command',
+        error: 'This message is no longer on the active branch'
+      } })
+      return { disposition: 'handled' }
+    }
+    return originalRequest(command, ...args)
+  }
+
+  await useAppStore.getState().editMessageFrom(prompt)
+  const state = useAppStore.getState()
+  assert.equal(state.drafts[ownerId]?.text, 'Current draft')
+  assert.ok(state.items.some(item => item.id === prompt.id))
+  assert.equal(state.error, 'This message is no longer on the active branch')
+  assert.ok(!calls.some(({ command }) => command === 'get_messages'))
 })
 
 test('an explicitly stopped worker settles without sending reads to a dead runtime', async () => {
@@ -665,6 +950,31 @@ test('events for unvisited background sessions establish thread shell with runni
     undefined,
     'opening the conversation clears the persisted mark'
   )
+})
+
+test('unpinning from an old view preserves pins from a different window', async (t) => {
+  const directory = 'C:/tmp'
+  const fileName = `settings-pin-view-${process.pid}.json`
+  mkdirSync(directory, { recursive: true })
+  const local = new SettingsStore(fileName)
+  try {
+    const first = 'C:/sessions/first.jsonl'
+    const other = 'C:/sessions/other.jsonl'
+    useAppStore.setState({ settings: local.patch({ pinnedSessions: [first] }) })
+    new SettingsStore(fileName).patch({ pinnedSessions: [first, other] })
+    assert.deepEqual(local.get().pinnedSessions, [first, other])
+    t.mock.method(bridge.settings, 'patch', async (patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline) =>
+      local.patch(patch, baseline)
+    )
+
+    await useAppStore.getState().togglePin(first)
+
+    assert.deepEqual(useAppStore.getState().settings.pinnedSessions, [other])
+    assert.deepEqual(new SettingsStore(fileName).get().pinnedSessions, [other])
+    useAppStore.getState().clearToast()
+  } finally {
+    rmSync(path.join(directory, fileName), { force: true })
+  }
 })
 
 test('deleted sessions are not resurrected by late background events', async () => {
@@ -1156,7 +1466,7 @@ test('a native notification reply continues its own conversation in the backgrou
   assert.equal(useAppStore.getState().activeSessionFile, background.file)
 })
 
-test('fork rekey clones non-draft threads with a fresh clientKey while keeping the parent intact', async () => {
+test('fork rekey creates a fresh transcript while keeping the parent intact', async () => {
   await useAppStore.getState().selectSession(session('fork-parent.jsonl'))
   emit({ ownerId: 'fork-parent.jsonl', event: { type: 'message_start', message: { role: 'user', content: [{ type: 'text', text: 'parent msg' }], timestamp: 1 } } })
   const parentClientKey = useAppStore.getState().clientKey
@@ -1169,7 +1479,9 @@ test('fork rekey clones non-draft threads with a fresh clientKey while keeping t
   assert.equal(after.threads['fork-parent.jsonl'].clientKey, parentClientKey)
 
   assert.ok(after.threads['fork-child.jsonl'])
-  assert.equal(after.threads['fork-child.jsonl'].items.length, 1)
+  assert.deepEqual(after.threads['fork-child.jsonl'].items, [])
+  assert.deepEqual(after.items, [])
+  assert.equal(after.hydratingSessionFile, 'fork-child.jsonl')
   assert.notEqual(after.threads['fork-child.jsonl'].clientKey, parentClientKey)
   assert.equal(after.activeSessionFile, 'fork-child.jsonl')
 })
@@ -1234,6 +1546,50 @@ test('hydrateSession deduplicates concurrent loads and preserves live prompt ite
   assert.equal(items[1]?.kind, 'assistant')
   assert.equal(lastAssistantText([items[1]]), 'historical answer')
   assert.equal(items[2]?.kind === 'user' ? items[2].text : '', 'live tail')
+})
+
+test('manual context compaction preserves the transcript and records the completed compaction', async () => {
+  const ownerId = 'manual-compaction.jsonl'
+  const history: SessionHydrationResult = {
+    messages: [
+      { role: 'user', content: 'Original prompt', timestamp: 1 },
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'old-read', name: 'read', arguments: { path: 'notes.md' } }], timestamp: 2 },
+      { role: 'toolResult', toolCallId: 'old-read', toolName: 'read', content: 'Original tool output', timestamp: 3 },
+      { role: 'assistant', content: 'Original answer', timestamp: 4 },
+      { role: 'user', content: 'Recent prompt', timestamp: 5 }
+    ],
+    historyTruncated: false
+  }
+  bridge.sessions.hydrate = async () => history
+  await useAppStore.getState().selectSession(session(ownerId))
+  const before = useAppStore.getState().items
+  assert.ok(before.some(item => item.kind === 'tool' && item.result === 'Original tool output'))
+
+  const result = { summary: 'Compressed context', tokensBefore: 6000, estimatedTokensAfter: 1200 }
+  let compacted = false
+  bridge.runtime.request = async (command, ...args) => {
+    if (command === 'compact') {
+      compacted = true
+      emit({ ownerId, event: { type: 'compaction_start', reason: 'manual' } })
+      emit({ ownerId, event: { type: 'compaction_end', reason: 'manual', aborted: false, result } })
+      return result
+    }
+    if (command === 'get_messages') {
+      return { messages: [{ role: 'compactionSummary', summary: result.summary }, history.messages.at(-1)] }
+    }
+    if (command === 'get_session_stats' && compacted) {
+      return { contextUsage: { tokens: null, contextWindow: 100_000, percent: null } }
+    }
+    return originalRequest(command, ...args)
+  }
+
+  assert.equal(await useAppStore.getState().compact(), true)
+  const state = useAppStore.getState()
+  assert.equal(compacted, true)
+  assert.equal(state.run.compaction, undefined)
+  assert.deepEqual(state.items.slice(0, before.length), before)
+  assert.ok(state.items.some(item => item.kind === 'notice' && item.text === 'Context compacted (6000 → ~1200 tokens)'))
+  assert.equal(state.stats?.contextUsage?.contextWindow, 100_000)
 })
 
 test('opening a cold conversation shows the saved mode and goal before Pi starts', async () => {

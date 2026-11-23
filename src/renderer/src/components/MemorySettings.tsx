@@ -32,6 +32,12 @@ function formatMemoryDate(timestamp: number, language: string): string {
   })
 }
 
+/** One line of the memory, short enough to read inside a confirmation. */
+function memoryPreview(text: string): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim()
+  return oneLine.length > 120 ? `${oneLine.slice(0, 119)}…` : oneLine
+}
+
 /**
  * Settings → Memory.
  *
@@ -50,6 +56,8 @@ export function MemorySettings() {
   const [learning, setLearning] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
+  /** The entry a delete is waiting on: the list has no undo, so it asks first. */
+  const [pendingDelete, setPendingDelete] = useState<MemoryEntry | null>(null)
   const [status, setStatus] = useState<{ tone: 'info' | 'error'; text: string } | null>(null)
   const [model, setModel] = useState(settings.memoryModel ?? '')
   const modelRef = useRef(model)
@@ -391,8 +399,9 @@ export function MemorySettings() {
                         <button
                           type="button"
                           className="icon-btn memory-row__delete"
-                          onClick={() => void removeEntry(entry.id)}
+                          onClick={() => setPendingDelete(entry)}
                           aria-label={t('Delete memory')}
+                          aria-haspopup="dialog"
                           title={t('Delete memory')}
                         >
                           <Trash2 size={13} />
@@ -422,6 +431,27 @@ export function MemorySettings() {
           tone="danger"
           onConfirm={() => void clearAll()}
           onCancel={() => setConfirmClear(false)}
+        />
+      ) : null}
+
+      {pendingDelete ? (
+        <ConfirmDialog
+          title={t('Delete this memory?')}
+          // The reader has to see which memory they are about to lose; a
+          // generic "are you sure" over a list of similar rows confirms
+          // nothing. The replacer is a function so the text cannot be read as
+          // a `$` pattern by `String.replace`.
+          body={t(
+            '“{text}” will be removed from this app’s memory and will not be used in new conversations. This cannot be undone.'
+          ).replace('{text}', () => memoryPreview(pendingDelete.text))}
+          confirmLabel={t('Delete')}
+          tone="danger"
+          onConfirm={() => {
+            const id = pendingDelete.id
+            setPendingDelete(null)
+            void removeEntry(id)
+          }}
+          onCancel={() => setPendingDelete(null)}
         />
       ) : null}
     </div>

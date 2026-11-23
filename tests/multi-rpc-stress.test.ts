@@ -152,8 +152,8 @@ class StressRuntime extends EventEmitter implements ManagedSessionRuntime {
     }
     this.activeStreaming = false
     this.running = false
-    this.status = { phase: 'error', error: errorReason, cwd: this.status.cwd }
-    this.emit('status', this.status)
+    this.status = { phase: 'stopped', error: errorReason, cwd: this.status.cwd }
+    this.emit('status', this.status, true)
   }
 
   /**

@@ -145,8 +145,11 @@ export function SettingsDialog({
     setCheckingUpdates(true)
     try {
       const result = await (silent ? window.pi.app.checkUpdate() : checkForAppUpdates())
-      if (silent) noteAppUpdateCheck(result)
-      setUpdateStatus(result)
+      // A failed check keeps the last good reading in the shared module, so the
+      // page must read that rather than the failure: a machine that is offline
+      // right now has not stopped having the version it found yesterday.
+      noteAppUpdateCheck(result)
+      setUpdateStatus(lastAppUpdateCheck())
     } catch {
       // The shared result card owns errors from a manual check.
     } finally {

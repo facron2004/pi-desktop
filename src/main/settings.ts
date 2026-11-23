@@ -5,6 +5,7 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync
 import path from 'node:path'
 import type {
   AppSettings,
+  SettingsPatchBaseline,
   SidebarArchiveFilter,
   SidebarGroupBy,
   SidebarSortBy,
@@ -19,6 +20,7 @@ import {
   SIDEBAR_SORT_MODES
 } from '@shared/types'
 import { normalizeFontScale } from '@shared/font-scale'
+import { migratePresetColors } from '@shared/theme-presets'
 import { forgetDefaultModel, rememberDefaultModel, rememberDefaultThinkingLevel } from './pi/retry-policy'
 import { properLockfile } from './proper-lockfile'
 
@@ -211,8 +213,10 @@ function mergeWorkspaces(
   // Preserve the order requested for projects this editor already knew.
   // Projects from other processes stay in their on-disk order, followed by
   // brand-new entries from this patch.
-  for (const workspace of proposed) {
-    if (baselineById.has(workspace.id) || currentById.has(workspace.id)) {
+  const retainedIds = baseline.filter(({ id }) => proposedById.has(id)).map(({ id }) => id)
+  const proposedIds = proposed.filter(({ id }) => baselineById.has(id)).map(({ id }) => id)
+  if (!sameValue(retainedIds, proposedIds)) {
+    for (const workspace of proposed) {
       const merged = mergedById.get(workspace.id)
       if (merged) append(merged)
     }
@@ -251,10 +255,19 @@ function mergeStringSet(
 function mergeProjectOrder(baseline: string[], proposed: string[], current: string[]): string[] {
   const proposedKeys = new Set(proposed.map(workspaceKey))
   const baselineKeys = new Set(baseline.map(workspaceKey))
+  const retained = baseline.map(workspaceKey).filter((key) => proposedKeys.has(key))
+  if (sameValue(retained, proposed.slice(0, retained.length).map(workspaceKey))) {
+    return mergeStringSet(baseline, proposed, current)
+  }
+  const currentKeys = new Set(current.map(workspaceKey))
+  const reordered = proposed.filter((item) => {
+    const key = workspaceKey(item)
+    return !baselineKeys.has(key) || currentKeys.has(key)
+  })
   const addedSinceRead = current.filter((item) =>
     !baselineKeys.has(workspaceKey(item)) && !proposedKeys.has(workspaceKey(item))
   )
-  return normalizeProjectOrder([...proposed, ...addedSinceRead])
+  return normalizeProjectOrder([...reordered, ...addedSinceRead])
 }
 
 function mergeRecord<T>(
@@ -690,6 +703,16 @@ export class SettingsStore {
     delete saved.removedWorkspaceIds
     const optionalString = (value: unknown): string | undefined =>
       typeof value === 'string' ? value : undefined
+    // A theme preset stores the colours it wrote. The palettes were
+    // de-duplicated (ChatGPT and Claude shared an accent; Pi and GitHub shared
+    // the pure-white canvas), so a saved preset's colours are moved onto the
+    // current palette — unless the user had changed one of them.
+    const themed = migratePresetColors({
+      themePreset: optionalString(saved.themePreset),
+      accentColor: optionalString(saved.accentColor),
+      customBg: optionalString(saved.customBg),
+      customFg: normalizeThemeForeground(saved)
+    })
     return {
       ...DEFAULT_SETTINGS,
       ...saved,
@@ -706,7 +729,9 @@ export class SettingsStore {
       trustProject: this.projectTrustReviewed && saved.trustProject === true,
       fontScale: normalizeFontScale(saved.fontScale),
       fontFamily: normalizeFontFamily(saved.fontFamily),
-      customFg: normalizeThemeForeground(saved),
+      accentColor: themed.accentColor,
+      customBg: themed.customBg,
+      customFg: themed.customFg,
       workspaces: dedupeWorkspaces(saved.workspaces),
       projectOrder: normalizeProjectOrder(saved.projectOrder),
       externalChatFolderHistory: normalizeExternalChatFolderHistory(
@@ -743,7 +768,7 @@ export class SettingsStore {
     return this.get().workspaces
   }
 
-  patch(patch: Partial<AppSettings>): AppSettings {
+  patch(patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): AppSettings {
     this.update((current) => {
       const { externalChatFolderHistory: _ignoredHistory, ...requested } = patch
       if (!Object.prototype.hasOwnProperty.call(patch, 'externalChatFolder')) return requested
@@ -760,7 +785,7 @@ export class SettingsStore {
         ...requested,
         externalChatFolderHistory: normalizeExternalChatFolderHistory(history, nextFolder)
       }
-    })
+    }, { baseline })
     // Pi reads its own startup model from the agent directory, not from this
     // file. A selection that never lands there is gone on the next launch.
     if ('model' in patch) {
@@ -773,19 +798,19 @@ export class SettingsStore {
     return this.get()
   }
 
-  addWorkspace(workspace: Workspace): AppSettings {
+  addWorkspace(workspace: Workspace, activate = true): AppSettings {
     return this.update((current) => {
       const key = workspaceKey(workspace.path)
       const existing = current.workspaces.find((item) => workspaceKey(item.path) === key)
       // Opening a folder that is already listed must leave it where the user
       // put it. Only a folder that has never been added goes on the end.
-      if (existing) return { activeWorkspaceId: existing.id }
+      if (existing) return activate ? { activeWorkspaceId: existing.id } : {}
       return {
         workspaces: [...current.workspaces, {
           ...workspace,
           createdAt: workspace.createdAt ?? workspace.lastOpenedAt ?? Date.now()
         }],
-        activeWorkspaceId: workspace.id
+        ...(activate ? { activeWorkspaceId: workspace.id } : {})
       }
     })
   }
@@ -807,7 +832,7 @@ export class SettingsStore {
         activeWorkspaceId,
         ...(hidePath ? { hiddenProjects } : {})
       }
-    }, id ? new Set([id]) : new Set())
+    }, { removedWorkspaceId: id })
   }
 
   private refreshFromDisk(force = false): void {
@@ -858,12 +883,12 @@ export class SettingsStore {
 
   private update(
     patchFor: (current: AppSettings) => Partial<AppSettings>,
-    removedWorkspaceIds: ReadonlySet<string> = new Set()
+    options: { baseline?: SettingsPatchBaseline; removedWorkspaceId?: string } = {}
   ): AppSettings {
     this.withSettingsLock(() => {
       // Another app process can update settings while this instance is open.
       // Merge under the lock so independent changes do not overwrite each other.
-      const baseline = this.data
+      const baseline = { ...this.data, ...options.baseline }
       this.refreshFromDisk(true)
       const current = this.data
       const patch = patchFor(current)
@@ -871,7 +896,8 @@ export class SettingsStore {
       const resetShortcuts = patch.shortcutBindings !== null &&
         typeof patch.shortcutBindings === 'object' && !Array.isArray(patch.shortcutBindings) &&
         Object.keys(patch.shortcutBindings).length === 0
-      const blockedWorkspaceIds = new Set([...this.removedWorkspaceIds, ...removedWorkspaceIds])
+      const blockedWorkspaceIds = new Set(this.removedWorkspaceIds)
+      if (options.removedWorkspaceId) blockedWorkspaceIds.add(options.removedWorkspaceId)
       const workspaces = patch.workspaces === undefined
         ? current.workspaces
         : mergeWorkspaces(

@@ -1,6 +1,6 @@
 import type { SidebarArchiveFilter, SidebarSortBy, SessionMeta } from '@shared/types'
 import { archiveSessionKey } from '@shared/session-archive'
-import { normalisePathKey } from './path'
+import { basename, normalisePathKey } from './path'
 
 /** The newest activity a project has, from its own metadata or its conversations. */
 function latestActivity(project: { lastOpenedAt: number; sessions: SessionMeta[] }): number {
@@ -75,4 +75,71 @@ export function flatSessions<Session extends SessionMeta>(sessions: readonly Ses
   return [...sessions].sort((a, b) =>
     (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)
   )
+}
+
+/** Archived conversations from one project folder. */
+export interface ArchivedProjectGroup<Session> {
+  /** The project folder, normalised; '' for chats with no folder of their own. */
+  key: string
+  name: string
+  sessions: Session[]
+}
+
+/**
+ * Group archived conversations by the project they belong to.
+ *
+ * The flat list is one newest-first column with no project rows, which is what
+ * makes it quick to scan — but an archived conversation is exactly the row whose
+ * folder is not obvious from its surroundings, so those are grouped under their
+ * project instead of sitting unlabelled in the column. Groups keep the caller's
+ * project order (a reader who arranged their projects expects it to hold);
+ * folders that order does not name, and chats with no folder at all, come last,
+ * newest activity first, with the projectless chat group closing the list.
+ */
+export function groupArchivedByProject<Session extends SessionMeta>(
+  sessions: readonly Session[],
+  options: {
+    /** Display name for a project folder; the folder's own name is the fallback. */
+    projectName?: (path: string) => string | undefined
+    /** Heading for archived chats that were never opened in a folder. */
+    projectlessName: string
+    /** Project order to honour, as the sidebar's project rows have it. */
+    order?: readonly string[]
+  }
+): ArchivedProjectGroup<Session>[] {
+  const order = (options.order ?? []).map((path) => normalisePathKey(path))
+  const groups = new Map<string, ArchivedProjectGroup<Session>>()
+  for (const session of sessions) {
+    const finished = session.cwd
+    const key = finished ? normalisePathKey(finished) : ''
+    let group = groups.get(key)
+    if (!group) {
+      const named = finished ? options.projectName?.(finished) : undefined
+      group = {
+        key,
+        name: key ? (named || basename(finished ?? '')) : options.projectlessName,
+        sessions: []
+      }
+      groups.set(key, group)
+    }
+    group.sessions.push(session)
+  }
+  const newest = (group: ArchivedProjectGroup<Session>): number =>
+    group.sessions.reduce(
+      (at, session) => Math.max(at, session.updatedAt || session.createdAt || 0),
+      0
+    )
+  return [...groups.values()]
+    .map((group) => ({ ...group, sessions: flatSessions(group.sessions) }))
+    .sort((left, right) => {
+      // Chats with no folder are their own block and always close the list.
+      if (left.key === '') return right.key === '' ? 0 : 1
+      if (right.key === '') return -1
+      const leftRank = order.indexOf(left.key)
+      const rightRank = order.indexOf(right.key)
+      const leftPlace = leftRank === -1 ? Number.POSITIVE_INFINITY : leftRank
+      const rightPlace = rightRank === -1 ? Number.POSITIVE_INFINITY : rightRank
+      if (leftPlace !== rightPlace) return leftPlace - rightPlace
+      return newest(right) - newest(left) || left.name.localeCompare(right.name)
+    })
 }

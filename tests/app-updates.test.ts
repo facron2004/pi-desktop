@@ -3,20 +3,37 @@ import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { downloadAppInstaller, launchAppInstaller, supportsAppUpdate } from '../src/main/app-update-installer'
+import {
+  clearDownloadedInstaller,
+  clearStaleDownloads,
+  downloadAppInstaller,
+  findDownloadedInstaller,
+  launchAppInstaller,
+  pruneDownloadedInstaller,
+  readDownloadedInstaller,
+  supportsAppUpdate
+} from '../src/main/app-update-installer'
 import {
   APP_UPDATE_NOTICE,
+  appUpdateInstall,
+  applyAppUpdate,
   availableAppUpdate,
   checkForAppUpdates,
   lastAppUpdateCheck,
   noteAppUpdateCheck,
+  noteAppUpdateProgress,
+  notePiCliUpdate,
+  piCliUpdate,
+  restoreDownloadedAppUpdate,
   restorePersistedAppUpdate,
   showAppUpdate,
+  startAppUpdateDownload,
   subscribeAppUpdateCheck,
-  subscribeAvailableAppUpdate
+  subscribeAvailableAppUpdate,
+  subscribePiCliUpdate
 } from '../src/renderer/src/lib/app-update'
 import { clearUpdateState, readUpdateState, readUpdateStateForVersion, writeUpdateState } from '../src/main/update-state'
 import {
@@ -123,7 +140,7 @@ test('downloads the matching architecture, verifies its hash and reports complet
     assert.equal(calls[0], 'https://api.github.com/repos/facron2004/pi-desktop/releases/tags/v0.11.2')
     assert.equal(calls[1], 'https://github.com/facron2004/pi-desktop/releases/download/v0.11.2/Pi.Desktop-0.11.2-x64.exe')
     assert.deepEqual(await readFile(installer), updateBytes)
-    assert.deepEqual(await readdir(directory), ['installer.exe'])
+    assert.deepEqual(await readdir(directory), ['installer.exe', 'installer.json'])
     assert.equal(progress[0]?.percent, 0)
     assert.equal(progress.at(-1)?.percent, 100)
     assert.ok(progress.every((sample, i) => !i || sample.percent >= progress[i - 1]!.percent))
@@ -257,6 +274,7 @@ test('the startup cache restores a release and a late cache read preserves a new
   const target = new EventTarget()
   const state = {
     app: { current: '0.11.1', latest: '0.11.2', hasUpdate: true },
+    piCli: { current: '1.5.0', latest: '1.5.2', hasUpdate: true },
     checkedAt: 1730000000000
   }
   let resolveDelayed!: (value: typeof state) => void
@@ -269,16 +287,21 @@ test('the startup cache restores a release and a late cache read preserves a new
     await restorePersistedAppUpdate()
     assert.deepEqual(availableAppUpdate(), { current: '0.11.1', latest: '0.11.2' })
     assert.deepEqual(lastAppUpdateCheck()?.app, state.app)
+    // The pair the check stored rides along, so the About page's CLI row is the
+    // reading that was actually fetched instead of an invented one.
+    assert.deepEqual(piCliUpdate(), { current: '1.5.0', latest: '1.5.2', hasUpdate: true })
 
     const fresh = {
       app: { current: '0.11.1', latest: '0.11.3', hasUpdate: true },
-      piCli: { current: '1.5.0', latest: '1.5.2', hasUpdate: true }
+      piCli: { current: '1.5.2', latest: '1.5.3', hasUpdate: true }
     }
     noteAppUpdateCheck(fresh)
     resolveDelayed(state)
     await delayedRestore
     assert.equal(lastAppUpdateCheck(), fresh)
     assert.equal(availableAppUpdate()?.latest, '0.11.3')
+    // A late restore must not put yesterday's CLI reading back over the live one.
+    assert.deepEqual(piCliUpdate(), fresh.piCli)
     await restorePersistedAppUpdate()
     assert.equal(reads, 2)
   } finally {
@@ -378,6 +401,31 @@ test('an app release is remembered for the sidebar and a failed check keeps it',
 })
 
 
+test('the bundled CLI keeps its own reading, whatever the app release says', () => {
+  // A clean slot: the checks above already filled it.
+  notePiCliUpdate({ current: '1.5.0', hasUpdate: false })
+  const seen: Array<boolean | undefined> = []
+  const stop = subscribePiCliUpdate((status) => seen.push(status?.hasUpdate))
+  try {
+    notePiCliUpdate({ current: '1.5.0', latest: '1.5.2', hasUpdate: true })
+    assert.deepEqual(piCliUpdate(), { current: '1.5.0', latest: '1.5.2', hasUpdate: true })
+    // A check that cannot reach npm keeps the reading it already has: the About
+    // page must not lose a newer CLI because the machine went offline.
+    notePiCliUpdate({ current: '1.5.0', hasUpdate: false, error: 'offline' })
+    assert.equal(piCliUpdate()?.hasUpdate, true)
+    // A full check answers both questions, so it refreshes this slot too — the
+    // app half being current says nothing about the agent.
+    noteAppUpdateCheck({
+      app: { current: '0.11.5', hasUpdate: false },
+      piCli: { current: '1.5.2', hasUpdate: false }
+    })
+    assert.deepEqual(piCliUpdate(), { current: '1.5.2', hasUpdate: false })
+    assert.deepEqual(seen, [true, false])
+  } finally {
+    stop()
+  }
+})
+
 test('the update reading survives a restart on disk', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'pi-desktop-update-state-'))
   try {
@@ -468,5 +516,366 @@ test('a reading that is not newer than the running version is not restored', () 
     assert.equal(readUpdateStateForVersion(dir, '0.11.1'), null)
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+const downloadFixture = () => {
+  const calls: string[] = []
+  // Route on the URL rather than the call count: a test may download twice,
+  // and the release document is only ever the API answer.
+  const fetcher: typeof fetch = async (url) => {
+    calls.push(String(url))
+    return String(url).startsWith('https://api.github.com/')
+      ? Response.json(fixtureRelease())
+      : new Response(updateBytes)
+  }
+  return { calls, fetcher }
+}
+
+test('a finished download is remembered for the next run', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'pi-app-update-'))
+  try {
+    const { fetcher } = downloadFixture()
+    const installer = await downloadAppInstaller(updateVersion, downloadOptions(directory, fetcher))
+    const stored = readDownloadedInstaller(directory, '0.11.1')
+    assert.equal(stored?.version, '0.11.2')
+    assert.equal(stored?.bytes, updateBytes.length)
+    assert.equal(stored?.path, installer)
+    // Only an installer newer than the running version is offered, and only
+    // for the exact release a check would name.
+    assert.equal(findDownloadedInstaller(directory, '0.11.2', '0.11.1')?.path, installer)
+    assert.equal(findDownloadedInstaller(directory, '0.11.3', '0.11.1'), undefined)
+    // After the update the stored installer is the running one: not offered.
+    assert.equal(readDownloadedInstaller(directory, '0.11.2'), undefined)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a finished download is reused without touching the network', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'pi-app-update-'))
+  try {
+    const { fetcher } = downloadFixture()
+    const installer = await downloadAppInstaller(updateVersion, downloadOptions(directory, fetcher))
+    const progress: number[] = []
+    const offline: typeof fetch = async () => {
+      throw new Error('the cached installer must not be downloaded again')
+    }
+    const reused = await downloadAppInstaller(
+      updateVersion,
+      downloadOptions(directory, offline, (value) => progress.push((value as { percent: number }).percent))
+    )
+    assert.equal(reused, installer)
+    assert.deepEqual(progress, [100])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a same-size corrupt cached installer is downloaded again', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'pi-app-update-'))
+  try {
+    const initial = downloadFixture()
+    const installer = await downloadAppInstaller(updateVersion, downloadOptions(directory, initial.fetcher))
+    await writeFile(installer, Buffer.alloc(updateBytes.length))
+
+    await assert.rejects(downloadAppInstaller(updateVersion, downloadOptions(directory, async () => {
+      throw new Error('offline')
+    })), /offline/)
+    const retry = downloadFixture()
+    assert.equal(await downloadAppInstaller(updateVersion, downloadOptions(directory, retry.fetcher)), installer)
+    assert.equal(retry.calls.length, 2, 'the corrupt installer must be replaced')
+    assert.deepEqual(await readFile(installer), updateBytes)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a legacy installer record is verified once without downloading the file again', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'pi-app-update-'))
+  try {
+    const installer = path.join(directory, 'installer.exe')
+    await writeFile(installer, updateBytes)
+    await writeFile(path.join(directory, 'installer.json'), JSON.stringify({
+      version: updateVersion, bytes: updateBytes.length
+    }))
+    const { fetcher, calls } = downloadFixture()
+    assert.equal(await downloadAppInstaller(updateVersion, downloadOptions(directory, fetcher)), installer)
+    assert.equal(calls.length, 1, 'legacy bytes need the published digest')
+    assert.equal(await downloadAppInstaller(updateVersion, downloadOptions(directory, async () => {
+      throw new Error('a verified legacy installer must work offline after migration')
+    })), installer)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a record and its installer are dropped when they no longer match', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'pi-app-update-'))
+  try {
+    const { fetcher } = downloadFixture()
+    await downloadAppInstaller(updateVersion, downloadOptions(directory, fetcher))
+    // A truncated file is not an installer: the record is stale, so a later
+    // request downloads again instead of launching a broken setup.
+    await writeFile(path.join(directory, 'installer.exe'), 'truncated')
+    assert.equal(readDownloadedInstaller(directory, '0.11.1'), undefined)
+    await downloadAppInstaller(updateVersion, downloadOptions(directory, fetcher))
+    // A record for another release is pruned; the newest release keeps its
+    // verified pair.
+    pruneDownloadedInstaller(directory, '0.11.3')
+    assert.equal(readDownloadedInstaller(directory, '0.11.1'), undefined)
+    assert.deepEqual(await readdir(directory), [])
+    await downloadAppInstaller(updateVersion, downloadOptions(directory, fetcher))
+    pruneDownloadedInstaller(directory, '0.11.2')
+    assert.ok(findDownloadedInstaller(directory, '0.11.2', '0.11.1'))
+    clearDownloadedInstaller(directory)
+    assert.deepEqual(await readdir(directory), [])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+type FakeAppBridge = {
+  downloadedUpdate: () => Promise<{ version: string; bytes?: number } | null>
+  downloadUpdate: (version: string) => Promise<{ success: boolean; version?: string; error?: string }>
+  installAppUpdate: (version: string) => Promise<{ success: boolean; version?: string; error?: string }>
+  openReleasePage: () => Promise<{ success: boolean }>
+  onAppUpdateProgress: (handler: (progress: unknown) => void) => () => void
+}
+
+/** A renderer window with just the update bridge; returns a restore function. */
+function updateHost(overrides: Partial<FakeAppBridge> = {}): () => void {
+  const previousWindow = globalThis.window
+  const target = new EventTarget()
+  const bridge: FakeAppBridge = {
+    downloadedUpdate: async () => null,
+    downloadUpdate: async (version) => ({ success: true, version }),
+    installAppUpdate: async (version) => ({ success: true, version }),
+    openReleasePage: async () => ({ success: true }),
+    onAppUpdateProgress: () => () => {},
+    ...overrides
+  }
+  Object.assign(globalThis, { window: Object.assign(target, { pi: { app: bridge } }) })
+  return () => {
+    Object.assign(globalThis, { window: previousWindow })
+  }
+}
+
+/** A check that finds nothing resets every reading the module keeps. */
+function resetDownloadState(): void {
+  noteAppUpdateCheck({
+    app: { current: '0.11.1', hasUpdate: false },
+    piCli: { current: '1.5.0', hasUpdate: false }
+  })
+}
+
+test('the download record follows a download and installs the stored version', async () => {
+  resetDownloadState()
+  const downloads: string[] = []
+  let installed: string | undefined
+  const stop = updateHost({
+    downloadUpdate: async (version) => {
+      downloads.push(version)
+      return { success: true, version }
+    },
+    installAppUpdate: async (version) => {
+      installed = version
+      return { success: true, version }
+    }
+  })
+  try {
+    const pending = startAppUpdateDownload('0.12.0', { supported: true, bytes: 4096 })
+    assert.equal(appUpdateInstall()?.stage, 'downloading')
+    // An event from another release must not drive this ring.
+    noteAppUpdateProgress({ version: '0.11.9', stage: 'downloading', percent: 90 })
+    assert.equal(appUpdateInstall()?.percent, 0)
+    noteAppUpdateProgress({
+      version: '0.12.0',
+      stage: 'downloading',
+      percent: 41.6,
+      transferredBytes: 1700,
+      totalBytes: 4096
+    })
+    assert.equal(appUpdateInstall()?.percent, 42)
+    assert.equal(appUpdateInstall()?.totalBytes, 4096)
+    assert.equal((await pending).success, true)
+    assert.equal(appUpdateInstall()?.stage, 'ready')
+    assert.equal(appUpdateInstall()?.percent, 100)
+    // Late events from the finished stream cannot take the ring back down.
+    noteAppUpdateProgress({ version: '0.12.0', stage: 'downloading', percent: 99 })
+    assert.equal(appUpdateInstall()?.stage, 'ready')
+    assert.deepEqual(await applyAppUpdate(), { success: true, version: '0.12.0' })
+    assert.deepEqual(downloads, ['0.12.0'])
+    assert.equal(installed, '0.12.0')
+  } finally {
+    stop()
+  }
+})
+
+test('a failed download is reported and a click can retry it', async () => {
+  resetDownloadState()
+  let attempts = 0
+  const stop = updateHost({
+    downloadUpdate: async (version) => {
+      attempts += 1
+      return attempts === 1 ? { success: false, error: 'offline' } : { success: true, version }
+    }
+  })
+  try {
+    const failed = await startAppUpdateDownload('0.12.1', { supported: true })
+    assert.equal(failed.success, false)
+    assert.equal(appUpdateInstall()?.stage, 'error')
+    assert.equal(appUpdateInstall()?.error, 'offline')
+    // Nothing verified is on disk, so a click cannot restart into it.
+    assert.equal(await applyAppUpdate(), null)
+    const retried = await startAppUpdateDownload('0.12.1', { supported: true })
+    assert.equal(retried.success, true)
+    assert.equal(appUpdateInstall()?.stage, 'ready')
+  } finally {
+    stop()
+  }
+})
+
+test('a refused restart keeps the installer ready to retry', async () => {
+  resetDownloadState()
+  const stop = updateHost({
+    installAppUpdate: async () => ({
+      success: false,
+      error: 'Finish or stop active tasks before updating Pi Desktop.'
+    })
+  })
+  try {
+    await startAppUpdateDownload('0.12.2', { supported: true })
+    const result = await applyAppUpdate()
+    assert.equal(result?.success, false)
+    // The installer is still on disk: the record must stay ready, with the
+    // reason the restart was refused.
+    assert.equal(appUpdateInstall()?.stage, 'ready')
+    assert.match(appUpdateInstall()?.error ?? '', /Finish or stop active tasks/)
+  } finally {
+    stop()
+  }
+})
+
+test('a restart restores the downloaded installer instead of downloading again', async () => {
+  resetDownloadState()
+  let downloads = 0
+  const stop = updateHost({
+    downloadedUpdate: async () => ({ version: '0.12.3', bytes: 2048 }),
+    downloadUpdate: async (version) => {
+      downloads += 1
+      return { success: true, version }
+    }
+  })
+  try {
+    await restoreDownloadedAppUpdate()
+    assert.deepEqual(appUpdateInstall(), {
+      version: '0.12.3',
+      stage: 'ready',
+      percent: 100,
+      transferredBytes: 2048,
+      totalBytes: 2048
+    })
+    // A check that names another release drops the restored installer.
+    noteAppUpdateCheck({
+      app: { current: '0.11.1', latest: '0.12.4', hasUpdate: true },
+      piCli: { current: '1.5.0', hasUpdate: false }
+    })
+    assert.equal(appUpdateInstall(), null)
+    assert.equal(downloads, 0)
+  } finally {
+    stop()
+  }
+})
+
+test('a restore racing a live download leaves the download alone', async () => {
+  resetDownloadState()
+  let finishDownload: ((value: { success: boolean; version?: string }) => void) | undefined
+  const stop = updateHost({
+    downloadedUpdate: async () => ({ version: '0.12.4', bytes: 1 }),
+    downloadUpdate: () => new Promise((resolve) => {
+      finishDownload = resolve
+    })
+  })
+  try {
+    const pending = startAppUpdateDownload('0.12.5', { supported: true })
+    await restoreDownloadedAppUpdate()
+    assert.equal(appUpdateInstall()?.version, '0.12.5')
+    assert.equal(appUpdateInstall()?.stage, 'downloading')
+    finishDownload?.({ success: true, version: '0.12.5' })
+    await pending
+    assert.equal(appUpdateInstall()?.stage, 'ready')
+  } finally {
+    stop()
+  }
+})
+
+test('a build without self-update opens the release page instead of downloading', async () => {
+  resetDownloadState()
+  let opened = 0
+  const stop = updateHost({
+    downloadUpdate: async () => {
+      throw new Error('a portable build must not download an installer')
+    },
+    openReleasePage: async () => {
+      opened += 1
+      return { success: true }
+    }
+  })
+  try {
+    const result = await startAppUpdateDownload('0.13.0', { supported: false })
+    assert.equal(result.success, true)
+    assert.equal(opened, 1)
+    assert.equal(appUpdateInstall(), null)
+  } finally {
+    stop()
+  }
+})
+
+test('a failed check keeps a downloaded installer the reader can still restart into', async () => {
+  resetDownloadState()
+  const stop = updateHost({ downloadedUpdate: async () => ({ version: '0.12.0', bytes: 4096 }) })
+  try {
+    // A verified installer from an earlier run, put back at startup.
+    await restoreDownloadedAppUpdate()
+    assert.equal(appUpdateInstall()?.stage, 'ready')
+    assert.equal(availableAppUpdate(), null, 'no check has offered the release in this run')
+
+    // The check that follows cannot reach GitHub. A failure says nothing about
+    // the bytes already on disk, so "restart to install" must survive it.
+    noteAppUpdateCheck({
+      app: { current: '0.11.1', hasUpdate: false, error: 'offline' },
+      piCli: { current: '1.5.0', hasUpdate: false }
+    })
+    assert.equal(availableAppUpdate(), null)
+    assert.equal(appUpdateInstall()?.stage, 'ready', 'a failed check dropped the downloaded installer')
+  } finally {
+    stop()
+    resetDownloadState()
+  }
+})
+
+test('a staging folder left by a killed download is swept, a live one is kept', () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pi-desktop-update-staging-'))
+  try {
+    const stale = path.join(directory, 'download-killed')
+    const live = path.join(directory, 'download-running')
+    mkdirSync(stale)
+    mkdirSync(live)
+    writeFileSync(path.join(stale, 'installer.exe'), 'half a setup file', 'utf8')
+    writeFileSync(path.join(live, 'installer.exe'), 'half a setup file', 'utf8')
+    // Two hours old: no process can still be streaming into it.
+    const old = new Date(Date.now() - 2 * 60 * 60_000)
+    utimesSync(stale, old, old)
+    // The pair this sweep must not touch.
+    writeFileSync(path.join(directory, 'installer.exe'), 'verified', 'utf8')
+
+    clearStaleDownloads(directory)
+
+    assert.equal(existsSync(stale), false, 'the killed download left its staging folder behind')
+    assert.equal(existsSync(live), true, 'a download still running had its staging folder swept')
+    assert.equal(existsSync(path.join(directory, 'installer.exe')), true, 'the sweep ate the verified installer')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
   }
 })

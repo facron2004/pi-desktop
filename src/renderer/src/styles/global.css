@@ -897,6 +897,45 @@ transition: background var(--dur-fast) var(--ease);
   gap: 2px;
 }
 
+/* Archived conversations in the flat column are grouped under the project they
+   came from. The heading is a label, not a row: it carries no hover fill, and
+   its glyph hangs in the same indent the rows put their mark in, so the project
+   name lines up with the conversation titles underneath it. */
+.sidebar__archive-group + .sidebar__archive-group {
+  margin-top: var(--sp-3);
+}
+
+.sidebar__archive-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2) var(--sp-1)
+    calc(var(--sidebar-session-indent) - var(--sidebar-mark-slot));
+  color: var(--sidebar-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-small);
+  user-select: none;
+}
+
+.sidebar__archive-group-head > svg {
+  flex: none;
+  opacity: 0.7;
+}
+
+.sidebar__archive-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar__archive-group-count {
+  flex: none;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+}
+
 .project__show-more {
   align-self: flex-start;
   min-height: var(--ctl-sm);
@@ -1180,8 +1219,11 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   color: var(--sidebar-text);
 }
 
-/* The app-update control sits beside Settings: a download glyph inside a
-   ring that fills as the installer arrives. The versions and the current
+/* The app-update control sits beside Settings as a filled round button in the
+   accent colour. The glyph is always the download mark — the button says
+   "there is an update", not which step it is on — and the ring drawn inside
+   the fill is the installer arriving. A closed ring means the download is
+   verified and the same click restarts into it. The versions and the current
    phase live in the hover card, because the foot has no room for a second
    line of text. */
 .sidebar__foot-row {
@@ -1201,33 +1243,43 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   flex: 0 0 auto;
   display: grid;
   place-items: center;
-  width: var(--ctl-md);
-  height: var(--ctl-md);
+  /* The smallest control token: the foot is a 32px row of 15px glyphs, and a
+     disc at the row's own height read heavier than the Settings label it sits
+     beside. */
+  width: var(--ctl-xs);
+  height: var(--ctl-xs);
   padding: 0;
   border-radius: var(--r-full);
-  color: var(--amber);
+  background: var(--accent);
+  color: var(--accent-contrast);
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
 .sidebar__update-btn:hover,
 .sidebar__update-btn:focus-visible {
-  background: var(--amber-soft);
+  background: var(--accent-hover);
 }
 
 .sidebar__update-btn[aria-disabled='true'] {
   cursor: default;
 }
 
+/* A failed download keeps the same filled shape; the colour is the failure. */
 .sidebar__update-btn[data-state='error'] {
-  color: var(--status-danger);
+  background: var(--status-danger);
+  color: var(--status-danger-ink);
 }
 
 .sidebar__update-mark {
   position: relative;
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  /* The ring sits inside the fill rather than on its rim: a hairline of accent
+     stays outside it, so the finished state reads as a progress ring drawn in
+     the button, not as a border painted around it. The 20px box keeps a visible
+     gap between the ring and the glyph at this size. */
+  width: 20px;
+  height: 20px;
 }
 
 .sidebar__update-ring {
@@ -1238,21 +1290,21 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   transform: rotate(-90deg);
 }
 
+/* The track is the fill's own ink, thinned out, so the ring reads on the
+   accent as well as on the failure colour. Both strokes are hairline-thin: at
+   this size a 2-unit stroke closed into a full circle read as a heavy border
+   around the glyph instead of a progress reading. */
 .sidebar__update-ring-track {
   fill: none;
-  stroke: var(--border-subtle);
-  stroke-width: 2;
-}
-
-/* Nothing is downloading yet: the ring is only a quiet frame. */
-.sidebar__update-btn[data-state='idle'] .sidebar__update-ring-track {
-  stroke: var(--amber-soft);
+  stroke: currentColor;
+  stroke-width: 1.5;
+  opacity: 0.22;
 }
 
 .sidebar__update-ring-fill {
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: 1.5;
   stroke-linecap: round;
   transition: stroke-dashoffset var(--dur-base) linear;
 }
@@ -1863,6 +1915,15 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   box-shadow: var(--shadow-lg);
   padding: var(--sp-2);
   animation: pop var(--dur-fast) var(--ease);
+}
+
+/* A menu opened from inside a dialog. The dialog's layer is --z-modal, above
+   the --z-floating a popover uses in the page, and the panel is portaled to
+   the body — so it inherits neither the dialog's stacking nor a variable set
+   on it. Without this the menu was painted behind the dialog it belongs to.
+   Popover.tsx writes the attribute from the trigger's own ancestry. */
+.popover[data-layer='modal'] {
+  z-index: calc(var(--z-modal) + 1);
 }
 
 .context-popover {

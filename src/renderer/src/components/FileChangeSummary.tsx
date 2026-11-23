@@ -26,7 +26,7 @@ export const FileChangeSummary = memo(function FileChangeSummary({
   const refreshGit = useAppStore((state) => state.refreshGit)
   const showToast = useAppStore((state) => state.showToast)
   const [expanded, setExpanded] = useState(false)
-  const [confirmUndo, setConfirmUndo] = useState(false)
+  const [undoTarget, setUndoTarget] = useState<{ root: string; changes: FileChange[] } | null>(null)
   const [undoing, setUndoing] = useState(false)
   const [hovered, setHovered] = useState<FileChange | null>(null)
   const [anchor, setAnchor] = useState<ReturnType<typeof previewAnchor> | null>(null)
@@ -35,17 +35,22 @@ export const FileChangeSummary = memo(function FileChangeSummary({
   const hiddenCount = changes.length - visibleChanges.length
 
   const undo = async () => {
-    setConfirmUndo(false)
+    const target = undoTarget
+    if (!target) return
+    setUndoTarget(null)
     setUndoing(true)
     let restored = 0
+    let failure: string | undefined
     try {
-      for (const change of changes) {
-        const path = relativePath(workspace ?? '', change.path).replace(/\\/g, '/')
-        const result = await window.pi.git.revertFile(path)
+      for (const change of target.changes) {
+        const path = relativePath(target.root, change.path).replace(/\\/g, '/')
+        const result = await window.pi.git.revertFile(path, target.root)
         if (result.ok) restored += 1
+        else failure ??= result.error ?? t('The file could not be reverted')
       }
       await refreshGit()
-      if (restored > 0) showToast(t('The changes were reverted'))
+      if (failure) showToast(failure, restored ? 'warning' : 'error')
+      else if (restored > 0) showToast(t('The changes were reverted'))
       else showToast(t('The file could not be reverted'), 'error')
     } finally {
       setUndoing(false)
@@ -96,8 +101,8 @@ export const FileChangeSummary = memo(function FileChangeSummary({
           <button
             type="button"
             className="file-changes__undo"
-            onClick={() => setConfirmUndo(true)}
-            disabled={undoing}
+            onClick={() => { if (workspace) setUndoTarget({ root: workspace, changes }) }}
+            disabled={undoing || !workspace}
           >
             {t('Undo')}
             <Undo2 size={13} />
@@ -159,14 +164,14 @@ export const FileChangeSummary = memo(function FileChangeSummary({
             document.body
           )
         : null}
-      {confirmUndo ? (
+      {undoTarget ? (
         <ConfirmDialog
           title={t('Undo these changes')}
           body={t('Discard the uncommitted changes in these files? A file that was never committed is left alone.')}
           confirmLabel={t('Undo')}
           tone="danger"
           onConfirm={() => void undo()}
-          onCancel={() => setConfirmUndo(false)}
+          onCancel={() => setUndoTarget(null)}
         />
       ) : null}
     </div>

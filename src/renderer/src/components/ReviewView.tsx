@@ -95,6 +95,7 @@ export function ReviewView({
 }) {
   const git = useAppStore((state) => state.git)
   const workspace = useAppStore((state) => state.workspace)
+  const expectedRoot = workspace?.path ?? ''
   const refreshGit = useAppStore((state) => state.refreshGit)
   const stageFile = useAppStore((state) => state.stageFile)
   const unstageFile = useAppStore((state) => state.unstageFile)
@@ -115,7 +116,7 @@ export function ReviewView({
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [diffs, setDiffs] = useState<Record<string, DiffState>>({})
   const [refreshing, setRefreshing] = useState(false)
-  const [revertTarget, setRevertTarget] = useState<string | null>(null)
+  const [revertTarget, setRevertTarget] = useState<{ file: string; root: string } | null>(null)
   const [expandAll, setExpandAll] = useState<boolean | undefined>(undefined)
   // The read that is running or was last asked for, per path. The object is its
   // own token: a read that finishes after a newer one started must not paint,
@@ -146,11 +147,11 @@ export function ReviewView({
       // The diff on screen stays there while the newer one is read. The store
       // reads the tree after every edit, and a spinner for each of those reads
       // would flash the pane instead of letting the edit land in place.
-      if (entry?.status === 'ready' && entry.signature === request.signature) return previous
+      if (entry?.status === 'ready' && entry.signature === request.signature && entry.snapshot?.root === request.snapshot?.root) return previous
       return { ...previous, [path]: { status: 'loading', ...request } }
     })
     try {
-      const diff = await window.pi.git.fileDiff(path)
+      const diff = await window.pi.git.fileDiff(path, expectedRoot)
       if (readsInFlight.current[path] !== mine) return
       delete readsInFlight.current[path]
       setDiffs((previous) => ({ ...previous, [path]: { status: 'ready', ...request, diff } }))
@@ -161,13 +162,13 @@ export function ReviewView({
         // A diff that was read before and is still current is worth more than
         // an error notice: the tree was read again, not the file broken.
         const entry = previous[path]
-        if (entry?.status === 'ready' && entry.signature === request.signature) {
+        if (entry?.status === 'ready' && entry.signature === request.signature && entry.snapshot?.root === request.snapshot?.root) {
           return { ...previous, [path]: { status: 'ready', ...request, diff: entry.diff } }
         }
         return { ...previous, [path]: { status: 'error', ...request } }
       })
     }
-  }, [])
+  }, [expectedRoot])
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
@@ -220,7 +221,8 @@ export function ReviewView({
 
   const selectedFile =
     visible.find((file) => file.path === selectedPath) ?? visible[0] ?? null
-  const selectedDiff = selectedFile ? diffs[selectedFile.path] : undefined
+  const cachedDiff = selectedFile ? diffs[selectedFile.path] : undefined
+  const selectedDiff = cachedDiff?.snapshot?.root === git?.root ? cachedDiff : undefined
 
   // Selecting a row is the only way its diff is read; keeping this effect at
   // the top means the first file is loaded as soon as the tree is available.
@@ -245,33 +247,33 @@ export function ReviewView({
 
   const toggleStage = useCallback(
     async (file: GitFileStatus) => {
-      const result = file.staged ? await unstageFile(file.path) : await stageFile(file.path)
+      const result = file.staged ? await unstageFile(file.path, expectedRoot) : await stageFile(file.path, expectedRoot)
       if (!result.ok) {
         showToast(result.error ?? t('The file could not be staged'), 'error')
       }
     },
-    [stageFile, unstageFile, showToast, t]
+    [stageFile, unstageFile, expectedRoot, showToast, t]
   )
 
   const stageEverything = useCallback(async () => {
     setStageBusy(true)
     try {
-      const result = await stageAll()
+      const result = await stageAll(expectedRoot)
       if (!result.ok) showToast(result.error ?? t('The files could not be staged'), 'error')
     } finally {
       setStageBusy(false)
     }
-  }, [stageAll, showToast, t])
+  }, [stageAll, expectedRoot, showToast, t])
 
   const unstageEverything = useCallback(async () => {
     setStageBusy(true)
     try {
-      const result = await unstageAll()
+      const result = await unstageAll(expectedRoot)
       if (!result.ok) showToast(result.error ?? t('The files could not be unstaged'), 'error')
     } finally {
       setStageBusy(false)
     }
-  }, [unstageAll, showToast, t])
+  }, [unstageAll, expectedRoot, showToast, t])
 
   const totals = useMemo(
     () =>
@@ -334,7 +336,7 @@ export function ReviewView({
     const target = revertTarget
     setRevertTarget(null)
     if (!target) return
-    const result = await window.pi.git.revertFile(target)
+    const result = await window.pi.git.revertFile(target.file, target.root)
     if (!result.ok) {
       showToast(result.error ?? t('The file could not be reverted'), 'error')
       return
@@ -347,8 +349,8 @@ export function ReviewView({
 
   const revertBody = revertTarget
     ? language === 'zh-CN'
-      ? `丢弃“${revertTarget}”的全部未提交更改（恢复到 HEAD）？此操作无法在 Pi Desktop 中撤销。`
-      : `Discard every uncommitted change in “${revertTarget}” (back to HEAD)? This cannot be undone from inside Pi Desktop.`
+      ? `丢弃“${revertTarget.file}”的全部未提交更改（恢复到 HEAD）？此操作无法在 Pi Desktop 中撤销。`
+      : `Discard every uncommitted change in “${revertTarget.file}” (back to HEAD)? This cannot be undone from inside Pi Desktop.`
     : ''
 
   return (
@@ -464,13 +466,14 @@ export function ReviewView({
               <ReviewFileDetail
                 file={selectedFile}
                 state={selectedDiff}
+                expectedRoot={expectedRoot}
                 split={diffSplit}
                 expandAll={expandAll}
                 onOpen={() => onOpenFile({ path: selectedFile.path })}
                 onReveal={() => void window.pi.fs.reveal(selectedFile.path)}
                 onToggleStage={() => void toggleStage(selectedFile)}
                 onCopyPatch={() => void copyPatch(selectedFile.path)}
-                onRevert={() => setRevertTarget(selectedFile.path)}
+                onRevert={() => setRevertTarget({ file: selectedFile.path, root: expectedRoot })}
                 onHunkReverted={() => void reloadAfterHunk()}
               />
             ) : (
@@ -614,6 +617,7 @@ function splitHunks(rows: DiffRow[], context = CONTEXT_LINES): DiffBlock[] {
 function ReviewFileDetail({
   file,
   state,
+  expectedRoot,
   split,
   expandAll,
   onOpen,
@@ -625,6 +629,7 @@ function ReviewFileDetail({
 }: {
   file: GitFileStatus
   state: DiffState | undefined
+  expectedRoot: string
   split: boolean
   expandAll: boolean | undefined
   onOpen: () => void
@@ -727,6 +732,7 @@ function ReviewFileDetail({
               mode={split ? 'split' : 'unified'}
               patchPath={file.path}
               revertPath={file.untracked ? undefined : file.path}
+              revertRoot={expectedRoot}
               onReverted={onHunkReverted}
               expandAll={expandAll}
             />

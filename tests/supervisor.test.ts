@@ -529,6 +529,42 @@ test('separate supervisors cannot open or mutate the same session file at once',
   }
 })
 
+test('a Pi exit releases the saved conversation without restarting the desktop', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-exit-'))
+  const sessionFile = path.join(dir, 'session.jsonl')
+  writeFileSync(sessionFile, '{"type":"session"}\n')
+  const a = new FakeRuntime()
+  const first = supervisorOf([a])
+  const second = supervisorOf([new FakeRuntime()])
+  const options = { sessionKey: sessionFile, sessionFile, cwd: dir }
+  const events: PiEvent[] = []
+  first.on('event', ({ event }) => events.push(event))
+  try {
+    assert.deepEqual(await first.ensure(options), { ok: true })
+    await first.request(sessionFile, 'prompt')
+
+    await assert.rejects(first.withCwdLock(dir, async () => {}), /conversation is working/)
+    await assert.rejects(first.withSessionFileMutation(sessionFile, async () => {}), /already open/)
+
+    a.running = false
+    a.status = { phase: 'stopped', cwd: dir, error: 'Pi exited' }
+    a.emit('status', a.status, true)
+    assert.deepEqual(events, [{ type: 'agent_settled', aborted: false, crashed: true }])
+
+    for (let attempt = 0; attempt < 100 && first.sessionInfo(sessionFile); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    assert.equal(await first.withSessionFileMutation(sessionFile, async () => 'unlocked'), 'unlocked')
+    assert.equal(await first.withCwdLock(dir, async () => 'released'), 'released')
+    assert.deepEqual(await second.ensure(options), { ok: true })
+    assert.equal(a.stops, 1)
+  } finally {
+    await first.stop()
+    await second.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('directory queue and exclusive write lock share canonical folder identity', async () => {
   const a = new FakeRuntime()
   const b = new FakeRuntime()
@@ -621,16 +657,16 @@ test('a process that dies during a run settles it instead of leaving it open', a
   supervisor.on('event', (payload) => events.push(payload))
 
   a.running = false
-  a.status = { phase: 'error', cwd: 'C:/a', error: 'the process died' }
+  a.status = { phase: 'error', cwd: 'C:/a', error: 'broken pipe' }
   a.emit('status', a.status)
+  assert.deepEqual(events, [])
+  await assert.rejects(supervisor.withCwdLock('C:/a', async () => {}), /conversation is working/)
+
+  a.status = { phase: 'stopped', cwd: 'C:/a', error: 'the process died' }
+  a.emit('status', a.status, true)
   assert.deepEqual(events, [
     { ownerId: 'A', event: { type: 'agent_settled', aborted: false, crashed: true } }
   ])
-
-  // The exit usually reports "error" and then "stopped"; one death is one
-  // settle.
-  a.emit('status', { phase: 'stopped', cwd: 'C:/a' })
-  assert.equal(events.length, 1)
 })
 
 test('a process that dies before the first prompt response still settles the run', async () => {
@@ -648,8 +684,8 @@ test('a process that dies before the first prompt response still settles the run
   await Promise.resolve()
 
   a.running = false
-  a.status = { phase: 'error', cwd: 'C:/a', error: 'the process died' }
-  a.emit('status', a.status)
+  a.status = { phase: 'stopped', cwd: 'C:/a', error: 'the process died' }
+  a.emit('status', a.status, true)
   rejectPrompt(new Error('pi exited'))
   await assert.rejects(prompt, /pi exited/)
 
@@ -721,7 +757,7 @@ test('a run that already settled normally is not reported as crashed', async () 
   supervisor.on('event', (payload) => events.push(payload))
   a.running = false
   a.status = { phase: 'stopped', cwd: 'C:/a' }
-  a.emit('status', a.status)
+  a.emit('status', a.status, true)
   assert.deepEqual(events, [])
 })
 

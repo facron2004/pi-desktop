@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { appendSessionName, readSessionMessages } from '../src/main/sessions'
+import { appendSessionName, openSessionFile, readSessionMessages } from '../src/main/sessions'
 import { needsSessionHydration, scopeEvent } from '../src/renderer/src/lib/session-scope'
 
 test('a bare event belongs to the view, a scoped event keeps its owner', () => {
@@ -63,3 +63,43 @@ test('cold history is the active branch and a rename appends session_info', asyn
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+for (const torn of [false, true]) {
+  test(`cold rename separates a ${torn ? 'torn' : 'valid'} unterminated record from the title`, async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'pi-session-tail-'))
+    const file = path.join(dir, 'chat.jsonl')
+    const original = [
+      JSON.stringify({ type: 'session', version: 3, id: 'header', cwd: dir }),
+      JSON.stringify({
+        type: 'message', id: 'prompt', parentId: null,
+        message: { role: 'user', content: 'Keep this prompt', timestamp: 1 }
+      }),
+      JSON.stringify({
+        type: 'message', id: 'answer', parentId: 'prompt',
+        message: { role: 'assistant', content: 'Keep this answer', timestamp: 2 }
+      }),
+      ...(torn ? ['{"type":"message","id":"interrupted"'] : [])
+    ].join('\n')
+    try {
+      writeFileSync(file, original)
+      const verified = await openSessionFile(file, dir, true)
+      assert.ok(verified)
+      try {
+        assert.equal(await appendSessionName(verified.target, 'Renamed', verified.handle), true)
+      } finally {
+        await verified.handle.close()
+      }
+      const contents = readFileSync(file, 'utf8')
+      assert.ok(contents.startsWith(original + '\n'))
+      const title = JSON.parse(contents.slice(original.length + 1))
+      assert.equal(title.type, 'session_info')
+      assert.equal(title.name, 'Renamed')
+      assert.equal(title.parentId, 'answer')
+      assert.deepEqual((await readSessionMessages(file)).map(message => message.content), [
+        'Keep this prompt', 'Keep this answer'
+      ])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}

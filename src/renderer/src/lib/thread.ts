@@ -1,4 +1,4 @@
-import { GOAL_CONTINUE_CUSTOM_TYPE, type AgentMessage, type ContentBlock, type ForkTarget, type PiEvent, type Usage } from '@shared/types'
+import { GOAL_CONTINUE_CUSTOM_TYPE, type AgentMessage, type ContentBlock, type PiEvent, type Usage } from '@shared/types'
 import { goalResumeTime, normalizePiEvent, type StreamContext, type StreamEvent, type StreamEventStatus } from './stream-events'
 
 export type { StreamContext } from './stream-events'
@@ -37,6 +37,8 @@ export interface UserItem {
   kind: 'user'
   text: string
   images: { data: string; mimeType: string }[]
+  /** The user message's persisted Pi session entry. */
+  entryId?: string
   timestamp: number
   order: number
   /** Adapter-minted message identity, used to ignore a duplicated start. */
@@ -609,6 +611,7 @@ export function itemsFromMessages(messages: AgentMessage[]): ThreadItem[] {
           kind: 'user',
           text: textOf(message.content),
           images: imagesOf(message.content),
+          ...(message.entryId ? { entryId: message.entryId } : {}),
           timestamp: message.timestamp ?? Date.now(),
           order: nextOrder()
         })
@@ -1403,11 +1406,6 @@ function exitCodeOf(value: unknown): number | undefined {
   return undefined
 }
 
-/** Collapse a prompt to a comparable shape. */
-function normalizePrompt(text: string): string {
-  return text.trim().replace(/\s+/g, ' ').toLowerCase()
-}
-
 /** The text of the last answer in the thread, if there is one. */
 export function lastAssistantText(items: ThreadItem[]): string {
   for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -1446,52 +1444,4 @@ export function transcriptOf(items: ThreadItem[]): string {
     if (text) parts.push(`## Pi\n\n${text}`)
   }
   return parts.join('\n\n')
-}
-
-/**
- * Map the user messages in the thread to the entry ids Pi can fork from.
- *
- * Pi reports the forkable prompts of the active branch in order, so the
- * pairing is positional. The text is used first, because a resumed session
- * and a live stream can disagree about whitespace.
- */
-export function pairForkTargets(
-  items: ThreadItem[],
-  targets: ForkTarget[]
-): Map<string, string> {
-  const paired = new Map<string, string>()
-  if (!targets.length) return paired
-
-  const byText = new Map<string, string[]>()
-  for (const target of targets) {
-    const key = normalizePrompt(target.text)
-    const bucket = byText.get(key)
-    if (bucket) bucket.push(target.entryId)
-    else byText.set(key, [target.entryId])
-  }
-
-  const users = items.filter((item): item is UserItem => item.kind === 'user')
-  const used = new Set<string>()
-
-  for (const user of users) {
-    const bucket = byText.get(normalizePrompt(user.text))
-    const entryId = bucket?.shift()
-    if (!entryId) continue
-    paired.set(user.id, entryId)
-    used.add(entryId)
-  }
-
-  // A prompt with no text — an image-only message — still lines up by
-  // position within the branch.
-  const leftover = targets.filter((target) => !used.has(target.entryId))
-  let index = 0
-  for (const user of users) {
-    if (paired.has(user.id)) continue
-    const target = leftover[index]
-    index += 1
-    if (!target) break
-    paired.set(user.id, target.entryId)
-  }
-
-  return paired
 }

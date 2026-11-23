@@ -184,6 +184,8 @@ export interface AgentMessage {
   role: string
   content: string | ContentBlock[]
   timestamp: number
+  /** ID of the enclosing session entry when supplied by replay. */
+  entryId?: string
   usage?: Usage
   stopReason?: string
   errorMessage?: string
@@ -227,7 +229,7 @@ export interface PiCommand {
 }
 
 /**
- * A user message the active branch can be forked from.
+ * A user message Pi reports as a fork point, including entries on other branches.
  *
  * Pi forks *before* the message, so the new branch keeps everything that came
  * earlier and the prompt itself comes back as text for the user to re-send.
@@ -962,7 +964,7 @@ export interface AppSettings {
   toolCallSummary?: boolean
   /** Name a new conversation from its first exchange with a throwaway model call. */
   autoTitle?: boolean
-  /** Automatically download available application and service updates. */
+  /** Check for updates in the background and download the installer when one is found. */
   automaticUpdates?: boolean
   /**
    * Closing the window hides the app in the system tray instead of quitting.
@@ -977,6 +979,12 @@ export interface AppSettings {
   /** Workspace-relative folder for generated pictures. */
   imageOutputDir?: string
 }
+
+/** Values shown to the editor before it changed a collection setting. */
+export type SettingsPatchBaseline = Partial<Pick<AppSettings,
+  'workspaces' | 'projectOrder' | 'pinnedSessions' | 'archivedSessions' |
+  'hiddenProjects' | 'lastSessions' | 'shortcutBindings'
+>>
 
 export interface PiLaunchInfo {
   source: 'custom' | 'bundled' | 'path' | 'none'
@@ -1045,6 +1053,13 @@ export interface AppUpdateProgress {
   transferredBytes?: number
   /** Size of the installer being downloaded. */
   totalBytes?: number
+}
+
+/** A verified installer already downloaded and waiting for a restart. */
+export interface DownloadedAppUpdate {
+  version: string
+  /** Installer size in bytes. */
+  bytes?: number
 }
 
 /** Progress of the development Pi CLI upgrade while npm is running. */
@@ -1202,9 +1217,24 @@ export interface PiDesktopBridge {
     emojiFont(): Promise<Uint8Array | null>
     /** Check for updates for the application and Pi CLI. */
     checkUpdate(): Promise<VersionCheckResult>
+    /**
+     * The bundled Pi CLI's version on its own.
+     *
+     * The CLI is the agent the app drives, so its version is checked whatever
+     * the reader decided about automatic app updates; a packaged build answers
+     * from the app's own files without touching the network.
+     */
+    checkPiCliUpdate(): Promise<VersionItemStatus>
     /** The last check that reached the network, kept across restarts. */
     updateState(): Promise<UpdateState | null>
-    /** Download a verified app release and restart through the Windows installer. */
+    /**
+     * Download and verify an app release without restarting. The installer
+     * stays on disk, so a restart can offer it again.
+     */
+    downloadUpdate(version: string): Promise<UpgradeResult>
+    /** The installer already downloaded and waiting for a restart, if any. */
+    downloadedUpdate(): Promise<DownloadedAppUpdate | null>
+    /** Download (unless already downloaded) a verified app release and restart through the Windows installer. */
     installAppUpdate(version: string): Promise<UpgradeResult>
     onAppUpdateProgress(handler: (progress: AppUpdateProgress) => void): () => void
     /** Upgrade the development Pi CLI; packaged builds use the bundled version. */
@@ -1247,7 +1277,7 @@ export interface PiDesktopBridge {
   }
   settings: {
     get(): Promise<AppSettings>
-    patch(patch: Partial<AppSettings>): Promise<AppSettings>
+    patch(patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): Promise<AppSettings>
   }
   remote: {
     status(): Promise<RemoteAccessStatus>
@@ -1291,7 +1321,7 @@ export interface PiDesktopBridge {
     /** Move a session file to the OS trash. Returns false when it fails. */
     remove(file: string): Promise<boolean>
     /** Active-branch messages and whether disk history was bounded. Does not start Pi. */
-    hydrate(file: string): Promise<SessionHydrationResult>
+    hydrate(file: string, scope?: 'branch'): Promise<SessionHydrationResult>
     /** Name a conversation. A hot one is renamed in its own process. */
     rename(file: string, name: string): Promise<boolean>
     /** Search conversation text on disk within the sidebar's archive filter. */
@@ -1381,15 +1411,15 @@ export interface PiDesktopBridge {
   }
   git: {
     /** Branch, ahead/behind and the working tree of the open workspace. */
-    status(): Promise<GitStatus>
-    log(limit?: number): Promise<GitCommit[]>
+    status(expectedRoot?: string): Promise<GitStatus>
+    log(limit?: number, expectedRoot?: string): Promise<GitCommit[]>
     /**
      * Commit the staged files, or — with `includeUnstaged` — stage everything
      * first and commit the whole working tree.
      */
-    commit(message: string, includeUnstaged?: boolean): Promise<GitCommitResult>
+    commit(message: string, includeUnstaged: boolean, expectedRoot: string): Promise<GitCommitResult>
     /** Both sides of one working-tree file, for the review tab. */
-    fileDiff(file: string): Promise<GitFileDiff>
+    fileDiff(file: string, expectedRoot?: string): Promise<GitFileDiff>
     /** Unified patch of the whole working tree, or of one file. */
     patch(file?: string): Promise<GitPatch>
     /** Metadata, file list and patch of one commit. */
@@ -1399,30 +1429,31 @@ export interface PiDesktopBridge {
     /** Both sides of one file between a commit and the file on disk. */
     commitWorktreeDiff(hash: string, file: string): Promise<GitCommitFileDiff | null>
     /** Apply a unified patch to the working tree, optionally in reverse. */
-    applyPatch(patch: string, reverse?: boolean): Promise<GitCommitResult>
+    applyPatch(patch: string, reverse: boolean, expectedRoot: string): Promise<GitCommitResult>
     /** Local branches and worktrees of the open repository. */
-    branches(): Promise<GitBranches>
-    switchBranch(name: string): Promise<GitCommitResult>
-    createBranch(name: string, checkout?: boolean): Promise<GitCommitResult>
+    branches(expectedRoot?: string): Promise<GitBranches>
+    switchBranch(name: string, expectedRoot: string): Promise<GitCommitResult>
+    createBranch(name: string, checkout: boolean, expectedRoot: string): Promise<GitCommitResult>
     /** Add a worktree, creating its branch when `createBranch` is set. */
     addWorktree(
       path: string,
       branch: string,
-      createBranch?: boolean
+      createBranch: boolean,
+      expectedRoot: string
     ): Promise<GitWorktreeResult>
     /** Remove a registered worktree that is not the one that is open. */
-    removeWorktree(path: string): Promise<GitCommitResult>
+    removeWorktree(path: string, expectedRoot: string): Promise<GitCommitResult>
     /** Discard the working-tree changes of a tracked file. */
-    revertFile(file: string): Promise<GitCommitResult>
+    revertFile(file: string, expectedRoot: string): Promise<GitCommitResult>
     /** Move one file into (or out of) the index. */
-    stageFile(file: string): Promise<GitCommitResult>
-    unstageFile(file: string): Promise<GitCommitResult>
-    stageAll(): Promise<GitCommitResult>
-    unstageAll(): Promise<GitCommitResult>
+    stageFile(file: string, expectedRoot: string): Promise<GitCommitResult>
+    unstageFile(file: string, expectedRoot: string): Promise<GitCommitResult>
+    stageAll(expectedRoot: string): Promise<GitCommitResult>
+    unstageAll(expectedRoot: string): Promise<GitCommitResult>
     /** Push the current branch to its upstream remote. */
-    push(): Promise<GitCommitResult>
+    push(expectedRoot: string): Promise<GitCommitResult>
     /** Pull changes from the upstream remote into the current branch. */
-    pull(): Promise<GitCommitResult>
+    pull(expectedRoot: string): Promise<GitCommitResult>
   }
   shell: {
     /** Data URLs of the installed editors' and shells' own icons. */

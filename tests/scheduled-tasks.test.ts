@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { ScheduledTaskService } from '../src/main/scheduled-tasks'
+import { properLockfile } from '../src/main/proper-lockfile'
 import type { SettingsStore } from '../src/main/settings'
 import type { SessionSupervisor } from '../src/main/pi/supervisor'
 
@@ -737,6 +738,67 @@ test('a scheduled run that crashes is recorded as an error, not completed', asyn
   }
 })
 
+test('scheduled tasks record the final model outcome when Pi settles', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-model-outcome-'))
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const [task] = service.create({
+      title: 'Check model outcome',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '23:59' }
+    })
+    const modelError = 'Provider rejected the request'
+    const sessionFile = path.join(userData, 'test-session.jsonl')
+    for (const outcome of ['error', 'completed', 'aborted'] as const) {
+      await service.runNow(task.id)
+      const ownerId = supervisor.ownerId
+      const willRetry = outcome !== 'error'
+      supervisor.emit('event', {
+        ownerId,
+        event: {
+          type: 'agent_end',
+          willRetry,
+          messages: [
+            { role: 'assistant', content: 'Starting', stopReason: 'toolUse' },
+            { role: 'assistant', content: [], stopReason: 'error', errorMessage: modelError }
+          ]
+        }
+      })
+      assert.equal(service.list()[0]?.lastStatus, 'running')
+      supervisor.emit('rekey', { from: ownerId, to: sessionFile })
+      if (outcome === 'completed') {
+        supervisor.emit('event', {
+          ownerId: sessionFile,
+          event: { type: 'agent_end', messages: [{ role: 'assistant', content: 'Done', stopReason: 'stop' }] }
+        })
+      }
+      supervisor.emit('event', {
+        ownerId: sessionFile,
+        event: { type: 'agent_settled', aborted: outcome === 'aborted' }
+      })
+
+      const [saved] = JSON.parse(readFileSync(path.join(userData, 'scheduled-tasks.json'), 'utf8'))
+      assert.equal(saved.lastStatus, outcome)
+      assert.equal(saved.lastError, outcome === 'error' ? modelError : undefined)
+      assert.equal(saved.lastSessionFile, sessionFile)
+    }
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
 test('an RPC error keeps a scheduled task reserved while its agent is still running', async () => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-rpc-error-test-'))
   const supervisor = new RpcErrorWhileRunningSupervisor()
@@ -912,6 +974,104 @@ test('a late prompt response failure does not overwrite an already settled task'
   }
 })
 
+test('a late RPC failure cannot finish or unlock the next run of the same task', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-late-response-'))
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const open = (owner: FakeSupervisor) => new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: owner as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  const service = open(supervisor)
+  const peerSupervisor = new FakeSupervisor()
+  const peer = open(peerSupervisor)
+
+  const firstPrompt = Promise.withResolvers<string>()
+  const firstResponse = Promise.withResolvers<never>()
+  supervisor.request = async <T>(key: string, command: string): Promise<T> => {
+    if (command !== 'prompt') return {} as T
+    if (supervisor.ensureCalls === 1) {
+      firstPrompt.resolve(key)
+      return firstResponse.promise
+    }
+    return { disposition: 'started' } as T
+  }
+
+  try {
+    const [task] = service.create({
+      title: 'Keep the next run reserved',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '23:59' }
+    })
+    const firstRun = assert.rejects(service.runNow(task.id), /Late RPC failure/)
+    const firstKey = await firstPrompt.promise
+    const firstFile = path.join(userData, 'first-session.jsonl')
+    supervisor.emit('rekey', { from: firstKey, to: firstFile })
+    supervisor.emit('event', { ownerId: firstFile, event: { type: 'agent_settled', aborted: false } })
+
+    await service.runNow(task.id)
+    const secondKey = supervisor.ownerId
+    assert.notEqual(secondKey, firstKey)
+    firstResponse.reject(new Error('Late RPC failure'))
+    await firstRun
+
+    const [saved] = JSON.parse(readFileSync(path.join(userData, 'scheduled-tasks.json'), 'utf8'))
+    assert.equal(saved.lastStatus, 'running')
+    assert.equal(saved.lastError, undefined)
+    await assert.rejects(service.runNow(task.id), /already running/)
+    await assert.rejects(peer.runNow(task.id), /already running/)
+    assert.equal(supervisor.ensureCalls, 2)
+    assert.equal(peerSupervisor.ensureCalls, 0)
+
+    supervisor.emit('event', { ownerId: secondKey, event: { type: 'agent_settled', aborted: false } })
+    assert.equal(service.list()[0]?.lastStatus, 'completed')
+  } finally {
+    service.dispose()
+    peer.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('a handled prompt settles the run after its draft acquires a session file', async () => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-handled-rekey-'))
+  const sessionFile = path.join(userData, 'handled-session.jsonl')
+  const supervisor = new FakeSupervisor()
+  supervisor.request = async <T>(key: string, command: string): Promise<T> => {
+    if (command !== 'prompt') return {} as T
+    supervisor.emit('rekey', { from: key, to: sessionFile })
+    return { disposition: 'handled' } as T
+  }
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const service = new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+
+  try {
+    const [task] = service.create({
+      title: 'Handled after rekey',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'daily', time: '23:59' }
+    })
+    const [completed] = await service.runNow(task.id)
+    assert.equal(completed.lastStatus, 'completed')
+    assert.equal(completed.lastSessionFile, sessionFile)
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
 test('a prompt removed from the supervisor queue is recorded as aborted', async () => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-cancelled-test-'))
   const supervisor = new CancelledPromptSupervisor()
@@ -979,6 +1139,7 @@ test('a completion persistence failure does not interrupt supervisor event deliv
     assert.ok(supervisor.ownerId)
 
     const serviceInternals = service as unknown as { write: () => void }
+    const originalWrite = serviceInternals.write
     serviceInternals.write = () => { throw new Error('disk full') }
     supervisor.on('event', () => { laterListenerReceivedEvent = true })
     console.error = () => {}
@@ -989,9 +1150,75 @@ test('a completion persistence failure does not interrupt supervisor event deliv
     }))
     assert.equal(laterListenerReceivedEvent, true)
     assert.equal(service.list()[0]?.lastStatus, 'completed')
+
+    serviceInternals.write = originalWrite
+    service.dispose()
+    const [saved] = JSON.parse(readFileSync(path.join(userData, 'scheduled-tasks.json'), 'utf8'))
+    assert.equal(saved.lastStatus, 'completed', 'shutdown flushes the result if storage has recovered')
   } finally {
     console.error = originalError
     service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('a completion blocked by another writer persists without losing a concurrent edit', async (t) => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-retry-result-'))
+  const file = path.join(userData, 'scheduled-tasks.json')
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const open = (owner = new FakeSupervisor()) => new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: owner as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  const first = open(supervisor)
+  const services = [first]
+
+  try {
+    const [task] = first.create({
+      title: 'Durable result',
+      prompt: 'Do the work',
+      workspaceId: 'project',
+      schedule: { kind: 'once', at: Date.now() + 3_600_000 }
+    })
+    await first.runNow(task.id)
+    const sessionFile = path.join(userData, 'result.jsonl')
+    supervisor.emit('rekey', { from: supervisor.ownerId, to: sessionFile })
+    const release = properLockfile.lockSync(file, { realpath: false })
+    const log = t.mock.method(console, 'error', () => {})
+    try {
+      supervisor.emit('event', { ownerId: sessionFile, event: { type: 'agent_settled', aborted: false } })
+      assert.equal(first.list()[0]?.lastStatus, 'completed')
+      assert.equal(JSON.parse(readFileSync(file, 'utf8'))[0]?.lastStatus, 'running')
+    } finally {
+      log.mock.restore()
+      release()
+    }
+
+    const second = open()
+    services.push(second)
+    assert.equal(second.list()[0]?.lastStatus, 'running', 'a peer must not recover a result being saved')
+    second.update(task.id, { ...task, title: 'Edited in the second instance' })
+
+    const deadline = Date.now() + 6_000
+    while (Date.now() < deadline && JSON.parse(readFileSync(file, 'utf8'))[0]?.lastStatus !== 'completed') {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    assert.equal(JSON.parse(readFileSync(file, 'utf8'))[0]?.lastStatus, 'completed', 'the scheduler retries without a user edit')
+    first.dispose()
+    const reopened = open()
+    services.push(reopened)
+    const [saved] = reopened.list()
+    assert.equal(saved?.lastStatus, 'completed')
+    assert.equal(saved?.lastSessionFile, sessionFile)
+    assert.equal(saved?.title, 'Edited in the second instance')
+    assert.equal(saved?.enabled, false)
+  } finally {
+    for (const service of services) service.dispose()
     rmSync(userData, { recursive: true, force: true })
   }
 })
@@ -1538,6 +1765,67 @@ test('a file that turns unreadable while the app runs clears the list and is set
     assert.deepEqual(published.slice(-1), [0], 'the page was not told the list is gone')
   } finally {
     service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('corruption recovery waits for the writer and keeps a peer’s replacement file', (t) => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-corrupt-race-'))
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const file = path.join(userData, 'scheduled-tasks.json')
+  const input = {
+    title: 'Original task',
+    prompt: 'Do the work',
+    workspaceId: 'project',
+    schedule: { kind: 'once' as const, at: Date.now() + 60 * 60 * 1000 }
+  }
+  const open = () => new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: new FakeSupervisor() as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  const service = open()
+  let peer: ScheduledTaskService | undefined
+  const log = t.mock.method(console, 'error', () => {})
+
+  try {
+    service.create(input)
+    const corrupt = '[{"id":'
+    writeFileSync(file, corrupt, 'utf8')
+
+    const release = properLockfile.lockSync(file, { realpath: false })
+    try {
+      assert.equal(service.list()[0]?.title, input.title)
+      assert.deepEqual(quarantined(userData), [])
+      assert.equal(readFileSync(file, 'utf8'), corrupt)
+    } finally {
+      release()
+    }
+
+    const originalLock = properLockfile.lockSync
+    const lock = t.mock.method(properLockfile, 'lockSync', (target, options) => {
+      if (target === file && !peer) {
+        lock.mock.restore()
+        // The peer wins the lock after the original service has already read
+        // the bad bytes and before it can re-check or move the file.
+        peer = open()
+        peer.create({ ...input, title: 'Saved by the peer' })
+      }
+      return originalLock(target, options)
+    })
+
+    assert.equal(service.list()[0]?.title, 'Saved by the peer')
+    assert.equal(JSON.parse(readFileSync(file, 'utf8'))[0]?.title, 'Saved by the peer')
+    const backups = quarantined(userData)
+    assert.equal(backups.length, 1)
+    assert.equal(readFileSync(path.join(userData, backups[0]), 'utf8'), corrupt)
+    assert.equal(log.mock.callCount(), 1, 'only the successful quarantine should be logged')
+  } finally {
+    service.dispose()
+    peer?.dispose()
     rmSync(userData, { recursive: true, force: true })
   }
 })

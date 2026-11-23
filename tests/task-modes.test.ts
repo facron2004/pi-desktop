@@ -16,6 +16,7 @@ import {
 
 type Entry = {
   type: string
+  id?: string
   customType: string
   data: unknown
   message?: { role?: string; content?: string | { type?: string; name?: unknown }[] }
@@ -983,8 +984,9 @@ test('Computer Use is a setting: on in the normal loadout, off in Plan Mode, and
 })
 
 test('the edit command rewinds the active branch instead of forking a conversation', async () => {
-  const f = fixture()
+  const f = fixture([{ type: 'message', id: 'entry-1', customType: '', data: undefined, message: { role: 'user' } }])
   f.emit('session_start')
+  await assert.rejects(f.command('desktop-rewind', 'another-branch'), /active branch/)
   await f.command('desktop-rewind', 'entry-1')
   assert.deepEqual(f.navigations, [{ targetId: 'entry-1', options: { summarize: false } }])
 })

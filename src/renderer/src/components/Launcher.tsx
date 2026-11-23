@@ -528,7 +528,7 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       hint: project.path,
       group: 'Projects',
       icon: FolderOpen,
-      run: () => switchProject(project.path, { allowWhileRunning: true })
+      run: async () => { await switchProject(project.path, { allowWhileRunning: true }) }
     })
   }
 

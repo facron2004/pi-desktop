@@ -32,6 +32,7 @@ export const BranchMenu = memo(function BranchMenu({
   const gitChipRef = useRef<HTMLButtonElement>(null)
   const git = useAppStore((state) => state.git)
   const workspace = useAppStore((state) => state.workspace)
+  const expectedRoot = workspace?.path ?? ''
   const refreshGit = useAppStore((state) => state.refreshGit)
   const switchProject = useAppStore((state) => state.switchProject)
   const removeWorkspace = useAppStore((state) => state.removeWorkspace)
@@ -40,29 +41,35 @@ export const BranchMenu = memo(function BranchMenu({
   const setPendingWorktree = useAppStore((state) => state.setPendingWorktree)
   const t = useT()
 
-  const [data, setData] = useState<GitBranches | undefined>(undefined)
+  const [loaded, setLoaded] = useState<{ root: string; data: GitBranches }>()
+  const data = loaded?.root === expectedRoot ? loaded.data : undefined
+  const loadRequest = useRef(0)
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [busy, setBusy] = useState<string | undefined>(undefined)
   const [searchQuery, setSearchQuery] = useState('')
   const [showNew, setShowNew] = useState(false)
   const [newBranch, setNewBranch] = useState('')
-  const [worktreeToRemove, setWorktreeToRemove] = useState<GitWorktree | undefined>()
+  const [worktreeToRemove, setWorktreeToRemove] = useState<{ worktree: GitWorktree; root: string }>()
 
   const restoreFocus = () => requestAnimationFrame(() => gitChipRef.current?.focus())
 
   const load = useCallback(async () => {
+    const request = ++loadRequest.current
     setLoading(true)
     setLoadError(false)
     try {
-      setData(await window.pi.git.branches())
+      const data = await window.pi.git.branches(expectedRoot)
+      if (request === loadRequest.current) setLoaded({ root: expectedRoot, data })
     } catch {
-      setData(undefined)
-      setLoadError(true)
+      if (request === loadRequest.current) {
+        setLoaded(undefined)
+        setLoadError(true)
+      }
     } finally {
-      setLoading(false)
+      if (request === loadRequest.current) setLoading(false)
     }
-  }, [])
+  }, [expectedRoot])
 
   const filteredBranches = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
@@ -103,7 +110,7 @@ export const BranchMenu = memo(function BranchMenu({
         return
       }
 
-      const result = await window.pi.git.switchBranch(name)
+      const result = await window.pi.git.switchBranch(name, expectedRoot)
       if (!result.ok) {
         showToast(result.error ?? t('Could not switch branch'), 'error')
         return
@@ -122,7 +129,7 @@ export const BranchMenu = memo(function BranchMenu({
     if (!name || busy) return
     setBusy('create')
     try {
-      const result = await window.pi.git.createBranch(name, true)
+      const result = await window.pi.git.createBranch(name, true, expectedRoot)
       if (!result.ok) {
         showToast(result.error ?? t('Could not create the branch'), 'error')
         return
@@ -154,11 +161,12 @@ export const BranchMenu = memo(function BranchMenu({
   }
 
   const removeWorktree = async () => {
-    const target = worktreeToRemove
-    if (!target || busy) return
+    const pending = worktreeToRemove
+    if (!pending || busy) return
+    const { worktree: target, root } = pending
     setBusy('remove-worktree')
     try {
-      const result = await window.pi.git.removeWorktree(target.path)
+      const result = await window.pi.git.removeWorktree(target.path, root)
       if (!result.ok) {
         showToast(result.error ?? t('Could not remove the worktree'), 'error')
         void load()
@@ -349,7 +357,7 @@ export const BranchMenu = memo(function BranchMenu({
                                 : `${t('Remove worktree')}: ${worktree.path}`
                           }
                           onClick={() => {
-                            if (!busy && !dirty) setWorktreeToRemove(worktree)
+                            if (!busy && !dirty) setWorktreeToRemove({ worktree, root: expectedRoot })
                           }}
                         >
                           <Trash2 size={12} />
@@ -458,7 +466,7 @@ export const BranchMenu = memo(function BranchMenu({
     worktreeToRemove ? (
       <ConfirmDialog
         key="remove-worktree"
-        title={`${t('Remove worktree')}: ${basename(worktreeToRemove.path)}`}
+        title={`${t('Remove worktree')}: ${basename(worktreeToRemove.worktree.path)}`}
         body={t('The worktree folder will be removed from disk. Its branch will remain.')}
         confirmLabel={busy === 'remove-worktree' ? 'Working…' : 'Remove worktree'}
         tone="danger"

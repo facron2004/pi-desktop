@@ -9,6 +9,7 @@ const fixture = path.join(process.cwd(), 'tests', 'fixtures', 'sessions', 'branc
 test('the saved session sample restores the active branch and is not rewritten', async () => {
   const before = readFileSync(fixture)
   const messages = await readSessionMessages(fixture)
+  assert.equal(messages[0]?.entryId, 'm1')
   assert.deepEqual(
     messages.map((message) => message.content),
     ['hello', 'hi']

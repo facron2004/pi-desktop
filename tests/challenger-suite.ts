@@ -147,7 +147,7 @@ test('CHALLENGE 1.2 (CRITICAL): Stale dialog of stopped session A must NOT be de
   assert.equal(b.hasPendingUi('dlg-b'), true, 'Session B pending dialog was corrupted!')
 })
 
-test('CHALLENGE 1.3: Dead process error cleans up approvals and releases directory lock immediately', async () => {
+test('CHALLENGE 1.3: Process exit cleans up approvals and releases the directory lock', async () => {
   const a = new MockManagedRuntime()
   const supervisor = new SessionSupervisor(() => a)
 
@@ -162,11 +162,10 @@ test('CHALLENGE 1.3: Dead process error cleans up approvals and releases directo
     sessionKey: 'A.jsonl'
   } as PiEvent)
 
-  // Process dies unexpectedly
   a.running = false
-  a.emit('status', { phase: 'error', error: 'Child crashed with SIGKILL', cwd: 'C:/ws-crash' } as RuntimeStatus)
+  a.emit('status', { phase: 'stopped', error: 'Child crashed with SIGKILL', cwd: 'C:/ws-crash' } as RuntimeStatus, true)
+  await new Promise<void>((resolve) => setImmediate(resolve))
 
-  // Directory lock is immediately acquirable
   const lockResult = await supervisor.withCwdLock('C:/ws-crash', async () => 'recovered')
   assert.equal(lockResult, 'recovered')
 })

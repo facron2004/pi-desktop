@@ -4,11 +4,15 @@
  *   node scripts/verify-update-persistence.mjs
  *
  * Three parts:
- *   1. an online launch that finds a newer release and writes the reading to
- *      disk;
- *   2. the application exits — a separate process, not a hidden window;
- *   3. an offline launch where GitHub is unreachable, and the sidebar badge
- *      and the About page must still show the version the first run found.
+ *   1. an online launch that checks for a newer release (through the About
+ *      page's "Check now", so the automatic-check setting is not required for
+ *      the harness) and writes the reading to disk;
+ *   2. the application exits — a separate process, not a hidden window — and a
+ *      downloaded installer record is left in its place;
+ *   3. an offline launch where GitHub is unreachable; a check is attempted and
+ *      fails, and the sidebar icon must still show the version the first run
+ *      found and offer "restart and install" from the kept installer, while
+ *      the About page shows the auto-check switch.
  *
  * The packaged build is used when it exists, so the run exercises the real
  * product rather than the development entry point.
@@ -20,7 +24,7 @@
  * code is changed for the test.
  */
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -58,18 +62,24 @@ const stateFile = path.join(profile, 'update-state.json')
 const onlineShot = path.join(output, '1-online.png')
 const offlineShot = path.join(output, '2-offline-restart.png')
 
-function launch(extraEnv) {
+function launch(extraEnv, { manualCheck }) {
   return promisify(execFile)(executable, args, {
     cwd: root,
     env: {
       ...process.env,
+      // The harness may itself be started by a process that runs Electron as
+      // Node; without this the app would start as plain Node and have no
+      // `ipcMain`.
+      ELECTRON_RUN_AS_NODE: undefined,
       PI_DESKTOP_USER_DATA: profile,
       PI_DESKTOP_WORKSPACE: workspace,
       PI_CODING_AGENT_DIR: agent,
       PI_CODING_AGENT_SESSION_DIR: path.join(agent, 'sessions'),
       PI_DESKTOP_RPC_TRACE: '0',
       PI_DESKTOP_SCREENSHOT_DELAY: '12000',
-      PI_DESKTOP_EVAL: probeScript,
+      PI_DESKTOP_EVAL: probeScript
+        .replace('__MANUAL_CHECK__', manualCheck ? 'true' : 'false')
+        .replace('__CLOSE_SETTINGS__', 'false'),
       PI_DESKTOP_EVAL_DELAY: '800',
       ...extraEnv
     },
@@ -88,10 +98,11 @@ try {
   const online = await launch({
     NODE_OPTIONS: '--require "' + fakeReleaseModule.replace(/\\/g, '/') + '"',
     PI_DESKTOP_SCREENSHOT: onlineShot
-  })
+  }, { manualCheck: true })
   const onlineOut = online.stdout + online.stderr
   const onlineEval = /\[pi-desktop\] eval result: (.*)/.exec(onlineOut)
   log('第 1 次页面读数: ' + (onlineEval ? onlineEval[1] : '(无)'))
+  if (!onlineEval) log('第 1 次完整输出:\n' + onlineOut.slice(-4000))
   log('第 1 次截图: ' + onlineShot)
 
   let state = null
@@ -111,13 +122,25 @@ try {
 
   // ---- 2. the app has exited by now --------------------------------------
   log('=== 第一次启动已退出（独立进程结束）===')
+  // A downloaded installer from that run. The next launch must offer
+  // "restart and install" from this file instead of downloading again.
+  const updateDir = path.join(profile, 'updates')
+  mkdirSync(updateDir, { recursive: true })
+  const installerBytes = Buffer.from('MZ fixture installer; the harness never runs it')
+  writeFileSync(path.join(updateDir, 'installer.exe'), installerBytes)
+  writeFileSync(
+    path.join(updateDir, 'installer.json'),
+    JSON.stringify({ version: '0.11.9', bytes: installerBytes.length, downloadedAt: Date.now() }),
+    'utf8'
+  )
+  log('已写入“已下载安装包”：' + path.join(updateDir, 'installer.exe'))
 
   // ---- 3. offline launch -------------------------------------------------
   log('=== 第 2 次启动：离线，GitHub 不可达 ===')
   const offline = await launch({
     NODE_OPTIONS: '--require "' + offlineModule.replace(/\\/g, '/') + '"',
     PI_DESKTOP_SCREENSHOT: offlineShot
-  })
+  }, { manualCheck: true })
   const offlineOut = offline.stdout + offline.stderr
   const offlineEval = /\[pi-desktop\] eval result: (.*)/.exec(offlineOut)
   const blocked = /\[offline\] blocked/.test(offlineOut)
@@ -126,14 +149,30 @@ try {
   log('第 2 次截图: ' + offlineShot)
 
   const probe = offlineEval ? JSON.parse(offlineEval[1]) : {}
+  // A packaged Windows install is the only build that may restart into a
+  // downloaded installer; the development entry point must keep offering the
+  // download page instead, however complete the file on disk looks.
+  const selfUpdate = usePackaged
   const sidebarShown = Boolean(probe.sidebarBadge && probe.sidebarBadge.exists)
   const aboutShown = Boolean(probe.aboutHasVersion)
-  log('侧栏更新徽标存在: ' + sidebarShown + ' ' + JSON.stringify(probe.sidebarBadge || {}))
+  const readyShown = probe.sidebarBadge?.state === 'ready'
+  const readyLabel = /restart and install|重启并安装/i.test(probe.sidebarBadge?.aria || '')
+  const pageLabel = /open download page|打开下载页/i.test(probe.sidebarBadge?.aria || '')
+  const fullRing = probe.sidebarBadge?.ringOffset !== null && Number(probe.sidebarBadge?.ringOffset) === 0
+  const autoCheckShown = Boolean(probe.aboutHasAutoCheck)
+  log('侧栏更新图标存在: ' + sidebarShown + ' ' + JSON.stringify(probe.sidebarBadge || {}))
+  log('图标进入“重启并安装”状态: ' + (selfUpdate === readyShown) + ' (state=' + probe.sidebarBadge?.state + ', aria=' + probe.sidebarBadge?.aria + ')' + (selfUpdate ? ' 满进度环: ' + fullRing : ''))
   log('“关于”页显示 v0.11.9: ' + aboutShown + ' ' + JSON.stringify(probe.aboutBadges || []))
-  const shown = sidebarShown && aboutShown
+  log('“关于”页自动检查更新开关: ' + autoCheckShown)
 
   if (!blocked) throw new Error('离线模拟没有生效，GitHub 请求没有被拦截')
-  if (!shown) throw new Error('离线重启后没有显示上次检查到的版本')
+  if (!sidebarShown || !aboutShown) throw new Error('离线重启后没有显示上次检查到的版本')
+  if (selfUpdate && (!readyShown || !readyLabel)) throw new Error('离线重启后没有显示“重启并安装”的更新图标')
+  if (selfUpdate && !fullRing) throw new Error('“重启并安装”状态的进度环不是满的')
+  if (!selfUpdate && (readyShown || !pageLabel)) {
+    throw new Error('开发入口不该自称能重启安装，应指向下载页')
+  }
+  if (!autoCheckShown) throw new Error('“关于”页没有“自动检查更新”开关')
 
   log('=== 验证通过 ===')
 } finally {

@@ -106,7 +106,7 @@ export function EditProjectDialog({
       updatedWorkspaces = [...workspaces, targetWorkspace]
     }
 
-    await updateSettings({ workspaces: updatedWorkspaces })
+    await updateSettings({ workspaces: updatedWorkspaces }, { workspaces })
 
     // Update active workspace in store if this project is currently active
     if (

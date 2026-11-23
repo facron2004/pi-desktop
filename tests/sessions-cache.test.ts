@@ -1152,7 +1152,7 @@ test('an oversized trailing record does not make the conversation appear empty',
   }
 })
 
-test('appendSessionName expands its tail window to find a large active leaf', async () => {
+test('appendSessionName expands past a malformed tail record to find a large active leaf', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'pi-large-rename-'))
   const file = path.join(dir, 'session.jsonl')
   try {
@@ -1179,7 +1179,8 @@ test('appendSessionName expands its tail window to find a large active leaf', as
           id: 'answer-1',
           parentId: 'tool-1',
           message: { role: 'assistant', content: largeAnswer, timestamp: 3 }
-        })
+        }),
+        '{"type":"message","id":"interrupted"'
       ].join('\n') + '\n',
       'utf8'
     )
@@ -1190,6 +1191,8 @@ test('appendSessionName expands its tail window to find a large active leaf', as
     assert.ok(last)
     assert.equal(JSON.parse(last).parentId, 'answer-1')
     assert.equal((await getSessionMeta(file))?.name, 'Large answer session')
+    const messages = await readSessionMessages(file)
+    assert.equal(messages.at(-1)?.content.length, largeAnswer.length)
   } finally {
     clearSessionCache()
     rmSync(dir, { recursive: true, force: true })

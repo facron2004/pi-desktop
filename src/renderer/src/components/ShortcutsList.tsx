@@ -78,7 +78,7 @@ export function ShortcutsList({
       const serialized = serializeChords(entry, chords)
       if (serialized === undefined) delete next[entry.id]
       else next[entry.id] = serialized
-      void updateSettings({ shortcutBindings: next })
+      void updateSettings({ shortcutBindings: next }, { shortcutBindings: bindings })
     },
     [bindings, updateSettings]
   )
@@ -88,7 +88,7 @@ export function ShortcutsList({
       if (recording?.id === id) cancelRecording()
       const next = { ...(bindings ?? {}) }
       delete next[id]
-      void updateSettings({ shortcutBindings: next })
+      void updateSettings({ shortcutBindings: next }, { shortcutBindings: bindings })
     },
     [bindings, cancelRecording, recording?.id, updateSettings]
   )

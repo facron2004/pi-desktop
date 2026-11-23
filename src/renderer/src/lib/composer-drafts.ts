@@ -39,6 +39,20 @@ export interface ComposerDraftSnapshot {
   lastDraftKeys: Record<string, string>
 }
 
+export function composerDraftAfterSend(
+  draft: ComposerDraft,
+  text: string,
+  image: ComposerImageOptions | undefined
+): ComposerDraft {
+  return {
+    text: '',
+    images: [],
+    files: [],
+    history: [text, ...(draft.history ?? []).filter((entry) => entry !== text)].slice(0, 50),
+    image
+  }
+}
+
 export function composerDraftHasContent(draft: ComposerDraft | undefined): boolean {
   return Boolean(draft && (
     draft.text.trim() || draft.command || draft.images.length > 0 || (draft.files?.length ?? 0) > 0

@@ -121,7 +121,7 @@ try {
   check('Two directories run concurrently', live.has('A') && live.has('B'))
   check('Background A still owns its run', await evaluate('store.getState().threads[cases.A].isStreaming&&store.getState().threads[cases.B].isStreaming'))
   await evaluate('store.getState().newChat()')
-  const guardedGit = await evaluate("window.pi.git.switchBranch('must-not-switch')")
+  const guardedGit = await evaluate("window.pi.git.switchBranch('must-not-switch', store.getState().workspace.path)")
   check('Git writes see a background run even with an idle chat on screen', !guardedGit.ok && guardedGit.error.includes('conversation is working'), guardedGit)
   await select('B', dirs.B)
   await screenshot('concurrent')

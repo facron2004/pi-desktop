@@ -9,7 +9,6 @@ import type { InspectorRequest, ModelInfo } from '@shared/types'
 import { collectChanges } from '../lib/changes'
 import { formatClock, formatCost, formatExactTokens, formatTokens } from '../lib/format'
 import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from '../lib/search'
-import { pairForkTargets } from '../lib/thread'
 import { describeTool } from '../lib/tools'
 import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
@@ -217,7 +216,6 @@ export const Thread = memo(function Thread() {
   })
   const cwdWait = useAppStore((state) => state.cwdWait)
   const models = useAppStore((state) => state.models)
-  const forkTargets = useAppStore((state) => state.forkTargets)
   const editMessageFrom = useAppStore((state) => state.editMessageFrom)
   const t = useT()
   const forking = useAppStore((state) => state.forking)
@@ -489,11 +487,6 @@ export const Thread = memo(function Thread() {
       scheduledSearchContextRef.current = null
     }
   }, [])
-  const editEntryByUserId = useMemo(
-    () => pairForkTargets(items, forkTargets),
-    [sessionKey, turns.length, forkTargets]
-  )
-
   useEffect(() => {
     if (hits.length === 0) setSearchResultsOpen(false)
   }, [hits.length])
@@ -1138,9 +1131,8 @@ export const Thread = memo(function Thread() {
                   t={t}
                   onCopy={copy}
                   userCopied={copied === userId}
-                  editEntryId={userId ? editEntryByUserId.get(userId) : undefined}
-                  onEdit={editMessageFrom}
-                  editing={Boolean(userId && editEntryByUserId.has(userId) && forking)}
+                  onEdit={activeSessionFile ? editMessageFrom : undefined}
+                  editing={forking}
                   run={run}
                   runDurationMs={
                     turn.user
@@ -1229,8 +1221,7 @@ interface ThreadTurnViewProps {
   t: (text: string) => string
   onCopy: (id: string, text: string) => void
   userCopied: boolean
-  editEntryId?: string
-  onEdit: (entryId: string, text: string, images: UserItem['images']) => void
+  onEdit?: (item: UserItem) => void
   editing: boolean
   run: RunState
   runDurationMs?: number
@@ -1309,7 +1300,6 @@ function equalThreadTurnViewProps(
     previous.t === next.t &&
     previous.onCopy === next.onCopy &&
     previous.userCopied === next.userCopied &&
-    previous.editEntryId === next.editEntryId &&
     previous.onEdit === next.onEdit &&
     previous.editing === next.editing &&
     previous.runDurationMs === next.runDurationMs
@@ -1323,7 +1313,6 @@ const ThreadTurnView = memo(function ThreadTurnView({
   t,
   onCopy,
   userCopied,
-  editEntryId,
   onEdit,
   editing,
   run,
@@ -1458,7 +1447,6 @@ const ThreadTurnView = memo(function ThreadTurnView({
           item={turn.user}
           onCopy={onCopy}
           copied={userCopied ? turn.user.id : null}
-          editEntryId={editEntryId}
           onEdit={onEdit}
           editing={editing}
         />

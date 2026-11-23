@@ -175,6 +175,11 @@ reason a run failed stays below its summary, including when the process is
 folded. With auto-fold enabled, opening a failed run shows its group summaries
 first. Each group can then be expanded to inspect the individual tool results.
 
+Manual context compaction refreshes session state and keeps the transcript.
+Pi's `compaction_end` supplies the notice. The `get_messages` response is the
+compacted model context, so using it here would remove older messages and tool
+results from the view.
+
 `Thread` remembers the scroll position per conversation (session file or draft
 key) in a process-level map so switching to an empty chat cannot forget it;
 `rekeyThread` migrates a draft's entry when Pi writes the session file. It only
@@ -196,10 +201,16 @@ Pi stores a session as a tree of entries, and two commands move around it:
   back as text, so the client puts it back in the composer.
 - `clone` copies the active branch into a new session at the current position.
 
+Both load the new session's JSONL when the worker switches files. The disk
+transcript retains the original history through compaction and keeps loading
+if the reader opens another conversation before the copy is ready.
+
 Both need the session to be on disk already, so they fail on a session that has
-never received a message. `get_fork_messages` reports the prompts of the active
-branch, in order, with the entry id to fork from; the thread pairs them with the
-messages on screen in `src/renderer/src/lib/thread.ts`.
+never received a message. `get_fork_messages` reports prompts from the session
+tree, including other branches. An edit uses the displayed message's persisted
+entry ID. A live message without an ID resolves by timestamp and exact text
+against the saved branch. Pi checks the ID is on the current branch before it
+rewinds.
 
 **Editing a user message is not a fork.** The pencil sends the bundled
 `desktop-rewind` extension command, which calls Pi's `ctx.navigateTree` on the
@@ -264,6 +275,21 @@ unlinks the verified JSONL inside the session root while its mutation lock is
 held — it must not use `shell.trashItem`, because a deleted conversation must
 not leave a recoverable copy in the OS Recycle Bin. The confirmation body says
 the session file will be permanently deleted; keep that copy explicit.
+
+**Archived conversations are grouped by project in the single list.** The flat
+column ("Single list") has no project rows at all, which is what makes it quick
+to scan — but an archived conversation is exactly the row whose folder is not
+obvious from its surroundings. `groupArchivedByProject` in
+`lib/sidebar-view.ts` therefore takes archived rows out of the column and puts
+them back below it, one heading per project: the caller's project order holds,
+a folder that order does not name still gets a heading from its own folder name,
+and archived chats with no folder close the list. The heading is a label, not a
+row — no hover fill, and its glyph hangs in the row indent so the project name
+lines up with the conversation titles underneath. The
+`All conversations (show archived)` filter also gets an `Archived` section head,
+because the column above holds current work; in `Archived only` mode every row
+is archived, so the group headings speak for themselves. Tree grouping needs
+none of this: its project rows already say where a conversation came from.
 
 ### The name in the sidebar head
 
@@ -385,13 +411,15 @@ Removing a task stops its run for the same reason: a deleted task must not leave
 an agent working where nothing can see it.
 
 **An unreadable `scheduled-tasks.json` is set aside, not pinned.**
-`quarantineInvalidFile` renames it to `scheduled-tasks.corrupt-<stamp>.json` and
-continues from an empty list. Pinning the bad version's fingerprint (the old
+`recoverInvalidTaskFile` rechecks the current file under the same lock used by
+writers. It renames confirmed corrupt data to `scheduled-tasks.corrupt-<stamp>-<id>.json`
+and continues from an empty list. Lock contention leaves recovery for the next
+refresh. Pinning the bad version's fingerprint (the old
 behaviour) left the page empty for good: every write still started from a list
 that could never load, so a new task could not be created either and the only
 clue was a console line. Only a *content* error is quarantined — a file with no
-id, title or usable schedule is dropped per record with a count in the log, and
-an I/O error keeps the old pinning because the bytes may still be fine.
+id, title or usable schedule is dropped per record with a count in the log.
+An I/O error preserves the last successfully loaded list until refresh succeeds.
 
 A scheduled task carries its own project, prompt, schedule, **model and
 reasoning effort**. Empty model/effort fields mean "follow the app's saved
@@ -429,11 +457,12 @@ menu) on the left and the round send button on the right. Nothing about the
 composer is conditional on a run — the model, reasoning and session controls
 used to live in this bar, which is why starting or sending used to rearrange it.
 
-One round button, two meanings: it sends when the run is settled, and it stops
-when the agent is working. It stops only while there is no draft — with text in
-the box the button is the way to send (steer or queue), so the stop moves into
-the row under the box as `session-bar__stop`. Both call the same `stop()`; there
-is no second abort path.
+The round button stops an active run while the composer is empty or a submission
+is awaiting confirmation. Otherwise it sends the current draft (steer or queue),
+and `session-bar__stop` remains available under the box. Both stop controls call
+`stop()`. A submitted draft stays visible and on disk until acceptance.
+Acceptance clears the draft that was submitted if it still matches the editor,
+so an edit made while waiting survives.
 
 The model is a per-conversation choice: picking a model in a session sends
 `set_model` to that process and never writes the app default — only a draft
@@ -610,6 +639,78 @@ the rule at the handler; `output/audit/window-controls-check.cjs` reads
 `WS_MINIMIZEBOX` / `WS_MAXIMIZEBOX` from a real window with the settings page
 open.
 
+## Updates
+
+The update control is **one round button in the sidebar foot, beside Settings**,
+filled with the accent colour, and the whole download lives behind it.
+`lib/app-update.ts` owns both readings — the release a check found and the
+installer's stage (`downloading` / `ready` / `installing` / `error`) — because
+the sidebar is a list that can be folded away, and a download owned by the
+component would lose its progress with it. **The glyph is always the download
+mark**; the ring drawn inside the fill is the only progress reading, and it
+closes when the installer is verified. A full ring *is* the "restart to install"
+affordance — the click is the same click, only its meaning changes — so do not
+swap the glyph for a restart arrow or repaint the button in a second colour. A
+failed download is the one state that recolours the fill (to the danger tone).
+The hover card carries the installer size and the phase, because the foot has no
+room for a second line.
+
+- **Automatic checking is the reader's choice** (`automaticUpdates`, Settings →
+  About). On, the app checks for a release at startup and every 12 hours and
+  downloads it in the background; off, only *Help → Check for updates* and the
+  About page reach GitHub. The switch exists on every build — it used to be drawn
+  only for the development entry point.
+- **The bundled CLI is checked either way.** It is the agent this app drives, so
+  `app:checkPiCliUpdate` runs on its own clock whatever the switch says; a stale
+  agent is a wrong answer, not a missing feature. The reading lives beside the app
+  release in `lib/app-update.ts` (`piCliUpdate`, `notePiCliUpdate`), a full check
+  fills the same slot, and the About page's built-in-service row reads it — never
+  `updateStatus.piCli`, which only a manual check fills. Only a build that can
+  replace its CLI asks npm: a packaged app answers from its own files, and the
+  upgrade itself still follows the switch (it writes into the CLI's folder, so a
+  running agent is never swapped mid-run).
+- **A check that answered still counts.** Both schedulers publish the result
+  *before* asking whether their effect is still alive: at startup `info` and the
+  saved settings arrive in the middle of the first request, which tears the
+  effect down and rebuilds it — and an "is this still my effect?" test at that
+  moment threw away the one answer the app had, so the About page showed no
+  reading until someone pressed *Check now*. The reading belongs to the module;
+  `active` only gates the toast and the CLI upgrade.
+- **Downloading is not installing.** `app:downloadUpdate` fetches and verifies
+  the installer and stops there: no conversation is aborted and no task is
+  stopped for it. `app:installUpdate` is the click, and it still refuses while a
+  run is active (`prepareForCliUpgrade`).
+- **The finished installer is kept.** It lands in `<userData>/updates` with
+  `installer.json` naming its release, `app:downloadedUpdate` puts it back at
+  startup, and a later download of the same release reuses the file instead of
+  fetching it again. Reuse and installation recheck the saved SHA-256 so a
+  damaged cache is fetched again even if its size is unchanged. Older records
+  fetch the release metadata once to verify the cached file. A record that
+  names another release — or the running version — is pruned by the check.
+- **A failed check never replaces the last good reading.** Not in the sidebar,
+  not in the About page: `noteAppUpdateCheck` keeps `lastCheck`, and the About
+  page re-reads it after a failed check instead of painting the failure. The
+  same holds for the installer record: only a check that *reached the network*
+  may forget a downloaded release (`!result.app.error`), because a failure says
+  nothing about the verified bytes already on disk — and the main process prunes
+  the file under the same condition.
+- **A killed download does not leave its staging folder behind.** Each download
+  streams into its own `download-XXXXXX` folder and deletes it in a `finally`;
+  a process killed mid-download never gets there, so `clearStaleDownloads` sweeps
+  folders older than an hour — on each new download and on each successful check.
+  The age guard is what keeps it from deleting a second instance's live download.
+- **Only a build that can install shows "restart and install".** A portable or
+  development build has no installer of its own, so the same icon keeps offering
+  the download page — `data-state` stays `idle` even when a record is found in
+  the data folder.
+
+Two harnesses read the real button: `scripts/verify-update-persistence.mjs`
+drives two launches (online, then offline with the GitHub check blocked) and
+`scripts/verify-update-icon.mjs` runs a copied `release/win-unpacked` twice —
+once with only a reading on disk (the ring must be empty) and once with a
+verified installer beside it (the ring must be closed). Both read `data-state`,
+the ring's `stroke-dashoffset` and the About page out of the live window.
+
 ## The tray and the taskbar icon
 
 Two things belong to the main process and nowhere else: the system tray and
@@ -718,8 +819,10 @@ A session larger than the 24 MB read window is not dropped. `sessions.ts` reads
 its transcript from the tail — the newest 24 MB — and builds metadata from a 2 MB
 head plus a 1 MB tail. `getSessionMeta` must never answer `null` just because a
 file is long, or the sidebar hides a conversation the user can still resume.
-`readJsonlLines` starting mid-file skips the partial line, and a cold rename
-appends its `session_info` to the tail leaf.
+`readJsonlLines` starting mid-file skips the partial line. A cold rename finds
+the last valid leaf within its bounded read and appends `session_info` through
+the same handle. If the final record lacks LF, the append supplies it and keeps
+the existing bytes intact.
 
 Full-text search does not skip a long session: above the 8 MB direct-scan window
 it uses a per-session index in `<userData>/session-search-index/`, holding only
@@ -750,6 +853,16 @@ switch lives in General → Project safety. `Ctrl+,` opens the dialog. Its
 **Keyboard shortcuts** page and the `Ctrl+/` modal both render `ShortcutsList`
 from the single `SHORTCUTS` table in `lib/shortcuts.ts`, so a new chord needs
 adding in exactly one place and the launcher's Settings action shows its hint.
+
+**Deleting one memory asks first, and quotes the line it is about to lose.**
+`MemorySettings` used to unlink an entry on the trash icon's click, with no
+undo anywhere — the store keeps one `memories.json`, so a mis-click was final.
+A row now enters `pendingDelete` and the confirmation names the entry's own text
+(one line, capped at 120 characters) instead of asking a bare "are you sure"
+over a list of similar rows; `Clear all` keeps the separate dialog it always
+had. The placeholder is filled with a **function** replacer, because a memory's
+text is arbitrary and `$&` in it would otherwise be read as a replacement
+pattern by `String.replace`.
 
 ## The launcher
 
@@ -1071,6 +1184,9 @@ The branch menu keeps a **visible worktree checkbox** of its own, beside
 worktree is created when an empty conversation sends its first prompt — a new
 branch named from the current one (`main` → `main-wt`, then `main-wt-2`), an
 empty path so the folder is a sibling, then a switch into that checkout.
+Git checks the project captured when that send began. If navigation supersedes
+the checkout switch, the original submission stays in its composer. A
+successful switch passes its own conversation key to the sender.
 A conversation that already has a prompt does not gain a worktree on a later
 send. There is no branch or path form. Do **not** fold this row into the
 branch-creation form: it was hidden there twice (v0.3.0 and the "refine the

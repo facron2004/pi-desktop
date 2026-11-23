@@ -4,6 +4,7 @@ import type { SessionMeta } from '@shared/types'
 import {
   filterByArchive,
   flatSessions,
+  groupArchivedByProject,
   projectDepths,
   sortByMode
 } from '../src/renderer/src/lib/sidebar-view'
@@ -65,4 +66,61 @@ test('the single list is one newest-first column', () => {
   const rows = [session('older', 5), session('newest', 20), session('middle', 10)]
   assert.deepEqual(flatSessions(rows).map((s) => s.file), ['newest', 'middle', 'older'])
   assert.equal(rows[0]!.file, 'older')
+})
+
+const inProject = (file: string, cwd: string, updatedAt: number): SessionMeta => ({
+  ...session(file, updatedAt),
+  cwd
+})
+
+test('archived conversations are grouped by the project they came from', () => {
+  const rows = [
+    inProject('a-old', 'C:/work/alpha', 10),
+    inProject('b-new', 'C:/work/beta', 30),
+    inProject('a-new', 'C:/work/alpha', 40),
+    inProject('b-old', 'C:/work/beta', 20)
+  ]
+  const groups = groupArchivedByProject(rows, {
+    projectName: (path) => ({ 'c:/work/alpha': 'Alpha', 'c:/work/beta': 'Beta' })[
+      path.replace(/\\/g, '/').toLowerCase()
+    ],
+    projectlessName: 'No project',
+    order: ['C:\\work\\alpha', 'C:/work/beta']
+  })
+
+  // The caller's project order wins over newest activity.
+  assert.deepEqual(groups.map((group) => group.key), ['c:/work/alpha', 'c:/work/beta'])
+  assert.deepEqual(groups.map((group) => group.name), ['Alpha', 'Beta'])
+  // Inside a group the newest conversation is on top.
+  assert.deepEqual(groups[0]!.sessions.map((s) => s.file), ['a-new', 'a-old'])
+  assert.deepEqual(groups[1]!.sessions.map((s) => s.file), ['b-new', 'b-old'])
+})
+
+test('archived groups fall back to the folder name and put projectless chats last', () => {
+  const rows = [
+    inProject('loose', 'C:/work/unknown', 5),
+    inProject('chat', '', 99),
+    inProject('named', 'C:/work/alpha', 1)
+  ]
+  const groups = groupArchivedByProject(rows, {
+    projectName: (path) => (path.toLowerCase().includes('alpha') ? 'Alpha' : undefined),
+    projectlessName: 'No project',
+    order: ['C:/work/alpha']
+  })
+
+  // A known project keeps its place; a folder the order does not name still gets
+  // a heading from its own folder name and follows; chats with no folder close it.
+  assert.deepEqual(groups.map((group) => group.name), ['Alpha', 'unknown', 'No project'])
+  assert.deepEqual(groups.map((group) => group.sessions.length), [1, 1, 1])
+  assert.equal(groups[2]!.key, '')
+})
+
+test('folders outside the project order come newest-first, and no rows make no groups', () => {
+  const rows = [
+    inProject('older-folder', 'C:/work/one', 10),
+    inProject('newer-folder', 'C:/work/two', 50)
+  ]
+  const groups = groupArchivedByProject(rows, { projectlessName: 'No project' })
+  assert.deepEqual(groups.map((group) => group.name), ['two', 'one'])
+  assert.deepEqual(groupArchivedByProject([], { projectlessName: 'No project' }), [])
 })

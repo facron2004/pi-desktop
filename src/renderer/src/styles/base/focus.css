@@ -2,7 +2,6 @@
    loaded later with a settings or tool page, so focus cannot grow a second ring. */
 :root :is(
   .input,
-  .appearance-select-native,
   .branch-menu__create-input,
   .color-picker__hex,
   .commit__input,

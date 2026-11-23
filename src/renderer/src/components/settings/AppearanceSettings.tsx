@@ -1,5 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Check, ChevronDown, ChevronRight, Copy, Download, Search, Sparkles, X } from 'lucide-react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Check, ChevronDown, ChevronRight, Copy, Download, Search, X } from 'lucide-react'
+import {
+  ACCENT_PRESETS,
+  CUSTOM_THEME_ID,
+  DEFAULT_THEME_ID,
+  THEME_PRESETS,
+  TONE_PRESETS,
+  findThemePreset,
+  presetPalette
+} from '@shared/theme-presets'
 import {
   FONT_SCALE_LABELS,
   FONT_SCALE_PRESETS,
@@ -13,75 +22,55 @@ import { Popover } from '../Popover'
 import { Switch } from '../Switch'
 import { SettingsGroup } from './SettingsShared'
 
-interface ThemePreset {
-  id: string
-  name: string
-  accent: string
-  light: { bg: string; fg: string }
-  dark: { bg: string; fg: string }
+/** One preset's canvas with its accent sitting on it, as the menu draws it. */
+function ThemeSwatch({ bg, accent }: { bg: string; accent: string }) {
+  return (
+    <span className="appearance-swatch" style={{ background: bg }} aria-hidden="true">
+      <span className="appearance-swatch__dot" style={{ background: accent }} />
+    </span>
+  )
 }
 
-const THEME_PRESETS: ThemePreset[] = [
-  {
-    id: 'chatgpt',
-    name: 'ChatGPT',
-    accent: '#D97757',
-    light: { bg: '#FAF9F5', fg: '#141413' },
-    dark: { bg: '#212121', fg: '#ECECEC' }
-  },
-  {
-    id: 'claude',
-    name: 'Claude',
-    accent: '#D97757',
-    light: { bg: '#FBF9F5', fg: '#1F1E1D' },
-    dark: { bg: '#18181B', fg: '#F4F4F5' }
-  },
-  {
-    id: 'pi',
-    name: 'Pi Classic',
-    accent: '#D95B26',
-    light: { bg: '#FFFFFF', fg: '#242424' },
-    dark: { bg: '#16181D', fg: '#F2F4F8' }
-  },
-  {
-    id: 'github',
-    name: 'GitHub',
-    accent: '#0969DA',
-    light: { bg: '#FFFFFF', fg: '#000000' },
-    dark: { bg: '#0D1117', fg: '#E6EDF3' }
-  },
-  {
-    id: 'vitesse',
-    name: 'Vitesse',
-    accent: '#4D9375',
-    light: { bg: '#FAFAFA', fg: '#374151' },
-    dark: { bg: '#121212', fg: '#DBDBDB' }
-  },
-  {
-    id: 'nord',
-    name: 'Nord',
-    accent: '#88C0D0',
-    light: { bg: '#ECEFF4', fg: '#2E3440' },
-    dark: { bg: '#2E3440', fg: '#ECEFF4' }
-  }
-]
+/** One accent as a solid chip, for the accent menu. */
+function AccentSwatch({ color }: { color: string }) {
+  return (
+    <span
+      className="appearance-swatch appearance-swatch--solid"
+      style={{ background: color }}
+      aria-hidden="true"
+    />
+  )
+}
 
-const ACCENT_PRESETS = [
-  { label: 'Custom', value: 'custom' },
-  { label: 'Terracotta (ChatGPT)', value: '#D97757' },
-  { label: 'Classic Orange (Pi)', value: '#D95B26' },
-  { label: 'Emerald (OpenAI)', value: '#10A37F' },
-  { label: 'Ocean Blue', value: '#3B82F6' },
-  { label: 'Violet', value: '#8B5CF6' },
-  { label: 'Rose', value: '#EC4899' },
-  { label: 'Amber', value: '#F59E0B' },
-  { label: 'Cyan', value: '#06B6D4' }
-]
-
-const TONE_PRESETS = [
-  { id: 'neutral', label: 'Normal contrast' },
-  { id: 'contrast', label: 'High contrast' }
-]
+/** A pill's shape, shared by the three menus so they cannot drift apart. */
+function MenuRow({
+  label,
+  selected,
+  onPick,
+  swatch,
+  role = 'option'
+}: {
+  label: string
+  selected: boolean
+  onPick: () => void
+  swatch?: ReactNode
+  role?: 'option'
+}) {
+  return (
+    <button
+      type="button"
+      role={role}
+      aria-selected={selected}
+      className="popover__item appearance-menu__item"
+      data-selected={selected}
+      onClick={onPick}
+    >
+      {swatch}
+      <span className="popover__item-text">{label}</span>
+      {selected ? <Check size={14} /> : null}
+    </button>
+  )
+}
 
 // Every label is an English key so `t()` can translate it; the English UI
 // must never fall back to the Chinese names that used to live here.
@@ -203,24 +192,18 @@ export function AppearanceSettings() {
     }
   }, [])
 
-  const currentPresetObj = settings.themePreset
-    ? THEME_PRESETS.find((preset) => preset.id === settings.themePreset)
-    : undefined
+  const currentPresetObj = findThemePreset(settings.themePreset)
 
   const effectiveAccent =
     settings.accentColor ?? currentPresetObj?.accent ?? defaultColors.accent
 
   const effectiveBg =
     settings.customBg ??
-    (currentPresetObj
-      ? (isDark ? currentPresetObj.dark.bg : currentPresetObj.light.bg)
-      : defaultColors.bg)
+    (currentPresetObj ? presetPalette(currentPresetObj, isDark).bg : defaultColors.bg)
 
   const effectiveFg =
     settings.customFg ??
-    (currentPresetObj
-      ? (isDark ? currentPresetObj.dark.fg : currentPresetObj.light.fg)
-      : defaultColors.fg)
+    (currentPresetObj ? presetPalette(currentPresetObj, isDark).fg : defaultColors.fg)
 
   const matchedAccentPreset = ACCENT_PRESETS.find(
     (p) => p.value.toLowerCase() === effectiveAccent.toLowerCase()
@@ -233,21 +216,55 @@ export function AppearanceSettings() {
     FONT_DISPLAY_NAMES[currentFontVal] ?? (currentFontVal === 'system' ? 'System default' : currentFontVal)
   )
 
-  const themeSelectValue = currentPresetObj
-    ? currentPresetObj.id
-    : settings.themePreset === 'custom'
-      ? 'custom'
-      : 'default'
+  // The pill shows what is painted, so "Default" previews the live tokens and
+  // "Custom" previews the hand-picked pair — every row of the menu is a
+  // colour the reader can tell apart at a glance.
+  const themeIsCustom = settings.themePreset === CUSTOM_THEME_ID
   const themeLabel = currentPresetObj
     ? t(currentPresetObj.name)
-    : settings.themePreset === 'custom'
+    : themeIsCustom
       ? t('Custom')
       : t('Default')
+  // Which menu row is ticked: `default` and `custom` are not presets.
+  const themeMenuValue =
+    currentPresetObj?.id ?? (themeIsCustom ? CUSTOM_THEME_ID : DEFAULT_THEME_ID)
   const accentLabel = matchedAccentPreset
     ? t(matchedAccentPreset.label)
     : settings.accentColor || currentPresetObj
       ? t('Custom')
       : t('Default')
+
+  // Every row of the theme menu is drawn from the colours it will paint, so
+  // two presets that look alike cannot hide behind their names any more.
+  // "Custom" has no colours of its own until the reader picks some, so until
+  // then it wears an empty slot instead of repeating "Default"'s swatch.
+  const themeChoices = useMemo(() => {
+    const rows: { value: string; label: string; bg: string; accent: string; empty?: boolean }[] = [
+      {
+        value: DEFAULT_THEME_ID,
+        label: t('Default'),
+        bg: defaultColors.bg,
+        accent: defaultColors.accent
+      }
+    ]
+    for (const preset of THEME_PRESETS) {
+      const palette = presetPalette(preset, isDark)
+      rows.push({
+        value: preset.id,
+        label: t(preset.name),
+        bg: palette.bg,
+        accent: preset.accent
+      })
+    }
+    rows.push({
+      value: CUSTOM_THEME_ID,
+      label: t('Custom'),
+      bg: effectiveBg,
+      accent: effectiveAccent,
+      empty: !themeIsCustom
+    })
+    return rows
+  }, [defaultColors, effectiveAccent, effectiveBg, isDark, themeIsCustom, t])
 
   const popularOnSystem = useMemo(() => {
     if (systemFonts.length === 0) return []
@@ -324,15 +341,14 @@ export function AppearanceSettings() {
 
     // With no preset chosen, changing the mode must only change the mode:
     // writing the old ChatGPT colours here is what made the dialog lie.
-    const preset = settings.themePreset
-      ? THEME_PRESETS.find((p) => p.id === settings.themePreset)
-      : undefined
+    const preset = findThemePreset(settings.themePreset)
     if (preset) {
+      const palette = presetPalette(preset, nextDark)
       void updateSettings({
         theme: mode,
         accentColor: preset.accent,
-        customBg: nextDark ? preset.dark.bg : preset.light.bg,
-        customFg: nextDark ? preset.dark.fg : preset.light.fg
+        customBg: palette.bg,
+        customFg: palette.fg
       })
     } else {
       void updateSettings({ theme: mode })
@@ -340,7 +356,7 @@ export function AppearanceSettings() {
   }
 
   const handlePresetChange = (presetId: string) => {
-    if (presetId === 'default') {
+    if (presetId === DEFAULT_THEME_ID) {
       void updateSettings({
         themePreset: undefined,
         accentColor: undefined,
@@ -349,17 +365,18 @@ export function AppearanceSettings() {
       })
       return
     }
-    if (presetId === 'custom') {
-      void updateSettings({ themePreset: 'custom' })
+    if (presetId === CUSTOM_THEME_ID) {
+      void updateSettings({ themePreset: CUSTOM_THEME_ID })
       return
     }
-    const preset = THEME_PRESETS.find((p) => p.id === presetId)
+    const preset = findThemePreset(presetId)
     if (!preset) return
+    const palette = presetPalette(preset, isDark)
     void updateSettings({
       themePreset: preset.id,
       accentColor: preset.accent,
-      customBg: isDark ? preset.dark.bg : preset.light.bg,
-      customFg: isDark ? preset.dark.fg : preset.light.fg
+      customBg: palette.bg,
+      customFg: palette.fg
     })
   }
 
@@ -503,25 +520,51 @@ export function AppearanceSettings() {
             >
               <Copy size={14} />
             </button>
-            <div className="appearance-select-pill">
-              <Sparkles size={13} className="appearance-select-pill__icon" />
-              <span>{themeLabel}</span>
-              <ChevronDown size={13} className="appearance-select-pill__chevron" />
-              <select
-                className="appearance-select-native"
-                aria-label={t('Theme')}
-                value={themeSelectValue}
-                onChange={(e) => handlePresetChange(e.target.value)}
-              >
-                <option value="default">{t('Default')}</option>
-                {THEME_PRESETS.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {t(p.name)}
-                  </option>
-                ))}
-                <option value="custom">{t('Custom')}</option>
-              </select>
-            </div>
+            <Popover
+              align="right"
+              width={244}
+              className="appearance-menu"
+              renderTrigger={({ open, toggle }) => (
+                <button
+                  type="button"
+                  className="appearance-select-pill"
+                  aria-label={t('Theme')}
+                  aria-haspopup="listbox"
+                  aria-expanded={open}
+                  onClick={toggle}
+                >
+                  <ThemeSwatch bg={effectiveBg} accent={effectiveAccent} />
+                  <span>{themeLabel}</span>
+                  <ChevronDown size={13} className="appearance-select-pill__chevron" />
+                </button>
+              )}
+            >
+              {(close) => (
+                <div className="appearance-menu__list" role="listbox" aria-label={t('Theme')}>
+                  {themeChoices.map((choice) => (
+                    <MenuRow
+                      key={choice.value}
+                      label={choice.label}
+                      selected={choice.value === themeMenuValue}
+                      swatch={
+                        choice.empty ? (
+                          <span
+                            className="appearance-swatch appearance-swatch--empty"
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <ThemeSwatch bg={choice.bg} accent={choice.accent} />
+                        )
+                      }
+                      onPick={() => {
+                        handlePresetChange(choice.value)
+                        close()
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </Popover>
           </div>
         </div>
 
@@ -529,26 +572,53 @@ export function AppearanceSettings() {
         <div className="appearance-row">
           <div className="appearance-row__label">{t('Accent color')}</div>
           <div className="appearance-row__right">
-            <div className="appearance-select-pill">
-              <span>{accentLabel}</span>
-              <ChevronDown size={13} className="appearance-select-pill__chevron" />
-              <select
-                className="appearance-select-native"
-                aria-label={t('Accent color')}
-                value={matchedAccentPreset ? matchedAccentPreset.value : 'custom'}
-                onChange={(e) => {
-                  if (e.target.value !== 'custom') {
-                    void updateSettings({ accentColor: e.target.value, themePreset: 'custom' })
-                  }
-                }}
-              >
-                {ACCENT_PRESETS.map((p) => (
-                  <option key={p.value} value={p.value}>
-                    {t(p.label)}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <Popover
+              align="right"
+              width={244}
+              className="appearance-menu"
+              renderTrigger={({ open, toggle }) => (
+                <button
+                  type="button"
+                  className="appearance-select-pill"
+                  aria-label={t('Accent color')}
+                  aria-haspopup="listbox"
+                  aria-expanded={open}
+                  onClick={toggle}
+                >
+                  <AccentSwatch color={effectiveAccent} />
+                  <span>{accentLabel}</span>
+                  <ChevronDown size={13} className="appearance-select-pill__chevron" />
+                </button>
+              )}
+            >
+              {(close) => (
+                <div className="appearance-menu__list" role="listbox" aria-label={t('Accent color')}>
+                  {ACCENT_PRESETS.map((preset) => {
+                    const isCustomRow = preset.value === CUSTOM_THEME_ID
+                    const selected = isCustomRow
+                      ? !matchedAccentPreset
+                      : matchedAccentPreset?.value === preset.value
+                    return (
+                      <MenuRow
+                        key={preset.value}
+                        label={t(preset.label)}
+                        selected={selected}
+                        swatch={<AccentSwatch color={isCustomRow ? effectiveAccent : preset.value} />}
+                        onPick={() => {
+                          if (!isCustomRow) {
+                            void updateSettings({
+                              accentColor: preset.value,
+                              themePreset: CUSTOM_THEME_ID
+                            })
+                          }
+                          close()
+                        }}
+                      />
+                    )
+                  })}
+                </div>
+              )}
+            </Popover>
             <ColorField
               label={t('Accent color')}
               value={effectiveAccent}
@@ -591,22 +661,40 @@ export function AppearanceSettings() {
         <div className="appearance-row">
           <div className="appearance-row__label">{t('Tone')}</div>
           <div className="appearance-row__right">
-            <div className="appearance-select-pill">
-              <span>{t(matchedTone?.label ?? 'Default')}</span>
-              <ChevronDown size={13} className="appearance-select-pill__chevron" />
-              <select
-                className="appearance-select-native"
-                aria-label={t('Tone')}
-                value={toneValue}
-                onChange={(e) => void updateSettings({ themeTone: e.target.value })}
-              >
-                {TONE_PRESETS.map((tone) => (
-                  <option key={tone.id} value={tone.id}>
-                    {t(tone.label)}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <Popover
+              align="right"
+              width={220}
+              className="appearance-menu"
+              renderTrigger={({ open, toggle }) => (
+                <button
+                  type="button"
+                  className="appearance-select-pill"
+                  aria-label={t('Tone')}
+                  aria-haspopup="listbox"
+                  aria-expanded={open}
+                  onClick={toggle}
+                >
+                  <span>{t(matchedTone?.label ?? 'Default')}</span>
+                  <ChevronDown size={13} className="appearance-select-pill__chevron" />
+                </button>
+              )}
+            >
+              {(close) => (
+                <div className="appearance-menu__list" role="listbox" aria-label={t('Tone')}>
+                  {TONE_PRESETS.map((tone) => (
+                    <MenuRow
+                      key={tone.id}
+                      label={t(tone.label)}
+                      selected={tone.id === toneValue}
+                      onPick={() => {
+                        void updateSettings({ themeTone: tone.id })
+                        close()
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </Popover>
           </div>
         </div>
 

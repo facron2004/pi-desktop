@@ -1,8 +1,9 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Download, RefreshCw, Sparkles } from 'lucide-react'
 import type { PiCliUpgradeProgress, VersionCheckResult } from '@shared/types'
 import { useT } from '../../lib/i18n'
 import { useAppStore } from '../../store/useAppStore'
+import { piCliUpdate, subscribePiCliUpdate } from '../../lib/app-update'
 import { Switch } from '../Switch'
 import { SettingsGroup } from './SettingsShared'
 
@@ -29,6 +30,11 @@ export function AboutSettings({
   const refreshInfo = useAppStore((state) => state.refreshInfo)
   const t = useT()
   const infoRequested = useRef(false)
+  // The CLI reading is its own: the app checks the bundled agent on its own
+  // schedule, so this row still learns about a newer CLI while automatic app
+  // updates are off. A manual check fills the same slot.
+  const [piCliStatus, setPiCliStatus] = useState(() => piCliUpdate())
+  useEffect(() => subscribePiCliUpdate(setPiCliStatus), [])
 
   useEffect(() => {
     if (infoRequested.current || info?.pi.version) return
@@ -76,11 +82,11 @@ export function AboutSettings({
             </div>
             <div className="settings-version-actions">
               <span className="settings-about-value">{piCliCurrent}</span>
-              {updateStatus?.piCli.hasUpdate ? (
+              {piCliStatus?.hasUpdate ? (
                 <>
                   <span className="settings-badge" data-tone="amber">
                     <Sparkles size={11} style={{ marginRight: 4 }} />
-                    {t('New version')} v{updateStatus.piCli.latest}
+                    {t('New version')} v{piCliStatus.latest}
                   </span>
                   <button
                     type="button"
@@ -126,21 +132,19 @@ export function AboutSettings({
             </button>
           </div>
 
-          {info?.isPackaged === false && info.pi.source === 'bundled' ? (
-            <div className="settings-item-row settings-about-row">
-              <div className="settings-item-row__info">
-                <span className="settings-item-row__title">{t('Automatically download updates')}</span>
-                <span className="settings-item-row__desc">
-                  {t('Download built-in service updates in the background and restart the app to finish installing')}
-                </span>
-              </div>
-              <Switch
-                checked={settings.automaticUpdates === true}
-                onChange={(value) => void updateSettings({ automaticUpdates: value })}
-                label={t('Automatically download updates')}
-              />
+          <div className="settings-item-row settings-about-row">
+            <div className="settings-item-row__info">
+              <span className="settings-item-row__title">{t('Automatically check for updates')}</span>
+              <span className="settings-item-row__desc">
+                {t('Check for new versions in the background and download them; restart from the icon beside Settings')}
+              </span>
             </div>
-          ) : null}
+            <Switch
+              checked={settings.automaticUpdates === true}
+              onChange={(value) => void updateSettings({ automaticUpdates: value })}
+              label={t('Automatically check for updates')}
+            />
+          </div>
         </div>
       </SettingsGroup>
     </div>

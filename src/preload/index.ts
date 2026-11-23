@@ -13,10 +13,12 @@ import type {
 import type {
   AggregatedUsageStats,
   SessionHydrationResult,
+  SettingsPatchBaseline,
   AppInfo,
   AppUpdateProgress,
   AppSettings,
   AuthStatus,
+  DownloadedAppUpdate,
   ExtensionUiResponse,
   FileContent,
   FileListResult,
@@ -64,6 +66,7 @@ import type {
   UpdateState,
   UpgradeResult,
   VersionCheckResult,
+  VersionItemStatus,
   Workspace
 } from '@shared/types'
 
@@ -101,7 +104,10 @@ const bridge: PiDesktopBridge = {
     getSystemFonts: (): Promise<string[]> => ipcRenderer.invoke('app:getSystemFonts'),
     emojiFont: (): Promise<Uint8Array | null> => ipcRenderer.invoke('app:emojiFont'),
     checkUpdate: (): Promise<VersionCheckResult> => ipcRenderer.invoke('app:checkUpdate'),
+    checkPiCliUpdate: (): Promise<VersionItemStatus> => ipcRenderer.invoke('app:checkPiCliUpdate'),
     updateState: (): Promise<UpdateState | null> => ipcRenderer.invoke('app:updateState'),
+    downloadUpdate: (version: string): Promise<UpgradeResult> => ipcRenderer.invoke('app:downloadUpdate', version),
+    downloadedUpdate: (): Promise<DownloadedAppUpdate | null> => ipcRenderer.invoke('app:downloadedUpdate'),
     installAppUpdate: (version: string): Promise<UpgradeResult> => ipcRenderer.invoke('app:installUpdate', version),
     onAppUpdateProgress: (handler: (progress: AppUpdateProgress) => void) =>
       subscribe<AppUpdateProgress>('app:updateProgress', handler),
@@ -135,8 +141,8 @@ const bridge: PiDesktopBridge = {
   },
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
-    patch: (patch: Partial<AppSettings>): Promise<AppSettings> =>
-      ipcRenderer.invoke('settings:patch', patch)
+    patch: (patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): Promise<AppSettings> =>
+      ipcRenderer.invoke('settings:patch', patch, baseline)
   },
   remote: {
     status: (): Promise<RemoteAccessStatus> => ipcRenderer.invoke('remote:status'),
@@ -178,7 +184,8 @@ const bridge: PiDesktopBridge = {
   sessions: {
     list: (cwd?: string): Promise<SessionMeta[]> => ipcRenderer.invoke('sessions:list', cwd),
     remove: (file: string): Promise<boolean> => ipcRenderer.invoke('sessions:remove', file),
-    hydrate: (file: string): Promise<SessionHydrationResult> => ipcRenderer.invoke('sessions:hydrate', file),
+    hydrate: (file: string, scope?: 'branch'): Promise<SessionHydrationResult> =>
+      ipcRenderer.invoke('sessions:hydrate', file, scope),
     rename: (file: string, name: string): Promise<boolean> =>
       ipcRenderer.invoke('sessions:rename', file, name),
     search: (query: string, limit?: number): Promise<SessionSearchHit[]> =>
@@ -272,11 +279,11 @@ const bridge: PiDesktopBridge = {
       ipcRenderer.invoke('marketplace:installGitRepository', repository, runId)
   },
   git: {
-    status: (): Promise<GitStatus> => ipcRenderer.invoke('git:status'),
-    log: (limit?: number): Promise<GitCommit[]> => ipcRenderer.invoke('git:log', limit),
-    commit: (message: string, includeUnstaged?: boolean): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:commit', message, includeUnstaged === true),
-    fileDiff: (file: string): Promise<GitFileDiff> => ipcRenderer.invoke('git:fileDiff', file),
+    status: (expectedRoot?: string): Promise<GitStatus> => ipcRenderer.invoke('git:status', expectedRoot),
+    log: (limit?: number, expectedRoot?: string): Promise<GitCommit[]> => ipcRenderer.invoke('git:log', limit, expectedRoot),
+    commit: (message: string, includeUnstaged: boolean, expectedRoot: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:commit', message, includeUnstaged, expectedRoot),
+    fileDiff: (file: string, expectedRoot?: string): Promise<GitFileDiff> => ipcRenderer.invoke('git:fileDiff', file, expectedRoot),
     patch: (file?: string): Promise<GitPatch> => ipcRenderer.invoke('git:patch', file),
     commitDetail: (hash: string): Promise<GitCommitDetail | null> =>
       ipcRenderer.invoke('git:commitDetail', hash),
@@ -284,31 +291,32 @@ const bridge: PiDesktopBridge = {
       ipcRenderer.invoke('git:commitFileDiff', hash, file),
     commitWorktreeDiff: (hash: string, file: string): Promise<GitCommitFileDiff | null> =>
       ipcRenderer.invoke('git:commitWorktreeDiff', hash, file),
-    applyPatch: (patch: string, reverse?: boolean): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:applyPatch', patch, reverse === true),
-    branches: (): Promise<GitBranches> => ipcRenderer.invoke('git:branches'),
-    switchBranch: (name: string): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:switchBranch', name),
-    createBranch: (name: string, checkout?: boolean): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:createBranch', name, checkout !== false),
+    applyPatch: (patch: string, reverse: boolean, expectedRoot: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:applyPatch', patch, reverse, expectedRoot),
+    branches: (expectedRoot?: string): Promise<GitBranches> => ipcRenderer.invoke('git:branches', expectedRoot),
+    switchBranch: (name: string, expectedRoot: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:switchBranch', name, expectedRoot),
+    createBranch: (name: string, checkout: boolean, expectedRoot: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:createBranch', name, checkout, expectedRoot),
     addWorktree: (
       path: string,
       branch: string,
-      createBranch?: boolean
+      createBranch: boolean,
+      expectedRoot: string
     ): Promise<GitWorktreeResult> =>
-      ipcRenderer.invoke('git:addWorktree', path, branch, createBranch !== false),
-    removeWorktree: (path: string): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:removeWorktree', path),
-    revertFile: (file: string): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:revertFile', file),
-    stageFile: (file: string): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:stageFile', file),
-    unstageFile: (file: string): Promise<GitCommitResult> =>
-      ipcRenderer.invoke('git:unstageFile', file),
-    stageAll: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:stageAll'),
-    unstageAll: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:unstageAll'),
-    push: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:push'),
-    pull: (): Promise<GitCommitResult> => ipcRenderer.invoke('git:pull')
+      ipcRenderer.invoke('git:addWorktree', path, branch, createBranch !== false, expectedRoot),
+    removeWorktree: (path: string, expectedRoot: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:removeWorktree', path, expectedRoot),
+    revertFile: (file: string, expectedRoot: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:revertFile', file, expectedRoot),
+    stageFile: (file: string, expectedRoot: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:stageFile', file, expectedRoot),
+    unstageFile: (file: string, expectedRoot: string): Promise<GitCommitResult> =>
+      ipcRenderer.invoke('git:unstageFile', file, expectedRoot),
+    stageAll: (expectedRoot: string): Promise<GitCommitResult> => ipcRenderer.invoke('git:stageAll', expectedRoot),
+    unstageAll: (expectedRoot: string): Promise<GitCommitResult> => ipcRenderer.invoke('git:unstageAll', expectedRoot),
+    push: (expectedRoot: string): Promise<GitCommitResult> => ipcRenderer.invoke('git:push', expectedRoot),
+    pull: (expectedRoot: string): Promise<GitCommitResult> => ipcRenderer.invoke('git:pull', expectedRoot)
   },
   shell: {
     nativeIcons: (): Promise<Record<string, string>> => ipcRenderer.invoke('shell:nativeIcons'),

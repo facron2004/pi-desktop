@@ -29,6 +29,7 @@ import type {
   SessionMeta,
   SessionSearchHit,
   SessionStats,
+  SettingsPatchBaseline,
   Workspace
 } from '@shared/types'
 import type { ProviderProfile, SaveProviderInput } from '@shared/providers'
@@ -46,6 +47,7 @@ import {
   mergeHydratedItems,
   nextId,
   nextOrder,
+  textOf,
   type ThreadItem,
   type UserItem
 } from '../lib/thread'
@@ -84,6 +86,7 @@ import {
 } from '../lib/session-timing'
 import { conversationStarted, nextWorktreeBranch } from '../lib/worktree-name'
 import {
+  composerDraftAfterSend,
   forgetLastDraftKey,
   loadComposerDrafts,
   saveComposerDrafts
@@ -400,6 +403,36 @@ function draftWorkspaceKey(workspace: Workspace | undefined): string {
   return workspace?.id ?? 'projectless'
 }
 
+interface ComposerSubmission {
+  draft: ComposerDraft
+  text: string
+  kind: QueueKind
+  imageOptions?: ComposerImageOptions
+  sendImage?: ComposerImageOptions
+}
+
+function composerClientKey(state: AppStore, key: string): string {
+  return state.threads[key]?.clientKey || key || state.clientKey || '__fallback__'
+}
+
+function restoreCancelledPrompts(
+  state: AppStore,
+  key: string,
+  removed: { steering: string[]; followUp: string[] } | undefined,
+  submission: ComposerSubmission | undefined
+): void {
+  const prompts = [...(removed?.steering ?? []), ...(removed?.followUp ?? [])]
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+  if (submission && state.drafts[threadKey(key)] === submission.draft) {
+    // One cancelled prompt already survives in the editor until acceptance.
+    const text = normalizeAppCommandInput(submission.text.trim())
+    const index = prompts.lastIndexOf(text)
+    if (index >= 0) prompts.splice(index, 1)
+  }
+  if (prompts.length) state.insertIntoComposer(prompts.join('\n'), 'append', key)
+}
+
 let draftPersistenceWarning: 'text-only' | 'failed' | undefined
 const DRAFT_SAVE_DEBOUNCE_MS = 350
 const cachedLastDraftKeysByStorage = new WeakMap<Storage, Record<string, string>>()
@@ -675,7 +708,7 @@ export interface AppStore {
     workspace: Workspace | undefined,
     sessionFile?: string,
     sourceAction?: string
-  ) => Promise<void>
+  ) => Promise<string | undefined>
   pickWorkspace: () => Promise<void>
   closeWorkspace: () => Promise<void>
   /**
@@ -685,7 +718,7 @@ export interface AppStore {
    * a worktree, the launcher). A project row in the sidebar only expands and
    * collapses, so it never has to ask, and expanding never ends a run.
    */
-  switchProject: (path: string | null, options?: { allowWhileRunning?: boolean }) => Promise<void>
+  switchProject: (path: string | null, options?: { allowWhileRunning?: boolean }) => Promise<string | undefined>
   /**
    * Make the project at `path` the active one without ending a run that is
    * still going: the conversation stays on screen, and the project is opened
@@ -697,10 +730,10 @@ export interface AppStore {
   refreshSessions: () => Promise<void>
   selectSession: (session: SessionMeta, sourceAction?: string) => Promise<void>
   /** Read a cold conversation from disk into its own thread. Does not start Pi. */
-  hydrateSession: (file: string) => Promise<void>
-  renameSession: (name: string) => Promise<void>
+  hydrateSession: (file: string, scope?: 'branch') => Promise<void>
+  renameSession: (name: string) => Promise<boolean>
   /** Name a conversation from the list, active or not. */
-  renameSessionFile: (file: string, name: string) => Promise<void>
+  renameSessionFile: (file: string, name: string) => Promise<boolean>
   /** Copy the current conversation into a new one. */
   duplicateSession: () => Promise<void>
   exportSession: () => Promise<void>
@@ -712,21 +745,23 @@ export interface AppStore {
   newChat: () => Promise<void>
   ensureRuntime: (sessionKey?: string, sourceAction?: string) => Promise<string>
   prewarmRuntime: (sessionKey?: string) => void
+  submittingDrafts: Record<string, ComposerSubmission>
+  submitComposerDraft: (sessionKey: string, submission: ComposerSubmission) => Promise<boolean>
   send: (
     text: string,
     images: { data: string; mimeType: string }[],
     kind?: QueueKind,
     image?: ComposerImageOptions
-  ) => Promise<void>
+  ) => Promise<boolean>
   sendPrompt: (
     sessionKey: string,
     text: string,
     images: { data: string; mimeType: string }[],
     kind: QueueKind,
     image?: ComposerImageOptions
-  ) => Promise<void>
+  ) => Promise<boolean>
   /** Execute a shell command inline in the thread via Pi's `bash` RPC. */
-  runInlineBash: (command: string, excludeFromContext?: boolean) => Promise<void>
+  runInlineBash: (command: string, excludeFromContext?: boolean) => Promise<boolean>
   stop: () => Promise<void>
   /** Abort one conversation by its id. Does not abort any other, and does not change the view. */
   stopSession: (sessionKey: string) => Promise<void>
@@ -774,7 +809,7 @@ export interface AppStore {
   refreshSkillCommands: (sessionKey?: string) => Promise<void>
   /** Run one of the commands the app itself provides. */
   runAppCommand: (name: string) => Promise<void>
-  updateSettings: (patch: Partial<AppSettings>) => Promise<void>
+  updateSettings: (patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline) => Promise<void>
   saveProvider: (input: SaveProviderInput) => Promise<{ provider: ProviderProfile; applied: boolean; applyError?: string }>
   removeProvider: (id: string) => Promise<void>
   /** Pin a conversation to the top of the sidebar, or unpin it. */
@@ -798,7 +833,7 @@ export interface AppStore {
    * and put the original prompt back in the composer for editing.
    */
   editMessageFrom: (
-    entryId: string,
+    target: string | UserItem,
     text?: string,
     images?: { data: string; mimeType: string }[]
   ) => Promise<void>
@@ -816,14 +851,14 @@ export interface AppStore {
    * Commit the staged files, or — with `includeUnstaged` — stage everything
    * first and commit the whole working tree. Also refreshes the git state.
    */
-  commitChanges: (message: string, includeUnstaged?: boolean) => Promise<GitCommitResult>
+  commitChanges: (message: string, includeUnstaged: boolean, expectedRoot: string) => Promise<GitCommitResult>
   /** Move one file into (or out of) the index and refresh the git state. */
-  stageFile: (file: string) => Promise<GitCommitResult>
-  unstageFile: (file: string) => Promise<GitCommitResult>
-  stageAll: () => Promise<GitCommitResult>
-  unstageAll: () => Promise<GitCommitResult>
-  pushGit: () => Promise<GitCommitResult>
-  pullGit: () => Promise<GitCommitResult>
+  stageFile: (file: string, expectedRoot: string) => Promise<GitCommitResult>
+  unstageFile: (file: string, expectedRoot: string) => Promise<GitCommitResult>
+  stageAll: (expectedRoot: string) => Promise<GitCommitResult>
+  unstageAll: (expectedRoot: string) => Promise<GitCommitResult>
+  pushGit: (expectedRoot: string) => Promise<GitCommitResult>
+  pullGit: (expectedRoot: string) => Promise<GitCommitResult>
   /** Ask the review panel to open its commit dialog. */
   requestCommit: () => void
   /** Open the conversation of a search hit and take the reader to the message. */
@@ -987,6 +1022,7 @@ export function getSessionAccessLru(): readonly string[] {
 }
 
 const hydrationInFlight = new Map<string, Promise<void>>()
+let pendingRewind: { sessionKey: string; error?: string } | undefined
 const inlineBashCounts = new Map<string, number>()
 const respondingUiIds = new Set<string>()
 
@@ -1253,33 +1289,37 @@ const skillCommandRequests = new Map<string, Promise<void>>()
  * first prompt of an empty one is the start: create the sibling worktree,
  * switch to it, then let `send` continue in that folder.
  */
-async function createWorktreeForSessionStart(get: GetState): Promise<boolean> {
+async function createWorktreeForSessionStart(get: GetState, source: string): Promise<string | undefined> {
   const state = get()
-  if (!state.git?.isRepo) {
-    state.setPendingWorktree(false)
-    return true
-  }
+  const epoch = workspaceEpoch
   state.setPendingWorktree(false)
+  let target: string
   try {
-    const listed = await window.pi.git.branches()
+    const listed = await window.pi.git.branches(source)
+    if (epoch !== workspaceEpoch) return
     const taken = [
       ...(listed?.branches ?? []).map((branch) => branch.name),
       ...(listed?.worktrees ?? []).flatMap((worktree) => (worktree.branch ? [worktree.branch] : []))
     ]
-    const name = nextWorktreeBranch(listed?.current ?? state.git.branch, taken)
-    const result = await window.pi.git.addWorktree('', name, true)
-    if (!result.ok || !result.path) {
+    const name = nextWorktreeBranch(listed?.current ?? state.git?.branch, taken)
+    const result = await window.pi.git.addWorktree('', name, true, source)
+    if (!result.ok || !result.path) throw new Error(result.error ?? 'Could not add the worktree')
+    target = result.path
+  } catch (error) {
+    if (epoch === workspaceEpoch) {
       get().setPendingWorktree(true)
-      get().showToast(result.error ?? 'Could not add the worktree', 'error')
-      return false
+      get().showToast(messageOf(error), 'error')
     }
-    get().showToast(`Worktree created at ${result.path}`)
-    await get().switchProject(result.path, { allowWhileRunning: true })
-    return true
-  } catch {
-    get().setPendingWorktree(true)
-    get().showToast('Could not add the worktree', 'error')
-    return false
+    return
+  }
+
+  get().showToast(`Worktree created at ${target}`)
+  if (epoch !== workspaceEpoch) return
+  try {
+    return await get().switchProject(target, { allowWhileRunning: true })
+  } catch (error) {
+    get().showToast(`Could not open the new worktree (${messageOf(error)})`, 'error')
+    return
   }
 }
 
@@ -1960,7 +2000,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         applyAppearance(next, get().info?.forcedTheme)
         await Promise.all([get().refreshSessions(), get().refreshGit()])
       }
-      return
+      return epoch === workspaceEpoch ? viewKeyOf(get()) || undefined : undefined
     }
     pendingProjectPath = undefined
     set({ pendingProject: undefined })
@@ -1968,8 +2008,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       const settings = await window.pi.settings.patch({ activeWorkspaceId: null })
       if (epoch !== workspaceEpoch) return
       set({ settings })
-      await get().openWorkspace(undefined, undefined, 'project-switch')
-      return
+      return get().openWorkspace(undefined, undefined, 'project-switch')
     }
     const { workspace, settings } = await window.pi.workspaces.add(path)
     if (epoch !== workspaceEpoch) return
@@ -1980,11 +2019,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const next = await window.pi.settings.patch({
       workspaces,
       activeWorkspaceId: workspace.id
-    })
+    }, { workspaces: settings.workspaces })
     if (epoch !== workspaceEpoch) return
     set({ settings: next })
     applyAppearance(next, get().info?.forcedTheme)
-    await get().openWorkspace({ ...workspace, lastOpenedAt: now }, undefined, 'project-switch')
+    return get().openWorkspace({ ...workspace, lastOpenedAt: now }, undefined, 'project-switch')
   },
 
   async queueProjectSwitch(path) {
@@ -2064,6 +2103,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     // the git subprocess behind disk scans.
     void get().refreshGit()
     await sessionsTask
+    return epoch === workspaceEpoch ? activeKey : undefined
   },
 
   async removeWorkspace(target) {
@@ -2191,7 +2231,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           })
         : session.cwd && (!workspace || !samePath(session.cwd, workspace.path))
           ? (() => {
-              const known = get().settings.workspaces.find((item) => samePath(item.path, session.cwd))
+              const workspaces = get().settings.workspaces
+              const known = workspaces.find((item) => samePath(item.path, session.cwd))
               const target: Workspace = known ?? {
                 id: `session-${session.id.slice(0, 8)}`,
                 path: session.cwd,
@@ -2199,9 +2240,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
                 lastOpenedAt: Date.now()
               }
               return window.pi.settings.patch({
-                ...(known ? {} : { workspaces: [...get().settings.workspaces, target] }),
+                ...(known ? {} : { workspaces: [...workspaces, target] }),
                 activeWorkspaceId: target.id
-              }).then((settings) => {
+              }, known ? undefined : { workspaces }).then((settings) => {
                 if (epoch !== workspaceEpoch) return
                 set({ settings, workspace: target })
                 void get().refreshGit()
@@ -2222,7 +2263,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }
   },
 
-  async hydrateSession(file) {
+  async hydrateSession(file, scope) {
     file = threadKey(file)
     const existingHydration = hydrationInFlight.get(file)
     if (existingHydration) return existingHydration
@@ -2239,7 +2280,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const work = (async () => {
       try {
         let viewEpoch = workspaceEpoch
-        let result = await hydrate(file)
+        let result = await hydrate(file, scope)
         // The main process can cancel A's read when B opens. If the reader
         // already came back to A, restart the read shared by both A selections.
         while (
@@ -2247,7 +2288,15 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           get().hydratingSessionFile === file && viewEpoch !== workspaceEpoch
         ) {
           viewEpoch = workspaceEpoch
-          result = await hydrate(file)
+          result = await hydrate(file, scope)
+        }
+        if (scope === 'branch' && !result.messages.length && !result.taskMode && !result.historyTruncated) {
+          // Pi delays writing a branch with no user or assistant message.
+          // Its live snapshot can still contain earlier shell output.
+          const data = await tracedRpc<{ messages?: AgentMessage[] }>(
+            file, 'get_messages', undefined, undefined, 'hydrate-branch'
+          )
+          if (data?.messages) result = { ...result, messages: data.messages }
         }
         const { messages, historyTruncated, taskMode } = result
         if (!messages.length && !taskMode) return
@@ -2300,14 +2349,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
 
   async renameSession(name: string) {
     const trimmed = name.trim()
-    if (!trimmed) return
+    if (!trimmed) return false
     const file = get().activeSessionFile
     // A file on disk is renamed on its own worker, or appended cold.
     // That must not start or switch whichever process is on screen.
-    if (file) {
-      await get().renameSessionFile(file, trimmed)
-      return
-    }
+    if (file) return get().renameSessionFile(file, trimmed)
     try {
       const draftId = get().draftId
       await tracedRpc(draftId, 'set_session_name', { name: trimmed }, undefined, 'session-rename')
@@ -2315,8 +2361,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         threads: draftId ? updateThreadSessionName(state.threads, draftId, trimmed) : state.threads,
         piState: state.piState ? { ...state.piState, sessionName: trimmed } : state.piState
       }))
+      return true
     } catch (error) {
       set({ error: messageOf(error) })
+      return false
     }
   },
 
@@ -2328,17 +2376,17 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
    */
   async renameSessionFile(file: string, name: string) {
     const trimmed = name.trim()
-    if (!trimmed || !file) return
+    if (!trimmed || !file) return false
     try {
       if (typeof window.pi.sessions.rename !== 'function') {
         set({ error: 'Could not rename that conversation' })
-        return
+        return false
       }
       sessionMutationSeq += 1
       const renamed = await window.pi.sessions.rename(file, trimmed)
       if (!renamed) {
         set({ error: 'Could not rename that conversation' })
-        return
+        return false
       }
       set((state) => ({
         sessions: state.sessions.map((entry) => (entry.file === file ? { ...entry, name: trimmed } : entry)),
@@ -2349,8 +2397,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
             : state.piState
       }))
       await get().refreshSessions()
+      return true
     } catch (error) {
       set({ error: messageOf(error) })
+      return false
     }
   },
 
@@ -2429,7 +2479,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           const settings = await window.pi.settings.patch({
             ...(pinned.includes(file) ? { pinnedSessions: pinned.filter((entry) => entry !== file) } : {}),
             ...(archived.includes(file) ? { archivedSessions: archived.filter((entry) => entry !== file) } : {})
-          })
+          }, { pinnedSessions: pinned, archivedSessions: archived })
           set({ settings })
         })
       } catch (error) {
@@ -2462,7 +2512,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           ...(pinned.includes(file)
             ? { pinnedSessions: pinned.filter((entry) => entry !== file) }
             : {})
-        })
+        }, { pinnedSessions: pinned, archivedSessions: archived })
         set({ settings })
         return true
       })
@@ -2483,7 +2533,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         if (!archived.includes(file)) return false
         const settings = await window.pi.settings.patch({
           archivedSessions: archived.filter((entry) => entry !== file)
-        })
+        }, { archivedSessions: archived })
         set({ settings })
         return true
       })
@@ -2575,10 +2625,39 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     })
   },
 
+  submittingDrafts: {},
+  async submitComposerDraft(sessionKey, submission) {
+    const { draft, text, kind, imageOptions, sendImage } = submission
+    const key = threadKey(sessionKey)
+    const state = get()
+    if (key && key !== threadKey(viewKeyOf(state))) return false
+    const client = composerClientKey(state, key)
+    if (state.submittingDrafts[client]) return false
+    set({ submittingDrafts: { ...state.submittingDrafts, [client]: submission } })
+    try {
+      const images = draft.images.map(({ data, mimeType }) => ({ data, mimeType }))
+      const accepted = await get().send(text, images, kind, sendImage)
+      if (accepted && key && get().drafts[threadKey(key)] === draft) {
+        get().updateDraft(key, () => composerDraftAfterSend(draft, text, imageOptions))
+        flushPendingDraftWrite()
+      }
+      return accepted
+    } catch (error) {
+      bindSet(set, get, key)({ error: messageOf(error) })
+      return false
+    } finally {
+      set((current) => {
+        const submittingDrafts = { ...current.submittingDrafts }
+        delete submittingDrafts[client]
+        return { submittingDrafts }
+      })
+    }
+  },
+
   async send(text, images, kind = 'steer', image) {
     flushPendingDraftWrite()
     const trimmed = normalizeAppCommandInput(text.trim())
-    if (!trimmed && !images.length) return
+    if (!trimmed && !images.length) return false
     // `!cmd` and `!!cmd` run a shell command inline via Pi's `bash` RPC.
     // `!cmd` enters the model's context; `!!cmd` stays out of context.
     if (!images.length && trimmed.startsWith('!')) {
@@ -2589,21 +2668,17 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           excludeFromContext ? 'Type a shell command after !!' : 'Type a shell command after !',
           'warning'
         )
-        return
+        return false
       }
-      await get().runInlineBash(command, excludeFromContext)
-      return
+      return get().runInlineBash(command, excludeFromContext)
     }
     // `/name <text>` renames the conversation instead of reaching the agent.
     if (trimmed === '/name' && !images.length) {
       get().showToast('Type the new name after /name', 'warning')
-      return
+      return false
     }
     const rename = /^\/name\s+([\s\S]+)$/.exec(trimmed)
-    if (rename && !images.length) {
-      await get().renameSession(rename[1].trim())
-      return
-    }
+    if (rename && !images.length) return get().renameSession(rename[1].trim())
     // `/image [prompt]` is the composer's shortcut into its image mode: the
     // controls and the prompt belong to the chat box, not to a side panel.
     const imageCommand = /^\/image(?:\s+([\s\S]*))?$/i.exec(trimmed)
@@ -2614,7 +2689,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           detail: arg.toLowerCase() === 'off' ? { prompt: '', off: true } : { prompt: arg }
         })
       )
-      return
+      return true
     }
     // App commands are client features, not Pi slash commands. Typing one is
     // the same request as picking it from the palette.
@@ -2624,14 +2699,20 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       )
       if (appCommand) {
         await get().runAppCommand(appCommand.name)
-        return
+        return true
       }
     }
-    if (get().pendingWorktree && !conversationStarted(get().items)) {
-      const created = await createWorktreeForSessionStart(get)
-      if (!created) return
+    const state = get()
+    let key = viewKeyOf(state)
+    if (state.pendingWorktree && !conversationStarted(state.items)) {
+      if (state.workspace?.path && state.git?.isRepo) {
+        const target = await createWorktreeForSessionStart(get, state.workspace.path)
+        if (!target) return false
+        key = target
+      } else {
+        state.setPendingWorktree(false)
+      }
     }
-    let key = viewKeyOf(get())
     if (!key) {
       const draftId = mintDraft()
       const thread = emptyThread(get().workspace?.path, draftMode(get().settings), true)
@@ -2645,7 +2726,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       })
       key = draftId
     }
-    await get().sendPrompt(key, trimmed, images, kind, image)
+    return get().sendPrompt(key, trimmed, images, kind, image)
   },
 
   async sendPrompt(key, trimmed, images, kind, image) {
@@ -2695,7 +2776,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
             items: clearPendingPrompts(state.items, pendingPrompt.id)
           }))
         }
-        return
+        return false
       }
       // The image controls live in the composer, the tool lives in Pi: hand the
       // chosen options to the task-mode extension first, so the run that the
@@ -2794,9 +2875,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           items: clearPendingPrompts(state.items, pendingPrompt.id)
         }))
       }
+      return result?.disposition === 'started' || result?.disposition === 'queued' ||
+        (result?.disposition === 'handled' && result.cancelled !== true)
     } catch (error) {
-      // The prompt never reached Pi, so a run it was shown as queued for
-      // must not stay open.
+      // An unconfirmed prompt must not leave its optimistic queue state open.
       forgetQueuedPrompt(key, pendingPrompt.id)
       update((state) => ({
         cwdWait: undefined,
@@ -2805,12 +2887,13 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         run: state.run.phase === 'queued' ? { ...state.run, phase: 'idle', settled: true } : state.run,
         items: clearPendingPrompts(state.items, pendingPrompt.id)
       }))
+      return false
     }
   },
 
   async runInlineBash(command, excludeFromContext = false) {
     const trimmed = command.trim()
-    if (!trimmed) return
+    if (!trimmed) return false
     const id = `inline-bash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
     // Events that were still waiting for a frame belong to the conversation
     // before this command; they must not land after it.
@@ -2878,7 +2961,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
             )
           }))
         }
-        return
+        return false
       }
       countedKey = threadKey(key)
       inlineBashCounts.set(countedKey, (inlineBashCounts.get(countedKey) ?? 0) + 1)
@@ -2930,6 +3013,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       })
       void get().refreshState(threadKey(owner))
       if (gitBelongsToView(ownGet, get, threadKey(owner))) void get().refreshGit()
+      return result?.cancelled !== true
     } catch (error) {
       const message = messageOf(error)
       update((state) => {
@@ -2958,6 +3042,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
             : {})
         }
       })
+      return false
     } finally {
       if (countedKey) {
         const resolved = threadKey(countedKey)
@@ -2979,6 +3064,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     // then rather than now.
     const key = threadKey(sessionKey.trim())
     if (!key) return
+    const state = get()
+    const submission = state.submittingDrafts[composerClientKey(state, key)]
     const ownGet = bindGet(get, key)
     // Nothing is open, so no settle will follow. Pi answers `abort` while idle
     // but never publishes `agent_settled` for it, and the row would stay on
@@ -3014,13 +3101,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         queue: { steering: [], followUp: [] },
         items: clearPendingPrompts(state.items)
       }))
-      const restored = [...(removed?.steering ?? []), ...(removed?.followUp ?? [])]
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .join('\n')
-      if (restored) {
-        get().insertIntoComposer(restored, 'append', key)
-      }
+      restoreCancelledPrompts(get(), key, removed, submission)
       if ((inlineBashCounts.get(threadKey(key)) ?? 0) > 0 && !ownGet().run.runId) {
         void tracedRpc(threadKey(key), 'abort_bash', undefined, undefined, 'user-stop').catch(() => {})
       }
@@ -3045,7 +3126,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   },
 
   async clearQueue(restoreToEditor = false) {
-    const key = viewKeyOf(get())
+    const state = get()
+    const key = viewKeyOf(state)
+    const submission = state.submittingDrafts[composerClientKey(state, threadKey(key))]
     const update = bindSet(set, get, key)
     try {
       const removed = await tracedRpc<{ steering: string[]; followUp: string[] }>(
@@ -3061,13 +3144,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       }))
       if (key) queuedPromptDrafts.delete(threadKey(key))
       if (restoreToEditor) {
-        const restored = [...(removed?.steering ?? []), ...(removed?.followUp ?? [])]
-          .map((entry) => entry.trim())
-          .filter(Boolean)
-          .join('\n')
-        if (restored) {
-          get().insertIntoComposer(restored, 'append', key)
-        }
+        restoreCancelledPrompts(get(), key, removed, submission)
       }
     } catch (error) {
       update({ error: messageOf(error) })
@@ -3308,11 +3385,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       // Pi may make multiple model calls while summarising a long session.
       // Its RPC client documents compaction as a command without a deadline.
       await tracedRpc(key, 'compact', payload, 0, 'compact')
+      // Pi already emitted the compaction notice. get_messages now holds the
+      // compacted model context, so reloading it would drop transcript history.
       await get().refreshState(threadKey(owner))
-      // The summary Pi wrote is an entry of the session, so the thread has
-      // to read it again — otherwise the conversation on screen still shows
-      // the messages that were just folded away.
-      await get().reloadMessages(threadKey(owner))
       // A retry that worked must not leave the previous failure on screen,
       // but it must not clear an unrelated error either.
       bindSet(set, get, owner)((state) =>
@@ -3596,7 +3671,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     if (last[workspace.path] === file) return
     const settings = await window.pi.settings.patch({
       lastSessions: { ...last, [workspace.path]: file }
-    })
+    }, { lastSessions: last })
     if (epoch !== workspaceEpoch) return
     set({ settings })
   },
@@ -3771,7 +3846,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }
   },
 
-  async updateSettings(patch) {
+  async updateSettings(patch, baseline) {
     if ('model' in patch || 'provider' in patch) {
       modelPreferenceSequence += 1
       const model = 'model' in patch ? patch.model : get().settings.model
@@ -3781,7 +3856,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       thinkingPreferenceSequence += 1
       thinkingPreferenceValue = typeof patch.thinkingLevel === 'string' ? patch.thinkingLevel : null
     }
-    const settings = await window.pi.settings.patch(patch)
+    const settings = await window.pi.settings.patch(patch, baseline)
     set({ settings })
     applyAppearance(settings, get().info?.forcedTheme)
   },
@@ -3850,7 +3925,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       const next = wasPinned
         ? pinned.filter((entry) => entry !== file)
         : [...pinned, file]
-      const settings = await window.pi.settings.patch({ pinnedSessions: next })
+      const settings = await window.pi.settings.patch({ pinnedSessions: next }, { pinnedSessions: pinned })
       set({ settings })
       return wasPinned
     })
@@ -3995,7 +4070,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       }
       const key = result?.sessionFile ?? threadKey(owner)
       await get().refreshState(key)
-      await get().reloadMessages(key)
+      await get().hydrateSession(key, 'branch')
       await get().refreshForkTargets(key)
       // The copy would carry the same name, which makes the two hard to tell
       // apart in the list.
@@ -4058,7 +4133,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       // old one has to be refreshed.
       const key = result?.sessionFile ?? threadKey(owner)
       await get().refreshState(key)
-      await get().reloadMessages(key)
+      await get().hydrateSession(key, 'branch')
       await get().refreshForkTargets(key)
       await get().refreshSessions()
       // Two conversations that start with the same prompt are hard to tell
@@ -4085,21 +4160,40 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }
   },
 
-  async editMessageFrom(entryId, text, images = []) {
+  async editMessageFrom(target, text, images = []) {
     if (get().forking) return
     if (get().isStreaming || get().run.phase !== 'idle' || get().run.compaction) {
       get().showToast('Wait for the current turn to finish before editing', 'warning')
       return
     }
-    const owner = viewKeyOf(get())
-    if (!owner || !/^[A-Za-z0-9_-]+$/.test(entryId)) {
+    const state = get()
+    const owner = viewKeyOf(state)
+    const user = typeof target === 'string' ? undefined : state.items.find(
+      (item): item is UserItem => item.kind === 'user' && item.id === target.id
+    )
+    if (!owner || (typeof target !== 'string' && (!user || user.pending))) {
       get().showToast('This message cannot be edited', 'warning')
       return
     }
-    const target = get().forkTargets.find((item) => item.entryId === entryId)
-    const prompt = (text ?? target?.text ?? '').trim()
     set({ forking: true })
     try {
+      let entryId = typeof target === 'string' ? target : user?.entryId
+      if (!entryId && user && !owner.startsWith('draft:')) {
+        // Live RPC messages have timestamps but no entry id. Read the saved
+        // branch on demand and require a unique identity before rewinding.
+        const { messages } = await window.pi.sessions.hydrate(owner, 'branch')
+        const matches = messages.filter(message =>
+          message.role === 'user' && message.timestamp === user.timestamp && textOf(message.content) === user.text
+        )
+        if (matches.length === 1) entryId = matches[0].entryId
+      }
+      if (!entryId || !/^[A-Za-z0-9_-]+$/.test(entryId)) {
+        get().showToast('This message cannot be edited', 'warning')
+        return
+      }
+      const saved = state.forkTargets.find((item) => item.entryId === entryId)
+      const prompt = (user?.text ?? text ?? saved?.text ?? '').trim()
+      images = user?.images ?? images
       const key = threadKey(owner)
       await get().ensureRuntime(owner, 'message-edit')
       // A running Pi process keeps the extension set it started with. If this
@@ -4119,6 +4213,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         await window.pi.runtime.stop(key)
         await get().ensureRuntime(owner, 'message-edit-reload')
       }
+      // Pi acknowledges extension prompts as handled even when the handler
+      // threw, so watch for the command error before changing the composer.
+      const rewind: typeof pendingRewind = { sessionKey: key }
+      pendingRewind = rewind
       const result = await tracedRpc<{ cancelled?: boolean; disposition?: string }>(
         key,
         'prompt',
@@ -4126,6 +4224,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         60_000,
         'message-edit'
       )
+      if (rewind.error) throw new Error(rewind.error)
       if (result?.cancelled) {
         get().showToast('Editing was cancelled', 'warning')
         return
@@ -4153,6 +4252,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       bindSet(set, get, owner)({ error: message })
       get().showToast(message, 'error')
     } finally {
+      pendingRewind = undefined
       set({ forking: false })
     }
   },
@@ -4171,7 +4271,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const request = ++gitStatusRequest
     const promise = (async () => {
       try {
-        const git = await window.pi.git.status()
+        const git = await window.pi.git.status(get().workspace?.path ?? '')
         if (epoch !== projectEpoch || request !== gitStatusRequest) return
         set({ git })
       } catch {
@@ -4198,8 +4298,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }, delayMs)
   },
 
-  async commitChanges(message, includeUnstaged = false) {
-    const result = await window.pi.git.commit(message, includeUnstaged)
+  async commitChanges(message, includeUnstaged, expectedRoot) {
+    const result = await window.pi.git.commit(message, includeUnstaged, expectedRoot)
     if (result.ok) {
       gitMutationSeq += 1
       get().showToast(result.hash ? `Committed ${result.hash}` : 'Changes committed')
@@ -4212,8 +4312,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     return result
   },
 
-  async stageFile(file) {
-    const result = await window.pi.git.stageFile(file)
+  async stageFile(file, expectedRoot) {
+    const result = await window.pi.git.stageFile(file, expectedRoot)
     if (!result.ok) {
       get().showToast(result.error ?? 'The file could not be staged', 'error')
       return result
@@ -4223,8 +4323,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     return result
   },
 
-  async unstageFile(file) {
-    const result = await window.pi.git.unstageFile(file)
+  async unstageFile(file, expectedRoot) {
+    const result = await window.pi.git.unstageFile(file, expectedRoot)
     if (!result.ok) {
       get().showToast(result.error ?? 'The file could not be unstaged', 'error')
       return result
@@ -4234,8 +4334,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     return result
   },
 
-  async stageAll() {
-    const result = await window.pi.git.stageAll()
+  async stageAll(expectedRoot) {
+    const result = await window.pi.git.stageAll(expectedRoot)
     if (!result.ok) {
       get().showToast(result.error ?? 'The files could not be staged', 'error')
       return result
@@ -4245,8 +4345,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     return result
   },
 
-  async unstageAll() {
-    const result = await window.pi.git.unstageAll()
+  async unstageAll(expectedRoot) {
+    const result = await window.pi.git.unstageAll(expectedRoot)
     if (!result.ok) {
       get().showToast(result.error ?? 'The files could not be unstaged', 'error')
       return result
@@ -4256,8 +4356,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     return result
   },
 
-  async pushGit() {
-    const result = await window.pi.git.push()
+  async pushGit(expectedRoot) {
+    const result = await window.pi.git.push(expectedRoot)
     if (!result.ok) {
       get().showToast(result.error ?? 'Could not push branch', 'error')
       return result
@@ -4268,8 +4368,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     return result
   },
 
-  async pullGit() {
-    const result = await window.pi.git.pull()
+  async pullGit(expectedRoot) {
+    const result = await window.pi.git.pull(expectedRoot)
     if (!result.ok) {
       get().showToast(result.error ?? 'Could not pull branch', 'error')
       return result
@@ -4868,8 +4968,13 @@ function rekeyThread(
     // A fork or clone branches a second conversation while leaving the original
     // file intact on disk, so it gets its own fresh clientKey instead of moving
     // or aliasing `from`'s view state, scroll memory, timing, or drafts.
-    threads[to] = {
+    threads[to] ??= {
       ...thread,
+      items: [],
+      historyLoaded: false,
+      historyTruncated: false,
+      contextBreakdown: undefined,
+      forkTargets: [],
       clientKey: mintClientKey(),
       notice: undefined,
       uiRequests: pendingDialogsFor(thread)
@@ -4878,6 +4983,7 @@ function rekeyThread(
 
   const targetThread = threads[to]
   const viewing = state.draftId === from || state.activeSessionFile === from
+  const loadBranch = !shouldMove && targetThread && needsSessionHydration(to, targetThread)
   if (shouldMove && from.startsWith('draft:')) {
     persistPromotedDraft(state, from, nextDrafts ?? state.drafts)
   }
@@ -4888,10 +4994,12 @@ function rekeyThread(
       ? {
           draftId: undefined,
           activeSessionFile: to,
-          ...(targetThread ? { clientKey: targetThread.clientKey } : {})
+          ...(targetThread ? projectThread(targetThread) : {}),
+          ...(loadBranch ? { hydratingSessionFile: to } : {})
         }
       : {})
   })
+  if (loadBranch) void get().hydrateSession(to, 'branch')
 }
 
 type SetState = (
@@ -5829,6 +5937,10 @@ function handleEvent(
         set((state) => ({ run: { ...state.run, compaction: undefined } }))
       }
       if (event.type === 'extension_error') {
+        if (pendingRewind && event.extensionPath === 'command:desktop-rewind' &&
+          threadKey(pendingRewind.sessionKey) === threadKey(owner || viewKeyOf(get()))) {
+          pendingRewind.error = typeof event.error === 'string' ? event.error : 'This message cannot be edited'
+        }
         set((state) => ({
           run: state.run.settled ? state.run : { ...state.run, hadError: true }
         }))

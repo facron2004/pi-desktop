@@ -24,7 +24,7 @@ export function ShortcutsSettings() {
           <button
             type="button"
             className="shortcuts-reset-all"
-            onClick={() => void updateSettings({ shortcutBindings: {} })}
+            onClick={() => void updateSettings({ shortcutBindings: {} }, { shortcutBindings: bindings })}
           >
             <RotateCcw size={13} />
             <span>{t('Reset all')}</span>

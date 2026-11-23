@@ -36,6 +36,7 @@ import {
 import type { AgentMode, AppLanguage, FileEntry, PiCommand } from '@shared/types'
 import { appCommandName } from '../lib/app-commands'
 import { commandIcon } from '../lib/command-source'
+import { composerDraftAfterSend } from '../lib/composer-drafts'
 import {
   composerFileToken,
   extractFilePathMentions,
@@ -177,7 +178,7 @@ function detectMention(text: string, cursor: number): MentionMatch | null {
 }
 
 export const Composer = memo(function Composer() {
-  const send = useAppStore((state) => state.send)
+  const submitComposerDraft = useAppStore((state) => state.submitComposerDraft)
   const stop = useAppStore((state) => state.stop)
   const isStreaming = useAppStore((state) => state.isStreaming)
   const aborting = useAppStore((state) => state.run.phase === 'aborting')
@@ -192,9 +193,10 @@ export const Composer = memo(function Composer() {
   const refreshSkillCommands = useAppStore((state) => state.refreshSkillCommands)
   const language = useAppStore((state) => state.settings.language ?? 'en')
   const draftKey = useAppStore((state) => draftKeyOf(state))
-  const clientKey = useAppStore((state) => {
+  const submitting = useAppStore((state) => {
     const key = state.activeSessionFile || state.draftId
-    return (key && state.threads[key]?.clientKey) || key || state.clientKey || ''
+    const client = (key && state.threads[key]?.clientKey) || key || state.clientKey || '__fallback__'
+    return Boolean(state.submittingDrafts[client])
   })
   const draftEntry = useAppStore(
     useCallback((state) => (draftKey ? state.drafts[draftKey] : undefined), [draftKey])
@@ -229,8 +231,6 @@ export const Composer = memo(function Composer() {
 
   const draftKeyRef = useRef(draftKey)
   draftKeyRef.current = draftKey
-  const clientKeyRef = useRef(clientKey)
-  clientKeyRef.current = clientKey
 
   const patchDraft = useCallback(
     (targetKey: string, updater: (prev: ComposerDraft) => ComposerDraft) => {
@@ -470,7 +470,6 @@ export const Composer = memo(function Composer() {
   // Enter repeats while it is held, and a double-click can land before React
   // has cleared the draft. Track locks per conversation identity so a send in
   // one session never blocks sending in another.
-  const sendingClientsRef = useRef<Set<string>>(new Set())
   // Where the caret goes after a mention has been spliced in. The text is
   // updated through the queue, so the position is only known inside the update.
   const mentionCaret = useRef<number | null>(null)
@@ -908,8 +907,7 @@ export const Composer = memo(function Composer() {
 
   const submit = useCallback(() => {
     const targetKey = draftKeyRef.current
-    const lockKey = clientKeyRef.current || targetKey || '__fallback__'
-    if (sendingClientsRef.current.has(lockKey)) return
+    if (submitting) return
     if ((pendingAddsByKeyRef.current.get(targetKey) ?? 0) > 0) return
     const currentDraft = readTargetDraft(targetKey)
     if (!currentDraft.text.trim() && !currentDraft.command && !currentDraft.images.length && !(currentDraft.files?.length ?? 0)) return
@@ -954,47 +952,40 @@ export const Composer = memo(function Composer() {
       useAppStore.getState().showToast(t('No command matches this slash command'), 'warning')
       return
     }
-    // Hold the lock until Pi accepts the prompt. Releasing it when the box
-    // clears lets a second Enter send the same draft again while the first
-    // request is still starting.
-    sendingClientsRef.current.add(lockKey)
     const fileReferences = (currentDraft.files ?? EMPTY_FILES).map(composerFileToken)
     const visibleText = effectiveText
     const body = [...fileReferences, visibleText].filter((part) => part.trim()).join('\n')
     const rawDraftText = currentDraft.command && !startsImage
       ? `/${currentDraft.command.name}${body ? ` ${body}` : ''}`
       : body
-    const shots = currentDraft.images.map(({ data, mimeType }) => ({ data, mimeType }))
     const isCommandOrBash =
       rawDraftText.trimStart().startsWith('/') || rawDraftText.trimStart().startsWith('!')
     // A command other than `/image` keeps its own meaning even while the image
     // controls are on screen.
     const sendImage = (currentDraft.command && !startsImage) || isCommandOrBash ? undefined : imageOptions
     const draftText =
-      sendImage && !rawDraftText.trim() && shots.length > 0
+      sendImage && !rawDraftText.trim() && currentDraft.images.length > 0
         ? t('Create a refined variation based on the reference image.')
         : rawDraftText
     // An image prompt needs its own agent start: the options travel with the
     // run, and a steer would be folded into a run that already started.
-    const delivery = sendImage ? 'followUp' : kind
-    void send(draftText, shots, delivery, sendImage).finally(() => {
-      sendingClientsRef.current.delete(lockKey)
+    void submitComposerDraft(targetKey, {
+      draft: currentDraft,
+      text: draftText,
+      kind: sendImage ? 'followUp' : kind,
+      imageOptions,
+      sendImage
+    }).then((accepted) => {
+      if (accepted && !targetKey) {
+        patchDraft('', (prev) => prev === currentDraft ? composerDraftAfterSend(prev, draftText, imageOptions) : prev)
+      }
     })
-    patchDraft(targetKey, (prev) => ({
-      text: '',
-      command: undefined,
-      images: EMPTY_IMAGES,
-      files: EMPTY_FILES,
-      pastedRefs: undefined,
-      history: [draftText, ...(prev.history ?? EMPTY_HISTORY).filter((entry) => entry !== draftText)].slice(0, 50),
-      image: imageOptions
-    }))
     setHistoryIndex(-1)
     setCommandSelected(false)
     setImageSelected(false)
     closePalette()
     setMention(null)
-  }, [kind, send, commands, language, t, closePalette, patchDraft, readTargetDraft, setHistoryIndex, defaultImageOptions, focusComposer])
+  }, [kind, submitting, submitComposerDraft, commands, language, t, closePalette, patchDraft, readTargetDraft, setHistoryIndex, defaultImageOptions, focusComposer])
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
@@ -1731,7 +1722,7 @@ export const Composer = memo(function Composer() {
                 anything but `ready` is what made the model control vanish. */}
             <ModelPicker />
 
-            {isStreaming && !hasContent ? (
+            {isStreaming && (!hasContent || submitting) ? (
               <button
                 type="button"
                 className="btn composer__send composer__send--stop"
@@ -1748,17 +1739,17 @@ export const Composer = memo(function Composer() {
                 type="button"
                 className="btn btn--primary composer__send"
                 onClick={submit}
-                disabled={!canCompose || addingFiles || !hasContent}
-                aria-busy={addingFiles || undefined}
+                disabled={!canCompose || addingFiles || submitting || !hasContent}
+                aria-busy={addingFiles || submitting || undefined}
                 aria-label={t('Send message')}
                 title={t('Send message')}
               >
-                {addingFiles ? <Loader2 size={15} className="spin" /> : <ArrowUp size={18} strokeWidth={2.6} />}
+                {addingFiles || submitting ? <Loader2 size={15} className="spin" /> : <ArrowUp size={18} strokeWidth={2.6} />}
               </button>
             )}
           </div>
         </div>
-        {isStreaming && hasContent ? (
+        {isStreaming && hasContent && !submitting ? (
           <div className="composer__stop-row">
             <button
               type="button"

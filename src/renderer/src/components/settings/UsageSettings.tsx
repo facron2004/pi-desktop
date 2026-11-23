@@ -454,7 +454,11 @@ export function UsageSettings() {
               </tr>
             </thead>
             <tbody>
-              {usageStats.recentDays.map((d) => (
+              {/* Newest day first. The reader opens this block to see what the
+                  last day cost, so that row must not sit under six older ones;
+                  `recentDays` itself stays in time order, because it is a series
+                  (and the heatmap reads it as one) — only the table reverses. */}
+              {[...usageStats.recentDays].reverse().map((d) => (
                 <tr key={d.date}>
                   <td>{d.date}</td>
                   <td>{formatTokens(d.totalTokens)}</td>

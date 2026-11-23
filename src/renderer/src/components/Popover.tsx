@@ -136,6 +136,14 @@ export function Popover({
     const panel = popoverRef.current
     if (!anchor || !panel) return
 
+    // The panel is portaled to the body, so it cannot inherit the stacking of
+    // whatever it was opened from. A dialog paints at `--z-modal`, which
+    // outranks the `--z-floating` a popover uses in the page, so a menu opened
+    // from inside a dialog was painted behind the dialog's own card. The
+    // stylesheet raises the panel when this attribute says it is in one.
+    if (anchor.closest('.modal-layer')) panel.dataset.layer = 'modal'
+    else delete panel.dataset.layer
+
     // React reapplies the inline `visibility: hidden` on every render. A parent
     // that updates while the menu is open (the branch list loading, for one)
     // would otherwise leave the panel hidden, because this effect used to skip

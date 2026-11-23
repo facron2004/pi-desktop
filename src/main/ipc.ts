@@ -12,6 +12,7 @@ import type {
   AppInfo,
   AppUpdateProgress,
   AppSettings,
+  DownloadedAppUpdate,
   ExtensionUiResponse,
   FileContent,
   FileEntry,
@@ -35,6 +36,7 @@ import type {
   RuntimeStatus,
   ScheduledTask,
   ScheduledTaskInput,
+  SettingsPatchBaseline,
   TerminalCreateOptions,
   TextSearchHit,
   TextSearchResult,
@@ -52,7 +54,15 @@ import {
   checkAppVersion,
   isNewerVersion
 } from './app-updates'
-import { downloadAppInstaller, launchAppInstaller, supportsAppUpdate } from './app-update-installer'
+import {
+  clearDownloadedInstaller,
+  clearStaleDownloads,
+  downloadAppInstaller,
+  launchAppInstaller,
+  pruneDownloadedInstaller,
+  readDownloadedInstaller,
+  supportsAppUpdate
+} from './app-update-installer'
 import { clearUpdateState, readUpdateStateForVersion, writeUpdateState } from './update-state'
 import { beginBundledPiCliMaintenance, checkAuth, killProcessTree, piVersion } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
@@ -403,12 +413,24 @@ function workspaceRoot(context: IpcContext): string {
   return active?.path ?? settings.workspaces[0]?.path ?? ''
 }
 
+function gitWorkspaceRoot(context: IpcContext, expectedRoot?: unknown): string {
+  const root = workspaceRoot(context)
+  if (expectedRoot !== undefined && (
+    typeof expectedRoot !== 'string' || !path.isAbsolute(expectedRoot) ||
+    !root || workspacePathKey(root) !== workspacePathKey(expectedRoot)
+  )) {
+    throw new Error('The active project changed before Git could start.')
+  }
+  return root
+}
+
 async function gitWrite<T extends GitCommitResult>(
   context: IpcContext,
-  action: (root: string) => Promise<T>
+  action: (root: string) => Promise<T>,
+  expectedRoot: unknown
 ): Promise<T | GitCommitResult> {
-  const root = workspaceRoot(context)
   try {
+    const root = gitWorkspaceRoot(context, expectedRoot ?? '')
     return await context.supervisor.withCwdLock(root, () => action(root))
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -850,6 +872,35 @@ function fetchLatestPiCliVersion(packageSpec: string): Promise<string> {
   })
 }
 
+/**
+ * The bundled CLI's reading on its own.
+ *
+ * A packaged app carries one CLI, released with the app, so it answers
+ * `hasUpdate: false` without asking npm anything. Only a development checkout
+ * can replace the CLI, and there the CLI *is* the agent under development.
+ *
+ * This is deliberately separate from `app:checkUpdate`: the app release is
+ * fetched from GitHub and is the reader's choice (`automaticUpdates`), while
+ * the CLI this app drives is checked on its own — a stale agent is a wrong
+ * answer, not a missing feature.
+ */
+async function checkPiCliVersion(piPath: string | undefined): Promise<VersionItemStatus> {
+  const current = (await piVersion(piPath)) || '1.4.0'
+  if (app.isPackaged || resolvePiLaunch(piPath).source !== 'bundled') {
+    return { current, hasUpdate: false }
+  }
+  try {
+    const latest = await fetchLatestPiCliVersion(piCliPackageSpec(app.getAppPath()))
+    return { current, latest, hasUpdate: isNewerVersion(latest, current) }
+  } catch (err: unknown) {
+    return {
+      current,
+      hasUpdate: false,
+      error: err instanceof Error ? err.message : 'Failed to check Pi CLI updates'
+    }
+  }
+}
+
 interface NpmCommandOutput {
   stdout: string
   stderr: string
@@ -985,6 +1036,11 @@ export function registerIpc(context: IpcContext): void {
   const workspaceMutations = new Map<string, Promise<unknown>>()
   let piCliUpgradeInFlight: Promise<UpgradeResult> | null = null
   let appUpdateInFlight: Promise<UpgradeResult> | null = null
+  // One download at a time, remembered with its version so an install request
+  // can wait for the very download it needs instead of starting a second one.
+  let appDownloadInFlight: { version: string; result: Promise<UpgradeResult> } | null = null
+  /** Where the verified installer and its record live between runs. */
+  const updatesDirectory = (): string => path.join(app.getPath('userData'), 'updates')
   const serializeWorkspaceMutation = <T>(targetPath: string, operation: () => T | Promise<T>): Promise<T> => {
     const key = workspacePathKey(targetPath)
     const previous = workspaceMutations.get(key) ?? Promise.resolve()
@@ -1204,27 +1260,11 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('app:checkUpdate', async (): Promise<VersionCheckResult> => {
     const piPath = settings.get().piPath
-    const currentPiVersion = (await piVersion(piPath)) || '1.4.0'
     const currentAppVersion = app.getVersion()
-    const canUpdateBundledPi = !app.isPackaged && resolvePiLaunch(piPath).source === 'bundled'
-
-    let piCliStatus: VersionItemStatus = {
-      current: currentPiVersion,
-      hasUpdate: false
-    }
-
-    if (canUpdateBundledPi) {
-      try {
-        const latestPi = await fetchLatestPiCliVersion(piCliPackageSpec(app.getAppPath()))
-        piCliStatus = {
-          current: currentPiVersion,
-          latest: latestPi,
-          hasUpdate: isNewerVersion(latestPi, currentPiVersion)
-        }
-      } catch (err: unknown) {
-        piCliStatus.error = err instanceof Error ? err.message : 'Failed to check Pi CLI updates'
-      }
-    }
+    // The CLI half is the same reading the dedicated channel reports; asking
+    // for it here keeps one check able to answer both, for the About page's
+    // manual entry points.
+    const piCliStatus = await checkPiCliVersion(piPath)
 
     const appStatus = await checkAppVersion(currentAppVersion)
 
@@ -1244,10 +1284,21 @@ export function registerIpc(context: IpcContext): void {
           ...(piCliStatus.error ? {} : { piCli: piCliStatus }),
           checkedAt: Date.now()
         })
+        // The release moved on (or this is the first check after a restart):
+        // an installer for another release is not what the reader will install.
+        if (appStatus.latest && !appDownloadInFlight && !appUpdateInFlight) {
+          pruneDownloadedInstaller(updatesDirectory(), appStatus.latest)
+        }
       } else {
         // The running version is the newest one, so there is nothing to
-        // remember.
+        // remember — and nothing left to install.
         clearUpdateState(userDataDir)
+        if (!appDownloadInFlight && !appUpdateInFlight) {
+          clearDownloadedInstaller(updatesDirectory())
+          // A check that reached the network is also where a staging folder a
+          // killed download left behind is swept, even with nothing to install.
+          clearStaleDownloads(updatesDirectory())
+        }
       }
     }
 
@@ -1255,6 +1306,14 @@ export function registerIpc(context: IpcContext): void {
       app: appStatus,
       piCli: piCliStatus
     }
+  })
+
+  // The bundled CLI on its own: no GitHub request, no app-release reading and
+  // no write to the stored snapshot. The renderer schedules this one whatever
+  // the reader chose about automatic app updates — the CLI is the agent this
+  // app drives, and its version is checked on its own.
+  ipcMain.handle('app:checkPiCliUpdate', (): Promise<VersionItemStatus> => {
+    return checkPiCliVersion(settings.get().piPath)
   })
 
   // The reading kept from the last check that reached the network. The
@@ -1267,13 +1326,76 @@ export function registerIpc(context: IpcContext): void {
     return readUpdateStateForVersion(app.getPath('userData'), app.getVersion())
   })
 
+  // Downloading is separate from installing: a release can arrive in the
+  // background while the app keeps working, and the finished installer waits
+  // for the reader to restart. No task is interrupted to fetch a file.
+  ipcMain.handle('app:downloadUpdate', async (_event, version: unknown): Promise<UpgradeResult> => {
+    if (typeof version !== 'string' || version.length > 64 || !/^\d+\.\d+\.\d+$/.test(version)) {
+      return { success: false, error: 'The requested app update is not a newer release.' }
+    }
+    if (!supportsAppUpdate(app.isPackaged, process.platform, process.execPath)) {
+      return { success: false, error: 'Automatic updates are available in the Windows installer version.' }
+    }
+    if (appUpdateInFlight) return { success: false, error: 'An update is already being installed.' }
+    if (appDownloadInFlight) {
+      return appDownloadInFlight.version === version
+        ? appDownloadInFlight.result
+        : { success: false, error: 'Another update is still downloading.' }
+    }
+    const result = (async (): Promise<UpgradeResult> => {
+      try {
+        if (!isNewerVersion(version, app.getVersion())) {
+          throw new Error('The requested app update is not a newer release.')
+        }
+        const onProgress = (progress: AppUpdateProgress): void => {
+          sendToWindow(getWindow(), 'app:updateProgress', progress)
+        }
+        await downloadAppInstaller(version, {
+          currentVersion: app.getVersion(),
+          arch: process.arch,
+          directory: updatesDirectory(),
+          onProgress
+        })
+        return { success: true, version }
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    })()
+    appDownloadInFlight = { version, result }
+    try {
+      return await result
+    } finally {
+      if (appDownloadInFlight?.result === result) appDownloadInFlight = null
+    }
+  })
+
+  // The installer kept from an earlier download. The renderer reads it at
+  // startup, so the icon offers "restart to install" before any check answers.
+  ipcMain.handle('app:downloadedUpdate', (): DownloadedAppUpdate | null => {
+    const downloaded = readDownloadedInstaller(updatesDirectory(), app.getVersion())
+    if (!downloaded) return null
+    return downloaded.bytes !== undefined
+      ? { version: downloaded.version, bytes: downloaded.bytes }
+      : { version: downloaded.version }
+  })
+
   ipcMain.handle('app:installUpdate', async (_event, version: unknown): Promise<UpgradeResult> => {
     if (appUpdateInFlight) return appUpdateInFlight
+    const pendingDownload = appDownloadInFlight
+    if (pendingDownload && pendingDownload.version !== version) {
+      // The background download for this release is the one to install; a
+      // download for another release has to finish or be stopped first.
+      return { success: false, error: 'Another update is still downloading.' }
+    }
     const operation = (async (): Promise<UpgradeResult> => {
       let finishMaintenance: (() => void) | undefined
       let prepared = false
       let restarting = false
       try {
+        if (pendingDownload) {
+          const download = await pendingDownload.result
+          if (!download.success) return download
+        }
         if (!supportsAppUpdate(app.isPackaged, process.platform, process.execPath)) {
           throw new Error('Automatic updates are available in the Windows installer version.')
         }
@@ -1286,10 +1408,12 @@ export function registerIpc(context: IpcContext): void {
         const onProgress = (progress: AppUpdateProgress): void => {
           sendToWindow(getWindow(), 'app:updateProgress', progress)
         }
+        // Recheck cached bytes before launching. A bad cache is downloaded
+        // again while this operation has exclusive access to the installer.
         const installer = await downloadAppInstaller(version, {
           currentVersion: app.getVersion(),
           arch: process.arch,
-          directory: path.join(app.getPath('userData'), 'updates'),
+          directory: updatesDirectory(),
           onProgress
         })
         onProgress({ version, stage: 'installing', percent: 100 })
@@ -1308,10 +1432,13 @@ export function registerIpc(context: IpcContext): void {
       }
     })()
     appUpdateInFlight = operation
+    let result: UpgradeResult | undefined
     try {
-      return await operation
+      result = await operation
+      return result
     } finally {
-      if (appUpdateInFlight === operation) appUpdateInFlight = null
+      // A successful launch owns the installer until this process shuts down.
+      if (!result?.success) appUpdateInFlight = null
     }
   })
 
@@ -1370,8 +1497,8 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('settings:get', (): AppSettings => settings.get())
 
-  ipcMain.handle('settings:patch', (_event, patch: Partial<AppSettings>): AppSettings => {
-    const next = settings.patch(patch)
+  ipcMain.handle('settings:patch', (_event, patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): AppSettings => {
+    const next = settings.patch(patch, baseline)
     if (patch.memoryGeneration === false) context.memory.cancelAutomaticGeneration()
     // The extension reads the switch when its process starts. A conversation
     // that is already running has to be told, or the toggle would wait for
@@ -1496,7 +1623,8 @@ export function registerIpc(context: IpcContext): void {
           name: workspaceName(dir),
           lastOpenedAt: Date.now()
         }
-        const next = settings.addWorkspace(workspace)
+        // The renderer commits the selection only while the switch still owns the view.
+        const next = settings.addWorkspace(workspace, false)
         const saved = next.workspaces.find((item) => workspacePathKey(item.path) === key) ?? workspace
         return { workspace: saved, settings: next }
       })
@@ -1507,15 +1635,16 @@ export function registerIpc(context: IpcContext): void {
     (await listSessions(cwd, settings.get().externalChatFolder)).map(withoutProjectFolder)
   )
 
-  ipcMain.handle('sessions:hydrate', async (event, file: string): Promise<SessionHydrationResult> => {
+  ipcMain.handle('sessions:hydrate', async (event, file: string, scope?: unknown): Promise<SessionHydrationResult> => {
     const empty = (): SessionHydrationResult => ({ messages: [], historyTruncated: false })
     const sender = (event as { sender?: object } | undefined)?.sender
-    const token = sender ? (sessionHydrationSequence += 1) : 0
-    if (sender) latestHydrations.set(sender, token)
+    // A branch operation reads its transcript independently of navigation.
+    const token = sender && scope !== 'branch' ? (sessionHydrationSequence += 1) : undefined
+    if (sender && token !== undefined) latestHydrations.set(sender, token)
     const isSuperseded = (): boolean => {
       if (!sender) return false
       const destroyed = (sender as { isDestroyed?: () => boolean }).isDestroyed?.() === true
-      return destroyed || latestHydrations.get(sender) !== token
+      return destroyed || (token !== undefined && latestHydrations.get(sender) !== token)
     }
 
     const opened = await openSessionFile(file, resolveSessionRoots(settings.get().externalChatFolder))
@@ -1528,8 +1657,8 @@ export function registerIpc(context: IpcContext): void {
     const cacheKey = canonicalSessionFile(opened.target)
     const existing = inflightHydrations.get(cacheKey)
     if (existing && !existing.aborted) {
-      await opened.handle.close().catch(() => {})
       existing.supersededChecks.add(isSuperseded)
+      await opened.handle.close().catch(() => {})
       const result = await existing.promise
       return isSuperseded() ? empty() : result
     }
@@ -1610,28 +1739,32 @@ export function registerIpc(context: IpcContext): void {
 
   // Git is read from the folder Pi runs in: the review panel and the branch
   // chip describe the work tree the agent is actually editing.
-  ipcMain.handle('git:status', () => readStatus(workspaceRoot(context)))
-
-  ipcMain.handle('git:log', (_event, limit?: number) => readLog(workspaceRoot(context), limit))
-
-  ipcMain.handle('git:commit', (_event, message: string, includeUnstaged?: boolean) =>
-    gitWrite(context, root => commitWorkingTree(root, message, includeUnstaged === true))
+  ipcMain.handle('git:status', (_event, expectedRoot?: unknown) =>
+    readStatus(expectedRoot === '' ? '' : gitWorkspaceRoot(context, expectedRoot))
   )
 
-  ipcMain.handle('git:stageFile', (_event, file: string) =>
-    gitWrite(context, root => stageFile(root, file))
+  ipcMain.handle('git:log', (_event, limit?: number, expectedRoot?: unknown) =>
+    readLog(gitWorkspaceRoot(context, expectedRoot), limit)
   )
 
-  ipcMain.handle('git:unstageFile', (_event, file: string) =>
-    gitWrite(context, root => unstageFile(root, file))
+  ipcMain.handle('git:commit', (_event, message: string, includeUnstaged: boolean, expectedRoot: unknown) =>
+    gitWrite(context, root => commitWorkingTree(root, message, includeUnstaged === true), expectedRoot)
   )
 
-  ipcMain.handle('git:stageAll', () => gitWrite(context, root => stageAll(root)))
+  ipcMain.handle('git:stageFile', (_event, file: string, expectedRoot: unknown) =>
+    gitWrite(context, root => stageFile(root, file), expectedRoot)
+  )
 
-  ipcMain.handle('git:unstageAll', () => gitWrite(context, root => unstageAll(root)))
+  ipcMain.handle('git:unstageFile', (_event, file: string, expectedRoot: unknown) =>
+    gitWrite(context, root => unstageFile(root, file), expectedRoot)
+  )
 
-  ipcMain.handle('git:fileDiff', (_event, file: string) =>
-    readFileDiff(workspaceRoot(context), file)
+  ipcMain.handle('git:stageAll', (_event, expectedRoot: unknown) => gitWrite(context, stageAll, expectedRoot))
+
+  ipcMain.handle('git:unstageAll', (_event, expectedRoot: unknown) => gitWrite(context, unstageAll, expectedRoot))
+
+  ipcMain.handle('git:fileDiff', (_event, file: string, expectedRoot?: unknown) =>
+    readFileDiff(gitWorkspaceRoot(context, expectedRoot), file)
   )
 
   ipcMain.handle('git:patch', (_event, file?: string) =>
@@ -1650,29 +1783,31 @@ export function registerIpc(context: IpcContext): void {
     readCommitWorktreeDiff(workspaceRoot(context), hash, file)
   )
 
-  ipcMain.handle('git:applyPatch', (_event, patch: string, reverse?: boolean) =>
-    gitWrite(context, root => applyPatch(root, patch, reverse === true))
+  ipcMain.handle('git:applyPatch', (_event, patch: string, reverse: boolean, expectedRoot: unknown) =>
+    gitWrite(context, root => applyPatch(root, patch, reverse === true), expectedRoot)
   )
 
-  ipcMain.handle('git:branches', () => readBranches(workspaceRoot(context)))
-
-  ipcMain.handle('git:switchBranch', (_event, name: string) =>
-    gitWrite(context, root => switchBranch(root, name))
+  ipcMain.handle('git:branches', (_event, expectedRoot?: unknown) =>
+    readBranches(gitWorkspaceRoot(context, expectedRoot))
   )
 
-  ipcMain.handle('git:createBranch', (_event, name: string, checkout?: boolean) =>
-    gitWrite(context, root => createBranch(root, name, checkout !== false))
+  ipcMain.handle('git:switchBranch', (_event, name: string, expectedRoot: unknown) =>
+    gitWrite(context, root => switchBranch(root, name), expectedRoot)
+  )
+
+  ipcMain.handle('git:createBranch', (_event, name: string, checkout: boolean, expectedRoot: unknown) =>
+    gitWrite(context, root => createBranch(root, name, checkout !== false), expectedRoot)
   )
 
   ipcMain.handle(
     'git:addWorktree',
-    (_event, worktreePath: string, branch: string, create?: boolean) =>
-      gitWrite(context, root => addWorktree(root, worktreePath, branch, create !== false))
+    (_event, worktreePath: string, branch: string, create: boolean, expectedRoot: unknown) =>
+      gitWrite(context, root => addWorktree(root, worktreePath, branch, create !== false), expectedRoot)
   )
 
-  ipcMain.handle('git:removeWorktree', async (_event, worktreePath: string) => {
-    const root = workspaceRoot(context)
+  ipcMain.handle('git:removeWorktree', async (_event, worktreePath: string, expectedRoot: unknown) => {
     try {
+      const root = gitWorkspaceRoot(context, expectedRoot ?? '')
       return await removeWorktree(
         root,
         worktreePath,
@@ -1694,13 +1829,13 @@ export function registerIpc(context: IpcContext): void {
     }
   })
 
-  ipcMain.handle('git:revertFile', (_event, file: string) =>
-    gitWrite(context, root => revertFile(root, file))
+  ipcMain.handle('git:revertFile', (_event, file: string, expectedRoot: unknown) =>
+    gitWrite(context, root => revertFile(root, file), expectedRoot)
   )
 
-  ipcMain.handle('git:push', () => gitWrite(context, root => pushBranch(root)))
+  ipcMain.handle('git:push', (_event, expectedRoot: unknown) => gitWrite(context, pushBranch, expectedRoot))
 
-  ipcMain.handle('git:pull', () => gitWrite(context, root => pullBranch(root)))
+  ipcMain.handle('git:pull', (_event, expectedRoot: unknown) => gitWrite(context, pullBranch, expectedRoot))
 
   ipcMain.handle('fs:list', async (_event, dir: string): Promise<FileListResult> => {
     const root = workspaceRoot(context)

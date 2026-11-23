@@ -22,16 +22,13 @@ export const UserMessage = memo(function UserMessage({
   item,
   onCopy,
   copied,
-  editEntryId,
   onEdit,
   editing
 }: {
   item: UserItem
   onCopy: (id: string, text: string) => void
   copied: string | null
-  /** The Pi entry id this prompt can be rewound to, when it can. */
-  editEntryId?: string
-  onEdit?: (entryId: string, text: string, images: UserItem['images']) => void
+  onEdit?: (item: UserItem) => void
   editing?: boolean
 }) {
   const t = useT()
@@ -74,11 +71,11 @@ export const UserMessage = memo(function UserMessage({
               >
                 {copied === item.id ? <Check size={12} /> : <Copy size={12} />}
               </button>
-              {editEntryId && onEdit ? (
+              {onEdit ? (
                 <button
                   type="button"
                   className="ghost-btn ghost-btn--edit"
-                  onClick={() => onEdit(editEntryId, item.text, item.images)}
+                  onClick={() => onEdit(item)}
                   disabled={editing}
                   aria-label={t('Edit message')}
                 >

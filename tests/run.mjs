@@ -57,6 +57,7 @@ const suites = [
   'fonts.test.ts',
   'ui-font.test.ts',
   'font-scale.test.ts',
+  'theme-presets.test.ts',
   'providers.test.ts',
   'model-catalog.test.ts',
   'retry-policy.test.ts',

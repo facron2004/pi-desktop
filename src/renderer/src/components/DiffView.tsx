@@ -195,6 +195,7 @@ export const DiffView = memo(function DiffView({
   mode = 'unified',
   patchPath,
   revertPath,
+  revertRoot,
   onReverted,
   onOpenLine,
   expandAll,
@@ -212,6 +213,7 @@ export const DiffView = memo(function DiffView({
    * the Review tab leaves this unset for them.
    */
   revertPath?: string
+  revertRoot?: string
   /** Called after a hunk was reverted, so the caller can reload its diff. */
   onReverted?: () => void
   /** Open the file this diff belongs to at a given line. */
@@ -228,7 +230,7 @@ export const DiffView = memo(function DiffView({
   }))
   const rowLimit = limitState.diffs === diffs ? limitState.limit : DIFF_INITIAL_ROWS
   // The hunk patch shown in the confirmation, captured when the reader asked.
-  const [pendingRevert, setPendingRevert] = useState<string | null>(null)
+  const [pendingRevert, setPendingRevert] = useState<{ patch: string; root: string } | null>(null)
   const [reverting, setReverting] = useState(false)
   const showToast = useAppStore((state) => state.showToast)
   const t = useT()
@@ -350,22 +352,22 @@ export const DiffView = memo(function DiffView({
   }
 
   const askRevert = (blockIndex: number) => {
-    if (!revertPath) return
+    if (!revertPath || !revertRoot) return
     const patch = patchFor(blockIndex, revertPath)
     if (!patch) {
       showToast(t('This block has no changes to revert'), 'warning')
       return
     }
-    setPendingRevert(patch)
+    setPendingRevert({ patch, root: revertRoot })
   }
 
   const confirmRevert = async () => {
-    const patch = pendingRevert
+    const target = pendingRevert
     setPendingRevert(null)
-    if (!patch) return
+    if (!target) return
     setReverting(true)
     try {
-      const result = await window.pi.git.applyPatch(patch, true)
+      const result = await window.pi.git.applyPatch(target.patch, true, target.root)
       if (!result.ok) {
         showToast(result.error ?? t('The hunk could not be reverted'), 'error')
         return
@@ -383,7 +385,7 @@ export const DiffView = memo(function DiffView({
   // work the same in both layouts.
   const hunkActions = (blockIndex: number) => {
     const copy = Boolean(patchPath) && patchable[blockIndex]
-    const revert = Boolean(revertPath) && patchable[blockIndex]
+    const revert = Boolean(revertPath && revertRoot) && patchable[blockIndex]
     if (!copy && !revert) return null
     return (
       <div className="diff__hunk-actions">

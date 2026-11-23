@@ -345,7 +345,7 @@ test('CwdGate release: same-cwd session runs concurrently while A waits on UI di
   assert.equal(gitResult, 'git ok')
 })
 
-test('runtime status error clears approvals and releases CwdGate lock', async () => {
+test('a Pi child exit clears approvals and releases the directory lock', async () => {
   const a = new TestSessionRuntime()
   const supervisor = supervisorOf([a])
   const workspaceCwd = 'C:/error-workspace'
@@ -363,11 +363,12 @@ test('runtime status error clears approvals and releases CwdGate lock', async ()
     method: 'confirm'
   } as PiEvent)
 
-  // Runtime experiences an unexpected error/crash
   a.running = false
-  a.emit('status', { phase: 'error', error: 'Pi child process died', cwd: workspaceCwd } as RuntimeStatus)
+  a.status = { phase: 'stopped', error: 'Pi child process died', cwd: workspaceCwd }
+  a.emit('status', a.status, true)
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput, false)
+  await new Promise<void>((resolve) => setImmediate(resolve))
 
-  // Git lock should now be released, not deadlocked
   const gitResult = await supervisor.withCwdLock(workspaceCwd, async () => 'git recovered')
   assert.equal(gitResult, 'git recovered')
 })

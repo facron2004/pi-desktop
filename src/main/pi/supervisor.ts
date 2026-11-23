@@ -579,7 +579,7 @@ export class SessionSupervisor extends EventEmitter {
     }
     const activity = this.activity.get(runtime)!
     if (activity.stopping) return activity.stopping
-    const wasBusy = activity.running || activity.writes > 0
+    const wasBusy = !activity.finalizing && (activity.running || activity.writes > 0)
     const settlementsAtStop = activity.settlements
     const starting = this.starting.get(id)
     const stopped = (async () => {
@@ -758,22 +758,20 @@ export class SessionSupervisor extends EventEmitter {
       this.note(ownerId, runtime, event)
       this.emit('event', { ownerId, event })
     })
-    runtime.on('status', (status: RuntimeStatus) => {
+    runtime.on('status', (status: RuntimeStatus, processExited?: boolean) => {
       const ownerId = this.ownerOf(runtime)
       if (!ownerId) return
       const activity = this.activity.get(runtime)!
-      if (status.phase === 'error' && runtime.isRunning && activity.writes > 0) {
+      if (status.phase === 'error' && activity.writes > 0) {
         // The request that hit the transport error may still be executing in Pi.
         activity.running = true
       }
-      if ((status.phase === 'error' || status.phase === 'stopped') && !runtime.isRunning) {
-        // A process that dies mid-run never writes `agent_settled`, and the
-        // run would stay open for the rest of the app's life. A deliberate
-        // stop sets `stopping` and publishes its own settle after the exit.
-        // An RPC error can arrive while the child is still running, so keep
-        // its activity and directory lease until a settle or process exit.
-        const crashed = (activity.running || activity.writes > 0) && !activity.stopping && !runtime.isRunning
+      if (processExited && !activity.stopping && !activity.finalizing) {
+        // A closed RPC transport can still have a live child. Only a confirmed
+        // exit retires the runtime and releases its session-file lock.
+        const crashed = activity.running || activity.writes > 0
         activity.running = false
+        activity.finalizing = true
         this.approvals.delete(ownerId)
         if (crashed) {
           this.emit('event', {
@@ -781,7 +779,9 @@ export class SessionSupervisor extends EventEmitter {
             event: { type: 'agent_settled', aborted: false, crashed: true }
           })
         }
-        this.releaseFromEvent(ownerId)
+        void this.stop(ownerId).catch((error) => {
+          console.error('[pi-desktop] could not retire an exited Pi process:', error)
+        })
       }
       this.emit('status', { ownerId, status })
     })

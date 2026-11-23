@@ -1,12 +1,10 @@
 import { Notification, type BrowserWindow } from 'electron'
-import type { AgentMessage } from '@shared/types'
 import { windowIconImage } from './app-icon'
+import { lastRunAssistantMessage } from './pi/run-result'
 
 /** Pi's agent_end contains the messages produced by this run. */
 export function describeRunCompletion(messages: unknown): { body: string; failed: boolean } {
-  const assistant = Array.isArray(messages)
-    ? (messages as AgentMessage[]).findLast((message) => message?.role === 'assistant')
-    : undefined
+  const assistant = lastRunAssistantMessage(messages)
   const failed = assistant?.stopReason === 'error'
   const content = assistant?.content
   let text = ''

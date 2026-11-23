@@ -37,7 +37,18 @@ import type { TerminalRunRequest } from './components/TerminalPanel'
 import { GoalBar } from './components/GoalBar'
 import { FeatureLoading } from './components/FeatureLoading'
 import { Popover } from './components/Popover'
-import { APP_UPDATE_NOTICE, noteAppUpdateCheck, restorePersistedAppUpdate, type AppUpdateNotice } from './lib/app-update'
+import {
+  APP_UPDATE_NOTICE,
+  appUpdateInstall,
+  availableAppUpdate,
+  noteAppUpdateCheck,
+  notePiCliUpdate,
+  restoreDownloadedAppUpdate,
+  restorePersistedAppUpdate,
+  startAppUpdateDownload,
+  subscribeAvailableAppUpdate,
+  type AppUpdateNotice
+} from './lib/app-update'
 import { matchesAnyShortcut, type ShortcutId } from './lib/shortcuts'
 import { activeConversationTitle } from './lib/live-sessions'
 import { useT } from './lib/i18n'
@@ -134,6 +145,9 @@ export default function App() {
   const [mcpOpen, setMcpOpen] = useState(false)
   const [extensionDialogMounted, setExtensionDialogMounted] = useState(false)
   const [pendingUpdateNotice, setPendingUpdateNotice] = useState<AppUpdateNotice | null>(null)
+  // The sidebar icon and the automatic download both read this; the shared
+  // module owns the reading, this is only the renderer's subscription to it.
+  const [availableUpdate, setAvailableUpdate] = useState(() => availableAppUpdate())
   const deskPage = useAppStore((state) => state.deskPage)
   const setDeskPage = useAppStore((state) => state.setDeskPage)
   // A command headed for the drawer. `seq` makes the same command twice two
@@ -150,6 +164,8 @@ export default function App() {
   const imageSeqRef = useRef(0)
   /** Last automatic update check; the effect below re-runs when a run settles. */
   const lastAutomaticUpdateCheck = useRef(0)
+  /** The bundled CLI has its own clock: the app release switch must not gate it. */
+  const lastPiCliCheck = useRef(0)
   const [changesOpen, setChangesOpen] = useState(false)
   // A click leaves the pointer on the corner control; the arrow stays hidden
   // until the pointer leaves and comes back.
@@ -186,6 +202,7 @@ export default function App() {
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState('')
   const exportedRef = useRef(false)
+  const devCommitOpenedRef = useRef(false)
   // Null while the panel is being dragged; the stored width takes over again
   // once the drag ends.
   const [draggedWidth, setDraggedWidth] = useState<number | null>(null)
@@ -206,31 +223,31 @@ export default function App() {
     // Owned by its own effect: the update check below re-runs whenever a run
     // starts or stops, and a restore is a startup read, not a per-run one.
     void restorePersistedAppUpdate()
+    // The installer a previous run downloaded stays on disk; putting it back
+    // is what makes the icon say "restart to install" before any check answers.
+    void restoreDownloadedAppUpdate()
   }, [])
 
-  useEffect(() => {
-    // A running conversation is left alone. The built-in service is only
-    // replaced in a development build; an app release is recorded either way,
-    // so the sidebar can offer the update without starting the download.
-    if (anySessionStreaming) return
-    const updateService = automaticUpdates === true && info?.isPackaged === false && info.pi.source === 'bundled'
+  useEffect(() => subscribeAvailableAppUpdate(setAvailableUpdate), [])
 
-    let active = true
+  useEffect(() => {
+    // Automatic checking is the reader's choice. With it off, only the manual
+    // entries (Help → Check for updates, About settings) reach the network.
+    if (automaticUpdates !== true) return
+    // A running conversation is left alone.
+    if (anySessionStreaming) return
+
     let running = false
-    const checkAndDownload = async () => {
+    const checkForUpdates = async () => {
       if (running) return
       running = true
       lastAutomaticUpdateCheck.current = Date.now()
       try {
         const result = await window.pi.app.checkUpdate()
-        if (!active) return
+        // The reading belongs to the module, not to this effect: a check that
+        // answers after a dependency changed still described the app as it is,
+        // and throwing it away is how a startup check could report nothing.
         noteAppUpdateCheck(result)
-        let downloaded = false
-        if (updateService && result.piCli.hasUpdate) {
-          const serviceUpdate = await window.pi.app.upgradePiCli()
-          downloaded = downloaded || serviceUpdate.success
-        }
-        if (active && downloaded) showToast(t('Update downloaded. Restart Pi Desktop to apply.'))
       } catch {
         // Transient update errors are retried on the next scheduled check.
       } finally {
@@ -242,17 +259,80 @@ export default function App() {
     // progress, but a finished turn flipping it back must not fire a network
     // check of its own. The interval owns the schedule.
     if (Date.now() - lastAutomaticUpdateCheck.current >= AUTOMATIC_UPDATE_INTERVAL_MS) {
-      void checkAndDownload()
+      void checkForUpdates()
     }
     const interval = window.setInterval(
-      () => void checkAndDownload(),
+      () => void checkForUpdates(),
       AUTOMATIC_UPDATE_INTERVAL_MS
     )
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [anySessionStreaming, automaticUpdates])
+
+  // The bundled CLI is the agent this app drives, so its version is checked on
+  // its own schedule: the switch above decides whether app releases are
+  // fetched, not whether the agent is current. Only a development checkout can
+  // replace it — a packaged build carries one CLI released with the app.
+  useEffect(() => {
+    if (info?.isPackaged !== false || info.pi.source !== 'bundled') return
+    // Replacing the CLI under a running agent would swap the binary mid-run.
+    if (anySessionStreaming) return
+
+    let active = true
+    let running = false
+    const checkPiCli = async () => {
+      if (running) return
+      running = true
+      lastPiCliCheck.current = Date.now()
+      try {
+        const status = await window.pi.app.checkPiCliUpdate()
+        // Same rule as above: the reading is the module's. The effect is torn
+        // down and rebuilt while `info` and the settings arrive at startup, and
+        // an answer that lands in that window must still reach the About page.
+        notePiCliUpdate(status)
+        if (!active || automaticUpdates !== true || !status.hasUpdate) return
+        // Upgrading writes into the CLI's own folder, so it follows the same
+        // switch that lets the app fetch a release in the background.
+        const upgraded = await window.pi.app.upgradePiCli()
+        if (active && upgraded.success) showToast(t('Upgrade completed'))
+      } catch {
+        // The next scheduled check tries again.
+      } finally {
+        running = false
+      }
+    }
+
+    if (Date.now() - lastPiCliCheck.current >= AUTOMATIC_UPDATE_INTERVAL_MS) {
+      void checkPiCli()
+    }
+    const interval = window.setInterval(() => void checkPiCli(), AUTOMATIC_UPDATE_INTERVAL_MS)
     return () => {
       active = false
       window.clearInterval(interval)
     }
-  }, [anySessionStreaming, info?.isPackaged, info?.pi.source, automaticUpdates, showToast, t])
+  }, [anySessionStreaming, automaticUpdates, info?.isPackaged, info?.pi.source, showToast, t])
+
+  // Fetch the release a check found, in the background. The ring on the
+  // sidebar icon is the progress; the click that installs is the reader's.
+  useEffect(() => {
+    if (automaticUpdates !== true || info?.appUpdateSupported !== true) return
+    if (!availableUpdate) return
+    // A ready or running download is already what a click would install.
+    if (appUpdateInstall()?.version === availableUpdate.latest) return
+    let active = true
+    void startAppUpdateDownload(availableUpdate.latest, {
+      supported: true,
+      ...(availableUpdate.bytes ? { bytes: availableUpdate.bytes } : {})
+    }).then((result) => {
+      if (active && result.success) {
+        showToast(t('Update downloaded. Restart from the icon beside Settings.'))
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [automaticUpdates, info?.appUpdateSupported, availableUpdate, showToast, t])
 
   useEffect(() => {
     if (changesOpen) {
@@ -571,16 +651,10 @@ export default function App() {
           session?: string
           settings?: boolean
           openTerminal?: boolean
-          commit?: boolean
         }
       }
     ).__piDesktopDev
     if (dev?.openTerminal) openInspector('terminal')
-    if (dev?.commit) {
-      setPanelView('changes')
-      setChangesOpen(true)
-      useAppStore.getState().requestCommit()
-    }
     if (dev?.settings) {
       setSettingsOpen(true)
       return
@@ -600,6 +674,15 @@ export default function App() {
       setChangesOpen(true)
     }
   }, [openInspector])
+
+  useEffect(() => {
+    const dev = (window as unknown as { __piDesktopDev?: { commit?: boolean } }).__piDesktopDev
+    if (!dev?.commit || !workspace || devCommitOpenedRef.current) return
+    devCommitOpenedRef.current = true
+    setPanelView('changes')
+    setChangesOpen(true)
+    useAppStore.getState().requestCommit()
+  }, [workspace])
 
   // Development aid: resume a specific session so screenshots can show a
   // conversation that already has content.

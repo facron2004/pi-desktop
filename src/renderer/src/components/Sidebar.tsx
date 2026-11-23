@@ -29,11 +29,11 @@ import { useAppStore } from '../store/useAppStore'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { archiveSessionKey } from '@shared/session-archive'
 import { MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
-import type { AppLanguage, AppUpdateProgress, ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from '@shared/types'
+import type { AppLanguage, ProjectIconColor, SessionMeta, SessionSearchHit, Workspace } from '@shared/types'
 import { formatBytes, formatDateTime, formatRelativeTime } from '../lib/format'
 import { normalisePathKey, samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
-import { filterByArchive, flatSessions, projectDepths, sortByMode } from '../lib/sidebar-view'
+import { filterByArchive, flatSessions, groupArchivedByProject, projectDepths, sortByMode } from '../lib/sidebar-view'
 import { liveConversationRows, type ConversationRow } from '../lib/live-sessions'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -42,7 +42,16 @@ import { SidebarTip, SIDEBAR_TIP_ID, useHoverTip, type SidebarTipRow } from './S
 import { PiLogo } from './PiLogo'
 import { PiWordmark } from './PiWordmark'
 import { projectIconColor, projectIconEmoji } from '../lib/project-icons'
-import { subscribeAvailableAppUpdate, type AvailableAppUpdate } from '../lib/app-update'
+import {
+  appUpdateInstall,
+  applyAppUpdate,
+  availableAppUpdate,
+  startAppUpdateDownload,
+  subscribeAppUpdateInstall,
+  subscribeAvailableAppUpdate,
+  type AppUpdateInstall,
+  type AvailableAppUpdate
+} from '../lib/app-update'
 
 /** A lighter funnel for the project view menu; lucide's list-filter reads too heavy at 14px. */
 function ViewFilterIcon({ size = 14 }: { size?: number }) {
@@ -226,14 +235,14 @@ export const Sidebar = memo(function Sidebar({
   const sidebarArchiveFilter = useAppStore((state) => state.settings.sidebarArchiveFilter ?? 'hidden')
   const pinnedSessionsSetting = useAppStore((state) => state.settings.pinnedSessions)
   const language = useAppStore((state) => state.settings.language ?? 'en')
-  const [appUpdate, setAppUpdate] = useState<AvailableAppUpdate | null>(null)
-  // The foot's update control downloads in place: the ring around the glyph
-  // is the install progress, and the card carries the versions.
-  const [updateDownloading, setUpdateDownloading] = useState(false)
-  const [updateProgress, setUpdateProgress] = useState<AppUpdateProgress | null>(null)
-  const [updateError, setUpdateError] = useState('')
-  const updateVersionRef = useRef<string | undefined>(undefined)
+  // Both readings live in the shared module, so a folded-away sidebar, a
+  // restarted app and the settings page all describe the same release. The
+  // initial value is read from the module, not assumed empty: the startup
+  // restore may already have answered.
+  const [appUpdate, setAppUpdate] = useState<AvailableAppUpdate | null>(() => availableAppUpdate())
+  const [install, setInstall] = useState<AppUpdateInstall | null>(() => appUpdateInstall())
   const updateSupported = useAppStore((state) => state.info?.appUpdateSupported !== false)
+  const showToast = useAppStore((state) => state.showToast)
   // The card is anchored by hand rather than through `useHoverTip`: its rows
   // change while the download runs, and the card must show the live percent.
   const [updateTipAnchor, setUpdateTipAnchor] = useState<HTMLElement | null>(null)
@@ -312,58 +321,62 @@ export const Sidebar = memo(function Sidebar({
   const projectTip = useHoverTip<{ path: string; title: string; rows: SidebarTipRow[] }>()
 
   useEffect(() => subscribeAvailableAppUpdate(setAppUpdate), [])
+  useEffect(() => subscribeAppUpdateInstall(setInstall), [])
 
-  useEffect(() => {
-    return window.pi.app.onAppUpdateProgress((progress) => {
-      if (!updateVersionRef.current || progress.version !== updateVersionRef.current) return
-      setUpdateProgress(progress)
-    })
-  }, [])
-
-  const startAppUpdate = async () => {
-    if (!appUpdate || updateDownloading) return
-    if (!updateSupported) {
-      const result = await window.pi.app.openReleasePage().catch((error: unknown) => ({
-        success: false,
-        error: String(error)
-      }))
-      if (!result.success) setUpdateError(result.error || 'Update failed. Please try again.')
-      return
-    }
-    updateVersionRef.current = appUpdate.latest
-    setUpdateDownloading(true)
-    setUpdateError('')
-    setUpdateProgress({ version: appUpdate.latest, stage: 'downloading', percent: 0 })
-    try {
-      const result = await window.pi.app.installAppUpdate(appUpdate.latest)
-      if (!result.success) throw new Error(result.error || 'Update failed. Please try again.')
-      setUpdateProgress({ version: appUpdate.latest, stage: 'installing', percent: 100 })
-    } catch (error) {
-      setUpdateError(error instanceof Error ? error.message : String(error))
-      setUpdateDownloading(false)
-      setUpdateProgress(null)
-      updateVersionRef.current = undefined
-    }
-  }
-
-  const updatePercent = updateProgress
-    ? Math.min(100, Math.max(0, Math.round(updateProgress.percent)))
+  // A record from another release is not this icon's business: the two can
+  // disagree for a moment while a check replaces one with the other. Only a
+  // build that can install has a download at all — a portable or development
+  // build never fetches an installer, so a record left in the data folder by
+  // some other launch is not something this icon can act on.
+  const currentInstall =
+    updateSupported && install && appUpdate && install.version === appUpdate.latest ? install : null
+  // Only a build that can install may offer "restart and install": a portable
+  // or development build must not promise a restart it cannot perform.
+  const updateReady = currentInstall?.stage === 'ready'
+  const updateFailed = currentInstall?.stage === 'error'
+  const updateBusy =
+    currentInstall?.stage === 'downloading' || currentInstall?.stage === 'installing'
+  const updatePercent = currentInstall
+    ? Math.min(100, Math.max(0, Math.round(currentInstall.percent)))
     : 0
   // Before the download starts the size comes from the release check; while it
   // runs the progress events carry the exact asset size.
-  const updateInstallerBytes = updateProgress?.totalBytes ?? appUpdate?.bytes
-  // What the ring cannot say: the installer size and how far the download has
-  // come. Nothing else belongs in this card.
+  const updateInstallerBytes = currentInstall?.totalBytes ?? appUpdate?.bytes
+
+  const startAppUpdate = async () => {
+    if (!appUpdate || updateBusy) return
+    if (updateReady) {
+      const result = await applyAppUpdate()
+      if (result && !result.success) {
+        showToast(result.error ? t(result.error) : t('Update failed. Please try again.'), 'error')
+      }
+      return
+    }
+    const result = await startAppUpdateDownload(appUpdate.latest, {
+      supported: updateSupported,
+      ...(appUpdate.bytes ? { bytes: appUpdate.bytes } : {})
+    })
+    if (!result.success) {
+      showToast(result.error ? t(result.error) : t('Update failed. Please try again.'), 'error')
+    }
+  }
+
+  // What the ring cannot say: the installer size and the current phase.
+  // Nothing else belongs in this card.
   const getUpdateTip = () => {
     if (!appUpdate) return { title: '', rows: [] as SidebarTipRow[] }
-    const progress = updateError
+    const status = updateFailed
       ? t('Update failed')
-      : updateDownloading
-        ? `${updatePercent}%`
-        : '0%'
+      : updateReady
+        ? t('Ready to restart')
+        : currentInstall?.stage === 'installing'
+          ? t('Restarting to install the update…')
+          : updateBusy
+            ? `${t('Downloading…')} ${updatePercent}%`
+            : t('Download update')
     const rows: SidebarTipRow[] = [
       { label: t('Installer size'), value: formatBytes(updateInstallerBytes) || '—' },
-      { label: t('Download progress'), value: progress }
+      { label: t('Status'), value: status }
     ]
     return { title: `v${appUpdate.latest}`, rows }
   }
@@ -595,7 +608,7 @@ export const Sidebar = memo(function Sidebar({
     const missing = projects
       .filter((project) => project.path && !known.has(normalisePathKey(project.path)))
       .map((project) => project.path)
-    if (missing.length > 0) void updateSettings({ projectOrder: [...order, ...missing] })
+    if (missing.length > 0) void updateSettings({ projectOrder: [...order, ...missing] }, { projectOrder: order })
   }, [projects, projectOrder, updateSettings])
 
   const ordered = useMemo(
@@ -671,12 +684,42 @@ export const Sidebar = memo(function Sidebar({
 
   // Single list: every non-pinned conversation, from projects and from chats
   // without one, in one newest-first column with no project rows in between.
-  const flatList = useMemo(
-    () => sidebarGroupBy === 'flat'
-      ? flatSessions(listed.filter((session) => !pinned.has(session.file) && matches(session, needle)))
-      : [],
-    [sidebarGroupBy, listed, pinned, needle]
-  )
+  // Archived conversations are the exception: they leave the column and come
+  // back below it, grouped by the project they came from (see `archivedGroups`),
+  // because a row from another folder has nothing around it to say so.
+  const flatList = useMemo(() => {
+    if (sidebarGroupBy !== 'flat') return []
+    const rows = listed.filter(
+      (session) => !pinned.has(session.file) && matches(session, needle)
+    )
+    return flatSessions(
+      sidebarArchiveFilter === 'hidden'
+        ? rows
+        : rows.filter((session) => !archivedFiles.has(archiveSessionKey(session.file)))
+    )
+  }, [sidebarGroupBy, listed, pinned, needle, sidebarArchiveFilter, archivedFiles])
+
+  // Archived conversations leave the flat column and come back under their own
+  // project, because a row's folder is not visible in a list that has no project
+  // rows at all. Tree mode groups by project already, so this is flat mode only.
+  const archivedGroups = useMemo(() => {
+    if (sidebarGroupBy !== 'flat') return []
+    const archivedRows = listed.filter(
+      (session) =>
+        !pinned.has(session.file) &&
+        matches(session, needle) &&
+        archivedFiles.has(archiveSessionKey(session.file))
+    )
+    if (archivedRows.length === 0) return []
+    const nameByKey = new Map(
+      ordered.map((project) => [normalisePathKey(project.path), project.name])
+    )
+    return groupArchivedByProject(archivedRows, {
+      projectName: (path) => nameByKey.get(normalisePathKey(path)),
+      projectlessName: t('No project'),
+      order: ordered.map((project) => project.path)
+    })
+  }, [sidebarGroupBy, listed, pinned, needle, archivedFiles, ordered, t])
 
   const projectSearchResults = useMemo(
     () => {
@@ -736,7 +779,7 @@ export const Sidebar = memo(function Sidebar({
     await updateSettings({
       workspaces: rebuilt,
       projectOrder: next.map((project) => project.path)
-    })
+    }, { workspaces: current, projectOrder })
   }
 
   /** Move a project one row up or down from its action menu. */
@@ -765,7 +808,7 @@ export const Sidebar = memo(function Sidebar({
     const updated = workspaces.map((item) =>
       item.id === project.id ? { ...item, icon: icon || undefined, iconColor } : item
     )
-    await updateSettings({ workspaces: updated })
+    await updateSettings({ workspaces: updated }, { workspaces })
     if (workspace?.id === project.id) {
       useAppStore.setState({ workspace: { ...workspace, icon: icon || undefined, iconColor } })
     }
@@ -1291,10 +1334,47 @@ export const Sidebar = memo(function Sidebar({
           </div>
 
           {sidebarGroupBy === 'flat' ? (
-            flatList.length === 0 ? (
-              <div className="sidebar__empty">{t('No conversations yet.')}</div>
+            flatList.length === 0 && archivedGroups.length === 0 ? (
+              <div className="sidebar__empty">
+                {t(
+                  sidebarArchiveFilter === 'archived'
+                    ? 'No archived conversations.'
+                    : 'No conversations yet.'
+                )}
+              </div>
             ) : (
-              <div className="session-list">{renderSessions(flatList)}</div>
+              <>
+                {flatList.length > 0 ? (
+                  <div className="session-list">{renderSessions(flatList)}</div>
+                ) : null}
+                {archivedGroups.length > 0 ? (
+                  <div className="sidebar__section sidebar__archived">
+                    {/* In 'all' mode the column above holds current work, so the
+                        block needs a name; in 'archived' mode every row here is
+                        archived and each group speaks for itself. */}
+                    {sidebarArchiveFilter === 'all' ? (
+                      <div className="sidebar__section-head">
+                        <span>{t('Archived')}</span>
+                      </div>
+                    ) : null}
+                    {archivedGroups.map((group) => (
+                      <div className="sidebar__archive-group" key={group.key || 'projectless'}>
+                        <div
+                          className="sidebar__archive-group-head"
+                          title={group.key || undefined}
+                        >
+                          <Archive size={11} strokeWidth={2} aria-hidden="true" />
+                          <span className="sidebar__archive-group-name">{group.name}</span>
+                          <span className="sidebar__archive-group-count">
+                            {group.sessions.length}
+                          </span>
+                        </div>
+                        <div className="session-list">{renderSessions(group.sessions)}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </>
             )
           ) : ordered.length === 0 ? (
             <div className="sidebar__empty">{t('No project selected yet.')}</div>
@@ -1427,7 +1507,7 @@ export const Sidebar = memo(function Sidebar({
                                     const updated = workspaces.map((w) =>
                                       w.id === projectId ? { ...w, name: trimmed } : w
                                     )
-                                    await updateSettings({ workspaces: updated })
+                                    await updateSettings({ workspaces: updated }, { workspaces })
                                     if (workspace?.id === projectId) {
                                       useAppStore.setState({ workspace: { ...workspace, name: trimmed } })
                                     }
@@ -1444,7 +1524,7 @@ export const Sidebar = memo(function Sidebar({
                                   const updated = workspaces.map((w) =>
                                     w.id === projectId ? { ...w, name: trimmed } : w
                                   )
-                                  await updateSettings({ workspaces: updated })
+                                  await updateSettings({ workspaces: updated }, { workspaces })
                                   if (workspace?.id === projectId) {
                                     useAppStore.setState({ workspace: { ...workspace, name: trimmed } })
                                   }
@@ -1746,16 +1826,18 @@ export const Sidebar = memo(function Sidebar({
             <button
               type="button"
               className="sidebar__update-btn"
-              data-state={
-                updateError
-                  ? 'error'
-                  : updateDownloading
-                    ? updateProgress?.stage ?? 'downloading'
-                    : 'idle'
-              }
-              aria-label={t(updateSupported ? 'Download update' : 'Open download page')}
+              data-state={updateFailed ? 'error' : updateReady ? 'ready' : updateBusy ? currentInstall?.stage ?? 'downloading' : 'idle'}
+              aria-label={t(
+                updateReady
+                  ? 'Restart and install'
+                  : !updateSupported
+                    ? 'Open download page'
+                    : updateBusy
+                      ? 'Downloading update…'
+                      : 'Download update'
+              )}
               aria-describedby={updateTipAnchor ? SIDEBAR_TIP_ID : undefined}
-              aria-disabled={updateDownloading || undefined}
+              aria-disabled={updateBusy || undefined}
               onMouseEnter={(event) => setUpdateTipAnchor(event.currentTarget)}
               onMouseLeave={() => setUpdateTipAnchor(null)}
               onFocus={(event) => setUpdateTipAnchor(event.currentTarget)}
@@ -1774,7 +1856,10 @@ export const Sidebar = memo(function Sidebar({
                     strokeDashoffset={UPDATE_RING_CIRCUMFERENCE * (1 - updatePercent / 100)}
                   />
                 </svg>
-                <Download size={13} strokeWidth={1.8} />
+                {/* The glyph never changes: the button is the update, and the
+                    ring is the only thing that says how far it has come. A
+                    closed ring is a finished download. */}
+                <Download size={11} strokeWidth={2} />
               </span>
             </button>
           ) : null}

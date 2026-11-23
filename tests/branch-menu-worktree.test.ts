@@ -30,12 +30,12 @@ test('checking the worktree box waits for the session to start', () => {
   assert.doesNotMatch(source, /t\('Branch for the worktree'\)/, 'the branch field must not come back')
   assert.match(
     store,
-    /pendingWorktree && !conversationStarted\(get\(\)\.items\)/,
+    /pendingWorktree && !conversationStarted\(state\.items\)/,
     'the worktree is created only when an empty conversation starts'
   )
   assert.match(
     store,
-    /window\.pi\.git\.addWorktree\('', name, true\)/,
+    /window\.pi\.git\.addWorktree\('', name, true, source\)/,
     'session start creates a worktree on a new branch in a sibling folder'
   )
 })

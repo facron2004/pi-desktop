@@ -2039,6 +2039,34 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     await setArchiveFilter(label, mode)
     await checkArchiveSearch(mode, expected)
   }
+  // The flat column has no project rows at all, so an archived conversation has
+  // nothing around it to say which folder it came from. It leaves the column and
+  // comes back under its own project instead.
+  const setGroupBy = async (label, mode) => {
+    document.querySelector('button[aria-label="View options"]').click()
+    const option = await until(() => [...document.querySelectorAll('.view-option-menu [role="menuitemradio"]')]
+      .find((node) => node.textContent.trim() === label), `Group by option ${label} is missing`)
+    option.click()
+    await until(() => store.getState().settings.sidebarGroupBy === mode, `Grouping did not switch to ${mode}`)
+  }
+  const archivedGroups = () => [...document.querySelectorAll('.sidebar__archive-group')].map((node) => ({
+    name: node.querySelector('.sidebar__archive-group-name')?.textContent.trim() ?? '',
+    titles: [...node.querySelectorAll('.session-item__title')].map((title) => title.textContent.trim())
+  }))
+  await setGroupBy('Single list', 'flat')
+  const grouped = await until(() => {
+    const list = archivedGroups()
+    return list.some((group) => group.titles.includes(archivedTitle)) ? list : null
+  }, 'The archived conversation was not grouped under its project')
+  check(grouped.every((group) => group.name.length > 0), 'An archived group lost its project name')
+  // The archived block lives inside the same project section, so the column is
+  // the section's own direct session list — the groups are further down.
+  const flatColumnTitles = [...document.querySelectorAll('.sidebar__projects > .session-list .session-item__title')]
+    .map((node) => node.textContent.trim())
+  check(!flatColumnTitles.includes(archivedTitle), 'An archived conversation stayed in the flat column')
+  await setGroupBy('By workspace', 'workspace')
+  passed.push('the flat column groups archived conversations under their project')
+
   const limitedHits = await window.pi.sessions.search(archiveQuery, 1)
   check(limitedHits.length === 1 && limitedHits[0].name === archivedTitle, 'A newer active hit used the archived search result limit')
   const archivedRow = await until(() => [...document.querySelectorAll('.session-item')].find(
@@ -2093,7 +2121,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 38 : 37)
+  assert.equal(passed.length, process.platform === 'win32' ? 39 : 38)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

@@ -424,7 +424,7 @@ export class PiRuntime extends EventEmitter {
           code === 0
             ? undefined
             : describeExit(client.stderrTail, code, signal)
-      })
+      }, true)
     })
 
     try {
@@ -565,7 +565,8 @@ export class PiRuntime extends EventEmitter {
     if (client) await this.dispose(client)
     // A start() that began while this process was exiting owns the status now.
     if (this.generation !== generation) return
-    this.setStatus({ phase: 'stopped' })
+    // Retirement after an unexpected exit keeps the diagnostics already reported.
+    if (this.status.phase !== 'stopped') this.setStatus({ phase: 'stopped' })
   }
 
   /**
@@ -621,9 +622,9 @@ export class PiRuntime extends EventEmitter {
     )
   }
 
-  private setStatus(status: RuntimeStatus): void {
+  private setStatus(status: RuntimeStatus, processExited = false): void {
     this.status = status
-    this.emit('status', status)
+    this.emit('status', status, processExited)
   }
 
   private observe(state: unknown): void {

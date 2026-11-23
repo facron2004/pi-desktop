@@ -6,6 +6,7 @@ import type { AgentMessage, AppSettings, ModelInfo, PiEvent, PiState, RuntimeRek
 import { forgetSessionTiming, readSessionTiming } from '../src/renderer/src/lib/session-timing'
 import { readScrollMemory, rememberScrollPosition } from '../src/renderer/src/lib/scroll-memory'
 import { sessionMetrics } from '../src/renderer/src/lib/session-metrics'
+import { COMPOSER_DRAFTS_STORAGE_KEY, loadComposerDrafts } from '../src/renderer/src/lib/composer-drafts'
 import { GENERATION_TIMING_STATUS_KEY } from '../src/shared/types'
 
 /* ------------------------------------------------------------------ *
@@ -1536,6 +1537,41 @@ test('threadsMetaVersion and activeToolsRevision ignore text deltas and incremen
   } finally {
     if (originalHydrate === undefined) delete (bridge.sessions as unknown as { hydrate?: unknown }).hydrate
     else (bridge.sessions as unknown as { hydrate?: unknown }).hydrate = originalHydrate
+    useAppStore.setState(previous)
+  }
+})
+
+test('a rejected launch preserves the original conversation draft on disk', async () => {
+  const previous = useAppStore.getState()
+  const saved = localValues.get(COMPOSER_DRAFTS_STORAGE_KEY)
+  const startup = Promise.withResolvers<string>()
+  try {
+    await previous.newChat()
+    const key = useAppStore.getState().draftId!
+    useAppStore.setState({ ensureRuntime: () => startup.promise })
+    useAppStore.getState().updateDraft(key, {
+      text: 'Keep this unsent message',
+      images: [{ id: 'image', name: 'capture.png', type: 'image', data: 'YQ==', mimeType: 'image/png', bytes: 1 }],
+      files: [{ id: 'reference', name: 'notes.md', path: 'notes.md' }]
+    })
+    const draft = useAppStore.getState().drafts[key]
+    const submission = useAppStore.getState().submitComposerDraft(key, { draft, text: draft.text, kind: 'steer' })
+    assert.deepEqual(loadComposerDrafts().drafts[key], draft, 'the draft remains recoverable before the response')
+
+    await useAppStore.getState().newChat()
+    const other = useAppStore.getState().draftId!
+    useAppStore.getState().updateDraft(other, { text: 'Draft in another conversation' })
+    startup.reject(new Error('Pi failed to start'))
+    assert.equal(await submission, false)
+    assert.equal(useAppStore.getState().draftId, other)
+    assert.deepEqual(useAppStore.getState().drafts[key], draft)
+    assert.deepEqual(loadComposerDrafts().drafts[key], draft)
+    assert.equal(useAppStore.getState().drafts[other]?.text, 'Draft in another conversation')
+    useAppStore.getState().clearDraft(other)
+    useAppStore.getState().clearDraft(key)
+  } finally {
+    if (saved === undefined) localValues.delete(COMPOSER_DRAFTS_STORAGE_KEY)
+    else localValues.set(COMPOSER_DRAFTS_STORAGE_KEY, saved)
     useAppStore.setState(previous)
   }
 })

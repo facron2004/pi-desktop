@@ -402,6 +402,52 @@ test('stale workspace writes keep new folders and merge separate project edits',
   }
 })
 
+test('view-based settings patches preserve concurrent edits after the main cache refreshes', () => {
+  const fileName = `settings-view-baseline-${process.pid}.json`
+  const file = settingsFile(fileName)
+  const local = new SettingsStore(fileName)
+  try {
+    const a = 'C:/one'
+    const b = 'C:/two'
+    const c = 'C:/three'
+    const seen = local.patch({
+      workspaces: [workspace('alpha', a, 100)],
+      pinnedSessions: ['C:/sessions/first.jsonl'],
+      projectOrder: [a, b],
+      lastSessions: { [a]: 'first.jsonl' }
+    })
+    const peer = new SettingsStore(fileName)
+    peer.patch({
+      workspaces: [{ ...seen.workspaces[0], name: 'Edited by peer' }],
+      pinnedSessions: ['C:/sessions/first.jsonl', 'C:/sessions/peer.jsonl'],
+      projectOrder: [b, a],
+      lastSessions: { [a]: 'first.jsonl', [b]: 'peer.jsonl' }
+    })
+    assert.equal(local.get().workspaces[0].name, 'Edited by peer')
+
+    local.patch({
+      workspaces: [{ ...seen.workspaces[0], icon: '📦' }],
+      pinnedSessions: [],
+      projectOrder: [a, b, c],
+      lastSessions: { [a]: 'next.jsonl' }
+    }, {
+      workspaces: seen.workspaces,
+      pinnedSessions: seen.pinnedSessions,
+      projectOrder: seen.projectOrder,
+      lastSessions: seen.lastSessions
+    })
+
+    const saved = new SettingsStore(fileName).get()
+    assert.deepEqual(saved.pinnedSessions, ['C:/sessions/peer.jsonl'])
+    assert.deepEqual(saved.projectOrder, [b, a, c])
+    assert.deepEqual(saved.lastSessions, { [a]: 'next.jsonl', [b]: 'peer.jsonl' })
+    assert.equal(saved.workspaces[0].name, 'Edited by peer')
+    assert.equal(saved.workspaces[0].icon, '📦')
+  } finally {
+    rmSync(file, { force: true })
+  }
+})
+
 test('workspace removal is atomic with hiding and keeps another process addition', () => {
   const fileName = `settings-cross-process-remove-${process.pid}.json`
   const file = settingsFile(fileName)

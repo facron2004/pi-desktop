@@ -383,6 +383,9 @@ export default function (pi) {
       const targetId = (value || '').trim();
       if (!targetId) throw new Error('Usage: /desktop-rewind <entryId>');
       if (!ctx.isIdle()) throw new Error('Wait for the current turn to finish before editing');
+      if (!ctx.sessionManager.getBranch().some(entry =>
+        entry.id === targetId && entry.type === 'message' && entry.message?.role === 'user'
+      )) throw new Error('This message is no longer on the active branch');
       const result = await ctx.navigateTree(targetId, { summarize: false });
       if (result.cancelled) throw new Error('Editing was cancelled');
     }

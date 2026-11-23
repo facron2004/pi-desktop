@@ -353,42 +353,54 @@
   white-space: nowrap;
 }
 
-.appearance-select-pill__icon {
-  color: var(--accent, #d97757);
-  flex: 0 0 auto;
-}
-
 .appearance-select-pill__chevron {
   color: var(--text-tertiary);
   flex: 0 0 auto;
   margin-left: 2px;
 }
 
-/* Native invisible select covering pill */
-.appearance-select-native {
+/* A preset's canvas with its accent sitting on it. The pill and every menu row
+   draw the same 14px tile, so the colour that will be painted is always the
+   label's neighbour — two presets can no longer look alike behind two names. */
+.appearance-swatch {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid var(--border-default);
+  overflow: hidden;
+}
+
+.appearance-swatch__dot {
   position: absolute;
-  inset: 0;
-  opacity: 0;
-  width: 100%;
-  height: 100%;
-  cursor: pointer;
+  inset: 3px;
+  border-radius: 2px;
+}
+
+/* An accent is one flat colour, so it has no canvas to show — the whole tile
+   is the colour itself. */
+.appearance-swatch--solid {
+  border-color: var(--border-strong);
+}
+
+/* "Custom" before anything has been picked: it has no colours of its own yet,
+   so it wears an empty slot rather than repeating "Default"'s swatch. */
+.appearance-swatch--empty {
+  background: transparent;
+  border-style: dashed;
+}
+
+.appearance-menu__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 @supports (appearance: base-select) {
-  .settings-select,
-  .appearance-select-native {
+  .settings-select {
     appearance: base-select;
-  }
-
-  .appearance-select-native {
-    opacity: 1;
-    border: 0;
-    background: transparent;
-    color: transparent;
-  }
-
-  .appearance-select-native::picker-icon {
-    visibility: hidden;
   }
 
   /* Option padding belongs to the open list. On the closed control it
@@ -419,14 +431,7 @@
     transform: rotate(45deg);
   }
 
-  .appearance-select-native:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 1px;
-    border-radius: var(--r-sm);
-  }
-
-  .settings-select::picker(select),
-  .appearance-select-native::picker(select) {
+  .settings-select::picker(select) {
     appearance: base-select;
     position-area: bottom span-left;
     position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
@@ -443,8 +448,7 @@
     overflow-y: auto;
   }
 
-  .settings-select::picker(select) option,
-  .appearance-select-native::picker(select) option {
+  .settings-select::picker(select) option {
     gap: 10px;
     padding: 7px 10px;
     border-radius: var(--r-sm);
@@ -462,30 +466,20 @@
   }
 
   .settings-select::picker(select) option:hover,
-  .settings-select::picker(select) option:focus,
-  .appearance-select-native::picker(select) option:hover,
-  .appearance-select-native::picker(select) option:focus {
+  .settings-select::picker(select) option:focus {
     outline: none;
     background: var(--bg-hover);
   }
 
-  .settings-select::picker(select) option:checked,
-  .appearance-select-native::picker(select) option:checked {
+  .settings-select::picker(select) option:checked {
     background: var(--bg-active);
     font-weight: 600;
   }
 
-  .settings-select option::checkmark,
-  .appearance-select-native option::checkmark {
+  .settings-select option::checkmark {
     order: 1;
     margin-left: auto;
     color: var(--accent);
-  }
-
-  .appearance-select-native optgroup {
-    color: var(--text-muted);
-    font-size: var(--text-xs);
-    font-weight: 600;
   }
 }
 

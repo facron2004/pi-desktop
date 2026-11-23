@@ -6,7 +6,78 @@ import { test } from 'node:test'
 import { app, ipcMain } from 'electron'
 import { registerIpc } from '../src/main/ipc'
 import type { IpcContext } from '../src/main/ipc'
+import { piVersion } from '../src/main/pi/cli'
+import { SettingsStore } from '../src/main/settings'
 import type { RuntimeEnsureOptions } from '../src/shared/types'
+
+test('Git writes reject a stale project and registration does not select a folder', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pi-worktree-project-guard-'))
+  const source = path.join(directory, 'source')
+  const other = path.join(directory, 'other')
+  const target = path.join(directory, 'target')
+  const fileName = `settings-worktree-guard-${process.pid}.json`
+  const settings = new SettingsStore(fileName)
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  const handleDescriptor = Object.getOwnPropertyDescriptor(ipcMain, 'handle')
+  const claimed: string[] = []
+  Object.defineProperty(ipcMain, 'handle', {
+    configurable: true,
+    value: (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) => handlers.set(channel, handler)
+  })
+
+  try {
+    const workspace = (id: string, path: string) => ({ id, path, name: id, lastOpenedAt: 0 })
+    settings.addWorkspace(workspace('source', source))
+    settings.addWorkspace(workspace('other', other))
+    registerIpc({
+      supervisor: { withCwdLock: async (root: string) => { claimed.push(root); return { ok: true } } },
+      settings,
+      getWindow: () => null,
+      terminals: { create: () => ({}) },
+      memory: { promptFor: () => '' }
+    } as unknown as IpcContext)
+
+    const branches = handlers.get('git:branches')!
+    const create = handlers.get('git:addWorktree')!
+    assert.throws(() => branches({}, source), /active project changed/)
+    assert.deepEqual(await create({}, '', 'main-wt', true, source), {
+      ok: false, error: 'The active project changed before Git could start.'
+    })
+    const writes: [string, ...unknown[]][] = [
+      ['git:revertFile', 'notes.md', source],
+      ['git:applyPatch', 'diff from the original checkout', true, source],
+      ['git:commit', 'Commit for the original checkout', true, source],
+      ['git:stageFile', 'notes.md', source],
+      ['git:unstageFile', 'notes.md', source],
+      ['git:stageAll', source],
+      ['git:unstageAll', source],
+      ['git:switchBranch', 'feature', source],
+      ['git:createBranch', 'feature', true, source],
+      ['git:removeWorktree', target, source],
+      ['git:push', source],
+      ['git:pull', source],
+      ['git:revertFile', 'notes.md']
+    ]
+    for (const [channel, ...args] of writes) {
+      const result = await handlers.get(channel)!({}, ...args)
+      assert.deepEqual(result, { ok: false, error: 'The active project changed before Git could start.' }, channel)
+    }
+    assert.deepEqual(claimed, [])
+
+    await handlers.get('workspaces:add')!({}, target)
+    assert.equal(settings.get().activeWorkspaceId, 'other')
+    assert.ok(settings.get().workspaces.some((workspace) => workspace.path === target))
+
+    settings.patch({ activeWorkspaceId: 'source' })
+    assert.deepEqual(await create({}, '', 'main-wt', true, source), { ok: true })
+    assert.deepEqual(claimed, [source])
+  } finally {
+    if (handleDescriptor) Object.defineProperty(ipcMain, 'handle', handleDescriptor)
+    else delete (ipcMain as unknown as { handle?: unknown }).handle
+    rmSync(path.join(app.getPath('userData'), fileName), { force: true })
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('runtime ensure reuses a live draft before Pi has flushed its session file', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'pi-runtime-ensure-'))
@@ -276,6 +347,46 @@ test('a packaged build cannot install the Pi CLI into its app directory', async 
   }
 })
 
+test('a packaged build answers for the bundled CLI without asking npm', async () => {
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  const handleDescriptor = Object.getOwnPropertyDescriptor(ipcMain, 'handle')
+  const packagedDescriptor = Object.getOwnPropertyDescriptor(app, 'isPackaged')
+  const pathEnv = process.env.PATH
+  Object.defineProperty(ipcMain, 'handle', {
+    configurable: true,
+    value: (channel: string, listener: unknown) => {
+      handlers.set(channel, listener as (event: unknown, ...args: unknown[]) => unknown)
+    }
+  })
+  Object.defineProperty(app, 'isPackaged', { configurable: true, value: true })
+
+  try {
+    // The CLI that ships with the app is released with it, so there is nothing
+    // to look up. npm is off the path: a registry request would come back as a
+    // failed reading instead of the version the app already carries.
+    process.env.PATH = ''
+    const expected = (await piVersion()) || '1.4.0'
+    registerIpc({
+      supervisor: {},
+      settings: { get: () => ({ workspaces: [] }) },
+      getWindow: () => null,
+      terminals: { create: () => ({}) },
+      memory: { promptFor: () => '' }
+    } as unknown as IpcContext)
+
+    const check = handlers.get('app:checkPiCliUpdate')
+    assert.ok(check, 'app:checkPiCliUpdate handler was registered')
+    assert.deepEqual(await check({}), { current: expected, hasUpdate: false })
+  } finally {
+    process.env.PATH = pathEnv
+    if (handleDescriptor) Object.defineProperty(ipcMain, 'handle', handleDescriptor)
+    else delete (ipcMain as unknown as { handle?: unknown }).handle
+    if (packagedDescriptor) Object.defineProperty(app, 'isPackaged', packagedDescriptor)
+    else delete (app as unknown as { isPackaged?: unknown }).isPackaged
+  }
+})
+
+
 test('runtime ensure fast path skips file validation and memory prompt when isReadyMatch is true', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'pi-runtime-fastpath-'))
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
@@ -404,6 +515,13 @@ test('sessions:hydrate deduplicates concurrent reads and supersedes stale sender
     assert.deepEqual(staleA, { messages: [], historyTruncated: false }, 'superseded hydration returns an empty structured result')
     assert.equal(activeB.messages.length, 4, 'newest hydration request completes normally')
     assert.equal(activeB.historyTruncated, false)
+
+    const [branchHistory, selectedHistory] = await Promise.all([
+      hydrate({ sender: senderA }, fileA, 'branch') as Promise<Hydration>,
+      hydrate({ sender: senderA }, fileB) as Promise<Hydration>
+    ])
+    assert.equal(branchHistory.messages.length, 600, 'leaving a new branch does not cancel its first load')
+    assert.equal(selectedHistory.messages.length, 4)
 
     const senderB = { isDestroyed: () => false }
     const senderC = { isDestroyed: () => false }
