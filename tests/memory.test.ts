@@ -331,10 +331,15 @@ test('merge enforces the per-project cap without limiting other projects', async
  * ------------------------------------------------------------------ */
 
 test('redactSecrets removes provider keys, bearer tokens and assignments without touching prose', () => {
+  // The Google key is assembled at runtime on purpose. Written as one literal it
+  // matched GitHub's `google_api_key` detector, which raised a public-leak alert
+  // on a repository whose only "secret" is this fixture — the value has to look
+  // like a key to the redactor, not to a scanner reading the file as text.
+  const googleKey = ['AIza', 'SyD1234567890abcdefghijklmnopqrstuv'].join('')
   const raw = [
     'OpenAI key sk-abcdefghijklmnopqrstuvwxyz0123456789',
     'Hugging Face token hf_abcdefghijklmnopqrstuvwxyz1234567890',
-    'Google AI key AIzaSyD1234567890abcdefghijklmnopqrstuv',
+    `Google AI key ${googleKey}`,
     'Google OAuth token ya29.a0AfH6SMB1234567890_abcdefghijklmnop',
     'GitLab personal token glpat-abcdefghijklmnopqrstuvwx',
     'GitLab runner token glrt-abcdefghijklmnopqrstuvwx',
@@ -364,7 +369,7 @@ test('redactSecrets removes provider keys, bearer tokens and assignments without
   const clean = redactSecrets(raw)
   assert.doesNotMatch(clean, /sk-abcdefghijklmnopqrstuvwxyz/)
   assert.doesNotMatch(clean, /hf_abcdefghijklmnopqrstuvwxyz1234567890/)
-  assert.doesNotMatch(clean, /AIzaSyD1234567890abcdefghijklmnopqrstuv/)
+  assert.ok(!clean.includes(googleKey))
   assert.doesNotMatch(clean, /ya29\.a0AfH6SMB1234567890_abcdefghijklmnop/)
   assert.doesNotMatch(clean, /glpat-abcdefghijklmnopqrstuvwx/)
   assert.doesNotMatch(clean, /glrt-abcdefghijklmnopqrstuvwx/)
