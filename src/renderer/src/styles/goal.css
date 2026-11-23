@@ -1,26 +1,26 @@
 /* ------------------------------------------------------------------ *
  * Goal bar
  *
- * Goal Mode's objective, above the composer. It is a card that sits on top of
- * the input box: a little narrower, with its own full-radius outline, and the
- * box below tucks under its bottom edge. The single line reads left to right —
- * mark, bold state word, objective, elapsed time — with delete / play / expand
- * pinned to the right. The state word is the only colour.
+ * Goal Mode's objective, above the composer. It is its own rounded card,
+ * separate from the input box below: both keep their full outline and there
+ * is a clear gap between them, so neither edge is cut into a square corner at
+ * the join. The single line reads left to right — mark, bold state word,
+ * objective, elapsed time — with delete / play / expand pinned to the right.
+ * The state word is the only colour.
  * ------------------------------------------------------------------ */
 
 .goal-bar {
   flex: 0 0 auto;
-  position: relative;
-  z-index: 2;
-  padding: var(--sp-1) var(--sp-6) 0;
-  /* Pull the composer up under this card so the two edges overlap. */
-  margin-bottom: -10px;
+  /* A real gap below the card: the composer keeps its own top corners instead
+     of being tucked under this one. */
+  padding: var(--sp-1) var(--sp-6) var(--sp-2);
 }
 
 .goal-bar__inner {
-  /* A shade narrower than the composer below, so both rounded edges show. */
-  width: calc(100% - var(--sp-8));
-  max-width: calc(var(--content-w) - var(--sp-8));
+  /* The composer's own column: one width for both cards, so their left and
+     right edges line up. Each keeps a full outline — no shared square join. */
+  width: 100%;
+  max-width: var(--content-w);
   margin: 0 auto;
   border: 1px solid var(--border);
   border-radius: var(--r-full);
