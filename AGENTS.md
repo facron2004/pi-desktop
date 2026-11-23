@@ -306,14 +306,13 @@ obvious from its surroundings. `groupArchivedByProject` in
 `lib/sidebar-view.ts` therefore takes archived rows out of the column and puts
 them back below it, one heading per project: the caller's project order holds,
 a folder that order does not name still gets a heading from its own folder name,
-and archived chats with no folder close the list. The head is a **fold control**
-now (`lib/archive-fold.ts`): a button carrying a caret and `aria-expanded` that
-opens and closes that folder's archived rows, never touching the runtime. The
-fold is a view preference in localStorage, keyed by the normalised folder (and
-`''` for the projectless group), so it survives a relaunch; a search opens every
-group, because a hit inside a folded group would be invisible. Its glyph still
-hangs in the row indent so the project name lines up with the conversation
-titles underneath. The
+and archived chats with no folder close the list. The head is a **fold control**:
+a button carrying a caret and `aria-expanded` that opens and closes that
+folder's archived rows, never touching the runtime. The open/closed set lives in
+the sidebar's own component state, so it lasts for the session rather than across
+a relaunch, and a search opens every group, because a hit inside a folded group
+would be invisible. Its glyph still hangs in the row indent so the project name
+lines up with the conversation titles underneath. The
 `All conversations (show archived)` filter also gets an `Archived` section head,
 because the column above holds current work; in `Archived only` mode every row
 is archived, so the group headings speak for themselves. Tree grouping needs
