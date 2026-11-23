@@ -269,3 +269,76 @@ button { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* Forwarded extension dialog, stop and new-conversation affordances. */
+
+.remote-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 16px 12px;
+  padding: 14px;
+  border: 1px solid var(--remote-accent);
+  border-radius: 14px;
+  background: var(--remote-surface);
+}
+
+.remote-dialog__title {
+  color: #eeeef0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.remote-dialog__message {
+  color: var(--remote-muted);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.remote-dialog__form { display: flex; flex-direction: column; gap: 10px; }
+.remote-dialog__form input,
+.remote-dialog__form textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--remote-line);
+  border-radius: 10px;
+  background: var(--remote-raised);
+  color: var(--remote-text);
+  resize: vertical;
+}
+
+.remote-dialog__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.remote-dialog__option {
+  padding: 9px 14px;
+  border: 1px solid var(--remote-line);
+  border-radius: 10px;
+  background: var(--remote-raised);
+  color: var(--remote-text);
+  font-size: 13px;
+}
+
+.remote-dialog__option:disabled { opacity: 0.55; }
+
+.remote-dialog__option--primary {
+  border-color: var(--remote-accent);
+  background: var(--remote-accent);
+  color: #fff;
+}
+
+.remote-stop {
+  margin: 0 16px 8px;
+  padding: 9px 14px;
+  border: 1px solid var(--remote-line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--remote-muted);
+  font-size: 13px;
+}
+
+.remote-stop:disabled { opacity: 0.55; }
+
+.remote-new-chat { border-style: dashed; }
+
+.remote-composer--new { margin: 0 16px 12px; }

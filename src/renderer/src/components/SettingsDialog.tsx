@@ -8,6 +8,7 @@ import {
   Gauge,
   Info,
   Keyboard,
+  MessageSquare,
   Palette,
   SlidersHorizontal,
   Smartphone,
@@ -38,6 +39,7 @@ const MemorySettings = lazy(() => import('./MemorySettings').then((m) => ({ defa
 const ArchivedSessionsSettings = lazy(() => import('./ArchivedSessionsSettings').then((m) => ({ default: m.ArchivedSessionsSettings })))
 const ModelsSettings = lazy(() => import('./models/ModelsSettings').then((m) => ({ default: m.ModelsSettings })))
 const RemoteAccessSettings = lazy(() => import('./RemoteAccessSettings').then((m) => ({ default: m.RemoteAccessSettings })))
+const ImChannelSettings = lazy(() => import('./ImChannelSettings').then((m) => ({ default: m.ImChannelSettings })))
 
 export type SettingsPage =
   | 'general'
@@ -48,6 +50,7 @@ export type SettingsPage =
   | 'shortcuts'
   | 'personalization'
   | 'remote'
+  | 'im-channels'
   | 'memory'
   | 'archived'
   | 'about'
@@ -61,6 +64,7 @@ const PAGES = [
   { id: 'shortcuts', label: 'Keyboard shortcuts', Icon: Keyboard },
   { id: 'personalization', label: 'Personalization', Icon: UserRound },
   { id: 'remote', label: 'Remote access', Icon: Smartphone },
+  { id: 'im-channels', label: 'IM channels', Icon: MessageSquare },
   { id: 'memory', label: 'Memory', Icon: Brain },
   { id: 'archived', label: 'Archived conversations', Icon: Archive },
   { id: 'about', label: 'About', Icon: Info }
@@ -235,6 +239,7 @@ export function SettingsDialog({
                 />
               ) : null}
               {page === 'remote' ? <RemoteAccessSettings /> : null}
+              {page === 'im-channels' ? <ImChannelSettings /> : null}
               {page === 'memory' ? <MemorySettings /> : null}
               {page === 'archived' ? <ArchivedSessionsSettings /> : null}
               {page === 'about' ? (

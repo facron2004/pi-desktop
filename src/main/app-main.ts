@@ -664,7 +664,7 @@ async function start(): Promise<void> {
     remote: remoteAccess,
     remoteReady,
     scheduledTasks: scheduledTaskService,
-    imChannels: imChannelService!,
+    imChannels: imChannelService,
     syncTray: () => applyTray()
   }
   registerIpc(context)

@@ -7,16 +7,25 @@ import type {
   ImChannelConfig,
   ImChannelStatus,
   ImChannelTestResult,
+  PiEvent,
+  RuntimeRekey,
   WechatChannelConfig
 } from '@shared/types'
 import type { SessionSupervisor } from '../pi/supervisor'
 import type { SettingsStore } from '../settings'
+import { describeRunCompletion } from '../desktop-notification'
+import { listSessions } from '../sessions'
 import { properLockfile } from '../proper-lockfile'
 
 const MAX_CHANNELS = 4
 const MAX_CHANNEL_FILE_BYTES = 16 * 1024
 /** Keep pushes and confirmations readable on a phone: same cap as a remote run preview. */
 export const MAX_IM_MESSAGE_CHARS = 4_000
+const MAX_INBOUND_CHARS = 8_000
+/** A reply that names the project and conversation needs both to be readable on a phone. */
+const NAME_LIMIT = 60
+/** How long `/new` waits for Pi to write the JSONL of the draft it started. */
+const REKEY_WAIT_MS = 15_000
 
 /**
  * One running IM transport (Feishu long connection, WeChat bridge listener).
@@ -118,15 +127,27 @@ export class ImChannelService extends EventEmitter {
   async initialize(): Promise<void> {
     if (this.disposed) return
     this.loadState()
-    // CHANNELS-TODO: register supervisor event listeners (event/rekey/ui-responded)
-    // and start an adapter for every enabled channel.
+    this.options.supervisor.on('event', this.onRuntimeEvent)
+    for (const channel of this.channels) {
+      if (channel.enabled) await this.reconcileChannel(channel.id)
+    }
   }
 
   async dispose(): Promise<void> {
+    if (this.disposed) {
+      await this.stopAll()
+      return
+    }
     this.disposed = true
-    // CHANNELS-TODO: detach supervisor listeners and stop every adapter.
+    this.options.supervisor.off('event', this.onRuntimeEvent)
+    await this.stopAll()
+  }
+
+  private async stopAll(): Promise<void> {
     for (const id of [...this.runtimes.keys()]) {
-      await this.remove(id).catch(() => {})
+      const runtime = this.runtimes.get(id)
+      this.runtimes.delete(id)
+      if (runtime) await runtime.adapter.stop().catch(() => {})
     }
   }
 
@@ -187,8 +208,15 @@ export class ImChannelService extends EventEmitter {
     if (!isPlainObject(config)) return { ok: false, error: 'A channel config object is required.' }
     const kind = config.kind
     if (kind !== 'feishu' && kind !== 'wechat') return { ok: false, error: 'Only feishu and wechat channels are supported.' }
-    const previous = typeof config.id === 'string' ? existing.find((item) => item.id === config.id) : undefined
-    const id = previous?.id ?? randomUUID()
+    // A caller may supply a stable id (settings form round-trips one); only
+    // mint a new id for a create with no usable id at all.
+    const supplied = isPlainObject(config) && typeof config.id === 'string' && config.id.trim()
+      ? config.id.trim().slice(0, 120)
+      : undefined
+    const previous = (supplied ?? (typeof config.id === 'string' ? config.id : undefined))
+      ? existing.find((item) => item.id === (supplied ?? config.id))
+      : undefined
+    const id = previous?.id ?? supplied ?? randomUUID()
 
     const bindingRaw = config.binding
     if (!isPlainObject(bindingRaw)) return { ok: false, error: 'Pick the project and conversation this channel drives.' }
@@ -256,9 +284,54 @@ export class ImChannelService extends EventEmitter {
       await runtime.adapter.stop().catch(() => {})
       return
     }
-    // CHANNELS-TODO: start (or reconfigure) the adapter for the enabled
-    // channel. A failed start must surface in `state` as 'error' with the
-    // message, never throw.
+    if (runtime?.adapter.reconfigure?.(channel)) {
+      this.emit('changed', this.status())
+      return
+    }
+    if (runtime) {
+      this.runtimes.delete(id)
+      await runtime.adapter.stop().catch(() => {})
+    }
+    const next: ChannelRuntime = { adapter: null as never, state: 'connecting' }
+    try {
+      next.adapter = this.options.createAdapter(channel, {
+        router: (targetId, text) => this.routeInbound(targetId, text),
+        onState: (state, error) => {
+          const entry = this.runtimes.get(id)
+          if (!entry || this.disposed) return
+          entry.state = state
+          entry.error = error
+          if (!this.disposed) this.emit('changed', this.status())
+        },
+        onBridgeHealth: (healthy) => {
+          const entry = this.runtimes.get(id)
+          if (!entry || this.disposed) return
+          entry.bridgeHealthy = healthy
+          if (!this.disposed) this.emit('changed', this.status())
+        }
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.runtimes.set(id, { adapter: { async stop() {}, async send() {}, async test() { return { ok: false, error: message } }, async start() {}, state: () => ({ state: 'error' }) }, state: 'error', error: message })
+      this.emit('changed', this.status())
+      return
+    }
+    this.runtimes.set(id, next)
+    // A failed start is a state, not an exception: the settings page reads it.
+    next.startTask = next.adapter.start()
+      .then(() => {
+        if (this.runtimes.get(id) === next) next.state = 'connected'
+      })
+      .catch((error: unknown) => {
+        if (this.runtimes.get(id) !== next) return
+        next.state = 'error'
+        next.error = error instanceof Error ? error.message : String(error)
+        void next.adapter.stop().catch(() => {})
+      })
+      .finally(() => {
+        if (!this.disposed && this.runtimes.get(id) === next) this.emit('changed', this.status())
+      })
+    this.emit('changed', this.status())
   }
 
   private maskChannel(channel: StoredChannel, runtime?: ChannelRuntime): ImChannelStatus {
@@ -359,11 +432,282 @@ export class ImChannelService extends EventEmitter {
     }
   }
 
-  // CHANNELS-TODO: routeInbound(channelId, text) plus the supervisor event
-  // wiring described in the design brief: command parsing (/help /status
-  // /stop /new), prompt dispatch through the bound conversation, run-settle
-  // pushes and needs-input notices. The helpers below are the seams the
-  // adapter files implement.
+  /* ---------------------------------------------------------------- *
+   * Routing
+   * ---------------------------------------------------------------- */
+
+  /** Normalized session-file identity, matching remote-access keying. */
+  private pathKey(file: string): string {
+    const resolved = path.resolve(file)
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+  }
+
+  private channelById(id: string): StoredChannel | undefined {
+    return this.channels.find((item) => item.id === id)
+  }
+
+  private async reply(channelId: string, text: string): Promise<void> {
+    const runtime = this.runtimes.get(channelId)
+    if (!runtime) return
+    await runtime.adapter.send(text.slice(0, MAX_IM_MESSAGE_CHARS))
+  }
+
+  /**
+   * One inbound IM message: a command, or a prompt for the bound
+   * conversation. Every failure path answers through the channel instead of
+   * throwing — the sender must learn what happened to their message.
+   */
+  private async routeInbound(channelId: string, text: string): Promise<void> {
+    if (this.disposed) return
+    const channel = this.channelById(channelId)
+    if (!channel || !channel.enabled) return
+    const runtime = this.runtimes.get(channelId)
+    if (runtime) runtime.lastMessageAt = Date.now()
+
+    const message = text.trim()
+    if (!message) return
+    if (message.length > MAX_INBOUND_CHARS) {
+      await this.reply(channelId, `消息过长（上限 ${MAX_INBOUND_CHARS.toLocaleString()} 字），请拆开发送。`)
+      return
+    }
+
+    const command = /^\/(help|status|stop|new)$/i.exec(message)
+    if (command) {
+      const verb = command[1].toLowerCase()
+      if (verb === 'help') {
+        await this.reply(channelId, '可用命令：/status 查看绑定对话、/stop 停止当前运行、/new 开始新对话。其他文字会作为指令发送给 Pi。')
+        return
+      }
+      if (verb === 'status') {
+        await this.replyStatus(channelId, channel)
+        return
+      }
+      if (verb === 'stop') {
+        const file = await this.resolveBoundFile(channel)
+        if (!file) return // replyStatus already explained the failure
+        await this.options.supervisor.stop(file)
+        await this.reply(channelId, '已停止当前运行。')
+        return
+      }
+      await this.startNewConversation(channelId, channel, message)
+      return
+    }
+
+    await this.dispatchPrompt(channelId, channel, message)
+  }
+
+  private async boundWorkspace(channel: StoredChannel): Promise<{ id: string; path: string; name: string } | null> {
+    const workspace = this.registeredWorkspaces().find((item) => item.id === channel.binding.workspaceId)
+    return workspace ?? null
+  }
+
+  /** The JSONL of the bound conversation, or null (the channel replied why). */
+  private async resolveBoundFile(channel: StoredChannel): Promise<string | null> {
+    const workspace = await this.boundWorkspace(channel)
+    if (!workspace) {
+      await this.reply(channel.id, '绑定的项目已不在应用中，请在设置里重新选择。')
+      return null
+    }
+    const sessions = await listSessions(workspace.path)
+    const session = sessions.find((item) => item.id === channel.binding.sessionId)
+    if (!session) {
+      await this.reply(channel.id, '绑定的对话已不存在，可用 /new 开始新对话。')
+      return null
+    }
+    return session.file
+  }
+
+  private async replyStatus(channelId: string, channel: StoredChannel): Promise<void> {
+    const workspace = await this.boundWorkspace(channel)
+    if (!workspace) {
+      await this.reply(channelId, '绑定的项目已不在应用中，请在设置里重新选择。')
+      return
+    }
+    const sessions = await listSessions(workspace.path)
+    const session = sessions.find((item) => item.id === channel.binding.sessionId)
+    if (!session) {
+      await this.reply(channelId, `项目「${clipName(workspace.name)}」· 绑定的对话已不存在，可用 /new 开始新对话。`)
+      return
+    }
+    const info = this.options.supervisor.sessionInfo(session.file)
+    const state = info?.waitingForInput ? '等待确认' : info?.running ? '正在运行' : '空闲'
+    await this.reply(channelId, `项目「${clipName(workspace.name)}」· ${clipName(session.name || session.preview || '未命名对话')}：${state}。`)
+  }
+
+  /** One ordinary message: ensure Pi, then hand it over as a steering prompt. */
+  private async dispatchPrompt(channelId: string, channel: StoredChannel, message: string): Promise<void> {
+    const file = await this.resolveBoundFile(channel)
+    if (!file) return
+    const workspace = await this.boundWorkspace(channel)
+    if (!workspace) return
+    const started = await this.options.supervisor.ensure({
+      sessionKey: file,
+      cwd: workspace.path,
+      sessionFile: file,
+      customInstructions: this.options.customInstructions(workspace.path)
+    }).catch((error: unknown) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }))
+    if (!started.ok) {
+      await this.reply(channelId, `Pi 未能启动：${clipText(started.error ?? '', 200)}`)
+      return
+    }
+    try {
+      await this.options.supervisor.request(
+        file,
+        'prompt',
+        { message, streamingBehavior: 'steer' },
+        900_000,
+        { sourceAction: 'im-send', uiSessionId: file }
+      )
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      await this.reply(channelId, `消息未能送达：${clipText(detail, 200)}`)
+    }
+  }
+
+  /** `/new`: run the message in a draft conversation, then re-bind the channel. */
+  private async startNewConversation(channelId: string, channel: StoredChannel, message: string): Promise<void> {
+    const workspace = await this.boundWorkspace(channel)
+    if (!workspace) {
+      await this.reply(channelId, '绑定的项目已不在应用中，请在设置里重新选择。')
+      return
+    }
+    const draftKey = `draft:${randomUUID()}`
+    const rekey = this.awaitRekey(draftKey)
+    const started = await this.options.supervisor.ensure({
+      sessionKey: draftKey,
+      cwd: workspace.path,
+      customInstructions: this.options.customInstructions(workspace.path)
+    }).catch((error: unknown) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }))
+    if (!started.ok) {
+      await this.reply(channelId, `Pi 未能启动：${clipText(started.error ?? '', 200)}`)
+      return
+    }
+    try {
+      await this.options.supervisor.request(
+        draftKey,
+        'prompt',
+        { message, streamingBehavior: 'steer' },
+        900_000,
+        { sourceAction: 'im-send', uiSessionId: draftKey }
+      )
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      await this.reply(channelId, `消息未能送达：${clipText(detail, 200)}`)
+      return
+    }
+    const rekeyed = await rekey
+    if (rekeyed) {
+      await this.rebind(channel, rekeyed)
+      await this.reply(channelId, '已切换到新对话。')
+    } else {
+      // The conversation exists and is running; only the binding update is
+      // missing. Say so rather than pretending the switch happened.
+      await this.reply(channelId, '新对话已开始，但暂时无法更新频道绑定，请稍后用 /status 查看。')
+    }
+  }
+
+  /** One bounded wait for the JSONL a draft is about to become. */
+  private awaitRekey(draftKey: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      let done = false
+      const finish = (value: string | null): void => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        this.options.supervisor.off('rekey', listener)
+        resolve(value)
+      }
+      const listener = (change: RuntimeRekey): void => {
+        if (change.from === draftKey) finish(change.to)
+      }
+      const timer = setTimeout(() => finish(null), REKEY_WAIT_MS)
+      this.options.supervisor.on('rekey', listener)
+    })
+  }
+
+  /** Persist the new binding for a channel and republish the settings view. */
+  private async rebind(channel: StoredChannel, file: string): Promise<void> {
+    const workspace = await this.boundWorkspace(channel)
+    if (!workspace) return
+    const sessions = await listSessions(workspace.path)
+    const session = sessions.find((item) => this.pathKey(item.file) === this.pathKey(file))
+    if (!session) return
+    await this.withStateLock(() => {
+      const stored = this.readPersistedState()
+      const next = stored.channels.map((item) =>
+        item.id === channel.id ? { ...item, binding: { workspaceId: workspace.id, sessionId: session.id } } : item
+      )
+      this.channels = next
+      this.writeState({ channels: next })
+    })
+    if (!this.disposed) this.emit('changed', this.status())
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Supervisor pushes
+   * ---------------------------------------------------------------- */
+
+  /** Final answers and needs-confirmation notices, per bound session file. */
+  private readonly onRuntimeEvent = (payload: { ownerId: string; event: PiEvent }): void => {
+    if (this.disposed || this.runtimes.size === 0) return
+    const ownerKey = this.pathKey(payload.ownerId)
+    const event = payload.event
+    if (event.type === 'agent_end') {
+      this.runCompletions.set(ownerKey, describeRunCompletion(event.messages))
+      return
+    }
+    if (event.type === 'agent_start') {
+      this.runCompletions.delete(ownerKey)
+      return
+    }
+    if (event.type === 'extension_ui_request') {
+      const method = String(event.method ?? '')
+      if (!['select', 'confirm', 'input', 'editor'].includes(method)) return
+      const ask = clipText(String(event.title ?? event.message ?? ''), 200).replace(/\s+/g, ' ').trim()
+      this.pushToBound(ownerKey, ask ? `Pi 需要确认：${ask}` : 'Pi 需要在桌面端确认后才能继续。')
+      return
+    }
+    if (event.type !== 'agent_settled') return
+    const completion = this.runCompletions.get(ownerKey)
+    this.runCompletions.delete(ownerKey)
+    if (!completion) return
+    if (event.aborted || event.runtimeStopped) return
+    if (event.crashed || completion.failed) {
+      this.pushToBound(ownerKey, `任务失败：${clipText(completion.body || 'Pi 在任务完成前退出', 300)}`)
+      return
+    }
+    if (!completion.body) return
+    this.pushToBound(ownerKey, completion.body)
+  }
+
+  /** Push one text to the channel whose binding currently owns that file. */
+  private pushToBound(ownerKey: string, text: string): void {
+    for (const channel of this.channels) {
+      if (!channel.enabled) continue
+      const workspace = this.registeredWorkspaces().find((item) => item.id === channel.binding.workspaceId)
+      // A synchronous lookup cannot resolve the session file without IO, so
+      // bindings carry the file identity only through the id → resolve lazily
+      // but never block the event: the check below runs on the next tick.
+      if (!workspace) continue
+      void this.matchesBinding(channel, ownerKey).then((matches) => {
+        if (matches) void this.reply(channel.id, text).catch(() => {})
+      })
+    }
+  }
+
+  private async matchesBinding(channel: StoredChannel, ownerKey: string): Promise<boolean> {
+    const workspace = await this.boundWorkspace(channel)
+    if (!workspace) return false
+    try {
+      const sessions = await listSessions(workspace.path)
+      const session = sessions.find((item) => item.id === channel.binding.sessionId)
+      return Boolean(session && this.pathKey(session.file) === ownerKey)
+    } catch {
+      return false
+    }
+  }
+
+  private readonly runCompletions = new Map<string, ReturnType<typeof describeRunCompletion>>()
 
   /** True while this service owns a live adapter for that channel id. */
   hasRuntime(id: string): boolean {
@@ -373,4 +717,13 @@ export class ImChannelService extends EventEmitter {
   storedChannels(): readonly StoredChannel[] {
     return this.channels
   }
+}
+
+function clipName(name: string): string {
+  return name.replace(/\s+/g, ' ').trim().slice(0, NAME_LIMIT)
+}
+
+function clipText(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
 }

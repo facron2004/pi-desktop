@@ -1,12 +1,13 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronLeft, ChevronRight, Folder, MessageSquare, Monitor, MoreHorizontal, Send } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Folder, MessageSquare, Monitor, MoreHorizontal, Send, Plus } from 'lucide-react'
 import {
   MAX_REMOTE_MESSAGE_CHARS,
   type AgentMessage,
   type PiEvent,
   type RemoteAccessDevice,
+  type RemoteDialogRequest,
   type RemoteSession,
   type RemoteWorkspace
 } from '@shared/types'
@@ -31,6 +32,7 @@ interface SessionDetail {
   truncated: boolean
   isRunning: boolean
   waitingForDesktop: boolean
+  pendingDialog: RemoteDialogRequest | null
 }
 
 async function api<T>(path: string, token?: string, init: RequestInit = {}): Promise<T> {
@@ -85,7 +87,12 @@ export function RemoteApp() {
   }, [replaceItems])
   const [truncated, setTruncated] = useState(false)
   const [running, setRunning] = useState(false)
-  const [waitingForDesktop, setWaitingForDesktop] = useState(false)
+  const [dialog, setDialog] = useState<RemoteDialogRequest | null>(null)
+  const [dialogBusy, setDialogBusy] = useState(false)
+  const [dialogInput, setDialogInput] = useState('')
+  const [stopping, setStopping] = useState(false)
+  const [newChat, setNewChat] = useState(false)
+  const [newChatMessage, setNewChatMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const [sendingRequests, setSendingRequests] = useState<RemoteSendRequests>({})
   const sendingRequestsRef = useRef<RemoteSendRequests>({})
@@ -132,7 +139,8 @@ export function RemoteApp() {
     replaceItems([])
     sendingRequestsRef.current = {}
     setSendingRequests({})
-    setWaitingForDesktop(false)
+    setDialog(null)
+    setDialogInput('')
     setLoading(false)
     setView('projects')
   }, [cancelNavigationLoad, replaceItems])
@@ -175,7 +183,8 @@ export function RemoteApp() {
       replaceItems(itemsFromMessages(result.messages))
       setTruncated(result.truncated)
       setRunning(result.isRunning)
-      setWaitingForDesktop(result.waitingForDesktop)
+      setDialog(result.pendingDialog)
+      setDialogInput(result.pendingDialog?.prefill ?? '')
       setError('')
     } catch (cause) {
       if (controller.signal.aborted || activeToken.current !== accessToken) return
@@ -298,11 +307,19 @@ export function RemoteApp() {
 
       const updateRuntimeState = (event: PiEvent) => {
         if (event.type === 'agent_start') setRunning(true)
-        if (event.type === 'remote_waiting_for_desktop') setWaitingForDesktop(true)
-        if (event.type === 'tool_execution_start') setWaitingForDesktop(false)
+        if (event.type === 'remote_dialog_request') {
+          const request = event as unknown as RemoteDialogRequest
+          setDialog(request)
+          setDialogInput(typeof request.prefill === 'string' ? request.prefill : '')
+        }
+        if (event.type === 'remote_dialog_closed') {
+          setDialog((current) => (current && current.id === event.id ? null : current))
+          setDialogBusy(false)
+        }
+        if (event.type === 'tool_execution_start') setDialog(null)
         if (event.type === 'agent_settled') {
           setRunning(false)
-          setWaitingForDesktop(false)
+          setDialog(null)
           if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
           refreshTimer = window.setTimeout(() => {
             refreshTimer = undefined
@@ -389,7 +406,8 @@ export function RemoteApp() {
               replaceItems(restored)
               setTruncated(snapshot.truncated)
               setRunning(snapshot.isRunning)
-              setWaitingForDesktop(snapshot.waitingForDesktop)
+              setDialog(snapshot.pendingDialog)
+              setDialogInput(snapshot.pendingDialog?.prefill ?? '')
               for (const event of events) updateRuntimeState(event)
               bufferedEvents = null
               snapshotHandled = true
@@ -493,7 +511,7 @@ export function RemoteApp() {
       setView('sessions')
       setSession(null)
       replaceItems([])
-      setWaitingForDesktop(false)
+      setDialog(null)
     } else if (view === 'sessions') {
       setView('projects')
       setWorkspace(null)
@@ -531,9 +549,91 @@ export function RemoteApp() {
     if (!workspace) return
     setSession(selected)
     replaceItems([])
-    setWaitingForDesktop(false)
+    setDialog(null)
     setView('conversation')
     void loadSession(token, workspace, selected)
+  }
+
+  /** POST /api/stop: the deliberate stop, same as the desktop session bar. */
+  const stopRun = async () => {
+    if (!workspace || !session || stopping) return
+    setStopping(true)
+    setError('')
+    try {
+      await api('/api/stop', token, {
+        method: 'POST',
+        body: JSON.stringify({ workspaceId: workspace.id, sessionId: session.id })
+      })
+    } catch (cause) {
+      if ((cause as ApiError).status === 401) clearPairingForToken(token)
+      else setError(cause instanceof Error ? cause.message : 'Could not stop the conversation.')
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  /** POST /api/dialog: answer the forwarded blocking dialog from the phone. */
+  const answerDialog = async (response: { value?: string; confirmed?: boolean; cancelled?: boolean }) => {
+    if (!workspace || !session || !dialog || dialogBusy) return
+    setDialogBusy(true)
+    const answered = dialog
+    try {
+      await api('/api/dialog', token, {
+        method: 'POST',
+        body: JSON.stringify({ workspaceId: workspace.id, sessionId: session.id, id: answered.id, response })
+      })
+      // The closed event normally clears the card; clearing here too means a
+      // dropped SSE connection cannot leave a stale answer form behind.
+      setDialog((current) => (current && current.id === answered.id ? null : current))
+    } catch (cause) {
+      if ((cause as ApiError).status === 401) clearPairingForToken(token)
+      else if ((cause as ApiError).status === 409) {
+        setDialog(null)
+        void loadSession(token, workspace, session)
+      } else {
+        setError(cause instanceof Error ? cause.message : 'Could not send the answer.')
+      }
+    } finally {
+      setDialogBusy(false)
+    }
+  }
+
+  /** The first message of a brand-new conversation in the open workspace. */
+  const startNewConversation = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!workspace || !newChatMessage.trim() || sending) return
+    const submitted = newChatMessage.trim()
+    const controller = beginNavigationLoad()
+    setError('')
+    try {
+      const result = await api<{ ok: boolean; sessionId: string | null }>('/api/message', token, {
+        method: 'POST',
+        body: JSON.stringify({ workspaceId: workspace.id, message: submitted }),
+        signal: controller.signal
+      })
+      if (controller.signal.aborted || activeToken.current !== token) return
+      setNewChat(false)
+      setNewChatMessage('')
+      if (result.sessionId) {
+        const stub: RemoteSession = {
+          id: result.sessionId,
+          name: submitted,
+          preview: submitted,
+          updatedAt: Date.now(),
+          messageCount: 1,
+          isRunning: true
+        }
+        openSession(stub)
+      } else {
+        await openWorkspace(workspace)
+      }
+    } catch (cause) {
+      if (controller.signal.aborted || activeToken.current !== token) return
+      if ((cause as ApiError).status === 401) clearPairingForToken(token)
+      else setError(cause instanceof Error ? cause.message : 'Could not start the conversation.')
+    } finally {
+      if (navigationLoad.current === controller) navigationLoad.current = null
+    }
   }
 
   const send = async (event: FormEvent<HTMLFormElement>) => {
@@ -627,6 +727,33 @@ export function RemoteApp() {
       {view === 'sessions' ? (
         <section className="remote-list-view">
           <div className="remote-section-title">最近对话</div>
+          {newChat ? (
+            <form className="remote-composer remote-composer--new" onSubmit={(event) => void startNewConversation(event)}>
+              <textarea
+                aria-label="新对话的第一条消息"
+                maxLength={MAX_REMOTE_MESSAGE_CHARS}
+                value={newChatMessage}
+                onChange={(event) => setNewChatMessage(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    event.currentTarget.form?.requestSubmit()
+                  }
+                }}
+                placeholder="向新对话发送第一条消息…"
+                rows={1}
+                autoFocus
+              />
+              <button className="remote-send" type="submit" disabled={!newChatMessage.trim()} aria-label="发送">
+                <Send size={18} />
+              </button>
+            </form>
+          ) : null}
+          <button className="remote-row remote-session remote-new-chat" onClick={() => setNewChat((current) => !current)}>
+            <span className="remote-session-icon"><Plus size={16} /></span>
+            <span className="remote-row__body"><strong>新建对话</strong><small>在 {workspace?.name} 中开始</small></span>
+          </button>
           {sessions.map((item) => (
             <button className="remote-row remote-session" key={item.id} onClick={() => openSession(item)}>
               <span className="remote-session-icon"><MessageSquare size={16} /></span>
@@ -653,9 +780,77 @@ export function RemoteApp() {
             {truncated ? <div className="remote-history-note">已省略较早的对话记录</div> : null}
             {items.map((item) => <RemoteMessage key={item.id} item={item} />)}
             {loading ? <div className="remote-loading">正在加载对话…</div> : null}
-            {waitingForDesktop ? <div className="remote-running remote-running--notice">Pi 需要在桌面端确认后才能继续。</div> : null}
-            {running && !waitingForDesktop ? <div className="remote-running"><span className="remote-spinner" />{streamConnected ? 'Pi 正在工作' : 'Pi 正在工作 · 等待连接'}</div> : null}
+            {dialog ? (
+              <div className="remote-dialog">
+                <div className="remote-dialog__title">{dialog.title || 'Pi 在等待你的回答'}</div>
+                {dialog.message ? <div className="remote-dialog__message">{dialog.message}</div> : null}
+                {dialog.method === 'select' && dialog.options ? (
+                  <div className="remote-dialog__actions">
+                    {dialog.options.map((option) => (
+                      <button
+                        className="remote-dialog__option"
+                        key={option}
+                        disabled={dialogBusy}
+                        onClick={() => void answerDialog({ value: option })}
+                      >{option}</button>
+                    ))}
+                  </div>
+                ) : null}
+                {dialog.method === 'confirm' ? (
+                  <div className="remote-dialog__actions">
+                    {(dialog.options ?? ['确认', '取消']).map((option) => (
+                      <button
+                        className="remote-dialog__option"
+                        key={option}
+                        disabled={dialogBusy}
+                        onClick={() => void answerDialog(option === '取消' ? { cancelled: true } : { value: option, confirmed: true })}
+                      >{option}</button>
+                    ))}
+                  </div>
+                ) : null}
+                {dialog.method === 'input' || dialog.method === 'editor' ? (
+                  <form
+                    className="remote-dialog__form"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      if (!dialogInput.trim()) return
+                      void answerDialog({ value: dialogInput })
+                    }}
+                  >
+                    {dialog.method === 'editor' ? (
+                      <textarea
+                        aria-label="回答"
+                        maxLength={32_000}
+                        rows={4}
+                        value={dialogInput}
+                        placeholder={dialog.placeholder || '输入回答…'}
+                        onChange={(event) => setDialogInput(event.target.value)}
+                      />
+                    ) : (
+                      <input
+                        aria-label="回答"
+                        maxLength={2_000}
+                        type="text"
+                        value={dialogInput}
+                        placeholder={dialog.placeholder || '输入回答…'}
+                        onChange={(event) => setDialogInput(event.target.value)}
+                      />
+                    )}
+                    <div className="remote-dialog__actions">
+                      <button type="button" className="remote-dialog__option" disabled={dialogBusy} onClick={() => void answerDialog({ cancelled: true })}>取消</button>
+                      <button type="submit" className="remote-dialog__option remote-dialog__option--primary" disabled={dialogBusy || !dialogInput.trim()}>{dialogBusy ? '发送中…' : '发送'}</button>
+                    </div>
+                  </form>
+                ) : null}
+              </div>
+            ) : null}
+            {running && !dialog ? <div className="remote-running"><span className="remote-spinner" />{streamConnected ? 'Pi 正在工作' : 'Pi 正在工作 · 等待连接'}</div> : null}
           </div>
+          {running ? (
+            <button className="remote-stop" onClick={() => void stopRun()} disabled={stopping}>
+              {stopping ? '正在停止…' : '停止运行'}
+            </button>
+          ) : null}
           <form className="remote-composer" onSubmit={(event) => void send(event)}>
             <textarea
               aria-label="输入消息"

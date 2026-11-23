@@ -1242,10 +1242,26 @@ network.
 - The phone API accepts registered workspace ids and Pi session ids. Resolve
   those ids to paths in the main process; never accept a phone-supplied `cwd` or
   session-file path.
-- Keep the API limited to listing registered projects and their conversations,
-  reading a conversation, and sending a prompt. Do not expose the preload bridge,
-  arbitrary Pi RPC, terminal, filesystem, Git, provider or settings operations.
-  Prompts still use the session's configured Pi permissions.
+- The phone API is a closed list: listing registered projects and their
+  conversations, reading a conversation, sending a prompt (into an existing
+  conversation or a new draft), stopping the conversation's run, and answering
+  a blocking extension dialog. Do not expose the preload bridge, arbitrary
+  Pi RPC, terminal, filesystem, Git, provider or settings operations.
+  Prompts still use the session's configured Pi permissions, and answering a
+  dialog from a paired phone is the same deliberate act as answering it on
+  the desktop — tool-approval dialogs included.
+- A blocking dialog (`select`/`confirm`/`input`/`editor`) is forwarded to the
+  phone as a sanitized `remote_dialog_request`: only `id`, `method`, `title`,
+  `message`, `options`, `placeholder` and `prefill`, each length-capped; the
+  `approval` payload, session keys and path fields never leave the main
+  process. The pending dialog rides on `/api/session` so a reconnecting phone
+  re-renders it, and the answer goes back through `respondUi`. The supervisor
+  emits `ui-responded` so every forwarded copy closes when any side answers —
+  desktop included. A settled run clears its dialog on both paths.
+- A new conversation from the phone runs under a `draft:<uuid>` key (the
+  scheduled-task pattern) and follows the supervisor's `rekey` event to find
+  the JSONL Pi wrote, so the response can hand the phone the new session id
+  instead of leaving it to guess which row in the list is fresh.
 - Live updates come from `SessionSupervisor` events. The mobile renderer reuses
   `lib/stream-events.ts` and `lib/thread.ts`; do not add a second protocol reducer.
 - Keep host checks, same-origin checks, one-use pairing, device revocation and
@@ -1253,6 +1269,53 @@ network.
   never pass raw values through. Never put a bearer token in a URL.
 - `npm run dev` watches the separate mobile bundle alongside Electron;
   `npm run build` includes it in the packaged output.
+
+## IM channels
+
+`src/main/channels/` bridges Feishu and WeChat to conversations. One channel
+is bound to one registered project and one conversation (`ImChannelBinding`);
+messages are dispatched as prompts, and run-state pushes come back through the
+same channel. Settings page: `ImChannelSettings` (page id `im-channels`).
+
+- **Config lives in `im-channels.json`** under the user data folder, written
+  atomically at mode 0600 behind the same proper-lockfile the remote access
+  state uses. `status()` never returns a credential — it reports
+  `appSecretSet` / `receiveTokenSet` masks, except `wechat.callbackUrl`, which
+  deliberately carries the receive token because that URL is what the user
+  must paste into the bridge's `RECVD_MSG_API`. An empty secret on save means
+  "keep the stored one", which is why the settings form never reads one back.
+- **Feishu** is a 自建应用 in long-connection mode (`@larksuiteoapi/node-sdk`
+  `WSClient`): no public URL, no decryption — the SDK owns the socket and the
+  reconnect. Feishu re-pushes an event whose handler exceeds three seconds, so
+  the handler routes and returns immediately; dedupe on `message_id`; strip
+  `@_user_N` mention placeholders before dispatch; only `text` messages
+  arrive, and an `allowedChatIds` allowlist gates which chats are routed.
+  Replies go through `im.message.create` to the last inbound `chat_id`
+  (falling back to the first allowed chat). `test()` reports the connection
+  state only — it never sends into a chat.
+- **WeChat never hooks the client.** The channel speaks the wechatbot-webhook
+  contract against a bridge the user runs themselves (`npx wechatbot-webhook`):
+  received messages arrive as multipart POSTs on a local listener (LAN-only
+  `isPrivateClient`, receive-token digest compare, per-IP rate limit, 1 MB
+  cap, text fields only — file parts are skipped, never buffered), replies go
+  to the bridge's `webhook/msg/v2` API, and `test()` is its `/healthz`.
+  Sending targets the configured `sendTo` or the last non-self sender. The
+  account risk belongs to the bridge project, which is why Pi Desktop keeps
+  the contract and none of the hooks.
+- **Routing is one place**: `routeInbound` in `im-channel-service.ts`. Commands
+  `/help`, `/status`, `/stop` and `/new`; anything else is a prompt through
+  `supervisor.ensure` + `request('prompt', …, streamingBehavior: 'steer')`
+  with the same argument shape as the remote-access send. `/new` uses the
+  draft + `rekey` pattern to re-bind the channel and persist the new binding.
+  Inbound length is capped; every reply is capped to `MAX_IM_MESSAGE_CHARS`.
+- **Pushes are event projections**, not a second transcript: `agent_end` +
+  `agent_settled` reuse `describeRunCompletion` (the same extraction the
+  desktop notification uses) to push the final answer — never for an aborted
+  or crashed run — and a blocking `extension_ui_request` pushes a
+  needs-confirmation notice. IM channels do not answer dialogs in v1.
+- **Keep the transport injectable**: `im-channel-service.ts` must not import
+  `adapters.ts`; tests pass a fake adapter through the constructor's
+  `createAdapter` option, the same seam the app uses with the real one.
 
 ## Memory
 

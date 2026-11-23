@@ -575,15 +575,49 @@ test('remote session snapshot restores whether a desktop approval is still pendi
         headers: { host: '127.0.0.1', authorization: `Bearer ${accessToken}` },
         socket: { remoteAddress: '127.0.0.1' }
       }, response)
-      return JSON.parse(body) as { waitingForDesktop: boolean }
+      return JSON.parse(body) as { waitingForDesktop: boolean; pendingDialog: unknown }
     }
 
     try {
       assert.equal((await snapshot()).waitingForDesktop, false)
-      sessionState = { running: true, waitingForInput: true }
-      assert.equal((await snapshot()).waitingForDesktop, true)
-      sessionState = { running: true, waitingForInput: false }
-      assert.equal((await snapshot()).waitingForDesktop, false)
+      // A supervisor-reported waiting state is only the prompt to forward the
+      // dialog; the phone's snapshot answers from the forwarded dialog map.
+      const internals = service as unknown as {
+        pendingDialogs: Map<string, unknown>
+        onRuntimeEvent: (payload: { ownerId: string; event: Record<string, unknown> }) => void
+        streams: Set<{ fileKey: string; response: { write: (data: string) => boolean; end: () => void }; heartbeat: ReturnType<typeof setInterval>; deviceId: string; workspaceId: string; sessionId: string }>
+        sessionRefs: Map<string, { workspaceId: string; sessionId: string; cwd: string; file: string }>
+      }
+      const file = path.join(workspaceSessions, `${sessionId}.jsonl`)
+      const fileKey = process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file)
+      internals.sessionRefs.set(fileKey, { workspaceId: 'workspace-1', sessionId, cwd: workspacePath, file })
+      const heartbeat = setInterval(() => {}, 60_000)
+      const writes: string[] = []
+      internals.streams.add({
+        deviceId: device.id,
+        workspaceId: 'workspace-1',
+        sessionId,
+        fileKey,
+        response: { write: (data) => { writes.push(data); return true }, end: () => {} },
+        heartbeat
+      })
+      try {
+        internals.onRuntimeEvent({ ownerId: file, event: { type: 'extension_ui_request', id: 'dlg-1', method: 'select', title: 'Pick one', options: ['a', 'b'], approval: { danger: 'secret' }, sessionKey: file, ownerId: file } })
+        const forwarded = JSON.parse(writes[0]!.split('data: ')[1])
+        assert.equal(forwarded.type, 'remote_dialog_request')
+        assert.equal(forwarded.id, 'dlg-1')
+        assert.equal(forwarded.options[1], 'b')
+        assert.equal(forwarded.approval, undefined, 'the approval payload never leaves the main process')
+        assert.equal(forwarded.sessionKey, undefined)
+        const afterDialog = await snapshot()
+        assert.equal(afterDialog.waitingForDesktop, true)
+        assert.equal((afterDialog.pendingDialog as { id: string }).id, 'dlg-1')
+        internals.onRuntimeEvent({ ownerId: file, event: { type: 'agent_settled', aborted: false } as unknown as Record<string, unknown> })
+        assert.equal(internals.pendingDialogs.size, 0, 'a settled run clears its forwarded dialog')
+        assert.equal((await snapshot()).waitingForDesktop, false)
+      } finally {
+        clearInterval(heartbeat)
+      }
     } finally {
       internals.server = null
       await service.dispose()

@@ -9,6 +9,7 @@ import type {
   PiEvent,
   RemoteAccessDevice,
   RemoteAccessStatus,
+  RemoteDialogRequest,
   RemoteSession,
   RemoteWorkspace
 } from '@shared/types'
@@ -39,6 +40,12 @@ const MAX_REMOTE_STRING = 16_000
 const MAX_REMOTE_VALUE_CHARS = 64_000
 const MAX_REMOTE_VALUE_NODES = 2_000
 const REMOTE_CONTENT_OMITTED = '[Content omitted on mobile]'
+const MAX_DIALOG_TEXT = 2_000
+const MAX_DIALOG_OPTIONS = 12
+const MAX_DIALOG_OPTION_CHARS = 200
+const MAX_DIALOG_ANSWER_CHARS = 32_000
+/** A phone-created conversation waits this long for Pi to write its JSONL. */
+const REMOTE_REKEY_WAIT_MS = 15_000
 
 function remoteStateFingerprint(file: string): string {
   try {
@@ -177,6 +184,35 @@ export function safeRemoteValue(value: unknown, depth = 0): unknown {
   })
 }
 
+/** Build the phone-safe copy of a blocking extension dialog, or null. */
+function sanitizeDialogRequest(event: PiEvent): RemoteDialogRequest | null {
+  const id = typeof event.id === 'string' ? event.id : ''
+  if (!id) return null
+  const method = String(event.method)
+  if (method !== 'select' && method !== 'confirm' && method !== 'input' && method !== 'editor') return null
+  const clip = (value: unknown): string | undefined => {
+    if (typeof value !== 'string') return undefined
+    const trimmed = value.trim()
+    return trimmed ? trimmed.slice(0, MAX_DIALOG_TEXT) : undefined
+  }
+  const options = Array.isArray(event.options)
+    ? event.options
+        .filter((option): option is string => typeof option === 'string' && option.trim().length > 0)
+        .slice(0, MAX_DIALOG_OPTIONS)
+        .map((option) => option.slice(0, MAX_DIALOG_OPTION_CHARS))
+    : undefined
+  return {
+    type: 'remote_dialog_request',
+    id,
+    method,
+    title: clip(event.title),
+    message: clip(event.message),
+    options: options?.length ? options : undefined,
+    placeholder: clip(event.placeholder),
+    prefill: clip(event.prefill)
+  }
+}
+
 function sanitizeRemoteValue(value: unknown, depth: number, budget: RemoteValueBudget): unknown {
   if (budget.exhausted) return REMOTE_CONTENT_OMITTED
   if (budget.nodes <= 0) {
@@ -282,6 +318,13 @@ export class RemoteAccessService {
   private readonly sessionRefs = new Map<string, SessionRef>()
   private readonly streams = new Set<EventStream>()
   private readonly pendingEvents = new Map<string, PiEvent[]>()
+  /**
+   * The blocking dialog a phone can still answer, keyed by the same
+   * `pathKey(file)` the streams use. Written when an `extension_ui_request`
+   * flows to a streamed session, cleared when any side answers it or the
+   * run settles.
+   */
+  private readonly pendingDialogs = new Map<string, RemoteDialogRequest>()
   private streamBatchTimer: ReturnType<typeof setTimeout> | undefined
   private stateSyncTimer: ReturnType<typeof setTimeout> | undefined
   private disposed = false
@@ -614,11 +657,27 @@ export class RemoteAccessService {
     this.enabled = true
     this.error = undefined
     this.options.supervisor.on('event', this.onRuntimeEvent)
+    // Any side may answer a forwarded dialog — the desktop included — so the
+    // phone's copy must close on every answer, not only its own.
+    this.options.supervisor.on('ui-responded', this.onUiResponded)
+  }
+
+  private readonly onUiResponded = (payload: { ownerId: string; id: string }): void => {
+    const fileKey = pathKey(payload.ownerId)
+    const dialog = this.pendingDialogs.get(fileKey)
+    if (!dialog || dialog.id !== payload.id) return
+    this.pendingDialogs.delete(fileKey)
+    const data = JSON.stringify({ type: 'remote_dialog_closed', id: payload.id })
+    for (const stream of this.streams) {
+      if (stream.fileKey === fileKey) stream.response.write(`event: pi\ndata: ${data}\n\n`)
+    }
   }
 
   private async stopServer(): Promise<void> {
     this.options.supervisor.off('event', this.onRuntimeEvent)
+    this.options.supervisor.off('ui-responded', this.onUiResponded)
     this.clearPendingStreamEvents()
+    this.pendingDialogs.clear()
     for (const stream of [...this.streams]) this.closeStream(stream)
     const server = this.server
     this.server = null
@@ -744,8 +803,18 @@ export class RemoteAccessService {
 
     let event = rawEvent
     if (event.type === 'extension_ui_request') {
-      if (!['select', 'confirm', 'input', 'editor'].includes(String(event.method))) return
-      event = { type: 'remote_waiting_for_desktop' }
+      const method = String(event.method)
+      if (!['select', 'confirm', 'input', 'editor'].includes(method)) return
+      // A dialog is forwardable, but the phone must only ever see the dialog
+      // itself: the approval payload, session keys and path fields stay in
+      // the main process. `pendingDialogs` also rides on /api/session so a
+      // reconnecting phone re-renders it.
+      const dialog = sanitizeDialogRequest(event)
+      if (!dialog) return
+      this.pendingDialogs.set(fileKey, dialog)
+      event = dialog as unknown as PiEvent
+    } else if (event.type === 'agent_settled') {
+      this.pendingDialogs.delete(fileKey)
     }
     const data = JSON.stringify(safeRemoteValue(event))
     for (const stream of authorizedStreams) {
@@ -807,6 +876,7 @@ export class RemoteAccessService {
     if (![...this.streams].some((active) => active.fileKey === stream.fileKey)) {
       this.sessionRefs.delete(stream.fileKey)
       this.pendingEvents.delete(stream.fileKey)
+      this.pendingDialogs.delete(stream.fileKey)
     }
     stream.response.end()
   }
@@ -903,11 +973,13 @@ export class RemoteAccessService {
         safeMessages.length < recentMessages.length
       this.requireActiveSession(device.id, ref)
       const sessionInfo = this.options.supervisor.sessionInfo(ref.file)
+      const pendingDialog = this.pendingDialogs.get(pathKey(ref.file)) ?? null
       this.sendJson(response, 200, {
         messages: safeMessages,
         truncated,
         isRunning: sessionInfo?.running ?? false,
-        waitingForDesktop: sessionInfo?.waitingForInput ?? false
+        waitingForDesktop: Boolean(pendingDialog),
+        pendingDialog
       })
       return
     }
@@ -925,6 +997,18 @@ export class RemoteAccessService {
     if (request.method === 'POST' && url.pathname === '/api/message') {
       this.requireSameOrigin(request)
       await this.sendMessage(request, response, device.id)
+      return
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/stop') {
+      this.requireSameOrigin(request)
+      await this.stopSession(request, response, device.id)
+      return
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/dialog') {
+      this.requireSameOrigin(request)
+      await this.answerDialog(request, response, device.id)
       return
     }
 
@@ -1192,13 +1276,20 @@ export class RemoteAccessService {
       this.readJson(request, MAX_REMOTE_MESSAGE_BODY_BYTES)
     )
     const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : ''
-    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : ''
     const message = typeof body.message === 'string' ? body.message.trim() : ''
     if (!message || message.length > MAX_REMOTE_MESSAGE_CHARS) {
       throw new HttpError(400, `Enter a message up to ${MAX_REMOTE_MESSAGE_CHARS.toLocaleString()} characters.`)
     }
 
     const workspace = this.getWorkspace(workspaceId)
+    if (!sessionId) {
+      // An empty session id starts a new conversation in the workspace: the
+      // scheduled-task draft pattern, with the rekey hand-back so the phone
+      // can open the conversation it just created instead of refreshing.
+      await this.sendToNewConversation(response, deviceId, workspace, message)
+      return
+    }
     const ref = await this.awaitWorkspaceAction(deviceId, workspace, () => this.resolveSession(workspaceId, sessionId))
     const started = await this.awaitSessionAction(
       deviceId,
@@ -1225,5 +1316,130 @@ export class RemoteAccessService {
       )
     )
     this.sendJson(response, 200, { ok: true })
+  }
+
+  /** POST /api/stop: the same deliberate stop the desktop's session bar performs. */
+  private async stopSession(
+    request: IncomingMessage,
+    response: ServerResponse,
+    deviceId: string
+  ): Promise<void> {
+    const body = await this.awaitDeviceAction(deviceId, () =>
+      this.readJson(request, MAX_PAIR_BODY_BYTES)
+    )
+    const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : ''
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+    const workspace = this.getWorkspace(workspaceId)
+    const ref = await this.awaitWorkspaceAction(deviceId, workspace, () => this.resolveSession(workspaceId, sessionId))
+    await this.awaitSessionAction(deviceId, ref, () => this.options.supervisor.stop(ref.file))
+    this.sendJson(response, 200, { ok: true })
+  }
+
+  /** POST /api/dialog: answer one forwarded blocking dialog from a paired phone. */
+  private async answerDialog(
+    request: IncomingMessage,
+    response: ServerResponse,
+    deviceId: string
+  ): Promise<void> {
+    const body = await this.awaitDeviceAction(deviceId, () =>
+      this.readJson(request, MAX_REMOTE_MESSAGE_BODY_BYTES)
+    )
+    const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : ''
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+    const dialogId = typeof body.id === 'string' ? body.id : ''
+    const raw = body.response
+    if (!dialogId) throw new HttpError(400, 'A dialog id is required.')
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new HttpError(400, 'A dialog response object is required.')
+    }
+    const answer = raw as { value?: unknown; confirmed?: unknown; cancelled?: unknown }
+    const dialogResponse: { value?: string; confirmed?: boolean; cancelled?: boolean } = {}
+    if (answer.value !== undefined) {
+      if (typeof answer.value !== 'string') throw new HttpError(400, 'The dialog value must be a string.')
+      dialogResponse.value = answer.value.slice(0, MAX_DIALOG_ANSWER_CHARS)
+    }
+    if (typeof answer.confirmed === 'boolean') dialogResponse.confirmed = answer.confirmed
+    if (typeof answer.cancelled === 'boolean') dialogResponse.cancelled = answer.cancelled
+
+    const workspace = this.getWorkspace(workspaceId)
+    const ref = await this.awaitWorkspaceAction(deviceId, workspace, () => this.resolveSession(workspaceId, sessionId))
+    // Only an open dialog can be answered: a late answer must not unblock an
+    // agent that already moved on (Pi answers stale responses itself, but the
+    // 409 tells the phone to drop its card).
+    const fileKey = pathKey(ref.file)
+    if (this.pendingDialogs.get(fileKey)?.id !== dialogId) {
+      throw new HttpError(409, 'The dialog is no longer open.')
+    }
+    await this.awaitSessionAction(deviceId, ref, () =>
+      Promise.resolve(this.options.supervisor.respondUi(ref.file, dialogId, dialogResponse))
+    )
+    this.sendJson(response, 200, { ok: true })
+  }
+
+  /**
+   * Send the first message of a new conversation: ensure a draft runtime,
+   * dispatch the prompt, then follow the supervisor's rekey to find the
+   * JSONL Pi wrote so the response names the new session.
+   */
+  private async sendToNewConversation(
+    response: ServerResponse,
+    deviceId: string,
+    workspace: ReturnType<RemoteAccessService['getWorkspace']>,
+    message: string
+  ): Promise<void> {
+    this.requireActiveDevice(deviceId)
+    this.requireActiveWorkspace(workspace.id, workspace.path)
+    const draftKey = `draft:${randomUUID()}`
+    const rekeyed = this.awaitDraftRekey(draftKey)
+    const started = await this.options.supervisor.ensure({
+      sessionKey: draftKey,
+      cwd: workspace.path,
+      customInstructions: this.options.customInstructions(workspace.path)
+    })
+    if (!started.ok) throw new HttpError(503, started.error ?? 'Pi could not start for this conversation.')
+    this.requireActiveDevice(deviceId)
+    this.requireActiveWorkspace(workspace.id, workspace.path)
+    try {
+      await this.options.supervisor.request(
+        draftKey,
+        'prompt',
+        { message, streamingBehavior: 'steer' },
+        900_000,
+        { sourceAction: 'remote-send', uiSessionId: draftKey }
+      )
+    } catch (error) {
+      // The prompt may still have landed; a send failure here is reported,
+      // and the phone refreshes its list either way.
+      const detail = error instanceof Error ? error.message : 'The message could not be sent.'
+      throw new HttpError(503, detail)
+    }
+    this.requireActiveDevice(deviceId)
+    this.requireActiveWorkspace(workspace.id, workspace.path)
+    const file = await rekeyed
+    let newSessionId: string | null = null
+    if (file) {
+      const listed = await listSessions(workspace.path)
+      newSessionId = listed.find((session) => pathKey(session.file) === pathKey(file))?.id ?? null
+    }
+    this.sendJson(response, 200, { ok: true, sessionId: newSessionId })
+  }
+
+  /** One bounded wait for the JSONL a draft is about to become. */
+  private awaitDraftRekey(draftKey: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      let done = false
+      const finish = (value: string | null): void => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        this.options.supervisor.off('rekey', listener)
+        resolve(value)
+      }
+      const listener = (change: { from: string; to: string }): void => {
+        if (change.from === draftKey) finish(change.to)
+      }
+      const timer = setTimeout(() => finish(null), REMOTE_REKEY_WAIT_MS)
+      this.options.supervisor.on('rekey', listener)
+    })
   }
 }
