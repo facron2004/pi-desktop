@@ -4,12 +4,15 @@ import { useAppStore } from '../store/useAppStore'
 import { findSessionMeta } from './RunStatusRow'
 
 /**
- * The app's transient messages: one slim card below the title bar in the
- * window's top-right corner, away from the composer and above whatever is open.
+ * The app's transient messages: one slim card in the middle of the window,
+ * above whatever is open.
  *
  * The composer used to own this slot, so every confirmation and every warning
  * pushed the input box down. A message about the app is not part of writing a
  * message; it floats over the app and leaves the composer's geometry alone.
+ * It is centred rather than pinned to a corner: a notice anchored to the edge
+ * read as something sliding in from the side, and a confirmation belongs where
+ * the reader is already looking.
  */
 export function AppToast() {
   const toast = useAppStore((state) => state.toast)
@@ -35,26 +38,28 @@ export function AppToast() {
     : undefined
 
   return (
-    <div className="app-toast" data-level={level} role={level === 'error' ? 'alert' : 'status'}>
-      <span className="app-toast__mark" aria-hidden="true">
-        <Icon size={11} strokeWidth={level === 'success' ? 3 : 2.6} />
-      </span>
-      {openSession ? (
-        <button type="button" className="app-toast__text app-toast__open" onClick={openSession}>
-          {t(toast.text)}
+    <div className="app-toast-layer">
+      <div className="app-toast" data-level={level} role={level === 'error' ? 'alert' : 'status'}>
+        <span className="app-toast__mark" aria-hidden="true">
+          <Icon size={11} strokeWidth={level === 'success' ? 3 : 2.6} />
+        </span>
+        {openSession ? (
+          <button type="button" className="app-toast__text app-toast__open" onClick={openSession}>
+            {t(toast.text)}
+          </button>
+        ) : (
+          <span className="app-toast__text">{t(toast.text)}</span>
+        )}
+        <button
+          type="button"
+          className="app-toast__close"
+          onClick={clearToast}
+          aria-label={t('Dismiss')}
+          title={t('Dismiss')}
+        >
+          <X size={13} strokeWidth={2} />
         </button>
-      ) : (
-        <span className="app-toast__text">{t(toast.text)}</span>
-      )}
-      <button
-        type="button"
-        className="app-toast__close"
-        onClick={clearToast}
-        aria-label={t('Dismiss')}
-        title={t('Dismiss')}
-      >
-        <X size={13} strokeWidth={2} />
-      </button>
+      </div>
     </div>
   )
 }

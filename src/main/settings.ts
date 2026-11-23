@@ -21,6 +21,7 @@ import {
 } from '@shared/types'
 import { normalizeFontScale } from '@shared/font-scale'
 import { migratePresetColors } from '@shared/theme-presets'
+import { withNewProjectFirst } from '@shared/project-order'
 import { forgetDefaultModel, rememberDefaultModel, rememberDefaultThinkingLevel } from './pi/retry-policy'
 import { properLockfile } from './proper-lockfile'
 
@@ -805,13 +806,17 @@ export class SettingsStore {
       const key = workspaceKey(workspace.path)
       const existing = current.workspaces.find((item) => workspaceKey(item.path) === key)
       // Opening a folder that is already listed must leave it where the user
-      // put it. Only a folder that has never been added goes on the end.
+      // put it. Only a folder that has never been added moves.
       if (existing) return activate ? { activeWorkspaceId: existing.id } : {}
       return {
         workspaces: [...current.workspaces, {
           ...workspace,
           createdAt: workspace.createdAt ?? workspace.lastOpenedAt ?? Date.now()
         }],
+        // …and it moves to the first row: the newest folder is what the reader
+        // just asked for, and appending it put it below every existing project
+        // as if the add had been ignored. Everything else keeps its order.
+        projectOrder: withNewProjectFirst(current.projectOrder ?? [], workspace.path, workspaceKey),
         ...(activate ? { activeWorkspaceId: workspace.id } : {})
       }
     })

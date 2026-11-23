@@ -86,6 +86,7 @@ const suites = [
   'stream-events.test.ts',
   'hydration-merge.test.ts',
   'streaming-markdown.test.ts',
+  'streaming-reveal.test.ts',
   'scroll-memory.test.ts',
   'conversation-helpers.test.ts',
   'turns.test.ts',

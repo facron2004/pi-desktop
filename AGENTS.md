@@ -140,6 +140,17 @@ What that buys, and what it costs:
   live tail** (`lib/streaming-markdown.ts`); `StreamingText` renders a finished
   chunk once and re-parses only the tail on the next delta. All chunks share
   one outer `.md` container so block spacing still reads as a single document.
+- **A provider that dumps a paragraph in one delta must not paint it in one
+  frame.** `StreamingText` keeps a presentation-only cursor (`useRevealedText`
+  + `lib/streaming-reveal.ts`) that advances the visible prefix toward the
+  store's full text. The cursor is not state the store owns — the store still
+  holds the complete text. It advances with `requestAnimationFrame`, stops
+  when it catches up, and resumes after `text_end`/`message_end` flip
+  `streaming` false so a big chunk is not cut short. `prefers-reduced-motion`
+  shows the full text immediately, and a block that mounts already settled is
+  a history message that is never typed out. The split and the reveal use the
+  same visible prefix, so a finished block is never revealed before the text
+  that would make it a block has appeared.
 - **What a turn changed is its closing statement.** `FileChangeSummary` renders
   only once the turn settles — `turnChanges.length > 0 && !liveTail` in
   `Thread.tsx`. A card that counted the files while the agent was still editing
@@ -488,11 +499,12 @@ reads its own persisted model from the sessions list (`SessionMeta.model`),
 so the chip follows the conversation, not whatever another conversation
 picked last.
 
-Transient app messages are a single floating `AppToast`, below the title bar in
-the window's top-right corner — never a strip inside the composer. `showToast`
-still owns the one message queue; the toast maps `info` to the success mark,
-carries a close button, and must not change the composer's geometry. A message
-about the app is not part of writing a message.
+Transient app messages are a single floating `AppToast`, in the **middle of the
+window** — never a strip inside the composer, and never pinned to a corner (a
+notice anchored to an edge reads as something sliding in from the side).
+`showToast` still owns the one message queue; the toast maps `info` to the
+success mark, carries a close button, and must not change the composer's
+geometry. A message about the app is not part of writing a message.
 
 ### The usage line under the composer
 

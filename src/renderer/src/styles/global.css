@@ -3444,14 +3444,24 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
  * being written in.
  * ------------------------------------------------------------------ */
 
-.app-toast {
+/* The layer is what centres the card. Centring with a `transform` on the card
+   would be re-applied by its own entrance animation on every mount, and any
+   later transform (a hover nudge, a motion override) would move it off centre;
+   a grid layer cannot be knocked out of place by the card's own styling. It is
+   click-through, so a notice never blocks the window behind it. */
+.app-toast-layer {
   position: fixed;
-  /* Below the title bar's panel control band: the corner toggle and the
-     panel's own maximize/restore buttons share that 46px strip, so placing a
-     floating notice inside it would intercept their pointer targets. */
-  top: calc(var(--titlebar-h) + var(--toolpanel-head-h) + var(--sp-2));
-  right: var(--shell-inset);
+  inset: 0;
   z-index: var(--z-overlay);
+  display: grid;
+  place-items: center;
+  padding: var(--sp-6);
+  pointer-events: none;
+}
+
+.app-toast {
+  position: relative;
+  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: var(--sp-3);
@@ -3534,7 +3544,12 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 @keyframes app-toast-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    /* Only the card's own offset animates; the layer keeps the centring. */
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 

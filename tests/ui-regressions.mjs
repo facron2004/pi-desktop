@@ -284,10 +284,20 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(composerBeforeToast, 'The composer is missing while checking the app toast')
   store.getState().showToast('Toast placement check')
   const appToast = await until(() => document.querySelector('.app-toast'), 'The app toast did not render')
-  const appToastBox = appToast.getBoundingClientRect()
+  // The card fades in while rising a few pixels, so the settled position is
+  // what "centred" means — measure once the animation has finished rather than
+  // on its first frame.
+  const appToastBox = await until(() => {
+    const box = document.querySelector('.app-toast')?.getBoundingClientRect()
+    if (!box || box.width === 0) return undefined
+    const dx = Math.abs(box.left + box.width / 2 - innerWidth / 2)
+    const dy = Math.abs(box.top + box.height / 2 - innerHeight / 2)
+    return dx <= 2 && dy <= 2 ? box : undefined
+  }, 'The app toast is not centred in the window')
   check(appToast.closest('.composer') === null, 'The app toast is rendered inside the composer')
   check(appToastBox.width > 0 && appToastBox.height > 0, 'The app toast has no size')
-  check(appToastBox.top < composerBeforeToast.top, 'The app toast still sits over the composer area')
+  // The notice is centred: a confirmation belongs where the reader is looking,
+  // and an edge-anchored card read as something sliding in from the side.
   check(
     appToastBox.top >= 0 && appToastBox.right <= innerWidth + 1,
     'The app toast runs outside the window'
@@ -300,7 +310,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   appToast.querySelector('.app-toast__close')?.click()
   await until(() => !document.querySelector('.app-toast'), 'The app toast did not dismiss')
-  passed.push('app messages float below the title bar without moving the composer')
+  passed.push('app messages appear in the middle of the window without moving the composer')
 
   const visibleToolPanel = () => document.querySelector('.tool-panel:not([hidden])')
   // A page opens the way the panel does it: the `+` creates a new tab, and its
