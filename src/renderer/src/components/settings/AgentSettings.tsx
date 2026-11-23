@@ -1,16 +1,15 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { ModelInfo, PermissionMode } from '@shared/types'
-import { resolveSavedModel, selectableModels } from '@shared/provider-models'
+import type { PermissionMode } from '@shared/types'
+import { resolveSavedModel } from '@shared/provider-models'
 import { useT } from '../../lib/i18n'
 import { DEFAULT_THINKING_LEVELS } from '../../lib/thinking'
 import { useAppStore } from '../../store/useAppStore'
 import { ConfirmDialog } from '../ConfirmDialog'
 import { Switch } from '../Switch'
+import { modelSpec, ModelSelect, useModelChoices } from './ModelSelect'
 import { PageIntro, SettingsGroup, SettingsSelect, type SettingsSelectOption } from './SettingsShared'
 import '../../styles/settings-agent.css'
-
-const modelSpec = (model: ModelInfo): string => `${model.provider}/${model.id}`
 
 /**
  * The three levels with the exact words `PermissionPicker` shows. That list is
@@ -51,85 +50,6 @@ function SettingsItemRow({
   )
 }
 
-/**
- * Models the selects on this page can offer.
- *
- * The saved provider catalog is folded in with whatever the live process
- * published, so a default can be chosen while no Pi process is running. The
- * grouping is the composer picker's: providers in first-appearance order, Pi's
- * order preserved inside each provider.
- */
-function useModelChoices(): { models: ModelInfo[]; groups: [string, ModelInfo[]][] } {
-  const runtimeModels = useAppStore((state) => state.models)
-  const catalogModels = useAppStore((state) => state.catalogModels)
-  const disabledModelSpecs = useAppStore((state) => state.disabledModelSpecs)
-  const models = useMemo(
-    () => selectableModels(runtimeModels, catalogModels, disabledModelSpecs),
-    [runtimeModels, catalogModels, disabledModelSpecs]
-  )
-  const groups = useMemo(() => {
-    const map = new Map<string, ModelInfo[]>()
-    for (const model of models) {
-      const group = map.get(model.provider)
-      if (group) group.push(model)
-      else map.set(model.provider, [model])
-    }
-    return [...map]
-  }, [models])
-  return { models, groups }
-}
-
-function ModelSelect({
-  label,
-  value,
-  groups,
-  emptyLabel,
-  onChange,
-  className
-}: {
-  label: string
-  value: string
-  groups: [string, ModelInfo[]][]
-  emptyLabel?: string
-  onChange: (spec: string) => void
-  className?: string
-}) {
-  const t = useT()
-  // A saved pair the catalog no longer offers still has to appear in the
-  // control. Dropping it would paint the first row and claim that was the choice.
-  const listed = groups.some(([, list]) => list.some((model) => modelSpec(model) === value))
-  const options: SettingsSelectOption[] = []
-  if (emptyLabel) options.push({ value: '', label: emptyLabel })
-  for (const [provider, list] of groups) {
-    for (const model of list) {
-      options.push({ value: modelSpec(model), label: model.name || model.id, group: provider })
-    }
-  }
-  if (value && !listed) options.push({ value, label: value })
-  // Nothing to list is worth saying out loud; a bare default looks like a choice.
-  if (groups.length === 0) {
-    return (
-      <SettingsSelect
-        label={label}
-        value=""
-        options={[{ value: '', label: t('No models yet.'), disabled: true }]}
-        onChange={() => undefined}
-        menuWidth={300}
-        className={className}
-      />
-    )
-  }
-  return (
-    <SettingsSelect
-      label={label}
-      value={value}
-      options={options}
-      onChange={onChange}
-      menuWidth={300}
-      className={className}
-    />
-  )
-}
 
 /**
  * A reasoning-effort select.

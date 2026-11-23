@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronRight, FolderOpen, Loader2, Sparkles, Trash2 } from 'lucide-react'
 import type { MemoryEntry, MemoryKind, MemoryState } from '@shared/types'
 import { useT } from '../lib/i18n'
@@ -11,6 +11,7 @@ import {
 import { useAppStore } from '../store/useAppStore'
 import '../styles/memory-settings.css'
 import { ConfirmDialog } from './ConfirmDialog'
+import { ModelSelect, useModelChoices } from './settings/ModelSelect'
 import { Switch } from './Switch'
 
 const KIND_LABEL: Record<MemoryKind, string> = {
@@ -73,9 +74,7 @@ export function MemorySettings() {
     writeCollapsedMemoryGroups(next)
   }
   const [model, setModel] = useState(settings.memoryModel ?? '')
-  const modelRef = useRef(model)
-  modelRef.current = model
-  const savedModelRef = useRef(settings.memoryModel ?? '')
+  const { groups: modelGroups } = useModelChoices()
 
   useEffect(() => {
     let alive = true
@@ -105,20 +104,8 @@ export function MemorySettings() {
 
   // The settings dialog can stay open while another window changes the value.
   useEffect(() => {
-    savedModelRef.current = settings.memoryModel ?? ''
     setModel(settings.memoryModel ?? '')
   }, [settings.memoryModel])
-
-  // Closing the page (or the dialog) must not lose a model name that never
-  // blurred; the field is the only draft on this page.
-  useEffect(
-    () => () => {
-      const value = modelRef.current.trim() || undefined
-      const saved = savedModelRef.current.trim() || undefined
-      if (value !== saved) void updateSettings({ memoryModel: value })
-    },
-    [updateSettings]
-  )
 
   const groups = useMemo<MemoryGroup[]>(() => {
     const byGroup = new Map<string, MemoryGroup>()
@@ -215,8 +202,10 @@ export function MemorySettings() {
     }
   }
 
-  const commitModel = () => {
-    const value = model.trim() || undefined
+  // A picker commits the moment it changes; there is no draft to lose.
+  const pickModel = (spec: string) => {
+    setModel(spec)
+    const value = spec.trim() || undefined
     if (value === (settings.memoryModel?.trim() || undefined)) return
     void updateSettings({ memoryModel: value })
   }
@@ -287,26 +276,21 @@ export function MemorySettings() {
           </div>
         </div>
 
-        <div className="memory-learning-card__model">
-          <label className="field__label" htmlFor="memory-model">
-            {t('Extraction model')}
-          </label>
-          <input
-            id="memory-model"
-            className="input memory-model-input"
+        <div className="memory-learning-card__row">
+          <div className="memory-learning-card__copy">
+            <span className="memory-learning-card__title">{t('Extraction model')}</span>
+            <span className="memory-learning-card__hint">
+              {t('Model used to extract memories. Leave empty to use the current model.')}
+            </span>
+          </div>
+          <ModelSelect
+            className="memory-learning-card__model-select"
+            label={t('Extraction model')}
             value={model}
-            placeholder={t('Empty uses the current model')}
-            onChange={(event) => setModel(event.target.value)}
-            onBlur={commitModel}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.currentTarget.blur()
-              }
-            }}
+            groups={modelGroups}
+            emptyLabel={t('Empty uses the current model')}
+            onChange={pickModel}
           />
-          <span className="field__hint">
-            {t('Model used to extract memories. Leave empty to use the current model.')}
-          </span>
         </div>
 
       </section>
