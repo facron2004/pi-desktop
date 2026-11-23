@@ -12,6 +12,7 @@
  */
 const WORDMARK_WIDTH = 56
 const WORDMARK_HEIGHT = 8
+const WORDMARK_STROKE = 0.3
 
 /** Horizontal runs of one pixel each, merged per row. */
 const WORDMARK_PATH =
@@ -53,6 +54,9 @@ export function PiWordmark({
       fill="currentColor"
       // Pixel art wants square edges: anti-aliasing would soften every step.
       shapeRendering="crispEdges"
+      stroke="currentColor"
+      strokeWidth={WORDMARK_STROKE}
+      strokeLinejoin="miter"
       className={['pi-wordmark', className].filter(Boolean).join(' ')}
       role="img"
       aria-label="Pi Desktop"
@@ -66,6 +70,7 @@ export function PiWordmark({
           width={1}
           height={1}
           fill="var(--brand-mark-coral)"
+          stroke="none"
         />
       ) : null}
     </svg>

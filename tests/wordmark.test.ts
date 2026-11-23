@@ -68,4 +68,20 @@ test('the startup screen inlines the same pixel wordmark as the asset', () => {
   assert.equal(inlineDot[1], assetDot[1], 'the accent dot moved horizontally')
   assert.equal(inlineDot[2], assetDot[2], 'the accent dot moved vertically')
   assert.match(html, /viewBox="0 0 56 8"/, 'the startup wordmark changed its grid')
+
+  // The hairline stroke is a presentation choice, but all copies must carry
+  // the same one or the wordmark reads with a different weight per surface.
+  const strokeOf = (text: string): string | undefined =>
+    /stroke-width="([\d.]+)"/.exec(text)?.[1] ??
+    /strokeWidth=\{([\d.]+)\}/.exec(text)?.[1] ??
+    /const WORDMARK_STROKE = ([\d.]+)/.exec(text)?.[1]
+  const component = readFileSync(
+    path.join(root, 'src/renderer/src/components/PiWordmark.tsx'),
+    'utf8'
+  )
+  assert.ok(strokeOf(asset), 'the stroke width disappeared from the asset')
+  assert.equal(strokeOf(asset), strokeOf(component), 'the component stroke drifted')
+  assert.equal(strokeOf(asset), strokeOf(html), 'the startup stroke drifted')
+  assert.match(asset, /<rect x="8" y="0" width="1" height="1"[^>]*stroke="none"/, 'the accent dot picked up a stroke')
+  assert.match(html, /<rect x="8" y="0" width="1" height="1"[^>]*stroke="none"/, 'the startup dot picked up a stroke')
 })

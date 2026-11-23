@@ -81,16 +81,19 @@ function toPath(glyphs) {
 const CORAL = '#cf4f3d'
 /** The file is the grid at six times, so it opens at a readable size. */
 const FILE_SCALE = 6
+/** A hair of stroke thickens the one-pixel stems without closing the counters. */
+const STROKE = 0.3
 
 function svg({ text, ink, accent }) {
   const { glyphs, width } = layout(text)
   const dot = accent
-    ? `<rect x="${glyphs[1].x + 2}" y="0" width="1" height="1" fill="${accent}"/>`
+    ? `<rect x="${glyphs[1].x + 2}" y="0" width="1" height="1" fill="${accent}" stroke="none"/>`
     : ''
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${ROWS}" ` +
     `width="${width * FILE_SCALE}" height="${ROWS * FILE_SCALE}" fill="${ink}" ` +
-    `shape-rendering="crispEdges" role="img" aria-label="${text}">` +
+    `shape-rendering="crispEdges" role="img" aria-label="${text}" ` +
+    `stroke="${ink}" stroke-width="${STROKE}" stroke-linejoin="miter">` +
     `<path d="${toPath(glyphs)}"/>${dot}</svg>\n`
   )
 }
