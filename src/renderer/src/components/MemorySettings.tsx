@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FolderOpen, Loader2, Sparkles, Trash2 } from 'lucide-react'
+import { ChevronRight, FolderOpen, Loader2, Sparkles, Trash2 } from 'lucide-react'
 import type { MemoryEntry, MemoryKind, MemoryState } from '@shared/types'
 import { useT } from '../lib/i18n'
 import { basename, normalisePathKey } from '../lib/path'
+import {
+  readCollapsedMemoryGroups,
+  toggleCollapsedMemoryGroup,
+  writeCollapsedMemoryGroups
+} from '../lib/memory-fold'
 import { useAppStore } from '../store/useAppStore'
 import '../styles/memory-settings.css'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -59,6 +64,14 @@ export function MemorySettings() {
   /** The entry a delete is waiting on: the list has no undo, so it asks first. */
   const [pendingDelete, setPendingDelete] = useState<MemoryEntry | null>(null)
   const [status, setStatus] = useState<{ tone: 'info' | 'error'; text: string } | null>(null)
+  /** Project groups the reader folded; a view preference, not memory state. */
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => readCollapsedMemoryGroups())
+
+  const toggleGroup = (key: string): void => {
+    const next = toggleCollapsedMemoryGroup(collapsed, key)
+    setCollapsed(next)
+    writeCollapsedMemoryGroups(next)
+  }
   const [model, setModel] = useState(settings.memoryModel ?? '')
   const modelRef = useRef(model)
   modelRef.current = model
@@ -367,50 +380,66 @@ export function MemorySettings() {
             </div>
           ) : (
             <div className="memory-list">
-              {groups.map((group) => (
-                <section className="memory-group" key={group.key}>
-                  <div className="memory-group__head">
-                    <span className="memory-group__title">{group.title}</span>
-                    <span className="memory-group__count">{group.entries.length}</span>
-                    {group.path ? (
-                      <span className="memory-group__path" title={group.path}>
-                        {group.path}
-                      </span>
-                    ) : null}
-                  </div>
-                  <ul className="memory-rows">
-                    {group.entries.map((entry) => (
-                      <li className="memory-row" key={entry.id}>
-                        <span className="memory-kind" data-kind={entry.kind}>
-                          {t(KIND_LABEL[entry.kind])}
+              {groups.map((group) => {
+                const isCollapsed = collapsed.has(group.key)
+                return (
+                  <section className="memory-group" key={group.key}>
+                    <button
+                      type="button"
+                      className="memory-group__head"
+                      aria-expanded={!isCollapsed}
+                      onClick={() => toggleGroup(group.key)}
+                    >
+                      <ChevronRight
+                        size={12}
+                        className="memory-group__caret"
+                        data-open={!isCollapsed || undefined}
+                        aria-hidden="true"
+                      />
+                      <span className="memory-group__title">{group.title}</span>
+                      <span className="memory-group__count">{group.entries.length}</span>
+                      {group.path ? (
+                        <span className="memory-group__path" title={group.path}>
+                          {group.path}
                         </span>
-                        <div className="memory-row__body">
-                          <span className="memory-row__text">{entry.text}</span>
-                          <span className="memory-row__meta">
-                            {entry.source ? (
-                              <span className="memory-row__source" title={entry.source}>
-                                {basename(entry.source)}
+                      ) : null}
+                    </button>
+                    {!isCollapsed ? (
+                      <ul className="memory-rows">
+                        {group.entries.map((entry) => (
+                          <li className="memory-row" key={entry.id}>
+                            <span className="memory-kind" data-kind={entry.kind}>
+                              {t(KIND_LABEL[entry.kind])}
+                            </span>
+                            <div className="memory-row__body">
+                              <span className="memory-row__text">{entry.text}</span>
+                              <span className="memory-row__meta">
+                                {entry.source ? (
+                                  <span className="memory-row__source" title={entry.source}>
+                                    {basename(entry.source)}
+                                  </span>
+                                ) : null}
+                                {entry.source ? <span aria-hidden="true">·</span> : null}
+                                <span>{formatMemoryDate(entry.updatedAt, language)}</span>
                               </span>
-                            ) : null}
-                            {entry.source ? <span aria-hidden="true">·</span> : null}
-                            <span>{formatMemoryDate(entry.updatedAt, language)}</span>
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          className="icon-btn memory-row__delete"
-                          onClick={() => setPendingDelete(entry)}
-                          aria-label={t('Delete memory')}
-                          aria-haspopup="dialog"
-                          title={t('Delete memory')}
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-              ))}
+                            </div>
+                            <button
+                              type="button"
+                              className="icon-btn memory-row__delete"
+                              onClick={() => setPendingDelete(entry)}
+                              aria-label={t('Delete memory')}
+                              aria-haspopup="dialog"
+                              title={t('Delete memory')}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </section>
+                )
+              })}
             </div>
           )}
 

@@ -893,6 +893,14 @@ had. The placeholder is filled with a **function** replacer, because a memory's
 text is arbitrary and `$&` in it would otherwise be read as a replacement
 pattern by `String.replace`.
 
+**The memory list is grouped by project, and each group folds.** The rows are
+still a projection of `MemoryState`; the grouping key is the entry's
+`projectPath` (normalised) or `global`, and the open/closed state is a view
+preference in localStorage (`lib/memory-fold.ts`), never a field in the memory
+store. The group head is the toggle button with a caret and `aria-expanded`;
+folding hides only that group's rows. A block that mounts with a group already
+folded starts closed, and an unreadable storage value is treated as no folds.
+
 ## The launcher
 
 `Ctrl+Shift+P` opens a palette over the app. It lists every action the app has,

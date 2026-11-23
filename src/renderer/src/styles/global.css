@@ -7103,10 +7103,37 @@ animation: fade var(--dur-fast) var(--ease);
 
 .memory-group__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
   gap: var(--sp-2);
+  width: 100%;
   min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.memory-group__head:hover .memory-group__title {
+  color: var(--accent);
+}
+
+.memory-group__caret {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.memory-group__caret[data-open] {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .memory-group__caret {
+    transition: none;
+  }
 }
 
 .memory-group__title {

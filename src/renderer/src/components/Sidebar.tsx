@@ -6,6 +6,7 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  ChevronRight,
   Clock,
   Download,
   Ellipsis,
@@ -298,6 +299,8 @@ export const Sidebar = memo(function Sidebar({
     count: INITIAL_CONVERSATION_SEARCH_RESULTS
   })
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set())
+  // Archived groups fold the same way a project row does, one fold per folder.
+  const [collapsedArchiveGroups, setCollapsedArchiveGroups] = useState<Set<string>>(() => new Set())
   const [expandedLimits, setExpandedLimits] = useState<Record<string, number>>({})
   const [searchOpen, setSearchOpen] = useState(false)
   const searchDialogRef = useRef<HTMLElement>(null)
@@ -997,6 +1000,17 @@ export const Sidebar = memo(function Sidebar({
     })
   }
 
+  // An archived group's head is the same control one level down: it folds the
+  // conversations of one folder, and never opens or stops anything.
+  const toggleArchiveGroup = useCallback((key: string) => {
+    setCollapsedArchiveGroups((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
   const startRename = useCallback((file: string, current: string) => {
     setRenaming(file)
     setDraft(current)
@@ -1369,21 +1383,42 @@ export const Sidebar = memo(function Sidebar({
                         <span>{t('Archived')}</span>
                       </div>
                     ) : null}
-                    {archivedGroups.map((group) => (
-                      <div className="sidebar__archive-group" key={group.key || 'projectless'}>
+                    {archivedGroups.map((group) => {
+                      // A search opens every group: a hit inside a folded group
+                      // would be invisible, which is the one thing a search must
+                      // not do. Otherwise the reader's fold is remembered.
+                      const groupExpanded =
+                        Boolean(needle) || !collapsedArchiveGroups.has(group.key)
+                      return (
                         <div
-                          className="sidebar__archive-group-head"
-                          title={group.key || undefined}
+                          className="sidebar__archive-group"
+                          key={group.key || 'projectless'}
+                          data-expanded={groupExpanded}
                         >
-                          <Archive size={11} strokeWidth={2} aria-hidden="true" />
-                          <span className="sidebar__archive-group-name">{group.name}</span>
-                          <span className="sidebar__archive-group-count">
-                            {group.sessions.length}
-                          </span>
+                          <button
+                            type="button"
+                            className="sidebar__archive-group-head"
+                            aria-expanded={groupExpanded}
+                            title={group.key || undefined}
+                            onClick={() => toggleArchiveGroup(group.key)}
+                          >
+                            <Archive size={11} strokeWidth={2} aria-hidden="true" />
+                            <span className="sidebar__archive-group-name">{group.name}</span>
+                            <span className="sidebar__archive-group-count">
+                              {group.sessions.length}
+                            </span>
+                            <ChevronRight
+                              size={12}
+                              aria-hidden="true"
+                              className="sidebar__archive-group-caret"
+                            />
+                          </button>
+                          {groupExpanded ? (
+                            <div className="session-list">{renderSessions(group.sessions)}</div>
+                          ) : null}
                         </div>
-                        <div className="session-list">{renderSessions(group.sessions)}</div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 ) : null}
               </>
