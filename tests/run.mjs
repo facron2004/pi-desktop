@@ -79,6 +79,7 @@ const suites = [
   'runtime-session-path.test.ts',
   'window-controls.test.ts',
   'sidebar-view.test.ts',
+  'sidebar-fold.test.ts',
   'navigation-policy.test.ts',
   'webview-policy.test.ts',
   'session-concurrency.test.ts',

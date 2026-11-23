@@ -2097,6 +2097,28 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   const flatColumnTitles = [...document.querySelectorAll('.sidebar__projects > .session-list .session-item__title')]
     .map((node) => node.textContent.trim())
   check(!flatColumnTitles.includes(archivedTitle), 'An archived conversation stayed in the flat column')
+
+  // The「对话」head is a fold control: it hides the list it names and stays on
+  // screen itself, because the caret is the only way back.
+  const sectionToggle = await until(
+    () => document.querySelector('.sidebar__projects .sidebar__section-toggle'),
+    'The chat section head has no fold control'
+  )
+  check(sectionToggle.getAttribute('aria-expanded') === 'true', 'The chat section started folded')
+  const visibleRows = () => [...document.querySelectorAll('.sidebar__projects .session-item')]
+    .filter((row) => row.getClientRects().length > 0).length
+  check(visibleRows() > 0, 'The chat section listed no rows to fold')
+  sectionToggle.click()
+  await until(() => sectionToggle.getAttribute('aria-expanded') === 'false',
+    'Folding the chat section did not collapse it')
+  await until(() => visibleRows() === 0, 'The folded chat section still draws its rows')
+  check(sectionToggle.getClientRects().length > 0, 'Folding the chat section hid the caret that unfolds it')
+  sectionToggle.click()
+  await until(() => sectionToggle.getAttribute('aria-expanded') === 'true',
+    'Unfolding the chat section did not restore it')
+  await until(() => visibleRows() > 0, 'The unfolded chat section drew no rows')
+  passed.push('the chat section head folds its list and keeps its caret')
+
   await setGroupBy('By workspace', 'workspace')
   passed.push('the flat column groups archived conversations under their project')
 
@@ -2154,7 +2176,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 40 : 38)
+  assert.equal(passed.length, process.platform === 'win32' ? 41 : 39)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

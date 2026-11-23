@@ -35,6 +35,12 @@ import { formatBytes, formatDateTime, formatRelativeTime } from '../lib/format'
 import { normalisePathKey, samePath } from '../lib/path'
 import { collectProjects, sortProjects, type Project } from '../lib/projects'
 import { filterByArchive, flatSessions, groupArchivedByProject, projectDepths, sortByMode } from '../lib/sidebar-view'
+import {
+  readCollapsedSidebarSections,
+  sidebarSectionExpanded,
+  toggleCollapsedSidebarSection,
+  writeCollapsedSidebarSections
+} from '../lib/sidebar-fold'
 import { liveConversationRows, type ConversationRow } from '../lib/live-sessions'
 import { basename } from '../lib/path'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -301,6 +307,11 @@ export const Sidebar = memo(function Sidebar({
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set())
   // Archived groups fold the same way a project row does, one fold per folder.
   const [collapsedArchiveGroups, setCollapsedArchiveGroups] = useState<Set<string>>(() => new Set())
+  // The section head folds its own list. The key follows the view, so folding
+  // the single list does not fold the project list as well.
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() =>
+    readCollapsedSidebarSections()
+  )
   const [expandedLimits, setExpandedLimits] = useState<Record<string, number>>({})
   const [searchOpen, setSearchOpen] = useState(false)
   const searchDialogRef = useRef<HTMLElement>(null)
@@ -1011,6 +1022,14 @@ export const Sidebar = memo(function Sidebar({
     })
   }, [])
 
+  const toggleSidebarSection = useCallback((key: string) => {
+    setCollapsedSections((current) => {
+      const next = toggleCollapsedSidebarSection(current, key)
+      writeCollapsedSidebarSections(next)
+      return next
+    })
+  }, [])
+
   const startRename = useCallback((file: string, current: string) => {
     setRenaming(file)
     setDraft(current)
@@ -1075,6 +1094,11 @@ export const Sidebar = memo(function Sidebar({
       })
     })
   }, [togglePin])
+
+  // The section head folds the list under it; the key follows the view so the
+  // two lists keep their own fold.
+  const sectionKey = sidebarGroupBy === 'flat' ? 'chats' : 'projects'
+  const sectionExpanded = sidebarSectionExpanded(collapsedSections, sectionKey, Boolean(needle))
 
   const renderSessions = (items: ConversationRow[], showProject = false) =>
     items.map((session) => (
@@ -1276,9 +1300,21 @@ export const Sidebar = memo(function Sidebar({
           </div>
         ) : null}
 
-        <div className="sidebar__section sidebar__projects">
+        <div
+          className="sidebar__section sidebar__projects"
+          data-collapsed={sectionExpanded ? undefined : 'true'}
+        >
           <div className="sidebar__section-head">
-            <span>{t(sidebarGroupBy === 'flat' ? 'Chats' : 'Projects')}</span>
+            <button
+              type="button"
+              className="sidebar__section-toggle"
+              aria-expanded={sectionExpanded}
+              title={t(sectionExpanded ? 'Collapse' : 'Expand')}
+              onClick={() => toggleSidebarSection(sectionKey)}
+            >
+              <ChevronRight size={12} aria-hidden="true" className="sidebar__section-caret" />
+              <span>{t(sidebarGroupBy === 'flat' ? 'Chats' : 'Projects')}</span>
+            </button>
             <div className="sidebar__section-actions no-drag">
               <Popover
                 placement="bottom"
