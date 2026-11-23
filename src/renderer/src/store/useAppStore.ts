@@ -2826,26 +2826,26 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       run: state.run.settled ? { phase: 'queued', turns: 0, settled: false } : state.run,
       status: { ...state.status, cwd: state.status.cwd ?? cwd }
     }))
+    const settleIfCancelledBeforeSend = (cancelled = false): boolean => {
+      const { run } = ownGet()
+      if (!cancelled && run.phase !== 'aborting' && run.outcome !== 'aborted') return false
+
+      forgetQueuedPrompt(key, pendingPrompt.id)
+      // If Stop landed during setup before Pi opened a run, no agent_settled
+      // event will arrive to take this conversation out of the aborting phase.
+      if (!run.settled && !run.runId) {
+        update((state) => ({
+          cwdWait: undefined,
+          isStreaming: false,
+          run: { ...state.run, phase: 'idle', settled: true, outcome: 'aborted' },
+          items: clearPendingPrompts(state.items, pendingPrompt.id)
+        }))
+      }
+      return true
+    }
     try {
       await get().ensureRuntime(key, 'prompt-send')
-      if (ownGet().run.phase === 'aborting' || ownGet().run.outcome === 'aborted') {
-        // Stop was pressed while this prompt was still cold-starting. Pi never
-        // opened a run for it (`runId` is absent), so no `agent_settled` will
-        // follow; leaving the phase on `aborting` would refuse every later
-        // prompt in this conversation. Inline bash settles the same optimistic
-        // run the same way. A prompt Pi did accept reopens the run on its own
-        // `agent_start`, so this cannot hide a run that kept going.
-        forgetQueuedPrompt(key, pendingPrompt.id)
-        if (!ownGet().run.settled && !ownGet().run.runId) {
-          update((state) => ({
-            cwdWait: undefined,
-            isStreaming: false,
-            run: { ...state.run, phase: 'idle', settled: true, outcome: 'aborted' },
-            items: clearPendingPrompts(state.items, pendingPrompt.id)
-          }))
-        }
-        return false
-      }
+      if (settleIfCancelledBeforeSend()) return false
       // The image controls live in the composer, the tool lives in Pi: hand the
       // chosen options to the task-mode extension first, so the run that the
       // user's prompt starts is the one those options apply to.
@@ -2853,11 +2853,12 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         const imagePrompt = trimmed || 'Create a refined variation based on the attached reference image.'
         payload.message = imagePrompt
         pendingPrompt.text = imagePrompt
-        await tracedRpc(
+        const setup = await tracedRpc<{ cancelled?: boolean }>(
           threadKey(key),
           'prompt',
           {
             message: `/desktop-image ${JSON.stringify({
+              id: pendingPrompt.id,
               prompt: imagePrompt,
               model: image.model,
               size: image.size,
@@ -2869,6 +2870,18 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           30_000,
           'image-params'
         )
+        if (settleIfCancelledBeforeSend(setup?.cancelled)) {
+          if (!setup?.cancelled) {
+            await tracedRpc(
+              threadKey(key),
+              'prompt',
+              { message: `/desktop-image ${JSON.stringify({ cancel: pendingPrompt.id })}` },
+              5_000,
+              'image-params-cancel'
+            ).catch(() => {})
+          }
+          return false
+        }
         void get().updateSettings({
           imageModel: image.model,
           imageSize: image.size,
@@ -3928,9 +3941,6 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         break
       case 'new':
         await get().newChat()
-        break
-      case 'subagent':
-        await get().setAgentMode(get().agentMode === 'subagent' ? 'default' : 'subagent')
         break
       case 'swarm':
         await get().setAgentMode(get().agentMode === 'swarm' ? 'default' : 'swarm')

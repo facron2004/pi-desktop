@@ -5,7 +5,6 @@ export const APP_COMMAND_ZH_NAMES: Record<string, string> = {
   name: '重命名',
   plan: '计划',
   goal: '目标',
-  subagent: '子智能体',
   swarm: '蜂群',
   plugin: '插件',
   image: '图片',
@@ -64,11 +63,6 @@ export const APP_COMMANDS: PiCommand[] = [
     description: 'Set a goal this conversation keeps working toward',
     source: 'app',
     takesArgument: true
-  },
-  {
-    name: 'subagent',
-    description: 'Switch to Subagent Mode — delegate independent work',
-    source: 'app'
   },
   {
     name: 'swarm',

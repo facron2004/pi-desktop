@@ -1,5 +1,5 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Check, ChevronLeft, ChevronRight, ListChecks, Paperclip, Plus, Sparkles, WandSparkles, Workflow } from 'lucide-react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { Check, ChevronLeft, ChevronRight, ListChecks, Network, Paperclip, Plus, Sparkles, WandSparkles, Workflow, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { commandIcon } from '../lib/command-source'
 import { useT } from '../lib/i18n'
@@ -18,7 +18,9 @@ const ACTIONS = [
   { key: 'plan', label: 'Plan Mode', description: 'Explore read-only, then review a plan', icon: ListChecks },
   { key: 'image', label: 'Image generation', description: 'Generate a picture in the composer', icon: WandSparkles },
   { key: 'diagrams', label: 'Diagrams', description: 'Insert a Mermaid diagram template', icon: Workflow },
-  { key: 'skills', label: 'Skills', description: 'Insert a Pi skill command', icon: Sparkles }
+  { key: 'skills', label: 'Skills', description: 'Insert a Pi skill command', icon: Sparkles },
+  { key: 'swarm', label: 'Swarm Mode', description: 'Lead a team of persistent workers across many turns', icon: Network },
+  { key: 'plugin', label: 'Plugin Mode', description: 'Build or modify a Pi extension', icon: Wrench }
 ] as const
 
 export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillCommands, pluginCommands, onModeChange, onPickFiles, onInsertCommand, onEnterImageMode }: {
@@ -37,7 +39,6 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
   const [diagramTemplates, setDiagramTemplates] = useState<DiagramTemplateItem[]>([])
   const [page, setPage] = useState<AddMenuPage>('actions')
-  const panelRef = useRef<HTMLDivElement>(null)
   const returnPage = useRef<AddMenuPage>('actions')
   const commands = page === 'skills' ? skillCommands : pluginCommands
   const pageLabel = page === 'skills' ? 'Skills' : page === 'plugins' ? 'Plugins' : 'Diagrams'
@@ -58,11 +59,10 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
     setPage(next)
   }
 
-  useLayoutEffect(() => {
-    const panel = panelRef.current
+  const focusPage = useCallback((panel: HTMLDivElement | null) => {
     if (!panel) return
     const target = page === 'actions'
-      ? panel.querySelector<HTMLButtonElement>('[data-page="' + returnPage.current + '"]') ?? panel.querySelector<HTMLButtonElement>('button')
+      ? panel.querySelector<HTMLButtonElement>(`[data-page="${returnPage.current}"]`) ?? panel.querySelector<HTMLButtonElement>('button')
       : panel.querySelector<HTMLButtonElement>('.composer__add-back')
     target?.focus()
   }, [page])
@@ -70,7 +70,8 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
   return (
     <Popover
       placement="top"
-      width={336}
+      matchWidthOf=".composer"
+      maxHeight={356}
       className="composer__add-popover"
       renderTrigger={({ open, toggle }) => (
         <button
@@ -78,6 +79,7 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
           className="icon-btn composer__add-trigger"
           aria-label={t('Add to message')}
           title={t('Add to message')}
+          aria-haspopup="menu"
           aria-expanded={open}
           disabled={!ready}
           onClick={(event) => {
@@ -93,7 +95,7 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
       )}
     >
       {(close) => (
-        <div ref={panelRef} role="menu" aria-label={t('Add to message')} onKeyDown={(event) => {
+        <div ref={focusPage} role="menu" aria-label={t('Add to message')} onKeyDown={(event) => {
           if (event.key === 'ArrowLeft' && page !== 'actions') {
             event.preventDefault()
             event.stopPropagation()
@@ -106,6 +108,7 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
               <div className="composer__add-actions">
                 {ACTIONS.map((entry) => {
                   const Icon = entry.icon
+                  const taskMode = entry.key === 'goal' || entry.key === 'plan' || entry.key === 'swarm' || entry.key === 'plugin'
                   return (
                     <button
                       key={entry.key}
@@ -113,21 +116,22 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
                       className="popover__item composer__add-action"
                       role="menuitem"
                       data-page={entry.key}
-                      disabled={busy && (entry.key === 'goal' || entry.key === 'plan')}
-                      title={t(entry.description)}
+                      disabled={busy && taskMode}
                       onClick={() => {
+                        if (entry.key === 'diagrams' || entry.key === 'skills') {
+                          navigate(entry.key)
+                          return
+                        }
                         close()
                         if (entry.key === 'files') void onPickFiles()
-                        else if (entry.key === 'goal') void onModeChange('goal')
-                        else if (entry.key === 'plan') void onModeChange('plan')
                         else if (entry.key === 'image') onEnterImageMode()
-                        else navigate(entry.key as AddMenuPage)
+                        else void onModeChange(entry.key)
                       }}
                     >
                       <Icon size={16} className="composer__add-action-icon" />
                       <span className="composer__add-action-copy">
                         <span className="composer__add-action-label">{t(entry.label)}</span>
-                        <span className="composer__add-action-description">{t(entry.description)}</span>
+                        <span className="composer__add-action-description" title={t(entry.description)}>{t(entry.description)}</span>
                       </span>
                       {(entry.key === 'diagrams' || entry.key === 'skills') ? <ChevronRight size={13} /> : null}
                       {entry.key === 'image' && imageMode ? <Check size={14} /> : null}
@@ -143,11 +147,11 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
                     {pluginCommands.map((command) => {
                       const Icon = commandIcon(command)
                       return (
-                        <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description ? t(command.description) : undefined} onClick={() => { close(); onInsertCommand(command) }}>
+                        <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" onClick={() => { close(); onInsertCommand(command) }}>
                           <Icon size={15} className="composer__add-command-icon" />
                           <span className="composer__add-command-copy">
                             <span className="composer__add-command-name">/{command.name}</span>
-                            {command.description ? <span className="composer__add-command-description">{t(command.description)}</span> : null}
+                            {command.description ? <span className="composer__add-command-description" title={t(command.description)}>{t(command.description)}</span> : null}
                           </span>
                         </button>
                       )
@@ -173,11 +177,10 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
                       className="popover__item composer__add-command composer__add-template"
                       role="menuitem"
                       data-template={template.id}
-                      title={template.description}
                       onClick={() => { close(); insertIntoComposer(template.prompt) }}
                     >
                       <span className="composer__add-command-name">{template.name}</span>
-                      <span className="composer__add-command-description">{template.description}</span>
+                      <span className="composer__add-command-description" title={template.description}>{template.description}</span>
                     </button>
                   ))}
                 </div>
@@ -186,11 +189,11 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
                   {commands.map((command) => {
                     const Icon = commandIcon(command)
                     return (
-                      <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" title={command.description ? t(command.description) : undefined} onClick={() => { close(); onInsertCommand(command) }}>
+                      <button key={command.source + '-' + command.name} type="button" className="popover__item composer__add-command" role="menuitem" onClick={() => { close(); onInsertCommand(command) }}>
                         <Icon size={15} className="composer__add-command-icon" />
                         <span className="composer__add-command-copy">
                           <span className="composer__add-command-name">/{command.name}</span>
-                          {command.description ? <span className="composer__add-command-description">{t(command.description)}</span> : null}
+                          {command.description ? <span className="composer__add-command-description" title={t(command.description)}>{t(command.description)}</span> : null}
                         </span>
                       </button>
                     )

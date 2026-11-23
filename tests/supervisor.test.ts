@@ -847,13 +847,63 @@ test('clear_queue cancels prompts still waiting at the directory gate', async ()
     releaseLock = resolve
   }))
   const waiting = supervisor.request<{ cancelled?: boolean }>('B', 'prompt', { message: 'later' })
+  const imageSetup = supervisor.request<{ cancelled?: boolean }>('B', 'prompt',
+    { message: '/desktop-image {"prompt":"a sketch"}' }, undefined, { sourceAction: 'image-params' })
   const cleared = await supervisor.request<{ steering: string[] }>('B', 'clear_queue')
   releaseLock()
   await locking
   const result = await waiting
   assert.equal(result.cancelled, true)
+  assert.equal((await imageSetup).cancelled, true)
   assert.deepEqual(cleared.steering, ['later'])
   assert.equal(b.commands.some(({ command }) => command === 'prompt'), false)
+})
+
+test('stopping cancels a prompt waiting for the cross-process directory registry lock', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-cancel-registry-wait-'))
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime], root)
+  t.after(async () => {
+    await supervisor.stop()
+    rmSync(root, { recursive: true, force: true })
+  })
+  await supervisor.ensure({ sessionKey: 'chat', cwd: root })
+  const release = properLockfile.lockSync(path.join(root, 'leases.json'), { realpath: false })
+  let waiting: Promise<{ cancelled?: boolean }>
+  let cleared: { steering: string[] }
+  try {
+    waiting = supervisor.request('chat', 'prompt', { message: 'cancel me' })
+    cleared = await supervisor.request('chat', 'clear_queue')
+    await supervisor.request('chat', 'abort')
+  } finally {
+    release()
+  }
+
+  assert.equal((await waiting).cancelled, true)
+  assert.deepEqual(cleared.steering, ['cancel me'])
+  assert.equal(runtime.commands.some(({ command }) => command === 'prompt'), false)
+  assert.equal(await supervisor.withCwdLock(root, async () => 'released'), 'released')
+})
+
+test('a new write cannot overtake the directory queue when its registry lock is released', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-registry-wait-order-'))
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime], root)
+  t.after(async () => {
+    await supervisor.stop()
+    rmSync(root, { recursive: true, force: true })
+  })
+  await supervisor.ensure({ sessionKey: 'chat', cwd: root })
+  const release = properLockfile.lockSync(path.join(root, 'leases.json'), { realpath: false })
+  const first = supervisor.request('chat', 'prompt', { message: 'first' })
+  release()
+  const second = supervisor.request('chat', 'prompt', { message: 'second' })
+
+  await Promise.all([first, second])
+  assert.deepEqual(
+    runtime.commands.filter(({ command }) => command === 'prompt').map(({ payload }) => payload.message),
+    ['first', 'second']
+  )
 })
 
 test('forking leaves the original file available to an independent runtime', async () => {
@@ -1748,7 +1798,7 @@ test('explicit PiRpcCommandError on prompt and failed bash commands do not wedge
   await supervisor.stop()
 })
 
-test('release clears the local CwdGate when bindFile retargets a draft while interprocess release is in flight', async (t) => {
+test('Git waits for cwd lock release when the settling draft binds to its file', async (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-retarget-release-'))
   const lockDir = path.join(root, 'locks')
   const projectDir = path.join(root, 'project')
@@ -1766,28 +1816,142 @@ test('release clears the local CwdGate when bindFile retargets a draft while int
   // Hold interprocess releaseOwner so we can trigger bindFile mid-release.
   const gate = (supervisor as unknown as { interprocessGate: InterprocessCwdGate }).interprocessGate
   const origReleaseOwner = gate.releaseOwner.bind(gate)
-  let resumeRelease!: () => void
-  const releaseEntered = new Promise<void>((resolve) => {
-    gate.releaseOwner = async (ownerId: string) => {
-      gate.releaseOwner = origReleaseOwner
-      resolve()
-      await new Promise<void>((r) => { resumeRelease = r })
-      return origReleaseOwner(ownerId)
-    }
-  })
+  const releaseEntered = Promise.withResolvers<void>()
+  const resumeRelease = Promise.withResolvers<void>()
+  gate.releaseOwner = async (ownerId: string) => {
+    gate.releaseOwner = origReleaseOwner
+    releaseEntered.resolve()
+    await resumeRelease.promise
+    return origReleaseOwner(ownerId)
+  }
 
-  runtime.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
-  await releaseEntered
+  let writing: Promise<string>
+  try {
+    runtime.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+    await releaseEntered.promise
 
-  // Rebind draft:1 -> sessionFile while releaseOwner is suspended.
-  runtime.boundFile = sessionFile
-  await supervisor.request('draft:1', 'get_state')
+    runtime.boundFile = sessionFile
+    await supervisor.request('draft:1', 'get_state')
 
-  // Let interprocess release finish and flush microtasks.
-  resumeRelease()
-  await new Promise((resolve) => setTimeout(resolve, 25))
+    let wrote = false
+    writing = supervisor.withCwdLock(projectDir, async () => {
+      wrote = true
+      return 'unlocked-after-rebind'
+    })
+    await Promise.resolve()
+    assert.equal(wrote, false, 'Git must wait while the shared lease is still held')
+  } finally {
+    resumeRelease.resolve()
+  }
 
-  // Local CwdGate must have released the rebound ownerId so exclusive Git writes succeed immediately.
-  const result = await supervisor.withCwdLock(projectDir, async () => 'unlocked-after-rebind')
-  assert.equal(result, 'unlocked-after-rebind')
+  assert.equal(await writing, 'unlocked-after-rebind')
 })
+
+for (const ending of ['settled', 'stopped'] as const) {
+  test(`a ${ending} conversation retries its directory release after the runtime forks`, { timeout: 8000 }, async (t) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-settled-release-retry-'))
+    const runtime = new FakeRuntime()
+    const replacement = new FakeRuntime()
+    const supervisor = supervisorOf([runtime, replacement], root)
+    t.after(async () => {
+      await supervisor.stop()
+      rmSync(root, { recursive: true, force: true })
+    })
+    await supervisor.ensure({ sessionKey: 'original.jsonl', sessionFile: 'original.jsonl', cwd: root })
+    await supervisor.request('original.jsonl', 'prompt', { message: 'start' })
+
+    const gate = (supervisor as unknown as { interprocessGate: InterprocessCwdGate }).interprocessGate
+    const releaseOwner = gate.releaseOwner.bind(gate)
+    const releaseFailed = Promise.withResolvers<void>()
+    let unavailable = true
+    t.mock.method(gate, 'releaseOwner', async (ownerId: string) => {
+      if (unavailable) {
+        releaseFailed.resolve()
+        throw Object.assign(new Error('Registry temporarily unavailable'), { code: 'EBUSY' })
+      }
+      await releaseOwner(ownerId)
+    })
+
+    try {
+      if (ending === 'settled') {
+        runtime.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+        await releaseFailed.promise
+        runtime.boundFile = 'forked.jsonl'
+      } else {
+        await supervisor.stop('original.jsonl')
+        assert.equal(supervisor.has('original.jsonl'), false)
+        await supervisor.ensure({ sessionKey: 'original.jsonl', sessionFile: 'original.jsonl', cwd: root })
+        replacement.boundFile = 'forked.jsonl'
+      }
+      await supervisor.request('original.jsonl', 'fork', { entryId: 'user-1' })
+      assert.equal(supervisor.has('original.jsonl'), false)
+      assert.equal(supervisor.has('forked.jsonl'), true)
+      await assert.rejects(supervisor.withCwdLock(root, async () => 'locked'), /conversation is working/)
+    } finally {
+      unavailable = false
+    }
+
+    const probe = new InterprocessCwdGate(root)
+    const deadline = Date.now() + 2500
+    let acquired = false
+    while (!acquired && Date.now() < deadline) {
+      acquired = probe.acquire(root, 'git-probe', 'exclusive')
+      if (!acquired) await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    assert.equal(acquired, true, 'the completed conversation should release its cross-process lease after recovery')
+    await probe.releaseOwner('git-probe')
+    assert.equal(await supervisor.withCwdLock(root, async () => 'unlocked'), 'unlocked')
+  })
+}
+
+for (const outcome of ['succeeds', 'fails'] as const) {
+  test(`a Git write that ${outcome} keeps its result and retries releasing an unreadable directory registry`, { timeout: 8000 }, async (t) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-git-release-retry-'))
+    const runtime = new FakeRuntime()
+    const supervisor = supervisorOf([runtime], root)
+    t.after(async () => {
+      await supervisor.stop()
+      rmSync(root, { recursive: true, force: true })
+    })
+    await supervisor.ensure({ sessionKey: 'chat', cwd: root })
+    const gate = (supervisor as unknown as { interprocessGate: InterprocessCwdGate }).interprocessGate
+    const externalGate = new InterprocessCwdGate(root)
+    const releaseOwner = gate.releaseOwner.bind(gate)
+    const unreadable = Object.assign(new Error('Registry temporarily unavailable'), { code: 'EBUSY' })
+    let failedReleases = 0
+    let unavailable = true
+    const retryFailed = Promise.withResolvers<void>()
+    t.mock.method(gate, 'releaseOwner', async (ownerId: string) => {
+      if (unavailable) {
+        failedReleases += 1
+        if (failedReleases === 2) retryFailed.resolve()
+        throw unreadable
+      }
+      await releaseOwner(ownerId)
+    })
+    let queued: Promise<unknown> | undefined
+    let writes = 0
+    const gitError = new Error('Git operation failed')
+    try {
+      const operation = supervisor.withCwdLock(root, async () => {
+        writes += 1
+        queued = supervisor.request('chat', 'prompt', { message: 'waiting for Git' })
+        void queued.catch(() => {})
+        if (outcome === 'fails') throw gitError
+        return 'git-result'
+      })
+      if (outcome === 'fails') await assert.rejects(operation, (error) => error === gitError)
+      else assert.equal(await operation, 'git-result')
+      await retryFailed.promise
+      assert.equal(externalGate.acquire(root, 'other-git', 'exclusive'), false)
+      assert.equal(runtime.commands.some(({ command }) => command === 'prompt'), false)
+    } finally {
+      unavailable = false
+    }
+
+    assert.deepEqual(await queued, { disposition: 'started' })
+    assert.equal(writes, 1)
+    await supervisor.stop('chat')
+    assert.equal(await supervisor.withCwdLock(root, async () => 'unlocked'), 'unlocked')
+  })
+}

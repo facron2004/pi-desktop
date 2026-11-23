@@ -34,7 +34,6 @@ import { TitleSubagents } from './components/TitleSubagents'
 import { ToolPanel, type ToolPanelView } from './components/ToolPanel'
 import type { LauncherShell } from './components/Launcher'
 import type { TerminalRunRequest } from './components/TerminalPanel'
-import { GoalBar } from './components/GoalBar'
 import { FeatureLoading } from './components/FeatureLoading'
 import { Popover } from './components/Popover'
 import {
@@ -113,10 +112,6 @@ export default function App() {
   const updateSettings = useAppStore((state) => state.updateSettings)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
   const draftId = useAppStore((state) => state.draftId)
-  const clientKey = useAppStore((state) => {
-    const key = state.activeSessionFile || state.draftId
-    return (key && state.threads[key]?.clientKey) || key || state.clientKey || 'draft'
-  })
   const switchProject = useAppStore((state) => state.switchProject)
   const isCompacting = useAppStore((state) => Boolean(state.run.compaction))
   const cycleModel = useAppStore((state) => state.cycleModel)
@@ -1104,8 +1099,6 @@ export default function App() {
                   ))}
                 </div>
               ))}
-
-              <GoalBar key={clientKey} />
 
               <Composer />
 

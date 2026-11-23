@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
@@ -190,6 +192,42 @@ test('an invalid settings file is preserved before defaults are written', () => 
       }
     }
   }
+})
+
+test('a transient settings read error cannot overwrite the persisted file with defaults', (t) => {
+  const fileName = `settings-read-failure-${process.pid}.json`
+  const file = settingsFile(fileName)
+  t.after(() => rmSync(file, { force: true }))
+  const registered = workspace('saved-workspace', 'C:/saved-workspace', 1)
+  const pinned = 'C:/saved.jsonl'
+  const original = JSON.stringify({ workspaces: [registered], pinnedSessions: [pinned], language: 'zh' })
+  writeFileSync(file, original, 'utf8')
+  const store = new SettingsStore(fileName)
+
+  const readFileSyncBeforeMock = fs.readFileSync
+  let unavailable = true
+  const read = t.mock.method(fs, 'readFileSync', (input, options) => {
+    if (input === file && unavailable) {
+      unavailable = false
+      throw Object.assign(new Error('Settings temporarily unavailable'), { code: 'EBUSY' })
+    }
+    return readFileSyncBeforeMock(input, options)
+  })
+  syncBuiltinESMExports()
+  try {
+    assert.throws(() => store.patch({ theme: 'light' }), { code: 'EBUSY' })
+    assert.equal(readFileSync(file, 'utf8'), original)
+  } finally {
+    read.mock.restore()
+    syncBuiltinESMExports()
+  }
+
+  store.patch({ theme: 'light' })
+  const saved = new SettingsStore(fileName).get()
+  assert.equal(saved.theme, 'light')
+  assert.equal(saved.language, 'zh')
+  assert.deepEqual(saved.workspaces.map(({ id }) => id), [registered.id])
+  assert.deepEqual(saved.pinnedSessions, [pinned])
 })
 
 test('valid JSON with malformed workspace and path settings falls back without crashing', () => {

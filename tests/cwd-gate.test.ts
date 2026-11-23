@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { CwdGate, InterprocessCwdGate } from '../src/main/pi/cwd-gate'
@@ -232,6 +234,38 @@ test('re-acquiring during an in-flight async release keeps a fresh lease on disk
   await first.releaseOwner('owner-a')
   assert.equal(await second.acquireAsync('C:/reacquire', 'other', 'exclusive'), true)
   await second.releaseOwner('other')
+})
+
+test('a lease registry read failure preserves active leases and prevents new claims', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-cwd-gate-read-failure-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const registry = path.join(root, 'leases.json')
+  const first = new InterprocessCwdGate(root)
+  const second = new InterprocessCwdGate(root)
+  const cwd = path.join(root, 'project')
+  assert.equal(first.acquire(cwd, 'conversation', 'shared'), true)
+  const readFile = fs.readFileSync
+  const saved = readFile(registry, 'utf8')
+
+  const read = t.mock.method(fs, 'readFileSync', (file, options) => {
+    if (file === registry) throw Object.assign(new Error('Temporary registry I/O error'), { code: 'EIO' })
+    return readFile(file, options)
+  })
+  syncBuiltinESMExports()
+  try {
+    assert.throws(() => second.acquire(cwd, 'git', 'exclusive'), { code: 'EIO' })
+    await assert.rejects(second.acquireAsync(cwd, 'git', 'exclusive'), { code: 'EIO' })
+    await assert.rejects(first.releaseOwner('conversation'), { code: 'EIO' })
+  } finally {
+    read.mock.restore()
+    syncBuiltinESMExports()
+  }
+
+  assert.equal(readFile(registry, 'utf8'), saved)
+  assert.equal(second.acquire(cwd, 'git', 'exclusive'), false)
+  await first.releaseOwner('conversation')
+  assert.equal(second.acquire(cwd, 'git', 'exclusive'), true)
+  await second.releaseOwner('git')
 })
 
 test('corrupt leases.json is quarantined and recovered cleanly without wedging future claims', async (t) => {

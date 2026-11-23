@@ -15,6 +15,7 @@ import { formatClock } from '../lib/format'
 import { Markdown } from './Markdown'
 import { ImageButton } from './Lightbox'
 import { useT } from '../lib/i18n'
+import { stripImageAnnotations } from '../lib/message-text'
 import { readProcessOpen, writeProcessOpen } from '../lib/view-state'
 import { useThreadEnv } from './conversation/ThreadEnvContext'
 
@@ -41,6 +42,9 @@ export const UserMessage = memo(function UserMessage({
               {item.images.map((image, index) => (
                 <ImageButton
                   key={`${item.id}-${index}`}
+                  // A fixed mark, not the picture: the bubble is where the
+                  // prompt is read, and the attachment opens on click.
+                  compact
                   src={`data:${image.mimeType};base64,${image.data}`}
                   alt="attachment"
                   inline={{ data: image.data, mimeType: image.mimeType }}
@@ -48,7 +52,11 @@ export const UserMessage = memo(function UserMessage({
               ))}
             </div>
           ) : null}
-          {item.text ? <Markdown>{item.text}</Markdown> : null}
+          {item.text ? (
+            <Markdown>
+              {item.images.length > 0 ? stripImageAnnotations(item.text) : item.text}
+            </Markdown>
+          ) : null}
         </div>
         <div className="user-msg__actions">
           {/* A prompt that Pi has not taken yet can be waiting for another

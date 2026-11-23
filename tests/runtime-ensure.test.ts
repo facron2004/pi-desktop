@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import https from 'node:https'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { app, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { registerIpc } from '../src/main/ipc'
 import type { IpcContext } from '../src/main/ipc'
 import { piVersion } from '../src/main/pi/cli'
 import { SettingsStore } from '../src/main/settings'
-import type { RuntimeEnsureOptions } from '../src/shared/types'
+import type { PiCliUpgradeProgress, RuntimeEnsureOptions } from '../src/shared/types'
 
 test('pasted image uses the original project after switching workspaces', async () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'pi-paste-project-'))
@@ -389,6 +393,96 @@ test('a packaged build cannot install the Pi CLI into its app directory', async 
     else delete (ipcMain as unknown as { handle?: unknown }).handle
     if (packagedDescriptor) Object.defineProperty(app, 'isPackaged', packagedDescriptor)
     else delete (app as unknown as { isPackaged?: unknown }).isPackaged
+  }
+})
+
+test('a Pi CLI upgrade reports completion only after the requested version runs', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-cli-upgrade-verify-'))
+  const packageName = '@earendil-works/pi-coding-agent'
+  const manifest = path.join(root, 'node_modules', packageName, 'package.json')
+  const cli = path.join(path.dirname(manifest), 'dist', 'bundle', 'cli.js')
+  mkdirSync(path.dirname(cli), { recursive: true })
+  writeFileSync(path.join(root, 'package.json'), JSON.stringify({ dependencies: { [packageName]: '^1.5.2' } }))
+  const version = '1.5.9'
+  const registry = createServer((_request, response) => {
+    response.setHeader('Content-Type', 'application/json')
+    response.end(JSON.stringify({ name: packageName, 'dist-tags': { latest: version }, versions: {
+      [version]: { name: packageName, version, dist: { tarball: `${npmEnvironment.npm_config_registry}pi.tgz` } }
+    } }))
+  })
+  registry.listen(0, '127.0.0.1')
+  await once(registry, 'listening')
+  const address = registry.address()
+  assert.ok(address && typeof address === 'object')
+  const npmEnvironment = {
+    npm_config_registry: `http://127.0.0.1:${address.port}/`,
+    npm_config_userconfig: path.join(root, 'npmrc'),
+    npm_config_cache: path.join(root, 'cache'),
+    npm_config_fetch_retries: '0',
+    npm_config_audit: 'false',
+    // Make npm exit successfully without touching the installed CLI.
+    npm_config_package_lock_only: 'true'
+  }
+  const previousEnvironment = Object.keys(npmEnvironment).map(key => [key, process.env[key]] as const)
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  const progress: PiCliUpgradeProgress[] = []
+  const restore = [
+    [ipcMain, 'handle', (channel: string, listener: (event: unknown, ...args: unknown[]) => unknown) => handlers.set(channel, listener)],
+    [app, 'getAppPath', () => root],
+    [https, 'get', () => { throw new Error('Use the local npm registry fixture') }],
+    [BrowserWindow, 'fromWebContents', () => ({ isDestroyed: () => false, webContents: {
+      isDestroyed: () => false, send: (_channel: string, update: PiCliUpgradeProgress) => progress.push(update)
+    } })]
+  ] as const
+  const descriptors = restore.map(([owner, property]) => Object.getOwnPropertyDescriptor(owner, property))
+  let finished = 0
+  try {
+    Object.assign(process.env, npmEnvironment)
+    for (const [owner, property, value] of restore) {
+      Object.defineProperty(owner, property, { configurable: true, value })
+    }
+    syncBuiltinESMExports()
+    registerIpc({
+      supervisor: { prepareForCliUpgrade: async () => true, finishCliUpgrade: () => { finished += 1 } },
+      settings: { get: () => ({ workspaces: [] }) },
+      getWindow: () => null,
+      terminals: { create: () => ({}) },
+      memory: { promptFor: () => '' }
+    } as unknown as IpcContext)
+    const upgrade = handlers.get('app:upgradePiCli')!
+    const setCli = (version: string, source: string) => {
+      writeFileSync(manifest, JSON.stringify({ name: packageName, version }))
+      writeFileSync(cli, source)
+    }
+
+    setCli('1.5.2', "console.log('1.5.2')")
+    const unchanged = await upgrade({}) as { success: boolean; error?: string }
+    assert.equal(unchanged.success, false)
+    assert.match(unchanged.error ?? '', /1\.5\.9.*1\.5\.2/)
+    assert.equal(progress.some(update => update.percent === 100), false)
+
+    setCli('1.5.9', "console.log('1.5.9'); process.exitCode = 1")
+    const broken = await upgrade({}) as { success: boolean }
+    assert.equal(broken.success, false)
+    assert.equal(progress.some(update => update.percent === 100), false)
+
+    setCli('1.5.9', "console.log('1.5.9')")
+    assert.deepEqual(await upgrade({}), { success: true, version: '1.5.9' })
+    assert.deepEqual(progress.filter(update => update.percent === 100), [{ stage: 'installing', percent: 100 }])
+    assert.equal(finished, 3, 'every outcome releases CLI maintenance')
+  } finally {
+    restore.forEach(([owner, property], index) => {
+      const descriptor = descriptors[index]
+      if (descriptor) Object.defineProperty(owner, property, descriptor)
+      else Reflect.deleteProperty(owner, property)
+    })
+    syncBuiltinESMExports()
+    for (const [key, value] of previousEnvironment) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    registry.close()
+    rmSync(root, { recursive: true, force: true })
   }
 })
 

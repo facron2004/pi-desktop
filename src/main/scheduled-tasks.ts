@@ -44,6 +44,7 @@ interface PendingRunResult {
 interface TaskRunOwner {
   token: string
   ownerPid: number
+  lastRunAt?: number
   piPid?: number
 }
 
@@ -712,7 +713,7 @@ export class ScheduledTaskService extends EventEmitter {
     return `${lockFile}.owner.json`
   }
 
-  private runLockOwnerState(lockFile: string, ownerFile: string): 'alive' | 'dead' | 'unknown' {
+  private runLockOwnerState(lockFile: string, ownerFile: string, lastRunAt?: number): 'alive' | 'dead' | 'unknown' {
     let owner: TaskRunOwner
     try {
       owner = JSON.parse(readFileSync(ownerFile, 'utf8')) as TaskRunOwner
@@ -736,6 +737,12 @@ export class ScheduledTaskService extends EventEmitter {
       return 'unknown'
     }
     if (!owner || typeof owner.token !== 'string') return 'unknown'
+    if (
+      lastRunAt !== undefined &&
+      owner.lastRunAt !== lastRunAt &&
+      // Older leases only recorded Pi's PID after saving the run.
+      !(owner.lastRunAt === undefined && owner.piPid !== undefined)
+    ) return 'unknown'
     const pid = owner.piPid ?? owner.ownerPid
     if (!Number.isSafeInteger(pid) || pid <= 0) return 'unknown'
     return processLiveness(pid)
@@ -792,26 +799,24 @@ export class ScheduledTaskService extends EventEmitter {
 
   private skipOverlappedOccurrences(): void {
     const now = Date.now()
-    if (!this.tasks.some((task) =>
+    // A peer takes the lease before recording the run. Advancing a due task
+    // during that gap would make the peer abandon the occurrence it claimed.
+    const overlapsLiveRun = (task: ScheduledTask): boolean =>
       task.enabled &&
       task.schedule.kind !== 'once' &&
       task.nextRunAt !== undefined &&
       task.nextRunAt <= now &&
-      this.hasTaskRunLock(task.id)
-    )) return
+      task.lastStatus === 'running' &&
+      task.lastRunAt !== undefined &&
+      this.runLockOwnerState(this.taskRunLockFile(task.id), this.taskRunOwnerFile(task.id), task.lastRunAt) === 'alive'
+    if (!this.tasks.some(overlapsLiveRun)) return
 
     let changed = false
     try {
       this.withDataLock(() => {
         const current = this.readForMutation()
         const next = current.map((task) => {
-          if (
-            !task.enabled ||
-            task.schedule.kind === 'once' ||
-            task.nextRunAt === undefined ||
-            task.nextRunAt > now ||
-            !this.hasTaskRunLock(task.id)
-          ) return task
+          if (!overlapsLiveRun(task)) return task
           changed = true
           return { ...task, nextRunAt: nextOccurrence(task.schedule, now) }
         })
@@ -916,8 +921,9 @@ export class ScheduledTaskService extends EventEmitter {
       }
       throw new Error('This task is already running.')
     }
+    const now = Date.now()
     const sessionKey = `draft:${randomUUID()}`
-    const runOwner: TaskRunOwner = { token: randomUUID(), ownerPid: process.pid }
+    const runOwner: TaskRunOwner = { token: randomUUID(), ownerPid: process.pid, lastRunAt: now }
     const taskRunLockFile = this.taskRunLockFile(task.id)
     const taskRunOwnerFile = this.taskRunOwnerFile(task.id)
     let releaseRunLock: () => void
@@ -968,7 +974,6 @@ export class ScheduledTaskService extends EventEmitter {
     this.waitingForRunSlot = false
 
     let currentTask: ScheduledTask | undefined
-    const now = Date.now()
     try {
       this.withDataLock(() => {
         const current = this.readForMutation()

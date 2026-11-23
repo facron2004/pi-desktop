@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
-import { ChevronRight, FileDiff, GitBranch, GitCommitHorizontal } from 'lucide-react'
+import { Bot, ChevronRight, FileDiff, GitBranch, GitCommitHorizontal } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { FileIcon } from './FileIcon'
 import { useAppStore } from '../store/useAppStore'
@@ -145,8 +145,14 @@ const SubagentTaskRow = memo(function SubagentTaskRow({ task, onOpenTask }: {
         aria-label={description}
         onClick={() => onOpenTask(task.id)}
       >
+        {/* A child agent wears the same 20px tile a produced file does, tinted
+            by its own state: the row is a thing, not a line of text. The tile
+            is the only mark it needs — the status is in the tile's colour and
+            in the label. */}
+        <span className="task-panel__tile task-panel__tile--bot" aria-hidden="true">
+          <Bot size={12} />
+        </span>
         <span className="task-panel__task-label">{label}</span>
-        <span className="task-panel__dot" aria-hidden="true" />
       </button>
     </li>
   )

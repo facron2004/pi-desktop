@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Download, FolderOpen, ImagePlus, X } from 'lucide-react'
+import { Check, Download, FolderOpen, Image as ImageIcon, ImagePlus, X } from 'lucide-react'
 import { useDialogFocus } from '../hooks/useDialogFocus'
 import { useT } from '../lib/i18n'
 import { useAppStore } from '../store/useAppStore'
@@ -31,7 +31,8 @@ export function ImageButton({
   inline,
   title,
   filePath,
-  onUseAsReference
+  onUseAsReference,
+  compact
 }: {
   src: string
   alt?: string
@@ -43,6 +44,12 @@ export function ImageButton({
   filePath?: string
   /** Hand this picture to the composer as a reference image. */
   onUseAsReference?: () => void
+  /**
+   * Draw a small mark instead of the picture. The transcript is for reading
+   * text, so a picture the reader attached is a fixed-size icon there; the
+   * click still opens the whole picture.
+   */
+  compact?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const t = useT()
@@ -50,7 +57,7 @@ export function ImageButton({
     <>
       <button
         type="button"
-        className="lightbox-trigger"
+        className={compact ? 'lightbox-trigger lightbox-trigger--compact' : 'lightbox-trigger'}
         onClick={(event) => {
           // Markdown can wrap a picture in a link; opening the lightbox is the
           // whole point of the click, so the link does not also open.
@@ -63,7 +70,7 @@ export function ImageButton({
         aria-label={t('Open the image')}
         title={title ?? t('Open the image')}
       >
-        <img src={src} alt={alt ?? ''} draggable={false} />
+        {compact ? <ImageIcon size={14} aria-hidden="true" /> : <img src={src} alt={alt ?? ''} draggable={false} />}
       </button>
       {open ? (
         <Lightbox

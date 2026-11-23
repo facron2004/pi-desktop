@@ -9,6 +9,7 @@ import {
   clearSessionCache,
   configureSessionSearchIndex,
   encodeWorkspaceDir,
+  forgetSessionSearchIndex,
   getAggregatedUsage,
   getSessionSearchIndexCacheStats,
   getUsageCacheStats,
@@ -1398,6 +1399,48 @@ test('searchSessions: a concurrent append waits for the current index version', 
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+for (const operation of ['delete', 'replace'] as const) {
+  test(`searchSessions drops a hit when its source is removed during an index build (${operation})`, async () => {
+    const parent = mkdtempSync(path.join(tmpdir(), 'pi-search-index-removed-'))
+    const root = path.join(parent, 'sessions')
+    mkdirSync(root)
+    const file = path.join(root, 'first.jsonl')
+    const kept = path.join(root, 'kept.jsonl')
+    const message = (role: string, content: string) => JSON.stringify({
+      type: 'message', message: { role, content, timestamp: 1 }
+    })
+    writeFileSync(file, `${message('user', 'sharedmarker in the old conversation')}\n${message('toolResult', 'x'.repeat(9 * 1024 * 1024))}\n`)
+    writeFileSync(kept, `${message('user', 'sharedmarker in another conversation')}\n`)
+    const earlier = new Date(Date.now() - 60_000)
+    utimesSync(kept, earlier, earlier)
+    configureSessionSearchIndex(path.join(parent, 'indexes'))
+
+    const searching = searchSessions('sharedmarker', operation === 'delete' ? 1 : 10, { sessionRoots: [root] })
+    try {
+      const deadline = Date.now() + 5_000
+      while (getSessionSearchIndexCacheStats().inFlight === 0 && Date.now() < deadline) {
+        await new Promise<void>(resolve => setImmediate(resolve))
+      }
+      assert.ok(getSessionSearchIndexCacheStats().inFlight > 0, 'the old file is already open for indexing')
+      renameSync(file, path.join(parent, 'detached.jsonl'))
+      if (operation === 'replace') {
+        writeFileSync(file, `${message('user', 'replacementmarker in the new conversation')}\n`)
+      } else {
+        await forgetSessionSearchIndex(file)
+      }
+
+      assert.deepEqual((await searching).map(hit => hit.file), [kept])
+      if (operation === 'replace') {
+        assert.deepEqual((await searchSessions('replacementmarker', 10, { sessionRoots: [root] })).map(hit => hit.file), [file])
+      }
+    } finally {
+      await searching.catch(() => {})
+      configureSessionSearchIndex(null)
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+}
 
 test('searchSessions: an append completes a record cut by the previous index read', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'pi-search-index-partial-'))

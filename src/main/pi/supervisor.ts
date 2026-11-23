@@ -33,6 +33,7 @@ const WARM_MS = 10 * 60 * 1000
 export const MAX_IDLE_RUNTIMES = 4
 const CWD_QUEUE_POLL_MIN_MS = 50
 const CWD_QUEUE_POLL_MAX_MS = 500
+const CWD_RELEASE_RETRY_MS = 500
 const MAX_QUEUED_JOBS_PER_CWD = 64
 const MAX_QUEUED_JOBS_TOTAL = 256
 const MAX_QUEUED_PAYLOAD_BYTES_TOTAL = 32 * 1024 * 1024
@@ -164,9 +165,10 @@ export class SessionSupervisor extends EventEmitter {
   private readonly warmTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private queueDrainTimer?: ReturnType<typeof setTimeout>
   private queueDrainDelayMs = CWD_QUEUE_POLL_MIN_MS
-  private readonly releasingCwds = new Set<{ ownerId: string; cwd: string; mode: CwdClaimMode }>()
+  private readonly releasingCwds = new Set<{ ownerId: string; cwd: string; mode: CwdClaimMode; done: Promise<void> }>()
   private readonly stoppingCwds = new Map<string, number>()
   private readonly releasingOwners = new Map<string, number>()
+  private readonly cwdReleaseRetries = new Map<string, { ownerId: string }>()
   private readonly activity = new WeakMap<ManagedSessionRuntime, RuntimeActivity>()
   private shuttingDown = false
   private cliUpgradeInProgress = false
@@ -271,6 +273,17 @@ export class SessionSupervisor extends EventEmitter {
   async withCwdLock<T>(cwd: string, action: () => Promise<T>): Promise<T> {
     const key = `operation:${randomUUID()}`
     if (this.shuttingDown) throw new Error('Pi is shutting down.')
+    if (cwd && this.releasingCwds.size > 0) {
+      // The UI can receive agent_settled before the shared lease leaves disk.
+      const cwdKey = CwdGate.key(cwd)
+      const releases = [...this.releasingCwds]
+        .filter((entry) => CwdGate.overlaps(cwdKey, entry.cwd))
+        .map((entry) => entry.done)
+      if (releases.length > 0) {
+        await Promise.all(releases)
+        if (this.shuttingDown) throw new Error('Pi is shutting down.')
+      }
+    }
     const claim = this.tryClaimCwdSync(cwd, key, 'exclusive')
     if (claim.status === 'conflict') {
       throw new Error('A conversation is working in this folder. Wait for it to finish before changing Git state.')
@@ -279,12 +292,9 @@ export class SessionSupervisor extends EventEmitter {
       if (!(await this.finishClaimCwdAsync(claim, 'exclusive'))) {
         throw new Error('A conversation is working in this folder. Wait for it to finish before changing Git state.')
       }
-      if (this.shuttingDown) {
-        await this.release(key, cwd)
-        throw new Error('Pi is shutting down.')
-      }
     }
     try {
+      if (this.shuttingDown) throw new Error('Pi is shutting down.')
       return await action()
     } finally {
       await this.release(key, cwd)
@@ -364,13 +374,25 @@ export class SessionSupervisor extends EventEmitter {
     }
   }
 
-  async request<T = unknown>(
+  request<T = unknown>(
     key: string,
     command: string,
     payload: Record<string, unknown> = {},
     timeoutMs = 30_000,
     trace?: RpcTraceHint,
     preflight?: () => void
+  ): Promise<T> {
+    return this.dispatchRequest(key, command, payload, timeoutMs, trace, preflight)
+  }
+
+  private async dispatchRequest<T>(
+    key: string,
+    command: string,
+    payload: Record<string, unknown>,
+    timeoutMs: number,
+    trace?: RpcTraceHint,
+    preflight?: () => void,
+    fromQueue = false
   ): Promise<T> {
     const id = this.canonical(key)
     if (this.cliUpgradeInProgress) throw new Error('The Pi CLI is updating. Try again when it finishes.')
@@ -392,25 +414,10 @@ export class SessionSupervisor extends EventEmitter {
     const writeCwd = writing ? this.cwdOf(id) : undefined
     if (writing) {
       this.clearWarm(id)
-      if (writeCwd) {
-        const claim = this.tryClaimCwdSync(writeCwd, id, 'shared')
-        let claimed = claim.status === 'acquired'
-        if (claim.status === 'lock_busy') {
-          claimed = await this.finishClaimCwdAsync(claim, 'shared')
-          if (claimed && (!runtime.isRunning || activity.stopping || this.shuttingDown || this.cliUpgradeInProgress)) {
-            await this.release(this.ownerOf(runtime) ?? id, writeCwd)
-            throw new Error(
-              this.cliUpgradeInProgress
-                ? 'The Pi CLI is updating. Try again when it finishes.'
-                : this.shuttingDown
-                  ? 'Pi is shutting down.'
-                  : 'Pi is not running for this conversation.'
-            )
-          }
-        }
-        if (!claimed) {
-          return this.enqueue<T>({ key: this.ownerOf(runtime) ?? id, cwd: writeCwd, command, payload, timeoutMs, trace, preflight })
-        }
+      // Keep writes waiting for the registry mutex in the same cancellable
+      // FIFO as writes blocked by a Git operation.
+      if (writeCwd && !fromQueue && (this.queued.has(CwdGate.key(writeCwd)) || !this.claimCwd(writeCwd, id))) {
+        return this.enqueue<T>({ key: id, cwd: writeCwd, command, payload, timeoutMs, trace, preflight })
       }
       if (command === 'prompt') {
         const sessionFile = runtime.currentStatus.sessionFile
@@ -458,9 +465,11 @@ export class SessionSupervisor extends EventEmitter {
       }
       if (command === 'clear_queue') {
         const queue = result as { steering?: string[]; followUp?: string[] } | undefined
+        // Only user prompts belong in the composer when the directory queue is cleared.
+        const prompts = removed.filter(job => job.trace?.sourceAction !== 'image-params' && job.trace?.sourceAction !== 'image-params-cancel')
         return {
-          steering: [...(queue?.steering ?? []), ...removed.filter(job => job.payload.streamingBehavior !== 'followUp').map(job => String(job.payload.message ?? ''))],
-          followUp: [...(queue?.followUp ?? []), ...removed.filter(job => job.payload.streamingBehavior === 'followUp').map(job => String(job.payload.message ?? ''))]
+          steering: [...(queue?.steering ?? []), ...prompts.filter(job => job.payload.streamingBehavior !== 'followUp').map(job => String(job.payload.message ?? ''))],
+          followUp: [...(queue?.followUp ?? []), ...prompts.filter(job => job.payload.streamingBehavior === 'followUp').map(job => String(job.payload.message ?? ''))]
         } as T
       }
       if (BIND_COMMANDS.has(command)) {
@@ -1058,18 +1067,19 @@ export class SessionSupervisor extends EventEmitter {
     return false
   }
 
-  private async release(key: string, stoppedCwd?: string): Promise<void> {
+  private async release(key: string, stoppedCwd?: string, retrying = false): Promise<void> {
     const id = this.canonical(key)
     const runtime = this.runtimes.get(id)
     const activity = runtime && this.activity.get(runtime)
     if (activity && (activity.writes > 0 || activity.running || activity.stopping)) return
     const cwd = CwdGate.key(stoppedCwd ?? this.cwdOf(id) ?? '')
     if (!cwd || !this.gate.holds(id)) return
-    const currentOwnerId = (): string => (runtime ? this.ownerOf(runtime) : undefined) ?? this.canonical(id)
-    const heldEntries = this.gate.entriesFor(id)
-    const releaseTokens = heldEntries.map((entry) => ({ ownerId: id, cwd: entry.cwd, mode: entry.mode }))
+    const currentOwnerId = (): string => activity?.ownerId ?? this.canonical(id)
     this.releasingOwners.set(id, (this.releasingOwners.get(id) ?? 0) + 1)
     if (this.interprocessGate) {
+      let markReleased!: () => void
+      const released = new Promise<void>((resolve) => { markReleased = resolve })
+      const releaseTokens = this.gate.entriesFor(id).map((entry) => ({ ...entry, ownerId: id, done: released }))
       for (const token of releaseTokens) this.releasingCwds.add(token)
       try {
         await this.interprocessGate.releaseOwner(id)
@@ -1077,6 +1087,26 @@ export class SessionSupervisor extends EventEmitter {
         if (reboundId !== id) {
           await this.interprocessGate.releaseOwner(reboundId)
         }
+      } catch (error) {
+        // Keep the lease until it can be removed from disk. Rebinding the
+        // lease to a different conversation file also moves its retry.
+        const ownerId = currentOwnerId()
+        if (!this.cwdReleaseRetries.has(ownerId)) {
+          if (!retrying) console.error('[pi-desktop] could not release project directory lock; retrying:', error)
+          const retry = { ownerId }
+          this.cwdReleaseRetries.set(ownerId, retry)
+          setTimeout(() => {
+            const owner = retry.ownerId
+            if (this.cwdReleaseRetries.get(owner) !== retry) return
+            this.cwdReleaseRetries.delete(owner)
+            void this.release(owner, cwd, true).then(() => {
+              this.pruneIdleRuntimes(this.canonical(owner))
+            }).catch((retryError) => {
+              console.error('[pi-desktop] could not retry project directory release:', retryError)
+            })
+          }, CWD_RELEASE_RETRY_MS).unref()
+        }
+        return
       } finally {
         const resolved = currentOwnerId()
         const releaseKey = this.releasingOwners.has(resolved) ? resolved : id
@@ -1084,6 +1114,7 @@ export class SessionSupervisor extends EventEmitter {
         if (count <= 1) this.releasingOwners.delete(releaseKey)
         else this.releasingOwners.set(releaseKey, count - 1)
         for (const token of releaseTokens) this.releasingCwds.delete(token)
+        markReleased()
       }
     } else {
       const count = this.releasingOwners.get(id) ?? 0
@@ -1147,7 +1178,7 @@ export class SessionSupervisor extends EventEmitter {
         this.queuedPayloadBytes -= next.payloadBytes
         dispatchedAny = true
         this.emit('queued', { ownerId: owner, cwd: next.cwd, queued: false } satisfies RuntimeQueueEvent)
-        void this.request(next.key, next.command, next.payload, next.timeoutMs, next.trace, next.preflight)
+        void this.dispatchRequest(next.key, next.command, next.payload, next.timeoutMs, next.trace, next.preflight, true)
           .then(next.resolve, (error) => {
             const currentRuntime = this.runtimes.get(owner)
             const currentActivity = currentRuntime && this.activity.get(currentRuntime)
@@ -1254,6 +1285,12 @@ export class SessionSupervisor extends EventEmitter {
     }
     this.gate.retarget(from, file)
     this.interprocessGate?.retargetOwner(from, file)
+    const releaseRetry = this.cwdReleaseRetries.get(from)
+    if (releaseRetry) {
+      this.cwdReleaseRetries.delete(from)
+      releaseRetry.ownerId = file
+      this.cwdReleaseRetries.set(file, releaseRetry)
+    }
     const releasingCount = this.releasingOwners.get(from)
     if (releasingCount) {
       this.releasingOwners.delete(from)

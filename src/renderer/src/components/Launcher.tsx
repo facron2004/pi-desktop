@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
-  Bot,
   Copy,
   CopyPlus,
   Cpu,
@@ -295,13 +294,6 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
       group: 'Mode',
       icon: Target,
       run: () => setAgentMode(agentMode === 'goal' ? 'default' : 'goal')
-    },
-    {
-      id: 'mode-subagent',
-      title: agentMode === 'subagent' ? 'Leave Subagent Mode' : 'Use Subagent Mode',
-      group: 'Mode',
-      icon: Bot,
-      run: () => setAgentMode(agentMode === 'subagent' ? 'default' : 'subagent')
     },
     {
       id: 'mode-swarm',

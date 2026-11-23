@@ -353,7 +353,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     }
   })
   try {
-    for (const mode of ['subagent', 'plan', 'goal', 'default']) {
+    for (const mode of ['plan', 'goal', 'swarm', 'default']) {
       await store.getState().setAgentMode(mode)
       const state = store.getState()
       const sessionKey = state.activeSessionFile ?? state.draftId
@@ -477,9 +477,13 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       !document.querySelector('.composer__mode'),
       'The composer still wears the goal mode chip while the goal bar already says it'
     )
-    const activeEdit = await until(() => store.getState().isStreaming && goalButton('Edit'), 'A running goal could not be edited')
+    const activeDetails = await until(() => store.getState().isStreaming && goalButton('Goal details'), 'A running goal has no details')
+    activeDetails.click()
+    const activeEdit = await until(() => document.querySelector('.goal-details__head button'), 'A running goal could not be edited')
+    check(document.querySelector('.goal-details__duration'), 'An active goal has no run duration in its details')
     activeEdit.click()
     const goalEditor = await until(() => document.querySelector('.goal-bar__input'), 'Goal editor did not open while running')
+    check(!document.querySelector('.goal-details') && document.activeElement === goalEditor, 'Opening the goal editor did not move focus from the details')
     setInputValue(goalEditor, goalFixture.revised)
     document.querySelector('.goal-bar__action[data-tone="primary"]').click()
     await until(() => document.querySelector('.goal-bar__objective')?.textContent === goalFixture.revised, 'Pi did not confirm the exact multiline edit')
@@ -493,8 +497,8 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
 
     const goalFile = store.getState().activeSessionFile
     const originalPrompt = await until(() => store.getState().forkTargets.find(({ text }) => text === goalFixture.original), 'Pi did not offer the original goal prompt for editing')
-    await until(() => goalButton('Edit') && !goalButton('Edit').disabled, 'The completed goal could not be edited')
-    goalButton('Edit').click()
+    const completedObjective = await until(() => document.querySelector('.goal-bar__objective'), 'The completed goal could not be edited')
+    completedObjective.click()
     const laterEditor = await until(() => document.querySelector('.goal-bar__input'), 'The later goal editor did not open')
     setInputValue(laterEditor, 'Unsaved draft for the later objective')
     await store.getState().editMessageFrom(originalPrompt.entryId, goalFixture.original)
@@ -518,7 +522,11 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     check([...details.querySelectorAll('.goal-details__text')].map((node) => node.textContent).join('\n') ===
       [goalFixture.saved.text, goalFixture.saved.summary].join('\n'), 'Goal details lost the full objective or blocker')
     const detailsRect = details.getBoundingClientRect()
-    check(detailsRect.left >= 0 && detailsRect.right <= innerWidth, 'Goal details overflowed the window')
+    const barRect = document.querySelector('.goal-bar').getBoundingClientRect()
+    const composerRect = document.querySelector('.composer').getBoundingClientRect()
+    check(Math.abs(barRect.left - composerRect.left) <= 1 && Math.abs(barRect.right - composerRect.right) <= 1 && barRect.bottom < composerRect.top,
+      'The goal bar does not share the composer column and keep a gap')
+    check(detailsRect.left >= 0 && detailsRect.right <= innerWidth && detailsRect.bottom <= barRect.top, 'Goal details did not fit above the bar')
     details.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await until(() => !document.querySelector('.goal-details'), 'Escape did not close the goal details')
     check(document.activeElement === detailTrigger, 'Closing goal details did not return focus to the trigger')
@@ -714,13 +722,13 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   })
   const resume = await until(() => document.querySelector('.goal-bar__actions button[title="Resume"]'), 'An idle active goal did not offer Resume')
   check(!resume.disabled, 'An idle active goal could not resume')
-  const edit = await until(() => document.querySelector('.goal-bar__actions button[title="Edit"]'), 'Goal did not render')
+  const edit = await until(() => document.querySelector('.goal-bar__objective'), 'Goal did not render')
   edit.click()
   await until(() => document.querySelector('.goal-bar__input'), 'Goal editor did not open')
   store.setState({ activeSessionFile: 'ui-goal-B', uiStatuses: goal('Goal B') })
   await pause(50)
   check(!document.querySelector('.goal-bar__input'), 'Goal editor retained a different conversation draft')
-  document.querySelector('.goal-bar__actions button[title="Edit"]').click()
+  document.querySelector('.goal-bar__objective').click()
   const input = await until(() => document.querySelector('.goal-bar__input'), 'Second goal editor did not open')
   check(input.value === 'Goal B', 'Second goal editor used the first conversation text')
   const updatedGoal = 'Goal B revised\n  Keep indentation'
@@ -1410,11 +1418,23 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     'The subagent list lost the task outcomes'
   )
   check(
-    [...commandRows, ...taskRows].every((row) =>
+    commandRows.every((row) =>
       row.querySelector('.task-panel__dot').getBoundingClientRect().left >=
         row.querySelector('.task-panel__task-label').getBoundingClientRect().right
     ),
-    'A task row did not put its status at the end of the row'
+    'A background task row did not put its status at the end of the row'
+  )
+  // A subagent row wears the same 20px tile a deliverable wears, at the start
+  // of the row — its state is the tile's colour, not a dot at the far edge.
+  check(
+    taskRows.every((row) => {
+      const tile = row.querySelector('.task-panel__tile--bot')
+      const label = row.querySelector('.task-panel__task-label')
+      if (!tile || !label) return false
+      const tileBox = tile.getBoundingClientRect()
+      return Math.round(tileBox.width) === 20 && tileBox.right <= label.getBoundingClientRect().left
+    }),
+    'A subagent row did not lead with its 20px state tile'
   )
   check(document.querySelectorAll('.task-panel__check').length === 3, 'The plan checklist is missing a step')
   check(document.querySelectorAll('.task-panel__check[data-done]').length === 2, 'A finished step is not marked as done')

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Type } from 'typebox'
+import { AGENT_MODES } from '@shared/types'
 import {
   PROGRESS_COMMENTARY_GUIDELINE,
   taskModesExtension,
@@ -186,12 +187,12 @@ function fixture(
 // A completed assistant response needs the new custom message before Pi can continue.
 const boundary = { outcome: 'completed', continue: false, context: { canContinue: false } }
 const PLAN_TOOLS = ['read', 'grep', 'find', 'ls', 'exit_plan_mode', 'desktop_ask_user']
-const DESKTOP_TOOLS = ['desktop_todo', 'desktop_ask_user']
+const DESKTOP_TOOLS = ['subagent', 'desktop_todo', 'desktop_ask_user']
 
 test('the user question is available in every desktop task mode and returns the exact selected option', async () => {
   const f = fixture()
   f.emit('session_start')
-  for (const mode of ['default', 'plan', 'goal', 'subagent', 'swarm', 'plugin']) {
+  for (const mode of AGENT_MODES) {
     await f.modeCommand(mode)
     assert.ok(f.active().includes('desktop_ask_user'), `missing question tool in ${mode}`)
   }
@@ -417,6 +418,25 @@ test('image options are discarded when a different prompt starts', async () => {
     systemPromptOptions: { sections: stale }
   }), undefined)
   assert.deepEqual(stale, {})
+})
+
+test('image options can be cancelled by their matching request id', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  const prompt = 'a red fox in snow'
+  await f.command('desktop-image', JSON.stringify({ id: 'first', prompt }))
+  await f.command('desktop-image', JSON.stringify({ cancel: 'older' }))
+
+  const active: Record<string, string> = {}
+  f.emit('before_agent_start', { prompt, systemPromptOptions: { sections: active } })
+  assert.match(active['desktop-image'], /generate_image exactly once/)
+
+  await f.command('desktop-image', JSON.stringify({ id: 'second', prompt }))
+  await f.command('desktop-image', JSON.stringify({ cancel: 'second' }))
+
+  const cancelled: Record<string, string> = {}
+  f.emit('before_agent_start', { prompt, systemPromptOptions: { sections: cancelled } })
+  assert.deepEqual(cancelled, {})
 })
 
 test('image options reject malformed requests', async () => {
@@ -1033,16 +1053,43 @@ test('rewinding restores the selected branch goal and tool restrictions without 
   assert.deepEqual(branch, [])
 })
 
-test('Subagent Mode adds the subagent tool and a delegation instruction', async () => {
+test('delegation is available in every working mode and stays out of the saved tool baseline', async () => {
   const f = fixture()
   f.emit('session_start')
-  await f.modeCommand('subagent')
-  assert.deepEqual(f.active(), [...f.base, 'subagent', ...DESKTOP_TOOLS])
-  const next = f.emit('before_agent_start') as { message: { content: string } }
-  assert.match(next.message.content, /delegate/i)
-  assert.match(next.message.content, /subagent/i)
-  await f.modeCommand('default')
-  assert.deepEqual(f.active(), [...f.base, ...DESKTOP_TOOLS])
+  for (const mode of AGENT_MODES) {
+    await f.modeCommand(mode)
+    assert.equal(f.active().includes('subagent'), mode !== 'plan', mode)
+    if (mode === 'plan') {
+      assert.deepEqual(f.active(), PLAN_TOOLS)
+      assert.equal((f.emit('tool_call', { toolName: 'subagent' }) as { block: boolean }).block, true)
+    }
+    if (mode !== 'default') {
+      const saved = f.entries.at(-1)?.data as { originalTools?: string[] }
+      assert.deepEqual(saved.originalTools, f.base, mode)
+    }
+  }
+  await assert.rejects(f.modeCommand('subagent'), /Unknown task mode/)
+})
+
+test('a legacy Subagent Mode session resumes in Default without stale delegation instructions', () => {
+  const f = fixture([{ type: 'custom', customType: 'pi-desktop-mode', data: {
+    mode: 'subagent', originalTools: ['read', 'write']
+  } }], false, 'plan')
+  f.emit('session_start')
+  assert.equal(f.mode(), 'default')
+  assert.deepEqual(f.active(), ['read', 'write', ...DESKTOP_TOOLS])
+  const user = { role: 'user', content: 'Continue the conversation' }
+  const messages = [user, { role: 'custom', customType: 'desktop-subagent-context', content: 'Delegate all work' }]
+  assert.deepEqual(f.emit('context', { messages }), { messages: [user] })
+})
+
+test('restoring a saved working mode removes the managed subagent tool from its baseline', () => {
+  const f = fixture([{ type: 'custom', customType: 'pi-desktop-mode', data: {
+    mode: 'goal', originalTools: ['read', 'subagent', 'write']
+  } }])
+  f.emit('session_start')
+  assert.deepEqual(f.active(), ['read', 'write', 'desktop_goal_finish', ...DESKTOP_TOOLS])
+  assert.deepEqual((f.entries.at(-1)?.data as { originalTools: string[] }).originalTools, ['read', 'write'])
 })
 
 test('Plugin Mode keeps the working tools and adds the extension-authoring instruction', async () => {

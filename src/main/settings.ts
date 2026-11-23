@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { execFile, execFileSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type {
   AppSettings,
@@ -380,10 +380,8 @@ function normalizeThemeForeground(parsed: Partial<AppSettings>): string | undefi
 }
 
 /**
- * The settings file as it sits on disk, or null when it is missing or
- * unreadable. Windows editors happily add a byte order mark and JSON.parse
- * rejects it, so the mark is stripped here: without this the whole file
- * would be discarded and the user would lose every workspace they opened.
+ * Settings as stored on disk. A missing file returns undefined and invalid
+ * content returns null. A byte order mark from a Windows editor is accepted.
  */
 interface PersistedAppSettings extends Partial<AppSettings> {
   /** Marks a project-trust choice explicitly reviewed by the user. */
@@ -392,10 +390,15 @@ interface PersistedAppSettings extends Partial<AppSettings> {
   removedWorkspaceIds?: string[]
 }
 
-function readSettingsFile(file: string): PersistedAppSettings | null {
+function readSettingsFile(file: string): PersistedAppSettings | null | undefined {
+  let raw: string
   try {
-    if (!existsSync(file)) return null
-    const raw = readFileSync(file, 'utf8')
+    raw = readFileSync(file, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+  try {
     const parsed: unknown = JSON.parse(raw.replace(/^\uFEFF/, ''))
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
       ? parsed as PersistedAppSettings
@@ -711,7 +714,7 @@ export class SettingsStore {
   constructor(fileName = 'settings.json') {
     this.file = path.join(app.getPath('userData'), fileName)
     this.data = { ...DEFAULT_SETTINGS }
-    this.refreshFromDisk(true)
+    this.refreshFromDisk()
   }
 
   private read(parsed: PersistedAppSettings | null): AppSettings {
@@ -873,17 +876,26 @@ export class SettingsStore {
     }, { removedWorkspaceId: id })
   }
 
-  private refreshFromDisk(force = false): void {
-    const version = settingsFileVersion(this.file)
-    if (!force && version === this.fileVersion) return
-    const parsed = readSettingsFile(this.file)
+  private refreshFromDisk(forWrite = false): boolean {
+    let version = settingsFileVersion(this.file)
+    if (!forWrite && version === this.fileVersion) return false
+    let parsed: ReturnType<typeof readSettingsFile>
+    try {
+      parsed = readSettingsFile(this.file)
+    } catch (error) {
+      // Keep reads available with defaults, but recheck the file next time.
+      // A save must have a verified base before it can replace the file.
+      if (forWrite) throw error
+      version = undefined
+    }
     this.projectTrustReviewed = parsed?.projectTrustReviewed === true
     this.removedWorkspaceIds.clear()
     for (const id of Array.isArray(parsed?.removedWorkspaceIds) ? parsed.removedWorkspaceIds : []) {
       if (typeof id === 'string') this.removedWorkspaceIds.add(id)
     }
-    this.data = this.read(parsed)
+    this.data = this.read(parsed ?? null)
     this.fileVersion = version
+    return parsed === null
   }
 
   private withSettingsLock<T>(action: () => T): T {
@@ -927,7 +939,7 @@ export class SettingsStore {
       // Another app process can update settings while this instance is open.
       // Merge under the lock so independent changes do not overwrite each other.
       const baseline = { ...this.data, ...options.baseline }
-      this.refreshFromDisk(true)
+      const preserveInvalidFile = this.refreshFromDisk(true)
       const current = this.data
       const patch = patchFor(current)
       const shortcutPatch = normalizeShortcutBindings(patch.shortcutBindings)
@@ -1009,25 +1021,26 @@ export class SettingsStore {
               )
             )
       }
-      this.write(next, projectTrustReviewed, blockedWorkspaceIds)
+      this.write(next, projectTrustReviewed, blockedWorkspaceIds, preserveInvalidFile)
       this.data = next
       this.projectTrustReviewed = projectTrustReviewed
       this.removedWorkspaceIds.clear()
       for (const id of blockedWorkspaceIds) this.removedWorkspaceIds.add(id)
       this.fileVersion = settingsFileVersion(this.file)
     })
-    return this.get()
+    return this.getCached()
   }
 
   private write(
     data: AppSettings,
     projectTrustReviewed: boolean,
-    removedWorkspaceIds: ReadonlySet<string>
+    removedWorkspaceIds: ReadonlySet<string>,
+    preserveInvalidFile: boolean
   ): void {
     const tmp = `${this.file}.${randomUUID()}.tmp`
     try {
       mkdirSync(path.dirname(this.file), { recursive: true })
-      if (existsSync(this.file) && readSettingsFile(this.file) === null) {
+      if (preserveInvalidFile) {
         const recoveryFile = `${this.file}.corrupt-${Date.now()}-${randomUUID()}`
         copyFileSync(this.file, recoveryFile)
         console.error(`[pi-desktop] invalid settings were preserved at ${recoveryFile}`)

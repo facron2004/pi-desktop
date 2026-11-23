@@ -71,7 +71,7 @@ export default function (pi) {
   const waitForAnswer = 'No option was selected. Wait for the user to reply before continuing with this decision.';
   // Kept out of the restored loadout and added back only while the setting is on.
   // Plan Mode never receives it.
-  const managedTools = new Set([finishTool, exitPlanTool, computerTool, todoTool, questionTool, ...swarmTools]);
+  const managedTools = new Set([finishTool, exitPlanTool, subagentTool, computerTool, todoTool, questionTool, ...swarmTools]);
   const modes = ${JSON.stringify(AGENT_MODES)};
   // Bound every automatic continuation, including a request to report the outcome.
   const maxGoalRounds = 40;
@@ -164,9 +164,8 @@ export default function (pi) {
     } else {
       const tools = [...base];
       if (mode === 'goal') tools.push(finishTool);
-      else if (mode === 'subagent') tools.push(subagentTool);
       else if (mode === 'swarm') tools.push(...swarmTools);
-      tools.push(todoTool, questionTool);
+      tools.push(subagentTool, todoTool, questionTool);
       if (computerEnabled) tools.push(computerTool);
       pi.setActiveTools([...new Set(tools)].filter(name => registered.has(name) &&
         (name !== questionTool || isLocalToolImplementation(name, registered.get(name)))));
@@ -310,7 +309,9 @@ export default function (pi) {
       if (entry.type === 'custom' && entry.customType === stateType && entry.data) {
         mode = modes.includes(entry.data.mode) ? entry.data.mode : 'default';
         goal = entry.data.goal;
-        originalTools = entry.data.originalTools;
+        originalTools = Array.isArray(entry.data.originalTools)
+          ? entry.data.originalTools.filter(name => name !== subagentTool)
+          : undefined;
       }
     }
     if (!fromTree && hasUserMessage) {
@@ -344,12 +345,17 @@ export default function (pi) {
       if (!text) throw new Error('Usage: /desktop-image <json>');
       let request;
       try { request = JSON.parse(text); } catch { throw new Error('Image request must be valid JSON'); }
+      if (typeof request?.cancel === 'string') {
+        if (imageRequest?.id === request.cancel) imageRequest = undefined;
+        return;
+      }
       if (!request || typeof request.prompt !== 'string' || !request.prompt.trim()) {
         throw new Error('Image prompt is required');
       }
       const count = Number(request.n);
       const references = Number(request.references);
       imageRequest = {
+        id: request.id,
         prompt: request.prompt.trim(),
         model: typeof request.model === 'string' ? request.model.trim() : '',
         size: typeof request.size === 'string' ? request.size.trim() : '',
@@ -529,10 +535,6 @@ export default function (pi) {
     if (mode === 'plan') return { message: {
       customType: planContextType, display: false,
       content: 'Plan Mode is active. Inspect the relevant code with read-only tools. If a decision needs user input, use ' + questionTool + ' with clear options and wait for the choice. Once the plan is ready, show the complete Markdown in the visible reply with the goal, ordered checkbox steps, affected areas, verification, and any material risks. Then submit that same Markdown in one exit_plan_mode call on its own. Approval restores the implementation tools. If the user keeps planning, wait for their next message before revising or submitting again.'
-    } };
-    if (mode === 'subagent') return { message: {
-      customType: 'desktop-subagent-context', display: false,
-      content: 'Subagent Mode is active. Delegate self-contained work to isolated subagents with the subagent tool instead of doing it in the main context. Keep the main conversation focused on orchestrating the subagents and reviewing their results. Do not delegate Computer Use; the computer tool is main-agent only.'
     } };
     if (mode === 'swarm') return { message: {
       customType: 'desktop-swarm-context', display: false,
@@ -776,7 +778,7 @@ export default function (pi) {
       if (message.customType === planContextType) return index === lastPlanContext;
       if (message.customType === goalContextType) return false;
       if (message.customType === goalContinueCustomType) return index === lastGoalContinue;
-      if (message.customType === 'desktop-subagent-context') return mode === 'subagent';
+      if (message.customType === 'desktop-subagent-context') return false;
       if (message.customType === 'desktop-swarm-context') return mode === 'swarm';
       if (message.customType === 'desktop-plugin-context') return mode === 'plugin';
       if (message.customType === 'desktop-computer-context') return computerEnabled && mode !== 'plan';

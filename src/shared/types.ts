@@ -777,12 +777,14 @@ export type PermissionMode = 'ask' | 'auto' | 'full'
 /**
  * A conversation's task mode. Plan explores without writing and submits its
  * plan for approval; Goal keeps working until the goal is done or blocked;
- * Subagent makes the model delegate self-contained work to isolated children;
  * Swarm makes it lead a team of named workers that stay alive across turns;
  * Plugin makes it build or modify a Pi extension.
- * Computer Use is not a mode: it is the `computerUse` setting.
+ *
+ * Working modes include the `subagent` tool for delegating independent tasks.
+ * Plan Mode limits tools to read-only planning, questions and plan review.
+ * Computer Use is not a mode either: it is the `computerUse` setting.
  */
-export const AGENT_MODES = ['default', 'goal', 'plan', 'subagent', 'swarm', 'plugin'] as const
+export const AGENT_MODES = ['default', 'goal', 'plan', 'swarm', 'plugin'] as const
 export type AgentMode = (typeof AGENT_MODES)[number]
 
 export interface GoalState {

@@ -2090,13 +2090,32 @@ export async function searchSessions(
   if (shouldStop()) return []
   candidates.sort((a, b) => b.mtime - a.mtime)
 
-  const hits: SessionSearchHit[] = []
+  let matches: { hits: SessionSearchHit[]; sourceIsCurrent: () => Promise<boolean> }[] = []
+  let hitCount = 0
+  const confirmedHits = async (): Promise<SessionSearchHit[]> => {
+    // An open handle can still read a deleted or replaced file. Recheck the
+    // names before returning so even an early hit must still have a source.
+    const current: typeof matches = []
+    const hits: SessionSearchHit[] = []
+    for (const match of matches) {
+      if (shouldStop()) return []
+      if (!(await match.sourceIsCurrent())) continue
+      current.push(match)
+      hits.push(...match.hits)
+    }
+    matches = current
+    hitCount = hits.length
+    return shouldStop() ? [] : hits
+  }
   let bytesRead = 0
   for (const candidate of candidates) {
     // A newer query supersedes this one: stop at the next file boundary so a
     // burst of keystrokes does not leave several scans running at once.
     if (shouldStop()) break
-    if (hits.length >= ceiling) break
+    if (hitCount >= ceiling) {
+      const hits = await confirmedHits()
+      if (hits.length >= ceiling || shouldStop()) return hits
+    }
     const opened = await openSessionFile(candidate.file, candidate.root, false, candidate.realRoot)
     if (!opened) continue
     try {
@@ -2104,53 +2123,67 @@ export async function searchSessions(
       const stats = await opened.handle.stat()
       const remaining = budget - bytesRead
       if (remaining <= 0) break
+      const identity = fileIdentity(stats)
+      const sourceIsCurrent = async (): Promise<boolean> => {
+        try {
+          if (await realpath(candidate.file) !== opened.target) return false
+          const named = await stat(opened.target)
+          return named.isFile() && named.nlink === 1 && fileIdentity(named) === identity
+        } catch {
+          return false
+        }
+      }
+      let fileHits: SessionSearchHit[] | undefined
       // A long session is searched through its index: the first query pays for
       // one pass over the file, and later keystrokes scan only the extracted
       // message text. Without an index folder (tests) the direct scan remains.
       if (stats.size > MAX_SEARCH_FILE_BYTES && searchIndexDir) {
         const indexed = await searchIndexedSession(
           candidate.file,
-          fileIdentity(stats),
+          identity,
           stats.mtimeMs,
           stats.size,
           needleLower,
           needle.length,
-          ceiling - hits.length,
+          ceiling - hitCount,
           remaining,
           opened.handle,
-          shouldStop
+          shouldStop,
+          sourceIsCurrent
         )
         bytesRead += indexed.workBytes
         if (shouldStop()) return []
-        if (indexed.usedIndex) {
-          hits.push(...indexed.hits)
-          continue
-        }
+        if (indexed.usedIndex) fileHits = indexed.hits
       }
       // An index attempt may already have spent part of the budget reading its
       // sidecar. Charge the direct fallback against the remainder, never the
       // stale amount from before that attempt.
-      const directRemaining = budget - bytesRead
-      if (directRemaining <= 0) break
-      const readLimit = Math.min(stats.size, MAX_SEARCH_FILE_BYTES, directRemaining)
-      bytesRead += readLimit
-      const fileHits = await searchSessionFile(
-        candidate.file,
-        stats.mtimeMs,
-        needleLower,
-        needle.length,
-        ceiling - hits.length,
-        readLimit,
-        opened.handle,
-        shouldStop
-      )
-      if (shouldStop()) return []
-      hits.push(...fileHits)
+      if (!fileHits) {
+        const directRemaining = budget - bytesRead
+        if (directRemaining <= 0) break
+        const readLimit = Math.min(stats.size, MAX_SEARCH_FILE_BYTES, directRemaining)
+        bytesRead += readLimit
+        fileHits = await searchSessionFile(
+          candidate.file,
+          stats.mtimeMs,
+          needleLower,
+          needle.length,
+          ceiling - hitCount,
+          readLimit,
+          opened.handle,
+          shouldStop
+        )
+        if (shouldStop()) return []
+      }
+      if (fileHits.length > 0) {
+        matches.push({ hits: fileHits, sourceIsCurrent })
+        hitCount += fileHits.length
+      }
     } finally {
       await opened.handle.close().catch(() => {})
     }
   }
-  return hits
+  return confirmedHits()
 }
 
 /** The text a hit shows around the match, flattened to one line. */
@@ -2693,7 +2726,8 @@ async function ensureSearchIndex(
   size: number,
   mtime: number,
   maxWorkBytes: number,
-  handle: FileHandle
+  handle: FileHandle,
+  sourceIsCurrent: () => Promise<boolean>
 ): Promise<SearchIndexLoad> {
   const indexPath = searchIndexPath(file)
   if (!indexPath) return { snapshot: null, sourceBytesRead: 0, indexBytesRead: 0 }
@@ -2721,6 +2755,9 @@ async function ensureSearchIndex(
 
     const cancellation = { cancelled: false }
     const task = (async (): Promise<SearchIndexLoad> => {
+      // Deletion may have forgotten the index while the scan still held the
+      // file open, before this build was registered for cancellation.
+      if (!(await sourceIsCurrent())) return { snapshot: null, sourceBytesRead: 0, indexBytesRead: 0 }
       if (cancellation.cancelled) return { snapshot: null, sourceBytesRead: 0, indexBytesRead: 0 }
       const cachedAppend = cached?.file === canonicalSessionFile(file) &&
         cached.identity === identity &&
@@ -2807,9 +2844,10 @@ async function searchIndexedSession(
   remaining: number,
   maxWorkBytes: number,
   handle: FileHandle,
-  shouldStop: () => boolean
+  shouldStop: () => boolean,
+  sourceIsCurrent: () => Promise<boolean>
 ): Promise<{ hits: SessionSearchHit[]; workBytes: number; usedIndex: boolean }> {
-  const load = await ensureSearchIndex(file, identity, size, mtime, maxWorkBytes, handle)
+  const load = await ensureSearchIndex(file, identity, size, mtime, maxWorkBytes, handle, sourceIsCurrent)
   const loadedBytes = load.sourceBytesRead + load.indexBytesRead
   if (shouldStop()) {
     return { hits: [], workBytes: loadedBytes, usedIndex: Boolean(load.snapshot) }

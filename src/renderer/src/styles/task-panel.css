@@ -286,6 +286,28 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
+/* A subagent row carries a mark instead of a dot: the same 20px tile a
+   deliverable file wears, tinted by the child's own state, so the rail reads
+   as rows rather than as a list of bare strings. */
+.task-panel__tile--bot {
+  color: var(--text-muted);
+}
+
+.task-panel__task:is([data-status='queued'], [data-status='running']) .task-panel__tile--bot {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.task-panel__task[data-status='completed'] .task-panel__tile--bot {
+  color: var(--status-success);
+  background: var(--status-success-soft);
+}
+
+.task-panel__task:is([data-status='failed'], [data-status='timed_out']) .task-panel__tile--bot {
+  color: var(--status-danger);
+  background: var(--status-danger-soft);
+}
+
 /* ---- progress -------------------------------------------------------- */
 
 .task-panel__check {

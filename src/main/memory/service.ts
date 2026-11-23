@@ -53,6 +53,7 @@ export class MemoryService extends EventEmitter {
   private supervisor?: SessionSupervisor
   private disposed = false
   private lifecycleVersion = 0
+  private automaticGenerationVersion = 0
 
   constructor(store: MemoryStore, getSettings: () => AppSettings, deps: MemoryServiceDeps = {}) {
     super()
@@ -361,6 +362,11 @@ export class MemoryService extends EventEmitter {
     if (!manual && this.getSettings().memoryGeneration === false) {
       return { ok: true, added: 0, skipped: 'Memory generation is off' }
     }
+    const automaticGenerationVersion = this.automaticGenerationVersion
+    const automaticBatchCancelled = (): boolean => !manual && (
+      automaticGenerationVersion !== this.automaticGenerationVersion ||
+      this.getSettings().memoryGeneration === false
+    )
     if (options.sessionFile) {
       if (this.supervisor?.sessionInfo(options.sessionFile)?.running) {
         return { ok: true, added: 0, skipped: 'Conversation is still running' }
@@ -384,6 +390,7 @@ export class MemoryService extends EventEmitter {
     try {
       listed = await list()
     } catch (error) {
+      if (automaticBatchCancelled()) return { ok: true, added: 0, skipped: 'Automatic memory generation was cancelled' }
       return {
         ok: false,
         added: 0,
@@ -393,6 +400,7 @@ export class MemoryService extends EventEmitter {
     if (lifecycleVersion !== this.lifecycleVersion) {
       return { ok: true, added: 0, skipped: 'Memory was cleared' }
     }
+    if (automaticBatchCancelled()) return { ok: true, added: 0, skipped: 'Automatic memory generation was cancelled' }
     const ledger = this.store.readLedger()
     const sessions: SessionMeta[] = []
     // Keep only the newest candidates without allocating and sorting the full
@@ -437,6 +445,7 @@ export class MemoryService extends EventEmitter {
       if (lifecycleVersion !== this.lifecycleVersion) {
         return { ok: true, added, skipped: 'Memory was cleared' }
       }
+      if (automaticBatchCancelled()) return { ok: true, added, skipped: 'Automatic memory generation was cancelled' }
     }
     if (lastError) return { ok: false, added, error: lastError }
     if (!added && processed) {
@@ -495,6 +504,8 @@ export class MemoryService extends EventEmitter {
 
   /** Stop automatic transcript extraction after the user turns learning off. */
   cancelAutomaticGeneration(): void {
+    // A startup batch may still be listing files or between extractions.
+    this.automaticGenerationVersion += 1
     this.cancelScheduledWork()
     this.cancelExtractions((attempt) => attempt.automatic)
     this.emitChanged()

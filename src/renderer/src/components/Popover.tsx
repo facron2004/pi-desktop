@@ -27,6 +27,8 @@ interface PopoverProps {
   align?: 'left' | 'right'
   placement?: 'top' | 'bottom' | 'right'
   width?: number
+  matchWidthOf?: string
+  maxHeight?: number
   className?: string
   /**
    * `click` is the default because every menu and picker in the app is a
@@ -50,6 +52,8 @@ export function Popover({
   align = 'left',
   placement = 'bottom',
   width,
+  matchWidthOf,
+  maxHeight,
   className,
   trigger = 'click',
   hoverDelay = 120,
@@ -132,9 +136,11 @@ export function Popover({
 
   useLayoutEffect(() => {
     if (!open) return
-    const anchor = containerRef.current
+    const container = containerRef.current
     const panel = popoverRef.current
-    if (!anchor || !panel) return
+    if (!container || !panel) return
+    const matchedAnchor = matchWidthOf ? container.closest(matchWidthOf) : null
+    const anchor = matchedAnchor ?? container
 
     // The panel is portaled to the body, so it cannot inherit the stacking of
     // whatever it was opened from. A dialog paints at `--z-modal`, which
@@ -150,6 +156,7 @@ export function Popover({
     // when `open` itself had not changed. Re-assert visibility before paint.
     const position = () => {
       const rect = anchor.getBoundingClientRect()
+      if (matchedAnchor) panel.style.width = `${rect.width}px`
       const edge = 12
       const gap = 8
       // The caption buttons are a native layer over the page. Room "above" a
@@ -161,7 +168,7 @@ export function Popover({
       // `scrollHeight` is the full content height even while the panel is
       // clamped, so this reads the natural size without first undoing the
       // previous clamp (which would bounce the ResizeObserver).
-      const naturalHeight = panel.scrollHeight + 2
+      const naturalHeight = Math.min(panel.scrollHeight + 2, maxHeight ?? Infinity)
       const useTop =
         placement !== 'right' &&
         (preferTop
@@ -183,7 +190,9 @@ export function Popover({
       // A max-height that only just covers the content still produces a
       // scrollbar: the border and rounding take the last pixels. Leave the
       // panel unclamped when it fits, and only scroll when it really cannot.
-      const nextMaxHeight = available >= naturalHeight + 2 ? '' : `${available}px`
+      const nextMaxHeight = maxHeight === undefined && available >= naturalHeight + 2
+        ? ''
+        : `${Math.min(available, maxHeight ?? Infinity)}px`
       if (panel.style.maxHeight !== nextMaxHeight) panel.style.maxHeight = nextMaxHeight
       const size = { width: panel.offsetWidth, height: panel.offsetHeight }
       const left =
@@ -212,7 +221,7 @@ export function Popover({
       window.removeEventListener('resize', position)
       window.removeEventListener('scroll', onScroll, true)
     }
-  }, [open, placement, align, width])
+  }, [open, placement, align, width, matchWidthOf, maxHeight])
 
   useEffect(() => {
     if (!open) return

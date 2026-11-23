@@ -1402,6 +1402,59 @@ test('disabling automatic learning aborts extraction without blocking manual lea
   assert.equal(extractionCalls, 2, 'manual learning remains an explicit action while automatic learning is off')
 })
 
+for (const interruptedAt of ['listing conversations', 'extracting a conversation'] as const) {
+  test(`re-enabling automatic learning cannot revive a cancelled batch (${interruptedAt})`, async (t) => {
+    const dir = tempDir(t, 'service-cancel-batch')
+    const store = new MemoryStore(path.join(dir, 'memories'))
+    const sessions = ['first', 'second'].map((name, index) => {
+      const file = path.join(dir, `${name}.jsonl`)
+      writeSessionFile(file, alphaCwd, name)
+      return metaFor(file, alphaCwd, 2 - index, 4)
+    })
+    let enabled = true
+    const reached = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    const extracted: string[] = []
+    const service = new MemoryService(store, () => ({ memoryGeneration: enabled } as AppSettings), {
+      list: async () => {
+        if (interruptedAt === 'listing conversations') {
+          reached.resolve()
+          await resume.promise
+        }
+        return sessions
+      },
+      extract: async (_store, file) => {
+        extracted.push(file)
+        if (interruptedAt === 'extracting a conversation' && extracted.length === 1) {
+          reached.resolve()
+          await resume.promise
+        }
+        return { added: 0 }
+      }
+    })
+    t.after(() => service.dispose())
+    const startupBatch = service as unknown as {
+      generateInternal: (options: { limit: number }, manual: boolean) => Promise<{ skipped?: string }>
+    }
+
+    const oldBatch = startupBatch.generateInternal({ limit: 2 }, false)
+    await reached.promise
+    enabled = false
+    service.cancelAutomaticGeneration()
+    enabled = true
+    resume.resolve()
+    const result = await oldBatch
+
+    assert.deepEqual(extracted, interruptedAt === 'extracting a conversation' ? [sessions[0].file] : [])
+    assert.equal(result.skipped, 'Automatic memory generation was cancelled')
+    assert.deepEqual(store.readLedger().sessions, {})
+
+    extracted.length = 0
+    await startupBatch.generateInternal({ limit: 2 }, false)
+    assert.deepEqual(extracted, sessions.map(session => session.file), 'a new batch may learn after re-enabling')
+  })
+}
+
 test('a new turn cancels in-flight memory extraction without marking the new revision processed', async (t) => {
   const dir = tempDir(t, 'service-new-turn')
   const store = new MemoryStore(path.join(dir, 'memories'))

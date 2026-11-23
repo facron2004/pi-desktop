@@ -1,36 +1,15 @@
-/* ------------------------------------------------------------------ *
- * Goal bar
- *
- * Goal Mode's objective, above the composer. It is its own rounded card,
- * separate from the input box below: both keep their full outline and there
- * is a clear gap between them, so neither edge is cut into a square corner at
- * the join. The single line reads left to right — mark, bold state word,
- * objective, elapsed time — with delete / play / expand pinned to the right.
- * The state word is the only colour.
- * ------------------------------------------------------------------ */
-
 .goal-bar {
-  flex: 0 0 auto;
-  /* A real gap below the card: the composer keeps its own top corners instead
-     of being tucked under this one. */
-  padding: var(--sp-1) var(--sp-6) var(--sp-2);
+  margin-bottom: var(--sp-3);
 }
 
 .goal-bar__inner {
-  /* The composer's own column: one width for both cards, so their left and
-     right edges line up. Each keeps a full outline — no shared square join. */
-  width: 100%;
-  max-width: var(--content-w);
-  margin: 0 auto;
   border: 1px solid var(--border);
   border-radius: var(--r-full);
-  background: color-mix(in srgb, var(--text-primary) 5%, var(--surface-canvas));
+  background: var(--surface-chrome);
   box-shadow: var(--shadow-sm);
 }
 
 .goal-bar__inner[data-editing='true'] {
-  width: 100%;
-  max-width: var(--content-w);
   border-radius: var(--composer-radius);
   box-shadow: var(--border-specular);
 }
@@ -38,10 +17,10 @@
 .goal-bar__head {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   min-width: 0;
-  min-height: 32px;
-  padding: 3px var(--sp-3) 3px var(--sp-4);
+  min-height: var(--ctl-lg);
+  padding: var(--sp-hair) var(--sp-2) var(--sp-hair) var(--sp-3);
 }
 
 .goal-bar__inner[data-editing='true'] .goal-bar__head {
@@ -56,29 +35,36 @@
   white-space: nowrap;
 }
 
-.goal-bar__icon {
+.goal-bar__mark {
   flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  background: var(--bg-hover);
   color: var(--text-muted);
 }
 
-/* The state word is bold ink, not a coloured pill: it is the headline of the
-   line, the same weight as the title in the reference. */
+.goal-bar__mark[data-status='active'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.goal-bar__mark[data-status='blocked'] {
+  background: var(--status-danger-soft);
+  color: var(--status-danger);
+}
+
+.goal-bar__mark[data-status='complete'] {
+  background: var(--status-success-soft);
+  color: var(--status-success);
+}
+
 .goal-bar__status {
   font-size: var(--text-small);
   font-weight: 650;
   color: var(--text);
-}
-
-.goal-bar__status[data-status='paused'] {
-  color: var(--text);
-}
-
-.goal-bar__status[data-status='blocked'] {
-  color: var(--status-danger);
-}
-
-.goal-bar__status[data-status='complete'] {
-  color: var(--status-success);
 }
 
 /* The objective runs on after the bold state word in quieter ink; one click
@@ -107,35 +93,30 @@
   outline-offset: 2px;
 }
 
-.goal-bar[data-status='complete'] .goal-bar__objective {
-  color: var(--text-faint);
-}
-
-.goal-bar__elapsed,
-.goal-bar__summary {
-  flex: 0 0 auto;
-  color: var(--text-faint);
-  font-size: var(--text-small);
-  white-space: nowrap;
-}
-
-.goal-bar__summary {
-  max-width: 22%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .goal-details-popover.popover {
   max-width: calc(100vw - 24px);
-  background: var(--surface-canvas);
+  background: var(--surface-raised);
   padding: 0;
 }
 
 .goal-details {
   display: grid;
   gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
+  padding: var(--sp-3) var(--sp-5) var(--sp-4);
   outline: none;
+}
+
+.goal-details__head,
+.goal-details__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.goal-details__title {
+  color: var(--text);
+  font-weight: 650;
 }
 
 .goal-details__label {
@@ -153,13 +134,31 @@
   user-select: text;
 }
 
-.goal-details__text + .goal-details__label {
-  margin-top: var(--sp-1);
+.goal-details__text + .goal-details__label,
+.goal-details__meta {
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
 }
 
-.goal-details__text + .goal-bar__action {
-  align-self: flex-start;
-  margin-top: var(--sp-1);
+.goal-details__meta {
+  color: var(--text-muted);
+  font-size: var(--text-small);
+}
+
+.goal-details__status {
+  font-weight: 600;
+}
+
+.goal-details__status[data-status='active'] {
+  color: var(--accent);
+}
+
+.goal-details__duration {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-variant-numeric: tabular-nums;
 }
 
 .goal-bar__actions {
@@ -177,7 +176,7 @@
   height: var(--ctl-xs);
   padding: 0 var(--sp-2);
   border-radius: var(--r-sm);
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-size: var(--text-assist);
   white-space: nowrap;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
@@ -188,7 +187,7 @@
   height: var(--ctl-xs);
   padding: 0;
   justify-content: center;
-  border-radius: var(--r-full);
+  border-radius: var(--r-sm);
 }
 
 .goal-bar__action:hover {
@@ -196,8 +195,10 @@
   color: var(--text);
 }
 
-.goal-bar__action--icon:hover {
+.goal-bar__action--icon:hover,
+.goal-bar__details-trigger[aria-expanded='true'] {
   background: var(--bg-active);
+  color: var(--text);
 }
 
 .goal-bar__action:focus-visible {
@@ -205,7 +206,8 @@
   outline-offset: -1px;
 }
 
-.goal-bar__action[data-tone='danger']:hover {
+.goal-bar__action[data-tone='danger']:hover:not(:disabled) {
+  background: var(--status-danger-soft);
   color: var(--status-danger);
 }
 
@@ -224,9 +226,9 @@
   cursor: default;
 }
 
-.goal-bar__action:disabled:hover {
+.goal-bar__action--icon:disabled:hover {
   background: none;
-  color: var(--text-faint);
+  color: var(--text-muted);
 }
 
 .goal-bar__editor {
@@ -272,18 +274,6 @@
   color: var(--text-faint);
   font-size: var(--text-assist);
   line-height: var(--leading-ui);
-}
-
-@media (max-width: 760px) {
-  .goal-bar {
-    padding-inline: var(--sp-4);
-  }
-}
-
-@container conversation (max-width: 520px) {
-  .goal-bar {
-    padding-inline: var(--sp-3);
-  }
 }
 
 /* Touch has no hover that reveals a target; the buttons themselves grow. */

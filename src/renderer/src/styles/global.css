@@ -2613,19 +2613,36 @@ transition: background var(--dur-fast) var(--ease);
   display: none;
 }
 
+/* A picture the reader attached is a mark in the bubble, not a preview: the
+   bubble is where the prompt is read, and a pasted screenshot at 190px pushed
+   the text it belongs to off the screen. The mark is one fixed size whatever
+   the picture is, and the click still opens the whole picture. */
 .user-msg__images {
   display: flex;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   flex-wrap: wrap;
   justify-content: flex-end;
-  margin-bottom: var(--sp-3);
+  margin-bottom: var(--sp-2);
 }
 
-.user-msg__images img {
-  max-width: 190px;
-  max-height: 190px;
-  border-radius: var(--r-md);
+.user-msg__images .lightbox-trigger--compact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
   border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.user-msg__images .lightbox-trigger--compact:hover,
+.user-msg__images .lightbox-trigger--compact:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 /* assistant message */

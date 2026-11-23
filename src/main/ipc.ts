@@ -66,7 +66,7 @@ import {
   supportsAppUpdate
 } from './app-update-installer'
 import { clearUpdateState, readUpdateStateForVersion, writeUpdateState } from './update-state'
-import { beginBundledPiCliMaintenance, checkAuth, killProcessTree, piVersion } from './pi/cli'
+import { beginBundledPiCliMaintenance, checkAuth, killProcessTree, piVersion, runPiCli } from './pi/cli'
 import { resolvePiLaunch } from './pi/locate'
 import {
   CLI_PACKAGE_NAME,
@@ -1004,8 +1004,8 @@ function runNpmCommand(
  *
  * npm does not print a determinate download bar when it has no TTY, so the
  * progress below follows the work it reports (`npm http` fetches) and fills
- * the remaining time with a bounded timer. It never reports completion before
- * npm exits, so the UI cannot show 100% for a failed install.
+ * the remaining time with a bounded timer. The caller reports completion after
+ * checking the installed executable.
  */
 async function runNpmInstall(
   cwd: string,
@@ -1048,7 +1048,6 @@ async function runNpmInstall(
       180_000,
       onOutput
     )
-    onProgress?.({ stage: 'installing', percent: 100 })
   } finally {
     clearInterval(timer)
   }
@@ -1496,8 +1495,19 @@ export function registerIpc(context: IpcContext): void {
             sendToWindow(BrowserWindow.fromWebContents(event.sender), 'app:piCliUpgradeProgress', progress)
           }
           await runNpmInstall(cwd, `${PI_CLI_PACKAGE_NAME}@${latestPiCliVersion}`, sendProgress)
-          const updatedVersion = await piVersion(piPath, { allowDuringMaintenance: true })
-          return { success: true, version: updatedVersion || undefined }
+          if (resolvePiLaunch(piPath).source !== 'bundled') {
+            throw new Error('The bundled Pi CLI could not be found after installation.')
+          }
+          const installed = await runPiCli(['--version'], { cwd, customPiPath: piPath, allowDuringMaintenance: true })
+          const updatedVersion = installed.stdout.trim()
+          if (installed.code !== 0 || !updatedVersion) {
+            throw new Error('The bundled Pi CLI could not start after installation.')
+          }
+          if (updatedVersion !== latestPiCliVersion) {
+            throw new Error(`Expected Pi CLI ${latestPiCliVersion} after installation, but found ${updatedVersion}.`)
+          }
+          sendProgress({ stage: 'installing', percent: 100 })
+          return { success: true, version: updatedVersion }
         } finally {
           if (supervisorPrepared) supervisor.finishCliUpgrade()
           finishCliMaintenance()

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { properLockfile } from '../proper-lockfile'
 import { canonicalPath } from './session-file'
@@ -488,10 +488,17 @@ export class InterprocessCwdGate {
   }
 
   private readRecords(): CwdLeaseRecord[] {
-    if (!existsSync(this.stateFile)) return []
+    let text: string
+    try {
+      text = readFileSync(this.stateFile, 'utf8')
+    } catch (error) {
+      // An unreadable registry may still hold live leases.
+      if (errorCode(error) === 'ENOENT') return []
+      throw error
+    }
     let parsed: unknown
     try {
-      parsed = JSON.parse(readFileSync(this.stateFile, 'utf8'))
+      parsed = JSON.parse(text)
     } catch {
       this.quarantineCorruptStateFile('invalid JSON')
       return []

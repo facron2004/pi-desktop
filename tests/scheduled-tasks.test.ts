@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -584,6 +584,7 @@ test('an expired lease does not relaunch a due task while its Pi process is aliv
     const ownerFile = `${path.join(userData, `scheduled-task-${digest}.run`)}.owner.json`
     const owner = JSON.parse(readFileSync(ownerFile, 'utf8')) as Record<string, unknown>
     assert.equal(owner.piPid, piProcess.pid)
+    assert.equal(owner.lastRunAt, first.list()[0]?.lastRunAt)
     writeFileSync(ownerFile, JSON.stringify({ ...owner, ownerPid: unusedProcessId() }))
 
     const lockDirectory = path.join(userData, `scheduled-task-${digest}.run.lock`)
@@ -608,6 +609,66 @@ test('an expired lease does not relaunch a due task while its Pi process is aliv
     await stopIdleProcess(piProcess)
   }
 })
+
+for (const state of ['unclaimed', 'replacement lease', 'crashed', 'running', 'legacy running'] as const) {
+  test(`a due recurring occurrence is only skipped for a matching live run (${state})`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const userData = mkdtempSync(path.join(tmpdir(), 'pi-schedule-overlap-'))
+    const file = path.join(userData, 'scheduled-tasks.json')
+    const now = Date.now()
+    const dueAt = now - 1000
+    const lastRunAt = now - 24 * 60 * 60 * 1000
+    const id = 'daily-job'
+    const lock = path.join(userData, `scheduled-task-${createHash('sha256').update(id).digest('hex')}.run`)
+    const ownerFile = `${lock}.owner.json`
+    mkdirSync(`${lock}.lock`)
+    writeFileSync(ownerFile, JSON.stringify({
+      token: 'lease',
+      ownerPid: state === 'crashed' ? unusedProcessId() : process.pid,
+      ...(state === 'legacy running'
+        ? { piPid: process.pid }
+        : { lastRunAt: state === 'unclaimed' || state === 'replacement lease' ? now : lastRunAt })
+    }))
+    writeFileSync(file, JSON.stringify([{
+      id, title: 'Daily job', prompt: 'Run the daily job', workspaceId: 'project', enabled: true,
+      createdAt: lastRunAt, nextRunAt: dueAt, schedule: { kind: 'daily', time: '00:00' },
+      ...(state === 'unclaimed' ? {} : { lastStatus: 'running', lastRunAt })
+    }]))
+    const supervisor = new CompletingSupervisor()
+    const service = new ScheduledTaskService({
+      userData,
+      settings: { get: () => ({ workspaces: [{ id: 'project', path: userData }] }) } as unknown as SettingsStore,
+      supervisor: supervisor as unknown as SessionSupervisor,
+      customInstructions: () => undefined
+    })
+    try {
+      t.mock.timers.tick(2_000)
+      assert.equal(supervisor.ensureCalls, 0)
+      if (state === 'running' || state === 'legacy running') {
+        assert.ok((service.list()[0]?.nextRunAt ?? 0) > now)
+        return
+      }
+      assert.equal(service.list()[0]?.nextRunAt, dueAt, 'the lease alone must not consume the occurrence')
+
+      if (state === 'crashed') {
+        const expiredAt = new Date(now - 90_000)
+        utimesSync(`${lock}.lock`, expiredAt, expiredAt)
+      } else {
+        rmdirSync(`${lock}.lock`)
+        unlinkSync(ownerFile)
+      }
+      t.mock.timers.tick(2_000)
+      t.mock.timers.tick(250)
+      await new Promise<void>(resolve => setImmediate(resolve))
+
+      assert.equal(supervisor.ensureCalls, 1, 'the original occurrence starts once the lease clears')
+      assert.equal(service.list()[0]?.lastStatus, 'completed')
+    } finally {
+      service.dispose()
+      rmSync(userData, { recursive: true, force: true })
+    }
+  })
+}
 
 test('a task whose running status cannot be saved is released for retry', async () => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-start-persist-test-'))

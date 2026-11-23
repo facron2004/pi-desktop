@@ -285,7 +285,8 @@ concurrently; desktop Git writes take `'exclusive'` access via `withCwdLock`
 (blocking while any overlapping conversation is working, and queueing new
 prompts until the exclusive lock releases). The working-directory gate is shared
 across app processes. Parent and nested folders overlap; sibling folders remain
-independent.
+independent. A Git write started during local lease cleanup waits for that
+cleanup before checking whether it can claim the directory.
 Switching projects is also only a view change. Closing or removing a workspace
 is what stops that folder's processes.
 
@@ -450,6 +451,10 @@ while the agent kept running) left the task `running` until the app restarted.
 lock and slot, and the schedule is untouched (`enabled` and `nextRunAt` survive).
 Removing a task stops its run for the same reason: a deleted task must not leave
 an agent working where nothing can see it.
+
+A recurring occurrence is skipped only when the saved run matches a live lease.
+A lease taken before the run is saved, or left behind by a dead process, leaves
+the occurrence due so the scheduler can run it when the lease clears.
 
 **An unreadable `scheduled-tasks.json` is set aside, not pinned.**
 `recoverInvalidTaskFile` rechecks the current file under the same lock used by
@@ -715,7 +720,8 @@ room for a second line.
   `updateStatus.piCli`, which only a manual check fills. Only a build that can
   replace its CLI asks npm: a packaged app answers from its own files, and the
   upgrade itself still follows the switch (it writes into the CLI's folder, so a
-  running agent is never swapped mid-run).
+  running agent is never swapped mid-run). The upgrade reports 100% only after
+  the installed CLI runs and prints the requested version.
 - **A check that answered still counts.** Both schedulers publish the result
   *before* asking whether their effect is still alive: at startup `info` and the
   saved settings arrive in the middle of the first request, which tears the
@@ -898,7 +904,9 @@ scans; when the remaining budget cannot cover the index work, it falls back to
 the bounded direct scan, and a cached scan stops at the remaining work limit.
 A missing, truncated or far-behind snapshot is rebuilt; the in-memory cache holds
 at most eight snapshots and an estimated 64 MiB total, and removing a session
-removes its index. On-disk sidecars are capped at 512 files and 512 MiB; startup
+removes its index. An open handle can outlast deletion or replacement, so
+search rechecks the named file's identity before returning its hits. On-disk
+sidecars are capped at 512 files and 512 MiB; startup
 and writes evict the oldest indexes when either limit is exceeded.
 `configureSessionSearchIndex` is the only door to the folder — the main process
 points it at `userData`, tests pass `null` to keep the old direct scan.
@@ -1383,7 +1391,9 @@ same channel. Settings page: `ImChannelSettings` (page id `im-channels`).
 file-backed store under `<userData>/memories/`, and the appended system-prompt
 block. `MemoryService` only listens to `agent_settled`, waits for an idle
 delay, skips aborted, draft, running and external-context sessions, and
-serializes model calls. The Pi extension persists external-context checks on
+serializes model calls. Turning automatic learning off cancels the active
+startup batch, even if learning is turned back on before that batch returns.
+The Pi extension persists external-context checks on
 the active branch; an oversized session without a complete check is skipped
 until Pi opens and classifies it, unless that filter is disabled.
 `memories.json` is canonical; `memory_summary.md` and
@@ -1414,10 +1424,10 @@ tool is available in every desktop task mode. It uses Pi's `select` dialog and
 returns the chosen option to the requesting conversation. `exit_plan_mode` asks
 for approval through Pi's dialog protocol. Approving restores the
 previous tool loadout. Its `tool_call` is exempt from the generic permission
-gate because that dialog is already the approval. The `subagent` tool is in the
-normal, Goal and Subagent loadouts (and blocked in Plan Mode); Subagent Mode adds
-the delegation-first instruction. `desktop_todo` is in the normal, Goal,
-Subagent and Plugin loadouts (not Plan Mode): it records the agent's checklist
+gate because that dialog is already the approval. Working modes include the
+`subagent` tool. Plan Mode blocks it. Saved Subagent Mode conversations reopen
+in Default Mode. The saved original tool list excludes the managed `subagent`
+tool. `desktop_todo` is available in working modes: it records the agent's checklist
 in the session and its `tool_call` is exempt from the permission gate because it
 is bookkeeping for the progress rail. Plugin Mode keeps the normal working
 loadout and adds an instruction to author a Pi extension — global

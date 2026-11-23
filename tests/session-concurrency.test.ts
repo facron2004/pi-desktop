@@ -166,7 +166,7 @@ for (const errorText of ['Unknown task mode', 'Unknown mode']) {
       }
       return originalRequest(command, ...args)
     }
-    await useAppStore.getState().setAgentMode('subagent')
+    await useAppStore.getState().setAgentMode('swarm')
     assert.equal(prompts, 2, 'retry the idle Pi once before asking for an app restart')
     assert.deepEqual(retired, ['mode.jsonl'])
     assert.equal(useAppStore.getState().agentMode, 'default')
@@ -180,14 +180,14 @@ test('an old Pi extension can be refreshed without restarting the desktop', asyn
   bridge.runtime.request = async (command, ...args) => {
     if (command === 'prompt' && ++prompts === 1) throw new Error('Unknown task mode')
     if (command === 'prompt') {
-      emit({ ownerId: 'mode.jsonl', event: { type: 'extension_ui_request', method: 'setStatus', statusKey: 'pi-desktop-mode', statusText: 'subagent' } })
+      emit({ ownerId: 'mode.jsonl', event: { type: 'extension_ui_request', method: 'setStatus', statusKey: 'pi-desktop-mode', statusText: 'swarm' } })
       return { disposition: 'handled' }
     }
     return originalRequest(command, ...args)
   }
-  await useAppStore.getState().setAgentMode('subagent')
+  await useAppStore.getState().setAgentMode('swarm')
   assert.equal(prompts, 2)
-  assert.equal(useAppStore.getState().agentMode, 'subagent')
+  assert.equal(useAppStore.getState().agentMode, 'swarm')
   assert.equal(useAppStore.getState().error, undefined)
 })
 
@@ -363,6 +363,65 @@ test('cancelling a queued composer submission restores a single copy', async () 
   assert.equal(await pending, false)
   assert.equal(useAppStore.getState().drafts[key]?.text, 'Still in the composer\nEarlier queued message')
 })
+
+for (const action of ['stop', 'clear queue'] as const) {
+  test(`${action} during image setup preserves the draft without sending the generation prompt`, async () => {
+    await useAppStore.getState().selectSession(session('cancel-image-setup.jsonl'))
+    const key = useAppStore.getState().activeSessionFile!
+    const setupStarted = Promise.withResolvers<void>()
+    const setupResponse = Promise.withResolvers<unknown>()
+    const generationPrompts: unknown[] = []
+    let preparedId: string | undefined
+    const cancelledIds: string[] = []
+    bridge.runtime.request = async (command, ...args) => {
+      if (command === 'clear_queue') return { steering: [], followUp: [] }
+      if (command !== 'prompt') return originalRequest(command, ...args)
+      const message = String(args[0]?.message)
+      if (message.startsWith('/desktop-image ')) {
+        const options = JSON.parse(message.slice('/desktop-image '.length))
+        if (options.cancel) {
+          cancelledIds.push(options.cancel)
+        } else if (!preparedId) {
+          assert.equal(typeof options.id, 'string')
+          preparedId = options.id
+          setupStarted.resolve()
+          return setupResponse.promise
+        }
+        return { disposition: 'handled' }
+      }
+      generationPrompts.push(args[0])
+      return { disposition: 'started' }
+    }
+
+    const image = { model: 'test/image', size: '1024x1024', quality: 'auto', count: 1 }
+    useAppStore.getState().updateDraft(key, {
+      text: '', image,
+      images: [{ type: 'image', mimeType: 'image/png', data: 'AA==', id: 'reference', name: 'reference.png', bytes: 1 }]
+    })
+    const draft = useAppStore.getState().drafts[key]
+    const submission = { draft, text: draft.text, kind: 'steer' as const, imageOptions: image, sendImage: image }
+    const pending = useAppStore.getState().submitComposerDraft(key, submission)
+    await setupStarted.promise
+    if (action === 'stop') await useAppStore.getState().stop()
+    else await useAppStore.getState().clearQueue(true)
+    setupResponse.resolve({ disposition: 'handled', cancelled: action === 'clear queue' })
+
+    assert.equal(await pending, false)
+    assert.deepEqual(generationPrompts, [])
+    assert.deepEqual(cancelledIds, action === 'stop' ? [preparedId] : [])
+    assert.equal(useAppStore.getState().drafts[key], draft)
+    assert.equal(useAppStore.getState().run.phase, 'idle')
+    assert.equal(useAppStore.getState().run.outcome, 'aborted')
+
+    assert.equal(await useAppStore.getState().submitComposerDraft(key, submission), true)
+    assert.deepEqual(generationPrompts, [{
+      message: 'Create a refined variation based on the attached reference image.',
+      streamingBehavior: 'steer',
+      images: [{ mimeType: 'image/png', data: 'AA==' }]
+    }], 'a fresh click can send the same reference image')
+    assert.deepEqual(useAppStore.getState().drafts[key]?.images, [])
+  })
+}
 
 test('a late prompt response updates its own thread', async () => {
   await useAppStore.getState().selectSession(session('A.jsonl'))

@@ -1,57 +1,80 @@
-/* A narrow list, not a wide sheet: one column of rows, each a single line —
-   icon, name, then what it does in muted text beside it. */
+.popover.composer__add-popover {
+  min-width: 0;
+  max-width: calc(100vw - 24px);
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  background: var(--surface-overlay);
+  backdrop-filter: none;
+  border-color: var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+  padding: var(--sp-2);
+}
+
 .composer__add-popover .popover__label.composer__add-section {
-  padding: var(--sp-3) var(--sp-3) var(--sp-1);
-  font-size: var(--text-xs);
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--text-assist);
+  line-height: var(--leading-assist);
   font-weight: 500;
   color: var(--text-muted);
 }
 
-.composer__add-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 0 var(--sp-1) var(--sp-1);
+.composer__add-actions + .composer__add-section {
+  margin-top: var(--sp-2);
 }
 
-.composer__add-popover .composer__add-action {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: 30px;
-  padding: var(--sp-1) var(--sp-2);
-  white-space: nowrap;
+.composer__add-popover .popover__item {
+  gap: var(--sp-3);
+  min-height: 32px;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-md);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
 }
 
-.composer__add-action-icon {
-  flex: 0 0 auto;
+.composer__add-popover .popover__item:hover,
+.composer__add-popover:not(:has(.popover__item:hover)) .popover__item:focus {
+  background: color-mix(in srgb, var(--text) 8%, var(--surface-overlay));
+}
+
+.composer__add-popover .popover__item:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.composer__add-action-icon,
+.composer__add-command-icon {
   color: var(--text-muted);
 }
 
-.composer__add-action-copy {
+.composer__add-action[data-page='image'] .composer__add-action-icon {
+  color: var(--accent);
+}
+
+.composer__add-action-copy,
+.composer__add-command-copy {
   display: flex;
   flex: 1 1 auto;
-  flex-direction: row;
   align-items: baseline;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   min-width: 0;
 }
 
-.composer__add-action-label {
-  flex: 0 0 auto;
+.composer__add-action-label,
+.composer__add-command-name {
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
   color: var(--text);
-  font-size: var(--text-small);
-  font-weight: 500;
+  text-overflow: ellipsis;
 }
 
-.composer__add-action-description {
-  flex: 0 1 auto;
+.composer__add-action-description,
+.composer__add-command-description {
   min-width: 0;
   overflow: hidden;
-  color: var(--text-faint);
-  font-size: var(--text-xs);
+  color: var(--text-muted);
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .composer__add-sep {
@@ -73,71 +96,10 @@
   padding: 0;
 }
 
-/* The list scrolls inside the panel; a long plugin catalog must not push the
-   sections above it out of reach. */
-.composer__add-list {
-  max-height: 320px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-}
-
-.composer__add-popover .composer__add-command {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: 30px;
-  padding: var(--sp-1) var(--sp-2);
-  white-space: nowrap;
-}
-
-.composer__add-command-icon {
-  flex: 0 0 auto;
+.composer__add-empty {
   color: var(--text-muted);
-}
-
-.composer__add-command-copy {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: row;
-  align-items: baseline;
-  gap: var(--sp-2);
-  min-width: 0;
-}
-
-.composer__add-command-name {
-  flex: 0 0 auto;
-  color: var(--text);
   font-size: var(--text-small);
-  font-weight: 500;
-}
-
-.composer__add-command-description,
-.composer__add-empty {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  line-height: 1.5;
-}
-
-.composer__add-command-description {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Template rows keep the same single line, but the name is the thing the reader
-   scans — keep it in the item foreground and the description quiet beside it. */
-.composer__add-popover .composer__add-template {
-  gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-2);
-}
-
-.composer__add-template .composer__add-command-name {
-  color: var(--text);
-}
-
-.composer__add-empty {
+  line-height: var(--leading-small);
   padding: var(--sp-3);
 }
 
@@ -145,6 +107,11 @@
    fill matches the text chips beside it instead of a small rounded box. */
 .icon-btn.composer__add-trigger {
   border-radius: var(--r-full);
+}
+
+.icon-btn.composer__add-trigger[aria-expanded='true'] {
+  background: var(--bg-active);
+  color: var(--text);
 }
 
 .composer__mode {
