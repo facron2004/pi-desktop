@@ -1884,32 +1884,56 @@ async function listSessionsInRoot(cwd: string | undefined, root: string): Promis
   }
 
   if (cwd && cwd.trim()) {
-    // Targeted workspace directory resolution (R3)
+    // Targeted workspace directory resolution (R3), plus direct `.jsonl` files
+    // in `root` for flat custom session directories (`--session-dir`,
+    // `PI_CODING_AGENT_SESSION_DIR`, or Pi's `settings.json:sessionDir`).
+    const seen = new Set<string>()
+    const appendMetas = (metas: SessionMeta[]) => {
+      for (const meta of metas) {
+        const key = canonicalSessionFile(meta.file)
+        if (seen.has(key)) continue
+        seen.add(key)
+        results.push(meta)
+      }
+    }
+
     const targetDir = await findWorkspaceSessionDir(root, cwd)
-    if (!targetDir) {
-      return []
+    if (targetDir) {
+      let files: string[] = []
+      let dirVerified = false
+      try {
+        const [names, dirReal] = await Promise.all([readdir(targetDir), realpath(targetDir)])
+        dirVerified = isBelowDirectory(realRoot, dirReal)
+        files = names.filter((f) => f.endsWith('.jsonl')).map((f) => path.join(targetDir, f))
+      } catch {
+        files = []
+      }
+      if (files.length > 0) appendMetas(await readMetas(files, cwd, dirVerified))
     }
 
-    let files: string[]
-    let dirVerified = false
+    let directFiles: string[] = []
     try {
-      const [names, dirReal] = await Promise.all([readdir(targetDir), realpath(targetDir)])
-      dirVerified = isBelowDirectory(realRoot, dirReal)
-      files = names.filter((f) => f.endsWith('.jsonl')).map((f) => path.join(targetDir, f))
+      const entries = await readdir(root, { withFileTypes: true })
+      directFiles = entries
+        .filter((e) => (e.isFile() || e.isSymbolicLink()) && e.name.endsWith('.jsonl'))
+        .map((e) => path.join(root, e.name))
     } catch {
-      return []
+      directFiles = []
     }
-
-    for (const meta of await readMetas(files, cwd, dirVerified)) results.push(meta)
+    if (directFiles.length > 0) appendMetas(await readMetas(directFiles, cwd, true))
   } else {
     // Global listing across all workspaces. Directories are independent, so
     // they are read with a small worker pool instead of one after another: a
     // cold start pays this scan before the sidebar can paint, and a user with
     // many projects used to wait for the sum of every folder's reads.
     let workspaceDirs: string[]
+    let directFiles: string[]
     try {
       const entries = await readdir(root, { withFileTypes: true })
       workspaceDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name)
+      directFiles = entries
+        .filter((e) => (e.isFile() || e.isSymbolicLink()) && e.name.endsWith('.jsonl'))
+        .map((e) => path.join(root, e.name))
     } catch {
       return []
     }
@@ -1937,7 +1961,14 @@ async function listSessionsInRoot(cwd: string | undefined, root: string): Promis
       }
     }
     const directoryWorkers = Math.min(MAX_CONCURRENT_WORKSPACE_DIRECTORIES, workspaceDirs.length)
-    await Promise.all(Array.from({ length: directoryWorkers }, () => directoryWorker()))
+    await Promise.all([
+      ...Array.from({ length: directoryWorkers }, () => directoryWorker()),
+      directFiles.length > 0
+        ? readMetas(directFiles, undefined, true).then((metas) => {
+            results.push(...metas)
+          })
+        : Promise.resolve()
+    ])
     for (const metas of perDirectory) results.push(...metas)
   }
 
@@ -1983,29 +2014,18 @@ export async function searchSessions(
     }
 
     let workspaceDirs: string[]
+    let directFiles: string[]
     try {
       const entries = await readdir(root, { withFileTypes: true })
       workspaceDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+      directFiles = entries
+        .filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith('.jsonl'))
+        .map((entry) => entry.name)
     } catch {
       continue
     }
 
-    for (const dir of workspaceDirs) {
-      if (shouldStop()) return []
-      const folder = path.join(root, dir)
-      let realFolder: string
-      try {
-        realFolder = await realpath(folder)
-        if (!isBelowDirectory(realRoot, realFolder)) continue
-      } catch {
-        continue
-      }
-      let names: string[]
-      try {
-        names = await readdir(folder)
-      } catch {
-        continue
-      }
+    const collectCandidates = async (folder: string, realFolder: string, names: string[]): Promise<boolean> => {
       let nextFile = 0
       const indexCandidates = async () => {
         while (!shouldStop()) {
@@ -2040,7 +2060,30 @@ export async function searchSessions(
       }
       const workers = Math.min(MAX_CONCURRENT_SEARCH_CANDIDATE_READS, names.length)
       await Promise.all(Array.from({ length: workers }, () => indexCandidates()))
+      return !shouldStop()
+    }
+
+    if (directFiles.length > 0 && !(await collectCandidates(root, realRoot, directFiles))) {
+      return []
+    }
+
+    for (const dir of workspaceDirs) {
       if (shouldStop()) return []
+      const folder = path.join(root, dir)
+      let realFolder: string
+      try {
+        realFolder = await realpath(folder)
+        if (!isBelowDirectory(realRoot, realFolder)) continue
+      } catch {
+        continue
+      }
+      let names: string[]
+      try {
+        names = await readdir(folder)
+      } catch {
+        continue
+      }
+      if (!(await collectCandidates(folder, realFolder, names))) return []
     }
   }
   const candidates = [...candidatesByFile.values()]
@@ -3020,41 +3063,86 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
     }
 
     let workspaceDirs: string[] = []
+    let directFiles: string[] = []
     try {
       const entries = await readdir(root, { withFileTypes: true })
       workspaceDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+      directFiles = entries
+        .filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith('.jsonl'))
+        .map((entry) => entry.name)
     } catch {
       workspaceDirs = []
+      directFiles = []
     }
 
-    await Promise.all(workspaceDirs.map(async (dir) => {
-      const dirPath = path.join(root, dir)
-      let names: string[] = []
-      let dirReal: string | undefined
-      try {
-        const [dirNames, resolvedDir] = await Promise.all([readdir(dirPath), realpath(dirPath)])
-        names = dirNames
-        dirReal = resolvedDir
-      } catch {
-        return
+    const pushUsageFile = (dirPath: string, file: string, dirVerified: boolean) => {
+      if (!file.endsWith('.jsonl')) return
+      const fullPath = path.join(dirPath, file)
+      const key = canonicalSessionFile(fullPath)
+      if (seenUsageFiles.has(key)) return
+      seenUsageFiles.add(key)
+      usageTasks.push({
+        fullPath,
+        root,
+        realRoot,
+        dirVerified,
+        sessionId: file.replace(/\.jsonl$/, ''),
+        key
+      })
+    }
+
+    for (const file of directFiles) pushUsageFile(root, file, true)
+
+    let nextWorkspaceDir = 0
+    const dirWorker = async () => {
+      while (nextWorkspaceDir < workspaceDirs.length) {
+        const dir = workspaceDirs[nextWorkspaceDir++]!
+        const dirPath = path.join(root, dir)
+        let names: string[] = []
+        let dirReal: string | undefined
+        try {
+          const [dirNames, resolvedDir] = await Promise.all([readdir(dirPath), realpath(dirPath)])
+          names = dirNames
+          dirReal = resolvedDir
+        } catch {
+          continue
+        }
+        const dirVerified = isBelowDirectory(realRoot, dirReal)
+        for (const file of names) pushUsageFile(dirPath, file, dirVerified)
       }
-      const dirVerified = isBelowDirectory(realRoot, dirReal)
-      for (const file of names) {
-        if (!file.endsWith('.jsonl')) continue
-        const fullPath = path.join(dirPath, file)
-        const key = canonicalSessionFile(fullPath)
-        if (seenUsageFiles.has(key)) continue
-        seenUsageFiles.add(key)
-        usageTasks.push({
-          fullPath,
-          root,
-          realRoot,
-          dirVerified,
-          sessionId: file.replace(/\.jsonl$/, ''),
-          key
-        })
-      }
-    }))
+    }
+    const dirWorkers = Math.min(MAX_CONCURRENT_WORKSPACE_DIRECTORIES, workspaceDirs.length)
+    await Promise.all(Array.from({ length: dirWorkers }, () => dirWorker()))
+  }
+
+  const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+  const tryExtractMessageTimestampFast = (raw: string): number | undefined => {
+    const head = raw.slice(0, 1024)
+    if (!/^\s*\{/.test(head)) return undefined
+    if (!raw.trimEnd().endsWith('}')) return undefined
+    const messageIdx = head.search(/"message"\s*:\s*\{/)
+    if (messageIdx < 0) return undefined
+    const prefix = head.slice(0, messageIdx)
+    if (!/"type"\s*:\s*"message"\b/.test(prefix)) return undefined
+
+    const entryTsMatch = prefix.match(/"timestamp"\s*:\s*"([^"]+)"/)
+    if (entryTsMatch) {
+      const parsed = Date.parse(entryTsMatch[1]!)
+      if (parsed > 0) return parsed
+    }
+
+    const tail = raw.slice(-512)
+    const msgNumTs = tail.match(/"timestamp"\s*:\s*(\d+)\s*\}\s*\}\s*$/)
+    if (msgNumTs) {
+      const parsed = Number(msgNumTs[1])
+      if (Number.isFinite(parsed) && parsed > 0) return parsed
+    }
+    const msgStrTs = tail.match(/"timestamp"\s*:\s*"([^"]+)"\s*\}\s*\}\s*$/)
+    if (msgStrTs) {
+      const parsed = Date.parse(msgStrTs[1]!)
+      if (parsed > 0) return parsed
+    }
+    return undefined
   }
 
   let nextTask = 0
@@ -3112,9 +3200,19 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
           usageData = undefined
           const timestamps: number[] | undefined = cacheable ? [] : undefined
           const metrics: CachedFileUsage['metrics'] | undefined = cacheable ? [] : undefined
+          let scannedLines = 0
 
           for await (const raw of readJsonlLines(opened.target, s.size, 0, false, opened.handle)) {
+            if (++scannedLines % 256 === 0) await yieldToEventLoop()
             if (!raw.includes('"message"')) continue
+            if (raw.length > 2048 && !raw.includes('"usage"')) {
+              const fastTs = tryExtractMessageTimestampFast(raw)
+              if (fastTs !== undefined) {
+                if (timestamps) timestamps.push(fastTs)
+                else recordActivity(sessionId, fastTs)
+                continue
+              }
+            }
             try {
               const record = JSON.parse(raw) as {
                 type?: string

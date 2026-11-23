@@ -22,7 +22,11 @@ import {
 import { normalizeFontScale } from '@shared/font-scale'
 import { migratePresetColors } from '@shared/theme-presets'
 import { withNewProjectFirst } from '@shared/project-order'
-import { forgetDefaultModel, rememberDefaultModel, rememberDefaultThinkingLevel } from './pi/retry-policy'
+import {
+  forgetDefaultModelAsync,
+  rememberDefaultModelAsync,
+  rememberDefaultThinkingLevelAsync
+} from './pi/retry-policy'
 import { properLockfile } from './proper-lockfile'
 
 /** Same folder, whatever slash style or drive-letter case it was opened with. */
@@ -700,6 +704,7 @@ export class SettingsStore {
   private projectTrustReviewed = false
   private fileVersion: string | undefined
   private dirEnsured = false
+  private piDefaultSync: Promise<void> = Promise.resolve()
   // Persisted with settings so other app processes share the same removals.
   private readonly removedWorkspaceIds = new Set<string>()
 
@@ -784,7 +789,7 @@ export class SettingsStore {
   }
 
   patch(patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): AppSettings {
-    this.update((current) => {
+    const updated = this.update((current) => {
       const { externalChatFolderHistory: _ignoredHistory, ...requested } = patch
       if (!Object.prototype.hasOwnProperty.call(patch, 'externalChatFolder')) return requested
 
@@ -802,15 +807,29 @@ export class SettingsStore {
       }
     }, { baseline })
     // Pi reads its own startup model from the agent directory, not from this
-    // file. A selection that never lands there is gone on the next launch.
-    if ('model' in patch) {
-      if (this.data.model) rememberDefaultModel(this.data.model)
-      else forgetDefaultModel()
+    // file. Sync asynchronously on a serialized chain so IPC never stalls the
+    // main thread on `Atomics.wait` while still landing updates in patch order.
+    const hasModel = 'model' in patch
+    const nextModel = updated.model
+    const hasThinking = 'thinkingLevel' in patch && Boolean(updated.thinkingLevel)
+    const nextThinking = updated.thinkingLevel
+    if (hasModel || hasThinking) {
+      const sync = async (): Promise<void> => {
+        if (hasModel) {
+          if (nextModel) await rememberDefaultModelAsync(nextModel)
+          else await forgetDefaultModelAsync()
+        }
+        if (hasThinking && nextThinking) {
+          await rememberDefaultThinkingLevelAsync(nextThinking)
+        }
+      }
+      this.piDefaultSync = this.piDefaultSync
+        .then(sync, sync)
+        .catch((error: unknown) => {
+          console.error('[pi-desktop] could not sync Pi default settings:', error)
+        })
     }
-    if ('thinkingLevel' in patch && this.data.thinkingLevel) {
-      rememberDefaultThinkingLevel(this.data.thinkingLevel)
-    }
-    return this.get()
+    return updated
   }
 
   addWorkspace(workspace: Workspace, activate = true): AppSettings {

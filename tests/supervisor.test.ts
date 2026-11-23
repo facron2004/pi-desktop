@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { ExtensionUiResponse, PiEvent, RuntimeQueueEvent, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
 import { SessionSupervisor, MAX_IDLE_RUNTIMES, type ManagedSessionRuntime } from '../src/main/pi/supervisor'
-import { PiRpcPreSendError } from '../src/main/pi/rpc-client'
+import { PiRpcCommandError, PiRpcPreSendError } from '../src/main/pi/rpc-client'
 import { InterprocessCwdGate } from '../src/main/pi/cwd-gate'
 import { properLockfile } from '../src/main/proper-lockfile'
 
@@ -1720,4 +1720,74 @@ test('rename waits for an in-flight start before calling set_session_name', asyn
     true
   )
   await supervisor.stop()
+})
+
+test('explicit PiRpcCommandError on prompt and failed bash commands do not wedge activity.running or CwdGate', async () => {
+  const runtime = new FakeRuntime()
+  const originalRequest = runtime.request.bind(runtime)
+  runtime.request = async <T = unknown>(command: string, payload?: Record<string, unknown>): Promise<T> => {
+    if (command === 'prompt') {
+      throw new PiRpcCommandError('No model configured', 'prompt')
+    }
+    if (command === 'bash') {
+      throw new Error('Command timed out')
+    }
+    return originalRequest<T>(command, payload)
+  }
+  const supervisor = supervisorOf([runtime])
+  await supervisor.ensure({ sessionKey: 'rpc-err', cwd: 'C:/rpc-err' })
+
+  await assert.rejects(() => supervisor.request('rpc-err', 'prompt', { message: 'hi' }), /No model configured/)
+  assert.equal(supervisor.sessionInfo('rpc-err')?.running, false)
+  assert.equal(await supervisor.withCwdLock('C:/rpc-err', async () => 'git-ok-after-prompt-error'), 'git-ok-after-prompt-error')
+
+  await assert.rejects(() => supervisor.request('rpc-err', 'bash', { command: 'echo hi' }), /Command timed out/)
+  assert.equal(supervisor.sessionInfo('rpc-err')?.running, false)
+  assert.equal(await supervisor.withCwdLock('C:/rpc-err', async () => 'git-ok-after-bash-error'), 'git-ok-after-bash-error')
+
+  await supervisor.stop()
+})
+
+test('release clears the local CwdGate when bindFile retargets a draft while interprocess release is in flight', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-retarget-release-'))
+  const lockDir = path.join(root, 'locks')
+  const projectDir = path.join(root, 'project')
+  const sessionFile = path.join(root, 'rebound.jsonl')
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime], lockDir)
+  t.after(async () => {
+    await supervisor.stop()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  await supervisor.ensure({ sessionKey: 'draft:1', cwd: projectDir })
+  await supervisor.request('draft:1', 'prompt', { message: 'start' })
+
+  // Hold interprocess releaseOwner so we can trigger bindFile mid-release.
+  const gate = (supervisor as unknown as { interprocessGate: InterprocessCwdGate }).interprocessGate
+  const origReleaseOwner = gate.releaseOwner.bind(gate)
+  let resumeRelease!: () => void
+  const releaseEntered = new Promise<void>((resolve) => {
+    gate.releaseOwner = async (ownerId: string) => {
+      gate.releaseOwner = origReleaseOwner
+      resolve()
+      await new Promise<void>((r) => { resumeRelease = r })
+      return origReleaseOwner(ownerId)
+    }
+  })
+
+  runtime.emit('event', { type: 'agent_settled', aborted: false } as PiEvent)
+  await releaseEntered
+
+  // Rebind draft:1 -> sessionFile while releaseOwner is suspended.
+  runtime.boundFile = sessionFile
+  await supervisor.request('draft:1', 'get_state')
+
+  // Let interprocess release finish and flush microtasks.
+  resumeRelease()
+  await new Promise((resolve) => setTimeout(resolve, 25))
+
+  // Local CwdGate must have released the rebound ownerId so exclusive Git writes succeed immediately.
+  const result = await supervisor.withCwdLock(projectDir, async () => 'unlocked-after-rebind')
+  assert.equal(result, 'unlocked-after-rebind')
 })

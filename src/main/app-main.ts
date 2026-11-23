@@ -329,14 +329,20 @@ function createWindow(): BrowserWindow {
     clearShowFallback()
     if (mainWindow === window) {
       mainWindow = null
-      void terminalManager?.disposeAll()
+      void terminalManager?.disposeAll().catch((error: unknown) => {
+        console.error('[pi-desktop] terminal cleanup failed:', error)
+      })
     }
   })
 
   // A crashed renderer has lost every terminal session id, so those PTYs no
   // longer have a controllable owner.
   window.webContents.on('render-process-gone', (_event, details) => {
-    if (mainWindow === window) void terminalManager?.disposeAll()
+    if (mainWindow === window) {
+      void terminalManager?.disposeAll().catch((error: unknown) => {
+        console.error('[pi-desktop] terminal cleanup failed:', error)
+      })
+    }
     if (!app.isPackaged) {
       console.error('[renderer] process gone:', details.reason)
     }
@@ -383,14 +389,20 @@ function createWindow(): BrowserWindow {
   window.webContents.on('will-navigate', guardNavigation)
   window.webContents.on('will-redirect', guardNavigation)
 
+  const handleWindowLoadError = (error: unknown) => {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code) : ''
+    if (code === 'ERR_ABORTED' || window.isDestroyed()) return
+    console.error('[pi-desktop] window load failed:', error)
+  }
+
   if (rendererEntry.developmentUrl) {
     const url = new URL(rendererEntry.developmentUrl)
     url.searchParams.set('piDesktopTheme', theme)
-    window.loadURL(url.toString())
+    void window.loadURL(url.toString()).catch(handleWindowLoadError)
   } else {
-    window.loadFile(rendererEntryFile, {
+    void window.loadFile(rendererEntryFile, {
       query: { piDesktopTheme: theme }
-    })
+    }).catch(handleWindowLoadError)
   }
 
   attachBrowserHistoryKeys(window)
@@ -554,8 +566,8 @@ async function start(): Promise<void> {
   }
 
   const runtimeOptions = {
-    customPiPath: initialSettings.piPath,
-    trustProject: initialSettings.trustProject,
+    getCustomPiPath: () => settingsStore.get().piPath,
+    getTrustProject: () => settingsStore.get().trustProject === true,
     getSessionRoots: () => resolveSessionRoots(settingsStore.get().externalChatFolder),
     getSessionDir: (cwd: string) => {
       const projectless = path.join(app.getPath('userData'), 'chats')
@@ -702,7 +714,11 @@ if (primaryInstance) {
   // Registered for the life of the process, so turning the tray on later still
   // focuses this window when a second launch asks for the lock.
   app.on('second-instance', () => revealMainWindow())
-  app.whenReady().then(start)
+  void app.whenReady().then(start).catch((error: unknown) => {
+    console.error('[pi-desktop] startup failed:', error)
+    process.exitCode = 1
+    app.quit()
+  })
 }
 
 app.on('before-quit', () => {

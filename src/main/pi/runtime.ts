@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, rm, unlink, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { resolveSessionFilePath, resolveSessionRoots } from '../sessions'
 import {
@@ -49,10 +49,12 @@ import {
 
 export interface RuntimeOptions {
   customPiPath?: string
+  getCustomPiPath?: () => string | undefined
   getSessionRoots?: () => readonly string[]
   getSessionDir?: (cwd: string) => string | undefined
   /** Trust project-local configuration such as `.pi/settings.json`. */
   trustProject?: boolean
+  getTrustProject?: () => boolean
   getPermissionMode?: () => PermissionMode
   /** Read at process start. A later Settings change reaches a live process by command. */
   getComputerUse?: () => boolean
@@ -84,8 +86,8 @@ export interface RuntimeOptions {
 export class PiRuntime extends EventEmitter {
   private client: PiRpcClient | null = null
   private status: RuntimeStatus = { phase: 'stopped' }
-  private pendingApprovalId?: string
-  private pendingUiRequestId?: string
+  private pendingApprovalIds = new Set<string>()
+  private pendingUiRequestIds = new Set<string>()
   private pendingSubagentEditor?: { token: string; requestId?: string; cancelled: boolean }
   private aborting = false
   /** Bumped on every start and stop so a superseded launch cannot publish status. */
@@ -122,7 +124,9 @@ export class PiRuntime extends EventEmitter {
     const generation = ++this.generation
     const trace = readTraceHint(options.trace)
     this.observed = {}
-    this.pendingApprovalId = undefined
+    this.pendingApprovalIds.clear()
+    this.pendingUiRequestIds.clear()
+    this.pendingSubagentEditor = undefined
     this.aborting = false
     // "starting" goes out before the old process is touched. Waiting for it
     // to exit, and publishing "stopped" while we wait, is the flash of
@@ -149,7 +153,10 @@ export class PiRuntime extends EventEmitter {
       sessionFile = verified
     }
 
-    const launch = resolvePiLaunch(this.options.customPiPath)
+    const customPiPath = this.options.getCustomPiPath ? this.options.getCustomPiPath() : this.options.customPiPath
+    const trustProject = this.options.getTrustProject ? this.options.getTrustProject() : this.options.trustProject === true
+
+    const launch = resolvePiLaunch(customPiPath)
     if (launch.source === 'none') {
       const error =
         'Could not find the Pi CLI. Install it with "npm i -g @earendil-works/pi-coding-agent" or set a custom path in Settings.'
@@ -163,6 +170,7 @@ export class PiRuntime extends EventEmitter {
     // lets go of it, which on Windows is the whole shutdown.
     const scratchId = randomUUID()
     const userData = app.getPath('userData')
+    const expectedStaticFiles = staticExtensionPaths(userData)
     const customInstructionsFile = path.join(userData, `pi-desktop-instructions-${scratchId}.md`)
     const permissionFile = path.join(userData, `pi-desktop-permissions-${scratchId}.mjs`)
     const subagentPermissionFile = path.join(userData, `pi-desktop-subagent-permissions-${scratchId}.mjs`)
@@ -184,7 +192,17 @@ export class PiRuntime extends EventEmitter {
         ensureStaticExtensionFiles(userData),
         (async () => {
           const writes: [string, string][] = [
-            [permissionFile, permissionExtension(permissionTitle, true, modeFile, swarmFile)],
+            [
+              permissionFile,
+              permissionExtension(
+                permissionTitle,
+                true,
+                modeFile,
+                swarmFile,
+                expectedStaticFiles.computer,
+                expectedStaticFiles.image
+              )
+            ],
             [subagentPermissionFile, permissionExtension(permissionTitle, false)],
             [subagentToolsFile, workspaceToolsExtension()],
             [modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile)],
@@ -194,7 +212,7 @@ export class PiRuntime extends EventEmitter {
                 this.options.getSubagentModel?.() ?? {},
                 subagentPermissionFile,
                 permissionTitle,
-                this.options.trustProject === true,
+                trustProject,
                 { command: launch.command, prefixArgs: launch.prefixArgs },
                 // Named agent presets are project data, not Settings, but they cross
                 // the same boundary: read here once per process, verified and bounded
@@ -208,7 +226,7 @@ export class PiRuntime extends EventEmitter {
               swarmExtension({
                 permissionExtensionPath: subagentPermissionFile,
                 permissionTitle,
-                trustProject: this.options.trustProject === true,
+                trustProject,
                 fallbackInvocation: { command: launch.command, prefixArgs: launch.prefixArgs },
                 workspaceToolsExtensionPath: subagentToolsFile
               })
@@ -239,7 +257,7 @@ export class PiRuntime extends EventEmitter {
       ...launch.prefixArgs,
       ...buildRpcArgs(
         { ...options, sessionFile },
-        this.options.trustProject,
+        trustProject,
         options.customInstructions?.trim() ? customInstructionsFile : undefined,
         permissionFile,
         modeFile,
@@ -307,8 +325,8 @@ export class PiRuntime extends EventEmitter {
       if (this.generation !== generation) return
       if (event.type === 'agent_start') this.aborting = false
       if (event.type === 'agent_settled') {
-        this.pendingApprovalId = undefined
-        this.pendingUiRequestId = undefined
+        this.pendingApprovalIds.clear()
+        this.pendingUiRequestIds.clear()
         this.pendingSubagentEditor = undefined
       }
       let cancelSubagentEditorRequestId: string | undefined
@@ -353,7 +371,7 @@ export class PiRuntime extends EventEmitter {
             client.respondUi(request.id, { confirmed: true })
             return
           }
-          this.pendingApprovalId = request.id
+          this.pendingApprovalIds.add(request.id)
           this.emit('event', {
             ...request,
             title: 'Approve tool operation?',
@@ -372,7 +390,7 @@ export class PiRuntime extends EventEmitter {
             this.pendingSubagentEditor.requestId = request.id
             if (this.pendingSubagentEditor.cancelled) cancelSubagentEditorRequestId = request.id
           }
-          this.pendingUiRequestId = request.id
+          this.pendingUiRequestIds.add(request.id)
         }
       }
       this.emit('event', event)
@@ -417,6 +435,9 @@ export class PiRuntime extends EventEmitter {
       // Still coming up: the failed request below reports the error.
       // Publishing "stopped" here is what the UI reads as a lost connection.
       if (this.status.phase === 'starting') return
+      this.pendingApprovalIds.clear()
+      this.pendingUiRequestIds.clear()
+      this.pendingSubagentEditor = undefined
       this.setStatus({
         phase: 'stopped',
         cwd: options.cwd,
@@ -490,14 +511,14 @@ export class PiRuntime extends EventEmitter {
     }
     if (command === 'abort' || command === 'abort_retry') {
       this.aborting = true
-      if (this.pendingApprovalId) {
-        this.client.respondUi(this.pendingApprovalId, { confirmed: false }, this.outbound('approval-cancel', trace))
-        this.pendingApprovalId = undefined
+      for (const id of this.pendingApprovalIds) {
+        this.client.respondUi(id, { confirmed: false }, this.outbound('approval-cancel', trace))
       }
-      if (this.pendingUiRequestId) {
-        this.client.respondUi(this.pendingUiRequestId, { confirmed: false, cancelled: true }, this.outbound('extension-ui-cancel', trace))
-        this.pendingUiRequestId = undefined
+      this.pendingApprovalIds.clear()
+      for (const id of this.pendingUiRequestIds) {
+        this.client.respondUi(id, { confirmed: false, cancelled: true }, this.outbound('extension-ui-cancel', trace))
       }
+      this.pendingUiRequestIds.clear()
       this.pendingSubagentEditor = undefined
     }
     const hint = readTraceHint(trace)
@@ -529,36 +550,41 @@ export class PiRuntime extends EventEmitter {
    * Silently ignored when the runtime is already gone.
    */
   respondUi(id: string, response: ExtensionUiResponse): void {
-    if (id === this.pendingApprovalId) this.pendingApprovalId = undefined
-    if (id === this.pendingUiRequestId) {
-      this.pendingUiRequestId = undefined
+    this.pendingApprovalIds.delete(id)
+    if (this.pendingUiRequestIds.delete(id)) {
       if (this.pendingSubagentEditor?.requestId === id) this.pendingSubagentEditor = undefined
     }
     this.client?.respondUi(id, response, this.outbound('extension-ui-response'))
   }
 
   hasPendingUi(id: string): boolean {
-    return this.pendingApprovalId === id || this.pendingUiRequestId === id
+    return this.pendingApprovalIds.has(id) || this.pendingUiRequestIds.has(id)
+  }
+
+  hasAnyPendingUi(): boolean {
+    return this.pendingApprovalIds.size > 0 || this.pendingUiRequestIds.size > 0
   }
 
   async stop(): Promise<void> {
     const generation = ++this.generation
-    if (this.pendingApprovalId && this.client?.running) {
-      try {
-        this.client.respondUi(this.pendingApprovalId, { confirmed: false }, this.outbound('approval-cancel'))
-      } catch {
-        /* client closing */
+    if (this.client?.running) {
+      for (const id of this.pendingApprovalIds) {
+        try {
+          this.client.respondUi(id, { confirmed: false }, this.outbound('approval-cancel'))
+        } catch {
+          /* client closing */
+        }
+      }
+      for (const id of this.pendingUiRequestIds) {
+        try {
+          this.client.respondUi(id, { confirmed: false, cancelled: true }, this.outbound('extension-ui-cancel'))
+        } catch {
+          /* client closing */
+        }
       }
     }
-    if (this.pendingUiRequestId && this.client?.running) {
-      try {
-        this.client.respondUi(this.pendingUiRequestId, { confirmed: false, cancelled: true }, this.outbound('extension-ui-cancel'))
-      } catch {
-        /* client closing */
-      }
-    }
-    this.pendingApprovalId = undefined
-    this.pendingUiRequestId = undefined
+    this.pendingApprovalIds.clear()
+    this.pendingUiRequestIds.clear()
     this.pendingSubagentEditor = undefined
     const client = this.client
     this.client = null
@@ -739,7 +765,8 @@ interface StaticExtensionFilePaths {
 const STATIC_EXT_DIR_PREFIX = 'pi-desktop-ext-'
 const PROCESS_STATIC_DIR_NAME = `${STATIC_EXT_DIR_PREFIX}${process.pid}-${randomUUID().slice(0, 8)}`
 const activeScratchEntries = new Set<string>([PROCESS_STATIC_DIR_NAME])
-const staticExtensionPromises = new Map<string, Promise<StaticExtensionFilePaths>>()
+const staticExtensionInFlight = new Map<string, Promise<StaticExtensionFilePaths>>()
+const staticExtensionSettled = new Map<string, StaticExtensionFilePaths>()
 const staticExtensionDirs = new Set<string>()
 let staticExtensionSources: StaticExtensionSources | undefined
 
@@ -757,9 +784,9 @@ function getStaticExtensionSources(): StaticExtensionSources {
   return staticExtensionSources
 }
 
-async function ensureStaticExtensionFiles(userData: string): Promise<StaticExtensionFilePaths> {
+function staticExtensionPaths(userData: string): StaticExtensionFilePaths {
   const dir = path.join(userData, PROCESS_STATIC_DIR_NAME)
-  const paths: StaticExtensionFilePaths = {
+  return {
     dir,
     provider: path.join(dir, 'pi-desktop-providers.mjs'),
     computer: path.join(dir, 'pi-desktop-computer.mjs'),
@@ -768,27 +795,60 @@ async function ensureStaticExtensionFiles(userData: string): Promise<StaticExten
     generationTiming: path.join(dir, 'pi-desktop-generation-timing.mjs'),
     mermaid: path.join(dir, 'pi-desktop-mermaid.mjs')
   }
-  const existing = staticExtensionPromises.get(dir)
-  if (existing && existsSync(paths.provider)) return existing
+}
+
+function allStaticExtensionFilesExist(paths: StaticExtensionFilePaths): boolean {
+  return (
+    existsSync(paths.provider) &&
+    existsSync(paths.computer) &&
+    existsSync(paths.image) &&
+    existsSync(paths.contextBreakdown) &&
+    existsSync(paths.generationTiming) &&
+    existsSync(paths.mermaid)
+  )
+}
+
+async function writeFileAtomic(target: string, content: string): Promise<void> {
+  const temp = `${target}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temp, content, 'utf8')
+    await rename(temp, target)
+  } catch (error) {
+    await unlink(temp).catch(() => {})
+    throw error
+  }
+}
+
+export async function ensureStaticExtensionFiles(userData: string): Promise<StaticExtensionFilePaths> {
+  const paths = staticExtensionPaths(userData)
+  const { dir } = paths
+
+  // Coalesce concurrent startups unconditionally while a write is in flight so
+  // two launches never race to truncate and overwrite the same static files.
+  const inFlight = staticExtensionInFlight.get(dir)
+  if (inFlight) return inFlight
+
+  const settled = staticExtensionSettled.get(dir)
+  if (settled && allStaticExtensionFilesExist(settled)) return settled
 
   const task = (async () => {
     const sources = getStaticExtensionSources()
     await mkdir(dir, { recursive: true })
     staticExtensionDirs.add(dir)
     await Promise.all([
-      writeFile(paths.provider, sources.provider, 'utf8'),
-      writeFile(paths.computer, sources.computer, 'utf8'),
-      writeFile(paths.image, sources.image, 'utf8'),
-      writeFile(paths.contextBreakdown, sources.contextBreakdown, 'utf8'),
-      writeFile(paths.generationTiming, sources.generationTiming, 'utf8'),
-      writeFile(paths.mermaid, sources.mermaid, 'utf8')
+      writeFileAtomic(paths.provider, sources.provider),
+      writeFileAtomic(paths.computer, sources.computer),
+      writeFileAtomic(paths.image, sources.image),
+      writeFileAtomic(paths.contextBreakdown, sources.contextBreakdown),
+      writeFileAtomic(paths.generationTiming, sources.generationTiming),
+      writeFileAtomic(paths.mermaid, sources.mermaid)
     ])
+    staticExtensionSettled.set(dir, paths)
     return paths
-  })().catch((error) => {
-    if (staticExtensionPromises.get(dir) === task) staticExtensionPromises.delete(dir)
-    throw error
+  })().finally(() => {
+    if (staticExtensionInFlight.get(dir) === task) staticExtensionInFlight.delete(dir)
   })
-  staticExtensionPromises.set(dir, task)
+  staticExtensionInFlight.set(dir, task)
   return task
 }
 
@@ -799,7 +859,8 @@ export function isActiveRuntimeScratchEntry(name: string): boolean {
 export async function cleanupStaticExtensionCache(): Promise<void> {
   const dirs = [...staticExtensionDirs]
   staticExtensionDirs.clear()
-  staticExtensionPromises.clear()
+  staticExtensionInFlight.clear()
+  staticExtensionSettled.clear()
   await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})))
 }
 

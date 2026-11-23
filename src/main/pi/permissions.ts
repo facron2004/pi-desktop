@@ -73,19 +73,22 @@ export function canAutoApprove(approval: ToolApproval, cwd: string, env: NodeJS.
 /**
  * A private dialog title keeps ordinary extension confirmations out of this gate.
  *
- * `taskModeExtensionPath` and `swarmExtensionPath` are the generated files this
- * app writes for its own extensions. A tool is exempt by **source**, never by
- * name alone: any other extension — a global Pi package, a project extension —
- * may register a tool called `swarm_task` or `desktop_todo`, and an exemption
- * matched on the name would let it run without the confirmation every other
- * tool needs. A name that resolves to another source falls through to `decide`,
- * so a squatted name costs a dialog instead of a silent approval.
+ * `taskModeExtensionPath`, `swarmExtensionPath`, `computerExtensionPath`, and
+ * `imageExtensionPath` are the generated files this app writes for its own
+ * extensions. A tool is exempt by **source**, never by name alone: any other
+ * extension — a global Pi package, a project extension — may register a tool
+ * called `swarm_task`, `desktop_todo`, `computer`, or `generate_image`, and an
+ * exemption matched on the name would let it run without the confirmation every
+ * other tool needs. A name that resolves to another source falls through to
+ * `decide`, so a squatted name costs a dialog instead of a silent approval.
  */
 export function permissionExtension(
   title: string,
   exemptDesktopTools = true,
   taskModeExtensionPath?: string,
-  swarmExtensionPath?: string
+  swarmExtensionPath?: string,
+  computerExtensionPath?: string,
+  imageExtensionPath?: string
 ): string {
   const ownedTools: Record<string, string> = {}
   if (exemptDesktopTools) {
@@ -97,15 +100,16 @@ export function permissionExtension(
     for (const name of ['swarm_spawn', 'swarm_task', 'swarm_collect', 'swarm_message', 'swarm_status', 'swarm_disband']) {
       if (swarmExtensionPath) ownedTools[name] = swarmExtensionPath
     }
+    // Switches the user turned on deliberately. `computer` is only offered after
+    // the Settings switch, and a per-click dialog would make the observe/act loop
+    // unusable; `generate_image` is the composer's own action. Both are verified
+    // by extension source path so third-party extensions cannot squat the names.
+    if (computerExtensionPath) ownedTools.computer = computerExtensionPath
+    if (imageExtensionPath) ownedTools.generate_image = imageExtensionPath
   }
-  // Switches the user turned on deliberately. `computer` is only offered after
-  // the Settings switch, and a per-click dialog would make the observe/act loop
-  // unusable; an image call is the composer's own action.
-  const settingTools = exemptDesktopTools ? ['computer', 'generate_image'] : []
   return `export default function (pi) {
     let pending = Promise.resolve();
     const ownedTools = new Map(Object.entries(${JSON.stringify(ownedTools)}));
-    const settingTools = new Set(${JSON.stringify(settingTools)});
     function freeze(value, seen = new WeakSet()) {
       if (!value || typeof value !== 'object' || seen.has(value)) return;
       seen.add(value);
@@ -119,11 +123,8 @@ export function permissionExtension(
     }
     pi.on('session_start', (_event, ctx) => ctx.ui.setStatus(${JSON.stringify(title)}, 'ready'));
     pi.on('tool_call', (event, ctx) => {
-      // Mode tools record session state or run their own approval.
-      // exit_plan_mode asks through its own dialog. desktop_todo only records
-      // the checklist in the session, so asking on every update would stop the
-      // agent for a bookkeeping step.
-      if (settingTools.has(event.toolName)) return;
+      // Mode, swarm, and desktop-owned tools record session state or run their
+      // own approval, verified strictly against the generated extension path.
       const ownedPath = ownedTools.get(event.toolName);
       if (ownedPath && sourcePathOf(event.toolName) === ownedPath) return;
       const decide = async () => {

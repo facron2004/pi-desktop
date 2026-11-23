@@ -87,6 +87,29 @@ export function isPreSendRpcError(error: unknown): boolean {
   )
 }
 
+/**
+ * Error raised when Pi answered an RPC request with an explicit
+ * `{ type: 'response', success: false }` record. For `prompt`, Pi only sends
+ * this error response when preflight failed and no agent turn started.
+ */
+export class PiRpcCommandError extends Error {
+  readonly command?: string
+  readonly rpcCommandError = true
+
+  constructor(message: string, command?: string) {
+    super(message)
+    this.name = 'PiRpcCommandError'
+    this.command = command
+  }
+}
+
+export function isRpcCommandError(error: unknown): boolean {
+  return (
+    error instanceof PiRpcCommandError ||
+    (typeof error === 'object' && error !== null && (error as { rpcCommandError?: unknown }).rpcCommandError === true)
+  )
+}
+
 function stderrTail(line: string): string {
   const bytes = Buffer.from(line, 'utf8')
   if (bytes.length <= MAX_RPC_STDERR_TAIL_BYTES) return line
@@ -635,7 +658,7 @@ export class PiRpcClient extends EventEmitter {
     if (record.success) {
       entry.resolve(record.data)
     } else {
-      entry.reject(new Error(record.error ?? `pi command "${record.command}" failed`))
+      entry.reject(new PiRpcCommandError(record.error ?? `pi command "${record.command}" failed`, record.command))
     }
   }
 

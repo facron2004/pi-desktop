@@ -5,6 +5,7 @@ import { properLockfile } from '../proper-lockfile'
 import { canonicalPath } from './session-file'
 
 export type CwdClaimMode = 'shared' | 'exclusive'
+export type InterprocessAcquireResult = 'acquired' | 'conflict' | 'lock_busy'
 
 interface CwdLeaseRecord {
   id: string
@@ -208,10 +209,12 @@ export class InterprocessCwdGate {
   private readonly root: string
   private readonly stateFile: string
   private readonly held = new Map<string, { ownerId: string; cwd: string; mode: CwdClaimMode }>()
+  private readonly releasingIds = new Set<string>()
   private readonly externalConflict = new Map<
     string,
     Partial<Record<CwdClaimMode, { pid: number; cwd: string; mode: CwdClaimMode }>>
   >()
+  private stateQueue: Promise<void> = Promise.resolve()
   private dirEnsured = false
 
   constructor(root: string) {
@@ -262,69 +265,110 @@ export class InterprocessCwdGate {
     if (!entry.exclusive) this.externalConflict.delete(key)
   }
 
+  private findReusableLease(
+    key: string,
+    ownerId: string
+  ): [string, { ownerId: string; cwd: string; mode: CwdClaimMode }] | undefined {
+    for (const entry of this.held.entries()) {
+      const [id, lease] = entry
+      if (this.releasingIds.has(id)) continue
+      if (lease.ownerId === ownerId && lease.cwd === key) return entry
+    }
+    return undefined
+  }
+
+  private acquireUnderLock(key: string, ownerId: string, mode: CwdClaimMode): boolean {
+    const existingEntry = this.findReusableLease(key, ownerId)
+    const records = this.readRecords()
+    const active = records.filter((record) =>
+      record.pid === process.pid
+        ? record.processInstanceId === PROCESS_INSTANCE_ID
+        : processIsAlive(record.pid)
+    )
+    const isOwnLease = (record: CwdLeaseRecord): boolean => {
+      if (record.pid !== process.pid || record.processInstanceId !== PROCESS_INSTANCE_ID) return false
+      return this.held.get(record.id)?.ownerId === ownerId
+    }
+    const overlapping = active.find((record) => {
+      if (isOwnLease(record)) return false
+      if (!CwdGate.overlaps(key, record.cwd)) return false
+      return mode === 'exclusive' || record.mode !== 'shared'
+    })
+    if (overlapping) {
+      if (active.length !== records.length) this.writeRecords(active)
+      this.setExternalConflict(key, mode, {
+        pid: overlapping.pid,
+        cwd: overlapping.cwd,
+        mode: overlapping.mode ?? 'exclusive'
+      })
+      return false
+    }
+
+    if (existingEntry) {
+      const [existingId, existingLease] = existingEntry
+      const upgraded = active.some((record) => record.id === existingId)
+      const nextRecords = upgraded
+        ? active.map((record) => (record.id === existingId ? { ...record, mode } : record))
+        : [...active, { id: existingId, pid: process.pid, processInstanceId: PROCESS_INSTANCE_ID, cwd: key, mode }]
+      this.writeRecords(nextRecords)
+      existingLease.mode = mode
+    } else {
+      const lease: CwdLeaseRecord = {
+        id: randomUUID(),
+        pid: process.pid,
+        processInstanceId: PROCESS_INSTANCE_ID,
+        cwd: key,
+        mode
+      }
+      this.writeRecords([...active, lease])
+      this.held.set(lease.id, { ownerId, cwd: key, mode })
+    }
+    this.clearExternalConflict(key, mode)
+    return true
+  }
+
   acquire(cwd: string, ownerId = CwdGate.key(cwd), mode: CwdClaimMode = 'shared'): boolean {
     if (!cwd) return true
     return this.acquireResolved(CwdGate.key(cwd), ownerId, mode)
   }
 
   acquireResolved(key: string, ownerId: string, mode: CwdClaimMode = 'shared'): boolean {
+    return this.tryAcquireResolvedSync(key, ownerId, mode) === 'acquired'
+  }
+
+  tryAcquireResolvedSync(
+    key: string,
+    ownerId: string,
+    mode: CwdClaimMode = 'shared'
+  ): InterprocessAcquireResult {
+    if (!key) return 'acquired'
+    const existingEntry = this.findReusableLease(key, ownerId)
+    if (existingEntry && (existingEntry[1].mode === 'exclusive' || mode === 'shared')) {
+      this.clearExternalConflict(key, mode)
+      return 'acquired'
+    }
+    try {
+      return this.withStateLockSync(() => this.acquireUnderLock(key, ownerId, mode)) ? 'acquired' : 'conflict'
+    } catch (error) {
+      if (errorCode(error) === 'ELOCKED') return 'lock_busy'
+      throw error
+    }
+  }
+
+  async acquireAsync(cwd: string, ownerId = CwdGate.key(cwd), mode: CwdClaimMode = 'shared'): Promise<boolean> {
+    if (!cwd) return true
+    return this.acquireResolvedAsync(CwdGate.key(cwd), ownerId, mode)
+  }
+
+  async acquireResolvedAsync(key: string, ownerId: string, mode: CwdClaimMode = 'shared'): Promise<boolean> {
     if (!key) return true
-    const existingEntry = [...this.held.entries()].find(
-      ([, lease]) => lease.ownerId === ownerId && lease.cwd === key
-    )
+    const existingEntry = this.findReusableLease(key, ownerId)
     if (existingEntry && (existingEntry[1].mode === 'exclusive' || mode === 'shared')) {
       this.clearExternalConflict(key, mode)
       return true
     }
     try {
-      return this.withStateLockSync(() => {
-        const records = this.readRecords()
-        const active = records.filter((record) =>
-          record.pid === process.pid
-            ? record.processInstanceId === PROCESS_INSTANCE_ID
-            : processIsAlive(record.pid)
-        )
-        const isOwnLease = (record: CwdLeaseRecord): boolean => {
-          if (record.pid !== process.pid || record.processInstanceId !== PROCESS_INSTANCE_ID) return false
-          return this.held.get(record.id)?.ownerId === ownerId
-        }
-        const overlapping = active.find((record) => {
-          if (isOwnLease(record)) return false
-          if (!CwdGate.overlaps(key, record.cwd)) return false
-          return mode === 'exclusive' || record.mode !== 'shared'
-        })
-        if (overlapping) {
-          if (active.length !== records.length) this.writeRecords(active)
-          this.setExternalConflict(key, mode, {
-            pid: overlapping.pid,
-            cwd: overlapping.cwd,
-            mode: overlapping.mode ?? 'exclusive'
-          })
-          return false
-        }
-
-        if (existingEntry) {
-          const [existingId, existingLease] = existingEntry
-          const upgraded = active.some((record) => record.id === existingId)
-          const nextRecords = upgraded
-            ? active.map((record) => (record.id === existingId ? { ...record, mode } : record))
-            : [...active, { id: existingId, pid: process.pid, processInstanceId: PROCESS_INSTANCE_ID, cwd: key, mode }]
-          this.writeRecords(nextRecords)
-          existingLease.mode = mode
-        } else {
-          const lease: CwdLeaseRecord = {
-            id: randomUUID(),
-            pid: process.pid,
-            processInstanceId: PROCESS_INSTANCE_ID,
-            cwd: key,
-            mode
-          }
-          this.writeRecords([...active, lease])
-          this.held.set(lease.id, { ownerId, cwd: key, mode })
-        }
-        this.clearExternalConflict(key, mode)
-        return true
-      })
+      return await this.withStateLock(() => this.acquireUnderLock(key, ownerId, mode))
     } catch (error) {
       if (errorCode(error) === 'ELOCKED') return false
       throw error
@@ -356,39 +400,56 @@ export class InterprocessCwdGate {
   private async releaseIds(ids: string[]): Promise<void> {
     if (!ids.length) return
     const releasing = new Set(ids)
-    await this.withStateLock(() => {
-      const records = this.readRecords()
-      const next = records.filter((record) => !releasing.has(record.id))
-      if (next.length !== records.length) this.writeRecords(next)
-    })
-    for (const id of ids) this.held.delete(id)
+    for (const id of ids) this.releasingIds.add(id)
+    let releasedOnDisk = false
+    try {
+      await this.withStateLock(() => {
+        const records = this.readRecords()
+        const next = records.filter((record) => !releasing.has(record.id))
+        if (next.length !== records.length) this.writeRecords(next)
+        releasedOnDisk = true
+      })
+    } finally {
+      for (const id of ids) {
+        this.releasingIds.delete(id)
+        if (releasedOnDisk) this.held.delete(id)
+      }
+    }
   }
 
-  private async withStateLock<T>(action: () => T): Promise<T> {
-    this.ensureRoot()
-    let release: (() => Promise<void>) | undefined
-    try {
-      release = await properLockfile.lock(this.stateFile, {
-        realpath: false,
-        retries: { retries: 20, minTimeout: 10, maxTimeout: 100 }
-      })
-    } catch (error) {
-      if (errorCode(error) === 'ENOENT') {
-        this.dirEnsured = false
-        this.ensureRoot()
+  private withStateLock<T>(action: () => T): Promise<T> {
+    const run = async (): Promise<T> => {
+      this.ensureRoot()
+      let release: (() => Promise<void>) | undefined
+      try {
         release = await properLockfile.lock(this.stateFile, {
           realpath: false,
           retries: { retries: 20, minTimeout: 10, maxTimeout: 100 }
         })
-      } else {
-        throw error
+      } catch (error) {
+        if (errorCode(error) === 'ENOENT') {
+          this.dirEnsured = false
+          this.ensureRoot()
+          release = await properLockfile.lock(this.stateFile, {
+            realpath: false,
+            retries: { retries: 20, minTimeout: 10, maxTimeout: 100 }
+          })
+        } else {
+          throw error
+        }
+      }
+      try {
+        return action()
+      } finally {
+        await release()
       }
     }
-    try {
-      return action()
-    } finally {
-      await release()
-    }
+    const queued = this.stateQueue.then(run, run)
+    this.stateQueue = queued.then(
+      () => undefined,
+      () => undefined
+    )
+    return queued
   }
 
   private withStateLockSync<T>(action: () => T): T {
@@ -412,20 +473,37 @@ export class InterprocessCwdGate {
     }
   }
 
+  private quarantineCorruptStateFile(reason: string): void {
+    const backup = `${this.stateFile}.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}`
+    try {
+      renameSync(this.stateFile, backup)
+    } catch {
+      try {
+        rmSync(this.stateFile, { force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+    console.error(`[pi-desktop] quarantined corrupt cwd-gate lease registry (${reason})`)
+  }
+
   private readRecords(): CwdLeaseRecord[] {
     if (!existsSync(this.stateFile)) return []
     let parsed: unknown
     try {
       parsed = JSON.parse(readFileSync(this.stateFile, 'utf8'))
     } catch {
-      throw new Error('The project activity lock registry could not be read.')
+      this.quarantineCorruptStateFile('invalid JSON')
+      return []
     }
     if (!parsed || typeof parsed !== 'object') {
-      throw new Error('The project activity lock registry is invalid.')
+      this.quarantineCorruptStateFile('non-object payload')
+      return []
     }
     const file = parsed as Partial<CwdLeaseFile>
     if (file.version !== 1 || !Array.isArray(file.leases)) {
-      throw new Error('The project activity lock registry is invalid.')
+      this.quarantineCorruptStateFile('unsupported schema')
+      return []
     }
     const records: CwdLeaseRecord[] = []
     for (const raw of file.leases) {
@@ -438,7 +516,8 @@ export class InterprocessCwdGate {
         typeof raw.cwd !== 'string' || !raw.cwd ||
         (raw.mode !== undefined && raw.mode !== 'shared' && raw.mode !== 'exclusive')
       ) {
-        throw new Error('The project activity lock registry is invalid.')
+        this.quarantineCorruptStateFile('malformed lease entry')
+        return []
       }
       records.push({
         id: raw.id,

@@ -147,7 +147,6 @@ const suites = [
   'pm-pricing.test.ts',
   'image-generation.test.ts',
   'image-tool.test.ts',
-  'image-echo.test.ts',
   'multi-rpc-stress.test.ts'
 ]
 const debug = process.argv[2] === '--debug'

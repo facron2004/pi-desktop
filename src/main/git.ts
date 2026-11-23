@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { constants, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { lstat, open, readlink, realpath, stat, type FileHandle } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { lstat, mkdtemp, open, readlink, realpath, rm, stat, writeFile, type FileHandle } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -870,12 +870,6 @@ async function commitSides(
   if (!root || !isHash(hash) || !filePath) return null
   const posix = filePath.replace(/\\/g, '/')
 
-  // A pathspec would make git call the rename an addition (the old path is not
-  // in the pathspec), so the whole commit's name-status is read instead.
-  const nameStatus = await git(root, ['-c', 'core.quotepath=false', 'show', '--name-status', '--format=', '-M', '-z', hash])
-  const entry = parseNameStatus(nameStatus.stdout).get(filePath)
-  const oldPath = (entry?.oldPath ?? filePath).replace(/\\/g, '/')
-
   const showSide = async (revision: string): Promise<string> => {
     const shown = await git(root, ['show', revision])
     return shown.code === 0 ? shown.stdout : ''
@@ -884,12 +878,18 @@ async function commitSides(
   let oldRaw = ''
   let newRaw = ''
   if (against === 'parent') {
+    // A pathspec would make git call the rename an addition (the old path is not
+    // in the pathspec), so the whole commit's name-status is read instead.
+    const nameStatus = await git(root, ['-c', 'core.quotepath=false', 'show', '--name-status', '--format=', '-M', '-z', hash])
+    const entry = parseNameStatus(nameStatus.stdout).get(filePath)
+    const oldPath = (entry?.oldPath ?? filePath).replace(/\\/g, '/')
     const parent = await git(root, ['rev-parse', '--verify', `${hash}^`])
     if (parent.code === 0) oldRaw = await showSide(`${hash}^:${oldPath}`)
     newRaw = await showSide(`${hash}:${posix}`)
   } else {
-    // Commit → working tree: the commit is the old side, the disk the new one.
-    oldRaw = await showSide(`${hash}:${oldPath}`)
+    // Commit → working tree: the commit already stores the file at its
+    // post-commit path (`posix`), while the disk is the new side.
+    oldRaw = await showSide(`${hash}:${posix}`)
     const working = await readWorktreeFile(root, filePath, MAX_DIFF_FILE_BYTES)
     if (working?.size && working.size > MAX_DIFF_FILE_BYTES) {
       newRaw = '\u0000'
@@ -954,13 +954,13 @@ export async function applyPatch(
   }
 
   return withGitMutation(root, async () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'pi-desktop-patch-'))
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'pi-desktop-patch-'))
     const file = path.join(dir, 'change.patch')
     try {
       // The body is written as it came: trailing spaces and an empty last
       // context line are part of the patch, even though the prefix check used
       // a trimmed copy.
-      writeFileSync(file, patch.endsWith('\n') ? patch : `${patch}\n`, 'utf8')
+      await writeFile(file, patch.endsWith('\n') ? patch : `${patch}\n`, 'utf8')
       const args = ['apply', '--whitespace=nowarn']
       if (reverse) args.push('--reverse')
       args.push(file)
@@ -974,7 +974,7 @@ export async function applyPatch(
       return { ok: true }
     } finally {
       try {
-        rmSync(dir, { recursive: true, force: true })
+        await rm(dir, { recursive: true, force: true })
       } catch {
         /* a temp directory that cannot be removed is not worth an error */
       }
@@ -1115,7 +1115,9 @@ export async function removeWorktree(
     .split('\n')
     .filter((line) => line.startsWith('worktree '))
     .map((line) => path.resolve(line.slice('worktree '.length)))
-  if (!registered.includes(resolved)) {
+  const samePath = (left: string, right: string): boolean =>
+    process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right
+  if (!registered.some((entry) => samePath(entry, resolved))) {
     return { ok: false, error: 'That folder is not a worktree of this repository.' }
   }
 

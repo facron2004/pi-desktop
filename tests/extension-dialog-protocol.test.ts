@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import type {
   ExtensionUiRequest,
   ExtensionUiResponse,
@@ -9,6 +12,7 @@ import type {
   RuntimeStatus
 } from '@shared/types'
 import { SessionSupervisor, type ManagedSessionRuntime } from '../src/main/pi/supervisor'
+import { PiRuntime, cleanupStaticExtensionCache, ensureStaticExtensionFiles } from '../src/main/pi/runtime'
 
 interface RecordedCommand {
   command: string
@@ -64,6 +68,10 @@ class TestSessionRuntime extends EventEmitter implements ManagedSessionRuntime {
 
   hasPendingUi(id: string): boolean {
     return this.pendingUiIds.has(id)
+  }
+
+  hasAnyPendingUi(): boolean {
+    return this.pendingUiIds.size > 0
   }
 
   async stop(): Promise<void> {
@@ -371,4 +379,154 @@ test('a Pi child exit clears approvals and releases the directory lock', async (
 
   const gitResult = await supervisor.withCwdLock(workspaceCwd, async () => 'git recovered')
   assert.equal(gitResult, 'git recovered')
+})
+
+test('overlapping extension UI dialogs stay pending until every dialog is answered or aborted', async () => {
+  const a = new TestSessionRuntime()
+  const supervisor = supervisorOf([a])
+  await supervisor.ensure({ sessionKey: 'A.jsonl', cwd: 'C:/overlap', sessionFile: 'A.jsonl' })
+
+  a.pendingUiIds.add('dlg-1')
+  a.emit('event', {
+    type: 'extension_ui_request',
+    id: 'dlg-1',
+    method: 'confirm',
+    title: 'First dialog'
+  } as PiEvent)
+  a.pendingUiIds.add('dlg-2')
+  a.emit('event', {
+    type: 'extension_ui_request',
+    id: 'dlg-2',
+    method: 'input',
+    title: 'Second dialog'
+  } as PiEvent)
+
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput, true)
+
+  // Answering the first dialog must keep waitingForInput true while dlg-2 is still open.
+  supervisor.respondUi('A.jsonl', 'dlg-1', { confirmed: true })
+  assert.equal(a.hasPendingUi('dlg-1'), false)
+  assert.equal(a.hasPendingUi('dlg-2'), true)
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput, true)
+
+  // Answering the second clears waitingForInput.
+  supervisor.respondUi('A.jsonl', 'dlg-2', { value: 'hello' })
+  assert.equal(a.hasPendingUi('dlg-2'), false)
+  assert.equal(supervisor.sessionInfo('A.jsonl')?.waitingForInput, false)
+})
+
+test('PiRuntime tracks overlapping UI dialogs in sets, cancels all on abort, and reads live trustProject/customPiPath getters', async (t) => {
+  const tempDir = mkdtempSync(path.join(tmpdir(), 'pi-runtime-live-'))
+  t.after(async () => {
+    await cleanupStaticExtensionCache()
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  // Concurrent ensureStaticExtensionFiles calls coalesce cleanly and write complete files atomically.
+  const [firstPaths, secondPaths, thirdPaths] = await Promise.all([
+    ensureStaticExtensionFiles(tempDir),
+    ensureStaticExtensionFiles(tempDir),
+    ensureStaticExtensionFiles(tempDir)
+  ])
+  assert.equal(firstPaths.provider, secondPaths.provider)
+  assert.equal(secondPaths.computer, thirdPaths.computer)
+  assert.ok(readFileSync(firstPaths.computer, 'utf8').includes('computer'))
+  assert.ok(readFileSync(firstPaths.image, 'utf8').includes('generate_image'))
+
+  // Fake Pi script that echoes its launch args through get_state and lets us drive overlapping UI requests.
+  const makeFakePiScript = (variant: string) => String.raw`
+const args = process.argv.slice(2);
+let permissionTitle = '';
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--extension' && args[i + 1] && args[i + 1].includes('pi-desktop-permissions-')) {
+    const src = require('node:fs').readFileSync(args[i + 1], 'utf8');
+    const m = src.match(/setStatus\("([^"]+)", 'ready'\)/);
+    if (m) permissionTitle = m[1];
+  }
+}
+process.stdout.write(JSON.stringify({ type: 'extension_ui_request', method: 'setStatus', statusKey: permissionTitle, statusText: 'ready' }) + '\n');
+process.stdout.write(JSON.stringify({ type: 'extension_ui_request', method: 'setStatus', statusKey: 'pi-desktop-mode', statusText: 'default' }) + '\n');
+const uiResponses = [];
+let buf = '';
+process.stdin.on('end', () => process.exit(0));
+process.stdin.on('data', (chunk) => {
+  buf += chunk;
+  let nl;
+  while ((nl = buf.indexOf('\n')) !== -1) {
+    const rec = JSON.parse(buf.slice(0, nl));
+    buf = buf.slice(nl + 1);
+    if (rec.type === 'extension_ui_response') {
+      uiResponses.push(rec);
+      continue;
+    }
+    if (rec.type === 'get_state') {
+      const sid = ${JSON.stringify(variant)} === 'second' ? 'custom-2' : (args.includes('--approve') ? 'trusted' : 'untrusted');
+      process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: 'get_state', success: true, data: { sessionId: sid, sessionFile: undefined } }) + '\n');
+    } else if (rec.type === 'emit_overlap') {
+      process.stdout.write(JSON.stringify({ type: 'extension_ui_request', id: 'ui-1', method: 'input', title: 'One' }) + '\n');
+      process.stdout.write(JSON.stringify({ type: 'extension_ui_request', id: 'ui-2', method: 'select', title: 'Two', options: ['a'] }) + '\n');
+      process.stdout.write(JSON.stringify({ type: 'extension_ui_request', id: 'app-1', method: 'confirm', title: permissionTitle, message: JSON.stringify({ toolName: 'bash', input: { command: 'ls' } }) }) + '\n');
+      process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: 'emit_overlap', success: true, data: {} }) + '\n');
+    } else if (rec.type === 'get_ui_responses') {
+      process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: 'get_ui_responses', success: true, data: uiResponses }) + '\n');
+    } else {
+      process.stdout.write(JSON.stringify({ type: 'response', id: rec.id, command: rec.type, success: true, data: {} }) + '\n');
+    }
+  }
+});
+`
+  const fakePi = path.join(tempDir, 'fake-pi-1.cjs')
+  const fakePi2 = path.join(tempDir, 'fake-pi-2.cjs')
+  writeFileSync(fakePi, makeFakePiScript('first'), 'utf8')
+  writeFileSync(fakePi2, makeFakePiScript('second'), 'utf8')
+
+  let trustProject = false
+  let customPiPath: string | undefined = fakePi
+  const runtime = new PiRuntime({
+    getCustomPiPath: () => customPiPath,
+    getTrustProject: () => trustProject,
+    getPermissionMode: () => 'ask'
+  })
+  t.after(async () => {
+    await runtime.stop()
+  })
+
+  // Start #1: trustProject=false
+  const first = await runtime.start({ cwd: tempDir })
+  assert.equal(first.ok, true, first.error)
+  assert.equal(runtime.currentStatus.sessionId, 'untrusted')
+
+  // Emit 3 overlapping dialogs (2 generic + 1 tool approval), verify all 3 are tracked and cancelled on abort.
+  await runtime.request('emit_overlap')
+  assert.equal(runtime.hasPendingUi('ui-1'), true)
+  assert.equal(runtime.hasPendingUi('ui-2'), true)
+  assert.equal(runtime.hasPendingUi('app-1'), true)
+  assert.equal(runtime.hasAnyPendingUi(), true)
+
+  runtime.respondUi('ui-1', { value: 'answered-1' })
+  assert.equal(runtime.hasPendingUi('ui-1'), false)
+  assert.equal(runtime.hasPendingUi('ui-2'), true)
+  assert.equal(runtime.hasPendingUi('app-1'), true)
+  assert.equal(runtime.hasAnyPendingUi(), true)
+
+  await runtime.request('abort')
+  assert.equal(runtime.hasPendingUi('ui-2'), false)
+  assert.equal(runtime.hasPendingUi('app-1'), false)
+  assert.equal(runtime.hasAnyPendingUi(), false)
+  const received = await runtime.request<{ id: string }[]>('get_ui_responses')
+  assert.deepEqual(received.map((r) => r.id).sort(), ['app-1', 'ui-1', 'ui-2'])
+
+  // Flip trustProject=true and restart without recreating PiRuntime: live getter must take effect.
+  trustProject = true
+  const second = await runtime.start({ cwd: tempDir })
+  assert.equal(second.ok, true, second.error)
+  assert.equal(runtime.currentStatus.sessionId, 'trusted')
+
+  // Point customPiPath to a second script: live getter must take effect on the next start.
+  trustProject = false
+  customPiPath = fakePi2
+  const third = await runtime.start({ cwd: tempDir })
+  assert.equal(third.ok, true, third.error)
+  assert.equal(runtime.currentStatus.sessionId, 'custom-2')
+  await runtime.stop()
 })

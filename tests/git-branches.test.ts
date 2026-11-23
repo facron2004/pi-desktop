@@ -247,3 +247,28 @@ test('readBranches never reuses a pre-write in-flight promise after a git branch
     cleanup()
   }
 })
+
+test('removeWorktree matches registered worktree paths case-insensitively on Windows', {
+  skip: process.platform !== 'win32'
+}, async () => {
+  const { root, git, cleanup } = gitRepoFixture()
+  const worktree = path.join(path.dirname(root), `${path.basename(root)}-CaseWt`)
+  try {
+    writeFileSync(path.join(root, 'file.txt'), 'initial\n')
+    git('add', 'file.txt')
+    git('commit', '-qm', 'initial commit')
+    const added = await addWorktree(root, worktree, 'case-wt', true)
+    assert.equal(added.ok, true)
+
+    const flippedDrive =
+      worktree[0] === worktree[0]!.toUpperCase()
+        ? worktree[0]!.toLowerCase() + worktree.slice(1)
+        : worktree[0]!.toUpperCase() + worktree.slice(1)
+    const removed = await removeWorktree(root, flippedDrive)
+    assert.equal(removed.ok, true, removed.error)
+    assert.equal(existsSync(worktree), false)
+  } finally {
+    rmSync(worktree, { recursive: true, force: true })
+    cleanup()
+  }
+})

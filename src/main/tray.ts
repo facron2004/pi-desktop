@@ -243,7 +243,11 @@ function createPopup(): boolean {
     }
   })
   const loader = popupUrl(theme)
-  void loader.load()
+  void loader.load().catch((error: unknown) => {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code?: unknown }).code) : ''
+    if (code === 'ERR_ABORTED' || created.isDestroyed()) return
+    console.error('[pi-desktop] tray popup load failed:', error)
+  })
   return true
 }
 
@@ -343,8 +347,10 @@ export function syncTray(options: TrayOptions & { enabled: boolean }): void {
     tray = new Tray(image)
     tray.setToolTip('Pi Desktop')
     // The hidden window leaves the taskbar, so the icon itself has to open it.
-    tray.on('click', options.show)
-    tray.on('double-click', options.show)
+    // Delegate through `lastOptions` so later `syncTray()` calls update the target.
+    const show = () => lastOptions?.show()
+    tray.on('click', show)
+    tray.on('double-click', show)
     // Right-click draws the custom popup instead of a native context menu.
     tray.on('right-click', showPopup)
   } else {

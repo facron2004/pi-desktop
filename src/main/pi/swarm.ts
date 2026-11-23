@@ -32,7 +32,7 @@ export function swarmExtension(options: SwarmExtensionOptions = {}): string {
   const trustProject = options.trustProject === true
   const fallbackInvocation = options.fallbackInvocation ?? { command: 'pi', prefixArgs: [] }
   const workspaceToolsPath = options.workspaceToolsExtensionPath ?? ''
-  return `import { execFile, spawn } from 'node:child_process';
+  return `import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import { Type } from 'typebox';
@@ -247,13 +247,29 @@ function ensureWorker(worker, ctx) {
   return spawned;
 }
 
-function killProcessTree(child) {
+function killProcessTree(child, sync = false) {
   if (!child) return;
   try {
     if (process.platform === 'win32') {
       if (child.pid) {
-        execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }, () => {});
-        return;
+        if (sync) {
+          if (typeof execFileSync === 'function') {
+            try {
+              execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 5000, stdio: 'ignore' });
+              return;
+            } catch {}
+          }
+          try { child.kill('SIGKILL'); } catch {}
+          return;
+        }
+        if (typeof execFile === 'function') {
+          execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }, error => {
+            if (error && child.exitCode === null && child.signalCode === null) {
+              try { child.kill('SIGKILL'); } catch {}
+            }
+          });
+          return;
+        }
       }
       child.kill('SIGKILL');
       return;
@@ -443,10 +459,10 @@ function spawnWorker(worker, ctx) {
   worker.startedAt = worker.startedAt || Date.now();
   worker.finishedAt = undefined;
   child.stdout.on('data', chunk => {
-    if (worker.child === child) consumeStdout(worker, decoder.write(chunk), ctx);
+    if (worker.child === child) consumeStdout(worker, child, decoder.write(chunk), ctx);
   });
   child.stdout.on('end', () => {
-    if (worker.child === child) consumeStdout(worker, decoder.end(), ctx);
+    if (worker.child === child) consumeStdout(worker, child, decoder.end(), ctx);
   });
   child.stderr.on('data', chunk => {
     if (worker.child === child) worker.stderr = bounded(worker.stderr + stderrDecoder.write(chunk), MAX_STDERR_CHARS);
@@ -495,9 +511,10 @@ function startTurn(worker, ctx, text, kind, onUpdate, signal) {
     if (worker.queue.length >= MAX_QUEUE_PER_WORKER) {
       return Promise.resolve({ ok: false, error: 'Worker "' + worker.name + '" has too many queued tasks.' });
     }
-    return new Promise(resolve => {
-      worker.queue.push({ ctx, text, kind, onUpdate, signal, resolve });
-    }).then(result => ({ ok: true, promise: Promise.resolve(result) }));
+    let resolveQueued;
+    const queuedPromise = new Promise(resolve => { resolveQueued = resolve; });
+    worker.queue.push({ ctx, text, kind, onUpdate, signal, resolve: resolveQueued, promise: queuedPromise });
+    return Promise.resolve({ ok: true, promise: queuedPromise });
   }
   const ensure = ensureWorker(worker, ctx);
   const processSignal = worker.processAbort?.signal;
@@ -587,7 +604,9 @@ function finalAssistantText(message) {
 }
 
 function forwardDialog(worker, event, ctx) {
-  const signal = worker.processAbort.signal;
+  const processAbort = worker.processAbort;
+  if (!processAbort) return;
+  const signal = processAbort.signal;
   const respond = record => {
     if (!signal.aborted) writeRecord(worker, record);
   };
@@ -601,11 +620,15 @@ function forwardDialog(worker, event, ctx) {
       let value;
       const options = { signal, ...(event.timeout ? { timeout: event.timeout } : {}) };
       if (event.method === 'confirm') {
-        let approval;
-        try { approval = JSON.parse(event.message || ''); } catch {}
-        if (approval && typeof approval === 'object' && !Array.isArray(approval)) {
+        if (PERMISSION_TITLE && event.title === PERMISSION_TITLE) {
+          let approval;
+          try { approval = JSON.parse(event.message || ''); } catch {}
+          if (!approval || typeof approval !== 'object' || Array.isArray(approval)) {
+            respond({ type: 'extension_ui_response', id: event.id, confirmed: false });
+            return;
+          }
           approval.cwd = ctx.cwd;
-          value = await ctx.ui.confirm(event.title || PERMISSION_TITLE, JSON.stringify(approval), options);
+          value = await ctx.ui.confirm(PERMISSION_TITLE, JSON.stringify(approval), options);
         } else {
           value = await ctx.ui.confirm(event.title || '', event.message || '', options);
         }
@@ -720,8 +743,8 @@ function handleEvent(worker, event, ctx) {
   if (event.type === 'agent_settled') finishTurn(worker, !worker.turnFailed, worker.errorMessage);
 }
 
-function consumeStdout(worker, text, ctx) {
-  if (!text) return;
+function consumeStdout(worker, child, text, ctx) {
+  if (!text || worker.child !== child) return;
   worker.buffer += text;
   worker.bufferBytes += Buffer.byteLength(text, 'utf8');
   if (worker.bufferBytes > 64 * 1024 * 1024) {
@@ -733,6 +756,7 @@ function consumeStdout(worker, text, ctx) {
   }
   let start = 0;
   while (true) {
+    if (worker.child !== child) return;
     const newline = worker.buffer.indexOf('\\n', start);
     if (newline === -1) {
       if (start > 0) {
@@ -864,7 +888,10 @@ export default function (pi) {
     }),
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     defaultActive: true,
-    async execute(_id, input, _signal, onUpdate, ctx) {
+    async execute(_id, input, signal, _onUpdate, _ctx) {
+      if (signal?.aborted) {
+        return { content: [{ type: 'text', text: 'Swarm collection was cancelled.' }], details: { workers: snapshots() }, isError: true };
+      }
       const requested = Array.isArray(input.names) ? input.names.map(cleanName).filter(Boolean) : [];
       const targets = requested.length
         ? requested.map(name => workers.get(name)).filter(Boolean)
@@ -872,10 +899,28 @@ export default function (pi) {
       if (targets.length === 0) {
         return { content: [{ type: 'text', text: 'The swarm has no workers.' }], details: { workers: snapshots() } };
       }
-      const reports = await Promise.all(targets.map(worker =>
-        worker.pending?.promise.then(result => result.text) ?? workerText(worker)
-      ));
-      return { content: [{ type: 'text', text: reports.join('\\n\\n---\\n\\n') }], details: { workers: snapshots() } };
+      const collectAll = Promise.all(targets.map(worker => {
+        const tail = worker.queue.length > 0 ? worker.queue[worker.queue.length - 1].promise : worker.pending?.promise;
+        return tail ? tail.then(result => result.text) : workerText(worker);
+      }));
+      if (!signal) {
+        const reports = await collectAll;
+        return { content: [{ type: 'text', text: reports.join('\\n\\n---\\n\\n') }], details: { workers: snapshots() } };
+      }
+      let onAbort;
+      const cancelled = new Promise(resolve => {
+        onAbort = () => resolve(null);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      try {
+        const reports = await Promise.race([collectAll, cancelled]);
+        if (reports === null) {
+          return { content: [{ type: 'text', text: 'Swarm collection was cancelled.' }], details: { workers: snapshots() }, isError: true };
+        }
+        return { content: [{ type: 'text', text: reports.join('\\n\\n---\\n\\n') }], details: { workers: snapshots() } };
+      } finally {
+        if (onAbort) signal.removeEventListener('abort', onAbort);
+      }
     }
   });
 
@@ -980,7 +1025,7 @@ export default function (pi) {
   });
 
   const stopOnExit = () => {
-    for (const worker of workers.values()) killProcessTree(worker.child);
+    for (const worker of workers.values()) killProcessTree(worker.child, true);
   };
   process.on('exit', stopOnExit);
   pi.on('session_shutdown', () => {

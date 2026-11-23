@@ -7,9 +7,11 @@ import {
   clearSessionCache,
   encodeWorkspaceDir,
   findWorkspaceSessionDir,
+  getAggregatedUsage,
   getSessionCacheSize,
   listSessions,
-  pathsEqual
+  pathsEqual,
+  searchSessions
 } from '../src/main/sessions'
 
 test('encodeWorkspaceDir: normalizes paths across Windows drive letters, separators, and Unicode', () => {
@@ -256,4 +258,72 @@ test('listSessions(targetCwd): targeted isolation reads ONLY target workspace an
     rmSync(sessionRoot, { recursive: true, force: true })
     rmSync(workDir, { recursive: true, force: true })
   }
+})
+
+test('flat custom session directories are listed, filtered by cwd, searched, and counted in usage', async (t) => {
+  clearSessionCache()
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-sessions-flat-'))
+  const emptyDefaultRoot = path.join(parent, 'default-sessions')
+  const flatRoot = path.join(parent, 'external-chats')
+  const projectA = path.join(parent, 'project-a')
+  const projectB = path.join(parent, 'project-b')
+  mkdirSync(emptyDefaultRoot, { recursive: true })
+  mkdirSync(flatRoot, { recursive: true })
+  mkdirSync(projectA, { recursive: true })
+  mkdirSync(projectB, { recursive: true })
+  const originalEnv = process.env.PI_CODING_AGENT_SESSION_DIR
+  process.env.PI_CODING_AGENT_SESSION_DIR = emptyDefaultRoot
+  t.after(() => {
+    if (originalEnv !== undefined) process.env.PI_CODING_AGENT_SESSION_DIR = originalEnv
+    else delete process.env.PI_CODING_AGENT_SESSION_DIR
+    clearSessionCache()
+    rmSync(parent, { recursive: true, force: true })
+  })
+
+  const makeFlatSession = (id: string, cwd: string, prompt: string, tokens: number) =>
+    [
+      JSON.stringify({ type: 'session', version: 3, id, cwd, timestamp: new Date().toISOString() }),
+      JSON.stringify({
+        type: 'message',
+        id: `${id}-u`,
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: prompt, timestamp: Date.now() }
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: `${id}-a`,
+        parentId: `${id}-u`,
+        timestamp: new Date().toISOString(),
+        message: { role: 'assistant', model: 'flat/model', content: 'ok', usage: { input: tokens, totalTokens: tokens } }
+      })
+    ].join('\n') + '\n'
+
+  writeFileSync(path.join(flatRoot, '2026-01-01_flat-a.jsonl'), makeFlatSession('flat-a', projectA, 'flat-marker-alpha', 11), 'utf8')
+  writeFileSync(path.join(flatRoot, '2026-01-02_flat-b.jsonl'), makeFlatSession('flat-b', projectB, 'flat-marker-beta', 19), 'utf8')
+
+  // An escaping symlink directly inside the flat root must still be ignored.
+  const outside = path.join(parent, 'outside.jsonl')
+  writeFileSync(outside, makeFlatSession('outside', projectA, 'flat-marker-secret', 999), 'utf8')
+  try {
+    symlinkSync(outside, path.join(flatRoot, 'escaped.jsonl'), 'file')
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'EPERM' && code !== 'EACCES' && code !== 'ENOTSUP') throw error
+  }
+
+  const allFlat = await listSessions(undefined, flatRoot)
+  assert.deepEqual(allFlat.map((s) => s.id).sort(), ['flat-a', 'flat-b'])
+
+  const filteredA = await listSessions(projectA, flatRoot)
+  assert.deepEqual(filteredA.map((s) => s.id), ['flat-a'])
+
+  const hits = await searchSessions('flat-marker-alpha', 10, { sessionRoots: [flatRoot] })
+  assert.equal(hits.length, 1)
+  assert.equal(hits[0]?.sessionId, 'flat-a')
+  assert.deepEqual(await searchSessions('flat-marker-secret', 10, { sessionRoots: [flatRoot] }), [])
+
+  const usage = await getAggregatedUsage(flatRoot)
+  assert.equal(usage.allTime.tokens.totalTokens, 30)
+  assert.equal(usage.allTime.conversationsCount, 2)
 })

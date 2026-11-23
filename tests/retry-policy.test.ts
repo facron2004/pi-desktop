@@ -3,7 +3,17 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { RETRY_FLOOR, ensurePatientRetrySettings, forgetDefaultModel, raiseRetryBudget, rememberDefaultModel, rememberDefaultThinkingLevel } from '../src/main/pi/retry-policy'
+import {
+  RETRY_FLOOR,
+  ensurePatientRetrySettings,
+  forgetDefaultModel,
+  forgetDefaultModelAsync,
+  raiseRetryBudget,
+  rememberDefaultModel,
+  rememberDefaultModelAsync,
+  rememberDefaultThinkingLevel,
+  rememberDefaultThinkingLevelAsync
+} from '../src/main/pi/retry-policy'
 import { isRateLimitError } from '../src/renderer/src/lib/provider-error'
 
 const RPM =
@@ -143,6 +153,38 @@ test('a saved reasoning level is written into Pi settings and an unknown one is 
     const saved = JSON.parse(readFileSync(file, 'utf8')) as { defaultModel: string; defaultThinkingLevel: string }
     assert.equal(saved.defaultModel, 'deepseek-flash')
     assert.equal(saved.defaultThinkingLevel, 'high')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('async default model and thinking helpers update and clear Pi settings without blocking', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-default-async-'))
+  const file = path.join(dir, 'settings.json')
+  try {
+    writeFileSync(file, JSON.stringify({ theme: 'dark' }))
+    await rememberDefaultModelAsync('openai/gpt-5', file)
+    await rememberDefaultThinkingLevelAsync('medium', file)
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as {
+      theme: string
+      defaultProvider?: string
+      defaultModel?: string
+      defaultThinkingLevel?: string
+    }
+    assert.equal(saved.theme, 'dark')
+    assert.equal(saved.defaultProvider, 'openai')
+    assert.equal(saved.defaultModel, 'gpt-5')
+    assert.equal(saved.defaultThinkingLevel, 'medium')
+
+    await forgetDefaultModelAsync(file)
+    const cleared = JSON.parse(readFileSync(file, 'utf8')) as {
+      defaultProvider?: string
+      defaultModel?: string
+      defaultThinkingLevel?: string
+    }
+    assert.equal(cleared.defaultProvider, undefined)
+    assert.equal(cleared.defaultModel, undefined)
+    assert.equal(cleared.defaultThinkingLevel, 'medium')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

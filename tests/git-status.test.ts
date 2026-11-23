@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
-import { applyPatch, readCommitDetail, readCommitFileDiff, readFileDiff, readPatch, readStatus, revertFile, stageFile, unstageFile } from '../src/main/git'
+import { applyPatch, readCommitDetail, readCommitFileDiff, readCommitWorktreeDiff, readFileDiff, readPatch, readStatus, revertFile, stageFile, unstageFile } from '../src/main/git'
 
 function fixture(): { root: string; git: (...args: string[]) => string; cleanup: () => void } {
   const temp = realpathSync(os.tmpdir())
@@ -262,6 +262,32 @@ test('readStatus coalesces concurrent calls and detects detached HEAD', async ()
     assert.equal(preResult.isRepo, true)
     assert.equal(postResult.files[0]?.staged, true)
     assert.equal(postResult.files[0]?.worktree, ' ')
+  } finally {
+    cleanup()
+  }
+})
+
+test('readCommitWorktreeDiff reads the renamed post-commit path and async applyPatch applies cleanly', async () => {
+  const { root, git, cleanup } = fixture()
+  try {
+    writeFileSync(path.join(root, 'before-rename.txt'), 'line 1\nline 2\n')
+    git('add', 'before-rename.txt')
+    git('commit', '-qm', 'initial')
+
+    git('mv', 'before-rename.txt', 'after-rename.txt')
+    git('commit', '-qm', 'rename file')
+    const renameCommit = git('rev-parse', 'HEAD').trim()
+
+    writeFileSync(path.join(root, 'after-rename.txt'), 'line 1\nline 2\nline 3\n')
+    const diff = await readCommitWorktreeDiff(root, renameCommit, 'after-rename.txt')
+    assert.ok(diff)
+    assert.equal(diff.oldText, 'line 1\nline 2\n')
+    assert.equal(diff.newText, 'line 1\nline 2\nline 3\n')
+
+    const patch = await readPatch(root, 'after-rename.txt')
+    assert.equal((await applyPatch(root, patch.text, true)).ok, true)
+    const reverted = await readCommitWorktreeDiff(root, renameCommit, 'after-rename.txt')
+    assert.equal(reverted?.newText.replace(/\r\n/g, '\n'), 'line 1\nline 2\n')
   } finally {
     cleanup()
   }

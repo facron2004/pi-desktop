@@ -183,3 +183,146 @@ test('a reopened conversation uses the newest complete roster, including removed
   assert.deepEqual(swarmWorkers([initial, disband, earlierResult]).map(worker => worker.name), ['worker-b'])
   assert.deepEqual(swarmWorkers([initial, report('swarm_disband', 3, 6, [])]), [])
 })
+
+test('swarm_collect unblocks immediately when its AbortSignal fires', async () => {
+  const f = fixture()
+  await f.call('spawn', { name: 'worker' })
+  await f.call('task', { name: 'worker', task: 'Slow task', wait: false })
+  const controller = new AbortController()
+  const pending = f.call('collect', {}, controller.signal)
+  await setImmediate()
+  controller.abort()
+
+  const result = await pending
+  assert.equal(result.isError, true)
+  assert.match(result.content[0].text, /cancelled/i)
+})
+
+test('queued swarm_task with wait=false returns immediately and swarm_collect gathers the queued turn', async () => {
+  const f = fixture()
+  await f.call('spawn', { name: 'worker' })
+  await f.call('task', { name: 'worker', task: 'First task', wait: false })
+
+  // Dispatching a second background task while the first is still running must not block.
+  const secondDispatch = await f.call('task', { name: 'worker', task: 'Queued follow-up', wait: false })
+  assert.equal(secondDispatch.isError, undefined)
+  assert.match(secondDispatch.content[0].text, /Dispatched/)
+
+  const collected = f.call('collect', { names: ['worker'] })
+  await setImmediate()
+  f.children[0].complete('First done')
+  await setImmediate()
+  f.children[0].complete('Queued done')
+
+  const result = await collected
+  assert.equal(result.isError, undefined)
+  assert.match(result.content[0].text, /Queued done/)
+})
+
+test('forwardDialog never promotes an untitled confirm with JSON body to the private approval title', async () => {
+  const seen: { title: string; message: string }[] = []
+  const source = swarmExtension({ permissionTitle: 'secret-approval-title' })
+    .replace(/^import .*;$/gm, '')
+    .replace('export default function', 'return function')
+  const children: WorkerProcess[] = []
+  const tools = new Map<string, {
+    name: string
+    execute: (id: string, params: object, signal: AbortSignal | undefined, update: undefined, ctx: unknown) => Promise<ToolResult>
+  }>()
+  const proc = Object.assign(new EventEmitter(), { argv: ['node', 'fake-pi'], execPath: 'node', platform: 'linux', kill: () => {} })
+  const spawn = () => {
+    const child = Object.assign(new WorkerProcess(), { pid: children.length + 1 })
+    children.push(child)
+    return child
+  }
+  const ctx = {
+    cwd: 'C:/lead-project',
+    ui: {
+      confirm: async (title: string, message: string) => {
+        seen.push({ title, message })
+        return true
+      },
+      setStatus: () => {}
+    }
+  }
+  const load = new Function('spawn', 'existsSync', 'StringDecoder', 'Type', 'process', source)
+  load(spawn, () => true, StringDecoder, Type, proc)({
+    on: () => {},
+    registerCommand: () => {},
+    registerTool: (tool: NonNullable<ReturnType<typeof tools.get>>) => tools.set(tool.name, tool)
+  })
+  await tools.get('swarm_spawn')!.execute('c', { name: 'worker' }, undefined, undefined, ctx)
+  const child = children[0]!
+
+  // Untitled confirm carrying JSON must keep empty title and must NOT be promoted to secret-approval-title.
+  child.emitRecord({
+    type: 'extension_ui_request',
+    method: 'confirm',
+    id: 'spoof-1',
+    title: '',
+    message: JSON.stringify({ toolName: 'read', input: { path: 'a.txt' }, toolSource: 'builtin' })
+  })
+  // Genuine approval with exact PERMISSION_TITLE gets lead cwd injected.
+  child.emitRecord({
+    type: 'extension_ui_request',
+    method: 'confirm',
+    id: 'real-1',
+    title: 'secret-approval-title',
+    message: JSON.stringify({ toolName: 'bash', input: { command: 'echo hi' } })
+  })
+  // Malformed approval claiming PERMISSION_TITLE is rejected immediately without opening a dialog.
+  child.emitRecord({
+    type: 'extension_ui_request',
+    method: 'confirm',
+    id: 'bad-1',
+    title: 'secret-approval-title',
+    message: 'not-json'
+  })
+  await setImmediate()
+  await setImmediate()
+
+  assert.equal(seen.length, 2)
+  assert.equal(seen[0]?.title, '')
+  assert.equal(seen[1]?.title, 'secret-approval-title')
+  assert.equal(JSON.parse(seen[1]!.message).cwd, 'C:/lead-project')
+  assert.ok(
+    child.requests.some((r) => r.type === 'extension_ui_response' && r.id === 'bad-1' && r.confirmed === false)
+  )
+})
+
+test('Windows stopOnExit uses synchronous taskkill and falls back to SIGKILL on error', async () => {
+  const syncCalls: unknown[][] = []
+  let sigkills = 0
+  const source = swarmExtension()
+    .replace(/^import .*;$/gm, '')
+    .replace('export default function', 'return function')
+  const tools = new Map<string, {
+    name: string
+    execute: (id: string, params: object, signal: AbortSignal | undefined, update: undefined, ctx: unknown) => Promise<ToolResult>
+  }>()
+  const proc = Object.assign(new EventEmitter(), { argv: ['node', 'fake-pi'], execPath: 'node', platform: 'win32', kill: () => {} })
+  const spawn = () =>
+    Object.assign(new WorkerProcess(), {
+      pid: 4242,
+      exitCode: null,
+      signalCode: null,
+      kill: () => { sigkills += 1 }
+    })
+  const execFileSync = (...args: unknown[]) => {
+    syncCalls.push(args)
+    throw new Error('taskkill unavailable')
+  }
+  const ctx = { cwd: process.cwd(), ui: { setStatus: () => {} } }
+  const load = new Function('spawn', 'execFile', 'execFileSync', 'existsSync', 'StringDecoder', 'Type', 'process', source)
+  load(spawn, () => {}, execFileSync, () => true, StringDecoder, Type, proc)({
+    on: () => {},
+    registerCommand: () => {},
+    registerTool: (tool: NonNullable<ReturnType<typeof tools.get>>) => tools.set(tool.name, tool)
+  })
+  await tools.get('swarm_spawn')!.execute('c', { name: 'worker' }, undefined, undefined, ctx)
+
+  proc.emit('exit')
+  assert.equal(syncCalls.length, 1)
+  assert.equal(syncCalls[0]?.[0], 'taskkill.exe')
+  assert.equal(sigkills, 1, 'fallback SIGKILL must fire when taskkill.exe fails')
+})

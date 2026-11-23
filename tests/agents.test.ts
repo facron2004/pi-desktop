@@ -137,6 +137,7 @@ Escaped.`)
 
 test('the agents directory itself escaping the workspace is rejected', async (t) => {
   const away = mkdtempSync(path.join(os.tmpdir(), 'pi-agents-away-'))
+  t.after(() => rmSync(away, { recursive: true, force: true }))
   mkdirSync(away, { recursive: true })
   writeAgent(away, 'far.md', `---
 name: far
@@ -144,10 +145,10 @@ description: Outside the workspace
 ---
 Far.`)
   const otherWorkspace = path.join(base, 'other-workspace')
-  mkdirSync(otherWorkspace, { recursive: true })
+  mkdirSync(path.join(otherWorkspace, '.pi'), { recursive: true })
   const link = path.join(otherWorkspace, '.pi', 'agents')
   try {
-    symlinkSync(away, link, 'junction')
+    symlinkSync(away, link, process.platform === 'win32' ? 'junction' : 'dir')
   } catch (error) {
     t.skip('directory symlinks are unavailable: ' + (error instanceof Error ? error.message : String(error)))
     return

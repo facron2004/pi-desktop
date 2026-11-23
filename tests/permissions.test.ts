@@ -105,16 +105,20 @@ test('permission messages reject malformed requests', () => {
 
 test('desktop exemptions are matched by extension source, not by tool name', async () => {
   // A subagent's own permission extension gets no desktop exemptions at all.
-  assert.match(permissionExtension('private-title', false), /new Set\(\[\]\)/)
+  const subagentSource = permissionExtension('private-title', false)
+  assert.match(subagentSource, /new Map\(Object\.entries\(\{\}\)\)/)
+  assert.doesNotMatch(subagentSource, /settingTools/)
 
   type ToolCall = (event: { toolName: string; input: Record<string, unknown> }, ctx: unknown) => Promise<unknown>
   type Handler = (name: string, handler: ToolCall) => void
   const modePath = path.resolve('bundled-mode.mjs')
   const swarmPath = path.resolve('bundled-swarm.mjs')
+  const computerPath = path.resolve('bundled-computer.mjs')
+  const imagePath = path.resolve('bundled-image.mjs')
   const { default: extension } = await import(`data:text/javascript,${encodeURIComponent(
-    permissionExtension('private-title', true, modePath, swarmPath)
+    permissionExtension('private-title', true, modePath, swarmPath, computerPath, imagePath)
   )}`)
-  let registered: { name: string; sourcePath: string }[] = []
+  let registered: { name: string; sourcePath?: string }[] = []
   let onToolCall: ToolCall | undefined
   let approvals = 0
   extension({
@@ -123,7 +127,7 @@ test('desktop exemptions are matched by extension source, not by tool name', asy
     }) as unknown as Handler,
     getAllTools: () => registered.map((entry) => ({
       name: entry.name,
-      sourceInfo: { path: entry.sourcePath, source: 'local' }
+      sourceInfo: entry.sourcePath ? { path: entry.sourcePath, source: 'local' } : { source: 'extension' }
     }))
   })
   const ctx = {
@@ -142,7 +146,9 @@ test('desktop exemptions are matched by extension source, not by tool name', asy
     ['exit_plan_mode', modePath],
     ['desktop_ask_user', modePath],
     ['swarm_task', swarmPath],
-    ['swarm_disband', swarmPath]
+    ['swarm_disband', swarmPath],
+    ['computer', computerPath],
+    ['generate_image', imagePath]
   ] as const) {
     registered = [{ name, sourcePath }]
     assert.equal(await call(name), undefined, name + ' from its own extension is exempt')
@@ -158,6 +164,19 @@ test('desktop exemptions are matched by extension source, not by tool name', asy
   registered = [{ name: 'desktop_todo', sourcePath: path.resolve('global-package.mjs') }]
   assert.equal((await call('desktop_todo'))?.block, true)
   assert.equal(approvals, 2)
+
+  registered = [{ name: 'computer', sourcePath: path.resolve('untrusted-extension.mjs') }]
+  assert.equal((await call('computer'))?.block, true)
+  assert.equal(approvals, 3)
+
+  registered = [{ name: 'generate_image', sourcePath: path.resolve('untrusted-extension.mjs') }]
+  assert.equal((await call('generate_image'))?.block, true)
+  assert.equal(approvals, 4)
+
+  // Missing sourceInfo.path must also never bypass confirmation.
+  registered = [{ name: 'computer' }]
+  assert.equal((await call('computer'))?.block, true)
+  assert.equal(approvals, 5)
 })
 
 test('only the bundled question tool opens its choice dialog without a separate approval', async () => {
@@ -189,10 +208,18 @@ test('the real extension serializes confirmations and blocks denied or aborted t
   type Context = { cwd: string; hasUI: boolean; signal: AbortSignal; ui: { confirm: (title: string, message: string) => Promise<boolean>; setStatus: (key: string, value: string) => void } }
   type Handler = (event: { toolName: string; input: Record<string, unknown> }, ctx: Context) => unknown
   const handlers = new Map<string, Handler>()
-  const { default: extension } = await import(`data:text/javascript,${encodeURIComponent(permissionExtension('private-title'))}`)
+  const computerPath = path.resolve('bundled-computer.mjs')
+  const imagePath = path.resolve('bundled-image.mjs')
+  const { default: extension } = await import(`data:text/javascript,${encodeURIComponent(
+    permissionExtension('private-title', true, undefined, undefined, computerPath, imagePath)
+  )}`)
   extension({
     on: (name: string, handler: Handler) => handlers.set(name, handler),
-    getAllTools: () => [{ name: 'write', sourceInfo: { source: 'extension' } }]
+    getAllTools: () => [
+      { name: 'write', sourceInfo: { source: 'extension' } },
+      { name: 'computer', sourceInfo: { source: 'local', path: computerPath } },
+      { name: 'generate_image', sourceInfo: { source: 'local', path: imagePath } }
+    ]
   })
   const answers: ((answer: boolean) => void)[] = []
   const approvalMessages: string[] = []

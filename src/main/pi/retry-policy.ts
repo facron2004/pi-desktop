@@ -230,6 +230,68 @@ function applyLaunchAgentSettings(
   return { settings: next, changed }
 }
 
+async function withSettingsLockAsync<T>(file: string, operation: () => Promise<T>): Promise<T> {
+  await mkdir(path.dirname(file), { recursive: true })
+  const release = await properLockfile.lock(file, {
+    realpath: false,
+    retries: { retries: 10, minTimeout: 10, maxTimeout: 50 }
+  })
+  try {
+    return await operation()
+  } finally {
+    try {
+      await release()
+    } catch (error) {
+      console.error('[pi-desktop] could not release agent settings lock:', error)
+    }
+  }
+}
+
+export async function rememberDefaultModelAsync(spec: string | undefined, file = agentSettingsPath()): Promise<void> {
+  const parsed = splitModelSpec(spec)
+  if (!parsed) return
+  const initial = await readSettingsAsync(file)
+  if (!initial || (initial.defaultProvider === parsed.provider && initial.defaultModel === parsed.model)) return
+  await withSettingsLockAsync(file, async () => {
+    const current = await readSettingsAsync(file)
+    if (!current) return
+    if (current.defaultProvider === parsed.provider && current.defaultModel === parsed.model) return
+    current.defaultProvider = parsed.provider
+    current.defaultModel = parsed.model
+    await writeSettingsAsync(file, current)
+  })
+}
+
+export async function rememberDefaultThinkingLevelAsync(
+  level: string | undefined,
+  file = agentSettingsPath()
+): Promise<void> {
+  const value = level?.trim().toLowerCase()
+  if (!value || !THINKING_LEVELS.has(value)) return
+  const initial = await readSettingsAsync(file)
+  if (!initial || initial.defaultThinkingLevel === value) return
+  await withSettingsLockAsync(file, async () => {
+    const current = await readSettingsAsync(file)
+    if (!current) return
+    if (current.defaultThinkingLevel === value) return
+    current.defaultThinkingLevel = value
+    await writeSettingsAsync(file, current)
+  })
+}
+
+export async function forgetDefaultModelAsync(file = agentSettingsPath()): Promise<void> {
+  const initial = await readSettingsAsync(file)
+  if (!initial || (!('defaultProvider' in initial) && !('defaultModel' in initial))) return
+  await withSettingsLockAsync(file, async () => {
+    const current = await readSettingsAsync(file)
+    if (!current) return
+    if (!('defaultProvider' in current) && !('defaultModel' in current)) return
+    delete current.defaultProvider
+    delete current.defaultModel
+    await writeSettingsAsync(file, current)
+  })
+}
+
 /**
  * Non-blocking launch preparation: checks retry floor + default model/thinking
  * asynchronously without locking or Atomics.wait unless a write is actually needed,
@@ -243,22 +305,11 @@ export async function prepareLaunchAgentSettings(
   if (!current) return
   if (!applyLaunchAgentSettings(current, options).changed) return
 
-  await mkdir(path.dirname(file), { recursive: true })
-  const release = await properLockfile.lock(file, {
-    realpath: false,
-    retries: { retries: 10, minTimeout: 10, maxTimeout: 50 }
-  })
-  try {
+  await withSettingsLockAsync(file, async () => {
     const latest = await readSettingsAsync(file)
     if (!latest) return
     const next = applyLaunchAgentSettings(latest, options)
     if (!next.changed) return
     await writeSettingsAsync(file, next.settings)
-  } finally {
-    try {
-      await release()
-    } catch (error) {
-      console.error('[pi-desktop] could not release agent settings lock:', error)
-    }
-  }
+  })
 }

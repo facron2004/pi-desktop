@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, renameSync, rmSync, rmdirSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { CwdGate, InterprocessCwdGate } from '../src/main/pi/cwd-gate'
@@ -211,4 +211,39 @@ test('an interprocess lease can be released after its symlink alias is retargete
 
   assert.equal(await second.acquire(firstTarget, 'probe', 'exclusive'), true, 'the old target is no longer leased')
   await second.release(firstTarget)
+})
+
+test('re-acquiring during an in-flight async release keeps a fresh lease on disk', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-cwd-gate-reacquire-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const first = new InterprocessCwdGate(root)
+  const second = new InterprocessCwdGate(root)
+
+  assert.equal(first.acquire('C:/reacquire', 'owner-a', 'shared'), true)
+
+  // Start releasing owner-a asynchronously, then immediately re-acquire before release finishes.
+  const releasing = first.releaseOwner('owner-a')
+  const reacquired = await first.acquireAsync('C:/reacquire', 'owner-a', 'shared')
+  await releasing
+
+  assert.equal(reacquired, true)
+  // Another gate must still see owner-a's fresh lease on disk and block an exclusive claim.
+  assert.equal(await second.acquireAsync('C:/reacquire', 'other', 'exclusive'), false)
+  await first.releaseOwner('owner-a')
+  assert.equal(await second.acquireAsync('C:/reacquire', 'other', 'exclusive'), true)
+  await second.releaseOwner('other')
+})
+
+test('corrupt leases.json is quarantined and recovered cleanly without wedging future claims', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-cwd-gate-corrupt-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  writeFileSync(path.join(root, 'leases.json'), '{"version":1,"leases":[broken', 'utf8')
+
+  const gate = new InterprocessCwdGate(root)
+  assert.equal(await gate.acquireAsync('C:/recovered', 'owner-1', 'exclusive'), true)
+  assert.ok(
+    readdirSync(root).some((name) => name.startsWith('leases.json.corrupt-')),
+    'corrupt registry should be quarantined for diagnostics'
+  )
+  await gate.releaseOwner('owner-1')
 })

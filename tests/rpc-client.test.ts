@@ -7,7 +7,9 @@ import {
   MAX_RPC_QUEUED_WRITE_BYTES,
   MAX_RPC_RECORD_BYTES,
   MAX_RPC_STDERR_TAIL_BYTES,
-  PiRpcClient
+  PiRpcClient,
+  PiRpcCommandError,
+  isRpcCommandError
 } from '../src/main/pi/rpc-client'
 
 const echo = String.raw`
@@ -245,5 +247,38 @@ test('stopping Pi also terminates its child processes', async () => {
     if (childPid) {
       try { process.kill(childPid, 'SIGKILL') } catch { /* the tree was already terminated */ }
     }
+  }
+})
+
+test('explicit RPC command errors reject with PiRpcCommandError while timeouts do not', async () => {
+  const responder = String.raw`
+let buffer = '';
+process.stdin.on('data', chunk => {
+  buffer += chunk;
+  let end;
+  while ((end = buffer.indexOf('\n')) !== -1) {
+    const command = JSON.parse(buffer.slice(0, end));
+    buffer = buffer.slice(end + 1);
+    if (command.type === 'fail_me') {
+      process.stdout.write(JSON.stringify({ type: 'response', id: command.id, command: 'prompt', success: false, error: 'Model not selected' }) + '\n');
+    }
+  }
+});`
+  const client = clientFor(responder)
+  try {
+    await assert.rejects(
+      () => client.request({ type: 'fail_me' }),
+      (error: unknown) =>
+        error instanceof PiRpcCommandError &&
+        isRpcCommandError(error) &&
+        error.command === 'prompt' &&
+        /Model not selected/.test(error.message)
+    )
+    await assert.rejects(
+      () => client.request({ type: 'hang_me' }, 50),
+      (error: unknown) => error instanceof Error && !isRpcCommandError(error)
+    )
+  } finally {
+    await client.stop()
   }
 })

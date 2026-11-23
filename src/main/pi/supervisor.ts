@@ -17,7 +17,7 @@ import type {
 import { appendSessionName } from '../sessions'
 import { isExternalToolName } from '../memory/policy'
 import { CwdGate, InterprocessCwdGate, type CwdClaimMode } from './cwd-gate'
-import { isPreSendRpcError } from './rpc-client'
+import { isPreSendRpcError, isRpcCommandError } from './rpc-client'
 import { canonicalSessionFile } from './session-file'
 import { properLockfile } from '../proper-lockfile'
 
@@ -102,6 +102,7 @@ export interface ManagedSessionRuntime extends EventEmitter {
   respondUi(id: string, response: ExtensionUiResponse): void
   stop(): Promise<void>
   hasPendingUi?(id: string): boolean
+  hasAnyPendingUi?(): boolean
 }
 
 export type SessionRuntimeFactory = () => ManagedSessionRuntime
@@ -270,8 +271,18 @@ export class SessionSupervisor extends EventEmitter {
   async withCwdLock<T>(cwd: string, action: () => Promise<T>): Promise<T> {
     const key = `operation:${randomUUID()}`
     if (this.shuttingDown) throw new Error('Pi is shutting down.')
-    if (!this.claimCwd(cwd, key, 'exclusive')) {
+    const claim = this.tryClaimCwdSync(cwd, key, 'exclusive')
+    if (claim.status === 'conflict') {
       throw new Error('A conversation is working in this folder. Wait for it to finish before changing Git state.')
+    }
+    if (claim.status === 'lock_busy') {
+      if (!(await this.finishClaimCwdAsync(claim, 'exclusive'))) {
+        throw new Error('A conversation is working in this folder. Wait for it to finish before changing Git state.')
+      }
+      if (this.shuttingDown) {
+        await this.release(key, cwd)
+        throw new Error('Pi is shutting down.')
+      }
     }
     try {
       return await action()
@@ -381,8 +392,25 @@ export class SessionSupervisor extends EventEmitter {
     const writeCwd = writing ? this.cwdOf(id) : undefined
     if (writing) {
       this.clearWarm(id)
-      if (writeCwd && !this.claimCwd(writeCwd, id, 'shared')) {
-        return this.enqueue<T>({ key: id, cwd: writeCwd, command, payload, timeoutMs, trace, preflight })
+      if (writeCwd) {
+        const claim = this.tryClaimCwdSync(writeCwd, id, 'shared')
+        let claimed = claim.status === 'acquired'
+        if (claim.status === 'lock_busy') {
+          claimed = await this.finishClaimCwdAsync(claim, 'shared')
+          if (claimed && (!runtime.isRunning || activity.stopping || this.shuttingDown || this.cliUpgradeInProgress)) {
+            await this.release(this.ownerOf(runtime) ?? id, writeCwd)
+            throw new Error(
+              this.cliUpgradeInProgress
+                ? 'The Pi CLI is updating. Try again when it finishes.'
+                : this.shuttingDown
+                  ? 'Pi is shutting down.'
+                  : 'Pi is not running for this conversation.'
+            )
+          }
+        }
+        if (!claimed) {
+          return this.enqueue<T>({ key: this.ownerOf(runtime) ?? id, cwd: writeCwd, command, payload, timeoutMs, trace, preflight })
+        }
       }
       if (command === 'prompt') {
         const sessionFile = runtime.currentStatus.sessionFile
@@ -441,10 +469,18 @@ export class SessionSupervisor extends EventEmitter {
       }
       return result
     } catch (error) {
-      // A failed write response does not prove Pi rejected or stopped the
-      // operation, UNLESS the command was rejected locally before writing
-      // to Pi's stdin. Keep the directory reserved only when Pi may be running.
-      if (writing && runtime.isRunning && activity.settlements === settlements && !isPreSendRpcError(error)) {
+      // A timed-out or transport-failed `prompt` does not prove Pi rejected the
+      // turn, so keep the directory reserved until Pi settles or exits. Explicit
+      // RPC command rejections (`PiRpcCommandError`, emitted only on preflight
+      // failure before a turn starts), pre-send local rejections, and `bash`
+      // commands (which never emit `agent_settled`) must not stick `running`.
+      if (
+        command === 'prompt' &&
+        runtime.isRunning &&
+        activity.settlements === settlements &&
+        !isPreSendRpcError(error) &&
+        !isRpcCommandError(error)
+      ) {
         activity.running = true
       }
       throw error
@@ -481,7 +517,10 @@ export class SessionSupervisor extends EventEmitter {
         this.touchRuntime(activity)
       }
       runtime.respondUi(id, response)
-      if (targetKey && (!runtime.hasPendingUi || !runtime.hasPendingUi(id))) {
+      const stillPending = runtime.hasAnyPendingUi
+        ? runtime.hasAnyPendingUi()
+        : Boolean(runtime.hasPendingUi?.(id))
+      if (targetKey && !stillPending) {
         this.approvals.delete(targetKey)
       }
       // Every surface that forwarded this dialog — the phone companion, the
@@ -951,30 +990,72 @@ export class SessionSupervisor extends EventEmitter {
     return false
   }
 
-  private claimCwd(cwd: string, key: string, mode: CwdClaimMode = 'shared'): boolean {
-    if (!cwd) return true
+  private tryClaimCwdSync(
+    cwd: string,
+    key: string,
+    mode: CwdClaimMode = 'shared'
+  ):
+    | { status: 'acquired' | 'conflict' }
+    | { status: 'lock_busy'; id: string; ownerId: string; previousMode: CwdClaimMode | undefined } {
+    if (!cwd) return { status: 'acquired' }
     const id = CwdGate.key(cwd)
     const ownerId = this.canonical(key)
     if (
       (this.releasingOwners.get(ownerId) ?? 0) > 0 ||
       this.hasConflictingRelease(id, mode)
     ) {
-      return false
+      return { status: 'conflict' }
     }
     const previousMode = this.gate.modeFor(id, ownerId)
-    if (!this.gate.claimResolved(id, ownerId, mode)) return false
-    if (!this.interprocessGate) return true
+    if (!this.gate.claimResolved(id, ownerId, mode)) return { status: 'conflict' }
+    if (!this.interprocessGate) return { status: 'acquired' }
     try {
-      const acquired = this.interprocessGate.acquireResolved(id, ownerId, mode)
-      if (acquired) return true
+      const result = this.interprocessGate.tryAcquireResolvedSync(id, ownerId, mode)
+      if (result === 'acquired') return { status: 'acquired' }
+      if (result === 'lock_busy') return { status: 'lock_busy', id, ownerId, previousMode }
       if (previousMode) this.gate.setKeyMode(id, ownerId, previousMode)
       else this.gate.releaseKey(id, ownerId)
-      return false
+      return { status: 'conflict' }
     } catch (error) {
       if (previousMode) this.gate.setKeyMode(id, ownerId, previousMode)
       else this.gate.releaseKey(id, ownerId)
       throw error
     }
+  }
+
+  private async finishClaimCwdAsync(
+    pending: { id: string; ownerId: string; previousMode: CwdClaimMode | undefined },
+    mode: CwdClaimMode
+  ): Promise<boolean> {
+    const rollback = () => {
+      const currentOwner = this.canonical(pending.ownerId)
+      if (pending.previousMode) {
+        this.gate.setKeyMode(pending.id, currentOwner, pending.previousMode)
+        if (currentOwner !== pending.ownerId) this.gate.setKeyMode(pending.id, pending.ownerId, pending.previousMode)
+      } else {
+        this.gate.releaseKey(pending.id, currentOwner)
+        if (currentOwner !== pending.ownerId) this.gate.releaseKey(pending.id, pending.ownerId)
+      }
+    }
+    try {
+      const acquired = await this.interprocessGate!.acquireResolvedAsync(pending.id, this.canonical(pending.ownerId), mode)
+      if (acquired) return true
+      rollback()
+      return false
+    } catch (error) {
+      rollback()
+      throw error
+    }
+  }
+
+  private claimCwd(cwd: string, key: string, mode: CwdClaimMode = 'shared'): boolean {
+    const result = this.tryClaimCwdSync(cwd, key, mode)
+    if (result.status === 'acquired') return true
+    if (result.status === 'lock_busy') {
+      if (result.previousMode) this.gate.setKeyMode(result.id, result.ownerId, result.previousMode)
+      else this.gate.releaseKey(result.id, result.ownerId)
+    }
+    return false
   }
 
   private async release(key: string, stoppedCwd?: string): Promise<void> {
@@ -984,6 +1065,7 @@ export class SessionSupervisor extends EventEmitter {
     if (activity && (activity.writes > 0 || activity.running || activity.stopping)) return
     const cwd = CwdGate.key(stoppedCwd ?? this.cwdOf(id) ?? '')
     if (!cwd || !this.gate.holds(id)) return
+    const currentOwnerId = (): string => (runtime ? this.ownerOf(runtime) : undefined) ?? this.canonical(id)
     const heldEntries = this.gate.entriesFor(id)
     const releaseTokens = heldEntries.map((entry) => ({ ownerId: id, cwd: entry.cwd, mode: entry.mode }))
     this.releasingOwners.set(id, (this.releasingOwners.get(id) ?? 0) + 1)
@@ -991,10 +1073,16 @@ export class SessionSupervisor extends EventEmitter {
       for (const token of releaseTokens) this.releasingCwds.add(token)
       try {
         await this.interprocessGate.releaseOwner(id)
+        const reboundId = currentOwnerId()
+        if (reboundId !== id) {
+          await this.interprocessGate.releaseOwner(reboundId)
+        }
       } finally {
-        const count = this.releasingOwners.get(id) ?? 0
-        if (count <= 1) this.releasingOwners.delete(id)
-        else this.releasingOwners.set(id, count - 1)
+        const resolved = currentOwnerId()
+        const releaseKey = this.releasingOwners.has(resolved) ? resolved : id
+        const count = this.releasingOwners.get(releaseKey) ?? 0
+        if (count <= 1) this.releasingOwners.delete(releaseKey)
+        else this.releasingOwners.set(releaseKey, count - 1)
         for (const token of releaseTokens) this.releasingCwds.delete(token)
       }
     } else {
@@ -1002,16 +1090,20 @@ export class SessionSupervisor extends EventEmitter {
       if (count <= 1) this.releasingOwners.delete(id)
       else this.releasingOwners.set(id, count - 1)
     }
-    if ((this.releasingOwners.get(id) ?? 0) > 0) return
+    const ownerId = currentOwnerId()
+    if ((this.releasingOwners.get(ownerId) ?? 0) > 0 || (ownerId !== id && (this.releasingOwners.get(id) ?? 0) > 0)) {
+      return
+    }
     // A continuation or another writer may have become active while the
     // cross-process registry lock was being acquired. Keep the local gate
     // until that writer settles as well.
     if (activity && (activity.writes > 0 || activity.running || activity.stopping)) return
-    this.gate.releaseOwner(id)
+    this.gate.releaseOwner(ownerId)
+    if (ownerId !== id) this.gate.releaseOwner(id)
     if (this.shuttingDown) return
     this.queueDrainDelayMs = CWD_QUEUE_POLL_MIN_MS
     this.drainQueued()
-    if (runtime?.isRunning) this.scheduleWarm(id)
+    if (runtime?.isRunning) this.scheduleWarm(ownerId)
   }
 
   private releaseFromEvent(key: string): void {
@@ -1042,7 +1134,14 @@ export class SessionSupervisor extends EventEmitter {
         }
         // Claim BOTH the local gate and the interprocess gate BEFORE dequeuing
         // so cross-process contention preserves strict FIFO order without churn.
-        if (!this.claimCwd(next.cwd, owner, 'shared')) break
+        let claimed = false
+        try {
+          claimed = this.claimCwd(next.cwd, owner, 'shared')
+        } catch (error) {
+          console.error('[pi-desktop] queued prompt could not inspect project lock:', error)
+          break
+        }
+        if (!claimed) break
         jobs.shift()
         this.queuedJobCount -= 1
         this.queuedPayloadBytes -= next.payloadBytes
@@ -1082,7 +1181,12 @@ export class SessionSupervisor extends EventEmitter {
     this.queueDrainDelayMs = Math.min(CWD_QUEUE_POLL_MAX_MS, delay * 2)
     this.queueDrainTimer = setTimeout(() => {
       this.queueDrainTimer = undefined
-      this.drainQueued()
+      try {
+        this.drainQueued()
+      } catch (error) {
+        console.error('[pi-desktop] queued prompt drain failed:', error)
+        this.scheduleQueueDrain()
+      }
     }, delay)
     // Deliberately not unref'd: this timer only exists while a request is
     // queued, and that caller is awaiting the request's promise. An unref'd
@@ -1150,6 +1254,14 @@ export class SessionSupervisor extends EventEmitter {
     }
     this.gate.retarget(from, file)
     this.interprocessGate?.retargetOwner(from, file)
+    const releasingCount = this.releasingOwners.get(from)
+    if (releasingCount) {
+      this.releasingOwners.delete(from)
+      this.releasingOwners.set(file, (this.releasingOwners.get(file) ?? 0) + releasingCount)
+    }
+    for (const token of this.releasingCwds) {
+      if (token.ownerId === from) token.ownerId = file
+    }
     if (this.approvals.has(from)) {
       this.approvals.delete(from)
       this.approvals.add(file)

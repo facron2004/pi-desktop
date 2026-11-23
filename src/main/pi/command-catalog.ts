@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { PiCommand } from '@shared/types'
@@ -66,17 +66,19 @@ async function runDiscoverSkillCommands(
     if (needsBundledGate) launch = resolvePiLaunch(customPiPath)
     if (launch.source === 'none') return { commands: [], cacheable: false }
 
+    const safeCwd = existsSync(cwd) ? cwd : process.cwd()
     const client = new PiRpcClient({
       command: launch.command,
       args: [
         ...launch.prefixArgs,
         '--mode',
         'rpc',
+        '--no-session',
         '--offline',
         '--no-extensions',
         trustProject ? '--approve' : '--no-approve'
       ],
-      cwd,
+      cwd: safeCwd,
       env: launch.env
     })
 

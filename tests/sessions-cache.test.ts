@@ -1955,3 +1955,63 @@ test('readSessionConversation projects desktop-goal-continue custom_message with
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('getAggregatedUsage fast-paths large non-usage lines while preserving activity and token counts', async (t) => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-usage-fastpath-'))
+  const root = path.join(parent, 'sessions')
+  const workspace = path.join(root, encodeWorkspaceDir('C:/usage-fastpath'))
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  mkdirSync(workspace, { recursive: true })
+  clearSessionCache()
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  t.after(() => {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    clearSessionCache()
+    rmSync(parent, { recursive: true, force: true })
+  })
+
+  const nowIso = new Date().toISOString()
+  const nowMs = Date.now()
+  const file = path.join(workspace, 'fastpath.jsonl')
+  writeFileSync(
+    file,
+    [
+      JSON.stringify({ type: 'session', version: 3, id: 'fastpath', cwd: 'C:/usage-fastpath' }),
+      // Large non-usage line with top-level ISO timestamp
+      JSON.stringify({
+        type: 'message',
+        id: 'tool-1',
+        timestamp: nowIso,
+        message: { role: 'toolResult', content: 'A'.repeat(16_384), timestamp: nowMs }
+      }),
+      // Large non-usage line with only trailing numeric message.timestamp
+      JSON.stringify({
+        type: 'message',
+        id: 'user-1',
+        message: { role: 'user', content: 'B'.repeat(8_192), timestamp: nowMs }
+      }),
+      // Assistant message with usage must still be fully parsed
+      JSON.stringify({
+        type: 'message',
+        id: 'asst-1',
+        timestamp: nowIso,
+        message: {
+          role: 'assistant',
+          model: 'test/fast-model',
+          content: 'done',
+          usage: { input: 10, output: 20, totalTokens: 30, cost: { total: 0.05 } }
+        }
+      })
+    ].join('\n') + '\n',
+    'utf8'
+  )
+
+  const usage = await getAggregatedUsage(root)
+  assert.equal(usage.today.conversationsCount, 1)
+  assert.equal(usage.allTime.tokens.input, 10)
+  assert.equal(usage.allTime.tokens.output, 20)
+  assert.equal(usage.allTime.tokens.totalTokens, 30)
+  assert.equal(usage.allTime.tokens.cost, 0.05)
+  assert.equal(usage.byModel[0]?.model, 'test/fast-model')
+})
