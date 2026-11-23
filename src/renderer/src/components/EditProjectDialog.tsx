@@ -182,14 +182,6 @@ export function EditProjectDialog({
                 <span>{t('Project folders')}</span>
                 <span className="project-edit__count">({folders.length})</span>
               </label>
-              <button
-                type="button"
-                className="project-edit__add-btn"
-                onClick={() => void handleAddFolder()}
-              >
-                <Plus size={13} />
-                <span>{t('Add folder')}</span>
-              </button>
             </div>
 
             {folders.length === 0 ? (
