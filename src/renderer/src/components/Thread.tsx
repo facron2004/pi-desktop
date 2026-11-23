@@ -644,7 +644,8 @@ export const Thread = memo(function Thread() {
       const shrank = clientHeight < previousClientHeight
       const grew = clientHeight > previousClientHeight
       previousClientHeight = clientHeight
-      if (stickRef.current && (shrank || isStreamingRef.current)) {
+      const distance = node.scrollHeight - node.scrollTop - clientHeight
+      if (stickRef.current && (shrank || isStreamingRef.current) && distance > 1) {
         node.scrollTo({ top: node.scrollHeight, behavior: 'instant' })
         previousScrollTopRef.current = node.scrollTop
         rememberScrollMemory(sessionKeyRef.current, node, FOLLOW_RANGE)
@@ -801,7 +802,7 @@ export const Thread = memo(function Thread() {
         : offsets.find((item) => item.offset > scrollTop + 8)
     if (!entry) {
       if (direction === -1 && firstVisibleTurn > 0) {
-        const previous = turns[firstVisibleTurn - 1]
+        const previous = turnsRef.current[firstVisibleTurn - 1]
         if (previous) {
           pendingTurnJumpRef.current = { turnId: previous.id, align: 'top' }
           expandHistory()
@@ -817,7 +818,7 @@ export const Thread = memo(function Thread() {
     void entry.turn.offsetWidth
     entry.turn.classList.add('turn--flash')
     window.setTimeout(() => entry.turn.classList.remove('turn--flash'), 1400)
-  }, [firstVisibleTurn, expandHistory, turns])
+  }, [firstVisibleTurn, expandHistory])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

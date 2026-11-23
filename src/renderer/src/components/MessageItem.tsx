@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useState } from 'react'
+import { memo, useEffect, useId, useMemo, useState } from 'react'
 import {
   Check,
   ChevronRight,
@@ -135,60 +135,74 @@ export const AssistantImage = memo(function AssistantImage({ data, mimeType }: {
   )
 })
 
-export const ThinkingBlock = memo(function ThinkingBlock({
-  turnId,
-  parts,
-  streaming
-}: {
-  turnId: string
-  parts: string[]
-  streaming?: boolean
-}) {
-  const t = useT()
-  const { threadKey } = useThreadEnv()
-  const disclosureKey = `thinking-${turnId}`
-  const bodyId = useId()
-  const [open, setOpen] = useState(() => readProcessOpen(threadKey, disclosureKey) === true)
+export const ThinkingBlock = memo(
+  function ThinkingBlock({
+    turnId,
+    parts,
+    streaming
+  }: {
+    turnId: string
+    parts: string[]
+    streaming?: boolean
+  }) {
+    const t = useT()
+    const { threadKey } = useThreadEnv()
+    const disclosureKey = `thinking-${turnId}`
+    const bodyId = useId()
+    const [open, setOpen] = useState(() => readProcessOpen(threadKey, disclosureKey) === true)
 
-  useEffect(() => {
-    setOpen(readProcessOpen(threadKey, disclosureKey) === true)
-  }, [threadKey, disclosureKey])
+    useEffect(() => {
+      setOpen(readProcessOpen(threadKey, disclosureKey) === true)
+    }, [threadKey, disclosureKey])
 
-  const toggle = () => {
-    const next = !open
-    setOpen(next)
-    writeProcessOpen(threadKey, disclosureKey, next ? true : undefined)
-  }
-  // Each reasoning step is its own paragraph, so the gap between steps is the
-  // block's own spacing instead of the full blank line a `pre-wrap` `\n\n`
-  // reserves. Blank lines inside one step are split too: Pi sometimes delivers
-  // a whole stretch of reasoning as one block.
-  const paragraphs = parts
-    .flatMap((part) => part.split(/\n[ \t]*\n/))
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean)
-  return (
-    <div className="thinking" data-open={open} data-streaming={streaming ? 'true' : undefined}>
-      <button
-        type="button"
-        className="thinking__head"
-        aria-expanded={open}
-        aria-controls={open ? bodyId : undefined}
-        onClick={toggle}
-      >
-        <ChevronRight size={13} className="caret" data-open={open} aria-hidden="true" />
-        <span className="thinking__title">{t('Thinking content')}</span>
-      </button>
-      {open ? (
-        <div className="thinking__body" id={bodyId} tabIndex={0}>
-          {paragraphs.map((paragraph, index) => (
-            <p key={index} className="thinking__text">{paragraph}</p>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  )
-})
+    const toggle = () => {
+      const next = !open
+      setOpen(next)
+      writeProcessOpen(threadKey, disclosureKey, next ? true : undefined)
+    }
+    // Each reasoning step is its own paragraph, so the gap between steps is the
+    // block's own spacing instead of the full blank line a `pre-wrap` `\n\n`
+    // reserves. Blank lines inside one step are split too: Pi sometimes delivers
+    // a whole stretch of reasoning as one block. Defer splitting while collapsed
+    // so long hidden reasoning does not burn CPU on every streamed frame.
+    const paragraphs = useMemo(
+      () =>
+        open
+          ? parts
+              .flatMap((part) => part.split(/\n[ \t]*\n/))
+              .map((paragraph) => paragraph.trim())
+              .filter(Boolean)
+          : [],
+      [open, parts]
+    )
+    return (
+      <div className="thinking" data-open={open} data-streaming={streaming ? 'true' : undefined}>
+        <button
+          type="button"
+          className="thinking__head"
+          aria-expanded={open}
+          aria-controls={open ? bodyId : undefined}
+          onClick={toggle}
+        >
+          <ChevronRight size={13} className="caret" data-open={open} aria-hidden="true" />
+          <span className="thinking__title">{t('Thinking content')}</span>
+        </button>
+        {open ? (
+          <div className="thinking__body" id={bodyId} tabIndex={0}>
+            {paragraphs.map((paragraph, index) => (
+              <p key={index} className="thinking__text">{paragraph}</p>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    )
+  },
+  (previous, next) =>
+    previous.turnId === next.turnId &&
+    previous.streaming === next.streaming &&
+    previous.parts.length === next.parts.length &&
+    previous.parts.every((part, index) => part === next.parts[index])
+)
 
 const NOTICE_ICONS = {
   info: Info,

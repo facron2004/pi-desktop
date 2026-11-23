@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { test } from 'node:test'
 import { advanceReveal, revealSpeed } from '../src/renderer/src/lib/streaming-reveal'
 
@@ -37,4 +39,15 @@ test('a slow provider is not slowed further by the reveal cursor', () => {
 test('a very long answer accelerates so the reader is not kept waiting', () => {
   assert.ok(revealSpeed(2_000) > revealSpeed(50))
   assert.ok(revealSpeed(600) > revealSpeed(50))
+})
+
+test('StreamingText keeps its RAF loop continuous across deltas and defers splitSettledMarkdown until reveal settles', () => {
+  const source = readFileSync(
+    path.resolve(process.cwd(), 'src/renderer/src/components/conversation/StreamingText.tsx'),
+    'utf8'
+  )
+  assert.match(source, /frameRef\.current !== 0/)
+  assert.match(source, /targetRef\.current/)
+  assert.match(source, /cached\.revealing && revealing && visible\.startsWith\(cached\.text\)/)
+  assert.match(source, /:\s*revealing\s*\?\s*splitStreamingMarkdown\(visible\)\s*:\s*splitSettledMarkdown\(visible\)/)
 })

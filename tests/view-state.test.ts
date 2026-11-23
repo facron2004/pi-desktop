@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   clearViewState,
+  MAX_VIEW_STATE_CONVERSATIONS,
   migrateViewState,
   readFileOpen,
   readHistoryFirstVisibleTurn,
@@ -86,4 +87,15 @@ test('deleting a conversation clears only its saved view preferences', () => {
   assert.equal(readFileOpen(retained, 'src/a.ts'), true)
   assert.equal(readProcessOpen(retained, 'process-1'), true)
   assert.equal(readHistoryFirstVisibleTurn(retained), 2)
+})
+
+test('view-state enforces an LRU cap across conversations and refreshes recency on read', () => {
+  writeToolOpen('lru-0', 't', true)
+  writeToolOpen('lru-1', 't', true)
+  assert.equal(readToolOpen('lru-0', 't'), true)
+  for (let index = 2; index <= MAX_VIEW_STATE_CONVERSATIONS; index += 1) {
+    writeToolOpen(`lru-${index}`, 't', true)
+  }
+  assert.equal(readToolOpen('lru-1', 't'), undefined, 'oldest unaccessed conversation is evicted')
+  assert.equal(readToolOpen('lru-0', 't'), true)
 })

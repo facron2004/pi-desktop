@@ -30,6 +30,19 @@ const MIN_ENTRIES = 2
 /** A fence opens and closes a code block, where a checklist is an example. */
 const FENCE = /^ {0,3}(`{3,}|~{3,})/
 
+const EMPTY_ENTRIES: PlanEntry[] = []
+
+function hasCheckboxCandidate(text: string): boolean {
+  return text.includes('[ ]') || text.includes('[x]') || text.includes('[X]')
+}
+
+function assistantHasCheckboxCandidate(item: AssistantItem): boolean {
+  for (const block of item.blocks) {
+    if (block.type === 'text' && hasCheckboxCandidate(block.text)) return true
+  }
+  return false
+}
+
 function assistantText(item: AssistantItem): string {
   return item.blocks
     .filter((block): block is Extract<AssistantBlock, { type: 'text' }> => block.type === 'text')
@@ -54,6 +67,7 @@ function stepText(text: string): string {
 
 /** Every checklist entry in a piece of markdown, in the order it is written. */
 export function parseChecklist(markdown: string): PlanEntry[] {
+  if (!hasCheckboxCandidate(markdown)) return EMPTY_ENTRIES
   const entries: PlanEntry[] = []
   let fence: string | null = null
 
@@ -102,13 +116,32 @@ let cachedPlan: Plan | null = null
  * re-parsed as its text grows.
  */
 const entriesCache = new WeakMap<AssistantItem, PlanEntry[]>()
+const planObjectCache = new WeakMap<AssistantItem | ToolItem, Plan>()
 
 function planEntries(item: AssistantItem): PlanEntry[] {
   const cached = entriesCache.get(item)
   if (cached) return cached
-  const entries = parseChecklist(assistantText(item))
+  const entries = assistantHasCheckboxCandidate(item)
+    ? parseChecklist(assistantText(item))
+    : EMPTY_ENTRIES
   entriesCache.set(item, entries)
   return entries
+}
+
+function samePlan(left: Plan | null, right: Plan | null): boolean {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.sourceId !== right.sourceId || left.done !== right.done || left.total !== right.total) {
+    return false
+  }
+  if (left.entries === right.entries) return true
+  if (left.entries.length !== right.entries.length) return false
+  for (let index = 0; index < left.entries.length; index += 1) {
+    const a = left.entries[index]
+    const b = right.entries[index]
+    if (a.text !== b.text || a.done !== b.done || a.active !== b.active) return false
+  }
+  return true
 }
 
 const todoCache = new WeakMap<ToolItem, PlanEntry[] | null>()
@@ -154,12 +187,17 @@ function todoPlan(items: ThreadItem[]): Plan | null {
     if (item.status === 'proposed' || item.status === 'error' || item.status === 'aborted') continue
     const entries = todoEntries(item)
     if (!entries) continue
-    return {
-      entries,
-      done: entries.filter((entry) => entry.done).length,
-      total: entries.length,
-      sourceId: item.id
+    let plan = planObjectCache.get(item)
+    if (!plan) {
+      plan = {
+        entries,
+        done: entries.filter((entry) => entry.done).length,
+        total: entries.length,
+        sourceId: item.id
+      }
+      planObjectCache.set(item, plan)
     }
+    return plan
   }
   return null
 }
@@ -170,9 +208,10 @@ export function extractPlan(items: ThreadItem[]): Plan | null {
   // for conversations whose agent never called the tool.
   const todo = todoPlan(items)
   if (todo) {
+    const resolved = samePlan(cachedPlan, todo) ? cachedPlan : todo
     cachedItems = items
-    cachedPlan = todo
-    return todo
+    cachedPlan = resolved
+    return resolved
   }
   let plan: Plan | null = null
   for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -182,15 +221,21 @@ export function extractPlan(items: ThreadItem[]): Plan | null {
     // The answer after a plan is prose, not a second plan; keep looking back
     // until a message actually carries one.
     if (entries.length < MIN_ENTRIES) continue
-    plan = {
-      entries,
-      done: entries.filter((entry) => entry.done).length,
-      total: entries.length,
-      sourceId: item.id
+    let nextPlan = planObjectCache.get(item)
+    if (!nextPlan) {
+      nextPlan = {
+        entries,
+        done: entries.filter((entry) => entry.done).length,
+        total: entries.length,
+        sourceId: item.id
+      }
+      planObjectCache.set(item, nextPlan)
     }
+    plan = nextPlan
     break
   }
+  const resolved = samePlan(cachedPlan, plan) ? cachedPlan : plan
   cachedItems = items
-  cachedPlan = plan
-  return plan
+  cachedPlan = resolved
+  return resolved
 }

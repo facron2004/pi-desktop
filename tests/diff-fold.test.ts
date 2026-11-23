@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { test } from 'node:test'
 import {
   buildDiff,
@@ -83,4 +85,30 @@ test('a fold standing for a huge unchanged run does not overflow the stack', () 
   assert.equal(folded[0]?.kind, 'gap')
   assert.equal(folded[0]?.kind === 'gap' ? folded[0].hidden.length : 0, 199_997)
   assert.deepEqual(folded.slice(1).map((row) => row.kind), ['ctx', 'ctx', 'ctx', 'add'])
+})
+
+test('DiffView/ReviewView gap toggling, BrowserView listener re-attach, ToolPanel concealed Escape, useIsDark singleton, and MermaidDiagram memo guards', () => {
+  const read = (rel: string) => readFileSync(path.resolve(process.cwd(), rel), 'utf8')
+
+  const diffView = read('src/renderer/src/components/DiffView.tsx')
+  assert.match(diffView, /const next = new Set<string>\(expandAll \? gapKeys : \[\]\)/)
+  assert.match(diffView, /if \(expandAll\) \{[\s\S]*?next\.delete\(key\)[\s\S]*?\} else \{[\s\S]*?next\.add\(key\)/)
+
+  const reviewView = read('src/renderer/src/components/ReviewView.tsx')
+  assert.match(reviewView, /onExpandAllChange=\{setExpandAll\}/)
+  assert.match(reviewView, /onExpandAllChange=\{onExpandAllChange\}/)
+
+  const browserView = read('src/renderer/src/components/BrowserView.tsx')
+  assert.match(browserView, /\[syncNavigation,\s*requestSeq\]/)
+
+  const toolPanel = read('src/renderer/src/components/ToolPanel.tsx')
+  assert.match(toolPanel, /if \(!maximized \|\| concealed\) return/)
+  assert.match(toolPanel, /if \(!overlay \|\| maximized \|\| concealed\) return/)
+
+  const theme = read('src/renderer/src/lib/theme.ts')
+  assert.match(theme, /useSyncExternalStore/)
+
+  const mermaid = read('src/renderer/src/components/MermaidDiagram.tsx')
+  assert.match(mermaid, /export const MermaidDiagram = memo\(/)
+  assert.equal(mermaid.includes('Math.abs(scale - computeFit())'), false)
 })

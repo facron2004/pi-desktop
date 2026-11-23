@@ -27,7 +27,11 @@ function oneLinePreview(text: string, truncated = false): string {
   return normalized
 }
 
+const responsePreviewCache = new WeakMap<Turn, string>()
+
 function responsePreview(turn: Turn): string {
+  const cached = responsePreviewCache.get(turn)
+  if (cached !== undefined) return cached
   let text = ''
   let inspectedBlocks = 0
   let truncated = false
@@ -57,7 +61,9 @@ function responsePreview(turn: Turn): string {
     if (truncated) break
   }
 
-  return oneLinePreview(text, truncated)
+  const preview = oneLinePreview(text, truncated)
+  responsePreviewCache.set(turn, preview)
+  return preview
 }
 
 interface MarkerProps {
@@ -163,7 +169,10 @@ export const SessionRail = memo(
   },
   (previous, next) =>
     previous.turns === next.turns &&
-    previous.activeTurn === next.activeTurn &&
     previous.activeTurnId === next.activeTurnId &&
-    previous.onSelect === next.onSelect
+    previous.onSelect === next.onSelect &&
+    (previous.activeTurn === next.activeTurn ||
+      (previous.activeTurn.id === next.activeTurn.id &&
+        previous.activeTurn.user === next.activeTurn.user &&
+        responsePreview(previous.activeTurn) === responsePreview(next.activeTurn)))
 )

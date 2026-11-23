@@ -185,9 +185,11 @@ const DeliverableRow = memo(function DeliverableRow({
  */
 const TaskProgressSection = memo(function TaskProgressSection() {
   const t = useT()
-  const items = useAppStore((state) => state.items)
-  const deferredItems = useDeferredValue(items)
-  const plan = useMemo(() => extractPlan(deferredItems), [deferredItems])
+  // `extractPlan` caches unchanged checklists by identity and fast-paths prose
+  // without checkbox tokens, so subscribing to the derived plan skips renders
+  // on streaming text deltas that do not change progress.
+  const rawPlan = useAppStore((state) => extractPlan(state.items))
+  const plan = useDeferredValue(rawPlan)
 
   return (
     <TaskSection

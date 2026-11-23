@@ -112,3 +112,19 @@ test('appendStreamingMarkdown matches whole-document splits across fences, lists
   assert.deepEqual(collapsed.blocks, [])
   assert.equal(collapsed.tail, `${doc}\n[ref]: https://example.com\n`)
 })
+
+test('streaming markdown does not prematurely split a loose list on a partial next marker', () => {
+  const before = `${paragraph('Intro')}1. ${'first list item '.repeat(80).trim()}\n\n`
+  // Next item starts arriving one character at a time ("2", then ".", then " second").
+  let split = splitStreamingMarkdown(before + '2')
+  assert.equal(joined(split), before + '2')
+  assert.ok(!split.blocks.join('').includes('first list item'), 'bare digit after blank line must not close the list')
+
+  split = appendStreamingMarkdown(split, '.')
+  assert.ok(!split.blocks.join('').includes('first list item'), 'incomplete ordered marker must not close the list')
+
+  split = appendStreamingMarkdown(split, ' second item\n\n' + paragraph('Outro'))
+  assert.equal(joined(split), before + '2. second item\n\n' + paragraph('Outro'))
+  const stable = split.blocks.join('')
+  assert.ok(!stable.includes('first list item') || stable.includes('2. second item'))
+})

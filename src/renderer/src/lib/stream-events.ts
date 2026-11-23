@@ -276,19 +276,37 @@ interface ThreadStreamState {
   messageByToolCall: Map<string, string>
 }
 
+export const MAX_THREAD_STREAM_STATES = 200
 const threadStates = new Map<string, ThreadStreamState>()
+
+function evictIdleThreadStates(): void {
+  if (threadStates.size <= MAX_THREAD_STREAM_STATES) return
+  for (const [key, state] of threadStates) {
+    if (threadStates.size <= MAX_THREAD_STREAM_STATES) break
+    if (!state.messageOpen) threadStates.delete(key)
+  }
+  while (threadStates.size > MAX_THREAD_STREAM_STATES) {
+    const oldest = threadStates.keys().next().value
+    if (oldest === undefined) break
+    threadStates.delete(oldest)
+  }
+}
 
 function stateFor(threadId: string): ThreadStreamState {
   let state = threadStates.get(threadId)
-  if (!state) {
-    state = {
-      sequence: 0,
-      toolCallByIndex: new Map(),
-      toolNameByIndex: new Map(),
-      messageByToolCall: new Map()
-    }
+  if (state) {
+    threadStates.delete(threadId)
     threadStates.set(threadId, state)
+    return state
   }
+  state = {
+    sequence: 0,
+    toolCallByIndex: new Map(),
+    toolNameByIndex: new Map(),
+    messageByToolCall: new Map()
+  }
+  threadStates.set(threadId, state)
+  evictIdleThreadStates()
   return state
 }
 

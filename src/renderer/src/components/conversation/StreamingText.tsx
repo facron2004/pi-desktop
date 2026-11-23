@@ -36,9 +36,29 @@ function useRevealedText(text: string, streaming: boolean): string {
   const shownRef = useRef(shown)
   shownRef.current = shown
   const target = text.length
+  const targetRef = useRef(target)
+  targetRef.current = target
+  const frameRef = useRef(0)
+  const lastRef = useRef(0)
+
+  useEffect(
+    () => () => {
+      if (frameRef.current !== 0) {
+        cancelAnimationFrame(frameRef.current)
+        frameRef.current = 0
+      }
+      lastRef.current = 0
+    },
+    []
+  )
 
   useEffect(() => {
     if (reduceMotion) {
+      if (frameRef.current !== 0) {
+        cancelAnimationFrame(frameRef.current)
+        frameRef.current = 0
+      }
+      lastRef.current = 0
       shownRef.current = target
       setShown(target)
       return
@@ -46,17 +66,25 @@ function useRevealedText(text: string, streaming: boolean): string {
     // A shorter text is a replacement (text_end is authoritative), not a delta.
     if (shownRef.current > target) {
       shownRef.current = 0
+      lastRef.current = 0
       setShown(0)
     }
     // A settled block that is already fully revealed needs no timer at all.
     if (!streaming && shownRef.current >= target) return
+    // Keep the running animation frame loop alive as deltas arrive so `lastRef`
+    // measures real inter-frame elapsed time instead of resetting to 0 each frame.
+    if (shownRef.current >= target || frameRef.current !== 0) return
 
-    let frame = 0
-    let last = 0
     const tick = (now: number) => {
-      if (last === 0) last = now
-      const next = advanceReveal(shownRef.current, target, now - last)
-      last = now
+      frameRef.current = 0
+      const currentTarget = targetRef.current
+      if (shownRef.current > currentTarget) {
+        shownRef.current = 0
+        lastRef.current = 0
+      }
+      const elapsed = lastRef.current === 0 ? 16 : now - lastRef.current
+      lastRef.current = now
+      const next = advanceReveal(shownRef.current, currentTarget, elapsed)
       if (next !== shownRef.current) {
         shownRef.current = next
         setShown(next)
@@ -64,10 +92,13 @@ function useRevealedText(text: string, streaming: boolean): string {
       // Keep revealing even after streaming flips false: text_end and
       // message_end land in quick succession, and stopping here would make
       // a big chunk jump to its end just as it started appearing.
-      if (next < target) frame = requestAnimationFrame(tick)
+      if (next < currentTarget) {
+        frameRef.current = requestAnimationFrame(tick)
+      } else {
+        lastRef.current = 0
+      }
     }
-    frame = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(frame)
+    frameRef.current = requestAnimationFrame(tick)
   }, [streaming, reduceMotion, target])
 
   if (reduceMotion || (!streaming && shown >= target)) return text
@@ -91,22 +122,23 @@ export const StreamingText = memo(function StreamingText({
   commentary = false
 }: StreamingTextProps) {
   const visible = useRevealedText(text, Boolean(streaming))
-  // Keep code highlighting deferred while the typewriter cursor is still
-  // moving, including the brief tail after streaming flips false.
+  // Keep code highlighting and settled-cache writes deferred while the
+  // typewriter cursor is still moving, including the brief tail after
+  // streaming flips false.
   const revealing = Boolean(streaming) || visible.length < text.length
-  const previous = useRef<{ text: string; streaming: boolean; split: StreamingMarkdownSplit } | null>(null)
+  const previous = useRef<{ text: string; revealing: boolean; split: StreamingMarkdownSplit } | null>(null)
   const split = useMemo(() => {
     const cached = previous.current
-    const next = cached && visible === cached.text
+    const next = cached && visible === cached.text && cached.revealing === revealing
       ? cached.split
-      : cached && cached.streaming && visible.startsWith(cached.text)
+      : cached && cached.revealing && revealing && visible.startsWith(cached.text)
         ? appendStreamingMarkdown(cached.split, visible.slice(cached.text.length))
-        : streaming
+        : revealing
           ? splitStreamingMarkdown(visible)
           : splitSettledMarkdown(visible)
-    previous.current = { text: visible, streaming: Boolean(streaming), split: next }
+    previous.current = { text: visible, revealing, split: next }
     return next
-  }, [visible, streaming])
+  }, [visible, revealing])
   const finishedBlocks = useMemo(
     () => split.blocks.map((block, index) => (
       <Markdown key={`block-${index}`} bare>

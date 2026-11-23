@@ -469,6 +469,7 @@ export function ReviewView({
                 expectedRoot={expectedRoot}
                 split={diffSplit}
                 expandAll={expandAll}
+                onExpandAllChange={setExpandAll}
                 onOpen={() => onOpenFile({ path: selectedFile.path })}
                 onReveal={() => void window.pi.fs.reveal(selectedFile.path)}
                 onToggleStage={() => void toggleStage(selectedFile)}
@@ -620,6 +621,7 @@ function ReviewFileDetail({
   expectedRoot,
   split,
   expandAll,
+  onExpandAllChange,
   onOpen,
   onReveal,
   onToggleStage,
@@ -632,6 +634,7 @@ function ReviewFileDetail({
   expectedRoot: string
   split: boolean
   expandAll: boolean | undefined
+  onExpandAllChange: (value: boolean | undefined) => void
   onOpen: () => void
   onReveal: () => void
   onToggleStage: () => void
@@ -735,6 +738,7 @@ function ReviewFileDetail({
               revertRoot={expectedRoot}
               onReverted={onHunkReverted}
               expandAll={expandAll}
+              onExpandAllChange={onExpandAllChange}
             />
           </>
         )}

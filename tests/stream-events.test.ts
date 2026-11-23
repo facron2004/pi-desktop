@@ -861,3 +861,29 @@ test('a manually resumed goal starts the same round in the live stream and repla
     assert.equal(items[0].kind === 'roundBreak' && items[0].resumed, true)
   }
 })
+
+test('stream state table bounds idle per-thread states via LRU without dropping active open messages', () => {
+  resetStreamState()
+  const active = contextOf('active-open-stream')
+  const opened = normalizeOne(
+    { type: 'message_start', message: { role: 'assistant', content: [], timestamp: 1 } },
+    active
+  )
+  assert.ok(opened.messageId)
+
+  for (let index = 0; index < 250; index += 1) {
+    const idle = contextOf(`idle-stream-${index}`)
+    normalizeOne({ type: 'agent_start' }, idle)
+  }
+
+  // The active open message must still retain its messageId for subsequent deltas.
+  const delta = normalizeOne(
+    update({ type: 'text_delta', contentIndex: 0, delta: 'still open' }),
+    active
+  )
+  assert.equal(delta.messageId, opened.messageId)
+  // An old idle stream that was evicted restarts its sequence from 1.
+  const restarted = normalizeOne({ type: 'agent_start' }, contextOf('idle-stream-0'))
+  assert.equal(restarted.sequence, 1)
+  resetStreamState()
+})

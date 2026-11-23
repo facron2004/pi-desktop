@@ -12,6 +12,7 @@ import {
   rememberScrollMemory,
   rememberScrollPosition,
   scrollTopForTurnTop,
+  MAX_SCROLL_MEMORIES,
   SCROLL_FOLLOW_RANGE,
   TURN_TOP_GUTTER,
   type ScrollMetrics
@@ -112,4 +113,18 @@ test('scrollTopForTurnTop stays inside the scrollable range', () => {
   assert.equal(scrollTopForTurnTop(metrics(1000, 0, 300), 950), 700)
   // A turn above the current position still never scrolls negative.
   assert.equal(scrollTopForTurnTop(metrics(1000, 0, 300), 4), 0)
+})
+
+test('scroll memory enforces an LRU cap and refreshes entries on read', () => {
+  clearScrollMemory()
+  rememberScrollPosition('session-0', { top: 10, atBottom: false })
+  rememberScrollPosition('session-1', { top: 20, atBottom: false })
+  // Reading session-0 refreshes its recency ahead of session-1.
+  assert.deepEqual(readScrollMemory('session-0'), { top: 10, atBottom: false })
+  for (let index = 2; index <= MAX_SCROLL_MEMORIES; index += 1) {
+    rememberScrollPosition(`session-${index}`, { top: index, atBottom: false })
+  }
+  assert.equal(readScrollMemory('session-1'), undefined, 'oldest unaccessed entry is evicted')
+  assert.deepEqual(readScrollMemory('session-0'), { top: 10, atBottom: false })
+  clearScrollMemory()
 })

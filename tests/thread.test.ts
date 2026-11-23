@@ -5,6 +5,7 @@ import {
   applyEvent,
   applyEventBatch,
   applyEvents,
+  applyStreamEvent,
   itemsFromMessages,
   lastAssistantText,
   markAborted,
@@ -894,4 +895,48 @@ test('applyEventBatch detaches lookup indexes from the base array when growing',
   assert.equal(tools(updatedBase).some((item) => item.toolCallId === 'call-batch' && item.status === 'ok'), true)
   const baseTool = tools(base).find((item) => item.toolCallId === 'call-base')
   assert.equal(baseTool?.status, 'proposed')
+})
+
+test('promoting a pending user bubble indexes its messageId so repeated message_start events deduplicate', () => {
+  const optimistic = [
+    {
+      id: 'pending-user-1',
+      kind: 'user' as const,
+      text: 'Hello Pi',
+      images: [],
+      timestamp: 100,
+      order: 1,
+      pending: true as const
+    }
+  ]
+
+  // Single-event promotion via applyStreamEvent
+  const startEvent = {
+    type: 'message.started' as const,
+    threadId: 'thread-promote',
+    sequence: 1,
+    messageId: 'msg-promoted-1',
+    message: { role: 'user' as const, content: 'Hello Pi', timestamp: 101 }
+  }
+  const promoted = applyStreamEvent(optimistic, startEvent)
+  assert.equal(promoted.length, 1)
+  assert.equal(promoted[0].kind === 'user' ? promoted[0].pending : true, undefined)
+  assert.equal(promoted[0].kind === 'user' ? promoted[0].messageId : undefined, 'msg-promoted-1')
+
+  const replayed = applyStreamEvent(promoted, { ...startEvent, sequence: 2 })
+  assert.equal(replayed.length, 1, 'replayed message.started must deduplicate against promoted messageId')
+
+  // Batch promotion via applyEventBatch
+  const batchCtx = { sessionKey: 'thread-promote-batch' }
+  const batched = applyEventBatch(optimistic, [
+    {
+      event: { type: 'message_start', message: { role: 'user', content: 'Hello Pi', timestamp: 101 } },
+      context: batchCtx
+    },
+    {
+      event: { type: 'message_start', message: { role: 'user', content: 'Hello Pi', timestamp: 101 } },
+      context: batchCtx
+    }
+  ])
+  assert.equal(batched.length, 1, 'duplicate message_start inside applyEventBatch must deduplicate')
 })

@@ -7,7 +7,7 @@ import { forgetSessionTiming, readSessionTiming } from '../src/renderer/src/lib/
 import { readScrollMemory, rememberScrollPosition } from '../src/renderer/src/lib/scroll-memory'
 import { sessionMetrics } from '../src/renderer/src/lib/session-metrics'
 import { COMPOSER_DRAFTS_STORAGE_KEY, loadComposerDrafts } from '../src/renderer/src/lib/composer-drafts'
-import { GENERATION_TIMING_STATUS_KEY } from '../src/shared/types'
+import { CONTEXT_BREAKDOWN_STATUS_KEY, GENERATION_TIMING_STATUS_KEY } from '../src/shared/types'
 
 /* ------------------------------------------------------------------ *
  * A stand-in for the preload bridge.
@@ -1786,6 +1786,178 @@ test('a stopped process retracts its live status readings but keeps the persiste
     status('pi-desktop-swarm', JSON.stringify([{ name: 'coder', status: 'working' }]))
     emitStatus({ phase: 'error', error: 'Pi exited unexpectedly' })
     assert.equal(find('pi-desktop-swarm'), undefined)
+  } finally {
+    useAppStore.setState(previous)
+  }
+})
+
+test('stopping while a prompt is still queued settles cleanly when prompt rejects, returns empty, or is handled', async () => {
+  const previous = useAppStore.getState()
+  const originalRequest = bridge.runtime.request
+  try {
+    for (const outcome of ['reject', 'unknown', 'handled'] as const) {
+      await useAppStore.getState().newChat()
+      const key = useAppStore.getState().draftId!
+      const promptDeferred = Promise.withResolvers<unknown>()
+      useAppStore.setState({
+        status: { phase: 'ready' },
+        ensureRuntime: async () => key
+      })
+      bridge.runtime.request = (command: string) => {
+        if (command === 'prompt') return promptDeferred.promise
+        if (command === 'clear_queue') return ok({ steering: [], followUp: [] })
+        return ok({})
+      }
+
+      const sendPromise = useAppStore.getState().send('Queued prompt', [])
+      // Yield until sendPrompt has entered `phase: 'queued'` and invoked `prompt`.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      assert.equal(useAppStore.getState().run.phase, 'queued')
+      assert.equal(useAppStore.getState().run.runId, undefined)
+
+      await useAppStore.getState().stopSession(key)
+      assert.equal(useAppStore.getState().run.phase, 'aborting')
+
+      if (outcome === 'reject') promptDeferred.reject(new Error('cancelled while queued'))
+      else if (outcome === 'unknown') promptDeferred.resolve({})
+      else promptDeferred.resolve({ disposition: 'handled', cancelled: false })
+
+      await sendPromise
+      assert.equal(useAppStore.getState().isStreaming, false, `${outcome} must clear isStreaming`)
+      assert.equal(useAppStore.getState().run.phase, 'idle', `${outcome} must not wedge in aborting`)
+      assert.equal(useAppStore.getState().run.settled, true, `${outcome} must settle the run`)
+      assert.equal(useAppStore.getState().run.outcome, 'aborted', `${outcome} must record aborted outcome`)
+    }
+  } finally {
+    bridge.runtime.request = originalRequest
+    useAppStore.setState(previous)
+  }
+})
+
+test('tool_execution_start respects waiting_approval and aborting via phaseFor', async () => {
+  const previous = useAppStore.getState()
+  try {
+    await useAppStore.getState().newChat()
+    startRun()
+    emit({ type: 'agent_start' })
+    emit({ type: 'turn_start' })
+    emit({
+      type: 'extension_ui_request',
+      id: 'req-approve-1',
+      method: 'confirm',
+      title: 'Approve',
+      message: 'Allow tool A?'
+    })
+    assert.equal(phase(), 'waiting_approval')
+
+    emit({ type: 'tool_execution_start', toolCallId: 'tool-b', toolName: 'read', args: { path: 'a.ts' } })
+    assert.equal(phase(), 'waiting_approval', 'parallel tool start must not clobber waiting_approval')
+
+    const key = useAppStore.getState().draftId!
+    useAppStore.setState((state) => ({
+      uiRequest: undefined,
+      uiRequests: [],
+      run: { ...state.run, phase: 'aborting' },
+      threads: {
+        ...state.threads,
+        [key]: { ...state.threads[key], uiRequest: undefined, uiRequests: [], run: { ...state.run, phase: 'aborting' } }
+      }
+    }))
+    emit({ type: 'tool_execution_start', toolCallId: 'tool-c', toolName: 'read', args: { path: 'b.ts' } })
+    assert.equal(phase(), 'aborting', 'late tool start must not clobber aborting')
+  } finally {
+    useAppStore.setState(previous)
+  }
+})
+
+test('CONTEXT_BREAKDOWN_STATUS_KEY avoids double bindSet, drainPending avoids stamping active cwd, and threadsToolsRevision ignores text deltas', async () => {
+  const previous = useAppStore.getState()
+  try {
+    await useAppStore.getState().newChat()
+    const activeKey = useAppStore.getState().draftId!
+    const bgKey = 'C:/other-project/bg-session.jsonl'
+    useAppStore.setState({
+      workspace: { id: 'ws-active', path: 'C:/active-project', name: 'active', lastOpenedAt: 1 }
+    })
+
+    // Background thread event routed via ownerId without an existing thread entry:
+    // drainPending must not stamp the active view's workspace.path onto it.
+    emit({
+      ownerId: bgKey,
+      event: {
+        type: 'message_start',
+        message: { role: 'assistant', content: [], timestamp: 100 }
+      }
+    } as unknown as PiEvent)
+    assert.equal(useAppStore.getState().threads[bgKey]?.cwd, undefined)
+
+    // Background text deltas must not bump threadsToolsRevision.
+    const revBeforeText = useAppStore.getState().threadsToolsRevision
+    emit({
+      ownerId: bgKey,
+      event: {
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Streaming prose' }
+      }
+    } as unknown as PiEvent)
+    assert.equal(useAppStore.getState().threadsToolsRevision, revBeforeText)
+
+    // A background tool update MUST bump threadsToolsRevision while leaving activeToolsRevision alone.
+    const activeToolsBefore = useAppStore.getState().activeToolsRevision
+    emit({
+      ownerId: bgKey,
+      event: {
+        type: 'tool_execution_start',
+        toolCallId: 'bg-subagent-1',
+        toolName: 'subagent',
+        args: { task: 'Check logs' }
+      }
+    } as unknown as PiEvent)
+    assert.equal(useAppStore.getState().threadsToolsRevision, revBeforeText + 1)
+    assert.equal(useAppStore.getState().activeToolsRevision, activeToolsBefore)
+
+    // CONTEXT_BREAKDOWN_STATUS_KEY should update the owning thread once without double-bumping version.
+    const versionBefore = useAppStore.getState().threads[activeKey]?.version ?? 0
+    emit({
+      ownerId: activeKey,
+      event: {
+        type: 'extension_ui_request',
+        id: 'ctx-1',
+        method: 'setStatus',
+        statusKey: CONTEXT_BREAKDOWN_STATUS_KEY,
+        statusText: JSON.stringify({
+          systemPrompt: 100,
+          toolDefinitions: 50,
+          conversationMessages: 200,
+          total: 350
+        })
+      }
+    } as unknown as PiEvent)
+    const afterThread = useAppStore.getState().threads[activeKey]
+    assert.equal(afterThread?.contextBreakdown?.total, 350)
+    assert.equal(afterThread?.version, versionBefore + 1, 'must update once without double bindSet bump')
+
+    // Routing a context breakdown whose sessionKey differs from ownerId writes only to target sessionKey.
+    const bgVersionBefore = useAppStore.getState().threads[bgKey]?.version ?? 0
+    emit({
+      ownerId: activeKey,
+      event: {
+        type: 'extension_ui_request',
+        id: 'ctx-2',
+        method: 'setStatus',
+        sessionKey: bgKey,
+        statusKey: CONTEXT_BREAKDOWN_STATUS_KEY,
+        statusText: JSON.stringify({
+          systemPrompt: 10,
+          toolDefinitions: 20,
+          conversationMessages: 30,
+          total: 60
+        })
+      }
+    } as unknown as PiEvent)
+    assert.equal(useAppStore.getState().threads[bgKey]?.contextBreakdown?.total, 60)
+    assert.equal(useAppStore.getState().threads[bgKey]?.version, bgVersionBefore + 1)
+    assert.equal(useAppStore.getState().threads[activeKey]?.contextBreakdown?.total, 350)
   } finally {
     useAppStore.setState(previous)
   }

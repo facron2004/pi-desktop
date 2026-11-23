@@ -99,10 +99,25 @@ export function scrollKeyOf(sessionFile: string | undefined): string {
   return sessionFile ?? 'draft'
 }
 
+export const MAX_SCROLL_MEMORIES = 200
 const memories = new Map<string, ScrollMemoryEntry>()
 
+function setScrollMemory(key: string, entry: ScrollMemoryEntry): void {
+  if (memories.has(key)) memories.delete(key)
+  memories.set(key, entry)
+  while (memories.size > MAX_SCROLL_MEMORIES) {
+    const oldest = memories.keys().next().value
+    if (oldest === undefined) break
+    memories.delete(oldest)
+  }
+}
+
 export function readScrollMemory(key: string): ScrollMemoryEntry | undefined {
-  return memories.get(key)
+  const entry = memories.get(key)
+  if (!entry) return undefined
+  memories.delete(key)
+  memories.set(key, entry)
+  return entry
 }
 
 export function rememberScrollMemory(
@@ -110,11 +125,11 @@ export function rememberScrollMemory(
   node: ScrollMetrics,
   range = SCROLL_FOLLOW_RANGE
 ): void {
-  memories.set(key, captureScroll(node, range))
+  setScrollMemory(key, captureScroll(node, range))
 }
 
 export function rememberScrollPosition(key: string, entry: ScrollMemoryEntry): void {
-  memories.set(key, entry)
+  setScrollMemory(key, entry)
 }
 
 /** Move the reader's place when a draft becomes a session file. */
@@ -122,7 +137,7 @@ export function migrateScrollMemory(from: string, to: string): void {
   if (from === to) return
   const entry = memories.get(from)
   if (!entry) return
-  if (!memories.has(to)) memories.set(to, entry)
+  if (!memories.has(to)) setScrollMemory(to, entry)
   memories.delete(from)
 }
 

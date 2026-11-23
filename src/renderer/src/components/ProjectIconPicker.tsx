@@ -3,9 +3,9 @@ import { RotateCcw, Search } from 'lucide-react'
 import type { ProjectIconColor } from '@shared/types'
 import {
   PROJECT_ICON_COLORS,
-  projectIconColor,
-  searchProjectIcons
+  projectIconColor
 } from '../lib/project-icons'
+import { searchProjectIcons } from '../lib/project-icon-search'
 import { useT } from '../lib/i18n'
 
 /** How many emoji the grid shows at once. */

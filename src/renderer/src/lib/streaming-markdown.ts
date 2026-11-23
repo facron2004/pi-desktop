@@ -110,6 +110,8 @@ const MIN_SPLIT_CHARS = 1200
 const CHUNK_CHARS = 1600
 
 const LIST_ITEM = /^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/
+/** A line that may still be growing into a list item marker before its trailing space arrives. */
+const PARTIAL_LIST_MARKER = /^ {0,3}(?:[-+*]|\d{1,9}[.)]?)$/
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 /** Reference definitions are document-global: splitting would break tail links. */
 const REFERENCE_DEFINITION = /^ {0,3}\[[^\]]+\]:[ \t]*\S/m
@@ -269,8 +271,13 @@ function scanStreamingMarkdown(text: string, initial: TailCheckpoint): Streaming
       let safe = true
       if (listIndent !== null) {
         // A blank line inside a loose list is still the same list. Only a
-        // non-list, non-indented line ends it.
-        if (LIST_ITEM.test(nextLineText) || nextIndent >= listIndent + 2) safe = false
+        // non-list, non-indented line ends it; an unfinished next line that
+        // could still become a list marker (`-`, `1`, `1.`) waits for more text.
+        if (
+          LIST_ITEM.test(nextLineText) ||
+          nextIndent >= listIndent + 2 ||
+          (!nextHasNewline && PARTIAL_LIST_MARKER.test(nextLineText))
+        ) safe = false
         else listIndent = null
       } else if (inQuote) {
         if (nextTrimmed.startsWith('>')) safe = false

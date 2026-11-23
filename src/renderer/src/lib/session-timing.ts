@@ -14,6 +14,9 @@ const STORAGE_PREFIX = 'pi-desktop:session-timing:v1:'
 const MODEL_TIMING_VERSION = 10
 const SOFT_JOURNAL_COMPACT_SAMPLES = 64
 const MAX_JOURNAL_SAMPLES = 128
+/** Maximum persisted session-timing records retained in localStorage before sweeping old entries. */
+export const MAX_STORED_TIMING_SESSIONS = 100
+const STORAGE_SWEEP_THRESHOLD = 180
 const SAMPLE_MARKER = ':sample:'
 const JOURNAL_MARKER = ':journal:'
 const TIMING_FIELDS = [
@@ -274,8 +277,103 @@ function recordOf(value: unknown): SessionTimingRecord {
   }
 }
 
+function isTimingBaseKey(key: string): boolean {
+  return (
+    key.startsWith(STORAGE_PREFIX) &&
+    !key.includes(JOURNAL_MARKER) &&
+    !key.includes(SAMPLE_MARKER)
+  )
+}
+
+/**
+ * Evict excess per-session timing records from localStorage so long-lived
+ * profiles do not exhaust browser storage quota. Active in-memory sessions
+ * (and an optional protected storage key) are kept first.
+ */
+export function pruneSessionTimingStorage(
+  maxSessions = MAX_STORED_TIMING_SESSIONS,
+  protectKey?: string,
+  store = storage()
+): number {
+  if (!store || typeof store.key !== 'function') return 0
+  const baseKeys: string[] = []
+  const companionsByBase = new Map<string, string[]>()
+  for (let index = 0; index < store.length; index += 1) {
+    const candidate = store.key(index)
+    if (!candidate || !candidate.startsWith(STORAGE_PREFIX)) continue
+    const journalIndex = candidate.indexOf(JOURNAL_MARKER, STORAGE_PREFIX.length)
+    const sampleIndex = candidate.indexOf(SAMPLE_MARKER, STORAGE_PREFIX.length)
+    const subIndex =
+      journalIndex >= 0 && sampleIndex >= 0
+        ? Math.min(journalIndex, sampleIndex)
+        : Math.max(journalIndex, sampleIndex)
+    if (subIndex >= 0) {
+      const base = candidate.slice(0, subIndex)
+      let list = companionsByBase.get(base)
+      if (!list) {
+        list = []
+        companionsByBase.set(base, list)
+      }
+      list.push(candidate)
+    } else if (isTimingBaseKey(candidate)) {
+      baseKeys.push(candidate)
+    }
+  }
+  const limit = Math.max(1, maxSessions)
+  if (baseKeys.length <= limit) return 0
+
+  const hotKeys = new Set<string>()
+  if (protectKey) hotKeys.add(protectKey)
+  for (const sessionKey of entriesForStorage(store).keys()) {
+    try {
+      hotKeys.add(storageKey(sessionKey))
+    } catch {
+      /* ignore */
+    }
+  }
+
+  let excess = baseKeys.length - limit
+  let removed = 0
+  const evict = (base: string) => {
+    cancelIdleCompaction(store, base)
+    store.removeItem(base)
+    const companions = companionsByBase.get(base)
+    if (companions) {
+      for (const subkey of companions) store.removeItem(subkey)
+    }
+    removed += 1
+    excess -= 1
+  }
+
+  for (const base of baseKeys) {
+    if (excess <= 0) break
+    if (!hotKeys.has(base)) evict(base)
+  }
+  for (const base of baseKeys) {
+    if (excess <= 0) break
+    if (base !== protectKey) evict(base)
+  }
+  return removed
+}
+
 function writeRecord(store: Storage, key: string, record: SessionTimingRecord): void {
-  store.setItem(key, JSON.stringify({ ...record, modelTimingVersion: MODEL_TIMING_VERSION }))
+  if (store.length > STORAGE_SWEEP_THRESHOLD) {
+    try {
+      pruneSessionTimingStorage(MAX_STORED_TIMING_SESSIONS, key, store)
+    } catch {
+      /* ignore sweep failures */
+    }
+  }
+  const payload = JSON.stringify({ ...record, modelTimingVersion: MODEL_TIMING_VERSION })
+  try {
+    store.setItem(key, payload)
+  } catch (error) {
+    if (pruneSessionTimingStorage(Math.min(20, MAX_STORED_TIMING_SESSIONS), key, store) > 0) {
+      store.setItem(key, payload)
+      return
+    }
+    throw error
+  }
 }
 
 function readStoredRecord(

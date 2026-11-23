@@ -1,11 +1,4 @@
 import type { ProjectIconColor } from '@shared/types'
-import {
-  PROJECT_ICON_EMOJIS,
-  type ProjectIconCategory,
-  type ProjectIconEntry
-} from './project-icon-data'
-
-export type { ProjectIconCategory, ProjectIconEntry }
 
 /**
  * The tints a project icon can wear, in the order MCode offers them.
@@ -44,24 +37,4 @@ export function projectIconEmoji(icon: string | undefined): string | undefined {
   const trimmed = icon.trim()
   if (!trimmed) return undefined
   return [...trimmed].length === 1 ? trimmed : undefined
-}
-
-/**
- * The emoji that match a search, or that belong to a category.
- *
- * The words are matched against the emoji and its keywords, so "编程" finds
- * the laptop and "code" finds it too.
- */
-export function searchProjectIcons(
-  query: string,
-  category?: ProjectIconCategory
-): ProjectIconEntry[] {
-  const needle = query.trim().toLowerCase()
-  const pool = category
-    ? PROJECT_ICON_EMOJIS.filter((entry) => entry.category === category)
-    : PROJECT_ICON_EMOJIS
-  if (!needle) return pool
-  return pool.filter((entry) =>
-    `${entry.emoji} ${entry.keywords}`.toLowerCase().includes(needle)
-  )
 }

@@ -59,6 +59,44 @@ export function composerDraftHasContent(draft: ComposerDraft | undefined): boole
   ))
 }
 
+/** Maximum number of sent-history-only sessions kept in browser storage. */
+export const MAX_HISTORY_ONLY_DRAFTS = 40
+
+function isHistoryOnlyDraft(draft: ComposerDraft): boolean {
+  return (
+    !composerDraftHasContent(draft) &&
+    !draft.image &&
+    (!draft.pastedRefs || Object.keys(draft.pastedRefs).length === 0)
+  )
+}
+
+/**
+ * Keep every draft that still holds unsent work, and cap sent-history-only
+ * entries by insertion recency so localStorage stays bounded over long use.
+ */
+export function pruneComposerDrafts(
+  drafts: Record<string, ComposerDraft>,
+  maxHistoryOnly = MAX_HISTORY_ONLY_DRAFTS
+): Record<string, ComposerDraft> {
+  const entries = Object.entries(drafts)
+  let historyOnlyCount = 0
+  for (const [, draft] of entries) {
+    if (isHistoryOnlyDraft(draft)) historyOnlyCount += 1
+  }
+  if (historyOnlyCount <= maxHistoryOnly) return drafts
+
+  let toDrop = historyOnlyCount - maxHistoryOnly
+  const pruned: Record<string, ComposerDraft> = {}
+  for (const [key, draft] of entries) {
+    if (toDrop > 0 && isHistoryOnlyDraft(draft)) {
+      toDrop -= 1
+      continue
+    }
+    pruned[key] = draft
+  }
+  return pruned
+}
+
 export type DraftSaveResult = 'saved' | 'partial' | 'failed'
 
 export const COMPOSER_DRAFTS_STORAGE_KEY = 'pi-desktop.composer-drafts.v1'
@@ -193,23 +231,26 @@ export function saveComposerDrafts(
   storage = browserStorage()
 ): DraftSaveResult {
   if (!storage) return 'failed'
+  const bounded = pruneComposerDrafts(snapshot.drafts)
   const drafts: Record<string, ComposerDraft> = Object.fromEntries(
-    Object.entries(snapshot.drafts).map(([key, draft]) => [key, {
+    Object.entries(bounded).map(([key, draft]) => [key, {
       ...draft,
       images: draft.images.map(({ previewUrl: _previewUrl, ...image }) => image)
     }])
   )
-  const write = (drafts: Record<string, ComposerDraft>): boolean => {
+  const write = (nextDrafts: Record<string, ComposerDraft>): boolean => {
     const serialized = JSON.stringify({
       version: 1,
-      drafts,
+      drafts: nextDrafts,
       lastDraftKeys: snapshot.lastDraftKeys
     })
+    const cached = snapshotCache.get(storage)
+    if (cached && cached.raw === serialized) return true
     try {
       storage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, serialized)
       snapshotCache.set(storage, {
         raw: serialized,
-        snapshot: { drafts, lastDraftKeys: { ...snapshot.lastDraftKeys } }
+        snapshot: { drafts: nextDrafts, lastDraftKeys: { ...snapshot.lastDraftKeys } }
       })
       return true
     } catch {
@@ -241,6 +282,16 @@ export function saveComposerDrafts(
     key, { ...draft, images: [] }
   ]))
   if (write(textOnly)) return 'partial'
+
+  // Last resort under severe quota pressure: drop sent-prompt histories so
+  // unsent text and file references still survive restart.
+  const activeTextOnly: Record<string, ComposerDraft> = {}
+  for (const [key, draft] of Object.entries(textOnly)) {
+    if (isHistoryOnlyDraft(draft)) continue
+    const { history: _history, ...withoutHistory } = draft
+    activeTextOnly[key] = withoutHistory
+  }
+  if (write(activeTextOnly)) return 'partial'
   return 'failed'
 }
 

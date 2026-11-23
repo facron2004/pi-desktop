@@ -6,9 +6,9 @@ import { sessionIndicator, isDotIndicator } from '../src/renderer/src/lib/sessio
 import {
   DEFAULT_PROJECT_ICON_COLOR,
   projectIconColor,
-  projectIconEmoji,
-  searchProjectIcons
+  projectIconEmoji
 } from '../src/renderer/src/lib/project-icons'
+import { searchProjectIcons } from '../src/renderer/src/lib/project-icon-search'
 import { collectProjects } from '../src/renderer/src/lib/projects'
 
 test('a waiting dialog outranks every other mark', () => {
@@ -111,4 +111,11 @@ test('Sidebar keys live/attention projections on threadsMetaVersion, lazy-loads 
   assert.match(source, /visibleContentHits/)
   assert.match(source, /lazy\(\(\) =>/)
   assert.equal(source.includes('useShallow'), false)
+})
+
+test('project-icons stays free of project-icon-data so the emoji table stays in the lazy picker chunk', () => {
+  const iconsSource = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/lib/project-icons.ts'), 'utf8')
+  assert.equal(iconsSource.includes('project-icon-data'), false)
+  const pickerSource = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/components/ProjectIconPicker.tsx'), 'utf8')
+  assert.match(pickerSource, /project-icon-search/)
 })

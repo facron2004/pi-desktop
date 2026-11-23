@@ -63,6 +63,7 @@ export function BrowserView({ request }: { request?: BrowserRequest | null } = {
     }
   }, [])
 
+  const requestSeq = request?.seq ?? 0
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
@@ -111,7 +112,7 @@ export function BrowserView({ request }: { request?: BrowserRequest | null } = {
       view.removeEventListener('did-navigate-in-page', onNavigated)
       view.removeEventListener('did-fail-load', onFail as EventListener)
     }
-  }, [syncNavigation])
+  }, [syncNavigation, requestSeq])
 
   /**
    * What the reader meant by the text in the box: an address, a local page, or

@@ -175,7 +175,7 @@ export const ToolPanel = memo(function ToolPanel({
   // surface back. Anything that owns Escape (a dialog, a menu, the lightbox)
   // keeps it — the panel only steps in when nothing else is open.
   useEffect(() => {
-    if (!maximized) return
+    if (!maximized || concealed) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return
       if (document.querySelector('.modal-layer, .popover, .tool-tab-menu, .lightbox-layer')) return
@@ -183,7 +183,7 @@ export const ToolPanel = memo(function ToolPanel({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [maximized])
+  }, [maximized, concealed])
 
   // The overlay panel used to close from the dialog hook's capture listener,
   // which ran before a find box inside it could see Escape. It handles the key
@@ -191,7 +191,7 @@ export const ToolPanel = memo(function ToolPanel({
   const closeRef = useRef(onClose)
   closeRef.current = onClose
   useEffect(() => {
-    if (!overlay || maximized) return
+    if (!overlay || maximized || concealed) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return
       const target = event.target
@@ -204,7 +204,7 @@ export const ToolPanel = memo(function ToolPanel({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [overlay, maximized])
+  }, [overlay, maximized, concealed])
 
   const openView = useCallback(
     (next: Exclude<ToolPanelView, 'start'>) => {

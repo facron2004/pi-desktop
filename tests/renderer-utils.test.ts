@@ -191,7 +191,14 @@ test('enforceSessionLru preserves historyFirstVisibleTurn while clearing cached 
   writeHistoryFirstVisibleTurn(evictedKey, 4)
 
   const threads: Record<string, SessionThread> = {
-    [evictedKey]: mockThread(),
+    [evictedKey]: mockThread({
+      models: [{ id: 'm1', provider: 'p1', api: 'openai-completions', name: 'M1', reasoning: false, input: ['text'], contextWindow: 8192, maxTokens: 1024 }],
+      commands: [{ name: 'cmd', source: 'extension' } as any],
+      forkTargets: [{ entryId: 'e1', text: 'hi' }],
+      stats: { tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 }, cost: 0 } as any,
+      contextBreakdown: { systemPromptTokens: 1, toolsTokens: 1, messagesTokens: 1, totalTokens: 3 } as any,
+      uiWidgets: [{ key: 'w', lines: ['line'] }]
+    }),
     [queuedUiKey]: mockThread({
       uiRequests: [{ id: 'req-2', method: 'input', title: 'Ask', placeholder: 'Answer' } as any]
     })
@@ -201,6 +208,12 @@ test('enforceSessionLru preserves historyFirstVisibleTurn while clearing cached 
 
   assert.equal(result[evictedKey].items.length, 0)
   assert.equal(result[evictedKey].version, 0)
+  assert.deepEqual(result[evictedKey].models, [])
+  assert.deepEqual(result[evictedKey].commands, [])
+  assert.deepEqual(result[evictedKey].forkTargets, [])
+  assert.equal(result[evictedKey].stats, undefined)
+  assert.equal(result[evictedKey].contextBreakdown, undefined)
+  assert.deepEqual(result[evictedKey].uiWidgets, [])
   assert.equal(readToolOpen(evictedKey, 'tool-1'), undefined)
   assert.equal(readHistoryFirstVisibleTurn(evictedKey), 4)
 

@@ -91,6 +91,7 @@ import {
   composerDraftAfterSend,
   forgetLastDraftKey,
   loadComposerDrafts,
+  pruneComposerDrafts,
   saveComposerDrafts
 } from '../lib/composer-drafts'
 import type { ComposerDraft, ComposerImageOptions } from '../lib/composer-drafts'
@@ -615,6 +616,11 @@ export interface AppStore {
    */
   activeToolsRevision: number
   /**
+   * Monotonic counter bumped when any thread's tool items change (or thread keys
+   * change) — lets cross-session views such as SubagentPanel ignore 60fps text deltas.
+   */
+  threadsToolsRevision: number
+  /**
    * Unread/failed marks that outlive the in-memory thread, keyed by session
    * file. A background run's notice must survive a restart so the sidebar can
    * keep pointing at the conversation the reader has not opened yet.
@@ -932,6 +938,7 @@ const refreshStateRequests = new Map<string, number>()
  * the context ring moving without flooding the RPC pipe.
  */
 const LIVE_STATS_INTERVAL_MS = 1_500
+const MAX_SESSION_TRACKER_ENTRIES = 200
 const liveStatsAt = new Map<string, number>()
 const liveStatsInFlight = new Map<string, Promise<void>>()
 /**
@@ -940,6 +947,26 @@ const liveStatsInFlight = new Map<string, Promise<void>>()
  * the fresh transcript numbers with the previous totals.
  */
 const liveStatsEpoch = new Map<string, number>()
+
+function setBoundedMap<K, V>(map: Map<K, V>, key: K, value: V, limit = MAX_SESSION_TRACKER_ENTRIES): void {
+  if (map.has(key)) map.delete(key)
+  map.set(key, value)
+  while (map.size > limit) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
+}
+
+function addBoundedSet<T>(set: Set<T>, value: T, limit = MAX_SESSION_TRACKER_ENTRIES): void {
+  if (set.has(value)) set.delete(value)
+  set.add(value)
+  while (set.size > limit) {
+    const oldest = set.values().next().value
+    if (oldest === undefined) break
+    set.delete(oldest)
+  }
+}
 let modelCatalogRequestSequence = 0
 let agentSettingSelectionInFlight = false
 /** Owners whose compact RPC is still running. Pi aborts the previous compaction
@@ -1138,6 +1165,12 @@ export function enforceSessionLru(
       nextThreads[key] = {
         ...thread,
         items: [],
+        models: [],
+        commands: [],
+        forkTargets: [],
+        stats: undefined,
+        contextBreakdown: undefined,
+        uiWidgets: [],
         historyLoaded: false,
         version: 0
       }
@@ -1146,6 +1179,11 @@ export function enforceSessionLru(
     // Keep `historyFirstVisibleTurn` across LRU item eviction so returning
     // to an older conversation restores the reader's expanded history slice.
     clearViewState(key, { preserveHistoryWindow: true })
+    liveStatsAt.delete(key)
+    liveStatsEpoch.delete(key)
+    for (const attempt of modelRestoreAttempts) {
+      if (attempt.startsWith(`${key}:`)) modelRestoreAttempts.delete(attempt)
+    }
     forgetSessionLru(key)
   }
 
@@ -1450,6 +1488,25 @@ function hasToolItemChange(
   return prevTools !== nextTools
 }
 
+function hasThreadsToolsChange(
+  prevThreads: Readonly<Record<string, SessionThread>>,
+  nextThreads: Readonly<Record<string, SessionThread>>
+): boolean {
+  if (prevThreads === nextThreads) return false
+  const prevKeys = Object.keys(prevThreads)
+  const nextKeys = Object.keys(nextThreads)
+  if (prevKeys.length !== nextKeys.length) return true
+  for (let index = 0; index < nextKeys.length; index += 1) {
+    const key = nextKeys[index]
+    if (!(key in prevThreads)) return true
+    const prevThread = prevThreads[key]
+    const nextThread = nextThreads[key]
+    if (prevThread === nextThread || prevThread.items === nextThread.items) continue
+    if (hasToolItemChange(prevThread.items, nextThread.items)) return true
+  }
+  return false
+}
+
 interface RevisionOptions {
   activeThreadHydrated?: boolean
   toolChangedHint?: boolean
@@ -1484,11 +1541,18 @@ function withRevisions(
         : hasToolItemChange(prev.items, patch.items)
   }
 
-  if (!bumpMeta && !bumpTools) return patch
+  const bumpThreadsTools =
+    bumpTools ||
+    ('threads' in patch &&
+      patch.threads !== undefined &&
+      hasThreadsToolsChange(prev.threads, patch.threads))
+
+  if (!bumpMeta && !bumpTools && !bumpThreadsTools) return patch
   return {
     ...patch,
     ...(bumpMeta ? { threadsMetaVersion: prev.threadsMetaVersion + 1 } : {}),
-    ...(bumpTools ? { activeToolsRevision: prev.activeToolsRevision + 1 } : {})
+    ...(bumpTools ? { activeToolsRevision: prev.activeToolsRevision + 1 } : {}),
+    ...(bumpThreadsTools ? { threadsToolsRevision: prev.threadsToolsRevision + 1 } : {})
   }
 }
 
@@ -1517,6 +1581,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   threads: {},
   threadsMetaVersion: 0,
   activeToolsRevision: 0,
+  threadsToolsRevision: 0,
   sessionNotices: loadSessionNotices(),
   rememberSessionNotice: (file, notice) => {
     const key = threadKey(file)
@@ -1558,10 +1623,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         persistDraftSnapshot(state, drafts, undefined, { debounce: true })
         return { drafts }
       }
-      const drafts = {
-        ...state.drafts,
+      const { [key]: _previous, ...rest } = state.drafts
+      const drafts = pruneComposerDrafts({
+        ...rest,
         [key]: nextDraft
-      }
+      })
       persistDraftSnapshot(state, drafts, undefined, { debounce: true })
       return { drafts }
     })
@@ -2823,24 +2889,38 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       // `started` means Pi accepted it for a run, and `queued` means Pi is
       // holding it for a run that is already going. The phase has to
       // follow that answer rather than stay on the optimistic `queued`.
+      // If the user clicked Stop before Pi opened a run (`!run.runId`), no
+      // `agent_settled` event will ever arrive, so settle it here as aborted.
+      const canSettlePreRun = (run: RunState) =>
+        run.phase === 'queued' || (run.phase === 'aborting' && !run.runId)
+      const settlePreRun = (run: RunState): RunState => ({
+        ...run,
+        phase: 'idle',
+        settled: true,
+        ...(run.phase === 'aborting' ? { outcome: 'aborted' as const } : {})
+      })
       if (result?.disposition === 'handled') {
         forgetQueuedPrompt(key, pendingPrompt.id)
-        update((state) => ({
-          cwdWait: undefined,
-          isStreaming: state.run.phase === 'queued' || state.run.phase === 'aborting' ? false : state.isStreaming,
-          run: state.run.phase === 'queued' || (result.cancelled && state.run.phase === 'aborting') ? { ...state.run, phase: 'idle', settled: true } : state.run,
-          // The handler consumed the command, so no model turn follows: the
-          // transcript still records it, or a late response lands on a thread
-          // whose transcript never shows what the reader asked for. A cancelled
-          // prompt never reached Pi, so its waiting bubble is removed instead.
-          items: result.cancelled
-            ? clearPendingPrompts(state.items, pendingPrompt.id)
-            : applyEvent(state.items, {
-                type: 'client_notice',
-                level: 'info',
-                text: `Pi handled ${trimmed} directly — no model turn was needed`
-              })
-        }))
+        update((state) => {
+          const shouldSettle =
+            canSettlePreRun(state.run) || (result.cancelled && state.run.phase === 'aborting')
+          return {
+            cwdWait: undefined,
+            isStreaming: shouldSettle ? false : state.isStreaming,
+            run: shouldSettle ? settlePreRun(state.run) : state.run,
+            // The handler consumed the command, so no model turn follows: the
+            // transcript still records it, or a late response lands on a thread
+            // whose transcript never shows what the reader asked for. A cancelled
+            // prompt never reached Pi, so its waiting bubble is removed instead.
+            items: result.cancelled
+              ? clearPendingPrompts(state.items, pendingPrompt.id)
+              : applyEvent(state.items, {
+                  type: 'client_notice',
+                  level: 'info',
+                  text: `Pi handled ${trimmed} directly — no model turn was needed`
+                })
+          }
+        })
       } else if (result?.disposition === 'started') {
         // A run is opening. `agent_start` confirms it; until then this is the
         // truth, and it keeps the row from reading "Queued" for a run that is
@@ -2870,25 +2950,39 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         // optimistic phase must not be left standing. Nothing will echo the
         // prompt back, so its waiting bubble goes too.
         forgetQueuedPrompt(key, pendingPrompt.id)
-        update((state) => ({
-          cwdWait: undefined,
-          isStreaming: state.run.phase === 'queued' ? false : state.isStreaming,
-          run: state.run.phase === 'queued' ? { ...state.run, phase: 'idle', settled: true } : state.run,
-          items: clearPendingPrompts(state.items, pendingPrompt.id)
-        }))
+        update((state) => {
+          const shouldSettle = canSettlePreRun(state.run)
+          return {
+            cwdWait: undefined,
+            isStreaming: shouldSettle ? false : state.isStreaming,
+            run: shouldSettle ? settlePreRun(state.run) : state.run,
+            items: clearPendingPrompts(state.items, pendingPrompt.id)
+          }
+        })
       }
       return result?.disposition === 'started' || result?.disposition === 'queued' ||
         (result?.disposition === 'handled' && result.cancelled !== true)
     } catch (error) {
       // An unconfirmed prompt must not leave its optimistic queue state open.
       forgetQueuedPrompt(key, pendingPrompt.id)
-      update((state) => ({
-        cwdWait: undefined,
-        error: state.run.phase === 'aborting' || state.run.outcome === 'aborted' ? state.error : messageOf(error),
-        isStreaming: state.run.phase === 'queued' ? false : state.isStreaming,
-        run: state.run.phase === 'queued' ? { ...state.run, phase: 'idle', settled: true } : state.run,
-        items: clearPendingPrompts(state.items, pendingPrompt.id)
-      }))
+      update((state) => {
+        const shouldSettle =
+          state.run.phase === 'queued' || (state.run.phase === 'aborting' && !state.run.runId)
+        return {
+          cwdWait: undefined,
+          error: state.run.phase === 'aborting' || state.run.outcome === 'aborted' ? state.error : messageOf(error),
+          isStreaming: shouldSettle ? false : state.isStreaming,
+          run: shouldSettle
+            ? {
+                ...state.run,
+                phase: 'idle',
+                settled: true,
+                ...(state.run.phase === 'aborting' ? { outcome: 'aborted' as const } : {})
+              }
+            : state.run,
+          items: clearPendingPrompts(state.items, pendingPrompt.id)
+        }
+      })
       return false
     }
   },
@@ -3530,7 +3624,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const now = Date.now()
     const last = liveStatsAt.get(key) ?? 0
     if (now - last < LIVE_STATS_INTERVAL_MS) return
-    liveStatsAt.set(key, now)
+    setBoundedMap(liveStatsAt, key, now)
     const epoch = liveStatsEpoch.get(key) ?? 0
     const task = tracedRpc<SessionStats>(key, 'get_session_stats', undefined, 20_000, 'live-stats')
       .then((stats) => {
@@ -3609,7 +3703,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       if (saved && !state?.model?.id && nextModels.some((model) => model.id === saved.id && model.provider === saved.provider)) {
         const attempt = `${owner}:${saved.provider}/${saved.id}`
         if (!modelRestoreAttempts.has(attempt)) {
-          modelRestoreAttempts.add(attempt)
+          addBoundedSet(modelRestoreAttempts, attempt)
           void tracedRpc(
             owner,
             'set_model',
@@ -3631,7 +3725,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       if (savedLevel && !state?.thinkingLevel && nextLevels.includes(savedLevel)) {
         const attempt = `${owner}:thinking:${savedLevel}`
         if (!modelRestoreAttempts.has(attempt)) {
-          modelRestoreAttempts.add(attempt)
+          addBoundedSet(modelRestoreAttempts, attempt)
           void tracedRpc(owner, 'set_thinking_level', { level: savedLevel }, undefined, 'restore-thinking')
             .then(async () => {
               await get().refreshState(owner)
@@ -4615,17 +4709,34 @@ function syncWindowChrome(dark: boolean): void {
  */
 function watchChromeOverlays(): void {
   if (chromeWatcher || typeof MutationObserver === 'undefined') return
-  // Streaming text mutates the DOM on every frame, so the check runs on the
-  // records first: only a node that is, or carries, a modal layer can move the
-  // strip. Querying the document on every batch would sit in the delta budget.
-  const touchesLayer = (records: MutationRecord[]): boolean =>
-    records.some((record) => {
-      for (const node of [...record.addedNodes, ...record.removedNodes]) {
-        if (!(node instanceof Element)) continue
-        if (node.matches(CHROME_OVERLAYS) || node.querySelector(CHROME_OVERLAYS)) return true
-      }
-      return false
-    })
+  // Streaming text mutates the DOM on every frame, so skip subtrees that never
+  // host non-portaled full-window layers (Lightbox and Mermaid fullscreen portal
+  // directly to document.body) and avoid array allocations / subtree queries on
+  // text or leaf nodes.
+  const NON_OVERLAY_SUBTREES = '.assistant__text, .thinking__body, .terminal-pane'
+  const isOverlayElement = (node: Element): boolean =>
+    node.classList.contains('modal-layer') ||
+    node.classList.contains('lightbox-layer') ||
+    node.classList.contains('mermaid-layer')
+  const listTouchesLayer = (nodes: NodeList): boolean => {
+    for (let index = 0; index < nodes.length; index += 1) {
+      const node = nodes[index]
+      if (node.nodeType !== 1) continue
+      const element = node as Element
+      if (isOverlayElement(element)) return true
+      if (element.firstElementChild !== null && element.querySelector(CHROME_OVERLAYS)) return true
+    }
+    return false
+  }
+  const touchesLayer = (records: MutationRecord[]): boolean => {
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index]
+      const target = record.target
+      if (target instanceof Element && target.closest(NON_OVERLAY_SUBTREES)) continue
+      if (listTouchesLayer(record.addedNodes) || listTouchesLayer(record.removedNodes)) return true
+    }
+    return false
+  }
   const repaint = (records: MutationRecord[]) => {
     if (!touchesLayer(records)) return
     const count = document.querySelectorAll(CHROME_OVERLAYS).length
@@ -5298,7 +5409,9 @@ function drainPending(onlyKey?: string): void {
       if (batch.events.length === 0) continue
       const base = (nextThreads ? nextThreads[key] : undefined) ?? state.threads[key]
       if (key && !base && deletedSessionKeys.has(key)) continue
-      const thread = base ?? emptyThread(state.workspace?.path)
+      // Match `bindSet`: an uninitialized background thread belongs to its own
+      // runtime's folder, never the active view's workspace.
+      const thread = base ?? emptyThread()
       const nextItems = applyEventBatch(thread.items, batch.events)
       if (nextItems === thread.items) continue
       const nextThread = threadFromPatch(thread, { items: nextItems })
@@ -5360,6 +5473,11 @@ function forgetDeletedThread(file: string): void {
     clearViewState(key)
     forgetSessionTiming(key)
     resetStreamState(key)
+    try {
+      cachedDraftStorage()?.removeItem(`pi-desktop.session-tree.collapsed:${key}`)
+    } catch {
+      /* ignore disabled storage */
+    }
     for (const attempt of modelRestoreAttempts) {
       if (attempt.startsWith(`${key}:`)) modelRestoreAttempts.delete(attempt)
     }
@@ -5533,7 +5651,7 @@ function handleEvent(
       // A live-stats read issued before this run describes the session as it
       // was; it must not land on the fresh transcript numbers below, and the
       // first answer of the new run should be allowed to ask again at once.
-      liveStatsEpoch.set(sessionKey, (liveStatsEpoch.get(sessionKey) ?? 0) + 1)
+      setBoundedMap(liveStatsEpoch, sessionKey, (liveStatsEpoch.get(sessionKey) ?? 0) + 1)
       liveStatsAt.delete(sessionKey)
       // One run per prompt. A follow-up prompt that arrives while a run is
       // active does not open a second one: Pi folds it into the current run.
@@ -6024,7 +6142,9 @@ function handleEvent(
       // a tool that started means one is running, and the run only goes back
       // to "the model is answering" when none is left.
       if (event.type === 'tool_execution_start') {
-        set((state) => ({ run: { ...state.run, phase: 'tool_running', settled: false } }))
+        set((state) => ({
+          run: { ...state.run, phase: phaseFor(state, 'tool_running'), settled: false }
+        }))
       }
       if (event.type === 'tool_execution_end') {
         const still = get().items.some((item) => item.kind === 'tool' && item.status === 'running')
@@ -6262,8 +6382,10 @@ function handleExtensionUi(
       if (key === CONTEXT_BREAKDOWN_STATUS_KEY) {
         const contextBreakdown = parseRequestContextBreakdown(request.statusText)
         if (contextBreakdown) {
-          if (taggedRequest.sessionKey) {
-            bindSet(set, get, taggedRequest.sessionKey)({ contextBreakdown })
+          const targetKey = taggedRequest.sessionKey
+          const canonicalOwner = owner ? threadKey(owner) : undefined
+          if (targetKey && targetKey !== canonicalOwner && realSet && realGet) {
+            bindSet(realSet, realGet, targetKey)({ contextBreakdown })
           } else {
             set({ contextBreakdown })
           }

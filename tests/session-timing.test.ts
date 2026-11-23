@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   forgetSessionTiming,
   migrateSessionTiming,
+  pruneSessionTimingStorage,
   recordGenerationWindow,
   readSessionTiming,
   recordModelDuration,
@@ -410,6 +411,26 @@ test('forgetting a deleted conversation drops its timing record', () => {
       runDurationsMs: {},
       generationWindowMs: {}
     })
+  } finally {
+    restore()
+  }
+})
+
+test('pruneSessionTimingStorage evicts excess stored sessions and their journal keys while keeping protected sessions', () => {
+  const restore = installStorage()
+  try {
+    const store = (globalThis as unknown as { window: { localStorage: Storage } }).window.localStorage
+    for (let index = 0; index < 10; index += 1) {
+      const key = `pi-desktop:session-timing:v1:${encodeURIComponent(`C:/sessions/old-${index}.jsonl`)}`
+      store.setItem(key, JSON.stringify({ modelTimingVersion: 10, modelDurationsMs: { t: index } }))
+      store.setItem(`${key}:journal:count`, '1')
+      store.setItem(`${key}:journal:0`, JSON.stringify({ field: 'modelDurationsMs', id: 'j', duration: 5 }))
+    }
+    const protectedKey = `pi-desktop:session-timing:v1:${encodeURIComponent('C:/sessions/old-0.jsonl')}`
+    const removed = pruneSessionTimingStorage(3, protectedKey, store)
+    assert.equal(removed, 7)
+    assert.ok(store.getItem(protectedKey), 'protected session key must survive eviction')
+    assert.equal(store.length, 3 * 3, 'companion journal keys are evicted alongside their base records')
   } finally {
     restore()
   }

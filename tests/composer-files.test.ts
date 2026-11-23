@@ -9,8 +9,11 @@ import {
 } from '../src/renderer/src/lib/composer-files'
 import {
   COMPOSER_DRAFTS_STORAGE_KEY,
+  MAX_HISTORY_ONLY_DRAFTS,
+  composerDraftAfterSend,
   forgetLastDraftKey,
   loadComposerDrafts,
+  pruneComposerDrafts,
   saveComposerDrafts
 } from '../src/renderer/src/lib/composer-drafts'
 
@@ -173,4 +176,62 @@ test('a malformed draft store is ignored and a promoted draft loses its new-chat
     lastDraftKeys: { one: 'draft:one', two: 'draft:two' }
   }, 'draft:one')
   assert.deepEqual(snapshot.lastDraftKeys, { two: 'draft:two' })
+})
+
+test('pruneComposerDrafts caps sent-history-only sessions while preserving all unsent drafts', () => {
+  const drafts: Record<string, ReturnType<typeof composerDraftAfterSend>> = {}
+  for (let index = 0; index < MAX_HISTORY_ONLY_DRAFTS + 15; index += 1) {
+    drafts[`session-${index}.jsonl`] = composerDraftAfterSend(
+      { text: '', images: [] },
+      `sent prompt ${index}`,
+      undefined
+    )
+  }
+  drafts['active-unsent.jsonl'] = {
+    text: 'Work in progress',
+    images: [],
+    history: ['older']
+  }
+
+  const pruned = pruneComposerDrafts(drafts)
+  assert.equal(pruned['active-unsent.jsonl']?.text, 'Work in progress')
+  assert.equal(pruned['session-0.jsonl'], undefined, 'oldest history-only session is evicted')
+  assert.ok(pruned[`session-${MAX_HISTORY_ONLY_DRAFTS + 14}.jsonl`], 'newest history-only session is retained')
+  assert.equal(Object.keys(pruned).length, MAX_HISTORY_ONLY_DRAFTS + 1)
+})
+
+test('saveComposerDrafts skips redundant setItem writes and drops history as a last resort on quota pressure', () => {
+  const storage = memoryStorage()
+  let setCount = 0
+  const rawSet = storage.setItem
+  storage.setItem = (key, value) => {
+    setCount += 1
+    rawSet(key, value)
+  }
+  const snapshot = {
+    drafts: { 'draft:same': { text: 'unchanged', images: [] } },
+    lastDraftKeys: { ws: 'draft:same' }
+  }
+  assert.equal(saveComposerDrafts(snapshot, storage), 'saved')
+  assert.equal(saveComposerDrafts(snapshot, storage), 'saved')
+  assert.equal(setCount, 1, 'identical serialized snapshots must not rewrite localStorage')
+
+  // Quota exceeded with large history degrades by dropping history while keeping unsent text.
+  const tight = memoryStorage()
+  const tightSet = tight.setItem
+  tight.setItem = (key, value) => {
+    if (value.length > 300) throw new Error('quota exceeded')
+    tightSet(key, value)
+  }
+  const res = saveComposerDrafts({
+    drafts: {
+      'old-history.jsonl': composerDraftAfterSend({ text: '', images: [] }, 'H'.repeat(400), undefined),
+      'draft:live': { text: 'Save me', images: [], history: ['P'.repeat(400)] }
+    },
+    lastDraftKeys: { ws: 'draft:live' }
+  }, tight)
+  assert.equal(res, 'partial')
+  const restored = loadComposerDrafts(tight)
+  assert.equal(restored.drafts['draft:live']?.text, 'Save me')
+  assert.equal(restored.drafts['old-history.jsonl'], undefined)
 })

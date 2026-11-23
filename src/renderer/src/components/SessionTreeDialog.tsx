@@ -120,8 +120,11 @@ const SessionTreeRow = memo(function SessionTreeRow({
 })
 
 /** The folds of one conversation are remembered by its session file. */
+const COLLAPSE_PREFIX = 'pi-desktop.session-tree.collapsed:'
+const MAX_COLLAPSED_SESSIONS = 50
+
 function collapseKey(file: string): string {
-  return `pi-desktop.session-tree.collapsed:${file}`
+  return `${COLLAPSE_PREFIX}${file}`
 }
 
 function readCollapsed(file: string | undefined): Set<string> {
@@ -137,10 +140,32 @@ function readCollapsed(file: string | undefined): Set<string> {
   }
 }
 
+function pruneCollapsedStorage(protectKey: string): void {
+  if (window.localStorage.length <= MAX_COLLAPSED_SESSIONS + 20) return
+  const keys: string[] = []
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const candidate = window.localStorage.key(index)
+    if (candidate && candidate.startsWith(COLLAPSE_PREFIX) && candidate !== protectKey) {
+      keys.push(candidate)
+    }
+  }
+  const excess = keys.length + 1 - MAX_COLLAPSED_SESSIONS
+  for (let index = 0; index < excess; index += 1) {
+    window.localStorage.removeItem(keys[index])
+  }
+}
+
 function writeCollapsed(file: string | undefined, collapsed: Iterable<string>): void {
   if (!file) return
+  const key = collapseKey(file)
+  const list = [...collapsed]
   try {
-    window.localStorage.setItem(collapseKey(file), JSON.stringify([...collapsed]))
+    if (list.length === 0) {
+      window.localStorage.removeItem(key)
+      return
+    }
+    window.localStorage.setItem(key, JSON.stringify(list))
+    pruneCollapsedStorage(key)
   } catch {
     // A full or disabled storage must not break the dialog.
   }

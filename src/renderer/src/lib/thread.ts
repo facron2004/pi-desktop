@@ -275,6 +275,49 @@ export function clearPendingPrompts(items: ThreadItem[], id?: string): ThreadIte
   return changed ? next : items
 }
 
+function itemMessageId(item: ThreadItem | undefined): string | undefined {
+  return item && (item.kind === 'user' || item.kind === 'assistant') ? item.messageId : undefined
+}
+
+function itemToolCallId(item: ThreadItem | undefined): string | undefined {
+  return item?.kind === 'tool' ? item.toolCallId : undefined
+}
+
+function identityChanged(previous: ThreadItem | undefined, next: ThreadItem | undefined): boolean {
+  if (!next) return Boolean(previous)
+  return (
+    previous?.id !== next.id ||
+    itemMessageId(previous) !== itemMessageId(next) ||
+    itemToolCallId(previous) !== itemToolCallId(next)
+  )
+}
+
+function updateIndexesForReplacement(
+  indexes: ThreadItemIndexes,
+  index: number,
+  previous: ThreadItem | undefined,
+  next: ThreadItem
+): void {
+  if (previous) {
+    if (previous.id !== next.id && indexes.byId.get(previous.id) === index) {
+      indexes.byId.delete(previous.id)
+    }
+    const prevToolCallId = itemToolCallId(previous)
+    if (prevToolCallId && prevToolCallId !== itemToolCallId(next) && indexes.byToolCallId.get(prevToolCallId) === index) {
+      indexes.byToolCallId.delete(prevToolCallId)
+    }
+    const prevMessageId = itemMessageId(previous)
+    if (prevMessageId && prevMessageId !== itemMessageId(next) && indexes.byMessageId.get(prevMessageId) === index) {
+      indexes.byMessageId.delete(prevMessageId)
+    }
+  }
+  indexes.byId.set(next.id, index)
+  const nextToolCallId = itemToolCallId(next)
+  if (nextToolCallId) indexes.byToolCallId.set(nextToolCallId, index)
+  const nextMessageId = itemMessageId(next)
+  if (nextMessageId) indexes.byMessageId.set(nextMessageId, index)
+}
+
 function changeDraftItem(items: ThreadItem[], index: number, item: ThreadItem): ThreadItem[] {
   const draft = mutableThreadItemsDrafts.get(items)
   if (!draft) {
@@ -282,7 +325,12 @@ function changeDraftItem(items: ThreadItem[], index: number, item: ThreadItem): 
     copy[index] = item
     return markThreadItemsChanged(items, copy, index)
   }
+  const previous = items[index]
   items[index] = item
+  if (identityChanged(previous, item)) {
+    const indexes = writableDraftIndexes(items, draft)
+    updateIndexesForReplacement(indexes, index, previous, item)
+  }
   draft.firstChangedIndex = Math.min(draft.firstChangedIndex, index)
   draft.changed = true
   return items
@@ -295,7 +343,9 @@ function markThreadItemsChanged(
 ): ThreadItem[] {
   threadItemsChanges.set(next, { base: new WeakRef(base), firstChangedIndex: changedIndex })
   const baseIndexes = indexesFor(base)
-  // Only clone index maps when items are appended; in-place item updates keep the same positions.
+  // Clone index maps when items are appended or when an in-place update alters
+  // an identity key (for example promoting an optimistic user prompt with its
+  // confirmed `messageId`).
   let indexes = baseIndexes
   if (next.length > base.length) {
     indexes = cloneIndexes(baseIndexes)
@@ -307,6 +357,13 @@ function markThreadItemsChanged(
         indexes.byMessageId.set(item.messageId, index)
       }
     }
+  } else if (
+    changedIndex >= 0 &&
+    changedIndex < next.length &&
+    identityChanged(base[changedIndex], next[changedIndex])
+  ) {
+    indexes = cloneIndexes(baseIndexes)
+    updateIndexesForReplacement(indexes, changedIndex, base[changedIndex], next[changedIndex])
   }
   threadItemIndexes.set(next, indexes)
   return next

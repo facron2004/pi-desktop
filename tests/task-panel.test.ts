@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { listBackgroundCommands, listDeliverables, listSubagentTasks, summariseDiff } from '../src/renderer/src/lib/task-panel'
+import { extractPlan } from '../src/renderer/src/lib/plan'
 import { isImageName } from '../src/renderer/src/lib/files'
 import type { GitStatus } from '../src/shared/types'
-import type { ToolItem } from '../src/renderer/src/lib/thread'
+import type { AssistantItem, ToolItem } from '../src/renderer/src/lib/thread'
 
 function tool(overrides: Partial<ToolItem> & Pick<ToolItem, 'id' | 'toolName'>): ToolItem {
   return {
@@ -210,4 +211,36 @@ test('TaskPanel gates tool derivations behind activeToolsRevision and isolates p
   assert.match(source, /TaskProgressSection/)
   assert.match(source, /lazy\(\(\) =>/)
   assert.equal(source.includes('useShallow'), false)
+})
+
+test('extractPlan keeps stable object identity across prose deltas and SubagentPanel avoids state.threads subscriptions', () => {
+  const planMessage: AssistantItem = {
+    id: 'a-plan',
+    kind: 'assistant',
+    blocks: [{ type: 'text', text: '- [x] Inspect\n- [ ] Fix' }],
+    timestamp: 1,
+    order: 1,
+    streaming: false
+  }
+  const prose1: AssistantItem = {
+    id: 'a-prose',
+    kind: 'assistant',
+    blocks: [{ type: 'text', text: 'Working on it' }],
+    timestamp: 2,
+    order: 2,
+    streaming: true
+  }
+  const prose2: AssistantItem = {
+    ...prose1,
+    blocks: [{ type: 'text', text: 'Working on it with more streaming prose' }]
+  }
+  const first = extractPlan([planMessage, prose1])
+  const second = extractPlan([planMessage, prose2])
+  assert.ok(first)
+  assert.equal(second, first, 'unchanged prior plan keeps the same object reference during prose streaming')
+
+  const subagentPanel = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/components/SubagentPanel.tsx'), 'utf8')
+  assert.match(subagentPanel, /state\.threadsToolsRevision/)
+  assert.match(subagentPanel, /subagentCallOf/)
+  assert.equal(/useAppStore\(\s*\(?state\)?\s*=>\s*state\.threads\s*\)/.test(subagentPanel), false)
 })

@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useId,
@@ -181,6 +182,7 @@ function useDiagramZoom(
   }, [])
 
   const [pannable, setPannable] = useState(false)
+  const [fitScale, setFitScale] = useState(1)
 
   useEffect(() => {
     const viewport = viewportRef.current
@@ -212,16 +214,19 @@ function useDiagramZoom(
   }, [size, viewportRef])
 
   useLayoutEffect(() => {
-    const fit = computeFit()
-    if (autoFitRef.current) applyScale(fit)
+    const nextFit = computeFit()
+    setFitScale(nextFit)
+    if (autoFitRef.current) applyScale(nextFit)
   }, [computeFit, applyScale])
 
   useEffect(() => {
     const viewport = viewportRef.current
     if (!viewport || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(() => {
+      const nextFit = computeFit()
+      setFitScale(nextFit)
       if (!autoFitRef.current) return
-      applyScale(computeFit())
+      applyScale(nextFit)
     })
     observer.observe(viewport)
     return () => observer.disconnect()
@@ -229,7 +234,9 @@ function useDiagramZoom(
 
   const fit = useCallback(() => {
     autoFitRef.current = true
-    applyScale(computeFit())
+    const nextFit = computeFit()
+    setFitScale(nextFit)
+    applyScale(nextFit)
     const viewport = viewportRef.current
     if (viewport) {
       viewport.scrollLeft = 0
@@ -329,7 +336,7 @@ function useDiagramZoom(
   return {
     scale,
     percent: Math.round(scale * 100),
-    atFit: Math.abs(scale - computeFit()) < 0.005,
+    atFit: Math.abs(scale - fitScale) < 0.005,
     dragging,
     pannable,
     canZoomIn: scale < MAX_SCALE - 0.001,
@@ -612,7 +619,7 @@ function DiagramSurface({
 }
 
 /** Render a ```mermaid fence as an interactive SVG diagram. */
-export function MermaidDiagram({ code, streaming = false }: MermaidDiagramProps) {
+export const MermaidDiagram = memo(function MermaidDiagram({ code, streaming = false }: MermaidDiagramProps) {
   const isDark = useIsDark()
   const t = useT()
   const normalized = normalizeMermaidSource(code)
@@ -809,4 +816,4 @@ export function MermaidDiagram({ code, streaming = false }: MermaidDiagramProps)
         : null}
     </>
   )
-}
+})

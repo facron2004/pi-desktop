@@ -15,18 +15,33 @@ interface ConversationViewState {
   historyFirstVisibleTurn?: number
 }
 
+export const MAX_VIEW_STATE_CONVERSATIONS = 200
 const conversations = new Map<string, ConversationViewState>()
+
+function touchConversation(threadId: string, state: ConversationViewState): void {
+  conversations.delete(threadId)
+  conversations.set(threadId, state)
+  while (conversations.size > MAX_VIEW_STATE_CONVERSATIONS) {
+    const oldest = conversations.keys().next().value
+    if (oldest === undefined) break
+    conversations.delete(oldest)
+  }
+}
 
 function stateFor(threadId: string, create = false): ConversationViewState | undefined {
   let state = conversations.get(threadId)
-  if (!state && create) {
+  if (state) {
+    touchConversation(threadId, state)
+    return state
+  }
+  if (create) {
     state = {
       toolOpen: new Map(),
       toolFull: new Map(),
       fileOpen: new Map(),
       processOpen: new Map()
     }
-    conversations.set(threadId, state)
+    touchConversation(threadId, state)
   }
   return state
 }

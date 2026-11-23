@@ -1,7 +1,7 @@
 import { memo, useMemo } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { conversationRows } from '../lib/live-sessions'
-import { subagentCalls } from '../lib/subagents'
+import { subagentCallOf } from '../lib/subagents'
 import { SubagentConversation } from './SubagentConversation'
 import { SubagentTree } from './SubagentTree'
 
@@ -16,16 +16,20 @@ function SubagentOverview({
   onSelectTask: (selection: SubagentSelection | null) => void
 }) {
   const sessions = useAppStore((state) => state.sessions)
-  const threads = useAppStore((state) => state.threads)
+  const threadsMetaVersion = useAppStore((state) => state.threadsMetaVersion)
+  const threadsToolsRevision = useAppStore((state) => state.threadsToolsRevision)
   const workspacePath = useAppStore((state) => state.workspace?.path)
   const selectSession = useAppStore((state) => state.selectSession)
   const cancelSubagentTask = useAppStore((state) => state.cancelSubagentTask)
-  // Use the same merge as the sidebar so a live draft or a prompt still on its
-  // way to Pi does not disappear from the subagent page before it is persisted.
-  const listed = useMemo(
-    () => conversationRows(sessions, threads, workspacePath),
-    [sessions, threads, workspacePath]
-  )
+  // Subscribe only to metadata + tool revisions rather than the whole `threads`
+  // map so 60fps text deltas in any conversation do not rebuild the tree.
+  const { threads, listed } = useMemo(() => {
+    const currentThreads = useAppStore.getState().threads
+    return {
+      threads: currentThreads,
+      listed: conversationRows(sessions, currentThreads, workspacePath)
+    }
+  }, [sessions, workspacePath, threadsMetaVersion, threadsToolsRevision])
 
   return (
     <div className="subagent-panel">
@@ -48,17 +52,21 @@ function SubagentDetail({
   selected: SubagentSelection
   onSelectTask: (selection: SubagentSelection | null) => void
 }) {
-  const selectedItems = useAppStore((state) => {
+  // `subagentCallOf` is WeakMap-cached per ToolItem, so selecting the task
+  // directly preserves object identity across parent text-delta frames.
+  const selectedTask = useAppStore((state) => {
     const activeKey = state.activeSessionFile ?? state.draftId ?? ''
-    return selected.sessionKey === activeKey
+    const items = selected.sessionKey === activeKey
       ? state.items
       : state.threads[selected.sessionKey]?.items
+    if (!items) return undefined
+    for (const item of items) {
+      if (item.kind !== 'tool' || item.toolName !== 'subagent') continue
+      const match = subagentCallOf(item).tasks.find((task) => task.id === selected.taskId)
+      if (match) return match
+    }
+    return undefined
   })
-  // Keep only the selection in view state; progress and output stay in the thread.
-  const selectedTask = useMemo(
-    () => subagentCalls(selectedItems ?? []).flatMap((call) => call.tasks).find((task) => task.id === selected.taskId),
-    [selected.taskId, selectedItems]
-  )
 
   if (selectedTask) {
     return <SubagentConversation target={{ task: selectedTask }} onBack={() => onSelectTask(null)} />

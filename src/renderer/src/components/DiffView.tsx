@@ -293,14 +293,13 @@ export const DiffView = memo(function DiffView({
   const toggle = (key: string) => {
     if (expandAll !== undefined) {
       // The panel is forcing a state; a click on one run takes over from it.
-      const next = new Set(gapKeys)
+      const next = new Set<string>(expandAll ? gapKeys : [])
       if (expandAll) {
         // Everything was open, so this one is closed and the rest stay open.
-        for (const other of gapKeys) next.delete(other)
-        next.add(key)
-      } else {
-        for (const other of gapKeys) next.add(other)
         next.delete(key)
+      } else {
+        // Everything was folded, so only this one opens.
+        next.add(key)
       }
       setOpened(next)
       onExpandAllChange?.(undefined)
