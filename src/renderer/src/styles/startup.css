@@ -32,11 +32,12 @@
   height: 128px;
 }
 
+/* The same pixel wordmark as the sidebar, inlined so the first paint does
+   not wait for React or an image request. 56x8 at seven to one. */
 .startup-screen__name {
-  font-size: var(--text-large);
-  line-height: var(--leading-large);
-  font-weight: var(--weight-medium);
-  letter-spacing: 0.06em;
+  display: block;
+  width: 196px;
+  height: 28px;
 }
 
 .startup-screen__tile {

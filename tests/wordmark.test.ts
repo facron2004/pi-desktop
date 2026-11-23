@@ -44,3 +44,28 @@ test('the component and the generated SVG draw the same pixel wordmark', () => {
   assert.equal(viewBox, 'from constants', 'the component stopped sizing its own viewBox')
   assert.match(asset, /viewBox="0 0 56 8"/, 'the SVG asset changed its grid')
 })
+
+/**
+ * The startup screen paints before React, so it cannot use PiWordmark. It
+ * inlines the same drawing instead: an <img> would arrive a frame late and
+ * would lose `currentColor`. This is the third copy of the wordmark, so it
+ * needs the same drift check as the component.
+ */
+test('the startup screen inlines the same pixel wordmark as the asset', () => {
+  const root = path.resolve(process.cwd())
+  const html = readFileSync(path.join(root, 'src/renderer/index.html'), 'utf8')
+  const asset = readFileSync(path.join(root, 'build/wordmark-pixel.svg'), 'utf8')
+
+  const inline = /class="startup-screen__name"[\s\S]*?<path d="([^"]*)"/.exec(html)?.[1]
+  assert.ok(inline, 'the startup screen no longer inlines the wordmark')
+  const assetPath = /<path d="([^"]*)"/.exec(asset)?.[1]
+  assert.ok(assetPath, 'the SVG asset has no path')
+  assert.equal(inline, assetPath, 'the startup wordmark drifted from the asset')
+
+  const inlineDot = /class="startup-screen__name"[\s\S]*?<rect x="(\d+)" y="(\d+)" width="1" height="1"/.exec(html)
+  const assetDot = /<rect x="(\d+)" y="(\d+)" width="1" height="1"/.exec(asset)
+  assert.ok(inlineDot && assetDot, 'the startup wordmark lost its accent dot')
+  assert.equal(inlineDot[1], assetDot[1], 'the accent dot moved horizontally')
+  assert.equal(inlineDot[2], assetDot[2], 'the accent dot moved vertically')
+  assert.match(html, /viewBox="0 0 56 8"/, 'the startup wordmark changed its grid')
+})

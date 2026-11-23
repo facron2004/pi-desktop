@@ -306,9 +306,14 @@ obvious from its surroundings. `groupArchivedByProject` in
 `lib/sidebar-view.ts` therefore takes archived rows out of the column and puts
 them back below it, one heading per project: the caller's project order holds,
 a folder that order does not name still gets a heading from its own folder name,
-and archived chats with no folder close the list. The heading is a label, not a
-row — no hover fill, and its glyph hangs in the row indent so the project name
-lines up with the conversation titles underneath. The
+and archived chats with no folder close the list. The head is a **fold control**
+now (`lib/archive-fold.ts`): a button carrying a caret and `aria-expanded` that
+opens and closes that folder's archived rows, never touching the runtime. The
+fold is a view preference in localStorage, keyed by the normalised folder (and
+`''` for the projectless group), so it survives a relaunch; a search opens every
+group, because a hit inside a folded group would be invisible. Its glyph still
+hangs in the row indent so the project name lines up with the conversation
+titles underneath. The
 `All conversations (show archived)` filter also gets an `Archived` section head,
 because the column above holds current work; in `Archived only` mode every row
 is archived, so the group headings speak for themselves. Tree grouping needs
@@ -321,10 +326,15 @@ The app's name is a **drawing, not text**. `PiWordmark`
 5-column cell, so it reads like a terminal (TUI) font: no pixel font ships with
 the app, and the system UI font does not read as a terminal. The grid is 56x8
 (7:1 — the `p` descends into the eighth row) and the glyph table is duplicated
-in `scripts/make-wordmark.mjs`, which writes `build/wordmark-pixel.svg`; the two
-are the same drawing and must stay byte-identical. The mark inherits
-`currentColor` so it follows `--sidebar-text`, `shape-rendering: crispEdges`
-keeps the steps square, and only the dot of the `i` wears the logo's coral.
+in `scripts/make-wordmark.mjs`, which writes `build/wordmark-pixel.svg`, and
+inlined once more in `src/renderer/index.html` for the startup screen — that
+screen paints before React, so it cannot use the component, and an `<img>`
+would arrive a frame late and lose `currentColor`. All three are the same
+drawing and must stay byte-identical; `tests/wordmark.test.ts` checks the
+component, the asset and the inline copy. The mark inherits `currentColor` so
+it follows `--sidebar-text` (and the startup screen's `--text-primary`),
+`shape-rendering: crispEdges` keeps the steps square, and only the dot of the
+`i` wears the logo's coral.
 Do not "fix" it back into a `<span>`: the sidebar head has no font-size rule for
 the name any more, and nothing ellipsises it — at the 200px minimum width the
 mark leaves ~22px of slack before the search button.
@@ -748,7 +758,19 @@ else — the tray is a projection of one setting, `trayPersistent`.
 
 With the tray on, closing the window hides it instead of quitting, and the
 tray icon is the way back: a click opens the window, the menu offers *show*
-and *quit*. The rules that keep the window from disappearing for good:
+and *quit*.
+
+**The tray menu is a card and nothing else.** The popup is its own frameless
+window (`tray.ts`), `transparent: true` with `hasShadow: false`, sized to the
+content height the page reports — so the card *is* the window, and any CSS that
+paints outside it (`box-shadow`, `backdrop-filter`) shows up as a halo over the
+desktop. It had a two-layer drop shadow plus 6px of outer padding to hold it,
+which read as frosted glass around a flat menu; `styles/tray-popup.css` now
+keeps `.tray` at zero padding with no shadow, and the 1px border and radius are
+what shape the card. Do not add a shadow back: the OS draws none either, and
+there is no margin for it to fall into.
+
+The rules that keep the window from disappearing for good:
 
 - Hide only while the tray icon is really there. A missing icon, a real quit
   and the screenshot harness all close the window for real; hiding without a
@@ -900,6 +922,16 @@ preference in localStorage (`lib/memory-fold.ts`), never a field in the memory
 store. The group head is the toggle button with a caret and `aria-expanded`;
 folding hides only that group's rows. A block that mounts with a group already
 folded starts closed, and an unreadable storage value is treated as no folds.
+
+**A confirmation is portalled to `body`, so it is centred on the window.**
+`ConfirmDialog` renders through `createPortal`, not inside the component that
+asks. A `position: fixed` layer resolves against the nearest ancestor that
+creates a containing block — a `transform`, a `filter`, `will-change`, a
+`contain` — and settings pages, panels and menus are exactly where one appears;
+mounted inline, the question「删除这条记忆?」was centred on the settings card
+instead of the window it is asking about. Keep the portal: a confirmation
+belongs to the window, and the layer it is drawn in must cover it, or the scrim
+leaves the card's surroundings live.
 
 ## The launcher
 
