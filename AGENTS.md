@@ -319,6 +319,15 @@ because the column above holds current work; in `Archived only` mode every row
 is archived, so the group headings speak for themselves. Tree grouping needs
 none of this: its project rows already say where a conversation came from.
 
+**The section head folds the list under it.**「对话」over the single list and
+「项目」over the grouped views is the fold control: a caret plus the name,
+`aria-expanded`, and the list hides under it while the head itself stays on
+screen — the caret is the only way back, so folding must never take the head
+with it. The state is a view preference (`lib/sidebar-fold.ts`, localStorage),
+keyed by the view rather than the label, so folding one list does not leave the
+other folded. A filter in the sidebar's field opens a folded section, because a
+match hidden inside it is the one thing a search must not do.
+
 ### The name in the sidebar head
 
 The app's name is a **drawing, not text**. `PiWordmark`
