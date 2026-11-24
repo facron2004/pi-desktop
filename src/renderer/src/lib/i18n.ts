@@ -354,7 +354,7 @@ const zhCN: Record<string, string> = {
   'Update downloaded. Restart Pi Desktop to apply.': '更新已下载，重启 Pi Desktop 后生效。',
   'Check for updates': '检查更新',
   'Checking for updates...': '正在检查更新...',
-  'Checking...': '正在检查...',
+  'Checking…': '检查中…',
   'Up to date': '已是最新版本',
   'Update available': '发现新版本',
   'Current version': '当前版本',

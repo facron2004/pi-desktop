@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, RefreshCw, Sparkles } from 'lucide-react'
+import { Download, Sparkles } from 'lucide-react'
 import type { PiCliUpgradeProgress, VersionCheckResult } from '@shared/types'
 import { useT } from '../../lib/i18n'
 import { useAppStore } from '../../store/useAppStore'
@@ -128,8 +128,9 @@ export function AboutSettings({
               disabled={checking || upgradingCli}
               onClick={() => void onCheck()}
             >
-              <RefreshCw size={12} className={checking ? 'spin' : ''} />
-              {checking ? t('Checking...') : t('Check now')}
+              {/* No spinner here: the label itself says which of the two states
+                  the check is in. */}
+              {checking ? t('Checking…') : t('Check now')}
             </button>
           </div>
 
