@@ -143,6 +143,14 @@ What that buys, and what it costs:
   live tail** (`lib/streaming-markdown.ts`); `StreamingText` renders a finished
   chunk once and re-parses only the tail on the next delta. All chunks share
   one outer `.md` container so block spacing still reads as a single document.
+  A fence that is still open is the one tail Markdown cannot bound: no block
+  boundary exists inside a fence, so a streamed log or diff would re-parse the
+  whole growing block on every frame. Its content is literal, so
+  `parseOpenFenceTail` reads the opener (marker length, info string,
+  indentation, closing rules) and `OpenFenceBlock` draws the same code block
+  `Markdown` would, straight from the text; closing the fence swaps in the
+  parsed block with identical markup. Mermaid fences stay on the Markdown path
+  because they become a diagram rather than a code block.
 - **A provider that dumps a paragraph in one delta must not paint it in one
   frame.** `StreamingText` keeps a presentation-only cursor (`useRevealedText`
   + `lib/streaming-reveal.ts`) that advances the visible prefix toward the
@@ -215,6 +223,12 @@ Per-conversation tool/file/process/history expansion lives in
 Tests: `npm test` runs the reducer unit tests (`tests/thread.test.ts`,
 against the real RPC event shapes), `npm run test:e2e` spawns the bundled
 CLI and drives the real reducer with a real run — including a stop mid-run.
+A suite only runs if `tests/run.mjs` lists it; that list is the gate, and
+files left off it read as coverage without being any. The bundler compiles
+JSX with the automatic runtime (matching the app's tsconfig) and the child
+runs with `--test-timeout` plus `--test-force-exit`: a hung test fails on its
+own, and a library that leaves a pending handle cannot hold the run open after
+its suite has reported.
 
 ## The session tree
 
@@ -888,6 +902,18 @@ created. `projectlessRoot()` now creates it, and `runPiCli` falls back to
 `process.cwd()` when the requested folder has disappeared. A workspace can be
 deleted between listing it and running a command, so never assume a path from
 `workspaceRoot()` still exists.
+
+### Settings writes wait off the main thread
+
+`settings.json` is guarded by an interprocess lock, and `lockSync` cannot retry
+(proper-lockfile refuses retries on the sync API), so the store spins on
+`Atomics.wait` between attempts. A second instance — a harness run, or a crashed
+one whose lock file has not gone stale yet — can hold the lock for seconds, and
+blocking the main thread that long freezes the window. The IPC paths that write
+settings therefore `await SettingsStore.waitForLock()` first: it polls
+`proper-lockfile.check` asynchronously, so the wait costs the UI nothing. The
+sync spin is bounded to ~50 ms and only covers the race between that poll and
+the write. Do not grow it back into a long spin.
 
 ### Long session files
 
