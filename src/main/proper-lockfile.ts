@@ -20,6 +20,10 @@ export interface ProperLockfileOptions {
 interface ProperLockfileModule {
   lock(file: string, options?: ProperLockfileOptions): Promise<() => Promise<void>>
   lockSync(file: string, options?: ProperLockfileOptions): () => void
+  check(
+    file: string,
+    options?: Pick<ProperLockfileOptions, 'realpath' | 'stale' | 'lockfilePath'>
+  ): Promise<boolean>
   checkSync(
     file: string,
     options?: Pick<ProperLockfileOptions, 'realpath' | 'stale' | 'lockfilePath'>

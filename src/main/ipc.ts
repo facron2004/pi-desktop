@@ -1559,9 +1559,22 @@ export function registerIpc(context: IpcContext): void {
     }
   })
 
+  // Settings writes take an interprocess lock. Waiting for another instance
+  // asynchronously keeps the window responsive when one holds it (the store's
+  // own sync spin then only has to cover the race with the write). A test
+  // harness may hand the handlers a partial settings double, so the wait is
+  // optional: it is a scheduling optimisation, not a correctness requirement.
+  const waitForSettingsLock = async (): Promise<void> => {
+    await settings.waitForLock?.()
+  }
+
   ipcMain.handle('settings:get', (): AppSettings => settings.get())
 
-  ipcMain.handle('settings:patch', (_event, patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): AppSettings => {
+  ipcMain.handle('settings:patch', async (_event, patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): Promise<AppSettings> => {
+    // Settings writes take an interprocess lock; waiting for another instance
+    // asynchronously keeps the window responsive when one holds it (see
+    // `SettingsStore.waitForLock`).
+    await waitForSettingsLock()
     const next = settings.patch(patch, baseline)
     if (patch.memoryGeneration === false) context.memory.cancelAutomaticGeneration()
     // The extension reads the switch when its process starts. A conversation
@@ -1647,6 +1660,7 @@ export function registerIpc(context: IpcContext): void {
         : await dialog.showOpenDialog({ properties: ['openDirectory'] })
       if (result.canceled || !result.filePaths.length) return null
       const dir = path.resolve(result.filePaths[0])
+      await waitForSettingsLock()
       return await serializeWorkspaceMutation(dir, () => {
         const existing = settings.get().workspaces.find(
           (item) => workspacePathKey(item.path) === workspacePathKey(dir)
@@ -1671,7 +1685,11 @@ export function registerIpc(context: IpcContext): void {
     const hidden = typeof hiddenPath === 'string' ? hiddenPath : undefined
     const initialWorkspace = settings.get().workspaces.find(entry => entry.id === workspaceId)
     const targetPath = initialWorkspace?.path ?? hidden
-    if (!targetPath) return settings.removeWorkspace(workspaceId)
+    if (!targetPath) {
+      await waitForSettingsLock()
+      return settings.removeWorkspace(workspaceId)
+    }
+    await waitForSettingsLock()
     return serializeWorkspaceMutation(targetPath, async () => {
       const workspace = settings.get().workspaces.find(entry => entry.id === workspaceId)
       const remove = () => settings.removeWorkspace(workspaceId, hidden)
@@ -1686,8 +1704,9 @@ export function registerIpc(context: IpcContext): void {
   // decided here where the file system is reachable.
   ipcMain.handle(
     'workspaces:add',
-    (_event, rawPath: string): Promise<{ workspace: Workspace; settings: AppSettings }> => {
+    async (_event, rawPath: string): Promise<{ workspace: Workspace; settings: AppSettings }> => {
       const dir = path.resolve(rawPath)
+      await waitForSettingsLock()
       return serializeWorkspaceMutation(dir, () => {
         const current = settings.get()
         const key = workspacePathKey(dir)
@@ -3063,3 +3082,4 @@ export function bridgeRuntime(context: IpcContext): void {
     sendToWindow(activeWindow(), 'imChannels:changed', channels)
   })
 }
+

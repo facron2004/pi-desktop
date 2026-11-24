@@ -193,6 +193,36 @@ test('settings:patch refuses a chat folder or Pi path that is not a safe path', 
   }
 })
 
+test('a settings lock held by another instance is waited out without blocking the thread', async () => {
+  const fileName = `settings-lock-wait-${process.pid}.json`
+  const file = settingsFile(fileName)
+  const lockDir = `${file}.lock`
+  try {
+    const store = new SettingsStore(fileName)
+    // A free file is not waited on at all.
+    const freeStart = Date.now()
+    await store.waitForLock(1_000)
+    assert.ok(Date.now() - freeStart < 500, 'an unlocked settings file must not be waited on')
+
+    // Another instance holds the lock. The async wait polls instead of blocking,
+    // and the sync write that follows gives up in tens of milliseconds instead
+    // of freezing the main thread for most of a second.
+    mkdirSync(lockDir)
+    const heldStart = Date.now()
+    await store.waitForLock(120)
+    assert.ok(Date.now() - heldStart >= 100, 'a held lock should be waited for')
+    const patchStart = Date.now()
+    assert.throws(() => store.patch({ theme: 'light' }), /lock/i)
+    assert.ok(
+      Date.now() - patchStart < 500,
+      `a held lock must not block the main thread for long (took ${Date.now() - patchStart} ms)`
+    )
+  } finally {
+    rmSync(lockDir, { recursive: true, force: true })
+    rmSync(file, { force: true })
+  }
+})
+
 test('an invalid settings file is preserved before defaults are written', () => {
   const fileName = `settings-invalid-recovery-${process.pid}.json`
   const file = settingsFile(fileName)

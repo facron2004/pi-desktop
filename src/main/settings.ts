@@ -934,6 +934,33 @@ export class SettingsStore {
     return parsed === null
   }
 
+  /**
+   * Wait for another process to release the settings lock, without blocking.
+   *
+   * `lockSync` cannot retry — proper-lockfile refuses retries on its sync API —
+   * so `withSettingsLock` spins on `Atomics.wait` between attempts. That spin is
+   * right for the microseconds a writer normally holds the lock, but a second
+   * instance (a harness run, or a crashed one whose lock file has not gone stale
+   * yet) can hold it for seconds, and blocking the main thread that long freezes
+   * the window. Callers that can be async wait here first; the sync spin is then
+   * left to cover only the race between this poll and the write itself.
+   */
+  async waitForLock(timeoutMs = 5_000): Promise<void> {
+    const deadline = Date.now() + Math.max(0, timeoutMs)
+    for (;;) {
+      let locked = false
+      try {
+        locked = await properLockfile.check(this.file, { realpath: false })
+      } catch {
+        // No settings file yet, or its folder is gone: nothing holds the lock.
+        return
+      }
+      if (!locked) return
+      if (Date.now() >= deadline) return
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
+
   private withSettingsLock<T>(action: () => T): T {
     if (!this.dirEnsured) {
       mkdirSync(path.dirname(this.file), { recursive: true })
@@ -954,7 +981,10 @@ export class SettingsStore {
           this.dirEnsured = true
           continue
         }
-        if (code !== 'ELOCKED' || attempt >= 49) throw error
+        // The attempts are bounded because this path blocks the main thread: a
+        // long-lived holder is waited out asynchronously in `waitForLock`, and
+        // an in-process write holds the lock for well under a millisecond.
+        if (code !== 'ELOCKED' || attempt >= 10) throw error
         // Progressive short backoff avoids a full 10ms stall on brief lock contention.
         const waitMs = attempt < 3 ? 2 : attempt < 8 ? 5 : 10
         Atomics.wait(settingsLockWait, 0, 0, waitMs)
