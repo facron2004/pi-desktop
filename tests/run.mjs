@@ -124,6 +124,7 @@ const suites = [
   'session-tree.test.ts',
   'renderer-utils.test.ts',
   'i18n.test.ts',
+  'i18n-coverage.test.ts',
   'compaction-error.test.ts',
   'extension-notices.test.ts',
   'highlight-cache.test.ts',
@@ -279,6 +280,7 @@ try {
 } finally {
   rmSync(out, { recursive: true, force: true })
 }
+
 
 
 
