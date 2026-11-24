@@ -667,6 +667,9 @@ export function Launcher({
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // A composing IME uses Enter to commit the candidate and the arrow keys to
+    // pick one; acting on them would run commands while the reader is typing.
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
     if (event.key === 'ArrowDown') {
       event.preventDefault()
       setIndex((value) => (visible.length ? (value + 1) % visible.length : 0))

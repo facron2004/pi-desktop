@@ -547,6 +547,7 @@ export function CommitDialog({
                   setMessage(event.target.value)
                 }}
                 onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
                   if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
                     event.preventDefault()
                     void submit('commit')

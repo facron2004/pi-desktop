@@ -664,6 +664,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
               setQuery(event.target.value)
             }}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
               if (event.key === 'Enter') {
                 event.preventDefault()
                 step(event.shiftKey ? -1 : 1)

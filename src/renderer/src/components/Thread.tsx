@@ -996,6 +996,9 @@ export const Thread = memo(function Thread() {
               autoFocus
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
+                // A composing IME uses Enter to commit its candidate; jumping to
+                // a hit here would move the view while the reader is typing.
+                if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
                 if (event.key === 'Enter') {
                   event.preventDefault()
                   stepHit(event.shiftKey ? -1 : 1)

@@ -1582,6 +1582,7 @@ export const Sidebar = memo(function Sidebar({
                               onClick={(e) => e.stopPropagation()}
                               onChange={(e) => setProjectDraft(e.target.value)}
                               onKeyDown={async (e) => {
+                                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
                                 if (e.key === 'Enter') {
                                   e.preventDefault()
                                   const trimmed = projectDraft.trim()
@@ -2058,6 +2059,9 @@ export const Sidebar = memo(function Sidebar({
               onFocus={focusSearch}
               onBlur={leaveSearch}
               onKeyDown={(event) => {
+                // A composing IME uses Escape to cancel the candidate and Enter
+                // to commit it; neither should close the dialog or pick a row.
+                if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
                 if (event.key === 'Escape') {
                   event.preventDefault()
                   event.stopPropagation()
@@ -2374,6 +2378,7 @@ const SessionRow = memo(function SessionRow({
           onChange={(event) => onRenameDraft(event.target.value)}
           onBlur={() => onCommitRename(session.file)}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
             if (event.key === 'Enter') {
               event.preventDefault()
               onCommitRename(session.file)
