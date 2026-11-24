@@ -5,7 +5,6 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import './styles/base/controls.css'
 import './styles/global.css'
 import './styles/ui-polish.css'
-import './styles/plan.css'
 import './styles/base/focus.css'
 import './styles/active-bubble.css'
 
