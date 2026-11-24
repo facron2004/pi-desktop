@@ -43,7 +43,7 @@ async function api<T>(path: string, token?: string, init: RequestInit = {}): Pro
   const response = await fetch(path, { ...init, headers, cache: 'no-store' })
   const value = await response.json().catch(() => ({})) as T & { error?: string }
   if (!response.ok) {
-    const error = new Error(value.error || `Request failed (${response.status})`) as ApiError
+    const error = new Error(value.error || `请求失败（${response.status}）`) as ApiError
     error.status = response.status
     throw error
   }
@@ -53,12 +53,12 @@ async function api<T>(path: string, token?: string, init: RequestInit = {}): Pro
 function mobileName(): string {
   const agent = navigator.userAgent
   if (/iPad|iPhone|iPod/i.test(agent)) return 'iPhone'
-  if (/Android/i.test(agent)) return 'Android phone'
-  return 'Mobile device'
+  if (/Android/i.test(agent)) return '安卓手机'
+  return '移动设备'
 }
 
 function sessionTitle(session: RemoteSession): string {
-  return session.name?.trim() || session.preview || 'New conversation'
+  return session.name?.trim() || session.preview || '新对话'
 }
 
 function formatTime(timestamp: number): string {
@@ -166,7 +166,7 @@ export function RemoteApp() {
     } catch (cause) {
       if (controller.signal.aborted || activeToken.current !== accessToken) return
       if ((cause as ApiError).status === 401) clearPairingForToken(accessToken)
-      else setError(cause instanceof Error ? cause.message : 'Could not load projects.')
+      else setError(cause instanceof Error ? cause.message : '无法加载项目。')
     } finally {
       if (navigationLoad.current === controller) navigationLoad.current = null
     }
@@ -194,7 +194,7 @@ export function RemoteApp() {
     } catch (cause) {
       if (controller.signal.aborted || activeToken.current !== accessToken) return
       if ((cause as ApiError).status === 401) clearPairingForToken(accessToken)
-      else setError(cause instanceof Error ? cause.message : 'Could not load the conversation.')
+      else setError(cause instanceof Error ? cause.message : '无法加载对话。')
     } finally {
       if (navigationLoad.current === controller) {
         navigationLoad.current = null
@@ -220,7 +220,7 @@ export function RemoteApp() {
       setPairSecret('')
       setToken(result.accessToken)
     } catch (cause) {
-      setPairingError(cause instanceof Error ? cause.message : 'Pairing failed.')
+      setPairingError(cause instanceof Error ? cause.message : '配对失败。')
     } finally {
       setPairing(false)
     }
@@ -378,7 +378,7 @@ export function RemoteApp() {
             clearPairingForToken(token)
             return
           }
-          if (!response.ok || !response.body) throw new Error('Live updates are unavailable.')
+          if (!response.ok || !response.body) throw new Error('实时更新不可用。')
           connectedBefore = true
           generation = ++snapshotGeneration
           setStreamConnected(true)
@@ -422,7 +422,7 @@ export function RemoteApp() {
                 snapshotHandled = true
                 return
               }
-              setError(cause instanceof Error ? cause.message : 'Could not restore the conversation.')
+              setError(cause instanceof Error ? cause.message : '无法恢复对话。')
               const events = bufferedEvents ?? []
               bufferedEvents = null
               for (const event of events) updateRuntimeState(event)
@@ -470,7 +470,7 @@ export function RemoteApp() {
             clearPairingForToken(token)
             return
           }
-          setError(cause instanceof Error ? cause.message : 'Live updates disconnected.')
+          setError(cause instanceof Error ? cause.message : '实时更新已断开。')
         }
         if (isActive()) setStreamConnected(false)
         if (!isActive()) break
@@ -540,7 +540,7 @@ export function RemoteApp() {
     } catch (cause) {
       if (controller.signal.aborted || activeToken.current !== token) return
       if ((cause as ApiError).status === 401) clearPairingForToken(token)
-      else setError(cause instanceof Error ? cause.message : 'Could not load conversations.')
+      else setError(cause instanceof Error ? cause.message : '无法加载对话列表。')
     } finally {
       if (navigationLoad.current === controller) {
         navigationLoad.current = null
@@ -570,7 +570,7 @@ export function RemoteApp() {
       })
     } catch (cause) {
       if ((cause as ApiError).status === 401) clearPairingForToken(token)
-      else setError(cause instanceof Error ? cause.message : 'Could not stop the conversation.')
+      else setError(cause instanceof Error ? cause.message : '无法停止该对话。')
     } finally {
       setStopping(false)
     }
@@ -595,7 +595,7 @@ export function RemoteApp() {
         setDialog(null)
         void loadSession(token, workspace, session)
       } else {
-        setError(cause instanceof Error ? cause.message : 'Could not send the answer.')
+        setError(cause instanceof Error ? cause.message : '无法发送回答。')
       }
     } finally {
       setDialogBusy(false)
@@ -636,7 +636,7 @@ export function RemoteApp() {
     } catch (cause) {
       if (controller.signal.aborted || activeToken.current !== token) return
       if ((cause as ApiError).status === 401) clearPairingForToken(token)
-      else setError(cause instanceof Error ? cause.message : 'Could not start the conversation.')
+      else setError(cause instanceof Error ? cause.message : '无法开始新对话。')
     } finally {
       creatingChatRef.current = false
       setCreatingChat(false)
@@ -669,7 +669,7 @@ export function RemoteApp() {
     } catch (cause) {
       if ((cause as ApiError).status === 401) clearPairingForToken(requestToken)
       else if (activeToken.current === requestToken && activeConversationKey.current === conversationKey) {
-        setError(cause instanceof Error ? cause.message : 'Could not send the message.')
+        setError(cause instanceof Error ? cause.message : '无法发送消息。')
       }
     } finally {
       const current = sendingRequestsRef.current
