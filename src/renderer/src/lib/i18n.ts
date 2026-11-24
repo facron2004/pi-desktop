@@ -2077,7 +2077,17 @@ const zhCN: Record<string, string> = {
   'Create a custom app on the Feishu open platform, enable the bot, subscribe to the im.message.receive_v1 event in long-connection mode, grant im:message and im:message:send_as_bot, then publish the version.':
     '在飞书开放平台创建自建应用，开启机器人能力，订阅 im.message.receive_v1 事件并选择长连接模式，开通 im:message 与 im:message:send_as_bot 权限后发布版本。',
   'Run the open-source wechatbot-webhook bridge (npx wechatbot-webhook), scan the QR code to log in, set the copied address above as the bridge RECVD_MSG_API environment variable, and fill in the bridge personal token. Pi Desktop never hooks the WeChat client; the web protocol is a third-party open-source project with account-limit risks — assess them yourself.':
-    '运行开源桥接服务 wechatbot-webhook（npx wechatbot-webhook），微信扫码登录后，把上方复制的地址填入桥接服务的 RECVD_MSG_API 环境变量，并填入桥接服务显示的个人令牌。Pi Desktop 不注入微信进程；web 协议由第三方开源项目实现，存在账号限制风险，请自行评估。'
+    '运行开源桥接服务 wechatbot-webhook（npx wechatbot-webhook），微信扫码登录后，把上方复制的地址填入桥接服务的 RECVD_MSG_API 环境变量，并填入桥接服务显示的个人令牌。Pi Desktop 不注入微信进程；web 协议由第三方开源项目实现，存在账号限制风险，请自行评估。',
+  // Strings that reached the UI after the first translation pass: the terminal
+  // panel, the marketplace toast, the channel test button and the
+  // cross-conversation wait status.
+  'Could not open the package page': '无法打开插件页面',
+  'Could not start the terminal': '无法启动终端',
+  'Connected': '已连接',
+  'Restart the terminal': '重启终端',
+  'Test': '测试',
+  'The shell has exited': '终端已退出',
+  'Waiting for another operation in {folder}': '正在等待 {folder} 中的另一项操作'
 }
 
 export function translate(text: string, language: AppLanguage): string {
