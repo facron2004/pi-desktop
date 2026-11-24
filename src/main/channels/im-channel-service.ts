@@ -431,8 +431,19 @@ export class ImChannelService extends EventEmitter {
     try {
       this.channels = this.readPersistedState().channels
     } catch (error) {
+      // A file that cannot be read must not stay where it is: every later save
+      // starts from it and fails with a raw JSON error, so the saved channel
+      // tokens become unreachable from the UI. Set it aside (the scheduled-tasks
+      // store does the same) and continue from an empty list.
+      try {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+        const quarantine = `${this.stateFile}.corrupt-${stamp}`
+        renameSync(this.stateFile, quarantine)
+        console.error(`[pi-desktop] im channel settings were unreadable and moved to ${path.basename(quarantine)}:`, error)
+      } catch (renameError) {
+        console.error('[pi-desktop] im channel settings could not be read or set aside:', renameError)
+      }
       this.channels = []
-      console.error('[pi-desktop] im channel settings could not be read:', error)
     }
   }
 
@@ -532,6 +543,13 @@ export class ImChannelService extends EventEmitter {
       }
       const file = await this.resolveBoundFile(channel)
       if (!file) return // resolveBoundFile already explained the failure
+      const info = this.options.supervisor.sessionInfo(file)
+      // stop() aborts whatever is running, but a conversation with nothing
+      // running must not be told that something was stopped.
+      if (!info?.running && !info?.waitingForInput) {
+        await this.reply(channelId, '当前对话没有正在运行的任务。')
+        return
+      }
       await this.options.supervisor.stop(file)
       await this.reply(channelId, '已停止当前运行。')
       return
@@ -664,8 +682,10 @@ export class ImChannelService extends EventEmitter {
         return
       }
       const rekeyed = await rekey.promise
-      if (rekeyed) {
-        await this.rebind(channel, rekeyed)
+      // The rebind resolves the new JSONL through the session list; when that
+      // list does not name it yet the binding is unchanged, and saying the switch
+      // happened would leave every later message driving the old conversation.
+      if (rekeyed && await this.rebind(channel, rekeyed)) {
         await this.reply(channelId, '已切换到新对话。')
       } else {
         // The conversation exists and is running; only the binding update is
@@ -702,13 +722,13 @@ export class ImChannelService extends EventEmitter {
     return { promise, cancel }
   }
 
-  /** Persist the new binding for a channel and republish the settings view. */
-  private async rebind(channel: StoredChannel, file: string): Promise<void> {
+  /** Persist the new binding for a channel; false when it could not be applied. */
+  private async rebind(channel: StoredChannel, file: string): Promise<boolean> {
     const workspace = await this.boundWorkspace(channel)
-    if (!workspace) return
+    if (!workspace) return false
     const sessions = await listSessions(workspace.path)
     const session = sessions.find((item) => this.pathKey(item.file) === this.pathKey(file))
-    if (!session) return
+    if (!session) return false
     await this.withStateLock(() => {
       const stored = this.readPersistedState()
       const next = stored.channels.map((item) =>
@@ -723,6 +743,7 @@ export class ImChannelService extends EventEmitter {
       fileKey: this.pathKey(session.file)
     })
     if (!this.disposed) this.emit('changed', this.status())
+    return true
   }
 
   /* ---------------------------------------------------------------- *

@@ -11,6 +11,8 @@ import '../styles/remote-access-settings.css'
 type EditState = {
   kind: ImChannelKind
   id?: string
+  /** Editing keeps the channel's own switch; it does not imply "on". */
+  enabled: boolean
   appId: string
   appSecret: string
   allowedChatIds: string
@@ -30,6 +32,7 @@ const DEFAULT_LISTEN_PORT = 8740
 function emptyEdit(kind: ImChannelKind): EditState {
   return {
     kind,
+    enabled: true,
     appId: '',
     appSecret: '',
     allowedChatIds: '',
@@ -49,6 +52,7 @@ function editFromStatus(status: ImChannelStatus): EditState {
   return {
     ...base,
     id: status.id,
+    enabled: status.enabled,
     appId: status.feishu?.appId ?? '',
     allowedChatIds: (status.feishu?.allowedChatIds ?? []).join('\n'),
     bridgeUrl: status.wechat?.bridgeUrl ?? DEFAULT_BRIDGE_URL,
@@ -128,7 +132,7 @@ export function ImChannelSettings() {
       const config: ImChannelConfig = {
         id: editing.id ?? '',
         kind: editing.kind,
-        enabled: true,
+        enabled: editing.enabled,
         binding: { workspaceId: editing.workspaceId, sessionId: editing.sessionId },
         ...(editing.kind === 'feishu'
           ? {

@@ -3,6 +3,8 @@ import { MAX_IM_MESSAGE_CHARS, type ChannelAdapter, type ChannelAdapterContext }
 
 /** Feishu re-pushes an event whose handler has not answered within 3 seconds. */
 const DEDUPE_ENTRIES = 256
+/** A channel that never reports ready is not connecting, it is broken. */
+const CONNECT_TIMEOUT_MS = 20_000
 
 function logError(channelId: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error)
@@ -14,7 +16,14 @@ export interface FeishuMessageClient {
 }
 
 export interface FeishuWsTransport {
-  start(onMessage: (data: unknown) => void): Promise<void>
+  /**
+   * `start` returns once the reconnect loop is scheduled, not once a socket
+   * exists, so the transport reports the handshake through these callbacks.
+   */
+  start(onMessage: (data: unknown) => void, handlers?: {
+    onReady: () => void
+    onError: (error: Error) => void
+  }): Promise<void>
   close(params?: { force?: boolean }): void
 }
 
@@ -41,7 +50,13 @@ export function createFeishuAdapter(
   let wsClient: FeishuWsTransport | null = null
   let stopped = false
   let lastChatId: string | undefined
+  let settleTimer: ReturnType<typeof setTimeout> | undefined
   let current: { state: 'connecting' | 'connected' | 'error' | 'disabled'; error?: string } = { state: 'connecting' }
+
+  const clearSettleTimer = (): void => {
+    if (settleTimer) clearTimeout(settleTimer)
+    settleTimer = undefined
+  }
 
   const remember = (id: string): boolean => {
     if (seen.has(id)) return false
@@ -94,21 +109,56 @@ export function createFeishuAdapter(
       const nextWsClient = deps.createWsClient({ appId: config.appId, appSecret: config.appSecret })
       client = nextClient
       wsClient = nextWsClient
-      await nextWsClient.start(handleInbound)
-      if (stopped || wsClient !== nextWsClient) {
+      const isCurrent = (): boolean => !stopped && wsClient === nextWsClient
+      // The SDK's start() resolves as soon as its reconnect loop is scheduled and
+      // logs-and-returns for an app id it refuses, so "connected" may only come
+      // from onReady. A handshake that never reports leaves the channel honestly
+      // in "connecting" for a bounded time instead of lying forever.
+      clearSettleTimer()
+      settleTimer = setTimeout(() => {
+        settleTimer = undefined
+        if (!isCurrent() || current.state !== 'connecting') return
+        current = { state: 'error', error: 'The Feishu connection did not complete its handshake.' }
+        context.onState('error', current.error)
+      }, CONNECT_TIMEOUT_MS)
+      settleTimer.unref?.()
+      try {
+        await nextWsClient.start(handleInbound, {
+          onReady: () => {
+            if (!isCurrent()) return
+            clearSettleTimer()
+            current = { state: 'connected' }
+            context.onState('connected')
+          },
+          onError: (error) => {
+            if (!isCurrent()) return
+            clearSettleTimer()
+            const message = error instanceof Error ? error.message : String(error)
+            current = { state: 'error', error: message }
+            context.onState('error', message)
+            logError(channelId, error)
+          }
+        })
+      } catch (error) {
+        if (!isCurrent()) throw error
+        clearSettleTimer()
+        const message = error instanceof Error ? error.message : String(error)
+        current = { state: 'error', error: message }
+        context.onState('error', message)
+        throw error
+      }
+      if (!isCurrent()) {
         try {
           nextWsClient.close({ force: true })
         } catch (error) {
           logError(channelId, error)
         }
-        return
       }
-      current = { state: 'connected' }
-      context.onState('connected')
     },
 
     async stop(): Promise<void> {
       stopped = true
+      clearSettleTimer()
       const activeWs = wsClient
       wsClient = null
       client = null

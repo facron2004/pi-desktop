@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
@@ -206,6 +206,81 @@ test('Feishu stop() closes WSClient and blocks late inbound events from stale so
   })
   await new Promise<void>((resolve) => setImmediate(resolve))
   assert.deepEqual(routed, ['hello'])
+})
+
+
+test('a Feishu channel is connected only once the handshake reports ready', async () => {
+  let ready: (() => void) | undefined
+  let failed: ((error: Error) => void) | undefined
+  const states: string[] = []
+  const adapter = createFeishuAdapter(
+    FEISHU,
+    { router: async () => {}, onState: (state) => states.push(state) },
+    {
+      createClient: () => ({ sendText: async () => {} }),
+      createWsClient: () => ({
+        // The real transport resolves before a socket exists.
+        async start(_onMessage, handlers) {
+          ready = handlers?.onReady
+          failed = handlers?.onError
+        },
+        close() {}
+      })
+    }
+  )
+  await adapter.start()
+  // The reconnect loop is scheduled, not connected: claiming otherwise is what
+  // made a wrong app secret read "Connected" forever.
+  assert.equal(adapter.state().state, 'connecting')
+  assert.equal((await adapter.test()).ok, false)
+
+  ready?.()
+  assert.equal(adapter.state().state, 'connected')
+  assert.equal((await adapter.test()).ok, true)
+  assert.deepEqual(states, ['connected'])
+
+  failed?.(new Error('invalid app secret'))
+  assert.equal(adapter.state().state, 'error')
+  assert.match(adapter.state().error ?? '', /invalid app secret/)
+  assert.equal((await adapter.test()).ok, false)
+  assert.deepEqual(states, ['connected', 'error'])
+  await adapter.stop()
+})
+
+test('a corrupt IM channel file is set aside and saving works again', async (t) => {
+  const adapter = fakeAdapter()
+  const { instance } = service(t, adapter)
+  const stateFile = (instance as unknown as { stateFile: string }).stateFile
+  mkdirSync(path.dirname(stateFile), { recursive: true })
+  writeFileSync(stateFile, '{ "channels": [ broken', 'utf8')
+
+  ;(instance as unknown as { loadState: () => void }).loadState()
+  assert.deepEqual(instance.status(), [])
+  const quarantined = readdirSync(path.dirname(stateFile)).filter((name) => name.includes('.corrupt-'))
+  assert.equal(quarantined.length, 1, 'the unreadable file was not preserved')
+
+  const saved = await instance.save(FEISHU)
+  assert.equal(saved.length, 1, 'a save after the quarantine starts from an empty list')
+  await instance.dispose()
+})
+
+test('/stop only claims a stop when the conversation is running', async (t) => {
+  const adapter = fakeAdapter()
+  const { instance, calls, supervisor } = service(t, adapter)
+  await instance.save(FEISHU)
+  await instance.initialize()
+  const router = adapter.contexts[0].router
+  ;(instance as unknown as { resolveBoundFile: () => Promise<string | null> }).resolveBoundFile = async () => 'C:/project/session.jsonl'
+
+  await router('channel-1', '/stop')
+  assert.match(adapter.sent.at(-1)!, /没有正在运行/)
+  assert.equal(calls.stops.length, 0, 'an idle conversation is not stopped')
+
+  supervisor.sessionInfo = () => ({ running: true, waitingForInput: false, cwd: 'C:/project', externalContext: false })
+  await router('channel-1', '/stop')
+  assert.match(adapter.sent.at(-1)!, /已停止/)
+  assert.deepEqual(calls.stops, ['C:/project/session.jsonl'])
+  await instance.dispose()
 })
 
 test('multipart parser enforces MAX_FIELDS, skips files, and uses a null-prototype map', () => {

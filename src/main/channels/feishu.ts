@@ -29,9 +29,24 @@ export function buildFeishuAdapter(channel: ImChannelConfig, context: ChannelAda
       }
     },
     createWsClient: ({ appId, appSecret }) => {
-      const sdkWs = new lark.WSClient({ appId, appSecret, loggerLevel: lark.LoggerLevel.warn })
+      // The callbacks are constructor options, so the transport holds them in
+      // mutable slots until start() supplies the adapter's handlers.
+      let notifyReady: (() => void) | undefined
+      let notifyError: ((error: Error) => void) | undefined
+      const sdkWs = new lark.WSClient({
+        appId,
+        appSecret,
+        loggerLevel: lark.LoggerLevel.warn,
+        onReady: () => notifyReady?.(),
+        onError: (error) => notifyError?.(error)
+      })
       return {
-        async start(onMessage: (data: unknown) => void): Promise<void> {
+        async start(
+          onMessage: (data: unknown) => void,
+          handlers?: { onReady: () => void; onError: (error: Error) => void }
+        ): Promise<void> {
+          notifyReady = handlers?.onReady
+          notifyError = handlers?.onError
           const dispatcher = new lark.EventDispatcher({}).register({
             'im.message.receive_v1': onMessage
           })
