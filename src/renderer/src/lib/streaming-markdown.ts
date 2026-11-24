@@ -389,6 +389,66 @@ export function splitStreamingMarkdown(text: string): StreamingMarkdownSplit {
   return scanStreamingMarkdown(text, freshCheckpoint(false))
 }
 
+/** An open fenced code block at the start of a live tail. */
+export interface OpenFenceTail {
+  /** The first token of the info string, when the fence has one. */
+  language?: string
+  /** The fence's content as it stands: no opener line, no closing fence. */
+  code: string
+}
+
+/** Below this the Markdown parse of an open fence is cheap; above it, it is not. */
+export const OPEN_FENCE_FAST_PATH_CHARS = MIN_SPLIT_CHARS
+
+/** Strip up to `indent` leading spaces from each line, as CommonMark does for an indented fence. */
+function stripFenceIndent(text: string, indent: number): string {
+  const spaces = new RegExp(`^ {0,${indent}}`, 'gm')
+  return text.replace(spaces, '')
+}
+
+/**
+ * Read a live tail that is exactly one still-open fenced code block.
+ *
+ * A fence is the one Markdown construct whose content the parser copies
+ * verbatim, so it does not need Markdown at all while it is still being
+ * written — and re-parsing it on every frame is the most expensive thing the
+ * transcript can do, because a streamed log or diff is exactly the kind of
+ * block that grows to tens of kilobytes. `StreamingText` uses this to render
+ * the open fence as the same code block `Markdown` would produce, straight
+ * from the text, and only parses `Markdown` again once the fence closes.
+ *
+ * Returns `null` for anything that is not a single open fence — a closed one,
+ * a fence that follows other text, or an opener whose own line is still
+ * arriving.
+ */
+export function parseOpenFenceTail(tail: string): OpenFenceTail | null {
+  if (!tail) return null
+  const openerEnd = tail.indexOf('\n')
+  // Without a newline the opener line itself is still growing: there is no
+  // content to render yet and the info string is not final.
+  if (openerEnd === -1) return null
+  const openerLine = tail.slice(0, openerEnd)
+  const opener = FENCE.exec(openerLine)
+  if (!opener) return null
+  const marker = opener[1]
+  const info = opener[2].trim()
+  // A backtick fence's info string cannot contain a backtick; such a line is
+  // an inline code span, not a fence.
+  if (marker[0] === '`' && info.includes('`')) return null
+
+  // One native multiline scan for a closing line: the same test per line in a
+  // JavaScript loop was the only part of this fast path that grew with the block.
+  const closing = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[ \\t]*$`, 'm')
+  const contentStart = openerEnd + 1
+  const content = tail.slice(contentStart)
+  if (closing.test(content)) return null
+
+  const indent = openerLine.length - openerLine.trimStart().length
+  let code = indent > 0 ? stripFenceIndent(content, indent) : content
+  if (code.endsWith('\n')) code = code.slice(0, -1)
+  return { language: info ? info.split(/[ \t]+/)[0] : undefined, code }
+}
+
 const SETTLED_SPLIT_CACHE_LIMIT = 64
 const MAX_CACHED_SETTLED_MARKDOWN_CHARS = 256 * 1024
 const settledSplitCache = new Map<string, StreamingMarkdownSplit>()

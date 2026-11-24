@@ -1,13 +1,16 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
   appendStreamingMarkdown,
+  OPEN_FENCE_FAST_PATH_CHARS,
+  parseOpenFenceTail,
   splitSettledMarkdown,
   splitStreamingMarkdown,
   type StreamingMarkdownSplit
 } from '../../lib/streaming-markdown'
 import { advanceReveal } from '../../lib/streaming-reveal'
 import { prefersReducedMotion } from '../../lib/motion'
-import { Markdown } from '../Markdown'
+import { isMermaidLanguage } from '../../lib/mermaid'
+import { Markdown, OpenFenceBlock } from '../Markdown'
 
 export interface StreamingTextProps {
   text: string
@@ -153,12 +156,23 @@ export const StreamingText = memo(function StreamingText({
     )),
     [split.blocks]
   )
+  // A long fence that is still open is the one tail Markdown cannot bound: its
+  // content is literal, so parse it once as the code block it will be instead of
+  // re-parsing the whole growing text on every frame. Diagrams stay on the
+  // Markdown path — a mermaid fence becomes a rendered diagram, not a code block.
+  const openFence = useMemo(
+    () => (split.tail.length >= OPEN_FENCE_FAST_PATH_CHARS ? parseOpenFenceTail(split.tail) : null),
+    [split.tail]
+  )
+  const codeTail = openFence && !isMermaidLanguage(openFence.language) ? openFence : null
 
   return (
     <div className="assistant__text" data-commentary={commentary || undefined}>
       <div className="md">
         {finishedBlocks}
-        {split.tail ? (
+        {codeTail ? (
+          <OpenFenceBlock code={codeTail.code} language={codeTail.language} streaming={revealing} />
+        ) : split.tail ? (
           <Markdown key="tail" bare streaming={revealing}>
             {split.tail}
           </Markdown>

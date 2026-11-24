@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   appendStreamingMarkdown,
+  parseOpenFenceTail,
   splitStreamingMarkdown,
   type StreamingMarkdownSplit
 } from '../src/renderer/src/lib/streaming-markdown'
@@ -111,6 +112,68 @@ test('appendStreamingMarkdown matches whole-document splits across fences, lists
   const collapsed = appendStreamingMarkdown(incremental, '\n[ref]: https://example.com\n')
   assert.deepEqual(collapsed.blocks, [])
   assert.equal(collapsed.tail, `${doc}\n[ref]: https://example.com\n`)
+})
+
+test('an open fence at the start of the tail is readable without a Markdown pass', () => {
+  const open = parseOpenFenceTail('```ts\nconst a = 1\n\nconst b = 2\n')
+  assert.deepEqual(open, { language: 'ts', code: 'const a = 1\n\nconst b = 2' })
+  // No trailing newline yet: the block is mid-line.
+  assert.deepEqual(parseOpenFenceTail('```ts\nconst a = 1\nconst b'), {
+    language: 'ts',
+    code: 'const a = 1\nconst b'
+  })
+  // Empty content is still a valid open fence (the block exists, it is just empty).
+  assert.deepEqual(parseOpenFenceTail('```\n'), { language: undefined, code: '' })
+})
+
+test('a closed fence, or a fence after other text, stays with the Markdown path', () => {
+  assert.equal(parseOpenFenceTail('```ts\nconst a = 1\n```\n'), null)
+  assert.equal(parseOpenFenceTail('```ts\nconst a = 1\n```\n\nnext paragraph'), null)
+  assert.equal(parseOpenFenceTail('A paragraph first\n```ts\nconst a = 1\n'), null)
+  assert.equal(parseOpenFenceTail('just a paragraph'), null)
+  assert.equal(parseOpenFenceTail(''), null)
+})
+
+test('an opener line that is still arriving is not a fence yet', () => {
+  // The info string could still grow (`ts` → `tsx`), so a code block rendered
+  // from it would flicker its language label.
+  assert.equal(parseOpenFenceTail('```ts'), null)
+  assert.equal(parseOpenFenceTail('``'), null)
+})
+
+test('fence markers only close a fence of the same character and at least its length', () => {
+  // A shorter backtick run inside a four-backtick fence is content, not a close.
+  assert.deepEqual(parseOpenFenceTail('````md\n```ts\nconst a = 1\n'), {
+    language: 'md',
+    code: '```ts\nconst a = 1'
+  })
+  // A tilde fence ignores backtick lines entirely.
+  assert.deepEqual(parseOpenFenceTail('~~~\n```\ncontent\n'), {
+    language: undefined,
+    code: '```\ncontent'
+  })
+  // A closing run must be followed only by whitespace.
+  assert.deepEqual(parseOpenFenceTail('```ts\n``` not a close\n'), {
+    language: 'ts',
+    code: '``` not a close'
+  })
+})
+
+test('an indented fence strips its own indentation from the content', () => {
+  assert.deepEqual(parseOpenFenceTail('   ```ts\n   const a = 1\n  two spaces\n'), {
+    language: 'ts',
+    code: 'const a = 1\ntwo spaces'
+  })
+})
+
+test('the info string keeps its first token, as react-markdown does', () => {
+  assert.deepEqual(parseOpenFenceTail('```js title="app.js" {1,3}\nlet a\n'), {
+    language: 'js',
+    code: 'let a'
+  })
+  // A backtick fence's info string cannot contain a backtick: that line is an
+  // inline code span, so the text below is not a fence.
+  assert.equal(parseOpenFenceTail('```a`b\ncontent\n'), null)
 })
 
 test('streaming markdown does not prematurely split a loose list on a partial next marker', () => {
