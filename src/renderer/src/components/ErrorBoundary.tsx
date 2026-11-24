@@ -54,11 +54,15 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, State> {
     const t = (text: string) => translate(text, language)
 
     if (this.props.inline || this.props.scope) {
+      // `scope` is a label key: regions pass a translated noun ("Sidebar"), the
+      // transcript passes its own English scope ("turn"), and a key that does
+      // not exist simply reads as itself.
+      const scope = this.props.scope ? t(this.props.scope) : ''
       return (
         <div className="component-error-fallback" role="alert">
           <span className="component-error-fallback__message">
-            {this.props.scope
-              ? `${t('Failed to render')} ${this.props.scope}`
+            {scope
+              ? `${t('Failed to render')} ${scope}`
               : t('Failed to render this section')}
           </span>
           <button type="button" className="btn btn--sm" onClick={this.retry}>

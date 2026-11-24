@@ -35,6 +35,7 @@ import { ToolPanel, type ToolPanelView } from './components/ToolPanel'
 import type { LauncherShell } from './components/Launcher'
 import type { TerminalRunRequest } from './components/TerminalPanel'
 import { FeatureLoading } from './components/FeatureLoading'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { Popover } from './components/Popover'
 import {
   APP_UPDATE_NOTICE,
@@ -934,16 +935,21 @@ export default function App() {
         onOpenAbout={openAbout}
       />
 
-      <Sidebar
-        onOpenSettings={openGeneralSettings}
-        onOpenPlugins={toggleMarketplace}
-        onOpenScheduledTasks={toggleScheduledTasks}
-        focusSearchSignal={sidebarSearchSignal}
-        width={sidebarWidth}
-        open={sidebarOpen}
-        onResize={setDraggedSidebar}
-        onResizeEnd={handleSidebarResizeEnd}
-      />
+      {/* A crash in one region must not blank the window: each shell region has
+          its own boundary, so the rest of the app stays usable and the failure
+          is a row with a Retry, not a dead screen. */}
+      <ErrorBoundary scope="Sidebar" inline>
+        <Sidebar
+          onOpenSettings={openGeneralSettings}
+          onOpenPlugins={toggleMarketplace}
+          onOpenScheduledTasks={toggleScheduledTasks}
+          focusSearchSignal={sidebarSearchSignal}
+          width={sidebarWidth}
+          open={sidebarOpen}
+          onResize={setDraggedSidebar}
+          onResizeEnd={handleSidebarResizeEnd}
+        />
+      </ErrorBoundary>
 
       <main className="main">
         <div className="titlebar drag-region">
@@ -1087,7 +1093,9 @@ export default function App() {
             </div>
           ) : (
             <>
-              {!showThread ? <Welcome /> : <Thread />}
+              <ErrorBoundary scope="Conversation" inline>
+                {!showThread ? <Welcome /> : <Thread />}
+              </ErrorBoundary>
 
               {widgetsAbove.map((widget) => (
                 <div className="widget" key={widget.key}>
@@ -1100,7 +1108,9 @@ export default function App() {
                 </div>
               ))}
 
-              <Composer />
+              <ErrorBoundary scope="Composer" inline>
+                <Composer />
+              </ErrorBoundary>
 
               {widgetsBelow.map((widget) => (
                 <div className="widget widget--below" key={widget.key}>
@@ -1121,7 +1131,11 @@ export default function App() {
               aria-label={t('Task status')}
             >
               <div className="task-rail__body">
-                {taskPanelMounted ? <TaskPanel onOpenTask={openSubagentTask} /> : null}
+                {taskPanelMounted ? (
+                  <ErrorBoundary scope="Task status" inline>
+                    <TaskPanel onOpenTask={openSubagentTask} />
+                  </ErrorBoundary>
+                ) : null}
               </div>
             </aside>
           ) : null}
@@ -1139,6 +1153,7 @@ export default function App() {
               onClick={closeChanges}
             />
           ) : null}
+          <ErrorBoundary scope="Tool panel" inline>
           <ToolPanel
             view={panelView}
             onViewChange={handlePanelViewChange}
@@ -1201,6 +1216,7 @@ export default function App() {
               </div>
             ) : null}
           </ToolPanel>
+          </ErrorBoundary>
         </>
       ) : null}
       {/* One toggle for the side panel, pinned to the corner of the content

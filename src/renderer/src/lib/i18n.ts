@@ -2087,7 +2087,10 @@ const zhCN: Record<string, string> = {
   'Restart the terminal': '重启终端',
   'Test': '测试',
   'The shell has exited': '终端已退出',
-  'Waiting for another operation in {folder}': '正在等待 {folder} 中的另一项操作'
+  'Waiting for another operation in {folder}': '正在等待 {folder} 中的另一项操作',
+  // Region labels for the error boundaries around the app shell.
+  'Sidebar': '侧栏',
+  'Tool panel': '工具面板'
 }
 
 export function translate(text: string, language: AppLanguage): string {
