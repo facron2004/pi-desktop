@@ -821,6 +821,10 @@ The rules that keep the window from disappearing for good:
   release it. With the tray on, closing the window still only hides it, and
   a second launch is the way back to that window.
 
+`tests/tray.test.ts` pins the rules on a fake Electron: the refusal and the
+remembered claim, the harness bypass, the icon lifecycle, the click target
+following the latest settings write, and a quit that cannot rebuild the icon.
+
 The taskbar icon is the window icon. Windows draws the taskbar button from
 the window's own icon, so a dev run of `electron.exe` shows the Electron
 logo until the window carries the app mark. `app-icon.ts` owns all of it:
@@ -902,6 +906,24 @@ created. `projectlessRoot()` now creates it, and `runPiCli` falls back to
 `process.cwd()` when the requested folder has disappeared. A workspace can be
 deleted between listing it and running a command, so never assume a path from
 `workspaceRoot()` still exists.
+
+Which executable is launched is decided by `resolvePiLaunch` in
+`src/main/pi/locate.ts`: an explicit user path first (a `.js` entry runs under
+the app's own node, anything else is spawned directly), then the CLI bundled
+with the app, then `pi` on PATH, then a clear `none`. The launch cache re-checks
+that the chosen file still exists, so uninstalling a custom CLI falls back
+instead of failing forever; `tests/locate.test.ts` pins the order and that
+re-check.
+
+### Window state
+
+`window-state.ts` remembers the window's content size and place. It saves the
+**content** bounds (not the outer frame, which includes the title bar and
+rounding), debounces drag events, writes atomically through a temp file, and
+drops a position that no longer lands on a display instead of opening the app
+off-screen. A record below 880×572 is what a process killed before its first
+frame leaves behind, so it is treated as no state at all.
+`tests/window-state.test.ts` pins these rules with a fake window.
 
 ### Settings writes wait off the main thread
 
