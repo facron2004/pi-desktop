@@ -129,6 +129,7 @@ const suites = [
   'source-hygiene.test.ts',
   'doc-paths.test.ts',
   'suite-registry.test.ts',
+  'setup-payload.test.ts',
   'compaction-error.test.ts',
   'extension-notices.test.ts',
   'highlight-cache.test.ts',

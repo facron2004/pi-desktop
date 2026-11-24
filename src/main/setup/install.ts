@@ -1,11 +1,13 @@
 import { app, shell } from 'electron'
 import { execFile, spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { SetupProgress } from '@shared/setup'
 import { cleanAppEnv } from './args'
+import { verifyPayload, type SourceEntry } from './payload'
 
 const execFileAsync = promisify(execFile)
 
@@ -129,11 +131,6 @@ function readdirSyncSafe(directory: string): string[] {
   } catch {
     return []
   }
-}
-
-interface SourceEntry {
-  relative: string
-  size: number
 }
 
 /**
@@ -275,6 +272,79 @@ function copyWithRobocopy(
   })
 }
 
+/**
+ * Rename a directory, waiting out a file the old app still holds.
+ *
+ * The update path renames the previous install aside; a process that has not
+ * finished exiting keeps a file open for a moment, which is the same condition
+ * the robocopy retries exist for.
+ */
+async function retryRename(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(from, to)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (attempt >= RETRY_DELAYS || (code !== 'EBUSY' && code !== 'EPERM' && code !== 'EACCES')) throw error
+      await new Promise((resolve) => setTimeout(resolve, RETRY_INTERVAL))
+    }
+  }
+}
+
+/**
+ * Put the verified staging copy in place of `target`.
+ *
+ * Nothing is written into the installed folder before the copy is complete and
+ * checked, so a failed copy leaves the previous install exactly as it was. The
+ * old copy is moved aside first and moved back if the swap fails, so a failure
+ * here cannot cost the reader their installation either.
+ */
+/**
+ * Remove staging folders a killed install left beside the target.
+ *
+ * Each attempt copies into its own `.Pi Desktop-install-<uuid>` folder; a
+ * process killed mid-copy (or a machine powered off) never reaches its cleanup.
+ * The age guard keeps a second installer's running copy untouched.
+ */
+async function clearStaleStaging(target: string): Promise<void> {
+  const parent = path.dirname(target)
+  const prefix = `.${path.basename(target)}-install-`
+  const cutoff = Date.now() - 10 * 60_000
+  try {
+    const items = await readdir(parent, { withFileTypes: true })
+    for (const item of items) {
+      if (!item.isDirectory() || !item.name.startsWith(prefix)) continue
+      const directory = path.join(parent, item.name)
+      try {
+        if (statSync(directory).mtimeMs > cutoff) continue
+      } catch {
+        continue
+      }
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+    }
+  } catch {
+    /* A parent we cannot list simply keeps its stale folders. */
+  }
+}
+
+async function swapIntoPlace(staging: string, target: string): Promise<void> {
+  if (!existsSync(target)) {
+    await retryRename(staging, target)
+    return
+  }
+  const backup = `${target}.old-${randomUUID()}`
+  await retryRename(target, backup)
+  try {
+    await retryRename(staging, target)
+  } catch (error) {
+    await retryRename(backup, target).catch(() => undefined)
+    throw error
+  }
+  // A folder another process still holds is removed by the next install.
+  await rm(backup, { recursive: true, force: true }).catch(() => undefined)
+}
+
 export async function installApp(options: InstallOptions): Promise<void> {
   const report = (progress: SetupProgress) => options.onProgress?.(progress)
   const target = path.resolve(options.targetDir)
@@ -290,20 +360,37 @@ export async function installApp(options: InstallOptions): Promise<void> {
   const { entries, files } = await listSource(source)
   let lastPercent = -1
   let lastReport = 0
-  await copyPayload({
-    source,
-    target,
-    entries,
-    onCopied: (copied, detail) => {
-      const percent = files > 0 ? Math.min(99, Math.floor((copied / files) * 100)) : 50
-      const now = Date.now()
-      if (percent !== lastPercent && now - lastReport > 40) {
-        lastPercent = percent
-        lastReport = now
-        report({ phase: 'copying', percent, detail })
+  // Copy beside the target, verify, then swap. Writing into the installed
+  // folder directly meant a copy that ran out of disk or hit a locked file left
+  // the new executable next to the old archive, and the silent update then
+  // started exactly that folder.
+  await clearStaleStaging(target)
+  const staging = path.join(path.dirname(target), `.${path.basename(target)}-install-${randomUUID()}`)
+  try {
+    await rm(staging, { recursive: true, force: true })
+    await copyPayload({
+      source,
+      target: staging,
+      entries,
+      onCopied: (copied, detail) => {
+        const percent = files > 0 ? Math.min(99, Math.floor((copied / files) * 100)) : 50
+        const now = Date.now()
+        if (percent !== lastPercent && now - lastReport > 40) {
+          lastPercent = percent
+          lastReport = now
+          report({ phase: 'copying', percent, detail })
+        }
       }
+    })
+    const mismatches = await verifyPayload(staging, entries)
+    if (mismatches.length > 0) {
+      const sample = mismatches.slice(0, 3).map((entry) => entry.relative).join(', ')
+      throw new Error(`复制安装文件不完整（${mismatches.length} 个文件缺失或大小不符：${sample}）。请检查磁盘空间后重试。`)
     }
-  })
+    await swapIntoPlace(staging, target)
+  } finally {
+    await rm(staging, { recursive: true, force: true }).catch(() => undefined)
+  }
 
   report({ phase: 'shortcuts', percent: 99, detail: '正在创建快捷方式…' })
   await createShortcuts(target)
