@@ -17,10 +17,15 @@ npm run dev
 
 | 命令 | 用途 |
 | --- | --- |
-| `npm run dev` | 启动 Electron 开发环境与热更新。 |
+| `npm run dev` | 启动 Electron 开发环境与热更新（同时监听手机端 bundle）。 |
+| `npm run remote:watch` | 只监听并重建手机端 bundle。 |
 | `npm run typecheck` | 检查主进程、preload 与渲染器的 TypeScript 类型。 |
-| `npm test` | 运行事件投影、运行状态、项目路径、Git 统计及差异折叠测试。 |
-| `npm run build` | 生成生产构建到 `out/`。 |
+| `npm test` | 运行全部单元与集成套件（主进程、IPC、渲染器、对抗用例），约两分钟。 |
+| `node tests/run.mjs --only=<名称>` | 用同一套打包器、mock 与环境只跑匹配的套件，便于调试。 |
+| `npm run test:ui` | 构建后用真实 Electron 渲染器跑界面回归检查（隔离 profile）。 |
+| `npm run test:e2e` | 启动真实内置 CLI 的一次完整运行（需要供应商认证，会产生费用）。 |
+| `npm run build` | 生成生产构建到 `out/`（桌面端与手机端）。 |
+| `npm run build:remote` | 只构建手机端 bundle。 |
 | `npm run start` | 预览已构建的应用。 |
 | `npm run dist` | 按 electron-builder 配置生成发布包到 `release/`。 |
 | `npm run dist:dir` | 生成解包应用目录。 |
@@ -47,15 +52,22 @@ node scripts/rpc-ui-smoke.mjs
 
 `npm run test:e2e` 会发起真实模型任务并验证事件投影与停止流程，需要已有供应商认证，可能产生模型调用费用。
 
+`npm run test:ui` 自己完成构建，然后用真实渲染器（隔离的 userData、夹具项目与本地假供应商）检查对话、侧栏、任务栏、工具面板、终端与对话框等 41 项界面行为；单测看不到的 DOM、CSS 与几何规则由它把关。
+
 ## 项目结构
 
 ```text
 src/
 ├─ main/                    Electron 主进程、窗口、IPC、设置与会话索引
-│  ├─ pi/                   CLI 定位、RPC 客户端与运行时
+│  ├─ pi/                   CLI 定位、RPC 客户端、运行时、子智能体与任务模式
+│  ├─ channels/             飞书 / 微信 IM 频道
+│  ├─ memory/               持久记忆的提取与存储
+│  ├─ providers/            模型提供商的配置存储
+│  ├─ setup/                应用自绘安装 / 卸载界面（`setup/index.html`）的逻辑
 │  ├─ git.ts                分支、工作区、差异和提交操作
 │  ├─ sessions.ts           会话读取、搜索与用量汇总
 │  └─ screenshot.ts         显式启用的截图辅助入口
+├─ remote/src/              手机远程访问 Web App（独立 bundle）
 ├─ preload/                 contextBridge，渲染器访问主进程的唯一入口
 ├─ shared/types.ts          共享协议及业务类型
 └─ renderer/src/
@@ -102,6 +114,10 @@ npx electron .
 ```
 
 使用独立 `PI_DESKTOP_USER_DATA` 保护日常配置。协议或会话验证还应指定独立的 `PI_CODING_AGENT_SESSION_DIR`。全部截图参数见 [AGENTS.md 的 Screenshot harness](../AGENTS.md#screenshot-harness)。
+
+## 持续集成
+
+`.github/workflows/ci.yml` 在每次推送到 `main` 与每个 Pull Request 上运行：类型检查、全部单元套件，以及 `npm run test:ui` 的真实渲染器验收。发布工作流（`release.yml`）只由标签触发，并保留自己的一份检查，所以发布永远不是从一棵未验证的树上切出来的。
 
 ## 提交与发布
 
