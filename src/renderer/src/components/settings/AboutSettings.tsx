@@ -13,8 +13,7 @@ export function AboutSettings({
   upgradingCli,
   piCliProgress,
   onCheck,
-  onUpgradeCli,
-  onShowUpdate
+  onUpgradeCli
 }: {
   updateStatus: VersionCheckResult | null
   checking: boolean
@@ -22,7 +21,6 @@ export function AboutSettings({
   piCliProgress: PiCliUpgradeProgress | null
   onCheck: (silent?: boolean) => void
   onUpgradeCli: () => void
-  onShowUpdate: () => void
 }) {
   const settings = useAppStore((state) => state.settings)
   const updateSettings = useAppStore((state) => state.updateSettings)
@@ -66,15 +64,9 @@ export function AboutSettings({
                     <Sparkles size={11} style={{ marginRight: 4 }} />
                     {t('New version')} v{updateStatus.app.latest}
                   </span>
-                  <button
-                    type="button"
-                    className="btn btn--primary btn--sm"
-                    disabled={checking || upgradingCli}
-                    onClick={onShowUpdate}
-                  >
-                    <Download size={12} />
-                    {t('View update')}
-                  </button>
+                  {/* The update lives on the sidebar button beside Settings: one
+                      affordance for check, download and restart, no dialog. */}
+                  <span className="settings-about-hint">{t('Update from the button beside Settings')}</span>
                 </>
               ) : null}
             </div>

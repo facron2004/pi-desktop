@@ -37,7 +37,6 @@ import type { TerminalRunRequest } from './components/TerminalPanel'
 import { FeatureLoading } from './components/FeatureLoading'
 import { Popover } from './components/Popover'
 import {
-  APP_UPDATE_NOTICE,
   appUpdateInstall,
   availableAppUpdate,
   noteAppUpdateCheck,
@@ -45,8 +44,7 @@ import {
   restoreDownloadedAppUpdate,
   restorePersistedAppUpdate,
   startAppUpdateDownload,
-  subscribeAvailableAppUpdate,
-  type AppUpdateNotice
+  subscribeAvailableAppUpdate
 } from './lib/app-update'
 import { matchesAnyShortcut, type ShortcutId } from './lib/shortcuts'
 import { activeConversationTitle } from './lib/live-sessions'
@@ -58,7 +56,6 @@ const TerminalPanel = lazy(() => import('./components/TerminalPanel').then((m) =
 const ScheduledTasksDialog = lazy(() => import('./components/ScheduledTasksDialog').then((m) => ({ default: m.ScheduledTasksDialog })))
 const Marketplace = lazy(() => import('./components/Marketplace').then((m) => ({ default: m.Marketplace })))
 const SettingsDialog = lazy(() => import('./components/SettingsDialog').then((m) => ({ default: m.SettingsDialog })))
-const AppUpdateDialog = lazy(() => import('./components/AppUpdateDialog').then((m) => ({ default: m.AppUpdateDialog })))
 const BrowserView = lazy(() => import('./components/BrowserView').then((m) => ({ default: m.BrowserView })))
 const ImageViewer = lazy(() => import('./components/ImageViewer').then((m) => ({ default: m.ImageViewer })))
 const SubagentPanel = lazy(() => import('./components/SubagentPanel').then((m) => ({ default: m.SubagentPanel })))
@@ -139,7 +136,6 @@ export default function App() {
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
   const [extensionDialogMounted, setExtensionDialogMounted] = useState(false)
-  const [pendingUpdateNotice, setPendingUpdateNotice] = useState<AppUpdateNotice | null>(null)
   // The sidebar icon and the automatic download both read this; the shared
   // module owns the reading, this is only the renderer's subscription to it.
   const [availableUpdate, setAvailableUpdate] = useState(() => availableAppUpdate())
@@ -397,13 +393,6 @@ export default function App() {
     if (hasActiveUiRequest) setExtensionDialogMounted(true)
   }, [hasActiveUiRequest])
 
-  useEffect(() => {
-    const onNotice = (event: Event) => {
-      setPendingUpdateNotice((event as CustomEvent<AppUpdateNotice>).detail)
-    }
-    window.addEventListener(APP_UPDATE_NOTICE, onNotice)
-    return () => window.removeEventListener(APP_UPDATE_NOTICE, onNotice)
-  }, [])
 
   // The panel is a column of the grid; it only floats over the conversation
   // when the window is too narrow to give it a column of its own.
@@ -1284,11 +1273,6 @@ export default function App() {
       {hasActiveUiRequest || extensionDialogMounted ? (
         <Suspense fallback={null}>
           <ExtensionDialog />
-        </Suspense>
-      ) : null}
-      {pendingUpdateNotice ? (
-        <Suspense fallback={null}>
-          <AppUpdateDialog initialNotice={pendingUpdateNotice} />
         </Suspense>
       ) : null}
       <HoverTip />

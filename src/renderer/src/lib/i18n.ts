@@ -362,6 +362,7 @@ const zhCN: Record<string, string> = {
   'Not now': '暂不更新',
   'Restart and update': '重启并更新',
   'View update': '查看更新',
+  'Update from the button beside Settings': '在「设置」旁的按钮里更新',
   'Updating…': '正在更新…',
   'A new Pi Desktop version is ready to install.': '新版本已发布，可以更新 Pi Desktop。',
   'You are running the latest Pi Desktop version.': '当前 Pi Desktop 已是最新版本。',

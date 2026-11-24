@@ -23,7 +23,6 @@ import {
   checkForAppUpdates,
   lastAppUpdateCheck,
   noteAppUpdateCheck,
-  showAppUpdate,
   subscribeAppUpdateCheck
 } from '../lib/app-update'
 import '../styles/appearance.css'
@@ -250,7 +249,6 @@ export function SettingsDialog({
                   piCliProgress={piCliProgress}
                   onCheck={handleCheck}
                   onUpgradeCli={handleUpgradeCli}
-                  onShowUpdate={() => { if (updateStatus) showAppUpdate(updateStatus) }}
                 />
               ) : null}
             </Suspense>

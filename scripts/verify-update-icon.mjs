@@ -139,7 +139,7 @@ try {
   check(/restart and install|重启并安装/i.test(readyBadge.aria || ''), 'ready 状态的 aria-label 没有说明点击会重启安装')
   check(readyBadge.hasRing === false, 'ready 状态仍显示进度环')
   check(ready.probe.aboutHasVersion === true, '“关于”页没有显示已下载的新版本')
-  check(ready.probe.cardDismissed === true, '更新卡片没有关掉，截图不干净')
+  check(ready.probe.updateButtonShown === true, '侧栏的更新按钮没有出现')
   if (process.env.PI_DESKTOP_VERIFY_KEEP !== '1') rmSync(readyProfile, { recursive: true, force: true })
 
   if (failures.length > 0) throw new Error('验证失败:\n- ' + failures.join('\n- '))

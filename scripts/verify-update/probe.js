@@ -45,36 +45,13 @@
     await wait(300)
   }
 
-  // 手动检查会弹出一张更新卡片（成功或失败都会弹）。截图要的是侧栏图标和
-  // “关于”页，所以卡片出现后逐个关掉，直到屏幕稳定——同一张卡片可能因为
-  // 一次新的结果被重新挂载。
-  const dismissCards = async () => {
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      const card = document.querySelector('.app-update-card')
-      if (!card) return true
-      const dismiss = Array.from(card.querySelectorAll('button')).find(
-        (b) => /not now|暂不更新|close|关闭|got it|知道了/i.test(b.innerText || '')
-      )
-      if (dismiss) dismiss.click()
-      else card.closest('.modal-layer')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
-      await wait(400)
-    }
-    return !document.querySelector('.app-update-card')
-  }
-
+  // 手动检查不弹卡片：结果直接落在侧栏的更新按钮上，所以只等图标出现。
   if (manualCheck) {
     const checkButton = Array.from(document.querySelectorAll('.settings-content button')).find(
       (b) => /check now|立即检查/i.test(b.innerText || '')
     )
-    if (checkButton) {
-      checkButton.click()
-      // 等卡片出现（结果落定）再关；侧栏图标也是这时才出现的。
-      for (let attempt = 0; attempt < 40 && !document.querySelector('.app-update-card'); attempt += 1) {
-        await wait(250)
-      }
-    }
+    if (checkButton) checkButton.click()
   }
-  const cardDismissed = await dismissCards()
   for (let attempt = 0; attempt < 40 && !updateButton(); attempt += 1) await wait(250)
   await wait(300)
 
@@ -90,7 +67,8 @@
   const finalText = content ? content.innerText : aboutText
   const snapshot = {
     sidebarBadge: readBadge(),
-    cardDismissed,
+    // A manual check answers on the sidebar button now; nothing may pop up.
+    updateButtonShown: Boolean(updateButton()),
     aboutBadges: badges,
     aboutHasVersion: /0\.11\.9/.test(finalText),
     aboutHasAutoCheck: /Automatically check for updates|自动检查更新/i.test(finalText),

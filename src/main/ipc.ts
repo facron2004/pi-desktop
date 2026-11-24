@@ -1449,6 +1449,14 @@ export function registerIpc(context: IpcContext): void {
         restarting = true
         // Return the IPC result before the normal shutdown path closes the window.
         setImmediate(() => app.quit())
+        // The installer runs detached, so this process has no reason to stay
+        // alive: a shutdown that cannot finish (a locked file, a child that will
+        // not exit) used to leave the app sitting on a "restarting" screen for
+        // good. Leave within a few seconds either way.
+        setTimeout(() => {
+          console.error('[pi-desktop] update shutdown timed out; exiting so the installer can take over')
+          process.exit(0)
+        }, 15_000).unref()
         return { success: true, version }
       } catch (error) {
         return { success: false, error: error instanceof Error ? error.message : String(error) }

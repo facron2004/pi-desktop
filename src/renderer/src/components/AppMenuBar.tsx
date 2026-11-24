@@ -272,7 +272,25 @@ export const AppMenuBar = memo(function AppMenuBar({
               shortcut: chord('command-palette')
             },
             { separator: true },
-            { label: `${t('Check for updates')}…`, onSelect: () => void checkForAppUpdates().catch(() => {}) },
+            {
+              // The answer lands on the sidebar button, so the menu only says
+              // what happened: no dialog stands between the reader and the app.
+              label: `${t('Check for updates')}…`,
+              onSelect: () => {
+                const toast = (text: string, level?: 'info' | 'warning') =>
+                  useAppStore.getState().showToast(text, level ?? 'info')
+                void checkForAppUpdates()
+                  .then((result) => {
+                    if (result.app.error) toast(result.app.error, 'warning')
+                    else if (result.app.hasUpdate && result.app.latest) {
+                      toast(`v${result.app.latest} · ${t('Update from the button beside Settings')}`)
+                    } else toast(t('You are running the latest Pi Desktop version.'))
+                  })
+                  .catch((error: unknown) =>
+                    toast(error instanceof Error ? error.message : String(error), 'warning')
+                  )
+              }
+            },
             {
               label: t('Report an issue'),
               onSelect: () => void window.pi.shell.openExternal(issuesUrl)
