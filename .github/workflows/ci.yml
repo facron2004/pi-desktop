@@ -41,3 +41,32 @@ jobs:
 
       - name: 单元测试
         run: npm test
+
+  # The unit suites cannot see the DOM, CSS or geometry rules AGENTS.md leans
+  # on; tests/ui-regressions.mjs drives the real renderer with an isolated
+  # profile. It found a regression in the image preview and a byte-order mark
+  # that only broke the production build, neither of which the unit gate could
+  # catch. It runs here rather than in the release job so a failure is a red
+  # check on the commit, not a release that cannot be cut.
+  ui:
+    name: 真实渲染器验收
+    runs-on: windows-latest
+    timeout-minutes: 45
+    needs: verify
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # Builds out/ itself (electron-vite) and then drives the packaged
+      # renderer; PI_DESKTOP_USER_DATA points the run at a throwaway profile.
+      - name: 真实渲染器验收
+        run: npm run test:ui
