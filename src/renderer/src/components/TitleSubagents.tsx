@@ -131,6 +131,9 @@ export const TitleSubagents = memo(function TitleSubagents({ onOpenTask, onOpenA
       align="left"
       width={320}
       className="title-subagents-popover"
+      // The panel is a dialog; without this, Tab from the badge walks out of the
+      // portal and closes the card the reader just opened.
+      focusPanel
       renderTrigger={({ open, toggle }) => (
         <button
           type="button"

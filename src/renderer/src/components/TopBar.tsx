@@ -369,6 +369,9 @@ export const ModelPicker = memo(function ModelPicker() {
       align="right"
       width={showModels ? 340 : 240}
       className="model-picker"
+      // The panel calls itself a dialog, so focus has to enter it: Tab from the
+      // chip would otherwise leave the portal and dismiss the picker.
+      focusPanel
       renderTrigger={({ open, toggle }) => (
         <button
           className="model-chip"
