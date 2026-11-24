@@ -138,7 +138,13 @@ export const ProjectSelector = memo(function ProjectSelector({
               aria-expanded={open}
               aria-haspopup="menu"
               onClick={(e) => {
-                if (!open) setSearchQuery('')
+                // A reopened menu starts at the top: the query is already empty,
+                // so the reset effect would not run and a stale highlight would
+                // make Enter open a row the reader never chose.
+                if (!open) {
+                  setSearchQuery('')
+                  setHighlighted(0)
+                }
                 toggle(e)
               }}
               title={workspace?.path ?? displayName}

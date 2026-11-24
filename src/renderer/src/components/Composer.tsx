@@ -808,7 +808,10 @@ export const Composer = memo(function Composer() {
       window.clearTimeout(timer)
       if (requestStarted) void window.pi.fs.search('', 0, 'composer-mention').catch(() => undefined)
     }
-  }, [mention, workspace?.path])
+    // The caret moving inside the same token produces a new match object; the
+    // search must follow the query, not the object, or a click would wipe the
+    // list and reset the highlighted row.
+  }, [mention?.query, workspace?.path])
 
   const closePalette = useCallback(() => setSlash(null), [])
 

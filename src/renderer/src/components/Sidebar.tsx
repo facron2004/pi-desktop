@@ -324,6 +324,9 @@ export const Sidebar = memo(function Sidebar({
   const draftRef = useRef(draft)
   draftRef.current = draft
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
+  // Renaming a project unmounts its input, so the row has to take focus back
+  // or a keyboard user is dropped onto <body>.
+  const projectRowRefs = useRef(new Map<string, HTMLButtonElement | null>())
   const [projectDraft, setProjectDraft] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
   const [pendingRemove, setPendingRemove] = useState<{ id?: string; path: string; name: string } | null>(null)
@@ -1544,6 +1547,11 @@ export const Sidebar = memo(function Sidebar({
                       <button
                         className="project__main"
                         type="button"
+                        ref={(element) => {
+                          if (!projectId) return
+                          if (element) projectRowRefs.current.set(projectId, element)
+                          else projectRowRefs.current.delete(projectId)
+                        }}
                         // The card carries what the row cannot: when the folder
                         // joined the list, how many conversations live in it,
                         // and where it is.
@@ -1597,8 +1605,10 @@ export const Sidebar = memo(function Sidebar({
                                     }
                                   }
                                   setRenamingProjectId(null)
+                                  if (projectId) requestAnimationFrame(() => projectRowRefs.current.get(projectId)?.focus())
                                 } else if (e.key === 'Escape') {
                                   setRenamingProjectId(null)
+                                  if (projectId) requestAnimationFrame(() => projectRowRefs.current.get(projectId)?.focus())
                                 }
                               }}
                               onBlur={async () => {
