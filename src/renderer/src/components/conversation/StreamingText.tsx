@@ -1,13 +1,16 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
   appendStreamingMarkdown,
+  OPEN_FENCE_FAST_PATH_CHARS,
+  parseOpenFenceTail,
   splitSettledMarkdown,
   splitStreamingMarkdown,
   type StreamingMarkdownSplit
 } from '../../lib/streaming-markdown'
 import { advanceReveal } from '../../lib/streaming-reveal'
 import { prefersReducedMotion } from '../../lib/motion'
-import { Markdown } from '../Markdown'
+import { isMermaidLanguage } from '../../lib/mermaid'
+import { Markdown, OpenFenceBlock } from '../Markdown'
 
 export interface StreamingTextProps {
   text: string
@@ -64,10 +67,14 @@ function useRevealedText(text: string, streaming: boolean): string {
       return
     }
     // A shorter text is a replacement (text_end is authoritative), not a delta.
+    // Clamp to the new end instead of restarting from zero: the replacement is
+    // the same answer with something removed (trailing whitespace, an echoed
+    // prompt, a normalised run), so re-typing it would blank the reply and
+    // replay seconds of text for a one-character difference.
     if (shownRef.current > target) {
-      shownRef.current = 0
+      shownRef.current = target
       lastRef.current = 0
-      setShown(0)
+      setShown(target)
     }
     // A settled block that is already fully revealed needs no timer at all.
     if (!streaming && shownRef.current >= target) return
@@ -79,7 +86,9 @@ function useRevealedText(text: string, streaming: boolean): string {
       frameRef.current = 0
       const currentTarget = targetRef.current
       if (shownRef.current > currentTarget) {
-        shownRef.current = 0
+        // The replacement arrived while the cursor was running: jump to its
+        // end, never back to the start (see the effect above).
+        shownRef.current = currentTarget
         lastRef.current = 0
       }
       const elapsed = lastRef.current === 0 ? 16 : now - lastRef.current
@@ -147,12 +156,23 @@ export const StreamingText = memo(function StreamingText({
     )),
     [split.blocks]
   )
+  // A long fence that is still open is the one tail Markdown cannot bound: its
+  // content is literal, so parse it once as the code block it will be instead of
+  // re-parsing the whole growing text on every frame. Diagrams stay on the
+  // Markdown path — a mermaid fence becomes a rendered diagram, not a code block.
+  const openFence = useMemo(
+    () => (split.tail.length >= OPEN_FENCE_FAST_PATH_CHARS ? parseOpenFenceTail(split.tail) : null),
+    [split.tail]
+  )
+  const codeTail = openFence && !isMermaidLanguage(openFence.language) ? openFence : null
 
   return (
     <div className="assistant__text" data-commentary={commentary || undefined}>
       <div className="md">
         {finishedBlocks}
-        {split.tail ? (
+        {codeTail ? (
+          <OpenFenceBlock code={codeTail.code} language={codeTail.language} streaming={revealing} />
+        ) : split.tail ? (
           <Markdown key="tail" bare streaming={revealing}>
             {split.tail}
           </Markdown>

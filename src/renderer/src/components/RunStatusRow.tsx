@@ -67,7 +67,6 @@ export const CwdWaitDetail = memo(function CwdWaitDetail({
   cwdWait: CwdWaitState
 }) {
   const t = useT()
-  const language = useAppStore((state) => state.settings.language ?? 'en')
   const selectSession = useAppStore((state) => state.selectSession)
   const isOperationHolder = Boolean(cwdWait.holderOwnerId?.startsWith('operation:'))
   const holderKey = !cwdWait.externalHolder && !isOperationHolder ? cwdWait.holderOwnerId : undefined
@@ -100,11 +99,9 @@ export const CwdWaitDetail = memo(function CwdWaitDetail({
     )
   )
   const folder = basename(cwdWait.holderCwd || cwdWait.cwd) || cwdWait.cwd
-  const translatedOperation = t('Waiting for another operation in {folder}')
-  const operationTemplate =
-    language === 'zh-CN' && translatedOperation === 'Waiting for another operation in {folder}'
-      ? '正在等待 {folder} 中的另一项操作'
-      : translatedOperation
+  // The template lives in the translation map, so the placeholder is replaced
+  // after translation and the Chinese and English halves cannot drift apart.
+  const operationTemplate = t('Waiting for another operation in {folder}')
   const text = cwdWait.externalHolder
     ? t('Waiting on another window in {folder}').replace('{folder}', folder)
     : isOperationHolder

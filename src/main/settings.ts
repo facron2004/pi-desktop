@@ -698,6 +698,41 @@ async function runUserDataAclSweep(target: string, systemDirectory: string): Pro
 }
 
 /**
+ * Guard the two settings that are not just preferences but capabilities.
+ *
+ * `externalChatFolder` roots session discovery: it is the containment root the
+ * session handlers resolve renderer-supplied paths against. A filesystem root
+ * there would make every `.jsonl` on the drive a valid conversation, which is
+ * exactly what that check exists to prevent. `piPath` decides which executable
+ * is spawned as the agent. The renderer is the app and may legitimately choose
+ * either, but the main process is the last place that can refuse a value that is
+ * not even a path — or a root — instead of trusting it.
+ */
+function assertSafeSettingsPatch(patch: Partial<AppSettings>): void {
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+    throw new TypeError('settings:patch expects an object')
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'externalChatFolder')) {
+    const folder = typeof patch.externalChatFolder === 'string' ? patch.externalChatFolder.trim() : ''
+    if (folder) {
+      if (!path.isAbsolute(folder)) {
+        throw new Error(`The chat folder must be an absolute path: ${folder}`)
+      }
+      const resolved = path.resolve(folder)
+      if (path.dirname(resolved) === resolved) {
+        throw new Error('The chat folder cannot be a filesystem root.')
+      }
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'piPath')) {
+    const cli = typeof patch.piPath === 'string' ? patch.piPath.trim() : ''
+    if (cli && !path.isAbsolute(cli)) {
+      throw new Error(`The Pi CLI path must be an absolute path: ${cli}`)
+    }
+  }
+}
+
+/**
  * Tiny JSON-file settings store in the Electron userData directory.
  * Writes are atomic (temp file + rename) so a crash cannot corrupt the file.
  */
@@ -792,6 +827,7 @@ export class SettingsStore {
   }
 
   patch(patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): AppSettings {
+    assertSafeSettingsPatch(patch)
     const updated = this.update((current) => {
       const { externalChatFolderHistory: _ignoredHistory, ...requested } = patch
       if (!Object.prototype.hasOwnProperty.call(patch, 'externalChatFolder')) return requested
@@ -898,6 +934,33 @@ export class SettingsStore {
     return parsed === null
   }
 
+  /**
+   * Wait for another process to release the settings lock, without blocking.
+   *
+   * `lockSync` cannot retry — proper-lockfile refuses retries on its sync API —
+   * so `withSettingsLock` spins on `Atomics.wait` between attempts. That spin is
+   * right for the microseconds a writer normally holds the lock, but a second
+   * instance (a harness run, or a crashed one whose lock file has not gone stale
+   * yet) can hold it for seconds, and blocking the main thread that long freezes
+   * the window. Callers that can be async wait here first; the sync spin is then
+   * left to cover only the race between this poll and the write itself.
+   */
+  async waitForLock(timeoutMs = 5_000): Promise<void> {
+    const deadline = Date.now() + Math.max(0, timeoutMs)
+    for (;;) {
+      let locked = false
+      try {
+        locked = await properLockfile.check(this.file, { realpath: false })
+      } catch {
+        // No settings file yet, or its folder is gone: nothing holds the lock.
+        return
+      }
+      if (!locked) return
+      if (Date.now() >= deadline) return
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
+
   private withSettingsLock<T>(action: () => T): T {
     if (!this.dirEnsured) {
       mkdirSync(path.dirname(this.file), { recursive: true })
@@ -918,7 +981,10 @@ export class SettingsStore {
           this.dirEnsured = true
           continue
         }
-        if (code !== 'ELOCKED' || attempt >= 49) throw error
+        // The attempts are bounded because this path blocks the main thread: a
+        // long-lived holder is waited out asynchronously in `waitForLock`, and
+        // an in-process write holds the lock for well under a millisecond.
+        if (code !== 'ELOCKED' || attempt >= 10) throw error
         // Progressive short backoff avoids a full 10ms stall on brief lock contention.
         const waitMs = attempt < 3 ? 2 : attempt < 8 ? 5 : 10
         Atomics.wait(settingsLockWait, 0, 0, waitMs)

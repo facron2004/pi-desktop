@@ -1,13 +1,46 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty'
 import { resolveShellSpec } from '../src/main/shell'
 import { assertTerminalWorkingDirectory } from '../src/main/terminal-path'
 import { TerminalManager } from '../src/main/terminal'
+import { resolveTerminalCwd } from '../src/main/ipc'
 import type { TerminalDataPayload } from '../src/shared/types'
+
+test('a terminal only starts inside a project the app knows about', () => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-terminal-gate-'))
+  const project = path.join(parent, 'project')
+  const nested = path.join(project, 'src')
+  const outside = path.join(parent, 'outside')
+  mkdirSync(project, { recursive: true })
+  mkdirSync(nested, { recursive: true })
+  mkdirSync(outside, { recursive: true })
+  try {
+    const context = {
+      settings: {
+        get: () => ({
+          activeWorkspaceId: 'w1',
+          workspaces: [{ id: 'w1', path: project }]
+        })
+      }
+    } as unknown as Parameters<typeof resolveTerminalCwd>[0]
+
+    // The project and a folder inside it are accepted...
+    assert.equal(resolveTerminalCwd(context, project), project)
+    assert.equal(resolveTerminalCwd(context, nested), nested)
+    // ...an unrelated absolute directory falls back to the workspace on screen...
+    assert.equal(resolveTerminalCwd(context, outside), project)
+    // ...a relative path is not a working directory either, and the explicit
+    // empty string still means "the projectless chats folder".
+    assert.equal(resolveTerminalCwd(context, 'relative/dir'), project)
+    assert.match(resolveTerminalCwd(context, ''), /chats$/)
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
 
 test('the integrated terminal defaults to PowerShell', () => {
   assert.equal(resolveShellSpec(undefined).label, 'PowerShell')

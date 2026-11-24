@@ -267,6 +267,7 @@ export function ColorPicker({
           onChange={(event) => setFromHex(event.target.value)}
           onBlur={() => setHexDraft(null)}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
             if (event.key === 'Enter') {
               event.preventDefault()
               event.currentTarget.blur()

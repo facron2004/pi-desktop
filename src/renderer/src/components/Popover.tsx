@@ -44,6 +44,15 @@ interface PopoverProps {
    * cross the gap to the card, or the card would vanish on the way in.
    */
   closeDelay?: number
+  /**
+   * Move focus into the panel when it opens.
+   *
+   * A menu does not need it: its rows are reached with the arrows from the
+   * trigger. A panel that calls itself a `dialog` does — Tab from the trigger
+   * would otherwise land outside the portal and dismiss the very card it was
+   * opening, because the panel lives at the end of `<body>`.
+   */
+  focusPanel?: boolean
 }
 
 export function Popover({
@@ -57,7 +66,8 @@ export function Popover({
   className,
   trigger = 'click',
   hoverDelay = 120,
-  closeDelay = 160
+  closeDelay = 160,
+  focusPanel = false
 }: PopoverProps) {
   const [open, setOpen] = useState(false)
   const popoverId = useId()
@@ -133,6 +143,19 @@ export function Popover({
       return !value
     })
   }
+
+  // Once per opening, so re-renders of an open panel never pull focus out of a
+  // field the reader is typing in.
+  const panelFocused = useRef(false)
+  useEffect(() => {
+    if (!open) {
+      panelFocused.current = false
+      return
+    }
+    if (!focusPanel || panelFocused.current) return
+    panelFocused.current = true
+    popoverRef.current?.focus({ preventScroll: true })
+  }, [open, focusPanel])
 
   useLayoutEffect(() => {
     if (!open) return
@@ -309,6 +332,7 @@ export function Popover({
           ref={popoverRef}
           data-popover-id={popoverId}
           className={`popover ${className ?? ''}`}
+          tabIndex={-1}
           onMouseEnter={stopClosing}
           onMouseLeave={scheduleClose}
           style={panelStyle}

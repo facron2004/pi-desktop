@@ -357,6 +357,17 @@ test('fetching merges upstream configuration without dropping manual edits or di
   assert.equal(keptCap[0].maxTokens, 384000, 'a smaller upstream cap must not shrink a saved output length')
 })
 
+/**
+ * Ports Undici refuses to fetch ("bad port"), so a loopback server on one of
+ * them fails before a request is sent.
+ *
+ * `listen(0)` normally avoids them because the OS hands out a high ephemeral
+ * port, but a machine whose dynamic port range starts lower (Windows lets it be
+ * configured) can be given, say, 6000 — and then this suite fails with
+ * "fetch failed: bad port", which reads like a bug in the code under test.
+ */
+const UNDICI_BLOCKED_PORTS = new Set([5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080])
+
 async function server(t: { after: (cleanup: () => Promise<void>) => void }, handler: (request: IncomingMessage, response: ServerResponse, body: Record<string, unknown>) => void) {
   const instance = createServer(async (request, response) => {
     let text = ''
@@ -364,9 +375,17 @@ async function server(t: { after: (cleanup: () => Promise<void>) => void }, hand
     response.setHeader('content-type', 'application/json')
     handler(request, response, text ? JSON.parse(text) : {})
   })
-  await new Promise<void>(resolve => instance.listen(0, '127.0.0.1', resolve))
+  let port = 0
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await new Promise<void>(resolve => instance.listen(0, '127.0.0.1', resolve))
+    port = (instance.address() as { port: number }).port
+    if (!UNDICI_BLOCKED_PORTS.has(port)) break
+    await new Promise<void>(resolve => instance.close(() => resolve()))
+    port = 0
+  }
+  assert.ok(port > 0, 'could not bind a loopback port that fetch accepts')
   t.after(() => new Promise<void>(resolve => { instance.closeAllConnections(); instance.close(() => resolve()) }))
-  return `http://127.0.0.1:${(instance.address() as { port: number }).port}`
+  return `http://127.0.0.1:${port}`
 }
 
 test('real HTTP discovery follows pagination, sends authentication and keeps supplied parameters', async t => {

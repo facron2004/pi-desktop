@@ -83,7 +83,7 @@ export function SubagentTree({ sessions, threads, onSelect, onOpenTask, onCancel
         <span>{t('Subagents')}</span>
         {running ? <span className="subagent-tree__count" title={t('Active')}>{running}</span> : null}
       </div>
-      <div className="subagent-tree__list" role="tree" aria-label={t('Subagents')}>
+      <div className="subagent-tree__list">
         {branches.map(({ session, calls }) => (
           <ConversationBranch
             key={session.file}
@@ -125,10 +125,11 @@ function ConversationBranch({ session, calls, now, onSelect, onOpenTask, onCance
 
   return (
     <div className="subagent-tree__branch" data-session-file={session.file}>
-      <div className="subagent-tree__conversation" role="treeitem" aria-expanded={open}>
+      <div className="subagent-tree__conversation">
         <button
           type="button"
           className="subagent-tree__toggle"
+          aria-expanded={open}
           aria-label={t(open ? 'Collapse subagents' : 'Expand subagents')}
           onClick={() => {
             const next = !open
@@ -151,7 +152,7 @@ function ConversationBranch({ session, calls, now, onSelect, onOpenTask, onCance
         </span>
       </div>
       {open ? (
-        <ul className="subagent-tree__tasks" role="group">
+        <ul className="subagent-tree__tasks">
           {tasks.map((task) => (
             <TaskRow
               key={task.id}
@@ -179,7 +180,7 @@ function TaskRow({ task, now, onOpen, onCancel }: {
   const activity = task.activity ? `${t(task.activity)}${task.toolName ? ` · ${task.toolName}` : ''}` : undefined
   const summary = task.source === 'swarm' ? `${status} · ${task.task}` : activity
   return (
-    <li className="subagent-tree__task" data-status={task.status} role="treeitem">
+    <li className="subagent-tree__task" data-status={task.status}>
       <div className="subagent-tree__task-line">
         <button type="button" className="subagent-tree__task-row" title={task.task} onClick={onOpen} aria-label={`${status}: ${task.label || task.task}`}>
           <span className="subagent-tree__disclosure-space" aria-hidden="true" />
@@ -210,3 +211,4 @@ function TaskRow({ task, now, onOpen, onCancel }: {
     </li>
   )
 }
+

@@ -233,7 +233,9 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     input.dispatchEvent(new Event('input', { bubbles: true }))
   }
   const check = (condition, message) => { if (!condition) throw new Error(message) }
-  const until = async (read, message, timeout = 10000) => {
+  // A paused animation frame or a paint throttled by an occluded window shows
+  // up here first, so the wait is generous and the failure says where focus was.
+  const until = async (read, message, timeout = 15000) => {
     const deadline = performance.now() + timeout
     while (performance.now() < deadline) {
       const value = read()
@@ -244,7 +246,13 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     const tools = Object.values(state.threads).flatMap((thread) => thread.items.filter((item) => item.kind === 'tool').map((item) => ({
       name: item.toolName, status: item.status, result: item.result?.slice(0, 200), details: item.details
     })))
-    throw new Error(`${message}: ${JSON.stringify({ error: state.error, phase: state.run.phase, tools })}`)
+    const active = document.activeElement
+    const focus = active instanceof HTMLElement
+      ? `${active.tagName.toLowerCase()}${active.className ? `.${String(active.className).trim().split(/\s+/).join('.')}` : ''}`
+      : String(active)
+    const modals = document.querySelectorAll('[aria-modal="true"]').length
+    const visible = document.visibilityState
+    throw new Error(`${message}: ${JSON.stringify({ error: state.error, phase: state.run.phase, focus, modals, visible, tools })}`)
   }
   const store = window.__piDesktopStore
   await store.getState().updateSettings({ language: 'en', terminalShell: 'cmd' })
@@ -254,6 +262,11 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
 
   await until(() => !document.getElementById('startup-screen'), 'The startup screen did not leave after bootstrap')
+  // The transcript is painted once per animation frame, and Chromium stops
+  // those frames for a hidden window. The harness disables backgrounding for
+  // its own window (app-main.ts); if that ever stops working, say so here
+  // instead of letting an unrelated check time out minutes later.
+  check(document.visibilityState === 'visible', `The harness window is ${document.visibilityState}: painting is paused`)
   check(!document.getElementById('root').inert, 'The interface stayed inert after startup')
   check(!document.getElementById('root').hasAttribute('aria-hidden'), 'The interface stayed hidden from assistive technology')
   passed.push('the startup screen reveals the interactive interface after bootstrap')
@@ -907,6 +920,26 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(head.querySelector('.file-changes__review') && head.querySelector('.file-changes__undo'), 'File actions moved outside the card header')
   const row = await until(() => fileChanges.querySelector('.file-changes__list .file-change'), 'The card did not show its files directly')
   const hover = (node) => node.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+  // The card re-renders as the turn settles, which replaces the row node; a
+  // mouseover dispatched on the old node never reaches the new one and the
+  // deliberate hover delay never starts. Re-hover whichever row is on screen,
+  // at most every ~500 ms so the delay can elapse.
+  const fileRowNames = () => [...document.querySelectorAll('.file-changes__list .file-change')]
+    .map((row) => ({ row, name: row.querySelector('.file-change__name')?.textContent?.trim() ?? '' }))
+  // Pick the row by name, not by index: a row can be replaced between the query
+  // and the hover, and an index says nothing about which file it now is.
+  const hoverFileMatching = async (matches, read, message) => {
+    const deadline = performance.now() + 15000
+    let polls = 0
+    while (performance.now() < deadline) {
+      const value = read()
+      if (value) return value
+      const target = fileRowNames().find((entry) => matches(entry.name))?.row
+      if (target && polls++ % 20 === 0) hover(target)
+      await pause(25)
+    }
+    throw new Error(message)
+  }
   hover(row)
   await pause(100)
   check(!document.querySelector('.file-change__preview'), 'File preview opened during a brief hover')
@@ -920,18 +953,27 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await pause(450)
   check(!document.querySelector('.file-change__preview'), 'Scrolling did not cancel the pending file preview')
 
-  hover(row)
-  await until(() => document.querySelector('.file-change__preview-line'), 'File preview did not open')
+  await hoverFileMatching(() => true, () => document.querySelector('.file-change__preview-line'), 'File preview did not open')
+  const firstFileName = document.querySelector('.file-change__preview-name')?.textContent?.trim() ?? ''
   check(document.querySelectorAll('.file-change__preview-line').length === 200, 'Large preview rendered more than one page')
   const next = document.querySelector('.file-change__preview-pages button[aria-label="Next page"]')
   check(next && !next.disabled, 'Preview has no next-page control')
   next.click()
   await until(() => document.querySelector('.file-change__preview-text')?.textContent === 'line 200', 'Preview did not advance')
   check(document.querySelectorAll('.file-change__preview-line').length === 200, 'Second preview page exceeded the limit')
-  hover(document.querySelectorAll('.file-change')[1])
-  await until(() => document.querySelector('.file-change__preview-text')?.textContent === 'small', 'File switch did not reset the preview page')
-  hover(row)
-  await until(() => document.querySelector('.file-change__preview-text')?.textContent === 'line 0', 'Returning to the file did not reset paging')
+  // Switching files is what the hover does; that paging was reset is proved by
+  // the next step, which returns to the first file (left on page 2) and requires
+  // its first line. Asserting the second file's text here only repeated the
+  // hover timing and flaked at it.
+  await hoverFileMatching((name) => Boolean(name) && name !== firstFileName,
+    () => {
+      const shown = document.querySelector('.file-change__preview-name')?.textContent?.trim() ?? ''
+      return shown && shown !== firstFileName ? true : null
+    },
+    'Hovering another file did not switch the preview')
+  await hoverFileMatching((name) => name === firstFileName,
+    () => document.querySelector('.file-change__preview-text')?.textContent === 'line 0' ? true : null,
+    'Returning to the file did not reset paging')
   passed.push('file previews wait for a deliberate hover and page by 200 lines')
 
   // Finished tool groups stay beside their commentary. The group and the
@@ -1417,16 +1459,21 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(!document.querySelector('.task-panel__rows'), 'A non-repo folder still shows the Git rows')
   const environmentSection = railSection('Environment info')
   const environmentToggle = environmentSection?.querySelector('.task-panel__section-toggle')
-  const environmentHeadHeight = environmentSection?.querySelector('.task-panel__section-head')?.getBoundingClientRect().height
   environmentToggle?.click()
-  await pause(250)
-  check(environmentToggle?.getAttribute('aria-expanded') === 'false', 'The environment section did not fold shut')
-  check(
-    environmentSection && environmentHeadHeight !== undefined &&
-      environmentSection.getBoundingClientRect().height <= environmentHeadHeight + 1,
-    'The non-repo subtitle still occupies space after folding the environment section'
+  await until(
+    () => railSection('Environment info')?.querySelector('.task-panel__section-toggle')?.getAttribute('aria-expanded') === 'false',
+    'The environment section did not fold shut',
+    5000
   )
-  environmentToggle?.click()
+  // The body collapses with a 180 ms grid-template-rows transition. Assert the
+  // end state and let the frame land, instead of assuming 250 ms is always
+  // enough on a loaded machine (that assumption flaked once).
+  await until(() => {
+    const section = railSection('Environment info')
+    const head = section?.querySelector('.task-panel__section-head')?.getBoundingClientRect().height
+    return Boolean(section && head !== undefined && section.getBoundingClientRect().height <= head + 1)
+  }, 'The non-repo subtitle still occupies space after folding the environment section', 5000)
+  railSection('Environment info')?.querySelector('.task-panel__section-toggle')?.click()
   await pause(250)
   const workspacePath = store.getState().workspace?.path
   check(typeof workspacePath === 'string' && workspacePath.length > 0, 'The active workspace path is missing')
@@ -1515,18 +1562,18 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   const progress = [...document.querySelectorAll('.task-panel__section')].find((node) =>
     node.querySelector('.task-panel__section-title')?.textContent === 'Progress'
   )
-  progress.querySelector('.task-panel__section-toggle').click()
-  await pause(250)
-  check(
-    progress.querySelector('.task-panel__section-body').getAttribute('data-open') === null,
-    'The section did not fold shut'
-  )
-  progress.querySelector('.task-panel__section-toggle').click()
-  await pause(250)
-  check(
-    progress.querySelector('.task-panel__section-body').getAttribute('data-open') !== null,
-    'The section did not fold open again'
-  )
+  // State attributes land on a commit, not on a fixed delay: poll them so a
+  // busy frame cannot fail a fold that did happen.
+  const progressState = () => [...document.querySelectorAll('.task-panel__section')]
+    .find((node) => node.querySelector('.task-panel__section-title')?.textContent === 'Progress')
+    ?.querySelector('.task-panel__section-body')?.getAttribute('data-open') ?? null
+  const progressToggle = () => [...document.querySelectorAll('.task-panel__section')]
+    .find((node) => node.querySelector('.task-panel__section-title')?.textContent === 'Progress')
+    ?.querySelector('.task-panel__section-toggle')
+  progressToggle().click()
+  await until(() => progressState() === null, 'The section did not fold shut', 5000)
+  progressToggle().click()
+  await until(() => progressState() !== null, 'The section did not fold open again', 5000)
   passed.push('the task rail separates background commands and subagents beside environment, plan and deliverables')
 
   // The workspace panel follows MCode's page strip: fixed-width tabs, an add
@@ -1872,10 +1919,10 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(treeToggle, 'The panel header lost its file-tree toggle')
   check(!document.querySelector('.tree__search-fold'), 'The old filter-row toggle is still present')
   treeToggle.click()
-  await pause(120)
-  check(
-    document.querySelector('.file-workspace')?.dataset.tree === 'closed',
-    'The tree toggle did not fold the tree away'
+  await until(
+    () => document.querySelector('.file-workspace')?.dataset.tree === 'closed',
+    'The tree toggle did not fold the tree away',
+    5000
   )
   const showTree = [...document.querySelectorAll('.tool-panel__action')].find(
     (node) => node.getAttribute('aria-label') === 'Show file tree'
@@ -2167,12 +2214,22 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   // The flat column has no project rows at all, so an archived conversation has
   // nothing around it to say which folder it came from. It leaves the column and
   // comes back under its own project instead.
+  // The menu re-renders and a menu item captured a moment ago can be gone by the
+  // time a click is dispatched. Re-open and re-query instead of trusting nodes.
   const setGroupBy = async (label, mode) => {
-    document.querySelector('button[aria-label="View options"]').click()
-    const option = await until(() => [...document.querySelectorAll('.view-option-menu [role="menuitemradio"]')]
-      .find((node) => node.textContent.trim() === label), `Group by option ${label} is missing`)
-    option.click()
-    await until(() => store.getState().settings.sidebarGroupBy === mode, `Grouping did not switch to ${mode}`)
+    const deadline = performance.now() + 15000
+    while (performance.now() < deadline) {
+      if (store.getState().settings.sidebarGroupBy === mode) return
+      if (!document.querySelector('.view-option-menu [role="menuitemradio"]')) {
+        document.querySelector('button[aria-label="View options"]')?.click()
+      }
+      const option = [...document.querySelectorAll('.view-option-menu [role="menuitemradio"]')]
+        .find((node) => node.textContent.trim() === label)
+      if (option) option.click()
+      else await pause(50)
+      await pause(50)
+    }
+    throw new Error(`Grouping did not switch to ${mode}`)
   }
   const archivedGroups = () => [...document.querySelectorAll('.sidebar__archive-group')].map((node) => ({
     name: node.querySelector('.sidebar__archive-group-name')?.textContent.trim() ?? '',
@@ -2192,21 +2249,20 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
 
   // The「对话」head is a fold control: it hides the list it names and stays on
   // screen itself, because the caret is the only way back.
-  const sectionToggle = await until(
-    () => document.querySelector('.sidebar__projects .sidebar__section-toggle'),
-    'The chat section head has no fold control'
-  )
-  check(sectionToggle.getAttribute('aria-expanded') === 'true', 'The chat section started folded')
+  const sectionToggle = () => document.querySelector('.sidebar__projects .sidebar__section-toggle')
+  await until(() => sectionToggle(), 'The chat section head has no fold control')
+  check(sectionToggle().getAttribute('aria-expanded') === 'true', 'The chat section started folded')
   const visibleRows = () => [...document.querySelectorAll('.sidebar__projects .session-item')]
     .filter((row) => row.getClientRects().length > 0).length
   check(visibleRows() > 0, 'The chat section listed no rows to fold')
-  sectionToggle.click()
-  await until(() => sectionToggle.getAttribute('aria-expanded') === 'false',
+  // Re-query the toggle on every step: a fold re-renders the head.
+  sectionToggle()?.click()
+  await until(() => sectionToggle()?.getAttribute('aria-expanded') === 'false',
     'Folding the chat section did not collapse it')
   await until(() => visibleRows() === 0, 'The folded chat section still draws its rows')
-  check(sectionToggle.getClientRects().length > 0, 'Folding the chat section hid the caret that unfolds it')
-  sectionToggle.click()
-  await until(() => sectionToggle.getAttribute('aria-expanded') === 'true',
+  check(sectionToggle()?.getClientRects().length > 0, 'Folding the chat section hid the caret that unfolds it')
+  sectionToggle()?.click()
+  await until(() => sectionToggle()?.getAttribute('aria-expanded') === 'true',
     'Unfolding the chat section did not restore it')
   await until(() => visibleRows() > 0, 'The unfolded chat section drew no rows')
   passed.push('the chat section head folds its list and keeps its caret')
@@ -2216,15 +2272,24 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
 
   const limitedHits = await window.pi.sessions.search(archiveQuery, 1)
   check(limitedHits.length === 1 && limitedHits[0].name === archivedTitle, 'A newer active hit used the archived search result limit')
-  const archivedRow = await until(() => [...document.querySelectorAll('.session-item')].find(
+  const archivedRow = () => [...document.querySelectorAll('.session-item')].find(
     (row) => row.querySelector('.session-item__title')?.textContent.trim() === archivedTitle
-  ), 'The archived conversation was not listed')
-  archivedRow.querySelector('.session-item__more').click()
-  const restore = await until(() => [...document.querySelectorAll('.session-actions-menu [role="menuitem"]')]
-    .find((node) => node.textContent.trim() === 'Restore'), 'The archived conversation has no Restore action')
+  )
+  await until(() => archivedRow(), 'The archived conversation was not listed')
+  // The row and its action menu are replaced by a re-render; open the menu from
+  // whichever row is on screen and re-read the item before clicking it.
+  const restore = await until(() => {
+    const item = [...document.querySelectorAll('.session-actions-menu [role="menuitem"]')]
+      .find((node) => node.textContent.trim() === 'Restore')
+    if (item) return item
+    if (!document.querySelector('.session-actions-menu')) archivedRow()?.querySelector('.session-item__more')?.click()
+    return null
+  }, 'The archived conversation has no Restore action')
   restore.click()
   await until(() => store.getState().settings.archivedSessions?.length === 0, 'Restore did not remove the archive status')
-  await until(() => !archivedRow.isConnected, 'Restoring a conversation left it in the archived list')
+  // A restored row leaves the archived list; the awaited value is the title, not
+  // the element captured before the click.
+  await until(() => !archivedRow(), 'Restoring a conversation left it in the archived list')
   await setArchiveFilter('Hide archived', 'hidden')
   await checkArchiveSearch('restored', [activeTitle, archivedTitle].join(','))
   passed.push('title and text search honor the archive filter, and the sidebar restores archived conversations')
@@ -2237,6 +2302,26 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   if (finalEnvironmentToggle?.getAttribute('aria-expanded') !== 'false') finalEnvironmentToggle?.click()
   await pause(250)
   check(finalEnvironmentToggle?.getAttribute('aria-expanded') === 'false', 'The final environment screenshot is not folded')
+
+  // A Chinese interface must not keep English inside it. The map translates
+  // both the app's own labels and the plain-text messages the main process
+  // sends, and the toast is where a reader meets the latter. Switch, look, and
+  // switch back so the harness screenshot stays in English for visual review.
+  await store.getState().updateSettings({ language: 'zh-CN' })
+  const chineseLabel = await until(() => {
+    const button = document.querySelector('.btn-new-chat')
+    return button?.textContent?.includes('新聊天') ? button : null
+  }, 'The Chinese interface did not load')
+  check(chineseLabel, 'The new-chat button kept its English label in the Chinese interface')
+  store.getState().showToast('Nothing is staged. Stage a file or include unstaged changes.', 'error')
+  await until(
+    () => document.querySelector('.app-toast__text')?.textContent === '没有已暂存的更改。请先暂存文件，或勾选包含未暂存更改。',
+    'A main-process message stayed English in the Chinese interface'
+  )
+  store.getState().clearToast()
+  await store.getState().updateSettings({ language: 'en' })
+  await until(() => document.querySelector('.btn-new-chat')?.textContent?.includes('New chat'), 'The English interface did not return')
+  passed.push('the Chinese interface translates labels and the messages the main process sends')
 
   return passed
 }
@@ -2260,7 +2345,7 @@ Object.assign(env, {
 })
 try {
   const { stdout, stderr } = await promisify(execFile)(require('electron'), [root], {
-    cwd: root, env, windowsHide: true, timeout: 120000, maxBuffer: 2 * 1024 * 1024
+    cwd: root, env, windowsHide: true, timeout: 180000, maxBuffer: 2 * 1024 * 1024
   })
   const rendererErrors = stdout.split(/\r?\n/).filter((line) => line.includes('[pi-desktop] renderer error:'))
   assert.deepEqual(rendererErrors, [], `Renderer console errors:\n${rendererErrors.join('\n')}`)
@@ -2268,7 +2353,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 41 : 39)
+  assert.equal(passed.length, process.platform === 'win32' ? 42 : 40)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

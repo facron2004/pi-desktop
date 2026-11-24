@@ -357,8 +357,10 @@ export function SessionTreeDialog({ onClose }: { onClose: () => void }) {
     if (forking) return
     setForking(row.id)
     try {
-      await forkFrom(row.id)
-      onClose()
+      // A refused fork (a run is active, another fork is in flight) must not
+      // close the tree: the reader would lose their place for nothing.
+      const forked = await forkFrom(row.id)
+      if (forked) onClose()
     } finally {
       setForking(null)
     }

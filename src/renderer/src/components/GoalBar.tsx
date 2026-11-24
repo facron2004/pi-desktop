@@ -75,7 +75,7 @@ export function GoalBar() {
   // Two words, because the bar answers one question: is this goal being worked
   // on right now? A goal the extension paused and a goal nobody is running are
   // the same thing to the reader, so both read "Paused". `blocked` and
-  // `complete` keep their own word 鈥?they are outcomes, not a run state.
+  // `complete` keep their own word — they are outcomes, not a run state.
   const badge = goalBadge(goal.status, running)
   const displayStatus = badge.status
   const canToggleRun = goalCanToggleRun(badge)
@@ -261,7 +261,7 @@ export function GoalBar() {
               </button>
             </div>
             <span className="goal-bar__hint">
-              {t('Enter to save 路 Shift+Enter for a new line 路 Esc to cancel')}
+              {t('Enter to save · Shift+Enter for a new line · Esc to cancel')}
             </span>
           </div>
         ) : null}

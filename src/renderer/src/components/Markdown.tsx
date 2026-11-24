@@ -479,6 +479,31 @@ const CodeBlock = memo(function CodeBlock({ code, language }: CodeBlockProps) {
   )
 })
 
+/**
+ * A fenced code block drawn straight from its text, with no Markdown pass.
+ *
+ * `StreamingText` uses it while a fence is still open: the fence's content is
+ * literal, so `Markdown` would re-parse the whole growing block on every frame
+ * without producing anything a `CodeBlock` does not already show. The markup is
+ * the one `Markdown`'s `pre` renderer produces, so closing the fence swaps in
+ * the parsed block without a visual change.
+ */
+export const OpenFenceBlock = memo(function OpenFenceBlock({
+  code,
+  language,
+  streaming
+}: {
+  code: string
+  language?: string
+  streaming: boolean
+}) {
+  return (
+    <StreamingContext.Provider value={streaming}>
+      <CodeBlock code={code} language={language} />
+    </StreamingContext.Provider>
+  )
+})
+
 export interface MarkdownProps {
   children: string
   streaming?: boolean

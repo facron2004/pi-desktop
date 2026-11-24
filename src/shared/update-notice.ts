@@ -19,12 +19,14 @@ export interface UpdateNoticeState {
   busy?: boolean
   /** The installer is on disk: the control is the restart affordance. */
   ready?: boolean
+  /** The last download failed: the control is the only way to try again. */
+  failed?: boolean
 }
 
 export function shouldShowUpdateNotice(state: UpdateNoticeState): boolean {
   if (!state.latest) return false
   // Work in flight is never hidden: a half-downloaded installer the reader
   // cannot see or restart is worse than the notice they dismissed.
-  if (state.busy || state.ready) return true
+  if (state.busy || state.ready || state.failed) return true
   return state.dismissedVersion?.trim() !== state.latest
 }

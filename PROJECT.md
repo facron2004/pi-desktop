@@ -1,3 +1,5 @@
+> **历史记录（2026-10 的一次会话 I/O 优化任务）**：下文描述的「当前架构」是任务开始时的状态，其中的同步 I/O、全量扫描与无缓存问题已在当时修复；当前实现与约定以 [AGENTS.md](AGENTS.md) 为准。
+
 # Project: Pi Desktop Session I/O & Metadata Caching Optimization
 
 ## Architecture

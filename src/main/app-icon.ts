@@ -21,13 +21,22 @@ const resolvedFileCache = new Map<string, string | null>()
 let cachedWindowIcon: { appPath: string; image: NativeImage | undefined } | undefined
 
 function iconCandidates(name: string): string[] {
-  return [
+  const candidates: string[] = []
+  // `process.resourcesPath` exists only inside the Electron runtime. A unit
+  // harness imports this module in plain Node, where joining an undefined path
+  // would throw instead of reporting "no icon".
+  if (typeof process.resourcesPath === 'string' && process.resourcesPath) {
     // Packaged copies sit beside the asar. The shell reads the taskbar icon
     // itself, and it cannot open a file that lives inside the archive.
-    path.join(process.resourcesPath, name),
-    path.join(app.getAppPath(), 'build', name),
-    path.join(path.resolve(__dirname, '../..'), 'build', name)
-  ]
+    candidates.push(path.join(process.resourcesPath, name))
+  }
+  candidates.push(path.join(app.getAppPath(), 'build', name))
+  // `__dirname` exists in the bundled main process; an ESM test bundle has no
+  // such binding, so the candidate is only added where it is real.
+  if (typeof __dirname === 'string') {
+    candidates.push(path.join(path.resolve(__dirname, '../..'), 'build', name))
+  }
+  return candidates
 }
 
 function firstExisting(name: string): string | undefined {

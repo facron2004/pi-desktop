@@ -760,7 +760,10 @@ export const MermaidDiagram = memo(function MermaidDiagram({ code, streaming = f
         className="mermaid-diagram"
         data-streaming={streaming ? 'true' : undefined}
         aria-busy={rendering}
+        // The fullscreen copy is the one on screen; the inline copy keeps its
+        // toolbar buttons in the document, so it must leave the tab order too.
         aria-hidden={fullscreen || undefined}
+        inert={fullscreen || undefined}
       >
         <DiagramSurface
           {...surfaceProps}

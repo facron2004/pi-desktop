@@ -61,9 +61,7 @@
 /* Medium bubbles: 10px → 12px. */
 .pill[data-active='true'],
 .model-chip[data-active='true']:not(.composer__image-chip),
-.effort-chip[data-active='true'],
-.app-rail__button[data-active='true'],
-.app-rail__branch .git-chip--icon[data-active='true'] {
+.effort-chip[data-active='true'] {
   border-radius: var(--r-active-bubble-md);
 }
 

@@ -38,8 +38,10 @@ const suites = [
   'shortcuts.test.ts',
   'user-data.test.ts',
   'app-updates.test.ts',
+  'process-tree.test.ts',
   'setup-args.test.ts',
   'pi-cli.test.ts',
+  'locate.test.ts',
   'session-metrics.test.ts',
   'session-timing.test.ts',
   'generation-timing.test.ts',
@@ -79,6 +81,7 @@ const suites = [
   'runtime-ensure.test.ts',
   'runtime-session-path.test.ts',
   'window-controls.test.ts',
+  'window-state.test.ts',
   'sidebar-view.test.ts',
   'sidebar-fold.test.ts',
   'navigation-policy.test.ts',
@@ -99,6 +102,7 @@ const suites = [
   'terminal-startup.test.ts',
   'view-state.test.ts',
   'live-sessions.test.ts',
+  'tray.test.ts',
   'tray-conversations.test.ts',
   'tray-placement.test.ts',
   'url-link.test.ts',
@@ -121,6 +125,11 @@ const suites = [
   'session-tree.test.ts',
   'renderer-utils.test.ts',
   'i18n.test.ts',
+  'i18n-coverage.test.ts',
+  'source-hygiene.test.ts',
+  'doc-paths.test.ts',
+  'suite-registry.test.ts',
+  'setup-payload.test.ts',
   'compaction-error.test.ts',
   'extension-notices.test.ts',
   'highlight-cache.test.ts',
@@ -149,9 +158,24 @@ const suites = [
   'pm-pricing.test.ts',
   'image-generation.test.ts',
   'image-tool.test.ts',
-  'multi-rpc-stress.test.ts'
+  'multi-rpc-stress.test.ts',
+  // Adversarial and stress suites that used to live behind their own runners.
+  // A suite nothing invokes is worse than no suite: it reads as coverage and
+  // cannot fail. They run here, with the shared electron mock.
+  'adversarial-ipc-stress.test.ts',
+  'adversarial-stress-m2.test.ts',
+  'challenger-m1-adversarial.test.ts',
+  'challenger-m1-c2.test.ts',
+  'challenger-m1-v2-stress.test.ts',
+  'challenger-m2-ux-lifecycle-stress.test.ts',
+  'session-supervisor-lru-stress.test.ts'
 ]
-const debug = process.argv[2] === '--debug'
+const debug = process.argv.includes('--debug')
+// `node tests/run.mjs --only=tray` runs one suite while debugging it, with the
+// same bundler, mock and env the full run uses.
+const only = process.argv.find((arg) => arg.startsWith('--only='))?.slice('--only='.length)
+const selected = only ? suites.filter((suite) => suite.includes(only)) : suites
+if (selected.length === 0) throw new Error(`no suite matches --only=${only}`)
 
 /**
  * The temp root every suite runs against, in canonical long form.
@@ -177,23 +201,45 @@ const out = mkdtempSync(path.join(tempRoot, 'pi-desktop-tests-'))
 const mockElectron = path.join(out, 'mock-electron.mjs')
 writeFileSync(
   mockElectron,
-  `export const app = { getPath: () => "C:/tmp", getAppPath: () => process.cwd(), isPackaged: false, getVersion: () => "0.7.3", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {}, exit: () => {} };
+  `export const app = { getPath: () => "C:/tmp", getAppPath: () => process.cwd(), isPackaged: false, getVersion: () => "0.7.3", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {}, exit: () => {}, quit: () => {}, requestSingleInstanceLock: () => true };
 export const dialog = { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true, filePath: undefined }) };
 export const BrowserWindow = class { static getAllWindows() { return [] } isDestroyed() { return false } };
 export const Menu = { buildFromTemplate: () => ({}) };
-export const Tray = class { setContextMenu() {} setImage() {} setToolTip() {} on() {} destroy() {} isDestroyed() { return false } };
-export const ipcMain = { handle: () => {}, on: () => {} };
-export const shell = { showItemInFolder: () => {}, trashItem: async () => {} };
+export const Tray = class {
+  static instances = [];
+  constructor(image) { this.image = image; this.handlers = new Map(); this.destroyed = false; Tray.instances.push(this) }
+  setContextMenu() {}
+  setImage(image) { this.image = image }
+  setToolTip() {}
+  on(event, handler) { this.handlers.set(event, handler) }
+  emit(event) { this.handlers.get(event)?.() }
+  destroy() { this.destroyed = true }
+  isDestroyed() { return this.destroyed }
+};
+const ipcHandlers = new Map();
+export const ipcMain = {
+  handle: (channel, handler) => { ipcHandlers.set(channel, handler); },
+  removeHandler: (channel) => { ipcHandlers.delete(channel); },
+  on: () => {},
+  _invoke: async (channel, event, ...args) => {
+    const handler = ipcHandlers.get(channel);
+    if (!handler) throw new Error("No handler registered for " + channel);
+    return handler(event, ...args);
+  },
+  _reset: () => ipcHandlers.clear()
+};
+export const shell = { showItemInFolder: () => {}, openPath: async () => "", trashItem: async () => {} };
 export const Notification = class { show() {} };
 export const nativeTheme = { shouldUseDarkColors: false };
-export const nativeImage = { createFromPath: () => ({ isEmpty: () => true, resize: () => ({}) }), createFromBuffer: () => ({ isEmpty: () => true, resize: () => ({}) }) };
+const fakeImage = { isEmpty: () => false, resize: () => fakeImage, setTemplateImage: () => {} };
+export const nativeImage = { createFromPath: () => fakeImage, createFromBuffer: () => fakeImage };
 export const screen = { getDisplayMatching: () => ({ id: 1, workArea: { x: 0, y: 0, width: 1280, height: 720 } }) };
 `
 )
 
 try {
   const built = []
-  for (const suite of suites) {
+  for (const suite of selected) {
     const bundle = `${suite.replace(/\.ts$/, '')}.mjs`
     await esbuild.build({
       entryPoints: [path.join(here, suite)],
@@ -202,6 +248,10 @@ try {
       platform: 'node',
       outfile: path.join(out, bundle),
       logLevel: 'warning',
+      // The renderer compiles JSX with the automatic runtime (tsconfig `react-jsx`),
+      // so a component with no `import React` must compile the same way here. With
+      // the classic transform, rendering such a component throws "React is not defined".
+      jsx: 'automatic',
       // The renderer's own aliases, so the test imports the module the same
       // way the app does.
       alias: {
@@ -221,11 +271,23 @@ try {
     execFileSync(process.execPath, [built[0]], { stdio: 'inherit', env: childEnv })
   } else {
     // Bound child-process tests so Windows startup probes do not starve each other.
-    execFileSync(process.execPath, ['--test', '--test-concurrency=4', ...built], {
+    // The per-test timeout is what turns a hung suite into one failing test instead
+    // of a process that never returns; the outer timeout is the last resort. The
+    // force-exit is about imports, not tests: a library that leaves a pending handle
+    // (`react-dom/server.browser` does) must not hold the whole run open after its
+    // suite has already reported.
+    execFileSync(process.execPath, ['--test', '--test-concurrency=4', '--test-timeout=180000', '--test-force-exit', ...built], {
       stdio: 'inherit',
-      env: childEnv
+      env: childEnv,
+      timeout: 15 * 60_000
     })
   }
 } finally {
   rmSync(out, { recursive: true, force: true })
 }
+
+
+
+
+
+

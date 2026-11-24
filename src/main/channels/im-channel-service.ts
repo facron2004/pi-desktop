@@ -22,6 +22,8 @@ const MAX_CHANNEL_FILE_BYTES = 16 * 1024
 /** Keep pushes and confirmations readable on a phone: same cap as a remote run preview. */
 export const MAX_IM_MESSAGE_CHARS = 4_000
 const MAX_INBOUND_CHARS = 8_000
+/** Ids remembered per channel to drop a platform's re-pushed event. */
+const MAX_INBOUND_DEDUPE = 256
 /** A reply that names the project and conversation needs both to be readable on a phone. */
 const NAME_LIMIT = 60
 /** How long `/new` waits for Pi to write the JSONL of the draft it started. */
@@ -31,13 +33,15 @@ const REKEY_WAIT_MS = 15_000
  * One running IM transport (Feishu long connection, WeChat bridge listener).
  *
  * `send` replies through the channel's own active target: the Feishu chat_id
- * of the last inbound message (or the first allowed chat), the WeChat
- * `sendTo` config or the last sender. The service never needs the target.
+ * `send` takes the chat the reply belongs to; without one the adapter falls
+ * back to its configured default (the first allowed chat, the WeChat `sendTo`
+ * config or the last sender) so a notification about a desktop-triggered run
+ * has somewhere to go.
  */
 export interface ChannelAdapter {
   start(): Promise<void>
   stop(): Promise<void>
-  send(text: string): Promise<void>
+  send(text: string, target?: string): Promise<void>
   /** Transport-level connectivity probe for the settings page's test button. */
   test(): Promise<{ ok: boolean; error?: string }>
   /** Update credentials in place after a save; returns false when restart is required. */
@@ -45,12 +49,21 @@ export interface ChannelAdapter {
   state(): { state: 'connecting' | 'connected' | 'error' | 'disabled'; error?: string }
 }
 
-export type ImChannelRouter = (channelId: string, text: string) => Promise<void>
+/**
+ * Hand one inbound message to the router.
+ *
+ * `replyTo` is where this message came from (a Feishu chat id, a WeChat
+ * contact token). Replies belong to the chat that asked, not to whichever chat
+ * spoke last.
+ */
+export type ImChannelRouter = (channelId: string, text: string, replyTo?: string) => Promise<void>
 
 /** The seams a transport adapter uses: inbound routing and state reporting. */
 export interface ChannelAdapterContext {
   /** Hand one inbound IM message to the conversation router. */
   router: ImChannelRouter
+  /** False for a platform event id already handled for this channel. */
+  rememberInbound?: (messageId: string) => boolean
   /** Publish connection-state changes for the settings page. */
   onState: (state: ChannelRuntime['state'], error?: string) => void
   /** WeChat only: publish the latest bridge health probe. */
@@ -112,6 +125,12 @@ export class ImChannelService extends EventEmitter {
   private readonly boundFileCache = new Map<string, { workspaceId: string; sessionId: string; fileKey: string }>()
   private readonly pendingNewConversation = new Set<string>()
   private readonly activeRekeys = new Set<() => void>()
+  /** Where the channel's current inbound turn came from, per channel. */
+  private readonly replyTargets = new Map<string, string>()
+  /** One inbound turn at a time per channel, so order is the sender's order. */
+  private readonly inboundChains = new Map<string, Promise<void>>()
+  /** Platform event ids already handled, surviving an adapter rebuild. */
+  private readonly seenInbound = new Map<string, Map<string, true>>()
   private disposed = false
 
   constructor(
@@ -151,6 +170,9 @@ export class ImChannelService extends EventEmitter {
     this.pendingNewConversation.clear()
     this.boundFileCache.clear()
     this.runCompletions.clear()
+    this.replyTargets.clear()
+    this.inboundChains.clear()
+    this.seenInbound.clear()
     await Promise.allSettled([...this.channelOps.values()])
     await this.stopAll()
   }
@@ -218,6 +240,8 @@ export class ImChannelService extends EventEmitter {
     })
     this.boundFileCache.delete(id)
     this.pendingNewConversation.delete(id)
+    this.replyTargets.delete(id)
+    this.seenInbound.delete(id)
     await this.reconcileChannel(id)
     this.emit('changed', this.status())
     return this.status()
@@ -232,10 +256,15 @@ export class ImChannelService extends EventEmitter {
   /** An empty secret on update means "keep the stored one". */
   private mergeSecrets(channel: ImChannelConfig, existing: StoredChannel[]): StoredChannel[] {
     const previous = existing.find((item) => item.id === channel.id)
-    const next = previous
+    if (!previous && existing.length >= MAX_CHANNELS) {
+      // Refuse the add rather than evicting the oldest binding: silently dropping
+      // a channel deletes its tokens and takes its bot offline, and nothing in
+      // the UI would say why the row vanished.
+      throw new Error(`At most ${MAX_CHANNELS} channels can be bound. Remove one before adding another.`)
+    }
+    return previous
       ? existing.map((item) => (item.id === channel.id ? channel : item))
       : [...existing, channel]
-    return next.slice(-MAX_CHANNELS)
   }
 
   private validateConfig(
@@ -337,7 +366,8 @@ export class ImChannelService extends EventEmitter {
       const next: ChannelRuntime = { adapter: null as never, state: 'connecting' }
       try {
         next.adapter = this.options.createAdapter(channel, {
-          router: (targetId, text) => this.routeInbound(targetId, text),
+          router: (targetId, text, replyTo) => this.routeInbound(targetId, text, replyTo),
+          rememberInbound: (messageId) => this.rememberInbound(id, messageId),
           onState: (state, error) => {
             const entry = this.runtimes.get(id)
             if (!entry || entry !== next || this.disposed) return
@@ -426,8 +456,19 @@ export class ImChannelService extends EventEmitter {
     try {
       this.channels = this.readPersistedState().channels
     } catch (error) {
+      // A file that cannot be read must not stay where it is: every later save
+      // starts from it and fails with a raw JSON error, so the saved channel
+      // tokens become unreachable from the UI. Set it aside (the scheduled-tasks
+      // store does the same) and continue from an empty list.
+      try {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+        const quarantine = `${this.stateFile}.corrupt-${stamp}`
+        renameSync(this.stateFile, quarantine)
+        console.error(`[pi-desktop] im channel settings were unreadable and moved to ${path.basename(quarantine)}:`, error)
+      } catch (renameError) {
+        console.error('[pi-desktop] im channel settings could not be read or set aside:', renameError)
+      }
       this.channels = []
-      console.error('[pi-desktop] im channel settings could not be read:', error)
     }
   }
 
@@ -492,7 +533,29 @@ export class ImChannelService extends EventEmitter {
   private async reply(channelId: string, text: string): Promise<void> {
     const runtime = this.runtimes.get(channelId)
     if (!runtime) return
-    await runtime.adapter.send(text.slice(0, MAX_IM_MESSAGE_CHARS))
+    await runtime.adapter.send(text.slice(0, MAX_IM_MESSAGE_CHARS), this.replyTargets.get(channelId))
+  }
+
+  /**
+   * A platform event id handled once per channel.
+   *
+   * The set lives here rather than in the adapter because every settings save
+   * rebuilds the adapter — exactly when a re-pushed event is likeliest — and a
+   * re-run instruction can apply a deploy or a delete twice.
+   */
+  private rememberInbound(channelId: string, messageId: string): boolean {
+    let seen = this.seenInbound.get(channelId)
+    if (!seen) {
+      seen = new Map()
+      this.seenInbound.set(channelId, seen)
+    }
+    if (seen.has(messageId)) return false
+    if (seen.size >= MAX_INBOUND_DEDUPE) {
+      const oldest = seen.keys().next().value
+      if (oldest !== undefined) seen.delete(oldest)
+    }
+    seen.set(messageId, true)
+    return true
   }
 
   /**
@@ -500,8 +563,24 @@ export class ImChannelService extends EventEmitter {
    * conversation. Every failure path answers through the channel instead of
    * throwing — the sender must learn what happened to their message.
    */
-  private async routeInbound(channelId: string, text: string): Promise<void> {
+  private routeInbound(channelId: string, text: string, replyTo?: string): Promise<void> {
+    if (this.disposed) return Promise.resolve()
+    // One turn at a time per channel: two messages a second apart have to reach
+    // Pi in the order they were sent ("yes, do it" must not overtake the
+    // question it answers), and the reply target below must not be replaced by
+    // the next turn while this one is still answering.
+    const previous = this.inboundChains.get(channelId) ?? Promise.resolve()
+    const next = previous.catch(() => undefined).then(() => this.handleInbound(channelId, text, replyTo))
+    const tracked = next.finally(() => {
+      if (this.inboundChains.get(channelId) === tracked) this.inboundChains.delete(channelId)
+    })
+    this.inboundChains.set(channelId, tracked)
+    return next
+  }
+
+  private async handleInbound(channelId: string, text: string, replyTo?: string): Promise<void> {
     if (this.disposed) return
+    if (replyTo) this.replyTargets.set(channelId, replyTo)
     const channel = this.channelById(channelId)
     if (!channel || !channel.enabled) return
     const runtime = this.runtimes.get(channelId)
@@ -527,6 +606,13 @@ export class ImChannelService extends EventEmitter {
       }
       const file = await this.resolveBoundFile(channel)
       if (!file) return // resolveBoundFile already explained the failure
+      const info = this.options.supervisor.sessionInfo(file)
+      // stop() aborts whatever is running, but a conversation with nothing
+      // running must not be told that something was stopped.
+      if (!info?.running && !info?.waitingForInput) {
+        await this.reply(channelId, '当前对话没有正在运行的任务。')
+        return
+      }
       await this.options.supervisor.stop(file)
       await this.reply(channelId, '已停止当前运行。')
       return
@@ -659,8 +745,10 @@ export class ImChannelService extends EventEmitter {
         return
       }
       const rekeyed = await rekey.promise
-      if (rekeyed) {
-        await this.rebind(channel, rekeyed)
+      // The rebind resolves the new JSONL through the session list; when that
+      // list does not name it yet the binding is unchanged, and saying the switch
+      // happened would leave every later message driving the old conversation.
+      if (rekeyed && await this.rebind(channel, rekeyed)) {
         await this.reply(channelId, '已切换到新对话。')
       } else {
         // The conversation exists and is running; only the binding update is
@@ -697,13 +785,13 @@ export class ImChannelService extends EventEmitter {
     return { promise, cancel }
   }
 
-  /** Persist the new binding for a channel and republish the settings view. */
-  private async rebind(channel: StoredChannel, file: string): Promise<void> {
+  /** Persist the new binding for a channel; false when it could not be applied. */
+  private async rebind(channel: StoredChannel, file: string): Promise<boolean> {
     const workspace = await this.boundWorkspace(channel)
-    if (!workspace) return
+    if (!workspace) return false
     const sessions = await listSessions(workspace.path)
     const session = sessions.find((item) => this.pathKey(item.file) === this.pathKey(file))
-    if (!session) return
+    if (!session) return false
     await this.withStateLock(() => {
       const stored = this.readPersistedState()
       const next = stored.channels.map((item) =>
@@ -718,6 +806,7 @@ export class ImChannelService extends EventEmitter {
       fileKey: this.pathKey(session.file)
     })
     if (!this.disposed) this.emit('changed', this.status())
+    return true
   }
 
   /* ---------------------------------------------------------------- *

@@ -38,10 +38,9 @@ mkdirSync(SETTINGS_DIRECTORY, { recursive: true })
 /** A settings file inside {@link SETTINGS_DIRECTORY}. */
 const settingsFile = (fileName: string): string => path.join(SETTINGS_DIRECTORY, fileName)
 
-test('user data directory permissions are restricted on POSIX', () => {
+test('user data directory permissions are restricted on POSIX', { skip: process.platform === 'win32' ? 'POSIX permissions only' : false }, () => {
   const directory = mkdtempSync(path.join(tmpdir(), 'pi-user-data-permissions-'))
   try {
-    if (process.platform === 'win32') return
     chmodSync(directory, 0o755)
     assert.equal(secureUserDataDirectory(directory), true)
     assert.equal(statSync(directory).mode & 0o777, 0o700)
@@ -50,8 +49,7 @@ test('user data directory permissions are restricted on POSIX', () => {
   }
 })
 
-test('user data directory restriction reports an unusable path on POSIX', () => {
-  if (process.platform === 'win32') return
+test('user data directory restriction reports an unusable path on POSIX', { skip: process.platform === 'win32' ? 'POSIX permissions only' : false }, () => {
   const root = mkdtempSync(path.join(tmpdir(), 'pi-user-data-invalid-'))
   const file = path.join(root, 'not-a-directory')
   try {
@@ -165,6 +163,62 @@ test('project trust defaults off and legacy trust is re-enabled only after an ex
     migrated.patch({ trustProject: true })
     assert.equal(new SettingsStore(fileName).get().trustProject, true)
   } finally {
+    rmSync(file, { force: true })
+  }
+})
+
+test('settings:patch refuses a chat folder or Pi path that is not a safe path', () => {
+  const fileName = `settings-patch-guard-${process.pid}.json`
+  const file = settingsFile(fileName)
+  try {
+    const store = new SettingsStore(fileName)
+    // The chat folder roots session discovery, so a relative value or the drive
+    // root would widen the containment check every renderer-supplied session
+    // path goes through. The CLI path decides what gets spawned.
+    assert.throws(() => store.patch({ externalChatFolder: 'relative/chats' }), /absolute path/)
+    assert.throws(
+      () => store.patch({ externalChatFolder: path.parse(path.resolve('C:/')).root }),
+      /filesystem root/
+    )
+    assert.throws(() => store.patch({ piPath: 'pi' }), /absolute path/)
+    assert.throws(() => store.patch(null as never), /expects an object/)
+    // A refused patch writes nothing: the stored file still has no such folder.
+    assert.equal(new SettingsStore(fileName).get().externalChatFolder, undefined)
+
+    const folder = path.join(path.parse(path.resolve('C:/')).root, 'tmp', 'pi-chat-folder-guard')
+    store.patch({ externalChatFolder: folder })
+    assert.equal(new SettingsStore(fileName).get().externalChatFolder, folder)
+  } finally {
+    rmSync(file, { force: true })
+  }
+})
+
+test('a settings lock held by another instance is waited out without blocking the thread', async () => {
+  const fileName = `settings-lock-wait-${process.pid}.json`
+  const file = settingsFile(fileName)
+  const lockDir = `${file}.lock`
+  try {
+    const store = new SettingsStore(fileName)
+    // A free file is not waited on at all.
+    const freeStart = Date.now()
+    await store.waitForLock(1_000)
+    assert.ok(Date.now() - freeStart < 500, 'an unlocked settings file must not be waited on')
+
+    // Another instance holds the lock. The async wait polls instead of blocking,
+    // and the sync write that follows gives up in tens of milliseconds instead
+    // of freezing the main thread for most of a second.
+    mkdirSync(lockDir)
+    const heldStart = Date.now()
+    await store.waitForLock(120)
+    assert.ok(Date.now() - heldStart >= 100, 'a held lock should be waited for')
+    const patchStart = Date.now()
+    assert.throws(() => store.patch({ theme: 'light' }), /lock/i)
+    assert.ok(
+      Date.now() - patchStart < 500,
+      `a held lock must not block the main thread for long (took ${Date.now() - patchStart} ms)`
+    )
+  } finally {
+    rmSync(lockDir, { recursive: true, force: true })
     rmSync(file, { force: true })
   }
 })

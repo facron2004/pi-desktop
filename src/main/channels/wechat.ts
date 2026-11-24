@@ -159,18 +159,25 @@ export function buildWechatAdapter(
     if (fields.isMsgFromSelf === '1') return
     const content = (fields.content ?? '').trim()
     if (!content) return
+    let sender = ''
+    let isRoom = false
     try {
       const source = JSON.parse(fields.source ?? '{}') as {
         room?: unknown
         from?: { payload?: { name?: unknown; id?: unknown } }
       }
       const fromPayload = source.from?.payload
-      if (typeof fromPayload?.name === 'string' && fromPayload.name) lastSenderName = fromPayload.name.slice(0, 120)
-      lastSenderWasRoom = Boolean(source.room)
+      if (typeof fromPayload?.name === 'string' && fromPayload.name) sender = fromPayload.name.slice(0, 120)
+      isRoom = Boolean(source.room)
+      if (sender) lastSenderName = sender
+      lastSenderWasRoom = isRoom
     } catch {
       /* a malformed source only loses sender tracking, not the message */
     }
-    void context.router(channelId, content).catch((error: unknown) => logError(channelId, error))
+    // The reply belongs to whoever wrote this message, not to the last contact
+    // that happened to speak before it.
+    const replyTo = sender ? `${isRoom ? 'room' : 'user'}:${sender}` : undefined
+    void context.router(channelId, content, replyTo).catch((error: unknown) => logError(channelId, error))
   }
 
   const adapter: ChannelAdapter = {
@@ -254,10 +261,22 @@ export function buildWechatAdapter(
       })
     },
 
-    async send(text: string): Promise<void> {
-      const to = config.sendTo || lastSenderName
-      if (!to) return
-      const isRoom = config.sendTo ? config.sendToIsRoom : lastSenderWasRoom
+    async send(text: string, target?: string): Promise<void> {
+      let to = config.sendTo || lastSenderName
+      let isRoom = config.sendTo ? config.sendToIsRoom : lastSenderWasRoom
+      if (target) {
+        const separator = target.indexOf(':')
+        const kind = target.slice(0, Math.max(0, separator))
+        const name = target.slice(separator + 1)
+        if (name && (kind === 'room' || kind === 'user')) {
+          to = name
+          isRoom = kind === 'room'
+        }
+      }
+      if (!to) {
+        logError(channelId, new Error('No WeChat contact to reply to yet.'))
+        return
+      }
       const base = config.bridgeUrl.replace(/\/+$/, '')
       const url = `${base}/webhook/msg/v2?token=${encodeURIComponent(config.bridgeToken)}`
       try {

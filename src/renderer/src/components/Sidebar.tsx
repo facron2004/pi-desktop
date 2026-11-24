@@ -324,6 +324,9 @@ export const Sidebar = memo(function Sidebar({
   const draftRef = useRef(draft)
   draftRef.current = draft
   const [renamingProjectId, setRenamingProjectId] = useState<string | null>(null)
+  // Renaming a project unmounts its input, so the row has to take focus back
+  // or a keyboard user is dropped onto <body>.
+  const projectRowRefs = useRef(new Map<string, HTMLButtonElement | null>())
   const [projectDraft, setProjectDraft] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionMeta | null>(null)
   const [pendingRemove, setPendingRemove] = useState<{ id?: string; path: string; name: string } | null>(null)
@@ -369,7 +372,8 @@ export const Sidebar = memo(function Sidebar({
     latest: appUpdate?.latest,
     dismissedVersion: dismissedUpdateVersion,
     busy: updateBusy,
-    ready: updateReady
+    ready: updateReady,
+    failed: currentInstall?.stage === 'error'
   })
 
   const startAppUpdate = async () => {
@@ -1547,6 +1551,11 @@ export const Sidebar = memo(function Sidebar({
                       <button
                         className="project__main"
                         type="button"
+                        ref={(element) => {
+                          if (!projectId) return
+                          if (element) projectRowRefs.current.set(projectId, element)
+                          else projectRowRefs.current.delete(projectId)
+                        }}
                         // The card carries what the row cannot: when the folder
                         // joined the list, how many conversations live in it,
                         // and where it is.
@@ -1585,6 +1594,7 @@ export const Sidebar = memo(function Sidebar({
                               onClick={(e) => e.stopPropagation()}
                               onChange={(e) => setProjectDraft(e.target.value)}
                               onKeyDown={async (e) => {
+                                if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
                                 if (e.key === 'Enter') {
                                   e.preventDefault()
                                   const trimmed = projectDraft.trim()
@@ -1599,8 +1609,10 @@ export const Sidebar = memo(function Sidebar({
                                     }
                                   }
                                   setRenamingProjectId(null)
+                                  if (projectId) requestAnimationFrame(() => projectRowRefs.current.get(projectId)?.focus())
                                 } else if (e.key === 'Escape') {
                                   setRenamingProjectId(null)
+                                  if (projectId) requestAnimationFrame(() => projectRowRefs.current.get(projectId)?.focus())
                                 }
                               }}
                               onBlur={async () => {
@@ -2062,6 +2074,9 @@ export const Sidebar = memo(function Sidebar({
               onFocus={focusSearch}
               onBlur={leaveSearch}
               onKeyDown={(event) => {
+                // A composing IME uses Escape to cancel the candidate and Enter
+                // to commit it; neither should close the dialog or pick a row.
+                if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
                 if (event.key === 'Escape') {
                   event.preventDefault()
                   event.stopPropagation()
@@ -2378,6 +2393,7 @@ const SessionRow = memo(function SessionRow({
           onChange={(event) => onRenameDraft(event.target.value)}
           onBlur={() => onCommitRename(session.file)}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
             if (event.key === 'Enter') {
               event.preventDefault()
               onCommitRename(session.file)

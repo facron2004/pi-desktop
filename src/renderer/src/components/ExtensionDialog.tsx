@@ -221,7 +221,10 @@ export function ExtensionDialog() {
           ) : null}
         </div>
         {pendingSessions.length > 1 ? (
-          <div className="modal__switcher" role="tablist" aria-label={t('Conversations waiting for input')}>
+          // A group of toggle buttons, not a tab list: there is no tab panel to
+          // point `aria-controls` at and no arrow-key model, so the honest
+          // contract is "pressed" on the conversation whose dialog is showing.
+          <div className="modal__switcher" role="group" aria-label={t('Conversations waiting for input')}>
             {pendingSessions.map((entry) => {
               const label =
                 entry.title ||
@@ -232,8 +235,7 @@ export function ExtensionDialog() {
                 <button
                   key={entry.sessionKey}
                   type="button"
-                  role="tab"
-                  aria-selected={active}
+                  aria-pressed={active}
                   className="modal__switcher-tab"
                   data-active={active}
                   title={entry.cwd ? `${label} · ${entry.cwd}` : label}

@@ -230,115 +230,6 @@
  * Sidebar
  * ------------------------------------------------------------------ */
 
-.app-rail {
-  grid-column: 1;
-  grid-row: 2;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--sp-2);
-  min-width: 0;
-  padding: var(--sp-1) var(--sp-2) var(--sp-3);
-  border-right: 1px solid var(--border-soft);
-  background: var(--sidebar-bg);
-  color: var(--sidebar-muted);
-  overflow: hidden;
-}
-
-.app-rail__group {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--sp-4);
-}
-
-/* Stopping a run: the one control in the column that is not navigation, so it
-   is the one that carries a colour rather than the column's own grey. */
-.app-rail__stop {
-  display: grid;
-  place-items: center;
-  width: var(--ctl-md);
-  height: var(--ctl-md);
-  flex: 0 0 auto;
-  padding: 0;
-  border-radius: var(--r-md);
-  background: var(--red);
-  color: var(--status-danger-ink);
-  box-shadow: var(--shadow-sm);
-  transition: background var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
-}
-
-.app-rail__stop:hover {
-  background: color-mix(in srgb, var(--red) 85%, var(--status-danger-ink));
-}
-
-.app-rail__stop[data-aborting] {
-  cursor: progress;
-  opacity: 0.7;
-}
-
-.app-rail__divider {
-  margin-top: auto;
-  width: 24px;
-  height: 1px;
-  flex: 0 0 auto;
-  background: var(--border-strong);
-}
-
-.app-rail__button {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: var(--ctl-md);
-  height: var(--ctl-md);
-  flex: 0 0 auto;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--r-md);
-  color: inherit;
-transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
-}
-
-.app-rail__button:hover {
-  background: var(--sidebar-hover);
-  color: var(--sidebar-text);
-}
-
-.app-rail__button[data-active='true'] {
-  background: var(--sidebar-active);
-  color: var(--sidebar-text);
-  border-color: var(--border-soft);
-}
-
-.app-rail__button[data-active='true']::after {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 6px;
-  height: 6px;
-  border: 1px solid var(--sidebar-bg);
-  border-radius: 50%;
-  background: var(--text-muted);
-  content: '';
-}
-
-.app-rail__branch,
-.app-rail__branch > .popover-wrap {
-  width: var(--ctl-md);
-  height: var(--ctl-md);
-}
-
-.app-rail__branch .git-chip--icon {
-  width: var(--ctl-md);
-  height: var(--ctl-md);
-  border-radius: var(--r-md);
-}
-
-.app-rail__mark {
-  width: 18px;
-  height: 18px;
-}
-
 .sidebar {
   grid-column: 1;
   grid-row: 2;
@@ -5165,7 +5056,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .project-menu__row:hover,
-.project-menu__row[data-active='true'] {
+.project-menu__row[data-active='true'],
+.project-menu__row[data-highlighted='true'] {
   background: var(--bg-hover);
 }
 
@@ -9111,12 +9003,6 @@ button:focus-visible,
 .git-chip--icon:hover,
 .git-chip--icon[data-active='true'] {
   background: var(--bg-hover);
-}
-
-.app-rail__branch .git-chip--icon:hover,
-.app-rail__branch .git-chip--icon[data-active='true'] {
-  background: var(--sidebar-hover);
-  color: var(--sidebar-text);
 }
 
 .git-chip__branch {

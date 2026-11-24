@@ -43,7 +43,7 @@ async function api<T>(path: string, token?: string, init: RequestInit = {}): Pro
   const response = await fetch(path, { ...init, headers, cache: 'no-store' })
   const value = await response.json().catch(() => ({})) as T & { error?: string }
   if (!response.ok) {
-    const error = new Error(value.error || `Request failed (${response.status})`) as ApiError
+    const error = new Error(value.error || `请求失败（${response.status}）`) as ApiError
     error.status = response.status
     throw error
   }
@@ -53,12 +53,12 @@ async function api<T>(path: string, token?: string, init: RequestInit = {}): Pro
 function mobileName(): string {
   const agent = navigator.userAgent
   if (/iPad|iPhone|iPod/i.test(agent)) return 'iPhone'
-  if (/Android/i.test(agent)) return 'Android phone'
-  return 'Mobile device'
+  if (/Android/i.test(agent)) return '安卓手机'
+  return '移动设备'
 }
 
 function sessionTitle(session: RemoteSession): string {
-  return session.name?.trim() || session.preview || 'New conversation'
+  return session.name?.trim() || session.preview || '新对话'
 }
 
 function formatTime(timestamp: number): string {
@@ -166,7 +166,7 @@ export function RemoteApp() {
     } catch (cause) {
       if (controller.signal.aborted || activeToken.current !== accessToken) return
       if ((cause as ApiError).status === 401) clearPairingForToken(accessToken)
-      else setError(cause instanceof Error ? cause.message : 'Could not load projects.')
+      else setError(cause instanceof Error ? cause.message : '无法加载项目。')
     } finally {
       if (navigationLoad.current === controller) navigationLoad.current = null
     }
@@ -194,7 +194,7 @@ export function RemoteApp() {
     } catch (cause) {
       if (controller.signal.aborted || activeToken.current !== accessToken) return
       if ((cause as ApiError).status === 401) clearPairingForToken(accessToken)
-      else setError(cause instanceof Error ? cause.message : 'Could not load the conversation.')
+      else setError(cause instanceof Error ? cause.message : '无法加载对话。')
     } finally {
       if (navigationLoad.current === controller) {
         navigationLoad.current = null
@@ -220,7 +220,7 @@ export function RemoteApp() {
       setPairSecret('')
       setToken(result.accessToken)
     } catch (cause) {
-      setPairingError(cause instanceof Error ? cause.message : 'Pairing failed.')
+      setPairingError(cause instanceof Error ? cause.message : '配对失败。')
     } finally {
       setPairing(false)
     }
@@ -270,6 +270,33 @@ export function RemoteApp() {
         flushPendingEvents()
       })
       if (!completed) frameHandle = handle
+    }
+
+    /**
+     * Read the transcript over HTTP without touching the error banner: used
+     * when the live stream cannot be established at all, so a phone that only
+     * cannot get SSE still reads the conversation.
+     */
+    const readSnapshot = async (source: string) => {
+      try {
+        const detailQuery = new URLSearchParams({ workspaceId: workspace.id, sessionId: session.id })
+        const snapshot = await api<SessionDetail>(`/api/session?${detailQuery}`, token, {
+          signal: controller.signal
+        })
+        if (!isActive()) return
+        cancelFrame()
+        pendingEvents.length = 0
+        replaceItems(restoreRemoteSessionItems(snapshot.messages, [], session.id, transcriptItems.current))
+        setTruncated(snapshot.truncated)
+        setRunning(snapshot.isRunning)
+        setDialog(snapshot.pendingDialog)
+        setDialogInput(snapshot.pendingDialog?.prefill ?? '')
+      } catch (cause) {
+        if (source === 'stream-unavailable') return
+        setError(cause instanceof Error ? cause.message : '无法加载对话。')
+      } finally {
+        if (isActive()) setLoading(false)
+      }
     }
 
     const queueBatchEvent = (event: PiEvent) => {
@@ -378,18 +405,24 @@ export function RemoteApp() {
             clearPairingForToken(token)
             return
           }
-          if (!response.ok || !response.body) throw new Error('Live updates are unavailable.')
+          if (!response.ok || !response.body) throw new Error('实时更新不可用。')
           connectedBefore = true
           generation = ++snapshotGeneration
           setStreamConnected(true)
           setError('')
-          bufferedEvents = reconnecting ? pendingReconnectEvents.splice(0) : null
+          // Register first, read the snapshot second — on the first connection
+          // as well as on a reconnect. Frames that arrive while the snapshot
+          // loads are buffered and replayed over it, so a delta cannot be lost
+          // between the snapshot read and the stream registration, and the
+          // snapshot cannot overwrite frames the phone already shows.
+          bufferedEvents = reconnecting ? pendingReconnectEvents.splice(0) : []
+          if (!reconnecting) setLoading(true)
           const reader = response.body.getReader()
           const decoder = new TextDecoder()
           let buffer = ''
 
           let snapshotTask: Promise<void> = Promise.resolve()
-          if (reconnecting) {
+          {
             snapshotController = new AbortController()
             const abortSnapshot = () => snapshotController?.abort()
             controller.signal.addEventListener('abort', abortSnapshot, { once: true })
@@ -415,6 +448,7 @@ export function RemoteApp() {
               for (const event of events) updateRuntimeState(event)
               bufferedEvents = null
               snapshotHandled = true
+              if (!reconnecting) setLoading(false)
             }).catch((cause: unknown) => {
               if (!isActive() || generation !== snapshotGeneration) return
               if ((cause as ApiError).status === 401) {
@@ -422,7 +456,8 @@ export function RemoteApp() {
                 snapshotHandled = true
                 return
               }
-              setError(cause instanceof Error ? cause.message : 'Could not restore the conversation.')
+              setError(cause instanceof Error ? cause.message : '无法恢复对话。')
+              if (!reconnecting) setLoading(false)
               const events = bufferedEvents ?? []
               bufferedEvents = null
               for (const event of events) updateRuntimeState(event)
@@ -452,14 +487,14 @@ export function RemoteApp() {
             }
             if (done) break
           }
-          if (reconnecting && !snapshotHandled && bufferedEvents) {
+          if (!snapshotHandled && bufferedEvents) {
             if (snapshotGeneration === generation) snapshotGeneration += 1
             pendingReconnectEvents.push(...bufferedEvents)
             bufferedEvents = null
             snapshotController?.abort()
           }
         } catch (cause) {
-          if (reconnecting && !snapshotHandled && bufferedEvents) {
+          if (!snapshotHandled && bufferedEvents) {
             if (snapshotGeneration === generation) snapshotGeneration += 1
             pendingReconnectEvents.push(...bufferedEvents)
             bufferedEvents = null
@@ -470,7 +505,14 @@ export function RemoteApp() {
             clearPairingForToken(token)
             return
           }
-          setError(cause instanceof Error ? cause.message : 'Live updates disconnected.')
+          // The stream could not be established (capacity, a proxy, a network
+          // that blocks long-lived requests). The transcript is still readable
+          // over plain HTTP, so read it once here instead of showing an empty
+          // conversation; the retry loop will merge live frames when the stream
+          // comes back. The disconnect message stays on screen either way.
+          if (!reconnecting && !snapshotHandled) void readSnapshot('stream-unavailable')
+          setError(cause instanceof Error ? cause.message : '实时更新已断开。')
+          if (!reconnecting) setLoading(false)
         }
         if (isActive()) setStreamConnected(false)
         if (!isActive()) break
@@ -540,7 +582,7 @@ export function RemoteApp() {
     } catch (cause) {
       if (controller.signal.aborted || activeToken.current !== token) return
       if ((cause as ApiError).status === 401) clearPairingForToken(token)
-      else setError(cause instanceof Error ? cause.message : 'Could not load conversations.')
+      else setError(cause instanceof Error ? cause.message : '无法加载对话列表。')
     } finally {
       if (navigationLoad.current === controller) {
         navigationLoad.current = null
@@ -555,7 +597,10 @@ export function RemoteApp() {
     replaceItems([])
     setDialog(null)
     setView('conversation')
-    void loadSession(token, workspace, selected)
+    // The stream effect registers and then reads the snapshot, in that order,
+    // so opening a running conversation cannot miss the deltas in between; the
+    // loading row covers the moment until its snapshot arrives.
+    setLoading(true)
   }
 
   /** POST /api/stop: the deliberate stop, same as the desktop session bar. */
@@ -570,7 +615,7 @@ export function RemoteApp() {
       })
     } catch (cause) {
       if ((cause as ApiError).status === 401) clearPairingForToken(token)
-      else setError(cause instanceof Error ? cause.message : 'Could not stop the conversation.')
+      else setError(cause instanceof Error ? cause.message : '无法停止该对话。')
     } finally {
       setStopping(false)
     }
@@ -595,7 +640,7 @@ export function RemoteApp() {
         setDialog(null)
         void loadSession(token, workspace, session)
       } else {
-        setError(cause instanceof Error ? cause.message : 'Could not send the answer.')
+        setError(cause instanceof Error ? cause.message : '无法发送回答。')
       }
     } finally {
       setDialogBusy(false)
@@ -636,7 +681,7 @@ export function RemoteApp() {
     } catch (cause) {
       if (controller.signal.aborted || activeToken.current !== token) return
       if ((cause as ApiError).status === 401) clearPairingForToken(token)
-      else setError(cause instanceof Error ? cause.message : 'Could not start the conversation.')
+      else setError(cause instanceof Error ? cause.message : '无法开始新对话。')
     } finally {
       creatingChatRef.current = false
       setCreatingChat(false)
@@ -669,7 +714,7 @@ export function RemoteApp() {
     } catch (cause) {
       if ((cause as ApiError).status === 401) clearPairingForToken(requestToken)
       else if (activeToken.current === requestToken && activeConversationKey.current === conversationKey) {
-        setError(cause instanceof Error ? cause.message : 'Could not send the message.')
+        setError(cause instanceof Error ? cause.message : '无法发送消息。')
       }
     } finally {
       const current = sendingRequestsRef.current
@@ -794,10 +839,15 @@ export function RemoteApp() {
                 {dialog.message ? <div className="remote-dialog__message">{dialog.message}</div> : null}
                 {dialog.method === 'select' && dialog.options ? (
                   <div className="remote-dialog__actions">
-                    {dialog.options.map((option) => (
+                    {/* The option text is the answer itself: Pi resolves the
+                        dialog with exactly this string, so it is shown whole and
+                        sent unchanged, and the key is the position — two options
+                        that read the same must still be two buttons. */}
+                    {dialog.options.map((option, index) => (
                       <button
                         className="remote-dialog__option"
-                        key={option}
+                        key={`${index}:${option}`}
+                        title={option}
                         disabled={dialogBusy}
                         onClick={() => void answerDialog({ value: option })}
                       >{option}</button>

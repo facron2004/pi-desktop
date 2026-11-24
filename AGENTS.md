@@ -65,6 +65,9 @@ npm run dev         # run with hot reload
 npm run build       # production build into out/
 npm run typecheck   # must pass before committing
 npm run dist        # installers into release/
+npm test            # unit suites (tests/run.mjs), a couple of minutes
+npm run test:ui     # real renderer against the built app (needs `out/`)
+npm run test:e2e    # bundled CLI, a real run, stop mid-run
 node scripts/rpc-smoke.mjs "C:/some/project"   # protocol smoke test
 node scripts/rpc-ui-smoke.mjs                  # extension UI smoke test
 ```
@@ -140,6 +143,14 @@ What that buys, and what it costs:
   live tail** (`lib/streaming-markdown.ts`); `StreamingText` renders a finished
   chunk once and re-parses only the tail on the next delta. All chunks share
   one outer `.md` container so block spacing still reads as a single document.
+  A fence that is still open is the one tail Markdown cannot bound: no block
+  boundary exists inside a fence, so a streamed log or diff would re-parse the
+  whole growing block on every frame. Its content is literal, so
+  `parseOpenFenceTail` reads the opener (marker length, info string,
+  indentation, closing rules) and `OpenFenceBlock` draws the same code block
+  `Markdown` would, straight from the text; closing the fence swaps in the
+  parsed block with identical markup. Mermaid fences stay on the Markdown path
+  because they become a diagram rather than a code block.
 - **A provider that dumps a paragraph in one delta must not paint it in one
   frame.** `StreamingText` keeps a presentation-only cursor (`useRevealedText`
   + `lib/streaming-reveal.ts`) that advances the visible prefix toward the
@@ -165,12 +176,13 @@ reason to drop a call from the stream.
 
 A row in the stream is a link, not a card, so it carries no surface of its
 own: the pointer must not paint a gray band across the column. The hover
-surface belongs to a card. `styles/global.css` is bundled after
-`styles/conversation-stream.css`, so the card hover rule itself excludes
-links: `.tool:hover:not(.tool--link)`. A plain `.tool:hover` of equal
-weight would win the tie and paint the band. `.tool.tool--link:hover` in
-the stream stylesheet stays as a second lock; `.tool--link:hover` alone
-does not outrank `.tool:hover`.
+surface belongs to a card. The lock is
+`.tool.tool--link:hover, .tool.tool--link:focus-within` in
+`styles/conversation-stream.css`: its specificity (0,3,0) outranks any
+`.tool:hover` a later stylesheet adds, and it repaints the link transparent. A
+new card hover rule must exclude links itself —
+`.tool:hover:not(.tool--link)` — because `.tool--link:hover` on its own is a
+lower weight than `.tool:hover` plus whatever else that rule carries.
 
 The stream's leaf components live in `components/conversation/`:
 `AssistantMessage` owns process segmentation, `StreamingText` owns the reply
@@ -211,6 +223,12 @@ Per-conversation tool/file/process/history expansion lives in
 Tests: `npm test` runs the reducer unit tests (`tests/thread.test.ts`,
 against the real RPC event shapes), `npm run test:e2e` spawns the bundled
 CLI and drives the real reducer with a real run — including a stop mid-run.
+A suite only runs if `tests/run.mjs` lists it; that list is the gate, and
+files left off it read as coverage without being any. The bundler compiles
+JSX with the automatic runtime (matching the app's tsconfig) and the child
+runs with `--test-timeout` plus `--test-force-exit`: a hung test fails on its
+own, and a library that leaves a pending handle cannot hold the run open after
+its suite has reported.
 
 ## The session tree
 
@@ -612,13 +630,18 @@ time, TTFT, generation windows and fallback tool durations, while
 
 ## The session bar
 
-`SessionBar` is the row under the composer, and it is the only place where the
-conversation's settings live: the project (a menu of every known project, which
-switches through `switchProject(..., { allowWhileRunning: true })` — the same
-deliberate door the launcher uses), the branch and its dirty count
-(`BranchMenu`), the reasoning effort, the model and the context ring
-(`ContextRing`). While a run is going it also carries the stop link; delivery
-mode is a Settings preference, not a composer control.
+The conversation's settings live in the composer and nowhere else. `Composer.tsx`
+draws the row above the box (`composer__top-selectors`) with the project
+(`ProjectSelector`, a menu of every known project which switches through
+`switchProject(..., { allowWhileRunning: true })` — the same deliberate door the
+launcher uses) and the branch with its dirty count (`BranchMenu`); the model and
+reasoning effort sit inside the box beside the send control (`ModelPicker` in
+`TopBar.tsx`); the context ring is the last reading of the `UsageBar` line under
+the box (`ContextRing`). While a run is going, the composer's round button stops
+it and `session-bar__stop` stays available under the box; delivery mode is a
+Settings preference, not a composer control. There is no separate `SessionBar`
+component any more — it was absorbed into the composer, so new controls belong
+there rather than in a second row.
 
 The title bar does not repeat any of it: it keeps the conversation's name and
 the app's actions. A project or branch chip in two places is two things to keep
@@ -797,6 +820,10 @@ The rules that keep the window from disappearing for good:
   release it. With the tray on, closing the window still only hides it, and
   a second launch is the way back to that window.
 
+`tests/tray.test.ts` pins the rules on a fake Electron: the refusal and the
+remembered claim, the harness bypass, the icon lifecycle, the click target
+following the latest settings write, and a quit that cannot rebuild the icon.
+
 The taskbar icon is the window icon. Windows draws the taskbar button from
 the window's own icon, so a dev run of `electron.exe` shows the Electron
 logo until the window carries the app mark. `app-icon.ts` owns all of it:
@@ -822,9 +849,11 @@ buttons):
   cache and a new shortcut all leave it alone. `dev.pi.desktop` was first
   claimed by a dev run that still carried electron.exe's icon, and
   `dev.pi.desktop.v2` was first registered with the previous pixel mark. The
-  id in use is `dev.pi.desktop.v3`. electron-builder also derives the NSIS
-  upgrade GUID from `appId`; pin `nsis.guid` to the previous value when rotating
-  the AUMID, or existing installations will not be recognized for upgrade.
+  id in use is `dev.pi.desktop.v3`, and rotating it again would present the
+  build as a new app. There is no NSIS target to pin: `electron-builder.yml`
+  builds `portable` and `dir`, and the installer the user runs is drawn by the
+  app itself (`setup/`), so `nsis.guid` only matters if an NSIS target is
+  introduced.
 
 An `.ico` stores a PNG per size and Electron's loader keeps only the
 largest frame, so a reader that wants one particular size walks the
@@ -876,6 +905,36 @@ created. `projectlessRoot()` now creates it, and `runPiCli` falls back to
 `process.cwd()` when the requested folder has disappeared. A workspace can be
 deleted between listing it and running a command, so never assume a path from
 `workspaceRoot()` still exists.
+
+Which executable is launched is decided by `resolvePiLaunch` in
+`src/main/pi/locate.ts`: an explicit user path first (a `.js` entry runs under
+the app's own node, anything else is spawned directly), then the CLI bundled
+with the app, then `pi` on PATH, then a clear `none`. The launch cache re-checks
+that the chosen file still exists, so uninstalling a custom CLI falls back
+instead of failing forever; `tests/locate.test.ts` pins the order and that
+re-check.
+
+### Window state
+
+`window-state.ts` remembers the window's content size and place. It saves the
+**content** bounds (not the outer frame, which includes the title bar and
+rounding), debounces drag events, writes atomically through a temp file, and
+drops a position that no longer lands on a display instead of opening the app
+off-screen. A record below 880×572 is what a process killed before its first
+frame leaves behind, so it is treated as no state at all.
+`tests/window-state.test.ts` pins these rules with a fake window.
+
+### Settings writes wait off the main thread
+
+`settings.json` is guarded by an interprocess lock, and `lockSync` cannot retry
+(proper-lockfile refuses retries on the sync API), so the store spins on
+`Atomics.wait` between attempts. A second instance — a harness run, or a crashed
+one whose lock file has not gone stale yet — can hold the lock for seconds, and
+blocking the main thread that long freezes the window. The IPC paths that write
+settings therefore `await SettingsStore.waitForLock()` first: it polls
+`proper-lockfile.check` asynchronously, so the wait costs the UI nothing. The
+sync spin is bounded to ~50 ms and only covers the race between that poll and
+the write. Do not grow it back into a long spin.
 
 ### Long session files
 
@@ -998,12 +1057,12 @@ key from an open dialog, menu or lightbox. There is no permanent
 "Tools" tab: closing the last page closes the panel. Reopening it starts from a
 centered "start from here" card list (`ToolPanel`).
 
-Files, File changes, Subagents, Terminal, Browser and Images are pages, not a
-fixed function tab bar. Selecting a card on the new-tab page turns that tab
+Files, File changes, Subagents, Swarm, Terminal, Browser and Images are pages,
+not a fixed function tab bar. Selecting a card on the new-tab page turns that tab
 into the chosen page; opening a view elsewhere adds or focuses its page tab.
 `Files` and `File changes` are split views: the preview or diff is the page and
-a 220px project tree (Files) or changed-file list (File changes) sits on its
-right, as MCode's file panel and review panel do. `SubagentPanel` is the Subagents page and owns the right-panel
+a 236px project tree (Files) or a 220px changed-file list (File changes) sits on
+its right, as MCode's file panel and review panel do. `SubagentPanel` is the Subagents page and owns the right-panel
 instance of `SubagentTree`; the left sidebar does not contain subagent status.
 The Images page lists at most 1,000 pictures after scanning at most 100,000
 directory entries; a newer image-list request in the same window supersedes
@@ -1413,10 +1472,18 @@ is `MemorySettings.tsx`; tests are `tests/memory.test.ts`. See
 ## Task modes
 
 Task modes are a bundled Pi extension (`src/main/pi/task-modes.ts`), not renderer
-state. The extension persists mode and goal in custom session entries, changes
+state. There are four working modes — Default, Goal, Swarm and Plugin — plus
+Plan Mode, which is an approval gate over the others rather than a fifth
+loadout. The extension persists mode and goal in custom session entries, changes
 the active tool loadout and publishes the mode on `pi-desktop-mode` and the goal
 on `pi-desktop-goal` (JSON `{text,status,summary}`). `GoalBar` only projects that
 status and sends `/desktop-goal pause|resume|clear|edit` back through the store.
+
+Swarm Mode is a team of persistent workers: the main chat leads, `swarm_spawn`
+starts a worker, `swarm_task` queues work on one, `swarm_message` talks to it,
+`swarm_collect` and `swarm_status` read the team, and `swarm_disband` ends it
+(`src/main/pi/swarm.ts`, page `SwarmPanel`, projection `lib/swarm.ts`). The tools
+exist only in this mode; `/swarm` enters it and `/swarm off` leaves it.
 
 Plan Mode explores with `read`, `grep`, `find`, and `ls`. The `desktop_ask_user`
 tool is available in every desktop task mode. It uses Pi's `select` dialog and
@@ -1539,7 +1606,7 @@ How a default reaches a process is the part to get right:
   first picker click after startup wait for a full Pi cold boot.
 
 `autoFoldProcess` and `toolCallSummary` are projections, not state. The first is the
-*default of the fold that `ProcessTrail` already computes* (`manualOpen ?? !autoFold`) —
+*default of the fold that `ProcessTrail` already computes* (`manualOpen ?? (!busy && !autoFold)`) —
 it ships on, because a settled trail is folded today. The second only gathers a *live*
 stretch of calls into the summary line, opening to the same `ToolCard` rows. Neither adds
 a store field, neither touches `lib/thread.ts`, and neither may change the rule that a tool
@@ -1623,7 +1690,10 @@ sidebar — a conversation that is not mounted has nothing to scroll.
 ## Screenshot harness
 
 The main process can capture itself for visual checks. It only activates when the
-environment variable is set:
+environment variable is set. The `output/audit/*` harnesses named in this file
+are local measurement scripts kept outside the repository (`output/` is
+gitignored), so a fresh clone cannot run them; when a claim depends on geometry,
+re-measure it with the screenshot harness below instead of trusting the number.
 
 ```bash
 PI_DESKTOP_SCREENSHOT=out/shot.png \

@@ -78,9 +78,11 @@ async function runSilent(): Promise<void> {
     app.exit(0)
   } catch (error) {
     await logSilentFailure(error)
-    // An update that fails must not leave the reader with no app at all: the
-    // previous copy is still installed, so start it again instead of exiting
-    // into nothing. The reason stays in the log for the next report.
+    // An update that fails must not leave the reader with no app at all. The
+    // install copies into a staging folder and swaps only after verifying every
+    // file, so a failure here means the previous copy is still exactly as it
+    // was: start it again instead of exiting into nothing. The reason stays in
+    // the log for the next report.
     try {
       const fallback = installDirArg || (await existingInstallDir())
       if (fallback && existsSync(path.join(fallback, 'Pi Desktop.exe'))) launchInstalled(fallback)

@@ -100,7 +100,8 @@ export interface ManagedSessionRuntime extends EventEmitter {
     timeoutMs?: number,
     trace?: RpcTraceHint
   ): Promise<T>
-  respondUi(id: string, response: ExtensionUiResponse): void
+  /** Answer a pending extension dialog; false when no runtime was waiting for it. */
+  respondUi(id: string, response: ExtensionUiResponse): boolean
   stop(): Promise<void>
   hasPendingUi?(id: string): boolean
   hasAnyPendingUi?(): boolean
@@ -501,7 +502,7 @@ export class SessionSupervisor extends EventEmitter {
     }
   }
 
-  respondUi(key: string, id: string, response: ExtensionUiResponse): void {
+  respondUi(key: string, id: string, response: ExtensionUiResponse): boolean {
     let targetKey: string | undefined = key ? this.canonical(key) : undefined
     let runtime = targetKey ? this.runtimes.get(targetKey) : undefined
 
@@ -537,7 +538,9 @@ export class SessionSupervisor extends EventEmitter {
       // answered it, so their copy of the dialog can close.
       const ownerId = targetKey ?? this.ownerOf(runtime)
       if (ownerId) this.emit('ui-responded', { ownerId, id })
+      return true
     }
+    return false
   }
 
   async rename(file: string, name: string, handle?: FileHandle): Promise<boolean> {

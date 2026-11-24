@@ -500,6 +500,33 @@ async function resolveRuntimeCwd(context: IpcContext, cwd: unknown): Promise<Res
   return null
 }
 
+/**
+ * Where a terminal may start.
+ *
+ * The renderer names the folder a hand-off came from, so it is treated like
+ * every other renderer path: only a folder this app knows about — a registered
+ * project, the projectless chats root, or a folder inside one of them — is
+ * accepted. Anything else falls back to the workspace on screen. A shell parked
+ * in an unregistered directory would also outlive the project it claims to
+ * belong to, because removing a workspace only stops the terminals whose cwd is
+ * inside it (`supervisor.stopCwd`).
+ */
+export function resolveTerminalCwd(context: IpcContext, requested: unknown): string {
+  const fallback = workspaceRoot(context)
+  if (requested === '') return projectlessRoot()
+  const wanted = typeof requested === 'string' ? requested.trim() : ''
+  if (!wanted || !path.isAbsolute(wanted)) return fallback
+  const candidate = path.resolve(wanted)
+  const roots = [
+    projectlessPath(),
+    ...(context.settings.get().workspaces ?? []).map((workspace) => workspace.path)
+  ]
+  for (const root of roots) {
+    if (root && isPathWithin(root, candidate)) return candidate
+  }
+  return fallback
+}
+
 /** The picture types the inspector's viewer can draw, by file extension. */
 const IMAGE_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -578,8 +605,15 @@ function pastedImageExtension(mimeType: string): string | null {
  * A picture of the open project as a data URL.
  *
  * The renderer may not read the disk, so the bytes come across as a data URL
- * the viewer can paint. Anything that is not an image inside the project, or
- * that is too large to hand to a `<img>`, is `null` rather than an error.
+ * the viewer can paint. Anything that is not an image inside a registered
+ * project, or that is too large to hand to a `<img>`, is `null` rather than an
+ * error.
+ *
+ * The read spans the registered projects, not just the active one: a nested
+ * project is a workspace of its own, so a transcript opened from it still shows
+ * the pictures its parent project produced. That is the whole widening — a path
+ * outside every registered root is refused, and each root is still checked with
+ * `openWorkspaceFile` (realpath, hard links, the named file).
  */
 export async function readImageDataUrl(
   context: IpcContext,
@@ -1117,7 +1151,7 @@ export function registerIpc(context: IpcContext): void {
     if (isQuitting()) throw new Error('The app is shutting down')
     return terminals.create({
       ...options,
-      cwd: options?.cwd === '' ? projectlessRoot() : options?.cwd?.trim() || workspaceRoot(context),
+      cwd: resolveTerminalCwd(context, options?.cwd),
       shell: options?.shell || settings.get().terminalShell
     })
   })
@@ -1430,20 +1464,25 @@ export function registerIpc(context: IpcContext): void {
         if (typeof version !== 'string' || version.length > 64 || !/^\d+\.\d+\.\d+$/.test(version) || !isNewerVersion(version, app.getVersion())) {
           throw new Error('The requested app update is not a newer release.')
         }
-        finishMaintenance = await beginBundledPiCliMaintenance()
-        prepared = await supervisor.prepareForCliUpgrade()
-        if (!prepared) throw new Error('Finish or stop active tasks before updating Pi Desktop.')
         const onProgress = (progress: AppUpdateProgress): void => {
           sendToWindow(getWindow(), 'app:updateProgress', progress)
         }
-        // Recheck cached bytes before launching. A bad cache is downloaded
-        // again while this operation has exclusive access to the installer.
+        // Download first, then take the agent offline. The transfer can take
+        // minutes; stopping every idle Pi runtime and blocking the bundled CLI
+        // before the bytes exist left the app without an agent for all of it —
+        // and with nothing to show for it if the download failed. Only the
+        // launch needs the windows closed.
+        // A bad cache is downloaded again while this operation has exclusive
+        // access to the installer.
         const installer = await downloadAppInstaller(version, {
           currentVersion: app.getVersion(),
           arch: process.arch,
           directory: updatesDirectory(),
           onProgress
         })
+        finishMaintenance = await beginBundledPiCliMaintenance()
+        prepared = await supervisor.prepareForCliUpgrade()
+        if (!prepared) throw new Error('Finish or stop active tasks before updating Pi Desktop.')
         onProgress({ version, stage: 'installing', percent: 100 })
         await launchAppInstaller(installer)
         restarting = true
@@ -1541,9 +1580,22 @@ export function registerIpc(context: IpcContext): void {
     }
   })
 
+  // Settings writes take an interprocess lock. Waiting for another instance
+  // asynchronously keeps the window responsive when one holds it (the store's
+  // own sync spin then only has to cover the race with the write). A test
+  // harness may hand the handlers a partial settings double, so the wait is
+  // optional: it is a scheduling optimisation, not a correctness requirement.
+  const waitForSettingsLock = async (): Promise<void> => {
+    await settings.waitForLock?.()
+  }
+
   ipcMain.handle('settings:get', (): AppSettings => settings.get())
 
-  ipcMain.handle('settings:patch', (_event, patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): AppSettings => {
+  ipcMain.handle('settings:patch', async (_event, patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): Promise<AppSettings> => {
+    // Settings writes take an interprocess lock; waiting for another instance
+    // asynchronously keeps the window responsive when one holds it (see
+    // `SettingsStore.waitForLock`).
+    await waitForSettingsLock()
     const next = settings.patch(patch, baseline)
     if (patch.memoryGeneration === false) context.memory.cancelAutomaticGeneration()
     // The extension reads the switch when its process starts. A conversation
@@ -1629,6 +1681,7 @@ export function registerIpc(context: IpcContext): void {
         : await dialog.showOpenDialog({ properties: ['openDirectory'] })
       if (result.canceled || !result.filePaths.length) return null
       const dir = path.resolve(result.filePaths[0])
+      await waitForSettingsLock()
       return await serializeWorkspaceMutation(dir, () => {
         const existing = settings.get().workspaces.find(
           (item) => workspacePathKey(item.path) === workspacePathKey(dir)
@@ -1653,7 +1706,11 @@ export function registerIpc(context: IpcContext): void {
     const hidden = typeof hiddenPath === 'string' ? hiddenPath : undefined
     const initialWorkspace = settings.get().workspaces.find(entry => entry.id === workspaceId)
     const targetPath = initialWorkspace?.path ?? hidden
-    if (!targetPath) return settings.removeWorkspace(workspaceId)
+    if (!targetPath) {
+      await waitForSettingsLock()
+      return settings.removeWorkspace(workspaceId)
+    }
+    await waitForSettingsLock()
     return serializeWorkspaceMutation(targetPath, async () => {
       const workspace = settings.get().workspaces.find(entry => entry.id === workspaceId)
       const remove = () => settings.removeWorkspace(workspaceId, hidden)
@@ -1668,8 +1725,9 @@ export function registerIpc(context: IpcContext): void {
   // decided here where the file system is reachable.
   ipcMain.handle(
     'workspaces:add',
-    (_event, rawPath: string): Promise<{ workspace: Workspace; settings: AppSettings }> => {
+    async (_event, rawPath: string): Promise<{ workspace: Workspace; settings: AppSettings }> => {
       const dir = path.resolve(rawPath)
+      await waitForSettingsLock()
       return serializeWorkspaceMutation(dir, () => {
         const current = settings.get()
         const key = workspacePathKey(dir)
@@ -3045,3 +3103,4 @@ export function bridgeRuntime(context: IpcContext): void {
     sendToWindow(activeWindow(), 'imChannels:changed', channels)
   })
 }
+

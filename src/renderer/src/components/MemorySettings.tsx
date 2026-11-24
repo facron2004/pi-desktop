@@ -326,7 +326,10 @@ export function MemorySettings() {
               type="button"
               className="btn btn--sm btn--danger"
               onClick={() => setConfirmClear(true)}
-              disabled={clearing || entryCount === 0 || learning || state?.generating === true}
+              // Not gated on entryCount: the confirmation also clears the
+              // per-session ledger, which is the only way back when every
+              // conversation was skipped and nothing was ever stored.
+              disabled={clearing || learning || state?.generating === true}
             >
               <Trash2 size={13} />
               {clearing ? t('Clearing…') : t('Clear all')}
@@ -411,6 +414,10 @@ export function MemorySettings() {
                               type="button"
                               className="icon-btn memory-row__delete"
                               onClick={() => setPendingDelete(entry)}
+                              // Deleting during a background pass bumps the
+                              // ledger generation and discards the whole pass
+                              // silently, the way Clear all already guards.
+                              disabled={learning || state?.generating === true}
                               aria-label={t('Delete memory')}
                               aria-haspopup="dialog"
                               title={t('Delete memory')}

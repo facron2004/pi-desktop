@@ -122,7 +122,21 @@ export const ToolPanel = memo(function ToolPanel({
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (view === 'start') return
+    // The sync has to be total. Returning early for the start page left the
+    // previously active tab selected while App passed the start page's content
+    // (none), so folding the panel on "File changes" and reopening it from the
+    // corner toggle produced an empty drawer.
+    if (view === 'start') {
+      const startTab = tabs.find((tab) => tab.view === null)
+      if (startTab) {
+        setActive((current) => (current === startTab.id ? current : startTab.id))
+        return
+      }
+      const id = `new-tab-${(newTabSequence.current += 1)}`
+      setTabs((current) => [...current, { id, view: null }])
+      setActive(id)
+      return
+    }
     const existing = tabs.find((tab) => tab.view === view)
     if (existing) {
       setActive(existing.id)

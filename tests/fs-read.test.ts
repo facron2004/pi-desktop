@@ -297,6 +297,43 @@ test('readImageDataUrl applies a caller byte limit and never exceeds the full-im
   }
 })
 
+test('readImageDataUrl spans registered projects but nothing outside them', async () => {
+  const temp = realpathSync(os.tmpdir())
+  const activeDir = mkdtempSync(path.join(temp, 'pi-desktop-image-active-'))
+  const otherDir = mkdtempSync(path.join(temp, 'pi-desktop-image-other-'))
+  const outsideDir = mkdtempSync(path.join(temp, 'pi-desktop-image-outside-'))
+  try {
+    const otherImage = path.join(otherDir, 'private.png')
+    writeFileSync(otherImage, 'private')
+    const outsideImage = path.join(outsideDir, 'stranger.png')
+    writeFileSync(outsideImage, 'stranger')
+    writeFileSync(path.join(activeDir, 'own.png'), '12345')
+    const context = {
+      settings: {
+        get: () => ({
+          activeWorkspaceId: 'active',
+          workspaces: [
+            { id: 'active', path: activeDir },
+            { id: 'other', path: otherDir }
+          ]
+        })
+      }
+    } as unknown as IpcContext
+
+    // The active project answers.
+    assert.equal(await readImageDataUrl(context, 'own.png'), 'data:image/png;base64,MTIzNDU=')
+    // A picture a nested project's transcript refers to still renders: the other
+    // project is registered, so it is read through the same verified handle.
+    assert.equal(await readImageDataUrl(context, otherImage), 'data:image/png;base64,cHJpdmF0ZQ==')
+    // A folder outside every registered project is still refused.
+    assert.equal(await readImageDataUrl(context, outsideImage), null)
+  } finally {
+    rmSync(activeDir, { recursive: true, force: true })
+    rmSync(otherDir, { recursive: true, force: true })
+    rmSync(outsideDir, { recursive: true, force: true })
+  }
+})
+
 test('workspace reads reject symlink targets outside the workspace', async (t) => {
   const parent = mkdtempSync(path.join(realpathSync(os.tmpdir()), 'pi-desktop-workspace-link-'))
   const workspace = path.join(parent, 'workspace')

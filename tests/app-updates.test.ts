@@ -446,7 +446,10 @@ test('the bundled CLI keeps its own reading, whatever the app release says', () 
     // A check that cannot reach npm keeps the reading it already has: the About
     // page must not lose a newer CLI because the machine went offline.
     notePiCliUpdate({ current: '1.5.0', hasUpdate: false, error: 'offline' })
+    // The last good version stays on screen, and the failure is published so the
+    // About page can say the check did not answer.
     assert.equal(piCliUpdate()?.hasUpdate, true)
+    assert.equal(piCliUpdate()?.error, 'offline')
     // A full check answers both questions, so it refreshes this slot too — the
     // app half being current says nothing about the agent.
     noteAppUpdateCheck({
@@ -454,7 +457,7 @@ test('the bundled CLI keeps its own reading, whatever the app release says', () 
       piCli: { current: '1.5.2', hasUpdate: false }
     })
     assert.deepEqual(piCliUpdate(), { current: '1.5.2', hasUpdate: false })
-    assert.deepEqual(seen, [true, false])
+    assert.deepEqual(seen, [true, true, false])
   } finally {
     stop()
   }
@@ -936,7 +939,10 @@ test('concurrent downloadAppInstaller calls serialize via lock and reuse the ver
       downloadAppInstaller(updateVersion, downloadOptions(directory, slowFetcher))
     ])
     assert.equal(first, second)
-    assert.equal(calls.length, 2, 'second concurrent caller must reuse the verified cache after acquiring the lock')
+    // One release lookup and one download for the first caller; the second
+    // re-reads the published digest (no file transfer) to confirm the cache is
+    // still this release's installer.
+    assert.equal(calls.length, 3, 'second concurrent caller must reuse the verified cache after acquiring the lock')
     assert.deepEqual(await readdir(directory), ['installer.exe', 'installer.json'])
   } finally {
     await rm(directory, { recursive: true, force: true })

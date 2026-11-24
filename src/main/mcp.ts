@@ -352,7 +352,7 @@ const SENSITIVE_KEY_VALUE_REGEX =
   /^(--?[a-z0-9_.-]*(?:token|secret|key|api[-_]?key|password|passwd|pwd|auth|credential|credentials)[a-z0-9_.-]*=)(.+)$/i
 
 const SENSITIVE_ENV_KEY_VALUE_REGEX =
-  /^((?:[A-Za-z_][A-Za-z0-9_.-]*[_-])?(?:token|secret|api[_-]?key|access[_-]?key(?:[_-]?id)?|private[_-]?key|password|passwd|pwd|auth(?:[_-]?token)?|credential(?:s)?)(?:[_-][A-Za-z0-9_.-]*)?=)(.+)$/i
+  /^((?:[A-Za-z_][A-Za-z0-9_.-]*[_-])?(?:token|secret|api[_-]?key|access[_-]?key(?:[_-]?id)?|private[_-]?key|password|passwd|pwd|auth(?:[_-]?token)?|credential(?:s)?)(?:[_-][A-Za-z0-9_.-]*)?=)(.+?)(;?)$/i
 
 export function sanitizeArgs(args?: unknown): string[] | undefined {
   if (!args || !Array.isArray(args)) return undefined
@@ -375,9 +375,11 @@ export function sanitizeArgs(args?: unknown): string[] | undefined {
       continue
     }
 
-    // Mask bare environment assignments (e.g. 'OPENAI_API_KEY=sk-123')
+    // Mask bare environment assignments (e.g. 'OPENAI_API_KEY=sk-123'). A
+    // trailing `;` is a connection-string delimiter rather than part of the
+    // secret, so it survives the mask and the redacted string still reads as one.
     if (SENSITIVE_ENV_KEY_VALUE_REGEX.test(arg)) {
-      sanitized.push(arg.replace(SENSITIVE_ENV_KEY_VALUE_REGEX, '$1***'))
+      sanitized.push(arg.replace(SENSITIVE_ENV_KEY_VALUE_REGEX, '$1***$3'))
       continue
     }
 
@@ -415,8 +417,8 @@ export function sanitizeCommand(rawCommand?: unknown): string | undefined {
     '$1***'
   )
   sanitized = sanitized.replace(
-    /(^|\s)((?:[A-Za-z_][A-Za-z0-9_.-]*[_-])?(?:token|secret|api[_-]?key|access[_-]?key(?:[_-]?id)?|private[_-]?key|password|passwd|pwd|auth(?:[_-]?token)?|credential(?:s)?)(?:[_-][A-Za-z0-9_.-]*)?=)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"']+)/gi,
-    '$1$2***'
+    /(^|\s)((?:[A-Za-z_][A-Za-z0-9_.-]*[_-])?(?:token|secret|api[_-]?key|access[_-]?key(?:[_-]?id)?|private[_-]?key|password|passwd|pwd|auth(?:[_-]?token)?|credential(?:s)?)(?:[_-][A-Za-z0-9_.-]*)?=)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s"';]+(;?))/gi,
+    '$1$2***$3'
   )
   sanitized = sanitized.replace(SENSITIVE_FLAG_SPACE_VALUE_REGEX, '$1$2$3***')
   sanitized = sanitized.replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1***')

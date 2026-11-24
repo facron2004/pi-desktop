@@ -63,12 +63,13 @@ test('a large file with one change still aligns quickly', () => {
   const lines = Array.from({ length: 20_000 }, (_, index) => `line ${index}`)
   const changed = [...lines]
   changed[10_000] = 'changed'
-  const started = Date.now()
   const block = buildDiff(lines.join('\n'), changed.join('\n'))
+  // The observable contract is that the diff did not degrade: the module has its
+  // own 1 s budget and reports `degraded` when it spends it. A wall-clock
+  // assertion here would be stricter than that budget and would fail on a loaded
+  // runner for reasons that have nothing to do with the diff.
   assert.equal(block.degraded, undefined)
   assert.deepEqual(diffStats(block), { added: 1, removed: 1 })
-  // The common prefix and suffix are trimmed, so this is far from the budget.
-  assert.ok(Date.now() - started < 900)
 })
 
 test('a normal-sized file still aligns line by line', () => {

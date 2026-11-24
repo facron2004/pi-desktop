@@ -287,8 +287,11 @@ export function UsageSettings() {
                 </div>
                 <div
                   className="usage-heatmap__cells"
-                  role="grid"
-                  aria-label={t('Usage heatmap')}
+                  // A grid needs row children and a 2-D keyboard model; this is
+                  // a picture of the year, so it is announced as one summary and
+                  // the hover tooltip stays the per-day reading.
+                  role="img"
+                  aria-label={`${t('Usage heatmap')}: ${heatmap.activeDays} ${t('Active days')} · ${formatTokens(heatmap.rangeTokens)} ${t('Total tokens')}`}
                 >
                   {heatmap.cells.map(({ date, day, week, weekday, level }) => {
                     const dateLabel = heatmap.fullDateFormatter.format(date)
@@ -298,7 +301,6 @@ export function UsageSettings() {
                         key={day.date}
                         className="usage-heatmap__cell"
                         data-level={level}
-                        role="gridcell"
                         aria-label={description}
                         style={{ gridColumn: week + 1, gridRow: weekday + 1 }}
                         onMouseEnter={(event) => {
@@ -556,3 +558,4 @@ export function UsageSettings() {
     </div>
   )
 }
+

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
@@ -32,12 +32,16 @@ interface FakeAdapter extends ChannelAdapter {
 function fakeAdapter(): FakeAdapter {
   const adapter: FakeAdapter = {
     sent: [],
+    targets: [],
     stopped: false,
     started: false,
     contexts: [],
     async start() { this.started = true },
     async stop() { this.stopped = true },
-    async send(text: string) { this.sent.push(text) },
+    async send(text: string, target?: string) {
+      this.sent.push(text)
+      this.targets.push(target)
+    },
     async test() { return { ok: true } },
     state: () => ({ state: 'connected' as const })
   }
@@ -208,6 +212,81 @@ test('Feishu stop() closes WSClient and blocks late inbound events from stale so
   assert.deepEqual(routed, ['hello'])
 })
 
+
+test('a Feishu channel is connected only once the handshake reports ready', async () => {
+  let ready: (() => void) | undefined
+  let failed: ((error: Error) => void) | undefined
+  const states: string[] = []
+  const adapter = createFeishuAdapter(
+    FEISHU,
+    { router: async () => {}, onState: (state) => states.push(state) },
+    {
+      createClient: () => ({ sendText: async () => {} }),
+      createWsClient: () => ({
+        // The real transport resolves before a socket exists.
+        async start(_onMessage, handlers) {
+          ready = handlers?.onReady
+          failed = handlers?.onError
+        },
+        close() {}
+      })
+    }
+  )
+  await adapter.start()
+  // The reconnect loop is scheduled, not connected: claiming otherwise is what
+  // made a wrong app secret read "Connected" forever.
+  assert.equal(adapter.state().state, 'connecting')
+  assert.equal((await adapter.test()).ok, false)
+
+  ready?.()
+  assert.equal(adapter.state().state, 'connected')
+  assert.equal((await adapter.test()).ok, true)
+  assert.deepEqual(states, ['connected'])
+
+  failed?.(new Error('invalid app secret'))
+  assert.equal(adapter.state().state, 'error')
+  assert.match(adapter.state().error ?? '', /invalid app secret/)
+  assert.equal((await adapter.test()).ok, false)
+  assert.deepEqual(states, ['connected', 'error'])
+  await adapter.stop()
+})
+
+test('a corrupt IM channel file is set aside and saving works again', async (t) => {
+  const adapter = fakeAdapter()
+  const { instance } = service(t, adapter)
+  const stateFile = (instance as unknown as { stateFile: string }).stateFile
+  mkdirSync(path.dirname(stateFile), { recursive: true })
+  writeFileSync(stateFile, '{ "channels": [ broken', 'utf8')
+
+  ;(instance as unknown as { loadState: () => void }).loadState()
+  assert.deepEqual(instance.status(), [])
+  const quarantined = readdirSync(path.dirname(stateFile)).filter((name) => name.includes('.corrupt-'))
+  assert.equal(quarantined.length, 1, 'the unreadable file was not preserved')
+
+  const saved = await instance.save(FEISHU)
+  assert.equal(saved.length, 1, 'a save after the quarantine starts from an empty list')
+  await instance.dispose()
+})
+
+test('/stop only claims a stop when the conversation is running', async (t) => {
+  const adapter = fakeAdapter()
+  const { instance, calls, supervisor } = service(t, adapter)
+  await instance.save(FEISHU)
+  await instance.initialize()
+  const router = adapter.contexts[0].router
+  ;(instance as unknown as { resolveBoundFile: () => Promise<string | null> }).resolveBoundFile = async () => 'C:/project/session.jsonl'
+
+  await router('channel-1', '/stop')
+  assert.match(adapter.sent.at(-1)!, /没有正在运行/)
+  assert.equal(calls.stops.length, 0, 'an idle conversation is not stopped')
+
+  supervisor.sessionInfo = () => ({ running: true, waitingForInput: false, cwd: 'C:/project', externalContext: false })
+  await router('channel-1', '/stop')
+  assert.match(adapter.sent.at(-1)!, /已停止/)
+  assert.deepEqual(calls.stops, ['C:/project/session.jsonl'])
+  await instance.dispose()
+})
+
 test('multipart parser enforces MAX_FIELDS, skips files, and uses a null-prototype map', () => {
   const boundary = '----piBoundary'
   const part = (name: string, value: string, filename?: string) =>
@@ -270,7 +349,7 @@ test('WeChat adapter uses redirect:error, timeout signal, bounded reads, and scr
   assert.ok(seenInit[1]?.signal)
 })
 
-test('IM /new prompts real text (not "/new"), crash settles notify, eviction stops old adapter, and transient workspace loss preserves channels', async (t) => {
+test('IM /new prompts real text (not "/new"), crash settles notify, a fifth channel is refused, and transient workspace loss preserves channels', async (t) => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-im-channels-reg-'))
   t.after(() => rmSync(userData, { recursive: true, force: true }))
   const adapters = new Map<string, FakeAdapter>()
@@ -337,11 +416,96 @@ test('IM /new prompts real text (not "/new"), crash settles notify, eviction sto
   await instance.save({ ...FEISHU, id: 'channel-2', binding: { workspaceId: 'ws-2', sessionId: 's-2' } })
   assert.equal(instance.storedChannels().some((c) => c.id === 'channel-1'), true)
 
-  // Saving 5th channel evicts channel-1 and stops its running adapter.
+  // A fifth channel is refused rather than evicting channel-1: silently dropping
+  // a binding deletes its credentials and takes its bot offline with no notice.
   await instance.save({ ...FEISHU, id: 'channel-3', binding: { workspaceId: 'ws-2', sessionId: 's-3' } })
   await instance.save({ ...FEISHU, id: 'channel-4', binding: { workspaceId: 'ws-2', sessionId: 's-4' } })
-  await instance.save({ ...FEISHU, id: 'channel-5', binding: { workspaceId: 'ws-2', sessionId: 's-5' } })
-  assert.equal(instance.hasRuntime('channel-1'), false)
-  assert.equal(adapter1.stopped, true, 'evicted channel runtime must be stopped')
+  await assert.rejects(
+    () => instance.save({ ...FEISHU, id: 'channel-5', binding: { workspaceId: 'ws-2', sessionId: 's-5' } }),
+    /At most 4 channels can be bound/
+  )
+  assert.equal(instance.storedChannels().some((c) => c.id === 'channel-1'), true)
+  assert.equal(instance.hasRuntime('channel-1'), true)
+  assert.equal(adapter1.stopped, false, 'a refused add must not stop another channel')
   await instance.dispose()
+})
+
+test('replies go to the chat that asked while another chat is talking', async (t) => {
+  const adapter = fakeAdapter()
+  const { instance } = service(t, adapter)
+  await instance.save(FEISHU)
+  await instance.initialize()
+  ;(instance as unknown as { resolveBoundFile: () => Promise<string | null> }).resolveBoundFile = async () => 'C:/project/session.jsonl'
+  const router = adapter.contexts[0].router
+  await router('channel-1', '/status', 'chat-a')
+  await router('channel-1', '/help', 'chat-b')
+  // Each answer goes to the chat that asked, not to whichever spoke last.
+  assert.deepEqual(adapter.targets, ['chat-a', 'chat-b'])
+  await instance.dispose()
+})
+
+test('inbound turns are serialized per channel', async (t) => {
+  const adapter = fakeAdapter()
+  const { instance, supervisor } = service(t, adapter)
+  await instance.save(FEISHU)
+  await instance.initialize()
+  ;(instance as unknown as { resolveBoundFile: () => Promise<string | null> }).resolveBoundFile = async () => 'C:/project/session.jsonl'
+  const router = adapter.contexts[0].router
+  let releaseFirst: () => void = () => {}
+  const gate = new Promise<void>((resolve) => { releaseFirst = resolve })
+  const started: string[] = []
+  supervisor.request = async (...args: unknown[]) => {
+    started.push(String((args[2] as { message?: string } | undefined)?.message ?? ''))
+    if (started.length === 1) await gate
+    return {}
+  }
+  const first = router('channel-1', 'first')
+  const second = router('channel-1', 'second')
+  await new Promise<void>((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(started, ['first'], 'the second message overtook the first')
+  releaseFirst()
+  await Promise.all([first, second])
+  assert.deepEqual(started, ['first', 'second'])
+  await instance.dispose()
+})
+
+test('a re-pushed platform event is dropped even after the adapter is rebuilt', async () => {
+  const seen = new Set<string>()
+  const rememberInbound = (id: string): boolean => {
+    if (seen.has(id)) return false
+    seen.add(id)
+    return true
+  }
+  const routed: string[] = []
+  const build = () => {
+    let handler: ((data: unknown) => void) | undefined
+    const adapter = createFeishuAdapter(
+      FEISHU,
+      { router: async (_id, text) => { routed.push(text) }, onState: () => {}, rememberInbound },
+      {
+        createClient: () => ({ sendText: async () => {} }),
+        createWsClient: () => ({
+          async start(onMessage, handlers) {
+            handler = onMessage
+            handlers?.onReady()
+          },
+          close() {}
+        })
+      }
+    )
+    return { adapter, fire: (event: unknown) => handler?.(event) }
+  }
+  const event = {
+    message: { message_id: 'om_same', message_type: 'text', chat_id: 'oc_chat', content: JSON.stringify({ text: 'deploy' }) }
+  }
+  const first = build()
+  await first.adapter.start()
+  first.fire(event)
+  first.fire(event)
+  const second = build()
+  await second.adapter.start()
+  second.fire(event)
+  assert.deepEqual(routed, ['deploy'], 'a re-pushed event ran the instruction again')
+  await first.adapter.stop()
+  await second.adapter.stop()
 })

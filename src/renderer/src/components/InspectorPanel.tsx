@@ -98,6 +98,7 @@ export function InspectorPanel({
   const showToast = useAppStore((state) => state.showToast)
   const git = useAppStore((state) => state.git)
   const commitRequest = useAppStore((state) => state.commitRequest)
+  const consumeCommitRequest = useAppStore((state) => state.consumeCommitRequest)
   const refreshGit = useAppStore((state) => state.refreshGit)
   const t = useT()
   const diffSplit = settings.diffSplit === true
@@ -126,8 +127,10 @@ export function InspectorPanel({
   // The app's own `/commit` command and the launcher ask for this dialog
   // through the store instead of reaching into the component tree.
   useEffect(() => {
-    if (commitRequest > 0) setCommitOpen(true)
-  }, [commitRequest])
+    if (!commitRequest) return
+    setCommitOpen(true)
+    consumeCommitRequest()
+  }, [commitRequest, consumeCommitRequest])
 
   // The lines that were added and removed over all the files, for the head of
   // the panel. The same numbers are shown per file.
@@ -308,9 +311,17 @@ export function InspectorPanel({
         widthRef.current = width
         onResize(width)
       }
+      // A cancelled gesture (window loses focus, capture is lost) never sends
+      // pointerup. Without these the body keeps the resize cursor and the
+      // pointermove listener, so the panel resizes with no button held.
+      let finished = false
       const up = () => {
+        if (finished) return
+        finished = true
         handle.removeEventListener('pointermove', move)
         handle.removeEventListener('pointerup', up)
+        handle.removeEventListener('pointercancel', up)
+        handle.removeEventListener('lostpointercapture', up)
         document.body.classList.remove('is-resizing')
         onResizeEnd?.(widthRef.current)
       }
@@ -318,6 +329,8 @@ export function InspectorPanel({
       handle.setPointerCapture(event.pointerId)
       handle.addEventListener('pointermove', move)
       handle.addEventListener('pointerup', up)
+      handle.addEventListener('pointercancel', up)
+      handle.addEventListener('lostpointercapture', up)
       document.body.classList.add('is-resizing')
     },
     [onResize, onResizeEnd]

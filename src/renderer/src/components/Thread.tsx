@@ -12,7 +12,7 @@ import { findMatches, splitSnippet, type SearchableChunk, type SearchHit } from 
 import { describeTool } from '../lib/tools'
 import { modelName } from '../lib/models'
 import { scrollBehavior } from '../lib/motion'
-import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition, scrollTopForTurnTop } from '../lib/scroll-memory'
+import { applyScroll, readScrollMemory, rememberScrollMemory, rememberScrollPosition, scrollKeyOf, scrollTopForTurnTop } from '../lib/scroll-memory'
 import { readSessionTiming, roundTimingDuration, userTimingDuration } from '../lib/session-timing'
 import { readHistoryFirstVisibleTurn, readProcessOpen, writeHistoryFirstVisibleTurn, writeProcessOpen } from '../lib/view-state'
 import { matchesAnyShortcut } from '../lib/shortcuts'
@@ -60,10 +60,6 @@ interface SearchSnapshot {
 
 interface SearchSource extends Omit<SearchSnapshot, 'hits'> {
   active: boolean
-}
-
-function scrollKeyOf(sessionFile: string | undefined): string {
-  return sessionFile ?? 'draft'
 }
 
 /** The text of a turn that the search bar looks through. */
@@ -1000,6 +996,9 @@ export const Thread = memo(function Thread() {
               autoFocus
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
+                // A composing IME uses Enter to commit its candidate; jumping to
+                // a hit here would move the view while the reader is typing.
+                if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
                 if (event.key === 'Enter') {
                   event.preventDefault()
                   stepHit(event.shiftKey ? -1 : 1)

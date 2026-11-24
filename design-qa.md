@@ -1,3 +1,5 @@
+> **历史记录（一次项目行与输入框控件的视觉 QA）**：文中引用的截图是本机临时文件，`PlanStrip` 等组件已被删除；当前界面约定以 [AGENTS.md](AGENTS.md) 为准。
+
 # Design QA: project row and composer controls
 
 ## Visual sources
