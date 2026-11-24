@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import { translate } from '../src/renderer/src/lib/i18n'
 
 /**
  * Every user-facing string a component asks for must have a Chinese reading.
@@ -84,4 +85,21 @@ test('a translated string is never left as its own English key', () => {
     .map(([, key]) => key)
     .slice(0, 10)
   assert.deepEqual(identical, [], 'these keys translate to themselves')
+})
+
+test('main-process messages that reach the UI have a Chinese reading', () => {
+  // The main process sends its guard messages as plain English text. They land
+  // in toasts and settings that already call translate(), so the map is the
+  // only thing that makes them readable — a missing key leaves English text in
+  // the middle of a Chinese screen.
+  const samples: [string, string][] = [
+    ['No project is open.', '当前没有打开的项目。'],
+    ['Nothing is staged. Stage a file or include unstaged changes.', '没有已暂存的更改。请先暂存文件，或勾选包含未暂存更改。'],
+    ['Fill in the Feishu App ID.', '请填写飞书 App ID。'],
+    ['Image prompt is required', '请填写图片提示词']
+  ]
+  for (const [english, chinese] of samples) assert.equal(translate(english, 'zh-CN'), chinese)
+  // Text this project does not own (git, Pi, a provider) is passed through.
+  assert.equal(translate('fatal: not a git repository', 'zh-CN'), 'fatal: not a git repository')
+  assert.equal(translate('No project is open.', 'en'), 'No project is open.')
 })
