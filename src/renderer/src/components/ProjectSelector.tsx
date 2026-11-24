@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Folder, MessageSquare, Plus, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { collectProjects, sortProjects } from '../lib/projects'
@@ -27,6 +27,11 @@ export const ProjectSelector = memo(function ProjectSelector({
   const t = useT()
 
   const [searchQuery, setSearchQuery] = useState('')
+  // The filter field takes focus when the menu opens, so the menu has to be
+  // drivable from it: Popover refuses to move a highlight while an input has
+  // focus, and a menu whose arrows and Enter do nothing is not a menu.
+  const [highlighted, setHighlighted] = useState(0)
+  const listRef = useRef<HTMLDivElement | null>(null)
 
   // Deduplicate strictly by canonical path key so no duplicate projects can ever appear.
   const projects = useMemo(() => {
@@ -57,6 +62,18 @@ export const ProjectSelector = memo(function ProjectSelector({
       : noProject
         ? t('Work without a project')
         : t('Select project')
+
+  // A new query is a new list: start again at the top and keep the highlighted
+  // row in view when the arrows walk past the fold.
+  useEffect(() => {
+    setHighlighted(0)
+  }, [searchQuery])
+
+  useEffect(() => {
+    listRef.current
+      ?.querySelector('[data-highlighted="true"]')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [highlighted])
 
   return (
     <Popover
@@ -143,6 +160,29 @@ export const ProjectSelector = memo(function ProjectSelector({
               placeholder={t('Search projects')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return
+                const count = filteredProjects.length
+                if (!count) return
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  setHighlighted((current) => {
+                    const next = event.key === 'ArrowDown' ? current + 1 : current - 1
+                    return (next + count) % count
+                  })
+                  return
+                }
+                if (event.key !== 'Enter') return
+                const picked = filteredProjects[Math.min(highlighted, count - 1)]
+                if (!picked) return
+                event.preventDefault()
+                event.stopPropagation()
+                close()
+                if (!(workspace && samePath(workspace.path, picked.path))) {
+                  void switchProject(picked.path, { allowWhileRunning: true })
+                }
+              }}
               autoFocus
             />
             {searchQuery ? (
@@ -160,14 +200,15 @@ export const ProjectSelector = memo(function ProjectSelector({
           <div className="project-menu__divider" />
 
           {/* Project List */}
-          <div className="project-menu__list">
-            {filteredProjects.map((p) => {
+          <div className="project-menu__list" ref={listRef}>
+            {filteredProjects.map((p, index) => {
               const isCurrent = Boolean(workspace && samePath(workspace.path, p.path))
               return (
                 <button
                   key={p.path}
                   className="project-menu__row"
                   data-active={isCurrent || undefined}
+                  data-highlighted={index === highlighted || undefined}
                   role="menuitem"
                   title={p.path}
                   onClick={async () => {

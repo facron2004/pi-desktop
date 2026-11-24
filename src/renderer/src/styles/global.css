@@ -5066,7 +5066,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 .project-menu__row:hover,
-.project-menu__row[data-active='true'] {
+.project-menu__row[data-active='true'],
+.project-menu__row[data-highlighted='true'] {
   background: var(--bg-hover);
 }
 
