@@ -149,7 +149,15 @@ const suites = [
   'pm-pricing.test.ts',
   'image-generation.test.ts',
   'image-tool.test.ts',
-  'multi-rpc-stress.test.ts'
+  'multi-rpc-stress.test.ts',
+  // Adversarial and stress suites that used to live behind their own runners.
+  // A suite nothing invokes is worse than no suite: it reads as coverage and
+  // cannot fail. They run here, with the shared electron mock.
+  'adversarial-ipc-stress.test.ts',
+  'challenger-m1-adversarial.test.ts',
+  'challenger-m1-v2-stress.test.ts',
+  'challenger-m2-ux-lifecycle-stress.test.ts',
+  'session-supervisor-lru-stress.test.ts'
 ]
 const debug = process.argv[2] === '--debug'
 
@@ -182,7 +190,7 @@ export const dialog = { showOpenDialog: async () => ({ canceled: true, filePaths
 export const BrowserWindow = class { static getAllWindows() { return [] } isDestroyed() { return false } };
 export const Menu = { buildFromTemplate: () => ({}) };
 export const Tray = class { setContextMenu() {} setImage() {} setToolTip() {} on() {} destroy() {} isDestroyed() { return false } };
-export const ipcMain = { handle: () => {}, on: () => {} };
+export const ipcMain = { handle: () => {}, on: () => {}, removeHandler: () => {} };
 export const shell = { showItemInFolder: () => {}, trashItem: async () => {} };
 export const Notification = class { show() {} };
 export const nativeTheme = { shouldUseDarkColors: false };
@@ -221,9 +229,12 @@ try {
     execFileSync(process.execPath, [built[0]], { stdio: 'inherit', env: childEnv })
   } else {
     // Bound child-process tests so Windows startup probes do not starve each other.
-    execFileSync(process.execPath, ['--test', '--test-concurrency=4', ...built], {
+    // The per-test timeout is what turns a hung suite into one failing test instead
+    // of a process that never returns; the outer timeout is the last resort.
+    execFileSync(process.execPath, ['--test', '--test-concurrency=4', '--test-timeout=180000', ...built], {
       stdio: 'inherit',
-      env: childEnv
+      env: childEnv,
+      timeout: 15 * 60_000
     })
   }
 } finally {

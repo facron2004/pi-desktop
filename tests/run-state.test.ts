@@ -1145,7 +1145,10 @@ test('an explicit runtime start cancels the pending speculative prewarm', async 
       id: 'prewarm-explicit-start', file, cwd: '', preview: 'Existing chat', updatedAt: 1, messageCount: 1
     })
     await useAppStore.getState().ensureRuntime(file, 'explicit-action')
-    await new Promise((resolve) => setTimeout(resolve, 1100))
+    // Wait for twice the prewarm delay: the assertion is "the timer did not fire",
+    // so a margin that is only barely longer than the delay would let a slow
+    // machine pass while the bug is present (the late timer lands after the check).
+    await new Promise((resolve) => setTimeout(resolve, 2_000))
     assert.equal(ensures, 1, 'the timer must not start the same runtime a second time')
 
     await useAppStore.getState().newChat()
