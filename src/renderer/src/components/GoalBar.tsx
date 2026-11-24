@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useState } from 'react'
 import { Clock3, Maximize2, Minimize2, Pause, Play, SquarePen, Trash2 } from 'lucide-react'
 import { GOAL_STATUS_KEY, type AppLanguage } from '@shared/types'
 import { readGoalStatus } from '@shared/task-mode-state'
-import { goalBadge, goalCanToggleRun } from '@shared/goal-display'
+import { goalBadge, goalBarVisible, goalCanToggleRun } from '@shared/goal-display'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { formatElapsed } from './conversation/RunSummary'
@@ -69,6 +69,10 @@ export function GoalBar() {
   }, [goalText])
 
   if (!goal) return null
+  // A finished goal is not a bar. The work is over, so the objective belongs at
+  // the end of the transcript (`GoalCompleteRow`), where the turn that finished
+  // it ends — a header above the composer would outlive the goal it describes.
+  if (!goalBarVisible(goal.status)) return null
 
   // A restored objective may still say active even though its run is gone.
   const running = goal.status === 'active' && agentMode === 'goal' && isStreaming
@@ -79,8 +83,9 @@ export function GoalBar() {
   const badge = goalBadge(goal.status, running)
   const displayStatus = badge.status
   const canToggleRun = goalCanToggleRun(badge)
-  const summary =
-    goal.status === 'blocked' || goal.status === 'complete' ? goal.summary : undefined
+  // `complete` never reaches here: a finished goal is a closing row in the
+  // transcript, not a bar. Only a blocker still needs its reason on screen.
+  const summary = goal.status === 'blocked' ? goal.summary : undefined
   // Extension-authored reasons arrive in English; translate the ones the
   // desktop itself wrote and leave a model-written blocker exactly as it is.
   const summaryText = summary ? t(summary) : undefined

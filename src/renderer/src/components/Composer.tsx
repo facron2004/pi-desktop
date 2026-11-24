@@ -14,7 +14,6 @@ import {
 } from 'lucide-react'
 import {
   draftKeyOf,
-  rewindUndoFor,
   useAppStore,
   type ComposerDraft,
   type ComposerDraftCommand,
@@ -35,6 +34,7 @@ import {
 } from '@shared/types'
 import type { AgentMode, AppLanguage, FileEntry, PiCommand } from '@shared/types'
 import { readGoalStatus } from '@shared/task-mode-state'
+import { goalBarVisible } from '@shared/goal-display'
 import { appCommandName } from '../lib/app-commands'
 import { commandIcon } from '../lib/command-source'
 import { composerDraftAfterSend } from '../lib/composer-drafts'
@@ -200,7 +200,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   })
   const submitting = useAppStore((state) => Boolean(state.submittingDrafts[clientKey]))
   // A message edit can be taken back until something is sent from here.
-  const undoEdit = useAppStore((state) => rewindUndoFor(state) !== undefined)
+  const undoEdit = useAppStore((state) => state.rewindUndo === true)
   const undoRewind = useAppStore((state) => state.undoRewind)
   const draftEntry = useAppStore(
     useCallback((state) => (draftKey ? state.drafts[draftKey] : undefined), [draftKey])
@@ -485,7 +485,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   // Mode" is redundant there. It comes back the moment the goal is cleared, and
   // it stays for every other task mode.
   const goalIsOnScreen = useAppStore((state) =>
-    Boolean(readGoalStatus(state.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text))
+    goalBarVisible(readGoalStatus(state.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text)?.status)
   )
   const modeChip = agentMode === 'default' ? null : MODE_CHIPS[agentMode]
   const showModeChip = modeChip && !(agentMode === 'goal' && goalIsOnScreen)

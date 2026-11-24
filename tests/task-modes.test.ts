@@ -29,7 +29,7 @@ type Context = {
   hasUI: boolean
   isIdle: () => boolean
   abort: () => void
-  sessionManager: { getBranch: () => Entry[]; getLeafId: () => string | null }
+  sessionManager: { getBranch: () => Entry[]; getEntry: (id: string) => Entry | undefined; getLeafId: () => string | null }
   navigateTree: (
     targetId: string,
     options?: { summarize?: boolean }
@@ -97,7 +97,11 @@ function fixture(
     hasUI: true,
     isIdle: () => idle,
     abort: () => { aborts += 1 },
-    sessionManager: { getBranch: () => entries, getLeafId: () => leafId },
+    sessionManager: {
+      getBranch: () => entries,
+      getEntry: (id) => entries.find((entry) => entry.id === id),
+      getLeafId: () => leafId
+    },
     navigateTree: async (targetId, options) => {
       navigations.push({ targetId, options })
       // Mirrors Pi: a user message stops *before* itself, anything else is a
@@ -722,9 +726,12 @@ test('Goal Mode requests continuation until the goal is explicitly completed or 
   assert.match(next.entries[0].content, /Continue toward the active goal/)
   assert.doesNotMatch(next.entries[0].content, /Finish and verify the task/)
   assert.equal(f.emit('agent_before_settle', { ...boundary, continue: true }), undefined)
-  await f.finish('complete')
+  const outcome = await f.finish('complete')
   assert.equal(f.goal()?.status, 'complete')
   assert.equal(f.mode(), 'default')
+  // An outcome ends the turn: no request follows the report, so the model
+  // cannot keep talking about work it has just declared finished.
+  assert.equal(outcome.terminate, true, 'the finish report did not end the turn')
   assert.equal(f.emit('agent_before_settle', boundary), undefined)
   // The finished goal stays on screen, but an ordinary follow-up no longer
   // becomes a new goal just because Goal Mode was used earlier.
@@ -1067,14 +1074,27 @@ test('undoing an edit returns to the branch it hid', async () => {
   ]
   const f = fixture(entries)
   f.emit('session_start')
+  const manager = f.ctx.sessionManager
+  manager.getBranch = () => {
+    const branch: Entry[] = []
+    for (let id = manager.getLeafId(); id;) {
+      const entry = manager.getEntry(id)
+      if (!entry) break
+      branch.push(entry)
+      id = entry.parentId ?? null
+    }
+    return branch.reverse()
+  }
   // The conversation stands on its last answer when the reader edits entry-1.
   await f.ctx.navigateTree('entry-4')
   await f.command('desktop-rewind', 'entry-1')
   assert.equal(f.ctx.sessionManager.getLeafId(), f.entries.at(-1)?.id)
   assert.equal(f.entries.at(-1)?.customType, 'pi-desktop-rewind')
 
-  await f.command('desktop-undo-rewind', '')
   const source = f.entries.find((entry) => entry.customType === 'pi-desktop-rewind-source')
+  assert.ok(source)
+  assert.equal(manager.getBranch().includes(source), false)
+  await f.command('desktop-undo-rewind', '')
   assert.deepEqual(f.navigations.at(-1), { targetId: source?.id, options: { summarize: false } })
   // The restored branch ends on the marker that records the return, and its
   // parent chain runs through the branch the edit had hidden.

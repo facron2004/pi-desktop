@@ -436,7 +436,7 @@ export default function (pi) {
           ? 'The conversation has moved on since the edit'
           : 'There is nothing to undo');
       }
-      if (!ctx.sessionManager.getBranch().some(entry => entry.id === previousLeafId)) {
+      if (!ctx.sessionManager.getEntry(previousLeafId)) {
         throw new Error('The earlier branch is gone');
       }
       await ctx.navigateTree(previousLeafId, { summarize: false });
@@ -732,7 +732,11 @@ export default function (pi) {
         applyTools();
       }
       persist(ctx);
-      return { content: [{ type: 'text', text: input.summary }], details: { status: input.status } };
+      // An outcome ends the turn. The model has just said everything there is
+      // to say about it, so letting it continue produces a second message after
+      // "marked complete" — a chat that goes on about work that is already
+      // done. terminate closes the tool batch without another request.
+      return { content: [{ type: 'text', text: input.summary }], details: { status: input.status }, terminate: true };
     }
   });
 

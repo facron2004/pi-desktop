@@ -510,23 +510,26 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     await until(() => !store.getState().isStreaming && document.querySelector('.goal-bar[data-status="paused"]'), 'Pausing did not settle the goal')
     await until(() => goalButton('Resume') && !goalButton('Resume').disabled, 'Resume stayed disabled after pause')
     goalButton('Resume').click()
-    await until(() => !store.getState().isStreaming && document.querySelector('.goal-bar[data-status="complete"]'), 'The resumed goal did not complete')
+    // A finished goal leaves the composer for the end of the transcript: the
+    // bar was a header for work that is over, so the closing row carries the
+    // objective and its summary instead.
+    const goalDone = await until(() => {
+      const row = document.querySelector('.goal-done')
+      return row && !store.getState().isStreaming ? row : null
+    }, 'The finished goal did not become a closing row')
+    check(!document.querySelector('.goal-bar'), 'A finished goal kept its bar above the composer')
+    check(goalDone.querySelector('.goal-done__objective')?.textContent === goalFixture.revised,
+      'The completed row lost the objective')
+    check(goalDone.querySelector('.goal-done__summary')?.textContent?.trim(), 'The completed row lost the completion summary')
+    const threadInner = document.querySelector('.thread__inner')
+    check(threadInner?.contains(goalDone), 'The completed row did not sit at the end of the conversation')
     await until(() => [...document.querySelectorAll('.run-outcome__label')].some((label) => label.textContent.includes('Resumed goal')), 'The manually resumed round did not have its own summary')
 
     const goalFile = store.getState().activeSessionFile
     const originalPrompt = await until(() => store.getState().forkTargets.find(({ text }) => text === goalFixture.original), 'Pi did not offer the original goal prompt for editing')
-    await until(() => document.querySelector('.goal-bar__objective'), 'The completed goal could not be edited')
-    // The objective is a label: the pencil in the actions row is the editor.
-    // `until` resolves to whatever the probe returns, so the probe has to hand
-    // back the element: `button && !button.disabled` is a boolean, and a
-    // boolean has no `click`.
-    const editButton = await until(() => {
-      const button = goalButton('Edit')
-      return button && !button.disabled ? button : null
-    }, 'The completed goal had no edit button')
-    editButton.click()
-    const laterEditor = await until(() => document.querySelector('.goal-bar__input'), 'The later goal editor did not open')
-    setInputValue(laterEditor, 'Unsaved draft for the later objective')
+    // Editing a completed goal is not offered any more, so the rewind is made
+    // from the request that created it; the restored branch brings the live
+    // objective back, which is what the bar has to agree with.
     await store.getState().editMessageFrom(originalPrompt.entryId, goalFixture.original)
     await until(() => document.querySelector('.goal-bar__objective')?.textContent === goalFixture.original, 'Rewinding kept the goal or edit draft from the branch that was left')
     check(store.getState().activeSessionFile === goalFile && store.getState().agentMode === 'goal', 'Rewinding failed to restore Goal Mode in the same conversation')

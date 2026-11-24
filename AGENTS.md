@@ -1491,6 +1491,18 @@ the active tool loadout and publishes the mode on `pi-desktop-mode` and the goal
 on `pi-desktop-goal` (JSON `{text,status,summary}`). `GoalBar` only projects that
 status and sends `/desktop-goal pause|resume|clear|edit` back through the store.
 
+**A finished goal leaves the composer.** The bar is a header for work in
+progress, so once the extension reports `complete` it stops rendering
+(`goalBarVisible`) and the objective becomes the conversation's closing row:
+`conversation/GoalCompleteRow` draws the check, the objective and the completion
+summary at the end of the transcript, where the turn that finished it ends. Its
+`clear` action is the only way to retire the row, and `blocked` deliberately
+keeps its bar — a blocker is a question (resume it, clear it), not an outcome.
+`desktop_goal_finish` returns `terminate: true` for the same reason: the model has
+just stated the outcome, and a request after it produced a second message about
+work already declared done. Only an *outcome* terminates; the auto-continue path
+still asks the model to keep working.
+
 Swarm Mode is a team of persistent workers: the main chat leads, `swarm_spawn`
 starts a worker, `swarm_task` queues work on one, `swarm_message` talks to it,
 `swarm_collect` and `swarm_status` read the team, and `swarm_disband` ends it
