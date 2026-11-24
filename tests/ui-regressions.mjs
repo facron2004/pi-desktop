@@ -2155,12 +2155,22 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   // The flat column has no project rows at all, so an archived conversation has
   // nothing around it to say which folder it came from. It leaves the column and
   // comes back under its own project instead.
+  // The menu re-renders and a menu item captured a moment ago can be gone by the
+  // time a click is dispatched. Re-open and re-query instead of trusting nodes.
   const setGroupBy = async (label, mode) => {
-    document.querySelector('button[aria-label="View options"]').click()
-    const option = await until(() => [...document.querySelectorAll('.view-option-menu [role="menuitemradio"]')]
-      .find((node) => node.textContent.trim() === label), `Group by option ${label} is missing`)
-    option.click()
-    await until(() => store.getState().settings.sidebarGroupBy === mode, `Grouping did not switch to ${mode}`)
+    const deadline = performance.now() + 15000
+    while (performance.now() < deadline) {
+      if (store.getState().settings.sidebarGroupBy === mode) return
+      if (!document.querySelector('.view-option-menu [role="menuitemradio"]')) {
+        document.querySelector('button[aria-label="View options"]')?.click()
+      }
+      const option = [...document.querySelectorAll('.view-option-menu [role="menuitemradio"]')]
+        .find((node) => node.textContent.trim() === label)
+      if (option) option.click()
+      else await pause(50)
+      await pause(50)
+    }
+    throw new Error(`Grouping did not switch to ${mode}`)
   }
   const archivedGroups = () => [...document.querySelectorAll('.sidebar__archive-group')].map((node) => ({
     name: node.querySelector('.sidebar__archive-group-name')?.textContent.trim() ?? '',
@@ -2180,21 +2190,20 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
 
   // The「对话」head is a fold control: it hides the list it names and stays on
   // screen itself, because the caret is the only way back.
-  const sectionToggle = await until(
-    () => document.querySelector('.sidebar__projects .sidebar__section-toggle'),
-    'The chat section head has no fold control'
-  )
-  check(sectionToggle.getAttribute('aria-expanded') === 'true', 'The chat section started folded')
+  const sectionToggle = () => document.querySelector('.sidebar__projects .sidebar__section-toggle')
+  await until(() => sectionToggle(), 'The chat section head has no fold control')
+  check(sectionToggle().getAttribute('aria-expanded') === 'true', 'The chat section started folded')
   const visibleRows = () => [...document.querySelectorAll('.sidebar__projects .session-item')]
     .filter((row) => row.getClientRects().length > 0).length
   check(visibleRows() > 0, 'The chat section listed no rows to fold')
-  sectionToggle.click()
-  await until(() => sectionToggle.getAttribute('aria-expanded') === 'false',
+  // Re-query the toggle on every step: a fold re-renders the head.
+  sectionToggle()?.click()
+  await until(() => sectionToggle()?.getAttribute('aria-expanded') === 'false',
     'Folding the chat section did not collapse it')
   await until(() => visibleRows() === 0, 'The folded chat section still draws its rows')
-  check(sectionToggle.getClientRects().length > 0, 'Folding the chat section hid the caret that unfolds it')
-  sectionToggle.click()
-  await until(() => sectionToggle.getAttribute('aria-expanded') === 'true',
+  check(sectionToggle()?.getClientRects().length > 0, 'Folding the chat section hid the caret that unfolds it')
+  sectionToggle()?.click()
+  await until(() => sectionToggle()?.getAttribute('aria-expanded') === 'true',
     'Unfolding the chat section did not restore it')
   await until(() => visibleRows() > 0, 'The unfolded chat section drew no rows')
   passed.push('the chat section head folds its list and keeps its caret')
@@ -2204,15 +2213,24 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
 
   const limitedHits = await window.pi.sessions.search(archiveQuery, 1)
   check(limitedHits.length === 1 && limitedHits[0].name === archivedTitle, 'A newer active hit used the archived search result limit')
-  const archivedRow = await until(() => [...document.querySelectorAll('.session-item')].find(
+  const archivedRow = () => [...document.querySelectorAll('.session-item')].find(
     (row) => row.querySelector('.session-item__title')?.textContent.trim() === archivedTitle
-  ), 'The archived conversation was not listed')
-  archivedRow.querySelector('.session-item__more').click()
-  const restore = await until(() => [...document.querySelectorAll('.session-actions-menu [role="menuitem"]')]
-    .find((node) => node.textContent.trim() === 'Restore'), 'The archived conversation has no Restore action')
+  )
+  await until(() => archivedRow(), 'The archived conversation was not listed')
+  // The row and its action menu are replaced by a re-render; open the menu from
+  // whichever row is on screen and re-read the item before clicking it.
+  const restore = await until(() => {
+    const item = [...document.querySelectorAll('.session-actions-menu [role="menuitem"]')]
+      .find((node) => node.textContent.trim() === 'Restore')
+    if (item) return item
+    if (!document.querySelector('.session-actions-menu')) archivedRow()?.querySelector('.session-item__more')?.click()
+    return null
+  }, 'The archived conversation has no Restore action')
   restore.click()
   await until(() => store.getState().settings.archivedSessions?.length === 0, 'Restore did not remove the archive status')
-  await until(() => !archivedRow.isConnected, 'Restoring a conversation left it in the archived list')
+  // A restored row leaves the archived list; the awaited value is the title, not
+  // the element captured before the click.
+  await until(() => !archivedRow(), 'Restoring a conversation left it in the archived list')
   await setArchiveFilter('Hide archived', 'hidden')
   await checkArchiveSearch('restored', [activeTitle, archivedTitle].join(','))
   passed.push('title and text search honor the archive filter, and the sidebar restores archived conversations')
