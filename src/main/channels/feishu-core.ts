@@ -95,8 +95,10 @@ export function createFeishuAdapter(
       }
       text = text.replace(/@_user_\d+/g, '').trim()
       if (!text) return
+      // A re-push of an event whose handler was slow is the same instruction.
+      if (context.rememberInbound?.(messageId) === false) return
       lastChatId = chatId
-      void context.router(channelId, text).catch((error: unknown) => logError(channelId, error))
+      void context.router(channelId, text, chatId).catch((error: unknown) => logError(channelId, error))
     } catch (error) {
       logError(channelId, error)
     }
@@ -170,11 +172,16 @@ export function createFeishuAdapter(
       }
     },
 
-    async send(text: string): Promise<void> {
+    async send(text: string, target?: string): Promise<void> {
       if (stopped || !client) throw new Error('The Feishu channel is not running.')
-      const target = lastChatId ?? config.allowedChatIds[0]
-      if (!target) return
-      await client.sendText(target, text.slice(0, MAX_IM_MESSAGE_CHARS))
+      // The chat that asked comes first; a push nobody asked for (a desktop run
+      // finishing) falls back to the last chat, then the first allowed one.
+      const chatId = target ?? lastChatId ?? config.allowedChatIds[0]
+      if (!chatId) {
+        logError(channelId, new Error('No Feishu chat to reply to yet.'))
+        return
+      }
+      await client.sendText(chatId, text.slice(0, MAX_IM_MESSAGE_CHARS))
     },
 
     async test(): Promise<{ ok: boolean; error?: string }> {

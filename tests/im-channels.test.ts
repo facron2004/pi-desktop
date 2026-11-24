@@ -32,12 +32,16 @@ interface FakeAdapter extends ChannelAdapter {
 function fakeAdapter(): FakeAdapter {
   const adapter: FakeAdapter = {
     sent: [],
+    targets: [],
     stopped: false,
     started: false,
     contexts: [],
     async start() { this.started = true },
     async stop() { this.stopped = true },
-    async send(text: string) { this.sent.push(text) },
+    async send(text: string, target?: string) {
+      this.sent.push(text)
+      this.targets.push(target)
+    },
     async test() { return { ok: true } },
     state: () => ({ state: 'connected' as const })
   }
@@ -424,4 +428,84 @@ test('IM /new prompts real text (not "/new"), crash settles notify, a fifth chan
   assert.equal(instance.hasRuntime('channel-1'), true)
   assert.equal(adapter1.stopped, false, 'a refused add must not stop another channel')
   await instance.dispose()
+})
+
+test('replies go to the chat that asked while another chat is talking', async (t) => {
+  const adapter = fakeAdapter()
+  const { instance } = service(t, adapter)
+  await instance.save(FEISHU)
+  await instance.initialize()
+  ;(instance as unknown as { resolveBoundFile: () => Promise<string | null> }).resolveBoundFile = async () => 'C:/project/session.jsonl'
+  const router = adapter.contexts[0].router
+  await router('channel-1', '/status', 'chat-a')
+  await router('channel-1', '/help', 'chat-b')
+  // Each answer goes to the chat that asked, not to whichever spoke last.
+  assert.deepEqual(adapter.targets, ['chat-a', 'chat-b'])
+  await instance.dispose()
+})
+
+test('inbound turns are serialized per channel', async (t) => {
+  const adapter = fakeAdapter()
+  const { instance, supervisor } = service(t, adapter)
+  await instance.save(FEISHU)
+  await instance.initialize()
+  ;(instance as unknown as { resolveBoundFile: () => Promise<string | null> }).resolveBoundFile = async () => 'C:/project/session.jsonl'
+  const router = adapter.contexts[0].router
+  let releaseFirst: () => void = () => {}
+  const gate = new Promise<void>((resolve) => { releaseFirst = resolve })
+  const started: string[] = []
+  supervisor.request = async (...args: unknown[]) => {
+    started.push(String((args[2] as { message?: string } | undefined)?.message ?? ''))
+    if (started.length === 1) await gate
+    return {}
+  }
+  const first = router('channel-1', 'first')
+  const second = router('channel-1', 'second')
+  await new Promise<void>((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(started, ['first'], 'the second message overtook the first')
+  releaseFirst()
+  await Promise.all([first, second])
+  assert.deepEqual(started, ['first', 'second'])
+  await instance.dispose()
+})
+
+test('a re-pushed platform event is dropped even after the adapter is rebuilt', async () => {
+  const seen = new Set<string>()
+  const rememberInbound = (id: string): boolean => {
+    if (seen.has(id)) return false
+    seen.add(id)
+    return true
+  }
+  const routed: string[] = []
+  const build = () => {
+    let handler: ((data: unknown) => void) | undefined
+    const adapter = createFeishuAdapter(
+      FEISHU,
+      { router: async (_id, text) => { routed.push(text) }, onState: () => {}, rememberInbound },
+      {
+        createClient: () => ({ sendText: async () => {} }),
+        createWsClient: () => ({
+          async start(onMessage, handlers) {
+            handler = onMessage
+            handlers?.onReady()
+          },
+          close() {}
+        })
+      }
+    )
+    return { adapter, fire: (event: unknown) => handler?.(event) }
+  }
+  const event = {
+    message: { message_id: 'om_same', message_type: 'text', chat_id: 'oc_chat', content: JSON.stringify({ text: 'deploy' }) }
+  }
+  const first = build()
+  await first.adapter.start()
+  first.fire(event)
+  first.fire(event)
+  const second = build()
+  await second.adapter.start()
+  second.fire(event)
+  assert.deepEqual(routed, ['deploy'], 'a re-pushed event ran the instruction again')
+  await first.adapter.stop()
+  await second.adapter.stop()
 })
