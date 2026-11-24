@@ -8,7 +8,7 @@
 
 在一个窗口里完成对话、代码修改、Git 审查与终端操作。
 
-[![Release](https://img.shields.io/github/v/release/facron2004/pi-desktop?style=flat-square&color=2563eb)](https://github.com/facron2004/pi-desktop/releases/latest) [![Platform](https://img.shields.io/badge/Windows-x64%20%7C%20ARM64-0078D4?style=flat-square)](https://github.com/facron2004/pi-desktop/releases/latest) [![Pi](https://img.shields.io/badge/Pi-1.5.2-7c3aed?style=flat-square)](https://github.com/earendil-works/pi) [![Electron](https://img.shields.io/badge/Electron-44.10-47848F?style=flat-square&logo=electron&logoColor=white)](package.json) [![React](https://img.shields.io/badge/React-19-149ECA?style=flat-square&logo=react&logoColor=white)](package.json) [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white)](package.json) [![License](https://img.shields.io/badge/License-MIT-16a34a?style=flat-square)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/facron2004/pi-desktop?style=flat-square&color=2563eb)](https://github.com/facron2004/pi-desktop/releases/latest) [![Platform](https://img.shields.io/badge/Windows-x64%20%7C%20ARM64-0078D4?style=flat-square)](https://github.com/facron2004/pi-desktop/releases/latest) [![Pi](https://img.shields.io/badge/Pi-1.6.0-7c3aed?style=flat-square)](https://github.com/earendil-works/pi) [![Electron](https://img.shields.io/badge/Electron-44.10-47848F?style=flat-square&logo=electron&logoColor=white)](package.json) [![React](https://img.shields.io/badge/React-19-149ECA?style=flat-square&logo=react&logoColor=white)](package.json) [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white)](package.json) [![License](https://img.shields.io/badge/License-MIT-16a34a?style=flat-square)](LICENSE)
 
 [下载](https://github.com/facron2004/pi-desktop/releases/latest) · [快速上手](#快速上手) · [使用指南](docs/user-guide.md) · [扩展市场说明](docs/marketplace.md) · [Mermaid 图表插件](docs/mermaid-plugin.md) · [PM 插件套件](docs/pm-plugin-suite.md) · [开发文档](docs/development.md) · [更新日志](CHANGELOG.md)
 
@@ -16,7 +16,7 @@
 
 ![Pi Desktop 浅色工作台](docs/screenshots/workbench-light.png)
 
-<p align="center"><sub>实际应用截图（v0.11.2 构建；浅色三栏工作台、任务进度轨道、Mermaid 图表与代码改动摘要）；对话与项目内容为演示数据。</sub></p>
+<p align="center"><sub>实际应用截图（浅色三栏工作台、任务进度轨道、Mermaid 图表与代码改动摘要）；对话与项目内容为演示数据。</sub></p>
 
 ## 简介
 

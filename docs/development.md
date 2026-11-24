@@ -4,7 +4,7 @@
 
 ## 环境与启动
 
-需要 Node.js 22.19+、npm 和 Git。Pi 作为项目依赖安装，当前锁定为 1.4.0。
+需要 Node.js 22.19+、npm 和 Git。Pi 作为项目依赖安装，版本以 `package.json` 中的 `@earendil-works/pi-coding-agent` 为准。
 
 ```bash
 git clone https://github.com/facron2004/pi-desktop.git
