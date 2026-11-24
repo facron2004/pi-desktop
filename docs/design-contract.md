@@ -1,3 +1,5 @@
+> **历史契约（2026-10，动手前固定）**：本文用来约束一次前端改版，此后界面又有变化——「SessionBar 是设置唯一入口」一项已过时（SessionBar 已并入输入框，见 AGENTS.md 的「The session bar」），其余数值以 `tokens.css` 现状为准，行为与产品约束以 [AGENTS.md](../AGENTS.md) 为准。
+
 # Design Contract — Pi Desktop「全局质感 + 对话流」
 
 依据 `agent-desktop-design-system`（SKILL.md 正文原则 + 本项目 `tokens.css`）。本文件在动手前固定，后续每一处改动都对照它，避免各页面各长一套风格。
