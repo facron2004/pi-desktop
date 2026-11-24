@@ -387,6 +387,8 @@ const zhCN: Record<string, string> = {
   'New version available: {version}': '发现新版本：{version}',
   'Reinstall & Upgrade': '重新安装升级',
   'Open download page': '打开下载页',
+  Note: '说明',
+  'Development and portable builds install from the release page; the installed app updates itself.': '开发版与免安装版没有内置安装程序，点击后会打开下载页；安装版会在应用内自动下载并重启安装。',
   'Release page opened': '已打开发行版下载页',
   'Opening...': '正在打开...',
   'Upgrading...': '正在升级...',

@@ -395,9 +395,11 @@ export const Sidebar = memo(function Sidebar({
   }
 
   // What the ring cannot say: the installer size and the current phase.
-  // Nothing else belongs in this card.
+  // Nothing else belongs in this card — except the one thing a build without an
+  // installer of its own has to explain, because its click leaves the app.
   const getUpdateTip = () => {
     if (!appUpdate) return { title: '', rows: [] as SidebarTipRow[] }
+    const manual = !updateSupported
     const status = updateFailed
       ? t('Update failed')
       : updateReady
@@ -406,11 +408,20 @@ export const Sidebar = memo(function Sidebar({
           ? t('Restarting to install the update…')
           : updateDownloading
             ? `${t('Downloading…')} ${updatePercent}%`
-            : t('Download update')
-    const rows: SidebarTipRow[] = [
-      { label: t('Installer size'), value: formatBytes(updateInstallerBytes) || '—' },
-      { label: t('Status'), value: status }
-    ]
+            : manual
+              ? t('Open download page')
+              : t('Download update')
+    const rows: SidebarTipRow[] = []
+    if (updateInstallerBytes) {
+      rows.push({ label: t('Installer size'), value: formatBytes(updateInstallerBytes) })
+    }
+    rows.push({ label: t('Status'), value: status })
+    if (manual && !updateBusy) {
+      rows.push({
+        label: t('Note'),
+        value: t('Development and portable builds install from the release page; the installed app updates itself.')
+      })
+    }
     return { title: `v${appUpdate.latest}`, rows }
   }
   const updateTipContent = updateTipAnchor && appUpdate ? getUpdateTip() : null
