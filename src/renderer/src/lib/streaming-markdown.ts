@@ -11,6 +11,14 @@
  * sees (a list restarting at 1, a blockquote losing its bar, a reference link
  * turning into literal text), so anything this scanner is unsure about stays
  * in the tail and is parsed as part of the live document.
+ *
+ * One thing the split deliberately does not do: cut inside a list whose items
+ * have no blank line between them. A boundary there renders as two lists (a
+ * numbered list restarting at 1), which changes the answer, so the items stay
+ * in the live tail and are re-parsed on every frame. That cost is bounded by
+ * what the reader is watching being written and is small next to the case the
+ * open-fence fast path exists for — a streamed log or diff, whose length is
+ * unbounded — so it is left alone rather than paid for with a visible seam.
  */
 
 export interface StreamingMarkdownSplit {
