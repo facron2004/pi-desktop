@@ -408,11 +408,10 @@ export class MemoryService extends EventEmitter {
     for (const session of listed) {
       if (session.messageCount < 2 || session.file.startsWith('draft:')) continue
       const record = ledger.sessions[canonicalSessionFile(session.file)] ?? ledger.sessions[session.file]
-      if (
-        record &&
-        !(record.skipped === 'error' && (record.attempts ?? 0) < 3) &&
-        this.store.wasProcessed(session.file, undefined, record)
-      ) continue
+      if (ledgerRecordSkipsLearning(record, {
+        processed: Boolean(record) && this.store.wasProcessed(session.file, undefined, record),
+        skipExternalContext: this.getSettings().memorySkipExternalContext !== false
+      })) continue
       const insertion = sessions.findIndex((candidate) => session.updatedAt > candidate.updatedAt)
       if (insertion < 0) {
         if (sessions.length < limit) sessions.push(session)
@@ -534,8 +533,34 @@ export class MemoryService extends EventEmitter {
 
   private emitChanged(): void {
     if (this.disposed) return
-    this.emit('changed', this.store.state(this.pending.size, this.running > 0, this.lastError))
+    // A listener (or a state projection over a malformed store) that throws must
+    // not escape into Pi's event dispatch, and must not leave `generating` true
+    // for the rest of the session.
+    try {
+      this.emit('changed', this.store.state(this.pending.size, this.running > 0, this.lastError))
+    } catch (error) {
+      console.error('[pi-desktop] could not publish the memory state:', error)
+    }
   }
+}
+
+
+/**
+ * Whether a ledger record means "this conversation is already handled".
+ *
+ * Two records are not facts about the chat and must not block it forever: an
+ * `external-context` skip is a policy decision (turning the filter off has to
+ * make those chats learnable again), and a failed attempt stays retryable until
+ * it has failed three times.
+ */
+export function ledgerRecordSkipsLearning(
+  record: { skipped?: string; attempts?: number } | undefined,
+  options: { processed: boolean; skipExternalContext: boolean }
+): boolean {
+  if (!record || !options.processed) return false
+  if (record.skipped === 'external-context' && !options.skipExternalContext) return false
+  if (record.skipped === 'error' && (record.attempts ?? 0) < 3) return false
+  return true
 }
 
 function statSafe(file: string): MemorySessionRevision | undefined {

@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events'
 import { performance } from 'node:perf_hooks'
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   renameSync,
@@ -324,6 +325,99 @@ test('merge enforces the per-project cap without limiting other projects', async
   assert.equal(countFor(alphaCwd), MAX_PROJECT_ENTRIES)
   assert.equal(countFor(betaCwd), 12)
   assert.equal(entries.length, MAX_PROJECT_ENTRIES + 12)
+})
+
+
+test('a corrupt memories.json is set aside instead of being overwritten', async (t) => {
+  const dir = tempDir(t, 'corrupt-store')
+  const store = new MemoryStore(dir)
+  store.ensure()
+  // A hand-edited file with a trailing comma used to read as "no memories" and
+  // the next learning pass wrote the empty list back over it.
+  const raw = '{ "version": 1, "entries": [ this is not json ] }'
+  writeFileSync(store.entriesFile, raw, 'utf8')
+
+  assert.deepEqual(store.readEntries(), [])
+  const quarantined = readdirSync(dir).filter((name) => name.startsWith('memories.json.corrupt-'))
+  assert.equal(quarantined.length, 1, 'the unreadable file was not preserved')
+  assert.equal(readFileSync(path.join(dir, quarantined[0]!), 'utf8'), raw)
+
+  await store.merge([{ scope: 'global', kind: 'knowledge', text: 'Only this fact is stored after the recovery.' }])
+  assert.equal(store.readEntries().length, 1)
+  assert.equal(readdirSync(dir).filter((name) => name.startsWith('memories.json.corrupt-')).length, 1,
+    'reading again quarantined the file a second time')
+})
+
+test('a hand-edited entry with a non-string path cannot wedge the store', (t) => {
+  const dir = tempDir(t, 'bad-entry')
+  const store = new MemoryStore(dir)
+  store.ensure()
+  writeFileSync(store.entriesFile, JSON.stringify({
+    version: 1,
+    updatedAt: 0,
+    entries: [
+      // memoryPathKey calls .replace on this, which threw from state() and from
+      // every changed notification.
+      { id: 'broken', scope: 'global', kind: 'preference', text: 'Keep release notes short.', projectPath: 42, updatedAt: 'yesterday' },
+      { id: 'good', scope: 'global', kind: 'knowledge', text: 'The build runs through electron-vite.' }
+    ]
+  }), 'utf8')
+
+  const state = store.state(0, false)
+  assert.equal(state.entries.length, 1, 'the malformed entry should be dropped, not throw')
+  assert.equal(state.entries[0]!.id, 'good')
+})
+
+test('removing a memory also removes the session note it left behind', async (t) => {
+  const dir = tempDir(t, 'remove-note')
+  const store = new MemoryStore(dir)
+  const sessionFile = path.join(dir, 'note-session.jsonl')
+  writeSessionFile(sessionFile, alphaCwd, 'note-session')
+  await store.merge([{
+    scope: 'project',
+    kind: 'knowledge',
+    text: 'The release script lives in scripts/release.ts.',
+    projectPath: alphaCwd,
+    source: sessionFile
+  }])
+  await store.writeRolloutSummary(sessionFile, { cwd: alphaCwd, candidates: [] })
+  const note = path.join(store.rolloutDir, 'note-session.md')
+  assert.equal(existsSync(note), true)
+
+  const [entry] = store.readEntries()
+  assert.ok(entry)
+  await store.remove(entry.id)
+  // The injected prompt points the model at these notes, so a deleted fact must
+  // not stay reachable through the note it was learned from.
+  assert.equal(existsSync(note), false, 'the note survived the deletion it described')
+})
+
+test('merge reports only entries that survived the caps', async (t) => {
+  const store = new MemoryStore(tempDir(t, 'cap-added'))
+  await store.merge(distinctCandidates(MAX_ENTRIES, 'full-store'))
+  // An environment fact has the lowest keep score, so a full store drops it.
+  const result = await store.merge([{ scope: 'global', kind: 'environment', text: 'A newly discovered toolchain version.' }])
+  assert.equal(result.total, MAX_ENTRIES)
+  assert.equal(result.added, 0, 'the status line claimed a memory the caps had dropped')
+})
+
+test('a context-skipped ledger record stops filtering when the policy is off', async (t) => {
+  const dir = tempDir(t, 'policy-off')
+  const store = new MemoryStore(dir)
+  const sessionFile = path.join(dir, 'skipped-session.jsonl')
+  writeSessionFile(sessionFile, alphaCwd, 'skipped-session')
+  await store.markProcessed(sessionFile, 'external-context')
+  assert.equal(store.wasProcessed(sessionFile, undefined, store.sessionRecord(sessionFile)), true)
+
+  const { ledgerRecordSkipsLearning } = await import('../src/main/memory/service')
+  const record = store.sessionRecord(sessionFile)
+  // The record is a policy decision, not a fact about the conversation: with the
+  // filter switched off the chat has to become learnable again.
+  assert.equal(ledgerRecordSkipsLearning(record, { processed: true, skipExternalContext: false }), false)
+  assert.equal(ledgerRecordSkipsLearning(record, { processed: true, skipExternalContext: true }), true)
+  // A failed attempt stays retryable while the attempts remain under three.
+  assert.equal(ledgerRecordSkipsLearning({ skipped: 'error', attempts: 2 }, { processed: true, skipExternalContext: true }), false)
+  assert.equal(ledgerRecordSkipsLearning({ skipped: 'error', attempts: 3 }, { processed: true, skipExternalContext: true }), true)
 })
 
 /* ------------------------------------------------------------------ *

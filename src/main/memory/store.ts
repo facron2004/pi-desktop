@@ -130,11 +130,29 @@ function recentLedgerSessions(
   return Object.fromEntries(entries.slice(0, MAX_MEMORY_LEDGER_SESSIONS))
 }
 
-function readJson<T>(file: string, fallback: T): T {
+/**
+ * Read a JSON file, setting aside one that exists but cannot be parsed.
+ *
+ * Falling back to the empty document and later writing it back destroyed every
+ * stored memory when an editor left a trailing comma in memories.json: the
+ * settings page said "no memories yet" and the next learning pass persisted the
+ * empty list. The scheduled-tasks store already quarantines a corrupt file and
+ * starts empty; memory does the same, so the bytes stay recoverable and the log
+ * says what happened.
+ */
+function readJson<T>(file: string, fallback: T, label: string): T {
+  if (!existsSync(file)) return fallback
   try {
-    if (!existsSync(file)) return fallback
     return JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) as T
-  } catch {
+  } catch (error) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const quarantine = `${file}.corrupt-${stamp}`
+    try {
+      renameSync(file, quarantine)
+      console.error(`[pi-desktop] ${label} could not be read and was moved to ${path.basename(quarantine)}:`, error)
+    } catch (renameError) {
+      console.error(`[pi-desktop] ${label} could not be read and could not be set aside:`, renameError)
+    }
     return fallback
   }
 }
@@ -204,7 +222,9 @@ function stripExtendedPath(value: string): string {
 
 /** Two spellings of the same folder compare equal on Windows. */
 export function memoryPathKey(value: string | undefined): string {
-  if (!value) return ''
+  // Entries come from a user-editable file; a non-string path must read as "no
+  // project" rather than throw from state() and its listeners.
+  if (!value || typeof value !== 'string') return ''
   const resolved = path.resolve(stripExtendedPath(value)).replace(/[\\/]+$/, '')
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
@@ -405,7 +425,7 @@ export class MemoryStore {
     if (version !== undefined && version === this.entriesFileVersion && this.entriesCache) {
       return cloneEntries(this.entriesCache)
     }
-    const file = readJson<MemoryFile>(this.entriesFile, { version: 1, updatedAt: 0, entries: [] })
+    const file = readJson<MemoryFile>(this.entriesFile, { version: 1, updatedAt: 0, entries: [] }, 'the memory list')
     const entries = !Array.isArray(file.entries)
       ? []
       : file.entries
@@ -415,7 +435,15 @@ export class MemoryStore {
               typeof entry.id === 'string' &&
               typeof entry.text === 'string' &&
               (entry.scope === 'global' || entry.scope === 'project') &&
-              KIND_ORDER.includes(entry.kind)
+              KIND_ORDER.includes(entry.kind) &&
+              // A hand-edited or foreign file can carry any type here;
+              // memoryPathKey() calls .replace on it and a throw from state()
+              // would wedge the settings page and every changed notification.
+              (entry.projectPath === undefined || typeof entry.projectPath === 'string') &&
+              (entry.projectName === undefined || typeof entry.projectName === 'string') &&
+              (entry.source === undefined || typeof entry.source === 'string') &&
+              (entry.createdAt === undefined || (typeof entry.createdAt === 'number' && Number.isFinite(entry.createdAt))) &&
+              (entry.updatedAt === undefined || (typeof entry.updatedAt === 'number' && Number.isFinite(entry.updatedAt)))
           )
           .map((entry) => ({
             ...entry,
@@ -453,7 +481,7 @@ export class MemoryStore {
   private mergeUnlocked(candidates: MemoryCandidate[]): MergeResult {
     const entries = this.readEntries()
     const now = Date.now()
-    let added = 0
+    const newIds = new Set<string>()
     for (const raw of candidates) {
       const candidate = sanitizeCandidate(raw)
       if (!candidate) continue
@@ -470,8 +498,9 @@ export class MemoryStore {
         if (candidate.source) existing.source = candidate.source
         continue
       }
+      const id = randomUUID()
       entries.push({
-        id: randomUUID(),
+        id,
         scope: candidate.scope,
         kind: candidate.kind,
         text: candidate.text,
@@ -481,10 +510,13 @@ export class MemoryStore {
         createdAt: now,
         updatedAt: now
       })
-      added += 1
+      newIds.add(id)
     }
     const written = this.writeEntries(entries)
-    return { added, total: written.length }
+    // enforceCaps can drop a fresh entry when the store or its project is full;
+    // the status line must not claim to have learned something that is not in
+    // the list.
+    return { added: written.filter((entry) => newIds.has(entry.id)).length, total: written.length }
   }
 
   async remove(id: string): Promise<void> {
@@ -492,8 +524,28 @@ export class MemoryStore {
       const ledger = this.readLedger()
       ledger.generation = (ledger.generation ?? 0) + 1
       this.writeLedger(ledger)
-      this.writeEntries(this.readEntries().filter((entry) => entry.id !== id))
+      const entries = this.readEntries()
+      const removed = entries.find((entry) => entry.id === id)
+      const remaining = entries.filter((entry) => entry.id !== id)
+      this.writeEntries(remaining)
+      // The rollout note is a projection of what a session taught, and the
+      // injected prompt points the model at those notes by session. The
+      // confirmation promises the entry is gone from memory, so the note goes
+      // with the last entry that references that session.
+      if (removed?.source && !remaining.some((entry) => entry.source === removed.source)) {
+        this.removeRolloutNote(removed.source)
+      }
     })
+  }
+
+  /** Delete one session's rollout note; a note someone holds open stays for now. */
+  private removeRolloutNote(sessionFile: string): void {
+    try {
+      const name = `${path.basename(sessionFile, path.extname(sessionFile))}.md`
+      rmSync(path.join(this.rolloutDir, name), { force: true })
+    } catch (error) {
+      console.error('[pi-desktop] could not remove the memory session note:', error)
+    }
   }
 
   async clear(): Promise<void> {
@@ -522,7 +574,7 @@ export class MemoryStore {
     if (version !== undefined && version === this.ledgerFileVersion && this.ledgerCache) {
       return cloneLedger(this.ledgerCache)
     }
-    const file = readJson<MemoryLedgerFile>(this.ledgerFile, { version: 1, sessions: {} })
+    const file = readJson<MemoryLedgerFile>(this.ledgerFile, { version: 1, sessions: {} }, 'the memory learning record')
     const sessions = file?.sessions
     const ledger: MemoryLedgerFile = {
       version: 1,
