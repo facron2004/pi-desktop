@@ -7679,6 +7679,14 @@ kbd {
   line-height: 1.65;
   color: var(--text-muted);
 }
+/* A notice's second line: the version it is about, quieter than the sentence
+   that says what happened. */
+.confirm__detail {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--text-faint);
+}
 
 .drawer__body--flush {
   padding: 0;

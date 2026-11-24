@@ -31,7 +31,10 @@ import {
   startAppUpdateDownload,
   subscribeAppUpdateCheck,
   subscribeAvailableAppUpdate,
-  subscribePiCliUpdate
+  subscribePiCliUpdate,
+  appUpdateResultNotice,
+  dismissAppUpdateResult,
+  subscribeAppUpdateResult
 } from '../src/renderer/src/lib/app-update'
 import { clearUpdateState, readUpdateState, readUpdateStateForVersion, writeUpdateState } from '../src/main/update-state'
 import {
@@ -307,7 +310,41 @@ test('the startup cache restores a release and a late cache read preserves a new
   }
 })
 
-test('manual checks share one request, publish the reading and stay retryable', async () => {
+test('a manual check says "you are current" once, and an update only lights the button', async () => {
+  const previousWindow = globalThis.window
+  const current = { app: { current: '0.11.13', hasUpdate: false }, piCli: { current: '1.6.0', hasUpdate: false } }
+  const newer = { app: { current: '0.11.13', latest: '0.11.14', hasUpdate: true }, piCli: { current: '1.6.0', hasUpdate: false } }
+  let next: unknown = current
+  const bridge = { app: { checkUpdate: async () => next } }
+  Object.assign(globalThis, { window: Object.assign(new EventTarget(), { pi: bridge }) })
+  const notices: unknown[] = []
+  const unsubscribe = subscribeAppUpdateResult((notice) => notices.push(notice))
+  try {
+    dismissAppUpdateResult()
+    await checkForAppUpdates()
+    assert.deepEqual(appUpdateResultNotice(), { kind: 'current', current: '0.11.13' })
+    assert.deepEqual(notices.at(-1), { kind: 'current', current: '0.11.13' })
+    dismissAppUpdateResult()
+    assert.equal(appUpdateResultNotice(), null)
+
+    // A release to install belongs on the sidebar button: no notice, and one
+    // that is already showing is dismissed.
+    next = newer
+    await checkForAppUpdates()
+    assert.equal(appUpdateResultNotice(), null)
+
+    // A check that could not answer says so instead of passing silently.
+    next = { app: { current: '0.11.13', hasUpdate: false, error: 'offline' }, piCli: { current: '1.6.0', hasUpdate: false } }
+    await checkForAppUpdates()
+    assert.deepEqual(appUpdateResultNotice(), { kind: 'error', error: 'offline' })
+  } finally {
+    unsubscribe()
+    dismissAppUpdateResult()
+    Object.assign(globalThis, { window: previousWindow })
+  }
+})
+
+test('a manual check shares one request, publishes the reading and stays retryable', async () => {
   const previousWindow = globalThis.window
   const target = new EventTarget()
   const readings: unknown[] = []

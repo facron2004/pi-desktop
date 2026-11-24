@@ -273,22 +273,14 @@ export const AppMenuBar = memo(function AppMenuBar({
             },
             { separator: true },
             {
-              // The answer lands on the sidebar button, so the menu only says
-              // what happened: no dialog stands between the reader and the app.
+              // A new release appears on the round button beside Settings; a
+              // check that found nothing says so in its own notice.
               label: `${t('Check for updates')}…`,
               onSelect: () => {
-                const toast = (text: string, level?: 'info' | 'warning') =>
-                  useAppStore.getState().showToast(text, level ?? 'info')
-                void checkForAppUpdates()
-                  .then((result) => {
-                    if (result.app.error) toast(result.app.error, 'warning')
-                    else if (result.app.hasUpdate && result.app.latest) {
-                      toast(`v${result.app.latest} · ${t('Update from the button beside Settings')}`)
-                    } else toast(t('You are running the latest Pi Desktop version.'))
-                  })
-                  .catch((error: unknown) =>
-                    toast(error instanceof Error ? error.message : String(error), 'warning')
-                  )
+                void checkForAppUpdates().catch(() => {
+                  // The notice owns the message; a rejection here is already
+                  // reported by the check itself.
+                })
               }
             },
             {

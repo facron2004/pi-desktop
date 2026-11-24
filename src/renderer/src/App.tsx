@@ -25,6 +25,7 @@ import { Sidebar } from './components/Sidebar'
 import { Thread } from './components/Thread'
 import { Composer } from './components/Composer'
 import { AppToast } from './components/AppToast'
+import { UpdateResultDialog } from './components/UpdateResultDialog'
 import { HoverTip } from './components/HoverTip'
 import { Welcome } from './components/Welcome'
 import type { SettingsPage } from './components/SettingsDialog'
@@ -1275,6 +1276,7 @@ export default function App() {
           <ExtensionDialog />
         </Suspense>
       ) : null}
+      <UpdateResultDialog />
       <HoverTip />
       <AppToast />
     </div>

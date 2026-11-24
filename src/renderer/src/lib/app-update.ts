@@ -40,9 +40,25 @@ type CheckListener = (result: VersionCheckResult | null) => void
 type InstallListener = (install: AppUpdateInstall | null) => void
 type PiCliListener = (status: VersionItemStatus | null) => void
 
+/**
+ * The manual check's answer when there is nothing to install.
+ *
+ * A release with an update belongs on the sidebar button — that is where it can
+ * be downloaded and installed — but "you are already current" and "the check
+ * failed" have no button to live on, so they are said once, in a notice the
+ * reader dismisses. `null` means no notice is showing.
+ */
+export type AppUpdateResultNotice =
+  | { kind: 'current'; current: string }
+  | { kind: 'error'; error: string }
+
+type ResultNoticeListener = (notice: AppUpdateResultNotice | null) => void
+
 let checking: Promise<VersionCheckResult> | undefined
 let available: AvailableAppUpdate | null = null
 const listeners = new Set<AvailableListener>()
+let resultNotice: AppUpdateResultNotice | null = null
+const resultNoticeListeners = new Set<ResultNoticeListener>()
 // The settings dialog unmounts when it closes, so its About page cannot own the
 // last check. Keep the full result here as well as the sidebar's summary: a
 // version the reader just looked up survives closing/reopening Settings and
@@ -434,16 +450,43 @@ export async function restorePersistedAppUpdate(): Promise<void> {
 /**
  * Check for a release and publish the reading.
  *
- * There is no dialog: the answer lands where the update lives — the sidebar's
- * round button beside Settings — and a check that fails keeps the last good
- * reading instead of replacing it with an error.
+ * There is no update dialog: a release with an update lands on the sidebar's
+ * round button beside Settings, which already owns download, progress and
+ * "restart to install". A check that answered "you are current" — or that could
+ * not answer at all — has nowhere to show itself, so it raises one dismissible
+ * notice instead. A failed check keeps the last good reading either way.
  */
 export function checkForAppUpdates(): Promise<VersionCheckResult> {
   if (checking) return checking
   checking = (async () => {
     const result = await window.pi.app.checkUpdate()
     noteAppUpdateCheck(result)
+    if (result.app.error) noteAppUpdateResult({ kind: 'error', error: result.app.error })
+    else if (!result.app.hasUpdate) noteAppUpdateResult({ kind: 'current', current: result.app.current })
+    else dismissAppUpdateResult()
     return result
   })().finally(() => { checking = undefined })
   return checking
+}
+
+/** The notice currently showing, if any. */
+export function appUpdateResultNotice(): AppUpdateResultNotice | null {
+  return resultNotice
+}
+
+export function subscribeAppUpdateResult(listener: ResultNoticeListener): () => void {
+  resultNoticeListeners.add(listener)
+  return () => {
+    resultNoticeListeners.delete(listener)
+  }
+}
+
+export function noteAppUpdateResult(notice: AppUpdateResultNotice | null): void {
+  resultNotice = notice
+  for (const listener of resultNoticeListeners) listener(resultNotice)
+}
+
+export function dismissAppUpdateResult(): void {
+  if (!resultNotice) return
+  noteAppUpdateResult(null)
 }

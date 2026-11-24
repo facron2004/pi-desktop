@@ -8,7 +8,11 @@ interface ConfirmDialogProps {
   className?: string
   title: string
   body: string
+  /** A quiet second line, e.g. the version a notice is about. */
+  detail?: string
   confirmLabel?: string
+  /** `null` asks nothing: the dialog is then a single-button notice. */
+  cancelLabel?: string | null
   tone?: 'danger' | 'default'
   onConfirm: () => void
   onCancel: () => void
@@ -29,7 +33,9 @@ export function ConfirmDialog({
   className,
   title,
   body,
+  detail,
   confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
   tone = 'default',
   onConfirm,
   onCancel
@@ -63,12 +69,15 @@ export function ConfirmDialog({
 
         <div className="modal__body">
           <p className="confirm__body">{body}</p>
+          {detail ? <p className="confirm__detail">{detail}</p> : null}
         </div>
 
         <div className="modal__foot">
-          <button className="btn" onClick={onCancel}>
-            {t('Cancel')}
-          </button>
+          {cancelLabel === null ? null : (
+            <button className="btn" onClick={onCancel}>
+              {t(cancelLabel)}
+            </button>
+          )}
           <button
             className={tone === 'danger' ? 'btn btn--danger' : 'btn btn--primary'}
             onClick={onConfirm}
