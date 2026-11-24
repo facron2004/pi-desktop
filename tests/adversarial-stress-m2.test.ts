@@ -1,7 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import React from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
+// `server.browser` rather than `server`: the node build calls `require('util')`,
+// which an ESM test bundle cannot satisfy. Render output is identical.
+import { renderToStaticMarkup } from 'react-dom/server.browser'
 
 // Subject under test imports
 import { countChangedFiles, collectChanges } from '../src/renderer/src/lib/changes'
@@ -537,3 +539,4 @@ test('[CHALLENGER 6.1] LRU Cache: 200 sessions thrashing retains active & protec
     `Retained ${retainedInactiveNonProtected} inactive sessions, expected <= ${maxInactive}`
   )
 })
+

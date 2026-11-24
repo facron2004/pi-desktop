@@ -154,6 +154,7 @@ const suites = [
   // A suite nothing invokes is worse than no suite: it reads as coverage and
   // cannot fail. They run here, with the shared electron mock.
   'adversarial-ipc-stress.test.ts',
+  'adversarial-stress-m2.test.ts',
   'challenger-m1-adversarial.test.ts',
   'challenger-m1-v2-stress.test.ts',
   'challenger-m2-ux-lifecycle-stress.test.ts',
@@ -210,6 +211,10 @@ try {
       platform: 'node',
       outfile: path.join(out, bundle),
       logLevel: 'warning',
+      // The renderer compiles JSX with the automatic runtime (tsconfig `react-jsx`),
+      // so a component with no `import React` must compile the same way here. With
+      // the classic transform, rendering such a component throws "React is not defined".
+      jsx: 'automatic',
       // The renderer's own aliases, so the test imports the module the same
       // way the app does.
       alias: {
@@ -230,8 +235,11 @@ try {
   } else {
     // Bound child-process tests so Windows startup probes do not starve each other.
     // The per-test timeout is what turns a hung suite into one failing test instead
-    // of a process that never returns; the outer timeout is the last resort.
-    execFileSync(process.execPath, ['--test', '--test-concurrency=4', '--test-timeout=180000', ...built], {
+    // of a process that never returns; the outer timeout is the last resort. The
+    // force-exit is about imports, not tests: a library that leaves a pending handle
+    // (`react-dom/server.browser` does) must not hold the whole run open after its
+    // suite has already reported.
+    execFileSync(process.execPath, ['--test', '--test-concurrency=4', '--test-timeout=180000', '--test-force-exit', ...built], {
       stdio: 'inherit',
       env: childEnv,
       timeout: 15 * 60_000
