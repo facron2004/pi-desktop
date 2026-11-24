@@ -1,7 +1,0 @@
-export { GeneralSettings, type GeneralSettingsForm } from './settings/GeneralSettings'
-export { AppearanceSettings } from './settings/AppearanceSettings'
-export { UsageSettings } from './settings/UsageSettings'
-export { PersonalizationSettings } from './settings/PersonalizationSettings'
-export { ShortcutsSettings } from './settings/ShortcutsSettings'
-export { AboutSettings } from './settings/AboutSettings'
-export { AgentSettings } from './settings/AgentSettings'

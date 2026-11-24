@@ -118,7 +118,13 @@ export function useLauncherActions(shell: LauncherShell): LauncherAction[] {
   const projectOrder = useAppStore((state) => state.settings.projectOrder)
   const archivedSessions = useAppStore((state) => state.settings.archivedSessions)
   const sessions = useAppStore((state) => state.sessions)
-  const threads = useAppStore((state) => state.threads)
+  // The palette is built from the same live rows the sidebar lists, but it must
+  // not re-render once per streamed frame: `threads` gets a new identity on every
+  // painted delta. The metadata counter is what the sidebar subscribes to for
+  // exactly this reason, so the snapshot below changes only when a conversation's
+  // own mark (streaming / notice / waiting dialog / first prompt) does.
+  const threadsMetaVersion = useAppStore((state) => state.threadsMetaVersion)
+  const threads = useMemo(() => useAppStore.getState().threads, [threadsMetaVersion])
   const sessionNotices = useAppStore((state) => state.sessionNotices)
   const workspace = useAppStore((state) => state.workspace)
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)

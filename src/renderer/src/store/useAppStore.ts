@@ -5275,6 +5275,9 @@ function scheduleItems(
  *   block `contentIndex` concatenate into one delta record.
  * - `tool_execution_update` replaces any trailing `tool_execution_update` for the
  *   same `toolCallId` (its `partialResult` is already the newest full snapshot).
+ * - `bash_execution_update` for the same command concatenates, because the reducer
+ *   appends each delta to the command's output: one reducer pass per frame instead
+ *   of one per chunk, which matters when a build log streams hundreds of chunks.
  */
 function coalescePendingEvent(
   events: { event: PiEvent; context: ReturnType<typeof runContextOf> }[],
@@ -5282,6 +5285,25 @@ function coalescePendingEvent(
   nextContext: ReturnType<typeof runContextOf>
 ): boolean {
   if (events.length === 0) return false
+  if (nextEvent.type === 'bash_execution_update') {
+    const nextId = typeof nextEvent.id === 'string' ? nextEvent.id : ''
+    if (!nextId) return false
+    const last = events[events.length - 1]
+    if (last.event.type !== 'bash_execution_update') return false
+    if (last.event.id !== nextId) return false
+    if (
+      last.context.sessionKey !== nextContext.sessionKey ||
+      last.context.runId !== nextContext.runId ||
+      last.context.turnId !== nextContext.turnId
+    ) {
+      return false
+    }
+    const previousDelta = typeof last.event.delta === 'string' ? last.event.delta : ''
+    const nextDelta = typeof nextEvent.delta === 'string' ? nextEvent.delta : ''
+    last.event = { ...nextEvent, delta: previousDelta + nextDelta }
+    last.context = nextContext
+    return true
+  }
   if (nextEvent.type === 'tool_execution_update') {
     const nextToolId = typeof nextEvent.toolCallId === 'string' ? nextEvent.toolCallId : ''
     if (!nextToolId) return false

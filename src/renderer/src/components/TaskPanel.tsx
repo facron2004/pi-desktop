@@ -76,6 +76,10 @@ const TaskSection = memo(function TaskSection({
         className="task-panel__section-body"
         data-open={open || undefined}
         aria-hidden={!open}
+        // The collapsed body is only clipped, so without `inert` its buttons stay
+        // in the tab order: Tab walks through invisible controls that are hidden
+        // from assistive technology, i.e. focus stops that announce nothing.
+        inert={!open || undefined}
       >
         <div className="task-panel__section-inner">
           {subtitle ? <p className="task-panel__section-subtitle">{subtitle}</p> : null}

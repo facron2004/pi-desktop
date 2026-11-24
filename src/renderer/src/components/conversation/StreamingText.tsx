@@ -64,10 +64,14 @@ function useRevealedText(text: string, streaming: boolean): string {
       return
     }
     // A shorter text is a replacement (text_end is authoritative), not a delta.
+    // Clamp to the new end instead of restarting from zero: the replacement is
+    // the same answer with something removed (trailing whitespace, an echoed
+    // prompt, a normalised run), so re-typing it would blank the reply and
+    // replay seconds of text for a one-character difference.
     if (shownRef.current > target) {
-      shownRef.current = 0
+      shownRef.current = target
       lastRef.current = 0
-      setShown(0)
+      setShown(target)
     }
     // A settled block that is already fully revealed needs no timer at all.
     if (!streaming && shownRef.current >= target) return
@@ -79,7 +83,9 @@ function useRevealedText(text: string, streaming: boolean): string {
       frameRef.current = 0
       const currentTarget = targetRef.current
       if (shownRef.current > currentTarget) {
-        shownRef.current = 0
+        // The replacement arrived while the cursor was running: jump to its
+        // end, never back to the start (see the effect above).
+        shownRef.current = currentTarget
         lastRef.current = 0
       }
       const elapsed = lastRef.current === 0 ? 16 : now - lastRef.current

@@ -12,6 +12,9 @@ import { Markdown } from '../Markdown'
 import { ImageButton } from '../Lightbox'
 import { LogOutput } from './LogOutput'
 import { useThreadEnv } from './ThreadEnvContext'
+
+/** Shared empty reading for a folded panel, so nothing is rebuilt while hidden. */
+const NO_DIFFS: DiffBlock[] = []
 import { useT } from '../../lib/i18n'
 
 const DiffView = lazy(() => import('../DiffView').then((m) => ({ default: m.DiffView })))
@@ -58,11 +61,21 @@ export const ToolResultPanel = memo(function ToolResultPanel({
   const { diffSplit } = useThreadEnv()
   const t = useT()
 
+  // The card keeps this panel mounted while it is folded (that is what preserves
+  // the expansion state), and the item gets a new identity on every reducer
+  // patch. Building the diff and the written content is the expensive part, so
+  // a folded panel must not do it: `open` is a dependency and the hidden branch
+  // returns empty values.
   const diffs = useMemo(
-    () => providedDiffs ?? diffableEdits(item).map((pair) => buildDiff(pair.oldText, pair.newText)),
-    [item, providedDiffs]
+    () => (open
+      ? providedDiffs ?? diffableEdits(item).map((pair) => buildDiff(pair.oldText, pair.newText))
+      : NO_DIFFS),
+    [open, item, providedDiffs]
   )
-  const content = useMemo(() => providedContent ?? writtenContent(item), [item, providedContent])
+  const content = useMemo(
+    () => (open ? providedContent ?? writtenContent(item) : ''),
+    [open, item, providedContent]
+  )
 
   const result = item.result ?? ''
   const truncated = result.length > RESULT_PREVIEW
