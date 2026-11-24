@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useState } from 'react'
 import { ChevronRight, Loader2, Network, Square } from 'lucide-react'
 import { formatDuration, formatTokens } from '../lib/format'
 import { useT } from '../lib/i18n'
+import { isDelegationTool } from '../lib/subagents'
 import {
   isSwarmWorking,
   parseSwarmSnapshots,
@@ -12,6 +13,7 @@ import {
   type SwarmWorkerState
 } from '../lib/swarm'
 import { useAppStore } from '../store/useAppStore'
+import { SubagentOverview } from './SubagentPanel'
 import '../styles/swarm-panel.css'
 
 const STATUS_LABEL: Record<SwarmWorkerState['status'], string> = {
@@ -115,26 +117,12 @@ function WorkerCard({ worker, now, expanded, onToggle, onStop }: {
   )
 }
 
-/**
- * The Swarm page of the workspace panel.
- *
- * It projects the `swarm_*` tool calls of the visible conversation and merges
- * the live roster the extension publishes, so a worker's card keeps updating
- * while the lead turn is still blocked inside a task.
- */
-export const SwarmPanel = memo(function SwarmPanel() {
+function WorkerRoster({ workers }: { workers: SwarmWorkerState[] }) {
   const t = useT()
-  const rosterSource = useAppStore((state) =>
-    state.uiStatuses.find((entry) => entry.key === SWARM_STATUS_KEY)?.text ?? state.items
-  )
   const stopSwarmWorker = useAppStore((state) => state.stopSwarmWorker)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now)
 
-  const workers = useMemo(
-    () => typeof rosterSource === 'string' ? parseSwarmSnapshots(rosterSource) : swarmWorkers(rosterSource),
-    [rosterSource]
-  )
   const summary = useMemo(() => summarizeSwarm(workers), [workers])
   const working = summary.working > 0
 
@@ -144,20 +132,8 @@ export const SwarmPanel = memo(function SwarmPanel() {
     return () => window.clearInterval(timer)
   }, [working])
 
-  if (workers.length === 0) {
-    return (
-      <div className="swarm swarm--empty">
-        <Network size={20} aria-hidden="true" />
-        <span>{t('No workers in this conversation')}</span>
-        <span className="swarm__empty-hint">
-          {t('Enter Swarm Mode and ask for a team; workers appear here while they work.')}
-        </span>
-      </div>
-    )
-  }
-
   return (
-    <div className="swarm">
+    <>
       <div className="swarm__bar">
         <span className="swarm__bar-title">
           <Network size={13} aria-hidden="true" />
@@ -201,6 +177,44 @@ export const SwarmPanel = memo(function SwarmPanel() {
           />
         ))}
       </div>
+    </>
+  )
+}
+
+/** The current conversation's worker roster and dispatched tasks. */
+export const SwarmPanel = memo(function SwarmPanel({ onOpenTask }: { onOpenTask: (taskId: string) => void }) {
+  const t = useT()
+  const sessionKey = useAppStore((state) => state.activeSessionFile ?? state.draftId)
+  const swarmMode = useAppStore((state) => state.agentMode === 'swarm')
+  const activeToolsRevision = useAppStore((state) => state.activeToolsRevision)
+  const rosterSource = useAppStore((state) => state.uiStatuses.find((entry) => entry.key === SWARM_STATUS_KEY)?.text)
+  const workers = useMemo(
+    () => rosterSource === undefined ? swarmWorkers(useAppStore.getState().items) : parseSwarmSnapshots(rosterSource),
+    [rosterSource, activeToolsRevision]
+  )
+  const hasDispatches = useMemo(
+    () => useAppStore.getState().items.some((item) => item.kind === 'tool' && isDelegationTool(item.toolName)),
+    [activeToolsRevision]
+  )
+
+  if (!workers.length && !hasDispatches) {
+    return (
+      <div className="swarm swarm--empty">
+        <Network size={20} aria-hidden="true" />
+        <span>{t(swarmMode ? 'No tasks have been delegated in this conversation yet.' : 'No workers in this conversation')}</span>
+        {!swarmMode ? <span className="swarm__empty-hint">
+          {t('Enter Swarm Mode and ask for a team; workers appear here while they work.')}
+        </span> : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="swarm">
+      {workers.length > 0 ? <WorkerRoster key={sessionKey} workers={workers} /> : null}
+      {sessionKey && hasDispatches ? (
+        <SubagentOverview sessionKey={sessionKey} onSelectTask={({ taskId }) => onOpenTask(taskId)} />
+      ) : null}
     </div>
   )
 })

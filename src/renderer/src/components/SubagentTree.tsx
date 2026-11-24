@@ -12,6 +12,7 @@ const STATUS_LABEL = {
   proposed: 'Not run',
   queued: 'Queued',
   running: 'Running',
+  dispatched: 'Dispatched',
   completed: 'Completed',
   failed: 'Failed',
   aborted: 'Stopped',
@@ -33,7 +34,8 @@ function isActive(task: SubagentTreeTask): boolean {
 
 /** Only a task that still occupies a slot can be stopped. */
 function isStoppable(task: SubagentTreeTask): boolean {
-  return isActive(task)
+  // A named worker may already be working on another assignment.
+  return task.source !== 'swarm' && isActive(task)
 }
 
 function durationOf(task: SubagentTreeTask, now: number): number | undefined {
@@ -175,6 +177,7 @@ function TaskRow({ task, now, onOpen, onCancel }: {
   const status = t(STATUS_LABEL[task.status])
   const duration = durationOf(task, now)
   const activity = task.activity ? `${t(task.activity)}${task.toolName ? ` · ${task.toolName}` : ''}` : undefined
+  const summary = task.source === 'swarm' ? `${status} · ${task.task}` : activity
   return (
     <li className="subagent-tree__task" data-status={task.status} role="treeitem">
       <div className="subagent-tree__task-line">
@@ -185,7 +188,7 @@ function TaskRow({ task, now, onOpen, onCancel }: {
           </span>
           <span className="subagent-tree__task-copy">
             <span className="subagent-tree__task-name">{task.label || task.task}</span>
-            {activity ? <span className="subagent-tree__summary">{activity}</span> : null}
+            {summary ? <span className="subagent-tree__summary">{summary}</span> : null}
           </span>
           <span className="subagent-tree__metrics">
             <span className="subagent-tree__metric-token">{task.tokens ? formatTokens(task.tokens) : ''}</span>

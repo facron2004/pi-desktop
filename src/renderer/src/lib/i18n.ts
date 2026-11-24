@@ -783,6 +783,8 @@ const zhCN: Record<string, string> = {
   'Switch to Swarm Mode — lead a team of persistent workers': '切换到蜂群模式：指挥一支常驻工作团队',
   'Lead a team of persistent workers across many turns': '指挥一支跨多轮持续工作的智能体团队',
   'No workers in this conversation': '此对话中没有工作智能体',
+  'No tasks have been delegated in this conversation yet.': '本对话还没有派发任务。',
+  Dispatched: '已派发',
   Swarm: '蜂群',
   'The worker team of this conversation': '此对话的工作智能体团队',
   'Enter Swarm Mode and ask for a team; workers appear here while they work.':
@@ -1067,6 +1069,7 @@ const zhCN: Record<string, string> = {
   'Start here': '从这里开始',
   'Coding around the project': '围绕项目展开工作',
   'No checklist in this conversation yet': '这段对话里还没有清单',
+  'Some steps are still unconfirmed': '部分步骤尚未确认完成',
   'When Pi writes a plan as a checklist, its steps show up here.':
     '当 Pi 以清单形式写计划时，它的步骤会出现在这里。',
   done: '已完成',
@@ -1661,6 +1664,7 @@ const zhCN: Record<string, string> = {
   'Ran command': '运行了命令',
   'Ran commands': '运行了命令',
   'Command failed': '命令执行失败',
+  'Pi accepted {input}': 'Pi 已接收 {input}',
   'Command stopped': '命令已停止',
   'Command not run': '命令未运行',
   'Reading file': '正在读取文件',

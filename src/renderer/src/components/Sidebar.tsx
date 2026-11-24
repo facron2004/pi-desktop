@@ -349,11 +349,14 @@ export const Sidebar = memo(function Sidebar({
   // or development build must not promise a restart it cannot perform.
   const updateReady = currentInstall?.stage === 'ready'
   const updateFailed = currentInstall?.stage === 'error'
-  const updateBusy =
-    currentInstall?.stage === 'downloading' || currentInstall?.stage === 'installing'
+  const updateDownloading = currentInstall?.stage === 'downloading'
+  const updateInstalling = currentInstall?.stage === 'installing'
+  const updateBusy = updateDownloading || updateInstalling
   const updatePercent = currentInstall
     ? Math.min(100, Math.max(0, Math.round(currentInstall.percent)))
     : 0
+  // The final progress event follows installer verification and can precede the IPC response.
+  const showUpdateRing = !currentInstall || (updateDownloading && updatePercent < 100)
   // Before the download starts the size comes from the release check; while it
   // runs the progress events carry the exact asset size.
   const updateInstallerBytes = currentInstall?.totalBytes ?? appUpdate?.bytes
@@ -395,9 +398,9 @@ export const Sidebar = memo(function Sidebar({
       ? t('Update failed')
       : updateReady
         ? t('Ready to restart')
-        : currentInstall?.stage === 'installing'
+        : updateInstalling
           ? t('Restarting to install the update…')
-          : updateBusy
+          : updateDownloading
             ? `${t('Downloading…')} ${updatePercent}%`
             : t('Download update')
     const rows: SidebarTipRow[] = [
@@ -1915,9 +1918,11 @@ export const Sidebar = memo(function Sidebar({
                   ? 'Restart and install'
                   : !updateSupported
                     ? 'Open download page'
-                    : updateBusy
-                      ? 'Downloading update…'
-                      : 'Download update'
+                    : updateInstalling
+                      ? 'Restarting to install the update…'
+                      : updateDownloading
+                        ? 'Downloading update…'
+                        : 'Download update'
               )}
               aria-describedby={updateTipAnchor ? SIDEBAR_TIP_ID : undefined}
               aria-disabled={updateBusy || undefined}
@@ -1928,20 +1933,19 @@ export const Sidebar = memo(function Sidebar({
               onClick={() => void startAppUpdate()}
             >
               <span className="sidebar__update-mark" aria-hidden="true">
-                <svg className="sidebar__update-ring" viewBox="0 0 24 24">
-                  <circle className="sidebar__update-ring-track" cx="12" cy="12" r="10" />
-                  <circle
-                    className="sidebar__update-ring-fill"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    strokeDasharray={UPDATE_RING_CIRCUMFERENCE}
-                    strokeDashoffset={UPDATE_RING_CIRCUMFERENCE * (1 - updatePercent / 100)}
-                  />
-                </svg>
-                {/* The glyph never changes: the button is the update, and the
-                    ring is the only thing that says how far it has come. A
-                    closed ring is a finished download. */}
+                {showUpdateRing ? (
+                  <svg className="sidebar__update-ring" viewBox="0 0 24 24">
+                    <circle className="sidebar__update-ring-track" cx="12" cy="12" r="10" />
+                    <circle
+                      className="sidebar__update-ring-fill"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      strokeDasharray={UPDATE_RING_CIRCUMFERENCE}
+                      strokeDashoffset={UPDATE_RING_CIRCUMFERENCE * (1 - updatePercent / 100)}
+                    />
+                  </svg>
+                ) : null}
                 <Download size={11} strokeWidth={2} />
               </span>
             </button>

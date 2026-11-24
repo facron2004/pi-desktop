@@ -425,6 +425,7 @@ for (const action of ['stop', 'clear queue'] as const) {
 
 test('a late prompt response updates its own thread', async () => {
   await useAppStore.getState().selectSession(session('A.jsonl'))
+  useAppStore.setState((state) => ({ settings: { ...state.settings, language: 'zh-CN' } }))
   let finish!: (value: unknown) => void
   bridge.runtime.request = async (command, ...args) => {
     if (command === 'prompt') return new Promise((resolve) => { finish = resolve })
@@ -436,8 +437,41 @@ test('a late prompt response updates its own thread', async () => {
   finish({ disposition: 'handled' })
   await sending
   assert.equal(useAppStore.getState().items.length, 0)
-  assert.equal(useAppStore.getState().threads['A.jsonl'].items.length, 1)
+  const items = useAppStore.getState().threads['A.jsonl'].items
+  assert.equal(items.length, 1)
+  assert.equal(items[0].kind === 'notice' && items[0].text, 'Pi 已接收 /handled')
 })
+
+for (const responseFirst of [true, false]) {
+  test(`the Swarm command acknowledgement stays out of the transcript when it arrives ${responseFirst ? 'before' : 'after'} the run starts`, async () => {
+    const key = 'swarm-command.jsonl'
+    const task = 'Review the benchmark cases'
+    const response = Promise.withResolvers<unknown>()
+    await useAppStore.getState().selectSession(session(key))
+    bridge.runtime.request = (command, ...args) => command === 'prompt'
+      ? response.promise
+      : originalRequest(command, ...args)
+    const sending = useAppStore.getState().send(`/swarm ${task}`, [])
+    await tick()
+    emitQueue({ ownerId: key, cwd: 'C:/p', queued: true, position: 1 })
+    assert.ok(useAppStore.getState().items.some((item) => item.kind === 'user' && item.pending))
+
+    const start = () => {
+      emit({ ownerId: key, event: { type: 'agent_start' } })
+      emit({ ownerId: key, event: { type: 'message_start', message: { role: 'user', content: task } } })
+    }
+    if (!responseFirst) start()
+    response.resolve({ disposition: 'handled' })
+    assert.equal(await sending, true)
+    if (responseFirst) start()
+
+    const { items, run, isStreaming } = useAppStore.getState()
+    assert.equal(run.phase, 'working')
+    assert.equal(isStreaming, true)
+    assert.equal(items.length, 1)
+    assert.ok(items[0].kind === 'user' && items[0].text === task && !items[0].pending)
+  })
+}
 
 test('a prompt held behind another conversation stays visible until Pi echoes it', async () => {
   await useAppStore.getState().selectSession(session('A.jsonl'))

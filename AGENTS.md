@@ -699,11 +699,10 @@ filled with the accent colour, and the whole download lives behind it.
 installer's stage (`downloading` / `ready` / `installing` / `error`) — because
 the sidebar is a list that can be folded away, and a download owned by the
 component would lose its progress with it. **The glyph is always the download
-mark**; the ring drawn inside the fill is the only progress reading, and it
-closes when the installer is verified. A full ring *is* the "restart to install"
-affordance — the click is the same click, only its meaning changes — so do not
-swap the glyph for a restart arrow or repaint the button in a second colour. A
-failed download is the one state that recolours the fill (to the danger tone).
+mark**. The ring drawn inside the fill shows download progress and disappears
+as soon as the installer is verified. The same button then offers "restart and
+install" in its accessible label and shows the ready phase in the hover card.
+A failed download recolours the fill to the danger tone.
 The hover card carries the installer size and the phase, because the foot has no
 room for a second line.
 
@@ -761,8 +760,8 @@ Two harnesses read the real button: `scripts/verify-update-persistence.mjs`
 drives two launches (online, then offline with the GitHub check blocked) and
 `scripts/verify-update-icon.mjs` runs a copied `release/win-unpacked` twice —
 once with only a reading on disk (the ring must be empty) and once with a
-verified installer beside it (the ring must be closed). Both read `data-state`,
-the ring's `stroke-dashoffset` and the About page out of the live window.
+verified installer beside it (the ring must be absent). Both read `data-state`,
+the ring's `stroke-dashoffset` when present and the About page out of the live window.
 
 ## The tray and the taskbar icon
 

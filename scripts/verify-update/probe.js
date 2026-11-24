@@ -13,7 +13,7 @@
       exists: true,
       aria: node.getAttribute('aria-label'),
       state: node.getAttribute('data-state'),
-      // 进度环：满进度时 dashoffset 归零。
+      hasRing: Boolean(node.querySelector('.sidebar__update-ring')),
       ringOffset: node.querySelector('.sidebar__update-ring-fill')?.getAttribute('stroke-dashoffset') ?? null
     }
   }

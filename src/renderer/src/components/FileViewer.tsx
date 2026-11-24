@@ -7,7 +7,6 @@ import {
   Copy,
   ExternalLink,
   Eye,
-  File as FileIcon,
   Link2,
   MessageSquarePlus,
   Search,
@@ -15,11 +14,11 @@ import {
   X
 } from 'lucide-react'
 import type { FileContent } from '@shared/types'
-import { fileTone } from '../lib/files'
 import { formatBytes } from '../lib/format'
 import { basename, relativePath } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { CodeSnippet } from './CodeSnippet'
+import { FileIcon } from './FileIcon'
 import { Markdown } from './Markdown'
 import { useT } from '../lib/i18n'
 import '../styles/file-viewer.css'
@@ -515,9 +514,7 @@ export function FileViewer({ file, root, line }: FileViewerProps) {
         <span className="viewer__crumb">
           <span className="viewer__crumb-root">{root ? basename(root) : ''}</span>
           <span className="viewer__crumb-path" title={content.path}>
-            <span className="tree__icon" data-tone={fileTone(content.path.split(/[\\/]/).pop() ?? '')}>
-              <FileIcon size={14} />
-            </span>
+            <FileIcon name={content.path} size={14} />
             <span className="viewer__crumb-text">{relativePath(root ?? '', content.path)}</span>
           </span>
         </span>

@@ -1163,7 +1163,7 @@ export default function App() {
               ) : panelView === 'subagents' ? (
                 <SubagentPanel selected={subagentSelection} onSelectTask={setSubagentSelection} />
               ) : panelView === 'swarm' ? (
-                <SwarmPanel />
+                <SwarmPanel onOpenTask={openSubagentTask} />
               ) : panelView === 'files' || panelView === 'changes' ? (
                 <InspectorPanel
                   embedded

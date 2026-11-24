@@ -695,6 +695,7 @@ export default function (pi) {
     promptSnippet: 'Keep the checklist of the current task',
     promptGuidelines: [
       'Use desktop_todo whenever a task takes more than two steps: send the whole list each time, keep at most one step in_progress, and mark a step completed only after it is verified. Update the list when the plan changes.',
+      'If you used desktop_todo, sync the final checklist before replying. Keep unfinished or blocked steps pending. If you cannot call the tool, include the same steps in the same order and with the same text as a Markdown checklist in your final reply, checking off only verified steps.',
       progressGuideline
     ],
     parameters: Type.Object({

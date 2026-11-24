@@ -1271,12 +1271,8 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 /* The app-update control sits beside Settings as a filled round button in the
-   accent colour. The glyph is always the download mark — the button says
-   "there is an update", not which step it is on — and the ring drawn inside
-   the fill is the installer arriving. A closed ring means the download is
-   verified and the same click restarts into it. The versions and the current
-   phase live in the hover card, because the foot has no room for a second
-   line of text. */
+   accent colour. The download mark stays visible when verification finishes
+   and the progress ring comes off. The hover card carries the version and phase. */
 .sidebar__foot-row {
   display: flex;
   align-items: center;
@@ -1325,10 +1321,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   position: relative;
   display: grid;
   place-items: center;
-  /* The ring sits inside the fill rather than on its rim: a hairline of accent
-     stays outside it, so the finished state reads as a progress ring drawn in
-     the button, not as a border painted around it. The 20px box keeps a visible
-     gap between the ring and the glyph at this size. */
+  /* The 20px box leaves room between the download glyph and the progress ring. */
   width: 20px;
   height: 20px;
 }
@@ -1341,10 +1334,7 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   transform: rotate(-90deg);
 }
 
-/* The track is the fill's own ink, thinned out, so the ring reads on the
-   accent as well as on the failure colour. Both strokes are hairline-thin: at
-   this size a 2-unit stroke closed into a full circle read as a heavy border
-   around the glyph instead of a progress reading. */
+/* The track uses the button's foreground colour at lower opacity. */
 .sidebar__update-ring-track {
   fill: none;
   stroke: currentColor;
@@ -8078,37 +8068,32 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
   font-weight: 700;
 }
 
-/* One hue per family, theme-aware: code blue, script amber, data green,
-   styles violet, pictures red. The tree and the flat lists share it. */
-.tree__icon[data-tone='ts'] {
+/* Theme-aware file colors shared by the tree, lists and preview. */
+.file-icon:is([data-tone='ts'], [data-tone='python'], [data-tone='go'], [data-tone='c'], [data-tone='cpp'], [data-tone='code']) {
   color: var(--project-icon-blue);
 }
 
-.tree__icon[data-tone='js'] {
+.file-icon[data-tone='js'] {
   color: var(--status-warning);
 }
 
-.tree__icon[data-tone='json'] {
+.file-icon:is([data-tone='html'], [data-tone='svelte'], [data-tone='rust'], [data-tone='swift']) {
+  color: var(--project-icon-orange);
+}
+
+.file-icon:is([data-tone='json'], [data-tone='shell'], [data-tone='vue']) {
   color: var(--status-success);
 }
 
-.tree__icon[data-tone='style'] {
+.file-icon:is([data-tone='style'], [data-tone='xml'], [data-tone='csharp'], [data-tone='kotlin'], [data-tone='php'], [data-tone='sql']) {
   color: var(--violet);
 }
 
-.tree__icon[data-tone='markdown'] {
-  color: var(--text-secondary);
-}
-
-.tree__icon[data-tone='shell'] {
-  color: var(--status-success);
-}
-
-.tree__icon[data-tone='image'] {
+.file-icon:is([data-tone='image'], [data-tone='java'], [data-tone='ruby']) {
   color: var(--status-danger);
 }
 
-.tree__icon[data-tone='plain'] {
+.file-icon:is([data-tone='markdown'], [data-tone='plain']) {
   color: var(--text-secondary);
 }
 

@@ -158,17 +158,17 @@ try {
   const readyShown = probe.sidebarBadge?.state === 'ready'
   const readyLabel = /restart and install|重启并安装/i.test(probe.sidebarBadge?.aria || '')
   const pageLabel = /open download page|打开下载页/i.test(probe.sidebarBadge?.aria || '')
-  const fullRing = probe.sidebarBadge?.ringOffset !== null && Number(probe.sidebarBadge?.ringOffset) === 0
+  const noRing = probe.sidebarBadge?.hasRing === false
   const autoCheckShown = Boolean(probe.aboutHasAutoCheck)
   log('侧栏更新图标存在: ' + sidebarShown + ' ' + JSON.stringify(probe.sidebarBadge || {}))
-  log('图标进入“重启并安装”状态: ' + (selfUpdate === readyShown) + ' (state=' + probe.sidebarBadge?.state + ', aria=' + probe.sidebarBadge?.aria + ')' + (selfUpdate ? ' 满进度环: ' + fullRing : ''))
+  log('图标进入“重启并安装”状态: ' + (selfUpdate === readyShown) + ' (state=' + probe.sidebarBadge?.state + ', aria=' + probe.sidebarBadge?.aria + ')' + (selfUpdate ? ' 已收起进度环: ' + noRing : ''))
   log('“关于”页显示 v0.11.9: ' + aboutShown + ' ' + JSON.stringify(probe.aboutBadges || []))
   log('“关于”页自动检查更新开关: ' + autoCheckShown)
 
   if (!blocked) throw new Error('离线模拟没有生效，GitHub 请求没有被拦截')
   if (!sidebarShown || !aboutShown) throw new Error('离线重启后没有显示上次检查到的版本')
   if (selfUpdate && (!readyShown || !readyLabel)) throw new Error('离线重启后没有显示“重启并安装”的更新图标')
-  if (selfUpdate && !fullRing) throw new Error('“重启并安装”状态的进度环不是满的')
+  if (selfUpdate && !noRing) throw new Error('“重启并安装”状态仍显示进度环')
   if (!selfUpdate && (readyShown || !pageLabel)) {
     throw new Error('开发入口不该自称能重启安装，应指向下载页')
   }

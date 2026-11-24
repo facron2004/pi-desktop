@@ -14,7 +14,7 @@
  *   idle   update-state.json only — a release was found, nothing downloaded.
  *          The button must be a filled circle with an empty ring.
  *   ready  the same reading plus updates/installer.exe + installer.json.
- *          The ring must be closed, and one click restarts into the update.
+ *          The button offers restart and install with the progress ring removed.
  *
  * No network is involved: both states are restored from disk at startup, which
  * is the point of keeping them. The settings dialog is closed before the
@@ -121,7 +121,7 @@ try {
   const idleProfile = writeProfile('idle', false)
   const idle = await run('idle', idleProfile)
   const idleBadge = idle.probe.sidebarBadge || {}
-  const emptyRing = Number(idleBadge.ringOffset) > 1
+  const emptyRing = idleBadge.hasRing === true && Number(idleBadge.ringOffset) > 1
   log(`空闲状态: state=${idleBadge.state} aria=${idleBadge.aria} ringOffset=${idleBadge.ringOffset} → ${idle.shot}`)
   check(idleBadge.exists === true, '空闲状态没有更新按钮')
   check(idleBadge.state === 'idle', '空闲状态的 data-state 不是 idle')
@@ -134,11 +134,10 @@ try {
   const readyProfile = writeProfile('ready', true)
   const ready = await run('ready', readyProfile)
   const readyBadge = ready.probe.sidebarBadge || {}
-  const fullRing = Number(readyBadge.ringOffset) === 0
-  log(`就绪状态: state=${readyBadge.state} aria=${readyBadge.aria} ringOffset=${readyBadge.ringOffset} → ${ready.shot}`)
+  log(`就绪状态: state=${readyBadge.state} aria=${readyBadge.aria} hasRing=${readyBadge.hasRing} → ${ready.shot}`)
   check(readyBadge.state === 'ready', '下载完成后按钮没有进入 ready 状态')
   check(/restart and install|重启并安装/i.test(readyBadge.aria || ''), 'ready 状态的 aria-label 没有说明点击会重启安装')
-  check(fullRing, 'ready 状态的进度环不是满的')
+  check(readyBadge.hasRing === false, 'ready 状态仍显示进度环')
   check(ready.probe.aboutHasVersion === true, '“关于”页没有显示已下载的新版本')
   check(ready.probe.cardDismissed === true, '更新卡片没有关掉，截图不干净')
   if (process.env.PI_DESKTOP_VERIFY_KEEP !== '1') rmSync(readyProfile, { recursive: true, force: true })

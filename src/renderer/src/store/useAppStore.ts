@@ -2914,23 +2914,24 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       })
       if (result?.disposition === 'handled') {
         forgetQueuedPrompt(key, pendingPrompt.id)
+        const isModeCommand = /^\/(?:plan|goal|swarm|plugin)(?:\s|$)/.test(trimmed)
         update((state) => {
           const shouldSettle =
             canSettlePreRun(state.run) || (result.cancelled && state.run.phase === 'aborting')
+          const items = clearPendingPrompts(state.items, pendingPrompt.id)
           return {
             cwdWait: undefined,
             isStreaming: shouldSettle ? false : state.isStreaming,
             run: shouldSettle ? settlePreRun(state.run) : state.run,
-            // The handler consumed the command, so no model turn follows: the
-            // transcript still records it, or a late response lands on a thread
-            // whose transcript never shows what the reader asked for. A cancelled
-            // prompt never reached Pi, so its waiting bubble is removed instead.
-            items: result.cancelled
-              ? clearPendingPrompts(state.items, pendingPrompt.id)
-              : applyEvent(state.items, {
+            // Mode shortcuts publish their own status and can send the task as
+            // a separate user message. Its events can arrive on either side of
+            // the command response.
+            items: result.cancelled || isModeCommand
+              ? items
+              : applyEvent(items, {
                   type: 'client_notice',
                   level: 'info',
-                  text: `Pi handled ${trimmed} directly — no model turn was needed`
+                  text: translate('Pi accepted {input}', state.settings.language).replace('{input}', () => trimmed)
                 })
           }
         })

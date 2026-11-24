@@ -18,6 +18,7 @@ const STATUS_LABEL: Record<SubagentTreeTask['status'], string> = {
   proposed: 'Not run',
   queued: 'Queued',
   running: 'Running',
+  dispatched: 'Dispatched',
   completed: 'Completed',
   failed: 'Failed',
   aborted: 'Stopped',

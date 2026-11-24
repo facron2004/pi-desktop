@@ -123,6 +123,7 @@ const SUBAGENT_STATUS_LABEL: Record<SubagentTreeTask['status'], string> = {
   proposed: 'Not run',
   queued: 'Queued',
   running: 'Running',
+  dispatched: 'Dispatched',
   completed: 'Completed',
   failed: 'Failed',
   aborted: 'Stopped',
@@ -195,6 +196,7 @@ const TaskProgressSection = memo(function TaskProgressSection() {
   // without checkbox tokens, so subscribing to the derived plan skips renders
   // on streaming text deltas that do not change progress.
   const rawPlan = useAppStore((state) => extractPlan(state.items))
+  const running = useAppStore((state) => state.isStreaming)
   const plan = useDeferredValue(rawPlan)
 
   return (
@@ -204,6 +206,9 @@ const TaskProgressSection = memo(function TaskProgressSection() {
         plan ? <span className="task-panel__count">{plan.done}/{plan.total}</span> : undefined
       }
     >
+      {!running && plan?.source === 'todo' && plan.done < plan.total ? (
+        <p className="task-panel__empty">{t('Some steps are still unconfirmed')}</p>
+      ) : null}
       {plan ? (
         <ul className="task-panel__list">
           {plan.entries.map((entry, index) => (
@@ -211,7 +216,7 @@ const TaskProgressSection = memo(function TaskProgressSection() {
               key={`${index}-${entry.text}`}
               className="task-panel__check"
               data-done={entry.done || undefined}
-              data-active={entry.active || undefined}
+              data-active={(running && entry.active) || undefined}
             >
               <span className="task-panel__check-mark" aria-hidden="true">
                 {index + 1}

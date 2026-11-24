@@ -24,6 +24,11 @@ writeFileSync(path.join(workspace, 'new-only-result.txt'), 'new query result\n')
 const nestedWorkspace = path.join(workspace, 'nested-project')
 mkdirSync(nestedWorkspace)
 writeFileSync(path.join(nestedWorkspace, 'nested-only.txt'), 'nested workspace file\n')
+writeFileSync(path.join(nestedWorkspace, 'index.html'), '<!doctype html>\n')
+writeFileSync(path.join(nestedWorkspace, 'main.py'), 'print("hello")\n')
+writeFileSync(path.join(nestedWorkspace, 'main.rs'), 'fn main() {}\n')
+writeFileSync(path.join(nestedWorkspace, 'build.mjs'), 'export {}\n')
+writeFileSync(path.join(nestedWorkspace, 'types.gql'), 'query { name }\n')
 // A 1×1 PNG so the Images page has something real to list.
 writeFileSync(
   path.join(workspace, 'shot.png'),
@@ -789,7 +794,36 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   check(document.querySelector('.shell__panel-toggle'), 'The tools-panel toggle did not come back with the conversation')
   check(!document.querySelector('.status-strip, .plan-strip'), 'A status or plan strip returned with the conversation')
-  passed.push('plan progress stays in the task rail and leaves desk pages clear')
+
+  const todo = {
+    id: 'ui-todo', kind: 'tool', toolCallId: 'ui-todo', toolName: 'desktop_todo', status: 'ok', timestamp: 2, order: 2,
+    args: { items: [
+      { text: 'Inspect the report', status: 'completed' },
+      { text: 'Run the tests', status: 'in_progress' }
+    ] }
+  }
+  const todoProgress = () => railSection('Progress')
+  const unconfirmed = () => todoProgress()?.querySelector('.task-panel__empty')?.textContent === 'Some steps are still unconfirmed'
+  store.setState({ items: [todo], isStreaming: true })
+  await until(() => todoProgress()?.querySelector('.task-panel__check[data-active]'), 'The running todo lost its active step')
+  check(!unconfirmed(), 'An active run showed the unconfirmed progress notice')
+
+  const finalReport = {
+    id: 'ui-todo-final', kind: 'assistant', streaming: false, stopReason: 'stop', timestamp: 3, order: 3,
+    blocks: [{ type: 'text', text: 'The report is ready.' }]
+  }
+  store.setState({ items: [todo, finalReport], isStreaming: false })
+  await until(unconfirmed, 'A settled run did not explain its remaining todo steps')
+  check(todoProgress()?.querySelector('.task-panel__count')?.textContent === '1/2', 'Plain final prose changed the todo count')
+  check(!todoProgress()?.querySelector('.task-panel__check[data-active]'), 'A settled todo still looked active')
+
+  store.setState({ items: [todo, {
+    ...finalReport,
+    blocks: [{ type: 'text', text: '- [x] Inspect the report\n- [x] Run the tests' }]
+  }] })
+  await until(() => todoProgress()?.querySelector('.task-panel__count')?.textContent === '2/2', 'The final checklist did not fill in progress')
+  check(!unconfirmed(), 'The complete todo still showed the unconfirmed progress notice')
+  passed.push('plan progress stays in the task rail, explains missing updates and recovers confirmed steps')
 
   await store.getState().newChat()
   await openSubagentsPage()
@@ -1824,6 +1858,12 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       .map((node) => Math.round(node.querySelector('.tree__name').getBoundingClientRect().left))
   )
   check(nameColumns.size === 1, `File names sit on ${nameColumns.size} columns: ${[...nameColumns].join(', ')}`)
+  for (const [name, mark] of [
+    ['index.html', '<>'], ['main.py', 'PY'], ['main.rs', 'RS'], ['build.mjs', 'JS'], ['types.gql', '</>']
+  ]) {
+    const row = treeRows.find((node) => node.querySelector('.tree__name')?.textContent === name)
+    check(row?.querySelector('.file-icon__mark')?.textContent === mark, `${name} did not show its code icon`)
+  }
   // The tree toggle lives in the panel header (a folder button), not in the
   // tree's own filter row: it stays in the same corner either way.
   const treeToggle = [...document.querySelectorAll('.tool-panel__action')].find(
@@ -1854,7 +1894,14 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => document.querySelector('.text-search'), 'Full-text search did not open in the preview pane')
   document.querySelector('.text-search .icon-btn[title]')?.click()
   await pause(120)
-  passed.push('the project tree wears type badges on evenly spaced rows, split by file index')
+  const pythonRow = [...document.querySelectorAll('.tree__item')]
+    .find((node) => node.querySelector('.tree__name')?.textContent === 'main.py')
+  pythonRow.click()
+  await until(
+    () => document.querySelector('.viewer__crumb-path .file-icon__mark')?.textContent === 'PY',
+    'The file preview did not show the same Python icon as the tree'
+  )
+  passed.push('the project tree and file preview share language icons, with evenly spaced tree rows')
 
   // The usage caption is one evenly spaced, vertically centred line: all three
   // controls share a height and a centre line, and the ring no longer towers
