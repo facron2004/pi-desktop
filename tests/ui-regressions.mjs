@@ -515,8 +515,10 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
 
     const goalFile = store.getState().activeSessionFile
     const originalPrompt = await until(() => store.getState().forkTargets.find(({ text }) => text === goalFixture.original), 'Pi did not offer the original goal prompt for editing')
-    const completedObjective = await until(() => document.querySelector('.goal-bar__objective'), 'The completed goal could not be edited')
-    completedObjective.click()
+    await until(() => document.querySelector('.goal-bar__objective'), 'The completed goal could not be edited')
+    // The objective is a label: the pencil in the actions row is the editor.
+    const editButton = await until(() => goalButton('Edit') && !goalButton('Edit').disabled, 'The completed goal had no edit button')
+    editButton.click()
     const laterEditor = await until(() => document.querySelector('.goal-bar__input'), 'The later goal editor did not open')
     setInputValue(laterEditor, 'Unsaved draft for the later objective')
     await store.getState().editMessageFrom(originalPrompt.entryId, goalFixture.original)

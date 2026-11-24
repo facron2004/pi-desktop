@@ -67,30 +67,17 @@
   color: var(--text);
 }
 
-/* The objective runs on after the bold state word in quieter ink; one click
-   opens the editor. A long one ellipsises, never pushing the controls out. */
+/* The objective runs on after the bold state word in quieter ink, as a label:
+   the pencil in the actions row opens the editor. A long one ellipsises, never
+   pushing the controls out. */
 .goal-bar__objective {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  padding: 0;
-  border: 0;
-  background: none;
   color: var(--text-muted);
   font-size: var(--text-small);
-  text-align: left;
-  cursor: text;
-}
-
-.goal-bar__objective:hover {
-  color: var(--text);
-}
-
-.goal-bar__objective:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
 }
 
 .goal-details-popover.popover {

@@ -129,15 +129,20 @@ export function GoalBar() {
 
           {editing ? null : (
             <>
-              <button
-                type="button"
-                className="goal-bar__objective"
-                title={t('Edit')}
-                onClick={startEdit}
-              >
+              <span className="goal-bar__objective" title={goal.text}>
                 {goal.text}
-              </button>
+              </span>
               <div className="goal-bar__actions">
+                <button
+                  type="button"
+                  className="goal-bar__action goal-bar__action--icon"
+                  title={t('Edit')}
+                  aria-label={t('Edit')}
+                  disabled={pending}
+                  onClick={startEdit}
+                >
+                  <SquarePen size={14} aria-hidden="true" />
+                </button>
                 <button
                   type="button"
                   className="goal-bar__action goal-bar__action--icon"
