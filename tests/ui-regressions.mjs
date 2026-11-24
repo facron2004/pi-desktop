@@ -2209,6 +2209,26 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await pause(250)
   check(finalEnvironmentToggle?.getAttribute('aria-expanded') === 'false', 'The final environment screenshot is not folded')
 
+  // A Chinese interface must not keep English inside it. The map translates
+  // both the app's own labels and the plain-text messages the main process
+  // sends, and the toast is where a reader meets the latter. Switch, look, and
+  // switch back so the harness screenshot stays in English for visual review.
+  await store.getState().updateSettings({ language: 'zh-CN' })
+  const chineseLabel = await until(() => {
+    const button = document.querySelector('.btn-new-chat')
+    return button?.textContent?.includes('新聊天') ? button : null
+  }, 'The Chinese interface did not load')
+  check(chineseLabel, 'The new-chat button kept its English label in the Chinese interface')
+  store.getState().showToast('Nothing is staged. Stage a file or include unstaged changes.', 'error')
+  await until(
+    () => document.querySelector('.app-toast__text')?.textContent === '没有已暂存的更改。请先暂存文件，或勾选包含未暂存更改。',
+    'A main-process message stayed English in the Chinese interface'
+  )
+  store.getState().clearToast()
+  await store.getState().updateSettings({ language: 'en' })
+  await until(() => document.querySelector('.btn-new-chat')?.textContent?.includes('New chat'), 'The English interface did not return')
+  passed.push('the Chinese interface translates labels and the messages the main process sends')
+
   return passed
 }
 
@@ -2239,7 +2259,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 41 : 39)
+  assert.equal(passed.length, process.platform === 'win32' ? 42 : 40)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })
