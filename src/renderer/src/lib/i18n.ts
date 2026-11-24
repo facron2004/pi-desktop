@@ -2154,6 +2154,12 @@ const zhCN: Record<string, string> = {
   'Image prompt is too long': '图片提示词太长',
   'Image generation request failed': '图片生成请求失败',
   'Image generation returned no images': '图片生成没有返回图片',
+  // Progress readings the memory service reports back to the settings page.
+  'Memory generation was cancelled': '记忆提取已取消',
+  'Memory was cleared': '记忆已清空',
+  'Conversation changed during memory generation': '提取记忆时对话发生了变化',
+  'Memory was changed during generation': '提取记忆时记忆已被修改',
+  'Automatic memory generation was cancelled': '自动记忆提取已取消'
 }
 
 export function translate(text: string, language: AppLanguage): string {
