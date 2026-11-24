@@ -297,6 +297,36 @@ test('readImageDataUrl applies a caller byte limit and never exceeds the full-im
   }
 })
 
+test('readImageDataUrl never reads a picture from another registered project', async () => {
+  const temp = realpathSync(os.tmpdir())
+  const activeDir = mkdtempSync(path.join(temp, 'pi-desktop-image-active-'))
+  const otherDir = mkdtempSync(path.join(temp, 'pi-desktop-image-other-'))
+  try {
+    const otherImage = path.join(otherDir, 'private.png')
+    writeFileSync(otherImage, 'private')
+    writeFileSync(path.join(activeDir, 'own.png'), '12345')
+    const context = {
+      settings: {
+        get: () => ({
+          activeWorkspaceId: 'active',
+          workspaces: [
+            { id: 'active', path: activeDir },
+            { id: 'other', path: otherDir }
+          ]
+        })
+      }
+    } as unknown as IpcContext
+
+    // The active project answers; a registered folder the reader is not looking
+    // at does not, even when the renderer names an absolute path inside it.
+    assert.equal(await readImageDataUrl(context, 'own.png'), 'data:image/png;base64,MTIzNDU=')
+    assert.equal(await readImageDataUrl(context, otherImage), null)
+  } finally {
+    rmSync(activeDir, { recursive: true, force: true })
+    rmSync(otherDir, { recursive: true, force: true })
+  }
+})
+
 test('workspace reads reject symlink targets outside the workspace', async (t) => {
   const parent = mkdtempSync(path.join(realpathSync(os.tmpdir()), 'pi-desktop-workspace-link-'))
   const workspace = path.join(parent, 'workspace')

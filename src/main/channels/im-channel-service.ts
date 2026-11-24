@@ -232,10 +232,15 @@ export class ImChannelService extends EventEmitter {
   /** An empty secret on update means "keep the stored one". */
   private mergeSecrets(channel: ImChannelConfig, existing: StoredChannel[]): StoredChannel[] {
     const previous = existing.find((item) => item.id === channel.id)
-    const next = previous
+    if (!previous && existing.length >= MAX_CHANNELS) {
+      // Refuse the add rather than evicting the oldest binding: silently dropping
+      // a channel deletes its tokens and takes its bot offline, and nothing in
+      // the UI would say why the row vanished.
+      throw new Error(`At most ${MAX_CHANNELS} channels can be bound. Remove one before adding another.`)
+    }
+    return previous
       ? existing.map((item) => (item.id === channel.id ? channel : item))
       : [...existing, channel]
-    return next.slice(-MAX_CHANNELS)
   }
 
   private validateConfig(

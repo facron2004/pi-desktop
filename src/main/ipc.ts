@@ -500,6 +500,33 @@ async function resolveRuntimeCwd(context: IpcContext, cwd: unknown): Promise<Res
   return null
 }
 
+/**
+ * Where a terminal may start.
+ *
+ * The renderer names the folder a hand-off came from, so it is treated like
+ * every other renderer path: only a folder this app knows about — a registered
+ * project, the projectless chats root, or a folder inside one of them — is
+ * accepted. Anything else falls back to the workspace on screen. A shell parked
+ * in an unregistered directory would also outlive the project it claims to
+ * belong to, because removing a workspace only stops the terminals whose cwd is
+ * inside it (`supervisor.stopCwd`).
+ */
+export function resolveTerminalCwd(context: IpcContext, requested: unknown): string {
+  const fallback = workspaceRoot(context)
+  if (requested === '') return projectlessRoot()
+  const wanted = typeof requested === 'string' ? requested.trim() : ''
+  if (!wanted || !path.isAbsolute(wanted)) return fallback
+  const candidate = path.resolve(wanted)
+  const roots = [
+    projectlessPath(),
+    ...(context.settings.get().workspaces ?? []).map((workspace) => workspace.path)
+  ]
+  for (const root of roots) {
+    if (root && isPathWithin(root, candidate)) return candidate
+  }
+  return fallback
+}
+
 /** The picture types the inspector's viewer can draw, by file extension. */
 const IMAGE_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -580,6 +607,12 @@ function pastedImageExtension(mimeType: string): string | null {
  * The renderer may not read the disk, so the bytes come across as a data URL
  * the viewer can paint. Anything that is not an image inside the project, or
  * that is too large to hand to a `<img>`, is `null` rather than an error.
+ *
+ * "Inside the project" is the active workspace and nothing else: a picture that
+ * belongs to another registered project is not readable from here, or a
+ * conversation could read a folder the reader is not looking at. The one
+ * deliberate widening in this file is `dialog:pickFiles`, and that is the user
+ * choosing a path rather than the renderer naming one.
  */
 export async function readImageDataUrl(
   context: IpcContext,
@@ -587,14 +620,7 @@ export async function readImageDataUrl(
   maxBytes = MAX_IMAGE_DATA_BYTES
 ): Promise<string | null> {
   const root = workspaceRoot(context)
-  let opened = await openWorkspaceFile(root, file)
-  if (!opened && typeof file === 'string' && path.isAbsolute(file)) {
-    for (const workspace of context.settings.get().workspaces ?? []) {
-      if (!workspace.path || workspace.path === root) continue
-      opened = await openWorkspaceFile(workspace.path, file)
-      if (opened) break
-    }
-  }
+  const opened = await openWorkspaceFile(root, file)
   if (!opened) return null
   try {
     const type = IMAGE_MIME[path.extname(opened.target).toLowerCase()]
@@ -1117,7 +1143,7 @@ export function registerIpc(context: IpcContext): void {
     if (isQuitting()) throw new Error('The app is shutting down')
     return terminals.create({
       ...options,
-      cwd: options?.cwd === '' ? projectlessRoot() : options?.cwd?.trim() || workspaceRoot(context),
+      cwd: resolveTerminalCwd(context, options?.cwd),
       shell: options?.shell || settings.get().terminalShell
     })
   })

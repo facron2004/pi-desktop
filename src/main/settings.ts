@@ -698,6 +698,41 @@ async function runUserDataAclSweep(target: string, systemDirectory: string): Pro
 }
 
 /**
+ * Guard the two settings that are not just preferences but capabilities.
+ *
+ * `externalChatFolder` roots session discovery: it is the containment root the
+ * session handlers resolve renderer-supplied paths against. A filesystem root
+ * there would make every `.jsonl` on the drive a valid conversation, which is
+ * exactly what that check exists to prevent. `piPath` decides which executable
+ * is spawned as the agent. The renderer is the app and may legitimately choose
+ * either, but the main process is the last place that can refuse a value that is
+ * not even a path — or a root — instead of trusting it.
+ */
+function assertSafeSettingsPatch(patch: Partial<AppSettings>): void {
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+    throw new TypeError('settings:patch expects an object')
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'externalChatFolder')) {
+    const folder = typeof patch.externalChatFolder === 'string' ? patch.externalChatFolder.trim() : ''
+    if (folder) {
+      if (!path.isAbsolute(folder)) {
+        throw new Error(`The chat folder must be an absolute path: ${folder}`)
+      }
+      const resolved = path.resolve(folder)
+      if (path.dirname(resolved) === resolved) {
+        throw new Error('The chat folder cannot be a filesystem root.')
+      }
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'piPath')) {
+    const cli = typeof patch.piPath === 'string' ? patch.piPath.trim() : ''
+    if (cli && !path.isAbsolute(cli)) {
+      throw new Error(`The Pi CLI path must be an absolute path: ${cli}`)
+    }
+  }
+}
+
+/**
  * Tiny JSON-file settings store in the Electron userData directory.
  * Writes are atomic (temp file + rename) so a crash cannot corrupt the file.
  */
@@ -792,6 +827,7 @@ export class SettingsStore {
   }
 
   patch(patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): AppSettings {
+    assertSafeSettingsPatch(patch)
     const updated = this.update((current) => {
       const { externalChatFolderHistory: _ignoredHistory, ...requested } = patch
       if (!Object.prototype.hasOwnProperty.call(patch, 'externalChatFolder')) return requested

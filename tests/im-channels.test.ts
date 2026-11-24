@@ -270,7 +270,7 @@ test('WeChat adapter uses redirect:error, timeout signal, bounded reads, and scr
   assert.ok(seenInit[1]?.signal)
 })
 
-test('IM /new prompts real text (not "/new"), crash settles notify, eviction stops old adapter, and transient workspace loss preserves channels', async (t) => {
+test('IM /new prompts real text (not "/new"), crash settles notify, a fifth channel is refused, and transient workspace loss preserves channels', async (t) => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-im-channels-reg-'))
   t.after(() => rmSync(userData, { recursive: true, force: true }))
   const adapters = new Map<string, FakeAdapter>()
@@ -337,11 +337,16 @@ test('IM /new prompts real text (not "/new"), crash settles notify, eviction sto
   await instance.save({ ...FEISHU, id: 'channel-2', binding: { workspaceId: 'ws-2', sessionId: 's-2' } })
   assert.equal(instance.storedChannels().some((c) => c.id === 'channel-1'), true)
 
-  // Saving 5th channel evicts channel-1 and stops its running adapter.
+  // A fifth channel is refused rather than evicting channel-1: silently dropping
+  // a binding deletes its credentials and takes its bot offline with no notice.
   await instance.save({ ...FEISHU, id: 'channel-3', binding: { workspaceId: 'ws-2', sessionId: 's-3' } })
   await instance.save({ ...FEISHU, id: 'channel-4', binding: { workspaceId: 'ws-2', sessionId: 's-4' } })
-  await instance.save({ ...FEISHU, id: 'channel-5', binding: { workspaceId: 'ws-2', sessionId: 's-5' } })
-  assert.equal(instance.hasRuntime('channel-1'), false)
-  assert.equal(adapter1.stopped, true, 'evicted channel runtime must be stopped')
+  await assert.rejects(
+    () => instance.save({ ...FEISHU, id: 'channel-5', binding: { workspaceId: 'ws-2', sessionId: 's-5' } }),
+    /At most 4 channels can be bound/
+  )
+  assert.equal(instance.storedChannels().some((c) => c.id === 'channel-1'), true)
+  assert.equal(instance.hasRuntime('channel-1'), true)
+  assert.equal(adapter1.stopped, false, 'a refused add must not stop another channel')
   await instance.dispose()
 })
