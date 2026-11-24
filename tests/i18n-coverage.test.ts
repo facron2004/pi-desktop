@@ -22,6 +22,7 @@ const SAME_IN_BOTH = new Set(['MCP', 'Pi CLI', 'tok/s', '简体中文'])
 // found through the process cwd (tests/run.mjs runs it from the project root),
 // not through import.meta.url.
 const renderer = path.resolve(process.cwd(), 'src', 'renderer', 'src')
+const mainProcess = path.resolve(process.cwd(), 'src', 'main')
 
 function translationKeys(): Set<string> {
   const source = readFileSync(path.join(renderer, 'lib', 'i18n.ts'), 'utf8')
@@ -102,4 +103,21 @@ test('main-process messages that reach the UI have a Chinese reading', () => {
   // Text this project does not own (git, Pi, a provider) is passed through.
   assert.equal(translate('fatal: not a git repository', 'zh-CN'), 'fatal: not a git repository')
   assert.equal(translate('No project is open.', 'en'), 'No project is open.')
+})
+
+test('every status reading the main process reports has a Chinese translation', () => {
+  // MemorySettings shows the reason a learning run added nothing through
+  // t(result.skipped). Five readings were missing from the map and stayed
+  // English on a Chinese screen because a literal scan of the renderer cannot
+  // see a string that is produced in the main process.
+  const readings = new Set<string>()
+  for (const file of sourceFiles(mainProcess)) {
+    for (const match of readFileSync(file, 'utf8').matchAll(/\bskipped:\s*'((?:\\.|[^'\\])*)'/g)) {
+      readings.add(match[1].replace(/\\(['"\\])/g, '$1'))
+    }
+  }
+  assert.ok(readings.size >= 10, `the scan found ${readings.size} status readings; it is looking at the wrong tree`)
+  const translated = translationKeys()
+  const missing = [...readings].filter((reading) => !translated.has(reading))
+  assert.deepEqual(missing, [], `status readings with no Chinese translation:\n  ${missing.join('\n  ')}`)
 })

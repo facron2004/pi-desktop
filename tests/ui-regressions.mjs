@@ -886,6 +886,22 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(head.querySelector('.file-changes__review') && head.querySelector('.file-changes__undo'), 'File actions moved outside the card header')
   const row = await until(() => fileChanges.querySelector('.file-changes__list .file-change'), 'The card did not show its files directly')
   const hover = (node) => node.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+  // The card re-renders as the turn settles, which replaces the row node; a
+  // mouseover dispatched on the old node never reaches the new one and the
+  // deliberate hover delay never starts. Re-hover whichever row is on screen,
+  // at most every ~500 ms so the delay can elapse.
+  const hoverOpenFile = async (index, read, message) => {
+    const deadline = performance.now() + 15000
+    let polls = 0
+    while (performance.now() < deadline) {
+      const value = read()
+      if (value) return value
+      const target = document.querySelectorAll('.file-changes__list .file-change')[index]
+      if (target && polls++ % 20 === 0) hover(target)
+      await pause(25)
+    }
+    throw new Error(message)
+  }
   hover(row)
   await pause(100)
   check(!document.querySelector('.file-change__preview'), 'File preview opened during a brief hover')
@@ -899,18 +915,19 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await pause(450)
   check(!document.querySelector('.file-change__preview'), 'Scrolling did not cancel the pending file preview')
 
-  hover(row)
-  await until(() => document.querySelector('.file-change__preview-line'), 'File preview did not open')
+  await hoverOpenFile(0, () => document.querySelector('.file-change__preview-line'), 'File preview did not open')
   check(document.querySelectorAll('.file-change__preview-line').length === 200, 'Large preview rendered more than one page')
   const next = document.querySelector('.file-change__preview-pages button[aria-label="Next page"]')
   check(next && !next.disabled, 'Preview has no next-page control')
   next.click()
   await until(() => document.querySelector('.file-change__preview-text')?.textContent === 'line 200', 'Preview did not advance')
   check(document.querySelectorAll('.file-change__preview-line').length === 200, 'Second preview page exceeded the limit')
-  hover(document.querySelectorAll('.file-change')[1])
-  await until(() => document.querySelector('.file-change__preview-text')?.textContent === 'small', 'File switch did not reset the preview page')
-  hover(row)
-  await until(() => document.querySelector('.file-change__preview-text')?.textContent === 'line 0', 'Returning to the file did not reset paging')
+  await hoverOpenFile(1,
+    () => document.querySelector('.file-change__preview-text')?.textContent === 'small' ? true : null,
+    'File switch did not reset the preview page')
+  await hoverOpenFile(0,
+    () => document.querySelector('.file-change__preview-text')?.textContent === 'line 0' ? true : null,
+    'Returning to the file did not reset paging')
   passed.push('file previews wait for a deliberate hover and page by 200 lines')
 
   // Finished tool groups stay beside their commentary. The group and the
