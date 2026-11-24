@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Unit tests for the conversation reducer and the thread view model.
  *
  * They run against the real Pi event shapes observed on the wire: RPC
@@ -126,6 +126,7 @@ const suites = [
   'renderer-utils.test.ts',
   'i18n.test.ts',
   'i18n-coverage.test.ts',
+  'source-hygiene.test.ts',
   'compaction-error.test.ts',
   'extension-notices.test.ts',
   'highlight-cache.test.ts',
@@ -281,6 +282,7 @@ try {
 } finally {
   rmSync(out, { recursive: true, force: true })
 }
+
 
 
 

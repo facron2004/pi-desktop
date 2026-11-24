@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { CircleHelp } from 'lucide-react'
 import type { AggregatedUsageStats, DailyUsageStat, ModelUsageStat } from '@shared/types'

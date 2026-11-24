@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Bot, ChevronRight, Loader2, Square } from 'lucide-react'
 import type { SessionMeta } from '@shared/types'
 import type { SessionThread } from '../store/useAppStore'
