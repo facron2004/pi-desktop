@@ -156,6 +156,7 @@ const suites = [
   'adversarial-ipc-stress.test.ts',
   'adversarial-stress-m2.test.ts',
   'challenger-m1-adversarial.test.ts',
+  'challenger-m1-c2.test.ts',
   'challenger-m1-v2-stress.test.ts',
   'challenger-m2-ux-lifecycle-stress.test.ts',
   'session-supervisor-lru-stress.test.ts'
@@ -191,8 +192,19 @@ export const dialog = { showOpenDialog: async () => ({ canceled: true, filePaths
 export const BrowserWindow = class { static getAllWindows() { return [] } isDestroyed() { return false } };
 export const Menu = { buildFromTemplate: () => ({}) };
 export const Tray = class { setContextMenu() {} setImage() {} setToolTip() {} on() {} destroy() {} isDestroyed() { return false } };
-export const ipcMain = { handle: () => {}, on: () => {}, removeHandler: () => {} };
-export const shell = { showItemInFolder: () => {}, trashItem: async () => {} };
+const ipcHandlers = new Map();
+export const ipcMain = {
+  handle: (channel, handler) => { ipcHandlers.set(channel, handler); },
+  removeHandler: (channel) => { ipcHandlers.delete(channel); },
+  on: () => {},
+  _invoke: async (channel, event, ...args) => {
+    const handler = ipcHandlers.get(channel);
+    if (!handler) throw new Error("No handler registered for " + channel);
+    return handler(event, ...args);
+  },
+  _reset: () => ipcHandlers.clear()
+};
+export const shell = { showItemInFolder: () => {}, openPath: async () => "", trashItem: async () => {} };
 export const Notification = class { show() {} };
 export const nativeTheme = { shouldUseDarkColors: false };
 export const nativeImage = { createFromPath: () => ({ isEmpty: () => true, resize: () => ({}) }), createFromBuffer: () => ({ isEmpty: () => true, resize: () => ({}) }) };

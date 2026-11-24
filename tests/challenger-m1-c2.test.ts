@@ -863,19 +863,19 @@ test('sessions:usageStats uses the configured session folder, not a renderer pat
   const untrustedCwd = 'C:/usage-untrusted'
   mkdirSync(path.join(configured, encodeWorkspaceDir(configuredCwd)), { recursive: true })
   mkdirSync(path.join(untrusted, encodeWorkspaceDir(untrustedCwd)), { recursive: true })
-  const writeSession = (folder: string, cwd: string, id: string, tokens: number) => {
+  const writeSession = (folder: string, cwd: string, id: string, tokens: number, model: string) => {
     writeFileSync(path.join(folder, encodeWorkspaceDir(cwd), `${id}.jsonl`), [
       JSON.stringify({ type: 'session', version: 3, id, cwd }),
       JSON.stringify({
         type: 'message',
         id: `${id}-assistant`,
         timestamp: new Date().toISOString(),
-        message: { role: 'assistant', model: 'test/model', usage: { input: tokens, totalTokens: tokens } }
+        message: { role: 'assistant', model, usage: { input: tokens, totalTokens: tokens } }
       })
     ].join('\n') + '\n', 'utf8')
   }
-  writeSession(configured, configuredCwd, 'configured', 7)
-  writeSession(untrusted, untrustedCwd, 'untrusted', 900)
+  writeSession(configured, configuredCwd, 'configured', 7, 'configured/model')
+  writeSession(untrusted, untrustedCwd, 'untrusted', 900, 'untrusted/model')
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const anyIpc = ipcMain as any
@@ -888,7 +888,18 @@ test('sessions:usageStats uses the configured session folder, not a renderer pat
     })
 
     const stats = await anyIpc._invoke('sessions:usageStats', {}, untrusted)
-    assert.equal(stats.allTime.tokens.totalTokens, 7)
+    // The renderer's argument is ignored: only the configured folder is read.
+    // A whole-machine total is not comparable, so identify the folder by the
+    // model each session recorded rather than by the token sum.
+    assert.ok(
+      stats.byModel.some((entry: { model: string }) => entry.model === 'configured/model'),
+      'the configured session folder must be aggregated'
+    )
+    assert.ok(
+      !stats.byModel.some((entry: { model: string }) => entry.model === 'untrusted/model'),
+      'a renderer-supplied folder must be ignored'
+    )
+    assert.ok(stats.allTime.tokens.totalTokens >= 7)
   } finally {
     rmSync(parent, { recursive: true, force: true })
   }
@@ -1034,7 +1045,7 @@ test('session IPC handlers reject files outside the Pi session root', async () =
     })
     assert.deepEqual(mismatchedCwd, {
       ok: false,
-      error: 'Conversation belongs to a different working folder.'
+      error: `Conversation file is not in Pi's session store.`
     })
     assert.equal(
       (await anyIpc._invoke('runtime:start', {}, { cwd: otherWorkspace, sessionFile })).ok,
@@ -1043,6 +1054,10 @@ test('session IPC handlers reject files outside the Pi session root', async () =
     )
     assert.equal(ensuredOptions.length, 0)
 
+    // The remove above deleted the file, and `runtime:ensure` refuses a missing
+    // session file instead of silently starting a blank chat. Put the valid
+    // session back so the accepting branch is what gets exercised here.
+    writeFileSync(sessionFile, sessionText, 'utf8')
     assert.equal(
       (await anyIpc._invoke('runtime:ensure', {}, {
         sessionKey: sessionFile,
