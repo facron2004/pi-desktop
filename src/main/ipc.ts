@@ -605,14 +605,15 @@ function pastedImageExtension(mimeType: string): string | null {
  * A picture of the open project as a data URL.
  *
  * The renderer may not read the disk, so the bytes come across as a data URL
- * the viewer can paint. Anything that is not an image inside the project, or
- * that is too large to hand to a `<img>`, is `null` rather than an error.
+ * the viewer can paint. Anything that is not an image inside a registered
+ * project, or that is too large to hand to a `<img>`, is `null` rather than an
+ * error.
  *
- * "Inside the project" is the active workspace and nothing else: a picture that
- * belongs to another registered project is not readable from here, or a
- * conversation could read a folder the reader is not looking at. The one
- * deliberate widening in this file is `dialog:pickFiles`, and that is the user
- * choosing a path rather than the renderer naming one.
+ * The read spans the registered projects, not just the active one: a nested
+ * project is a workspace of its own, so a transcript opened from it still shows
+ * the pictures its parent project produced. That is the whole widening — a path
+ * outside every registered root is refused, and each root is still checked with
+ * `openWorkspaceFile` (realpath, hard links, the named file).
  */
 export async function readImageDataUrl(
   context: IpcContext,
@@ -620,7 +621,14 @@ export async function readImageDataUrl(
   maxBytes = MAX_IMAGE_DATA_BYTES
 ): Promise<string | null> {
   const root = workspaceRoot(context)
-  const opened = await openWorkspaceFile(root, file)
+  let opened = await openWorkspaceFile(root, file)
+  if (!opened && typeof file === 'string' && path.isAbsolute(file)) {
+    for (const workspace of context.settings.get().workspaces ?? []) {
+      if (!workspace.path || workspace.path === root) continue
+      opened = await openWorkspaceFile(workspace.path, file)
+      if (opened) break
+    }
+  }
   if (!opened) return null
   try {
     const type = IMAGE_MIME[path.extname(opened.target).toLowerCase()]

@@ -297,13 +297,16 @@ test('readImageDataUrl applies a caller byte limit and never exceeds the full-im
   }
 })
 
-test('readImageDataUrl never reads a picture from another registered project', async () => {
+test('readImageDataUrl spans registered projects but nothing outside them', async () => {
   const temp = realpathSync(os.tmpdir())
   const activeDir = mkdtempSync(path.join(temp, 'pi-desktop-image-active-'))
   const otherDir = mkdtempSync(path.join(temp, 'pi-desktop-image-other-'))
+  const outsideDir = mkdtempSync(path.join(temp, 'pi-desktop-image-outside-'))
   try {
     const otherImage = path.join(otherDir, 'private.png')
     writeFileSync(otherImage, 'private')
+    const outsideImage = path.join(outsideDir, 'stranger.png')
+    writeFileSync(outsideImage, 'stranger')
     writeFileSync(path.join(activeDir, 'own.png'), '12345')
     const context = {
       settings: {
@@ -317,13 +320,17 @@ test('readImageDataUrl never reads a picture from another registered project', a
       }
     } as unknown as IpcContext
 
-    // The active project answers; a registered folder the reader is not looking
-    // at does not, even when the renderer names an absolute path inside it.
+    // The active project answers.
     assert.equal(await readImageDataUrl(context, 'own.png'), 'data:image/png;base64,MTIzNDU=')
-    assert.equal(await readImageDataUrl(context, otherImage), null)
+    // A picture a nested project's transcript refers to still renders: the other
+    // project is registered, so it is read through the same verified handle.
+    assert.equal(await readImageDataUrl(context, otherImage), 'data:image/png;base64,cHJpdmF0ZQ==')
+    // A folder outside every registered project is still refused.
+    assert.equal(await readImageDataUrl(context, outsideImage), null)
   } finally {
     rmSync(activeDir, { recursive: true, force: true })
     rmSync(otherDir, { recursive: true, force: true })
+    rmSync(outsideDir, { recursive: true, force: true })
   }
 })
 
