@@ -675,7 +675,7 @@ export interface AppStore {
   toast?: { text: string; level: 'info' | 'warning' | 'error'; sessionKey?: string }
   /** Branch and working tree of the open project, when it is a git repo. */
   git?: GitStatus
-  /** Bumped when the app asks the review panel to open its commit dialog. */
+  /** 1 while the app has asked the review panel to open its commit dialog. */
   commitRequest: number
   /** Monotonic counter bumped when a user prompt or inline command is submitted in this conversation. */
   submitSeq?: number
@@ -835,7 +835,8 @@ export interface AppStore {
   insertIntoComposer: (text: string, mode?: 'append' | 'replace', sessionKey?: string) => void
   refreshForkTargets: (sessionKey?: string) => Promise<void>
   /** Start a new branch that keeps the history before `entryId`. */
-  forkFrom: (entryId: string) => Promise<void>
+  /** Fork into a new conversation; false when the fork was refused or cancelled. */
+  forkFrom: (entryId: string) => Promise<boolean>
   /**
    * Move this conversation back to before `entryId` in the same session file
    * and put the original prompt back in the composer for editing.
@@ -869,6 +870,8 @@ export interface AppStore {
   pullGit: (expectedRoot: string) => Promise<GitCommitResult>
   /** Ask the review panel to open its commit dialog. */
   requestCommit: () => void
+  /** The panel opened the dialog; forget the request. */
+  consumeCommitRequest: () => void
   /** Open the conversation of a search hit and take the reader to the message. */
   openSearchHit: (hit: SessionSearchHit, query: string) => Promise<void>
   /** The thread found the message (or gave up); forget the request. */
@@ -4216,10 +4219,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   },
 
   async forkFrom(entryId) {
-    if (get().forking) return
+    if (get().forking) return false
     if (get().isStreaming) {
       get().showToast('Wait for the current turn to finish before branching', 'warning')
-      return
+      return false
     }
     const owner = viewKeyOf(get())
     const originSession = get().sessions.find((session) => session.file === owner)
@@ -4237,7 +4240,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       )
       if (result?.cancelled) {
         get().showToast('The branch was cancelled', 'warning')
-        return
+        return false
       }
       // The fork opens a new session file, so everything that points at the
       // old one has to be refreshed.
@@ -4263,8 +4266,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       const prompt = result?.text?.trim()
       if (prompt) get().insertIntoComposer(prompt, 'replace', key)
       get().showToast('Branched into a new conversation')
+      return true
     } catch (error) {
       bindSet(set, get, owner)({ error: messageOf(error) })
+      return false
     } finally {
       set({ forking: false })
     }
@@ -4500,7 +4505,13 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   },
 
   requestCommit() {
-    set((state) => ({ commitRequest: state.commitRequest + 1 }))
+    // A request, not a counter: the panel consumes it when it opens the dialog,
+    // so remounting the panel later cannot pop the dialog a second time.
+    set((state) => (state.commitRequest === 1 ? {} : { commitRequest: 1 }))
+  },
+
+  consumeCommitRequest() {
+    set((state) => (state.commitRequest === 0 ? {} : { commitRequest: 0 }))
   },
 
   async openSearchHit(hit, query) {
