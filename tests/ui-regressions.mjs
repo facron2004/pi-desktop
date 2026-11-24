@@ -1499,18 +1499,18 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   const progress = [...document.querySelectorAll('.task-panel__section')].find((node) =>
     node.querySelector('.task-panel__section-title')?.textContent === 'Progress'
   )
-  progress.querySelector('.task-panel__section-toggle').click()
-  await pause(250)
-  check(
-    progress.querySelector('.task-panel__section-body').getAttribute('data-open') === null,
-    'The section did not fold shut'
-  )
-  progress.querySelector('.task-panel__section-toggle').click()
-  await pause(250)
-  check(
-    progress.querySelector('.task-panel__section-body').getAttribute('data-open') !== null,
-    'The section did not fold open again'
-  )
+  // State attributes land on a commit, not on a fixed delay: poll them so a
+  // busy frame cannot fail a fold that did happen.
+  const progressState = () => [...document.querySelectorAll('.task-panel__section')]
+    .find((node) => node.querySelector('.task-panel__section-title')?.textContent === 'Progress')
+    ?.querySelector('.task-panel__section-body')?.getAttribute('data-open') ?? null
+  const progressToggle = () => [...document.querySelectorAll('.task-panel__section')]
+    .find((node) => node.querySelector('.task-panel__section-title')?.textContent === 'Progress')
+    ?.querySelector('.task-panel__section-toggle')
+  progressToggle().click()
+  await until(() => progressState() === null, 'The section did not fold shut', 5000)
+  progressToggle().click()
+  await until(() => progressState() !== null, 'The section did not fold open again', 5000)
   passed.push('the task rail separates background commands and subagents beside environment, plan and deliverables')
 
   // The workspace panel follows MCode's page strip: fixed-width tabs, an add
@@ -1850,10 +1850,10 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(treeToggle, 'The panel header lost its file-tree toggle')
   check(!document.querySelector('.tree__search-fold'), 'The old filter-row toggle is still present')
   treeToggle.click()
-  await pause(120)
-  check(
-    document.querySelector('.file-workspace')?.dataset.tree === 'closed',
-    'The tree toggle did not fold the tree away'
+  await until(
+    () => document.querySelector('.file-workspace')?.dataset.tree === 'closed',
+    'The tree toggle did not fold the tree away',
+    5000
   )
   const showTree = [...document.querySelectorAll('.tool-panel__action')].find(
     (node) => node.getAttribute('aria-label') === 'Show file tree'
