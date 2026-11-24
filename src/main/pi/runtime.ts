@@ -549,12 +549,16 @@ export class PiRuntime extends EventEmitter {
    * Answer a blocking extension dialog so the agent can continue.
    * Silently ignored when the runtime is already gone.
    */
-  respondUi(id: string, response: ExtensionUiResponse): void {
-    this.pendingApprovalIds.delete(id)
-    if (this.pendingUiRequestIds.delete(id)) {
+  respondUi(id: string, response: ExtensionUiResponse): boolean {
+    const knownApproval = this.pendingApprovalIds.delete(id)
+    const knownDialog = this.pendingUiRequestIds.delete(id)
+    if (knownDialog) {
       if (this.pendingSubagentEditor?.requestId === id) this.pendingSubagentEditor = undefined
     }
     this.client?.respondUi(id, response, this.outbound('extension-ui-response'))
+    // Reported so a caller can tell "answered Pi" from "Pi had already settled
+    // this dialog" (its own timeout, a desktop answer elsewhere).
+    return knownApproval || knownDialog
   }
 
   hasPendingUi(id: string): boolean {

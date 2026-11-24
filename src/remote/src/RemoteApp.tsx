@@ -794,10 +794,15 @@ export function RemoteApp() {
                 {dialog.message ? <div className="remote-dialog__message">{dialog.message}</div> : null}
                 {dialog.method === 'select' && dialog.options ? (
                   <div className="remote-dialog__actions">
-                    {dialog.options.map((option) => (
+                    {/* The option text is the answer itself: Pi resolves the
+                        dialog with exactly this string, so it is shown whole and
+                        sent unchanged, and the key is the position — two options
+                        that read the same must still be two buttons. */}
+                    {dialog.options.map((option, index) => (
                       <button
                         className="remote-dialog__option"
-                        key={option}
+                        key={`${index}:${option}`}
+                        title={option}
                         disabled={dialogBusy}
                         onClick={() => void answerDialog({ value: option })}
                       >{option}</button>

@@ -51,7 +51,8 @@ function harness(t: { after: (fn: () => Promise<void> | void) => void }): Harnes
     ensure: async () => ({ ok: true }),
     stop: async () => {},
     request: async () => ({}),
-    respondUi: () => {}
+    // A dialog the phone may answer: the supervisor reports that it was found.
+    respondUi: () => true
   }) as EventEmitter & Record<string, unknown>
   const service = new RemoteAccessService({
     userData,
@@ -117,7 +118,10 @@ test('POST /api/dialog answers a pending dialog and broadcasts close on ui-respo
   const actualFileKey = process.platform === 'win32' ? path.resolve(resolved.file).toLowerCase() : path.resolve(resolved.file)
   h.internals.pendingDialogs.set(actualFileKey, { id: 'dlg-1' } as never)
   let answered: unknown[] = []
-  h.supervisor.respondUi = (...args: unknown[]) => { answered = args }
+  h.supervisor.respondUi = (...args: unknown[]) => {
+    answered = args
+    return true
+  }
 
   const result = await h.post('/api/dialog', {
     workspaceId: 'workspace-1', sessionId: h.sessionId, id: 'dlg-1',

@@ -1193,3 +1193,120 @@ test('remote SSE streams coalesce token deltas and flush before structural event
     rmSync(userData, { recursive: true, force: true })
   }
 })
+
+test('a select keeps the extension\'s own option strings, and a dialog the phone cannot show stays on the desktop', async t => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-remote-dialog-options-'))
+  const workspacePath = path.join(userData, 'workspace')
+  mkdirSync(workspacePath, { recursive: true })
+  const device = { id: 'phone-1', name: 'Phone', pairedAt: 1, tokenHash: 'a'.repeat(64) }
+  writeFileSync(path.join(userData, 'remote-access.json'), JSON.stringify({ enabled: true, devices: [device] }))
+  const service = new RemoteAccessService({
+    userData,
+    uiDirectory: userData,
+    settings: { get: () => ({ workspaces: [{ id: 'workspace-1', path: workspacePath }] }) } as never,
+    supervisor: new EventEmitter() as never,
+    customInstructions: () => undefined
+  })
+  const internals = service as unknown as {
+    server: object | null
+    pendingDialogs: Map<string, { id: string; options?: string[]; timeout?: number }>
+    onRuntimeEvent: (payload: { ownerId: string; event: Record<string, unknown> }) => void
+  }
+  internals.server = {}
+  t.after(async () => {
+    internals.server = null
+    await service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  })
+  const file = path.join(workspacePath, 'session.jsonl')
+  const emit = (event: Record<string, unknown>) => internals.onRuntimeEvent({ ownerId: file, event })
+
+  // A select is answered by echoing the string the reader tapped, so trimming
+  // the option produced an answer Pi never offered.
+  const long = 'o'.repeat(250)
+  emit({ type: 'extension_ui_request', id: 'dlg-long', method: 'select', title: 'Pick one', options: ['short', long] })
+  const forwarded = internals.pendingDialogs.get(pathKeyOf(file))
+  assert.ok(forwarded, 'the dialog was not forwarded')
+  assert.equal(forwarded.options?.[1], long, 'the option text was rewritten before the phone saw it')
+
+  // Pi answers a dialog itself when its timeout expires; the reader's card must
+  // know that deadline.
+  emit({ type: 'extension_ui_request', id: 'dlg-timeout', method: 'confirm', title: 'Continue?', timeout: 5_000 })
+  assert.equal(internals.pendingDialogs.get(pathKeyOf(file))?.timeout, 5_000)
+
+  // A list the card cannot hold is not silently cut down: the desktop answers it.
+  internals.pendingDialogs.clear()
+  emit({ type: 'extension_ui_request', id: 'dlg-many', method: 'select', title: 'Pick one', options: Array.from({ length: 13 }, (_, index) => `option-${index}`) })
+  assert.equal(internals.pendingDialogs.has(pathKeyOf(file)), false, 'an oversized dialog was cut down and forwarded')
+})
+
+test('an answer for a dialog Pi already settled is a conflict, not a success', async t => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-remote-dialog-settled-'))
+  const sessionRoot = path.join(userData, 'sessions')
+  const workspacePath = path.join(userData, 'workspace')
+  const priorSessionRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  process.env.PI_CODING_AGENT_SESSION_DIR = sessionRoot
+  t.after(() => {
+    if (priorSessionRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = priorSessionRoot
+    rmSync(userData, { recursive: true, force: true })
+  })
+
+  mkdirSync(path.join(sessionRoot, encodeWorkspaceDir(workspacePath)), { recursive: true })
+  mkdirSync(workspacePath, { recursive: true })
+  const sessionId = 'settled-session'
+  const file = path.join(sessionRoot, encodeWorkspaceDir(workspacePath), `${sessionId}.jsonl`)
+  writeFileSync(file, JSON.stringify({
+    type: 'session',
+    version: 3,
+    id: sessionId,
+    cwd: workspacePath,
+    timestamp: new Date(1_700_000_000_000).toISOString()
+  }) + '\n')
+
+  const device = { id: 'phone-1', name: 'Phone', pairedAt: 1, tokenHash: 'a'.repeat(64) }
+  writeFileSync(path.join(userData, 'remote-access.json'), JSON.stringify({ enabled: true, devices: [device] }))
+  const supervisor = Object.assign(new EventEmitter(), {
+    sessionInfo: () => ({ cwd: workspacePath, externalContext: false, running: false, waitingForInput: false }),
+    respondUi: () => false
+  })
+  const service = new RemoteAccessService({
+    userData,
+    uiDirectory: userData,
+    settings: { get: () => ({ workspaces: [{ id: 'workspace-1', path: workspacePath }] }) } as never,
+    supervisor: supervisor as never,
+    customInstructions: () => undefined
+  })
+  const internals = service as unknown as {
+    server: object | null
+    pendingDialogs: Map<string, unknown>
+    onRuntimeEvent: (payload: { ownerId: string; event: Record<string, unknown> }) => void
+    answerDialog: (request: unknown, response: unknown, deviceId: string) => Promise<void>
+  }
+  internals.server = {}
+  t.after(async () => {
+    internals.server = null
+    await service.dispose()
+  })
+
+  internals.onRuntimeEvent({ ownerId: file, event: { type: 'extension_ui_request', id: 'dlg-1', method: 'confirm', title: 'Run it?' } })
+  assert.equal(internals.pendingDialogs.size, 1, 'the dialog was not forwarded')
+
+  const request = Object.assign(Readable.from([JSON.stringify({
+    workspaceId: 'workspace-1',
+    sessionId,
+    id: 'dlg-1',
+    response: { confirmed: true }
+  })]), { headers: {} })
+  const response = { writeHead: () => response, end: () => undefined }
+  await assert.rejects(
+    internals.answerDialog(request, response, device.id),
+    (error: unknown) => (error as { status?: number }).status === 409 && /no longer open/.test(String((error as Error).message))
+  )
+})
+
+/** The service keys pending dialogs the way the running process does. */
+function pathKeyOf(file: string): string {
+  const resolved = path.resolve(file)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}

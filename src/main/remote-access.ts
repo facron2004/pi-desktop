@@ -42,8 +42,12 @@ const MAX_REMOTE_VALUE_CHARS = 64_000
 const MAX_REMOTE_VALUE_NODES = 2_000
 const REMOTE_CONTENT_OMITTED = '[Content omitted on mobile]'
 const MAX_DIALOG_TEXT = 2_000
+/** More options than the phone's card can list are left to the desktop. */
 const MAX_DIALOG_OPTIONS = 12
-const MAX_DIALOG_OPTION_CHARS = 200
+/** Total characters of option text the phone card will accept. */
+const MAX_DIALOG_OPTIONS_CHARS = 4_000
+/** A stream whose socket has been idle this long is considered dead. */
+const REMOTE_STREAM_IDLE_MS = 60_000
 const MAX_DIALOG_ANSWER_CHARS = 32_000
 /** A phone-created conversation waits this long for Pi to write its JSONL. */
 const REMOTE_REKEY_WAIT_MS = 15_000
@@ -161,12 +165,27 @@ function isPrivateIpv4(address: string): boolean {
   return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
 }
 
+/**
+ * How likely a private address is the one a phone on the same Wi-Fi can reach.
+ *
+ * 172.16/12 is where WSL2, Hyper-V and Docker put their virtual switches, and
+ * they usually enumerate first — a QR built from one of those is unroutable
+ * from the phone even though it is technically private.
+ */
+function addressReachRank(address: string): number {
+  const [first, second] = address.split('.').map(Number)
+  if (first === 192 && second === 168) return 0
+  if (first === 10) return 1
+  if (first === 172 && second >= 16 && second <= 31) return 2
+  return 3
+}
+
 function localIpv4Addresses(): string[] {
   const addresses = Object.values(networkInterfaces())
     .flatMap((entries) => entries ?? [])
     .filter((entry) => entry.family === 'IPv4' && !entry.internal && isPrivateIpv4(entry.address))
     .map((entry) => entry.address)
-  return [...new Set(addresses)]
+  return [...new Set(addresses)].sort((left, right) => addressReachRank(left) - addressReachRank(right))
 }
 
 export function isPrivateClient(address?: string): boolean {
@@ -196,11 +215,18 @@ function sanitizeDialogRequest(event: PiEvent): RemoteDialogRequest | null {
     const trimmed = value.trim()
     return trimmed ? trimmed.slice(0, MAX_DIALOG_TEXT) : undefined
   }
-  const options = Array.isArray(event.options)
-    ? event.options
-        .filter((option): option is string => typeof option === 'string' && option.trim().length > 0)
-        .slice(0, MAX_DIALOG_OPTIONS)
-        .map((option) => option.slice(0, MAX_DIALOG_OPTION_CHARS))
+  // A select is answered by echoing the option string the reader tapped — Pi
+  // resolves the dialog with exactly that value — so options are forwarded
+  // unmodified. A dialog the phone cannot show faithfully is left to the
+  // desktop instead of being quietly trimmed into a different question.
+  const optionText = Array.isArray(event.options)
+    ? event.options.filter((option): option is string => typeof option === 'string' && option.trim().length > 0)
+    : []
+  const optionBudget = optionText.reduce((total, option) => total + option.length, 0)
+  if (optionText.length > MAX_DIALOG_OPTIONS || optionBudget > MAX_DIALOG_OPTIONS_CHARS) return null
+  const options = optionText.length > 0 ? optionText : undefined
+  const timeout = typeof event.timeout === 'number' && Number.isFinite(event.timeout) && event.timeout > 0
+    ? Math.round(event.timeout)
     : undefined
   return {
     type: 'remote_dialog_request',
@@ -208,9 +234,10 @@ function sanitizeDialogRequest(event: PiEvent): RemoteDialogRequest | null {
     method,
     title: clip(event.title),
     message: clip(event.message),
-    options: options?.length ? options : undefined,
+    options,
     placeholder: clip(event.placeholder),
-    prefill: clip(event.prefill)
+    prefill: clip(event.prefill),
+    ...(timeout === undefined ? {} : { timeout })
   }
 }
 
@@ -631,6 +658,9 @@ export class RemoteAccessService {
         }
         const status = error instanceof HttpError ? error.status : 500
         const message = error instanceof HttpError ? error.message : 'Remote request failed.'
+        // An unexpected failure left no trace anywhere before; the phone only
+        // saw the generic sentence and the desktop log said nothing.
+        if (status === 500) console.error('[pi-desktop] remote access request failed:', error)
         this.sendJson(response, status, { error: message })
       })
     })
@@ -689,9 +719,7 @@ export class RemoteAccessService {
     const data = JSON.stringify({ type: 'remote_dialog_closed', id: payload.id })
     for (const stream of [...this.streams]) {
       if (stream.fileKey !== fileKey) continue
-      if (stream.response.writableEnded || stream.response.destroyed || !stream.response.write(`event: pi\ndata: ${data}\n\n`)) {
-        this.closeStream(stream)
-      }
+      this.writeStream(stream, `event: pi\ndata: ${data}\n\n`)
     }
   }
 
@@ -846,7 +874,7 @@ export class RemoteAccessService {
     const data = JSON.stringify(safeRemoteValue(event))
     for (const stream of authorizedStreams) {
       if (!this.streams.has(stream)) continue
-      if (!stream.response.write(`event: pi\ndata: ${data}\n\n`)) this.closeStream(stream)
+      this.writeStream(stream, `event: pi\ndata: ${data}\n\n`)
     }
   }
 
@@ -910,6 +938,22 @@ export class RemoteAccessService {
     }
     queue.push(this.cloneRemoteEvent(payload.event))
     this.scheduleStreamFlush()
+  }
+
+  /**
+   * Write one SSE frame.
+   *
+   * `write() === false` means the socket buffer passed its high-water mark: the
+   * peer must drain, not die. Closing on it dropped every frame still batched
+   * for that conversation and cost the phone a reconnect in the middle of a
+   * run. Only an ended or destroyed response is a dead peer.
+   */
+  private writeStream(stream: EventStream, chunk: string): void {
+    if (stream.response.writableEnded || stream.response.destroyed) {
+      this.closeStream(stream)
+      return
+    }
+    stream.response.write(chunk)
   }
 
   private closeStream(stream: EventStream): void {
@@ -1292,7 +1336,7 @@ export class RemoteAccessService {
     response.write('retry: 2000\n\n')
     let stream: EventStream | undefined
     const heartbeat = setInterval(() => {
-      if (!response.write(': keep-alive\n\n') && stream) this.closeStream(stream)
+      if (stream) this.writeStream(stream, ': keep-alive\n\n')
     }, 20_000)
     stream = {
       deviceId,
@@ -1306,6 +1350,21 @@ export class RemoteAccessService {
     this.streams.add(stream)
     this.sessionRefs.set(stream.fileKey, ref)
     response.on('close', () => this.closeStream(stream))
+    // A phone that leaves the network without a FIN keeps a socket the server
+    // still believes in, and each one holds one of the 24 stream slots. An
+    // idle socket is closed so a dead peer cannot lock the live stream out for
+    // the rest of the session.
+    response.socket?.setTimeout(REMOTE_STREAM_IDLE_MS, () => this.closeStream(stream))
+  }
+
+  /**
+   * The supervisor's own refusal is the one a reader can act on ("This
+   * conversation is already open in another Pi Desktop process."), so it is
+   * kept instead of being flattened into a generic 500.
+   */
+  private sessionActionError(error: unknown, fallback: string): HttpError {
+    if (error instanceof HttpError) return error
+    return new HttpError(503, error instanceof Error && error.message ? error.message : fallback)
   }
 
   private async sendMessage(
@@ -1344,18 +1403,22 @@ export class RemoteAccessService {
     )
     if (!started.ok) throw new HttpError(503, started.error ?? 'Pi could not start for this conversation.')
 
-    await this.awaitSessionAction(
-      deviceId,
-      ref,
-      () => this.options.supervisor.request(
-        ref.file,
-        'prompt',
-        { message, streamingBehavior: 'steer' },
-        900_000,
-        { sourceAction: 'remote-send', uiSessionId: ref.file },
-        () => this.requireActiveSession(deviceId, ref)
+    try {
+      await this.awaitSessionAction(
+        deviceId,
+        ref,
+        () => this.options.supervisor.request(
+          ref.file,
+          'prompt',
+          { message, streamingBehavior: 'steer' },
+          900_000,
+          { sourceAction: 'remote-send', uiSessionId: ref.file },
+          () => this.requireActiveSession(deviceId, ref)
+        )
       )
-    )
+    } catch (error) {
+      throw this.sessionActionError(error, 'Pi could not take the message.')
+    }
     this.sendJson(response, 200, { ok: true })
   }
 
@@ -1372,7 +1435,11 @@ export class RemoteAccessService {
     const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
     const workspace = this.getWorkspace(workspaceId)
     const ref = await this.awaitWorkspaceAction(deviceId, workspace, () => this.resolveSession(workspaceId, sessionId))
-    await this.awaitSessionAction(deviceId, ref, () => this.options.supervisor.stop(ref.file))
+    try {
+      await this.awaitSessionAction(deviceId, ref, () => this.options.supervisor.stop(ref.file))
+    } catch (error) {
+      throw this.sessionActionError(error, 'Pi could not stop this conversation.')
+    }
     this.sendJson(response, 200, { ok: true })
   }
 
@@ -1411,9 +1478,16 @@ export class RemoteAccessService {
     if (this.pendingDialogs.get(fileKey)?.id !== dialogId) {
       throw new HttpError(409, 'The dialog is no longer open.')
     }
-    await this.awaitSessionAction(deviceId, ref, () =>
+    const answered = await this.awaitSessionAction(deviceId, ref, () =>
       Promise.resolve(this.options.supervisor.respondUi(ref.file, dialogId, dialogResponse))
     )
+    // Pi may have settled the dialog itself (its own timeout) between the card
+    // and the tap. Saying `ok` would drop the card while the agent carried on
+    // with Pi's default answer, so report the truth instead.
+    if (!answered) {
+      this.pendingDialogs.delete(fileKey)
+      throw new HttpError(409, 'The dialog is no longer open.')
+    }
     this.sendJson(response, 200, { ok: true })
   }
 

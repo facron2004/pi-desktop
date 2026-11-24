@@ -1199,9 +1199,15 @@ export interface RemoteDialogRequest {
   method: RemoteDialogMethod
   title?: string
   message?: string
+  /**
+   * The extension's own option strings, unmodified: Pi resolves a select with
+   * exactly the string the phone sends back.
+   */
   options?: string[]
   placeholder?: string
   prefill?: string
+  /** Pi's own auto-answer deadline (ms); a card past it is already settled. */
+  timeout?: number
 }
 
 /** Broadcast to a phone stream when its dialog was answered anywhere. */
