@@ -87,7 +87,16 @@ export function subscribePiCliUpdate(listener: PiCliListener): () => void {
  * this check itself, so the About page and the badge read the same slot.
  */
 export function notePiCliUpdate(status: VersionItemStatus | null): void {
-  if (!status || status.error) return
+  if (!status) return
+  if (status.error) {
+    // Keep the last good version on screen, but publish the failure: the About
+    // page renders `error`, and a check that never answered must not read as
+    // "up to date".
+    if (piCliReading?.error === status.error) return
+    piCliReading = { ...(piCliReading ?? { current: status.current, hasUpdate: false }), error: status.error }
+    for (const listener of piCliListeners) listener(piCliReading)
+    return
+  }
   if (
     piCliReading?.current === status.current &&
     piCliReading?.latest === status.latest &&

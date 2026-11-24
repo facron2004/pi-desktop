@@ -1464,20 +1464,25 @@ export function registerIpc(context: IpcContext): void {
         if (typeof version !== 'string' || version.length > 64 || !/^\d+\.\d+\.\d+$/.test(version) || !isNewerVersion(version, app.getVersion())) {
           throw new Error('The requested app update is not a newer release.')
         }
-        finishMaintenance = await beginBundledPiCliMaintenance()
-        prepared = await supervisor.prepareForCliUpgrade()
-        if (!prepared) throw new Error('Finish or stop active tasks before updating Pi Desktop.')
         const onProgress = (progress: AppUpdateProgress): void => {
           sendToWindow(getWindow(), 'app:updateProgress', progress)
         }
-        // Recheck cached bytes before launching. A bad cache is downloaded
-        // again while this operation has exclusive access to the installer.
+        // Download first, then take the agent offline. The transfer can take
+        // minutes; stopping every idle Pi runtime and blocking the bundled CLI
+        // before the bytes exist left the app without an agent for all of it —
+        // and with nothing to show for it if the download failed. Only the
+        // launch needs the windows closed.
+        // A bad cache is downloaded again while this operation has exclusive
+        // access to the installer.
         const installer = await downloadAppInstaller(version, {
           currentVersion: app.getVersion(),
           arch: process.arch,
           directory: updatesDirectory(),
           onProgress
         })
+        finishMaintenance = await beginBundledPiCliMaintenance()
+        prepared = await supervisor.prepareForCliUpgrade()
+        if (!prepared) throw new Error('Finish or stop active tasks before updating Pi Desktop.')
         onProgress({ version, stage: 'installing', percent: 100 })
         await launchAppInstaller(installer)
         restarting = true

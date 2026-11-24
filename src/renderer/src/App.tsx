@@ -321,9 +321,15 @@ export default function App() {
       supported: true,
       ...(availableUpdate.bytes ? { bytes: availableUpdate.bytes } : {})
     }).then((result) => {
-      if (active && result.success) {
+      if (!active) return
+      if (result.success) {
         showToast(t('Update downloaded. Restart from the icon beside Settings.'))
+        return
       }
+      // A dismissed release has no card to carry the failure, and nothing
+      // retries on its own: say so once, and the sidebar control stays as the
+      // retry.
+      showToast(result.error ? t(result.error) : t('Update failed. Please try again.'), 'error')
     })
     return () => {
       active = false

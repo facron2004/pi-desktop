@@ -287,16 +287,42 @@ async function streamReleaseAsset(
   asset: ReleaseAsset,
   options: { onProgress: (progress: AppUpdateProgress) => void; fetcher: typeof fetch }
 ): Promise<void> {
-  const response = await options.fetcher(`${DOWNLOAD_ROOT}v${version}/${encodeURIComponent(asset.name)}`, {
-    signal: AbortSignal.timeout(10 * 60_000)
-  })
-  if (!response.ok || !response.body) throw new Error(`Could not download the update (HTTP ${response.status}).`)
+  // A total deadline made the download impossible on a slow line: the current
+  // asset is about 136 MiB, which needs roughly 240 KB/s to fit in ten minutes.
+  // What matters is whether bytes still arrive, so the watchdog restarts on
+  // every chunk and aborts only a transfer that has stalled.
+  const controller = new AbortController()
+  let stallTimer: ReturnType<typeof setTimeout> | undefined
+  const stopStallWatch = () => {
+    if (stallTimer) clearTimeout(stallTimer)
+    stallTimer = undefined
+  }
+  const bumpStall = () => {
+    stopStallWatch()
+    stallTimer = setTimeout(() => controller.abort(new Error('The update download stalled. Please try again.')), 60_000)
+    stallTimer.unref?.()
+  }
+  bumpStall()
+  let response: Response
+  try {
+    response = await options.fetcher(`${DOWNLOAD_ROOT}v${version}/${encodeURIComponent(asset.name)}`, {
+      signal: controller.signal
+    })
+  } catch (error) {
+    stopStallWatch()
+    throw controller.signal.reason instanceof Error ? controller.signal.reason : error
+  }
+  if (!response.ok || !response.body) {
+    stopStallWatch()
+    throw new Error(`Could not download the update (HTTP ${response.status}).`)
+  }
   const hash = createHash('sha256')
   let transferred = 0
   let lastPercent = -1
   options.onProgress({ version, stage: 'downloading', percent: 0, transferredBytes: 0, totalBytes: asset.size })
   const verify = new Transform({
     transform(chunk: Buffer, _encoding, callback) {
+      bumpStall()
       transferred += chunk.length
       if (transferred > asset.size || transferred > MAX_INSTALLER_BYTES) {
         callback(new Error('The update download is larger than expected.'))
@@ -322,7 +348,9 @@ async function streamReleaseAsset(
     }
   } catch (error) {
     await rm(target, { force: true })
-    throw error
+    throw controller.signal.reason instanceof Error ? controller.signal.reason : error
+  } finally {
+    stopStallWatch()
   }
 }
 
@@ -349,16 +377,36 @@ export async function downloadAppInstaller(version: string, options: InstallerOp
   const releaseOptions = { arch: options.arch, fetcher }
   return withInstallerLock(options.directory, async () => {
     const cached = findDownloadedInstaller(options.directory, version, options.currentVersion)
-    // Older records only carry a size. Fetch the published digest once, then
-    // keep it with the verified cache so later retries can work offline.
-    const asset = cached?.digest ? undefined : await selectReleaseAsset(version, releaseOptions)
+    // The record lives in a folder any process running as this user can write,
+    // so it cannot be its own trust anchor. Ask the release what this version's
+    // digest is and require the cached bytes to match it; a cache that disagrees
+    // is discarded and fetched again. When the release cannot be reached the
+    // cache is still used, but only because its bytes hash to the digest that was
+    // written after a verified download.
+    let asset: ReleaseAsset | undefined
+    let cache = cached
     if (cached) {
-      const bytes = asset?.size ?? cached.bytes
-      const digest = asset?.digest ?? cached.digest
-      if (bytes && digest && await matchesInstaller(cached.path, bytes, digest)) {
-        if (!cached.digest) writeInstallerRecord(options.directory, version, bytes, digest)
+      try {
+        asset = await selectReleaseAsset(version, releaseOptions)
+      } catch {
+        asset = undefined
+      }
+      // A legacy record has no digest yet; the published digest is then what
+      // verifies it. A record that names a different digest or size than the
+      // release does is not this release's installer.
+      if (asset && cached.digest && (cached.digest !== asset.digest || cached.bytes !== asset.size)) {
+        await rm(cached.path, { force: true })
+        await rm(installerRecordPath(options.directory), { force: true })
+        cache = undefined
+      }
+    }
+    if (cache) {
+      const bytes = asset?.size ?? cache.bytes
+      const digest = asset?.digest ?? cache.digest
+      if (bytes && digest && await matchesInstaller(cache.path, bytes, digest)) {
+        if (!cache.digest) writeInstallerRecord(options.directory, version, bytes, digest)
         options.onProgress({ version, stage: 'downloading', percent: 100, transferredBytes: bytes, totalBytes: bytes })
-        return cached.path
+        return cache.path
       }
     }
     const releaseAsset = asset ?? await selectReleaseAsset(version, releaseOptions)

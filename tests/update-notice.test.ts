@@ -47,3 +47,14 @@ test('a blank dismissal is not a dismissal', () => {
   assert.equal(shouldShowUpdateNotice({ latest: '0.12.0', dismissedVersion: '   ' }), true)
   assert.equal(shouldShowUpdateNotice({ latest: '0.12.0', dismissedVersion: null }), true)
 })
+
+// A failed download is neither progress nor a ready installer, but the control
+// is the only retry: hiding it after a dismissal left the failure invisible and
+// the release unretryable.
+test('a failed download keeps the control on screen', () => {
+  assert.equal(
+    shouldShowUpdateNotice({ latest: '0.12.0', dismissedVersion: '0.12.0', failed: true }),
+    true
+  )
+  assert.equal(shouldShowUpdateNotice({ latest: '0.12.0', failed: true }), true)
+})

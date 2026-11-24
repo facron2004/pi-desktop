@@ -369,7 +369,8 @@ export const Sidebar = memo(function Sidebar({
     latest: appUpdate?.latest,
     dismissedVersion: dismissedUpdateVersion,
     busy: updateBusy,
-    ready: updateReady
+    ready: updateReady,
+    failed: currentInstall?.stage === 'error'
   })
 
   const startAppUpdate = async () => {
