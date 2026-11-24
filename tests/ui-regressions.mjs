@@ -228,7 +228,9 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     input.dispatchEvent(new Event('input', { bubbles: true }))
   }
   const check = (condition, message) => { if (!condition) throw new Error(message) }
-  const until = async (read, message, timeout = 10000) => {
+  // A paused animation frame or a paint throttled by an occluded window shows
+  // up here first, so the wait is generous and the failure says where focus was.
+  const until = async (read, message, timeout = 15000) => {
     const deadline = performance.now() + timeout
     while (performance.now() < deadline) {
       const value = read()
@@ -239,7 +241,13 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     const tools = Object.values(state.threads).flatMap((thread) => thread.items.filter((item) => item.kind === 'tool').map((item) => ({
       name: item.toolName, status: item.status, result: item.result?.slice(0, 200), details: item.details
     })))
-    throw new Error(`${message}: ${JSON.stringify({ error: state.error, phase: state.run.phase, tools })}`)
+    const active = document.activeElement
+    const focus = active instanceof HTMLElement
+      ? `${active.tagName.toLowerCase()}${active.className ? `.${String(active.className).trim().split(/\s+/).join('.')}` : ''}`
+      : String(active)
+    const modals = document.querySelectorAll('[aria-modal="true"]').length
+    const visible = document.visibilityState
+    throw new Error(`${message}: ${JSON.stringify({ error: state.error, phase: state.run.phase, focus, modals, visible, tools })}`)
   }
   const store = window.__piDesktopStore
   await store.getState().updateSettings({ language: 'en', terminalShell: 'cmd' })
@@ -249,6 +257,11 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
 
   await until(() => !document.getElementById('startup-screen'), 'The startup screen did not leave after bootstrap')
+  // The transcript is painted once per animation frame, and Chromium stops
+  // those frames for a hidden window. The harness disables backgrounding for
+  // its own window (app-main.ts); if that ever stops working, say so here
+  // instead of letting an unrelated check time out minutes later.
+  check(document.visibilityState === 'visible', `The harness window is ${document.visibilityState}: painting is paused`)
   check(!document.getElementById('root').inert, 'The interface stayed inert after startup')
   check(!document.getElementById('root').hasAttribute('aria-hidden'), 'The interface stayed hidden from assistive technology')
   passed.push('the startup screen reveals the interactive interface after bootstrap')
@@ -1383,16 +1396,21 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   check(!document.querySelector('.task-panel__rows'), 'A non-repo folder still shows the Git rows')
   const environmentSection = railSection('Environment info')
   const environmentToggle = environmentSection?.querySelector('.task-panel__section-toggle')
-  const environmentHeadHeight = environmentSection?.querySelector('.task-panel__section-head')?.getBoundingClientRect().height
   environmentToggle?.click()
-  await pause(250)
-  check(environmentToggle?.getAttribute('aria-expanded') === 'false', 'The environment section did not fold shut')
-  check(
-    environmentSection && environmentHeadHeight !== undefined &&
-      environmentSection.getBoundingClientRect().height <= environmentHeadHeight + 1,
-    'The non-repo subtitle still occupies space after folding the environment section'
+  await until(
+    () => railSection('Environment info')?.querySelector('.task-panel__section-toggle')?.getAttribute('aria-expanded') === 'false',
+    'The environment section did not fold shut',
+    5000
   )
-  environmentToggle?.click()
+  // The body collapses with a 180 ms grid-template-rows transition. Assert the
+  // end state and let the frame land, instead of assuming 250 ms is always
+  // enough on a loaded machine (that assumption flaked once).
+  await until(() => {
+    const section = railSection('Environment info')
+    const head = section?.querySelector('.task-panel__section-head')?.getBoundingClientRect().height
+    return Boolean(section && head !== undefined && section.getBoundingClientRect().height <= head + 1)
+  }, 'The non-repo subtitle still occupies space after folding the environment section', 5000)
+  railSection('Environment info')?.querySelector('.task-panel__section-toggle')?.click()
   await pause(250)
   const workspacePath = store.getState().workspace?.path
   check(typeof workspacePath === 'string' && workspacePath.length > 0, 'The active workspace path is missing')
@@ -2213,7 +2231,7 @@ Object.assign(env, {
 })
 try {
   const { stdout, stderr } = await promisify(execFile)(require('electron'), [root], {
-    cwd: root, env, windowsHide: true, timeout: 120000, maxBuffer: 2 * 1024 * 1024
+    cwd: root, env, windowsHide: true, timeout: 180000, maxBuffer: 2 * 1024 * 1024
   })
   const rendererErrors = stdout.split(/\r?\n/).filter((line) => line.includes('[pi-desktop] renderer error:'))
   assert.deepEqual(rendererErrors, [], `Renderer console errors:\n${rendererErrors.join('\n')}`)
