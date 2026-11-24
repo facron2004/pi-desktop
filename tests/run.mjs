@@ -127,6 +127,7 @@ const suites = [
   'i18n.test.ts',
   'i18n-coverage.test.ts',
   'source-hygiene.test.ts',
+  'doc-paths.test.ts',
   'compaction-error.test.ts',
   'extension-notices.test.ts',
   'highlight-cache.test.ts',
