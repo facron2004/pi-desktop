@@ -72,6 +72,18 @@ if (process.env.PI_DESKTOP_USER_DATA) {
   isolateUserDataEnvironment(userData)
 }
 
+// A harness window is not the reader's foreground window. Windows can report it
+// as occluded while the eval drives it, and on a CI runner there is no
+// interactive desktop at all; Chromium then treats the window as hidden and
+// stops animation frames (the transcript is painted per frame) and throttles
+// timers. The eval then waits for state that is correct but never painted, and
+// unrelated checks time out minutes after the real work passed. The switches
+// only exist while the screenshot/eval harness drives the app.
+if (process.env.PI_DESKTOP_SCREENSHOT) {
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+  app.commandLine.appendSwitch('disable-renderer-backgrounding')
+}
+
 // One app, one window. The lock is taken before any startup work, so a second
 // launch — a double-click while the first copy is still starting — exits at
 // once and asks the running instance to reveal its window. The screenshot
@@ -242,6 +254,9 @@ function createWindow(): BrowserWindow {
       // forward; the page gets no bridge and no node access.
       webviewTag: true,
       spellcheck: true,
+      // Same reason as the switches above: a harness run must keep painting
+      // when its window is behind another app.
+      backgroundThrottling: !process.env.PI_DESKTOP_SCREENSHOT,
       additionalArguments: [
         ...(process.env.PI_DESKTOP_PREFILL
           ? [`--pi-desktop-prefill=${process.env.PI_DESKTOP_PREFILL}`]
