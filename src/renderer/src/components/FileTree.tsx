@@ -462,17 +462,18 @@ function ChangedLevel({
   onOpen: (file: string) => void
 }) {
   return (
-    <ul className="tree__list" role="group">
+    <ul className="tree__list">
       {nodes.map((node) => {
         if (node.kind === 'folder') {
           const open = !collapsed.has(node.path)
           return (
-            <li key={node.path} role="treeitem" aria-expanded={open}>
+            <li key={node.path}>
               <button
                 type="button"
                 className="tree__item"
                 data-kind="directory"
                 data-change={node.change}
+                aria-expanded={open}
                 style={{ paddingLeft: depth * INDENT + 6 }}
                 onClick={() => onToggle(node.path)}
                 title={node.path}
@@ -495,7 +496,7 @@ function ChangedLevel({
           )
         }
         return (
-          <li key={node.path} role="treeitem">
+          <li key={node.path}>
             <button
               type="button"
               className="tree__item"
@@ -564,22 +565,19 @@ const TreeLevel = memo(function TreeLevel({
   return (
     <>
       {listing.entries.length > 0 ? (
-        <ul className="tree__list" role="group">
+        <ul className="tree__list">
           {listing.entries.slice(0, entryLimit).map((entry) => {
             const isOpen = expanded.has(entry.path)
             const directory = entry.kind === 'directory'
             const change = changeFor(changes, entry.path, directory ? 'directory' : 'file')
             return (
-              <li
-                key={entry.path}
-                role="treeitem"
-                aria-expanded={directory ? isOpen : undefined}
-              >
+              <li key={entry.path}>
                 <button
                   className="tree__item"
                   data-kind={directory ? 'directory' : 'file'}
                   data-status={change}
                   data-open={directory ? isOpen || undefined : undefined}
+                  aria-expanded={directory ? isOpen : undefined}
                   style={{ paddingLeft: depth * INDENT + 6 }}
                   draggable={!directory}
                   onDragStart={
@@ -650,3 +648,4 @@ const TreeLevel = memo(function TreeLevel({
     </>
   )
 })
+

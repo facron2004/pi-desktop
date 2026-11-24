@@ -224,7 +224,7 @@ export function SettingsDialog({
             ))}
           </nav>
 
-          <main className="settings-content">
+          <div className="settings-content">
             <Suspense fallback={<FeatureLoading />}>
               {page === 'general' ? <GeneralSettings /> : null}
               {page === 'agent' ? <AgentSettings /> : null}
@@ -254,7 +254,7 @@ export function SettingsDialog({
                 />
               ) : null}
             </Suspense>
-          </main>
+          </div>
         </div>
 
       </div>

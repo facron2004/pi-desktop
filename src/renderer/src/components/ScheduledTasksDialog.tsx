@@ -631,11 +631,12 @@ export function ScheduledTasksDialog() {
             {manualOpen ? (
               <h2 className="scheduled-detail__create-title">{t('New scheduled task')}</h2>
             ) : (
-              <div className="scheduled-detail__tabs" role="tablist" aria-label={t('Task details tabs')}>
+              // Two panes switched by two buttons: a toggle group is what this
+              // is, and it needs no tab panel or arrow-key model to be operable.
+              <div className="scheduled-detail__tabs" role="group" aria-label={t('Task details tabs')}>
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={detailTab === 'rule'}
+                  aria-pressed={detailTab === 'rule'}
                   className="scheduled-detail__tab"
                   onClick={() => setDetailTab('rule')}
                 >
@@ -643,8 +644,7 @@ export function ScheduledTasksDialog() {
                 </button>
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={detailTab === 'records'}
+                  aria-pressed={detailTab === 'records'}
                   className="scheduled-detail__tab"
                   onClick={() => setDetailTab('records')}
                 >
