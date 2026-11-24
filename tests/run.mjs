@@ -99,6 +99,7 @@ const suites = [
   'terminal-startup.test.ts',
   'view-state.test.ts',
   'live-sessions.test.ts',
+  'tray.test.ts',
   'tray-conversations.test.ts',
   'tray-placement.test.ts',
   'url-link.test.ts',
@@ -161,7 +162,12 @@ const suites = [
   'challenger-m2-ux-lifecycle-stress.test.ts',
   'session-supervisor-lru-stress.test.ts'
 ]
-const debug = process.argv[2] === '--debug'
+const debug = process.argv.includes('--debug')
+// `node tests/run.mjs --only=tray` runs one suite while debugging it, with the
+// same bundler, mock and env the full run uses.
+const only = process.argv.find((arg) => arg.startsWith('--only='))?.slice('--only='.length)
+const selected = only ? suites.filter((suite) => suite.includes(only)) : suites
+if (selected.length === 0) throw new Error(`no suite matches --only=${only}`)
 
 /**
  * The temp root every suite runs against, in canonical long form.
@@ -187,11 +193,21 @@ const out = mkdtempSync(path.join(tempRoot, 'pi-desktop-tests-'))
 const mockElectron = path.join(out, 'mock-electron.mjs')
 writeFileSync(
   mockElectron,
-  `export const app = { getPath: () => "C:/tmp", getAppPath: () => process.cwd(), isPackaged: false, getVersion: () => "0.7.3", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {}, exit: () => {} };
+  `export const app = { getPath: () => "C:/tmp", getAppPath: () => process.cwd(), isPackaged: false, getVersion: () => "0.7.3", setAppUserModelId: () => {}, whenReady: () => Promise.resolve(), on: () => {}, exit: () => {}, quit: () => {}, requestSingleInstanceLock: () => true };
 export const dialog = { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true, filePath: undefined }) };
 export const BrowserWindow = class { static getAllWindows() { return [] } isDestroyed() { return false } };
 export const Menu = { buildFromTemplate: () => ({}) };
-export const Tray = class { setContextMenu() {} setImage() {} setToolTip() {} on() {} destroy() {} isDestroyed() { return false } };
+export const Tray = class {
+  static instances = [];
+  constructor(image) { this.image = image; this.handlers = new Map(); this.destroyed = false; Tray.instances.push(this) }
+  setContextMenu() {}
+  setImage(image) { this.image = image }
+  setToolTip() {}
+  on(event, handler) { this.handlers.set(event, handler) }
+  emit(event) { this.handlers.get(event)?.() }
+  destroy() { this.destroyed = true }
+  isDestroyed() { return this.destroyed }
+};
 const ipcHandlers = new Map();
 export const ipcMain = {
   handle: (channel, handler) => { ipcHandlers.set(channel, handler); },
@@ -207,14 +223,15 @@ export const ipcMain = {
 export const shell = { showItemInFolder: () => {}, openPath: async () => "", trashItem: async () => {} };
 export const Notification = class { show() {} };
 export const nativeTheme = { shouldUseDarkColors: false };
-export const nativeImage = { createFromPath: () => ({ isEmpty: () => true, resize: () => ({}) }), createFromBuffer: () => ({ isEmpty: () => true, resize: () => ({}) }) };
+const fakeImage = { isEmpty: () => false, resize: () => fakeImage, setTemplateImage: () => {} };
+export const nativeImage = { createFromPath: () => fakeImage, createFromBuffer: () => fakeImage };
 export const screen = { getDisplayMatching: () => ({ id: 1, workArea: { x: 0, y: 0, width: 1280, height: 720 } }) };
 `
 )
 
 try {
   const built = []
-  for (const suite of suites) {
+  for (const suite of selected) {
     const bundle = `${suite.replace(/\.ts$/, '')}.mjs`
     await esbuild.build({
       entryPoints: [path.join(here, suite)],
@@ -260,3 +277,4 @@ try {
 } finally {
   rmSync(out, { recursive: true, force: true })
 }
+
