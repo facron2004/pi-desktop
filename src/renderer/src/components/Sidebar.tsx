@@ -1113,10 +1113,15 @@ export const Sidebar = memo(function Sidebar({
     })
   }, [togglePin])
 
-  // The section head folds the list under it; the key follows the view so the
-  // two lists keep their own fold.
-  const sectionKey = sidebarGroupBy === 'flat' ? 'chats' : 'projects'
-  const sectionExpanded = sidebarSectionExpanded(collapsedSections, sectionKey, Boolean(needle))
+  // A section head folds only when it labels conversations — the single list,
+  // and the conversations with no project. The project rows are the tree itself
+  // and stay open. Each conversation head keeps its own fold.
+  const chatsListExpanded = sidebarSectionExpanded(collapsedSections, 'chats', Boolean(needle))
+  const chatsExpanded = sidebarSectionExpanded(
+    collapsedSections,
+    'chats-without-project',
+    Boolean(needle)
+  )
 
   const renderSessions = (items: ConversationRow[], showProject = false) =>
     items.map((session) => (
@@ -1320,19 +1325,29 @@ export const Sidebar = memo(function Sidebar({
 
         <div
           className="sidebar__section sidebar__projects"
-          data-collapsed={sectionExpanded ? undefined : 'true'}
+          data-collapsed={
+            sidebarGroupBy === 'flat' && !chatsListExpanded ? 'true' : undefined
+          }
         >
-          <div className="sidebar__section-head">
-            <button
-              type="button"
-              className="sidebar__section-toggle"
-              aria-expanded={sectionExpanded}
-              title={t(sectionExpanded ? 'Collapse' : 'Expand')}
-              onClick={() => toggleSidebarSection(sectionKey)}
-            >
-              <ChevronRight size={12} aria-hidden="true" className="sidebar__section-caret" />
-              <span>{t(sidebarGroupBy === 'flat' ? 'Chats' : 'Projects')}</span>
-            </button>
+          <div className="sidebar__section-head" data-fold={sidebarGroupBy === 'flat' ? 'true' : undefined}>
+            <span className="sidebar__section-title">
+              {t(sidebarGroupBy === 'flat' ? 'Chats' : 'Projects')}
+            </span>
+            {/* Only a head that labels conversations folds: the project rows are
+                the tree itself, and folding them away would hide the list the
+                reader came for. The caret sits at the right end of the head. */}
+            {sidebarGroupBy === 'flat' ? (
+              <button
+                type="button"
+                className="sidebar__section-toggle"
+                aria-expanded={chatsListExpanded}
+                aria-label={t(chatsListExpanded ? 'Collapse conversations' : 'Expand conversations')}
+                title={t(chatsListExpanded ? 'Collapse' : 'Expand')}
+                onClick={() => toggleSidebarSection('chats')}
+              >
+                <ChevronRight size={12} aria-hidden="true" className="sidebar__section-caret" />
+              </button>
+            ) : null}
             <div className="sidebar__section-actions no-drag">
               <Popover
                 placement="bottom"
@@ -1900,9 +1915,22 @@ export const Sidebar = memo(function Sidebar({
         </div>
 
         {sidebarGroupBy !== 'flat' && projectlessSessions.length > 0 ? (
-          <div className="sidebar__section">
-            <div className="sidebar__section-head">
-              <span>{t('Chats')}</span>
+          <div
+            className="sidebar__section sidebar__chats"
+            data-collapsed={chatsExpanded ? undefined : 'true'}
+          >
+            <div className="sidebar__section-head" data-fold="true">
+              <span className="sidebar__section-title">{t('Chats')}</span>
+              <button
+                type="button"
+                className="sidebar__section-toggle"
+                aria-expanded={chatsExpanded}
+                aria-label={t(chatsExpanded ? 'Collapse conversations' : 'Expand conversations')}
+                title={t(chatsExpanded ? 'Collapse' : 'Expand')}
+                onClick={() => toggleSidebarSection('chats-without-project')}
+              >
+                <ChevronRight size={12} aria-hidden="true" className="sidebar__section-caret" />
+              </button>
             </div>
             <div className="session-list">{renderSessions(projectlessSessions)}</div>
           </div>

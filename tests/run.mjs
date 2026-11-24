@@ -54,7 +54,7 @@ const suites = [
   'subagent.test.ts',
   'swarm.test.ts',
   'subagent-tree.test.ts',
-  'title-subagents.test.ts',
+  'subagents.test.ts',
   'file-status.test.ts',
   'fonts.test.ts',
   'ui-font.test.ts',

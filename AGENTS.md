@@ -259,6 +259,19 @@ The transcript keeps the saved history before the edited entry, including
 messages and tool results older than the model's most recent compaction.
 `forkFrom` stays for the session-tree fork action only.
 
+**An edit can be taken back.** The rewind first appends a
+`pi-desktop-rewind-source` marker to the branch it is about to leave and writes
+that marker's id into the `pi-desktop-rewind` entry, because the old tip may be
+a user message and navigation stops *before* one. `desktop-undo-rewind` moves
+the leaf back to that marker and appends a child of it, so reopening the JSONL
+follows the restored branch. Both markers are `display: false`: they are
+positions, not transcript rows. The undo is only offered while the conversation
+still ends on the rewind marker — sending a prompt from the rewound branch
+moves the branch on, and going back would silently drop that message — and the
+renderer keeps that window in `rewindUndo` (per conversation, cleared by
+`sendPrompt`), showing it as a row above the composer. A cancelled or refused
+navigation puts the leaf back where it found it before throwing.
+
 A hot conversation is renamed with `set_session_name` on its own process. A cold
 one gets a single `session_info` line appended to its JSONL, and only when no
 process is writing that file. Naming never switches the conversation on screen.
@@ -337,14 +350,18 @@ because the column above holds current work; in `Archived only` mode every row
 is archived, so the group headings speak for themselves. Tree grouping needs
 none of this: its project rows already say where a conversation came from.
 
-**The section head folds the list under it.**「对话」over the single list and
-「项目」over the grouped views is the fold control: a caret plus the name,
-`aria-expanded`, and the list hides under it while the head itself stays on
-screen — the caret is the only way back, so folding must never take the head
-with it. The state is a view preference (`lib/sidebar-fold.ts`, localStorage),
-keyed by the view rather than the label, so folding one list does not leave the
-other folded. A filter in the sidebar's field opens a folded section, because a
-match hidden inside it is the one thing a search must not do.
+**Only a conversation list folds, and its caret sits at the right.** The heads
+that label conversations —「对话」over the single list, and「对话」over the chats
+with no project — carry one caret at the right end of the head; the list hides
+under it while the head stays on screen, because the caret is the only way back.
+The「项目 / Projects」head does **not** fold: the project rows are the tree itself,
+and folding them away hides the list the reader opened the sidebar for. The
+label stays plain text, so a click on the name cannot fold anything; the
+hover-revealed view menu steps left of the caret instead of under it. Open points
+down, folded points right. The state is a view preference (`lib/sidebar-fold.ts`,
+localStorage) keyed per list (`chats`, `chats-without-project`), so folding one
+list never folds another. A filter in the sidebar's field opens a folded list,
+because a match hidden inside it is the one thing a search must not do.
 
 ### The name in the sidebar head
 
@@ -647,23 +664,18 @@ The title bar does not repeat any of it: it keeps the conversation's name and
 the app's actions. A project or branch chip in two places is two things to keep
 in sync, and the one in the header had no room to say what it was.
 
-**Subagents wear one badge beside that name.** `TitleSubagents` projects the
-active thread's `subagent` tool nodes through `lib/subagents.ts`
-(`subagentTasks`, `summarizeSubagents`, `subagentPreview`) — the same source the
-Subagents page reads. The pill appears only when the
-conversation actually delegated work and carries the number of child tasks, with
-a spinner while any are in flight. Its card lists each child's status, a capped
-one-line look at its live output or final answer, and duration/token/model
-metrics; the preview collapses whitespace so a long child answer cannot push the
-card open. Clicking a row uses `openSubagentTask` in `App.tsx`: it stores only a session key and a task id,
-then `SubagentPanel` reads the current thread to render `SubagentConversation`
-on the right panel — status and output keep updating while it is open. The
-card's footer opens the whole catalog instead. `tests/title-subagents.test.ts`
-guards the projection, `tests/ui-regressions.mjs` drives the two-click flow
-against real child processes, and `output/audit/titlebar-check.mjs` captures
-and measures the title bar's spacing. The badge is pulled into the title's own
-padding (one group, not two islands) and the dead air that used to sit between
-them is spent on the pill's interior instead.
+**The title bar wears the conversation's name and nothing else.** Subagents live
+in the task rail (the 子智能体 section) and in the Subagents page, not beside the
+title: a badge there counted children the rail already listed one line below, and
+it crowded the name of the conversation it belonged to. Both places read the same
+projection — `lib/subagents.ts` (`subagentTasks`, `summarizeSubagents`,
+`subagentPreview`) over the thread's `subagent` tool nodes. Clicking a row uses
+`openSubagentTask` in `App.tsx`: it stores only a session key and a task id, then
+`SubagentPanel` reads the current thread to render `SubagentConversation` on the
+right panel, with the Back control returning to the catalog. `tests/subagents.test.ts`
+guards the projection and `tests/ui-regressions.mjs` drives a catalog row into the
+child conversation against real child processes. Do not add a second summary of
+the same children to the header.
 
 **The title bar must wear the same row the sidebar highlights.** The sidebar
 lists disk sessions *plus* live threads (`lib/live-sessions.ts`), because a chat

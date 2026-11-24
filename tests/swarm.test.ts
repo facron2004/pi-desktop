@@ -5,7 +5,7 @@ import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
 import { Type } from 'typebox'
 import { swarmExtension } from '../src/main/pi/swarm'
-import { swarmWorkers } from '../src/renderer/src/lib/swarm'
+import { parseSwarmSnapshots, summarizeSwarm, swarmWorkers } from '../src/renderer/src/lib/swarm'
 import type { ToolItem } from '../src/renderer/src/lib/thread'
 
 interface ToolResult {
@@ -89,6 +89,30 @@ test('collect waits for the running turn and returns its report', async () => {
 
   f.children[0].complete('First report')
   assert.match((await pending).content[0].text, /First report/)
+})
+
+test('worker snapshots show the current turn time and queue, and bulk stop preserves idle workers', async (t) => {
+  let now = 1000
+  t.mock.method(Date, 'now', () => now)
+  const f = fixture()
+  for (const name of ['first', 'second', 'idle']) await f.call('spawn', { name })
+  now = 5000
+  await f.call('task', { name: 'first', task: 'Running task', wait: false })
+  await f.call('task', { name: 'first', task: 'Queued task', wait: false })
+  await f.call('task', { name: 'second', task: 'Another running task', wait: false })
+  now = 6000
+  const live = await f.call('status', {})
+  const workers = parseSwarmSnapshots(JSON.stringify(live.details.workers))
+  assert.equal(workers[0].startedAt, 5000)
+  assert.equal(workers[0].queued, 1)
+  assert.equal(summarizeSwarm(workers).working, 2)
+
+  await f.stop('*')
+  const stopped = parseSwarmSnapshots(JSON.stringify(f.roster()))
+  assert.deepEqual(stopped.map((worker) => worker.status), ['stopped', 'stopped', 'idle'])
+  assert.equal(stopped[0].queued, undefined)
+  assert.equal(stopped[0].finishedAt, 6000)
+  assert.deepEqual(summarizeSwarm(stopped), { total: 3, working: 0, idle: 1, failed: 0, stopped: 2, tokens: 0 })
 })
 
 test('a retired process cannot settle the replacement worker turn', async () => {

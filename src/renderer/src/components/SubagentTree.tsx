@@ -5,6 +5,7 @@ import type { SessionThread } from '../store/useAppStore'
 import { subagentCalls, type SubagentCall, type SubagentTreeTask } from '../lib/subagents'
 import { formatDuration, formatTokens } from '../lib/format'
 import { useT } from '../lib/i18n'
+import { SubagentAvatar } from './SubagentAvatar'
 import { readProcessOpen, writeProcessOpen } from '../lib/view-state'
 import '../styles/subagent-tree.css'
 
@@ -187,6 +188,7 @@ function TaskRow({ task, now, onOpen, onCancel }: {
           <span className="subagent-tree__status" data-status={task.status}>
             <StatusMark status={task.status} />
           </span>
+          <SubagentAvatar task={task} />
           <span className="subagent-tree__task-copy">
             <span className="subagent-tree__task-name">{task.label || task.task}</span>
             {summary ? <span className="subagent-tree__summary">{summary}</span> : null}

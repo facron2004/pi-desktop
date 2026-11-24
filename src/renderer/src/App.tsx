@@ -31,7 +31,6 @@ import { Welcome } from './components/Welcome'
 import type { SettingsPage } from './components/SettingsDialog'
 import { AppMenuBar } from './components/AppMenuBar'
 import { TaskPanel } from './components/TaskPanel'
-import { TitleSubagents } from './components/TitleSubagents'
 import { ToolPanel, type ToolPanelView } from './components/ToolPanel'
 import type { LauncherShell } from './components/Launcher'
 import type { TerminalRunRequest } from './components/TerminalPanel'
@@ -448,6 +447,7 @@ export default function App() {
   const openChanges = useCallback(() => openInspector('changes'), [openInspector])
   const openFiles = useCallback(() => openInspector('files'), [openInspector])
   const openBrowser = useCallback(() => openInspector('browser'), [openInspector])
+  const openSwarm = useCallback(() => openInspector('swarm'), [openInspector])
   /**
    * One child's transcript, opened on the Subagents page of the side panel.
    * The title badge and the task rail share this door, so neither keeps a
@@ -984,12 +984,6 @@ export default function App() {
             ) : (
               <span className="titlebar__title" title={title}>{title}</span>
             )}
-            {/* A conversation that delegated work wears its subagents beside
-                the name. The badge is a projection of the active thread, so it
-                appears and disappears with the subagent calls themselves. */}
-            {!deskPage && hasItems ? (
-              <TitleSubagents onOpenTask={openSubagentTask} onOpenAll={openSubagentPanel} />
-            ) : null}
             {/* The project and the branch are not repeated here. SessionBar
                 already carries both — with a project menu that can switch and a
                 BranchMenu that can act — so a second copy in the header was two
@@ -1105,7 +1099,7 @@ export default function App() {
               ))}
 
               <ErrorBoundary scope="Composer" inline>
-                <Composer />
+                <Composer onOpenSwarm={openSwarm} />
               </ErrorBoundary>
 
               {widgetsBelow.map((widget) => (
@@ -1174,7 +1168,7 @@ export default function App() {
               ) : panelView === 'subagents' ? (
                 <SubagentPanel selected={subagentSelection} onSelectTask={setSubagentSelection} />
               ) : panelView === 'swarm' ? (
-                <SwarmPanel onOpenTask={openSubagentTask} />
+                <SwarmPanel />
               ) : panelView === 'files' || panelView === 'changes' ? (
                 <InspectorPanel
                   embedded

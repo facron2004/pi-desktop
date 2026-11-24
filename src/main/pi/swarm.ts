@@ -160,6 +160,7 @@ function snapshot(worker) {
     startedAt: worker.startedAt,
     finishedAt: worker.finishedAt,
     recycled: worker.recycled === true || undefined,
+    queued: worker.queue.length || undefined,
     turns: worker.usage.turns,
     tokens: worker.usage.input + worker.usage.output + worker.usage.cacheRead + worker.usage.cacheWrite,
     cost: worker.usage.cost,
@@ -378,7 +379,7 @@ function drainQueue(worker) {
   });
 }
 
-function stopWorker(worker, status) {
+function stopWorker(worker, status, notify = true) {
   const child = detachWorkerProcess(worker);
   worker.status = status;
   worker.finishedAt = Date.now();
@@ -392,7 +393,7 @@ function stopWorker(worker, status) {
   const result = turnResult(worker);
   worker.queue.splice(0).forEach(queued => queued.resolve(result));
   if (turn) resolveTurn(turn, result);
-  publishStatus(true);
+  if (notify) publishStatus(true);
 }
 
 function onProcessExit(worker, child, message) {
@@ -456,7 +457,7 @@ function spawnWorker(worker, ctx) {
   }
   worker.child = child;
   worker.processAbort = new AbortController();
-  worker.startedAt = worker.startedAt || Date.now();
+  worker.startedAt = Date.now();
   worker.finishedAt = undefined;
   child.stdout.on('data', chunk => {
     if (worker.child === child) consumeStdout(worker, child, decoder.write(chunk), ctx);
@@ -514,6 +515,7 @@ function startTurn(worker, ctx, text, kind, onUpdate, signal) {
     let resolveQueued;
     const queuedPromise = new Promise(resolve => { resolveQueued = resolve; });
     worker.queue.push({ ctx, text, kind, onUpdate, signal, resolve: resolveQueued, promise: queuedPromise });
+    publishStatus(false);
     return Promise.resolve({ ok: true, promise: queuedPromise });
   }
   const ensure = ensureWorker(worker, ctx);
@@ -550,6 +552,7 @@ function startTurn(worker, ctx, text, kind, onUpdate, signal) {
       turn.promise = new Promise(resolve => { turn.resolve = resolve; });
       worker.pending = turn;
       worker.status = 'working';
+      worker.startedAt = turn.startedAt;
       worker.task = text;
       worker.progressText = '';
       worker.activity = 'Starting';
@@ -1014,8 +1017,17 @@ export default function (pi) {
   // same way it stops a subagent task: an extension command reaches Pi while
   // the session is streaming.
   pi.registerCommand('desktop-swarm-stop', {
-    description: 'Stop one swarm worker by name',
-    handler: async value => {
+    description: 'Stop one swarm worker by name, or all active workers with *',
+    handler: async (value, ctx) => {
+      if (value?.trim() === '*') {
+        for (const worker of workers.values()) {
+          if (worker.status === 'working' || worker.status === 'starting' || worker.queue.length) {
+            stopWorker(worker, 'stopped', false);
+          }
+        }
+        publishStatus(true, ctx);
+        return;
+      }
       const name = cleanName(value);
       if (!name) throw new Error('Usage: /desktop-swarm-stop <worker>');
       const worker = workers.get(name);

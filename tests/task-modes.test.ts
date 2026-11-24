@@ -18,6 +18,7 @@ import {
 type Entry = {
   type: string
   id?: string
+  parentId?: string | null
   customType: string
   data: unknown
   message?: { role?: string; content?: string | { type?: string; name?: unknown }[] }
@@ -88,13 +89,23 @@ function fixture(
   const confirms: { title: string; message: string; signal?: AbortSignal }[] = []
   const selections: { question: string; options: string[]; signal?: AbortSignal }[] = []
   const navigations: { targetId: string; options?: { summarize?: boolean } }[] = []
+  // Pi's leaf pointer: an append lands on it, navigation moves it. The rewind
+  // and its undo are both defined by where it is, so the fixture models it.
+  let leafId: string | null = null
+  let appended = 0
   const ctx: Context = {
     hasUI: true,
     isIdle: () => idle,
     abort: () => { aborts += 1 },
-    sessionManager: { getBranch: () => entries, getLeafId: () => null },
+    sessionManager: { getBranch: () => entries, getLeafId: () => leafId },
     navigateTree: async (targetId, options) => {
       navigations.push({ targetId, options })
+      // Mirrors Pi: a user message stops *before* itself, anything else is a
+      // position the leaf can rest on.
+      const entry = entries.find((candidate) => candidate.id === targetId)
+      leafId = entry?.type === 'message' && entry.message?.role === 'user'
+        ? entry.parentId ?? null
+        : targetId
       return { cancelled: false }
     },
     ui: {
@@ -131,7 +142,13 @@ function fixture(
       toolPaths.set(tool.name, modeExtensionPath)
       active.push(tool.name)
     },
-    appendEntry: (customType: string, data: unknown) => entries.push({ type: 'custom', customType, data }),
+    appendEntry: (customType: string, data: unknown) => {
+      appended += 1
+      const id = `appended-${appended}`
+      entries.push({ id, parentId: leafId, type: 'custom', customType, data })
+      leafId = id
+      return id
+    },
     sendUserMessage: (text: string) => sent.push(text),
     sendMessage: (message: { customType?: string; content?: string; display?: boolean }, options?: { triggerTurn?: boolean }) => {
       sentMessages.push({ message, options })
@@ -1010,20 +1027,82 @@ test('the edit command persists the new leaf of the same conversation', async ()
   await assert.rejects(f.command('desktop-rewind', 'another-branch'), /active branch/)
   assert.equal(f.entries.length, entryCount)
 
+  // A cancelled navigation leaves the branch where it found it. The marker
+  // that remembers the old leaf stays behind, so the session still ends on the
+  // branch it started from.
   const navigate = f.ctx.navigateTree
-  f.ctx.navigateTree = async () => ({ cancelled: true })
+  f.ctx.navigateTree = async (targetId, options) => {
+    f.navigations.push({ targetId, options })
+    return { cancelled: true }
+  }
   await assert.rejects(f.command('desktop-rewind', 'entry-1'), /cancelled/)
-  assert.equal(f.entries.length, entryCount)
+  assert.equal(f.entries.length, entryCount + 1)
+  assert.equal(f.entries.at(-1)?.customType, 'pi-desktop-rewind-source')
+  assert.equal(f.navigations.at(-1)?.targetId, f.entries.at(-1)?.id)
   f.ctx.navigateTree = navigate
+  assert.equal(f.ctx.sessionManager.getLeafId(), f.entries.at(-1)?.id)
+  const leaf = f.ctx.sessionManager.getLeafId
   f.ctx.sessionManager.getLeafId = () => 'entry-1'
   await assert.rejects(f.command('desktop-rewind', 'entry-1'), /move before this message/)
-  assert.equal(f.entries.length, entryCount)
-  f.ctx.sessionManager.getLeafId = () => null
+  f.ctx.sessionManager.getLeafId = leaf
 
   await f.command('desktop-rewind', 'entry-1')
+  const rewindMarker = f.entries.at(-1)
+  // Navigation only moves Pi's in-memory leaf, so the command writes a child
+  // of the new leaf 閳?and one of the branch it left, for the undo to find.
+  assert.equal(rewindMarker?.customType, 'pi-desktop-rewind')
   assert.deepEqual(f.navigations.at(-1), { targetId: 'entry-1', options: { summarize: false } })
-  assert.equal(f.entries.length, entryCount + 1)
+  const rewindSource = f.entries.at(-2)
+  assert.equal(rewindSource?.customType, 'pi-desktop-rewind-source')
+  assert.deepEqual(rewindMarker?.data, { previousLeafId: rewindSource?.id })
+  assert.equal(f.ctx.sessionManager.getLeafId(), rewindMarker?.id)
+})
+
+test('undoing an edit returns to the branch it hid', async () => {
+  const entries: Entry[] = [
+    { type: 'message', id: 'entry-1', parentId: null, customType: '', data: undefined, message: { role: 'user', content: 'Plan the release' } },
+    { type: 'message', id: 'entry-2', parentId: 'entry-1', customType: '', data: undefined, message: { role: 'assistant', content: 'Here is the plan' } },
+    { type: 'message', id: 'entry-3', parentId: 'entry-2', customType: '', data: undefined, message: { role: 'user', content: 'Now ship it' } },
+    { type: 'message', id: 'entry-4', parentId: 'entry-3', customType: '', data: undefined, message: { role: 'assistant', content: 'Shipping' } }
+  ]
+  const f = fixture(entries)
+  f.emit('session_start')
+  // The conversation stands on its last answer when the reader edits entry-1.
+  await f.ctx.navigateTree('entry-4')
+  await f.command('desktop-rewind', 'entry-1')
+  assert.equal(f.ctx.sessionManager.getLeafId(), f.entries.at(-1)?.id)
   assert.equal(f.entries.at(-1)?.customType, 'pi-desktop-rewind')
+
+  await f.command('desktop-undo-rewind', '')
+  const source = f.entries.find((entry) => entry.customType === 'pi-desktop-rewind-source')
+  assert.deepEqual(f.navigations.at(-1), { targetId: source?.id, options: { summarize: false } })
+  // The restored branch ends on the marker that records the return, and its
+  // parent chain runs through the branch the edit had hidden.
+  const undoMarker = f.entries.at(-1)
+  assert.equal(undoMarker?.customType, 'pi-desktop-undo-rewind')
+  assert.equal(undoMarker?.parentId, source?.id)
+  assert.equal(source?.parentId, 'entry-4')
+  assert.equal(f.ctx.sessionManager.getLeafId(), undoMarker?.id)
+})
+
+test('an edit cannot be undone once the conversation has moved on', async () => {
+  const f = fixture([
+    { type: 'message', id: 'entry-1', parentId: null, customType: '', data: undefined, message: { role: 'user' } },
+    { type: 'message', id: 'entry-2', parentId: 'entry-1', customType: '', data: undefined, message: { role: 'assistant' } }
+  ])
+  f.emit('session_start')
+  await f.command('desktop-rewind', 'entry-1')
+  // Anything appended after the edit means a return would drop it.
+  await f.modeCommand('goal')
+  await assert.rejects(f.command('desktop-undo-rewind', ''), /moved on since the edit/)
+})
+
+test('undo refuses without an edit to undo, and while a turn is running', async () => {
+  const f = fixture()
+  f.emit('session_start')
+  await assert.rejects(f.command('desktop-undo-rewind', ''), /nothing to undo/)
+  f.idle(false)
+  await assert.rejects(f.command('desktop-undo-rewind', ''), /Wait for the current turn/)
 })
 
 test('rewinding restores the selected branch goal and tool restrictions without appending state', async () => {
@@ -1240,3 +1319,6 @@ test('every mode carries the visible step-commentary guideline without duplicati
   assert.equal(planEvent.message.customType, 'desktop-plan-context')
   assert.deepEqual(promptGuidelines, [PROGRESS_COMMENTARY_GUIDELINE])
 })
+
+
+

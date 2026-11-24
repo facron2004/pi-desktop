@@ -554,34 +554,48 @@ transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(
   color: var(--sidebar-text);
 }
 
-/* The section head's own label is the fold control: caret, then the name. It
-   overrides the 24px icon-button rule above, because it carries text, and it
-   stays visible instead of appearing on hover — it is the only way to open the
-   list back up. */
-.sidebar__section-head > .sidebar__section-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-1);
-  width: auto;
-  height: auto;
+/* The section head's label. A head that folds keeps the label as plain text and
+   puts the caret at the right end, where the eye looks for a fold control; the
+   label itself is not a button, so a click on it cannot fold the list by
+   accident. */
+.sidebar__section-title {
+  flex: 1 1 auto;
   min-width: 0;
-  padding: 2px var(--sp-1);
-  margin-left: calc(var(--sp-1) * -1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The fold control: one caret at the right end of the head. It overrides the
+   24px icon-button rule above, which hides its buttons until the head is
+   hovered — the caret is the only way to open a folded list, so it stays
+   visible. */
+.sidebar__section-head > .sidebar__section-toggle {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: var(--text-xs);
-  font-weight: var(--font-weight-ui);
-  line-height: var(--leading-small);
-  text-align: left;
   cursor: pointer;
   opacity: 1;
 }
 
+/* The view menu and New project keep the right corner; a caret sitting there
+   would dive under them on hover, so they step in by the caret's own width. */
+.sidebar__section-head[data-fold='true'] .sidebar__section-actions {
+  right: calc(4px + 22px);
+}
+
 .sidebar__section-head > .sidebar__section-toggle:hover {
   color: var(--sidebar-text);
+  background: var(--sidebar-hover);
 }
 
 .sidebar__section-head > .sidebar__section-toggle:focus-visible {
@@ -589,19 +603,23 @@ transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(
   outline-offset: -2px;
 }
 
+/* Open points down, folded points right: the caret says where the list went. */
 .sidebar__section-caret {
-  flex: 0 0 12px;
+  transform: rotate(90deg);
   opacity: 0.55;
   transition: transform var(--dur-fast) var(--ease);
 }
 
-.sidebar__projects[data-collapsed='true'] .sidebar__section-caret {
-  transform: rotate(-90deg);
+/* A section head with a caret folds the list under it — the projects, the
+   single list, and the conversations with no project each keep their own fold
+   (the key the component passes decides which). */
+.sidebar__section[data-collapsed='true'] .sidebar__section-caret {
+  transform: rotate(0deg);
 }
 
 /* Folding hides the list itself, never the head: the caret has to stay on
    screen to unfold it again. Every direct child except the head is the list. */
-.sidebar__projects[data-collapsed='true'] > :not(.sidebar__section-head) {
+.sidebar__section[data-collapsed='true'] > :not(.sidebar__section-head) {
   display: none;
 }
 
@@ -3829,6 +3847,50 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 .composer[data-shell='true']:focus-within {
   border-color: var(--violet);
   box-shadow: 0 0 0 3px var(--violet-soft), var(--shadow-sm);
+}
+
+/* Taking an edit back: the branch the edit moved away from is still in the
+   session file, and this row is the way to it. It sits on the composer's
+   column rather than inside the box — it describes the conversation, not the
+   message being written. */
+.composer__rewind {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-sunken);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+}
+
+.composer__rewind-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__rewind-undo {
+  flex: 0 0 auto;
+  height: var(--ctl-xs);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+
+.composer__rewind-undo:hover,
+.composer__rewind-undo:focus-visible {
+  background: var(--bg-hover);
 }
 
 .composer__queue {
@@ -7571,6 +7633,7 @@ kbd {
   line-height: 1.65;
   color: var(--text-muted);
 }
+
 /* A notice's second line: the version it is about, quieter than the sentence
    that says what happened. */
 .confirm__detail {
@@ -8971,6 +9034,7 @@ button:focus-visible,
 
   .permission-picker > span,
   .composer__mode > span,
+  .composer__swarm-roster > span,
   .model-chip__sep,
   .model-chip__effort {
     display: none;

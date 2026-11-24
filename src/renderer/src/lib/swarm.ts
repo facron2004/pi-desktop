@@ -27,6 +27,7 @@ export interface SwarmWorkerState {
   startedAt?: number
   finishedAt?: number
   recycled?: boolean
+  queued?: number
   turns?: number
   tokens?: number
   cost?: number
@@ -68,6 +69,7 @@ function normalizeWorker(value: unknown): SwarmWorkerState | undefined {
     startedAt: numberOf(raw.startedAt),
     finishedAt: numberOf(raw.finishedAt),
     recycled: raw.recycled === true,
+    queued: numberOf(raw.queued),
     turns: numberOf(raw.turns),
     tokens: numberOf(raw.tokens),
     cost: numberOf(raw.cost),
@@ -111,7 +113,7 @@ export function swarmWorkers(items: readonly ThreadItem[]): SwarmWorkerState[] {
 }
 
 export function isSwarmWorking(worker: SwarmWorkerState): boolean {
-  return worker.status === 'working' || worker.status === 'starting'
+  return worker.status === 'working' || worker.status === 'starting' || (worker.queued ?? 0) > 0
 }
 
 export interface SwarmSummary {
@@ -119,6 +121,7 @@ export interface SwarmSummary {
   working: number
   idle: number
   failed: number
+  stopped: number
   tokens: number
 }
 
@@ -126,18 +129,21 @@ export function summarizeSwarm(workers: readonly SwarmWorkerState[]): SwarmSumma
   let working = 0
   let idle = 0
   let failed = 0
+  let stopped = 0
   let tokens = 0
   for (const worker of workers) {
     if (isSwarmWorking(worker)) working += 1
     else if (worker.status === 'failed') failed += 1
+    else if (worker.status === 'stopped') stopped += 1
     else idle += 1
     tokens += worker.tokens ?? 0
   }
-  return { total: workers.length, working, idle, failed, tokens }
+  return { total: workers.length, working, idle, failed, stopped, tokens }
 }
 
 /** A one-line preview: a live tail while working, the report once idle. */
 export function swarmPreview(worker: SwarmWorkerState): string {
+  if (worker.status === 'starting') return ''
   const candidates = worker.status === 'working'
     ? [worker.progressText, worker.toolName, worker.activity, worker.task]
     : [worker.errorMessage, worker.output, worker.task]
