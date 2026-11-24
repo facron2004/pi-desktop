@@ -38,6 +38,7 @@ const suites = [
   'shortcuts.test.ts',
   'user-data.test.ts',
   'app-updates.test.ts',
+  'process-tree.test.ts',
   'setup-args.test.ts',
   'pi-cli.test.ts',
   'locate.test.ts',
@@ -280,6 +281,7 @@ try {
 } finally {
   rmSync(out, { recursive: true, force: true })
 }
+
 
 
 

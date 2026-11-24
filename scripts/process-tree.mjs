@@ -41,7 +41,10 @@ export function terminateProcessTree(child, graceMs = 1000) {
     } catch (error) {
       if (error?.code === 'ESRCH') return false
       if (error?.code === 'EPERM') return true
-      throw error
+      // An unexpected errno is not evidence that the group is gone, but it is
+      // not worth an unhandled rejection in a shutdown path either: treat it as
+      // gone and let the bounded wait below finish.
+      return false
     }
   }
 
@@ -54,6 +57,10 @@ export function terminateProcessTree(child, graceMs = 1000) {
     if (!groupExists()) return
 
     signalGroup('SIGKILL')
-    while (groupExists()) await wait(50)
+    // A process that cannot be reaped (a zombie, or one stuck in the kernel)
+    // must not hang the shutdown that is waiting for it: give the kill a few
+    // seconds and then let the caller go.
+    const killDeadline = Date.now() + 5_000
+    while (groupExists() && Date.now() < killDeadline) await wait(50)
   })()
 }
