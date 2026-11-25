@@ -40,6 +40,7 @@ import { clearUpdateState, readUpdateState, readUpdateStateForVersion, writeUpda
 import {
   APP_RELEASE_PAGE_URL,
   checkAppVersion,
+  fetchInstallerBytes,
   fetchLatestAppVersion,
   isNewerVersion
 } from '../src/main/app-updates'
@@ -169,6 +170,81 @@ for (const [name, bytes, pattern] of [
     }
   })
 }
+
+test('reads the installer size from the public download URL, not the REST API', async () => {
+  const calls: string[] = []
+  const bytes = await fetchInstallerBytes('0.11.2', 'x64', (async (url, init) => {
+    calls.push(String(url))
+    assert.equal(init?.method, 'HEAD')
+    assert.equal(init?.redirect, 'follow')
+    return new Response(null, { status: 200, headers: { 'content-length': '123456' } })
+  }) as typeof fetch)
+
+  assert.equal(bytes, 123456)
+  assert.equal(
+    calls[0],
+    'https://github.com/facron2004/pi-desktop/releases/download/v0.11.2/Pi.Desktop-0.11.2-x64.exe'
+  )
+  assert.ok(!calls.some((url) => url.startsWith('https://api.github.com/')), 'the size read touched the REST API')
+})
+
+test('a rate-limited release API falls back to the public downloads and checksums', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'pi-app-update-'))
+  const calls: string[] = []
+  const digest = createHash('sha256').update(updateBytes).digest('hex')
+  try {
+    const fetcher: typeof fetch = async (url, init) => {
+      const href = String(url)
+      calls.push(href)
+      if (href.startsWith('https://api.github.com/')) {
+        return new Response('rate limit exceeded', {
+          status: 403,
+          headers: { 'x-ratelimit-remaining': '0' }
+        })
+      }
+      if (href.endsWith('/SHA256SUMS.txt')) {
+        return new Response(`${digest}  Pi.Desktop-0.11.2-x64.exe\n`)
+      }
+      if (init?.method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: { 'content-length': String(updateBytes.length) }
+        })
+      }
+      return new Response(updateBytes)
+    }
+    const installer = await downloadAppInstaller(updateVersion, downloadOptions(directory, fetcher))
+    assert.deepEqual(await readFile(installer), updateBytes)
+    assert.ok(calls.includes('https://github.com/facron2004/pi-desktop/releases/download/v0.11.2/SHA256SUMS.txt'))
+    assert.equal(
+      calls.filter((url) => !url.startsWith('https://api.github.com/')).length,
+      3,
+      'the fallback should read the checksums, HEAD the asset and download it once'
+    )
+    const stored = readDownloadedInstaller(directory, '0.11.1')
+    assert.equal(stored?.digest, `sha256:${digest}`)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a release API 500 is an error, not a reason to read public files', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'pi-app-update-'))
+  const calls: string[] = []
+  try {
+    const fetcher: typeof fetch = async (url) => {
+      calls.push(String(url))
+      return new Response(null, { status: 503 })
+    }
+    await assert.rejects(
+      downloadAppInstaller(updateVersion, downloadOptions(directory, fetcher)),
+      /HTTP 503/
+    )
+    assert.equal(calls.length, 1, 'a server error must not fall back')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 test('rejects old versions, traversal, unsupported architectures and unsigned metadata before downloading', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'pi-app-update-'))

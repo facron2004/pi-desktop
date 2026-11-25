@@ -18,11 +18,15 @@ import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { ReadableStream } from 'node:stream/web'
 import type { AppUpdateProgress } from '@shared/types'
-import { installerAssetNames, isNewerVersion } from './app-updates'
+import {
+  installerAssetNames,
+  isNewerVersion,
+  orderedInstallerAssetNames,
+  releaseDownloadUrl
+} from './app-updates'
 import { properLockfile } from './proper-lockfile'
 
 const RELEASES_API = 'https://api.github.com/repos/facron2004/pi-desktop/releases/tags/'
-const DOWNLOAD_ROOT = 'https://github.com/facron2004/pi-desktop/releases/download/'
 const MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
 
 /** The one verified setup file kept in the update folder. */
@@ -241,19 +245,35 @@ function assertUpdatable(version: string, options: { currentVersion: string; arc
   if (options.arch !== 'x64' && options.arch !== 'arm64') throw new Error('Automatic updates are not supported on this architecture.')
 }
 
+/** A REST API answer that is worth falling back from, not retrying. */
+class ReleaseApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
+}
+
 /**
- * Pick and validate the release asset. Everything the download needs is decided
- * here — the renderer never supplies a URL, a file name or an executable path.
+ * Read the release through the REST API: it carries the asset size and GitHub's
+ * own SHA-256 digest, so nothing is inferred.
  */
-async function selectReleaseAsset(
+async function selectReleaseAssetFromApi(
   version: string,
   options: { arch: string; fetcher: typeof fetch }
 ): Promise<ReleaseAsset> {
   const releaseResponse = await options.fetcher(`${RELEASES_API}v${version}`, {
-    headers: { Accept: 'application/vnd.github+json' },
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'Pi-Desktop'
+    },
     signal: AbortSignal.timeout(15_000)
   })
-  if (!releaseResponse.ok) throw new Error(`Could not read the update release (HTTP ${releaseResponse.status}).`)
+  if (!releaseResponse.ok) {
+    throw new ReleaseApiError(
+      `Could not read the update release (HTTP ${releaseResponse.status}).`,
+      releaseResponse.status
+    )
+  }
   const release = await releaseResponse.json() as {
     tag_name?: string
     draft?: boolean
@@ -271,6 +291,85 @@ async function selectReleaseAsset(
     throw new Error('No verified installer is available for this release.')
   }
   return { name: asset.name, size: asset.size, digest: asset.digest! }
+}
+
+/**
+ * The release's published `SHA256SUMS.txt`, as a name → digest map.
+ *
+ * This file is a normal release asset: reading it costs no REST API quota, and
+ * the installer it describes is verified exactly like an API digest would be —
+ * both arrive over TLS from the same release.
+ */
+async function readReleaseChecksums(
+  version: string,
+  options: { fetcher: typeof fetch }
+): Promise<Map<string, string>> {
+  const response = await options.fetcher(releaseDownloadUrl(version, 'SHA256SUMS.txt'), {
+    redirect: 'follow',
+    headers: { 'User-Agent': 'Pi-Desktop' },
+    signal: AbortSignal.timeout(15_000)
+  })
+  if (!response.ok) throw new Error(`Could not read the update checksums (HTTP ${response.status}).`)
+  const checksums = new Map<string, string>()
+  for (const line of (await response.text()).split(/\r?\n/)) {
+    const match = /^([a-f0-9]{64})\s+\*?(.+?)\s*$/i.exec(line.trim())
+    if (match) checksums.set(match[2]!, `sha256:${match[1]!.toLowerCase()}`)
+  }
+  return checksums
+}
+
+/**
+ * Pick the asset through the public download files instead of the REST API.
+ *
+ * This is the fallback that keeps updates working when the anonymous API quota
+ * is exhausted (HTTP 403, 60 requests an hour per network) or the API host is
+ * blocked: the asset names are deterministic, a HEAD answers the size, and
+ * `SHA256SUMS.txt` answers the digest. The version itself came from the web
+ * `/releases/latest` redirect, which only ever names a published release, so
+ * this path can never pick a draft or a prerelease.
+ */
+async function selectReleaseAssetFromDownloads(
+  version: string,
+  options: { arch: string; fetcher: typeof fetch }
+): Promise<ReleaseAsset> {
+  const checksums = await readReleaseChecksums(version, options)
+  for (const name of orderedInstallerAssetNames(version, options.arch)) {
+    const digest = checksums.get(name)
+    if (!digest) continue
+    const response = await options.fetcher(releaseDownloadUrl(version, name), {
+      method: 'HEAD',
+      redirect: 'follow',
+      headers: { 'User-Agent': 'Pi-Desktop' },
+      signal: AbortSignal.timeout(15_000)
+    })
+    if (!response.ok) continue
+    const size = Number(response.headers.get('content-length'))
+    if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_INSTALLER_BYTES) continue
+    return { name, size, digest }
+  }
+  throw new Error('No verified installer is available for this release.')
+}
+
+/**
+ * Pick and validate the release asset. Everything the download needs is decided
+ * here — the renderer never supplies a URL, a file name or an executable path.
+ * A rate-limited API falls back to the public files; a genuine server error is
+ * still an error.
+ */
+async function selectReleaseAsset(
+  version: string,
+  options: { arch: string; fetcher: typeof fetch }
+): Promise<ReleaseAsset> {
+  try {
+    return await selectReleaseAssetFromApi(version, options)
+  } catch (error) {
+    const rateLimited = error instanceof ReleaseApiError && (error.status === 403 || error.status === 429)
+    if (!rateLimited) throw error
+    console.warn(
+      `[pi-desktop] the update release API answered HTTP ${error.status}; reading the release's public downloads instead.`
+    )
+    return selectReleaseAssetFromDownloads(version, options)
+  }
 }
 
 /**
@@ -305,7 +404,8 @@ async function streamReleaseAsset(
   bumpStall()
   let response: Response
   try {
-    response = await options.fetcher(`${DOWNLOAD_ROOT}v${version}/${encodeURIComponent(asset.name)}`, {
+    response = await options.fetcher(releaseDownloadUrl(version, encodeURIComponent(asset.name)), {
+      headers: { 'User-Agent': 'Pi-Desktop' },
       signal: controller.signal
     })
   } catch (error) {

@@ -921,6 +921,24 @@ lessons live in `src/main/setup/payload.ts`:
   `tests/setup-install.test.ts` checks the old executable, archive, and marker.
 
 
+**Reading a release costs no REST API quota when it can avoid one.** The
+anonymous GitHub REST API allows 60 requests an hour per network, shared by
+every app instance, restart and test run on that network; a normal startup
+check used to spend one of them just to read the installer size, so a few
+launches could exhaust the quota and every later download then failed with
+"Could not read the update release (HTTP 403)". The flow now spreads the work
+over endpoints that have no quota: the version comes from the
+`/releases/latest` web redirect, the size from a `HEAD` on the public
+`releases/download` URL, and the digest from the release's `SHA256SUMS.txt`.
+The REST API is still tried first for the installer (GitHub's own asset digest
+and size, plus the draft/prerelease check), and a 403/429 means "the quota is
+gone", not "the release is broken": `selectReleaseAsset` falls back to the
+deterministic asset names, the file size from the `HEAD`, and the published
+checksum. A 5xx does not fall back — a broken API answer is an error worth
+retrying, not a reason to trust a different source. The fallback can never pick
+a draft or prerelease because the version it resolves came from the web
+redirect, which only names a published release.
+
 Two harnesses read the real button: `scripts/verify-update-persistence.mjs`
 drives two launches (online, then offline with the GitHub check blocked) and
 `scripts/verify-update-icon.mjs` runs a copied `release/win-unpacked` twice —

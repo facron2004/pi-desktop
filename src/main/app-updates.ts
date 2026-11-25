@@ -4,7 +4,6 @@ export const APP_RELEASE_PAGE_URL = 'https://github.com/facron2004/pi-desktop/re
 
 const LATEST_RELEASE_URL = APP_RELEASE_PAGE_URL
 const LATEST_RELEASE_TAG_PATH = /^\/facron2004\/pi-desktop\/releases\/tag\/v?(\d+\.\d+\.\d+)$/
-const RELEASES_API = 'https://api.github.com/repos/facron2004/pi-desktop/releases/tags/'
 const SEMVER_PATTERN = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
 interface ParsedVersion {
@@ -73,6 +72,14 @@ export async function fetchLatestAppVersion(fetcher: typeof fetch = fetch): Prom
   return match[1]!
 }
 
+/** Where the release's public download files live. No REST API quota here. */
+export const RELEASE_DOWNLOAD_ROOT = 'https://github.com/facron2004/pi-desktop/releases/download/'
+
+/** A release file's public URL: the browser download endpoint GitHub serves. */
+export function releaseDownloadUrl(version: string, file: string): string {
+  return `${RELEASE_DOWNLOAD_ROOT}v${version}/${file}`
+}
+
 /** The asset names an electron-builder release may use for this version. */
 export function installerAssetNames(version: string, arch: string): string[] {
   return ['Pi.Desktop', 'Pi Desktop', 'Pi-Desktop'].flatMap((prefix) => [
@@ -82,33 +89,47 @@ export function installerAssetNames(version: string, arch: string): string[] {
 }
 
 /**
+ * The candidate assets in the order a download should try them: the
+ * architecture-specific build first, the larger universal one after it.
+ */
+export function orderedInstallerAssetNames(version: string, arch: string): string[] {
+  const names = installerAssetNames(version, arch)
+  const specific = names.filter((name) => name.endsWith(`-${arch}.exe`))
+  const universal = names.filter((name) => !name.endsWith(`-${arch}.exe`))
+  return [...specific, ...universal]
+}
+
+/**
  * Size of the release installer, so an update card can say how large the
  * download is before it starts. A missing answer is not an error: the version
  * check still stands on its own.
+ *
+ * This reads the public download endpoint with a HEAD. The REST API allows 60
+ * anonymous requests per hour per network, and the old implementation spent one
+ * of them on every check; a machine that restarted the app a few times could
+ * exhaust that quota and then could not download an update at all.
  */
 export async function fetchInstallerBytes(
   version: string,
   arch: string,
   fetcher: typeof fetch = fetch
 ): Promise<number | undefined> {
-  try {
-    const response = await fetcher(`${RELEASES_API}v${version}`, {
-      headers: { Accept: 'application/vnd.github+json' },
-      signal: AbortSignal.timeout(8_000)
-    })
-    if (!response.ok) return undefined
-    const release = await response.json() as { assets?: { name?: string; size?: number }[] }
-    if (!Array.isArray(release.assets)) return undefined
-    const names = installerAssetNames(version, arch)
-    const asset = release.assets.find(
-      (entry) => names.includes(entry.name ?? '') && entry.name?.endsWith(`-${arch}.exe`)
-    ) ?? release.assets.find((entry) => names.includes(entry.name ?? ''))
-    return typeof asset?.size === 'number' && Number.isSafeInteger(asset.size) && asset.size > 0
-      ? asset.size
-      : undefined
-  } catch {
-    return undefined
+  for (const name of orderedInstallerAssetNames(version, arch)) {
+    try {
+      const response = await fetcher(releaseDownloadUrl(version, name), {
+        method: 'HEAD',
+        redirect: 'follow',
+        headers: { 'User-Agent': 'Pi-Desktop' },
+        signal: AbortSignal.timeout(8_000)
+      })
+      if (!response.ok) continue
+      const bytes = Number(response.headers.get('content-length'))
+      if (Number.isSafeInteger(bytes) && bytes > 0) return bytes
+    } catch {
+      /* the next candidate may still be downloadable */
+    }
   }
+  return undefined
 }
 
 export async function checkAppVersion(
