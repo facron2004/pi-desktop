@@ -817,6 +817,7 @@ const zhCN: Record<string, string> = {
   'Queued tasks': '排队中的任务',
   'Elapsed': '已用时',
   'Workers and their tasks': '工作智能体与任务',
+  '{count} task': '{count} 个任务',
   '{count} tasks': '{count} 个任务',
   'Tasks for {name}': '{name} 的任务',
   'No tasks yet': '暂无任务',

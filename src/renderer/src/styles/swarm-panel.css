@@ -284,10 +284,13 @@
 }
 
 .swarm__lane-count {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  overflow: hidden;
   color: var(--text-secondary);
   font-size: var(--text-2xs);
   font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .swarm__lane-live {

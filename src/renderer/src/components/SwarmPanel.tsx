@@ -204,6 +204,12 @@ function OverView({
   const t = useT()
   const summary = summarizeSwarm(workers)
   const counts = countAssignments(assignments)
+  const queuedFromWorkers = workers.reduce((total, worker) => total + (worker.queued ?? 0), 0)
+  // "Active tasks" answers what the team is doing, not how many log rows carry
+  // a running status: a worker that is working is active even while the tool
+  // call that started it still reads "dispatched".
+  const activeTasks = live ? summary.working : counts.active
+  const queuedTasks = live ? queuedFromWorkers : counts.queued
   const lanes = assignmentsByWorker(assignments)
   // Every current worker gets a lane, even before it was handed anything: the
   // page is where the reader watches the team, not only where the lead's
@@ -228,8 +234,8 @@ function OverView({
     <div className="swarm__view swarm__view--overview">
       <dl className="swarm__kv">
         <div><dt>{t('Workers')}</dt><dd>{summary.total}</dd></div>
-        <div><dt>{t('Active tasks')}</dt><dd>{counts.active}</dd></div>
-        <div><dt>{t('Queued tasks')}</dt><dd>{counts.queued}</dd></div>
+        <div><dt>{t('Active tasks')}</dt><dd>{activeTasks}</dd></div>
+        <div><dt>{t('Queued tasks')}</dt><dd>{queuedTasks}</dd></div>
         <div><dt>{t('Tokens')}</dt><dd>{formatTokens(summary.tokens)}</dd></div>
         <div><dt>{t('Elapsed')}</dt><dd>{elapsed === undefined ? '—' : formatDuration(elapsed)}</dd></div>
       </dl>
@@ -254,8 +260,8 @@ function OverView({
                       {busy && live ? <Loader2 size={11} className="spin" aria-hidden="true" /> : null}
                       {t(STATUS_LABEL[status])}
                     </span>
-                    <span className="swarm__lane-count" title={t('{count} tasks').replace('{count}', String(lane.length))}>
-                      {lane.length}
+                    <span className="swarm__lane-count">
+                      {t(lane.length === 1 ? '{count} task' : '{count} tasks').replace('{count}', String(lane.length))}
                     </span>
                   </div>
                   {lane.length > 0 ? (
@@ -304,7 +310,9 @@ function OverView({
                     <Loader2 size={12} className="spin" aria-hidden="true" />
                     <span className="swarm__feed-name">{event.name}</span>
                     <span className="swarm__feed-text" title={event.activity}>{event.activity || event.task}</span>
-                    <time>{event.at === undefined ? '' : formatRelativeTime(event.at, language)}</time>
+                    {/* A live row is "for 7m", not "7m ago": the timestamp is when
+                        the worker started, not when it last said something. */}
+                    <time>{event.at === undefined ? '' : formatDuration(Math.max(0, now - event.at))}</time>
                   </div>
                 )}
               </li>
