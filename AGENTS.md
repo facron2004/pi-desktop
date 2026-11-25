@@ -47,6 +47,8 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
 | `src/main/` | Electron main process: window, IPC, settings, session index |
 | `src/main/pi/` | Pi integration: CLI discovery, RPC client, runtime, one-shot CLI |
 | `src/main/window-state.ts` | remembers the size and place of the window |
+| `src/main/side-chats.ts` | side-chat bindings: one side session per main conversation |
+| `src/renderer/src/components/side-chat/` | the side chat panel: header, sync pill, transcript, composer |
 | `src/preload/` | `contextBridge` surface — the only renderer↔main channel |
 | `src/renderer/` | React UI |
 | `src/renderer/src/components/Launcher.tsx` | the palette over the app (`Ctrl+Shift+P`) |
@@ -715,6 +717,84 @@ The arc length is the whole reading — the percentage of the window in use — 
 it is drawn in one colour, the control's own foreground. Do not add a colour
 scale: the length says how much, and the numbers stay in the `ContextPanel`
 popover behind it, which reads Pi's `get_session_stats`.
+
+## The side chat
+
+A side chat is a **read-only companion conversation** beside the chat on screen.
+It runs its own Pi process in the same project, and it is steered on its own —
+asking it something never touches the run the lead is doing. Every main
+conversation keeps one side slot, and that binding is what the panel follows.
+
+### What it cannot do
+
+`src/main/pi/side-chat.ts` installs the side process's tool loadout: `read`,
+`grep`, `find`, `ls`, `inspect_main_conversation` and `inspect_main_changes`
+only. `write`, `edit`, `bash`, `powershell`, `codemode`, `tool_search`,
+`subagent`, `computer`, `generate_image` and every `mcp__*` tool are absent,
+and the static system-prompt section (kept byte-identical so providers keep
+their KV-cache prefix) says so in the first line. A side chat that claims it
+edited a file is wrong: keep the tool exclusion list and that prompt together.
+
+### The mirror is a projection, never a second transcript
+
+`src/main/pi/main-mirror.ts` reads the main conversation from Pi's own session
+file and rebuilds `<main_conversation_digest>` (`MAX_DIGEST_CHARS`) before every
+side user message: finished turns, the goal and todo plan, tool calls, and the
+files the run changed. Full turn text, tool output (`TOOL_OUTPUT_LINES_PER_PAGE`
+lines per page) and unified diffs come back only through
+`inspect_main_conversation` / `inspect_main_changes`, which
+`side-chat-bridge.ts` serves over a token-guarded loopback HTTP port. Do not
+grow the digest into a copy of the chat; the tools are the deep read.
+
+### The binding
+
+`src/main/side-chats.ts` owns `side-chats.json` in `userData`: for each main
+`.jsonl` it remembers the active side file and every side file ever bound to it.
+Side sessions live under `_side-chats/` beside the main session; they are
+ordinary Pi sessions, and `isSideSessionKey` keeps them out of the sidebar and
+the tray. `Clear` stops the old side runtime and starts a fresh side session
+without deleting the old file. The live snapshot is published on
+`pi-desktop-side-chat` (`parentSessionKey`, `activeSideKey`, `parentRunning`,
+`parentTurnCount`, `sessionChangedFiles`).
+
+### The panel
+
+`SideChatPanel` is lazy-mounted as its own tool-panel page (`view: 'side-chat'`)
+and renders under `ConversationScopeProvider surface="side"`, so it reads the
+side thread's slice while the main stream and composer keep theirs. The parts:
+
+- **Header** (`SideChatHeader`): the read-only marker, the review/preset menu
+  (`explain-live`, `summarize-main`, `diagnose-error`, `breakdown-plan`,
+  `review-session`, `review-worktree`), and Clear with confirmation.
+- **Sync pill** (`SideChatSyncPill`): what the main chat is doing right now —
+  run phase, goal, todo progress, changed files — built by
+  `lib/side-chat-context.ts`.
+- **Transcript and turn actions**: a ```prompt fence becomes a one-click
+  hand-off to the main composer; a tool call or reference quotes back into the
+  side composer.
+- **Composer**: reference chips (`MAX_SIDE_CHAT_REFERENCES`,
+  `MAX_SIDE_CHAT_SNIPPET_CHARS`) attached from the selection bar, a turn, a tool,
+  an error or a file diff; `ThreadSelectionBar` is the "ask about this" row on
+  the main transcript.
+
+### Doors
+
+`Ctrl+Shift+L` (`toggle-side-chat`), `/side [question]` (open, or follow with a
+question), the titlebar side-chat button and its unread dot, the Progress
+section's breakdown action, the context menus on the main transcript, and the
+tray card. `lib/side-chat-context.ts` owns `OPEN_SIDE_CHAT_EVENT` and the
+request shape; `App.tsx` stamps every request with a new `seq` so repeating
+the same question still runs.
+
+### Model and reasoning
+
+A side chat keeps its own model and reasoning level: `sideModelOverrides` /
+`sideThinkingOverrides` in the store, and `pendingModelSelections` /
+`pendingThinkingSelections` for the next launch. A side pick never writes the
+app default (`rememberDefaults: false`), the per-conversation locks
+(`agentSettingSelectionsInFlight`, keyed by session) let the main and the side
+switch independently, and the deadlines documented under the composer apply to
+both.
 
 ## The window's own controls
 
