@@ -1468,6 +1468,21 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     threads: { ...state.threads, [draftId]: { ...baseThread, items } }
   }))
   setRailItems(railItems)
+  // A docked tool panel narrows the main stage, and the app folds the task rail
+  // to protect the reading column. Open it from its toggle before asserting.
+  if (!railSection('Environment info')) {
+    // The rail toggle renders only after the injected items paint; wait for it
+    // instead of querying once, which found nothing while React was still folding.
+    const railToggle = await until(
+      () => [...document.querySelectorAll('button[aria-label]')].find(
+        (node) => /task status/i.test(node.getAttribute('aria-label') ?? '') &&
+          node.getBoundingClientRect().width > 0
+      ),
+      'The task rail toggle never appeared'
+    )
+    railToggle.click()
+  }
+  await until(() => railSection('Environment info'), 'The task rail did not open from its toggle')
   for (const title of ['Environment info', 'Background tasks', 'Subagents', 'Progress', 'Deliverables']) {
     await until(() => railSection(title), `The task rail is missing the ${title} section`)
   }
@@ -1628,7 +1643,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     panelToggle()?.click()
   }
   await until(() => document.querySelector('.tool-start'), 'The panel start page did not render')
-  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 7, 'The start page does not list every page')
+  check(document.querySelectorAll('.tool-start .tool-menu__card').length === 8, 'The start page does not list every page')
   const filesCard = [...document.querySelectorAll('.tool-start .tool-menu__card')].find((node) => node.textContent?.includes('Files'))
   check(filesCard, 'The start page has no Files entry')
   check(
@@ -2353,6 +2368,14 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   otherModel.click()
   await until(() => !document.querySelector('.model-picker-container'), 'Picking a model left the picker open')
   passed.push('picking a model closes the picker without waiting on Pi')
+
+  // Side chat is a panel of its own: a header with the read-only promise, the
+  // main-chat sync pill and a composer, opened without touching the main chat.
+  await openToolPage('side-chat', 'Side chat')
+  await until(() => document.querySelector('.side-chat'), 'The Side chat panel did not render')
+  check(Boolean(document.querySelector('.side-chat__head')), 'The Side chat panel has no header')
+  check(Boolean(document.querySelector('.side-chat__readonly')), 'Side chat does not say it is read-only')
+  passed.push('side chat opens as its own read-only panel')
   await store.getState().updateSettings({ model: 'fixture/sidebar-test', provider: 'fixture' })
   store.setState({ models: [], catalogModels: [] })
   // The Swarm page: a live roster, one lane per worker, a filter, and a
@@ -2458,7 +2481,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 44 : 42)
+  assert.equal(passed.length, process.platform === 'win32' ? 45 : 43)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

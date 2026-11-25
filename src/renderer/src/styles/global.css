@@ -5606,22 +5606,28 @@ transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--
 }
 
 /* Task rail open: tighten chat right gutter so rail doesn't double-margin */
-.main__stage:has(.task-rail) .composer-wrap {
-  padding-right: var(--sp-4);
-}
+/* The rail's right gutter only exists while the rail is a column of the
+   stage. Below 760px the rail floats over the stage (see the main-stage
+   container query above), so it takes no width and the symmetric gutters are
+   what keep the composer and the jump band on the same axis. */
+@container main-stage (min-width: 761px) {
+  .main__stage:has(.task-rail) .composer-wrap {
+    padding-right: var(--sp-4);
+  }
 
-.main__stage:has(.task-rail) .thread__inner {
-  padding-right: var(--sp-4);
-}
+  .main__stage:has(.task-rail) .thread__inner {
+    padding-right: var(--sp-4);
+  }
 
-.main__stage:has(.task-rail) .thread-search {
-  padding-right: var(--sp-4);
-}
+  .main__stage:has(.task-rail) .thread-search {
+    padding-right: var(--sp-4);
+  }
 
-/* Same gutter as the composer, so the jump controls stay centred on its box. */
-.main__stage:has(.task-rail) .scroll-jumps {
-  left: var(--sp-2);
-  right: var(--sp-4);
+  /* Same gutter as the composer, so the jump controls stay centred on its box. */
+  .main__stage:has(.task-rail) .scroll-jumps {
+    left: var(--sp-2);
+    right: var(--sp-4);
+  }
 }
 
 
