@@ -1514,6 +1514,32 @@ starts a worker, `swarm_task` queues work on one, `swarm_message` talks to it,
 (`src/main/pi/swarm.ts`, page `SwarmPanel`, projection `lib/swarm.ts`). The tools
 exist only in this mode; `/swarm` enters it and `/swarm off` leaves it.
 
+### The Swarm page
+
+`SwarmPanel` is the reader's window into that team, and it answers three
+questions separately because during a run they disagree constantly:
+
+- **Overview** — one row of readings (workers, active and queued tasks, tokens,
+  elapsed), one lane per worker with a block per dispatched task, and a feed
+  that puts live workers first and hand-overs after them. A lane exists for a
+  worker before it was handed anything, so the page always shows the whole
+  team; a worker with no task yet shows what it is doing instead.
+- **Workers** — the roster, filtered by status, each row expandable to its live
+  output or its report. Arrow keys move between rows; Stop is drawn only for a
+  worker that is really running.
+- **Dispatches** — the `swarm_task` / `swarm_message` calls as a log, newest
+  first, filtered by status; a row opens the existing `SubagentConversation`
+  and Back returns to the log.
+
+**A roster read from the thread rather than the live status entry is history**:
+a `running` worker there did finish, so it reads "Previously active", and a
+queued count is not a live queue (`displayStatusOf`). All of those readings live
+in `lib/swarm.ts` (`swarmAssignments`, `assignmentsByWorker`, `swarmFeed`,
+`countAssignments`, the filters) so they are tested without a DOM
+(`tests/swarm-view.test.ts`). `tests/ui-regressions.mjs` drives the page with
+an injected roster and asserts the three views, the lanes, a status filter and a
+dispatch row opening its child conversation.
+
 Plan Mode explores with `read`, `grep`, `find`, and `ls`. The `desktop_ask_user`
 tool is available in every desktop task mode. It uses Pi's `select` dialog and
 returns the chosen option to the requesting conversation. `exit_plan_mode` asks

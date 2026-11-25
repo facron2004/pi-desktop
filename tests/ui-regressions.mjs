@@ -2332,6 +2332,59 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await pause(250)
   check(finalEnvironmentToggle?.getAttribute('aria-expanded') === 'false', 'The final environment screenshot is not folded')
 
+  // The Swarm page: a live roster, one lane per worker, a filter, and a
+  // dispatch that opens the child conversation. Injected through the store
+  // because the fake provider does not run a real team.
+  const swarmNow = Date.now()
+  const swarmItem = {
+    id: 'swarm-assign-1', kind: 'tool', toolCallId: 'swarm-assign-1', toolName: 'swarm_task',
+    args: { name: 'math-reason', task: 'expand the math direction' },
+    status: 'ok', result: 'dispatched', timestamp: swarmNow - 80_000,
+    startedAt: swarmNow - 80_000, finishedAt: swarmNow - 70_000, order: 1
+  }
+  store.setState((state) => ({
+    activeSessionFile: undefined,
+    draftId: 'draft:swarm-check',
+    items: [swarmItem],
+    activeToolsRevision: state.activeToolsRevision + 1,
+    uiStatuses: [{ key: 'pi-desktop-swarm', text: JSON.stringify([
+      { name: 'math-reason', status: 'working', task: 'expand the math direction', progressText: 'writing 12 more questions', tokens: 1200, startedAt: swarmNow - 90_000 },
+      { name: 'code', status: 'idle', task: 'add boundary cases', output: 'added 8 cases', tokens: 800, queued: 1, startedAt: swarmNow - 200_000, finishedAt: swarmNow - 10_000 },
+      { name: 'know-safety', status: 'failed', task: 'expand knowledge', errorMessage: 'exit 1', startedAt: swarmNow - 500_000, finishedAt: swarmNow - 400_000 }
+    ]) }]
+  }))
+  await openToolPage('swarm', 'Swarm')
+  const swarmTabs = await until(() => {
+    const tabs = [...document.querySelectorAll('.swarm__tab')].map((node) => node.textContent?.trim() ?? '')
+    return tabs.length === 3 ? tabs : null
+  }, 'The Swarm page did not show its views')
+  check(swarmTabs.some((label) => label.startsWith('Overview')) && swarmTabs.some((label) => label.startsWith('Workers')) && swarmTabs.some((label) => label.startsWith('Dispatches')),
+    'The Swarm page views are not Overview / Workers / Dispatches')
+  const laneNames = [...document.querySelectorAll('.swarm__lane-name')].map((node) => node.textContent?.trim())
+  check(laneNames.includes('math-reason') && laneNames.includes('code'),
+    `The orchestration lanes lost a worker (${JSON.stringify(laneNames)})`)
+  check(document.querySelectorAll('.swarm__lane-task').length === 1, 'The lane did not show the dispatched task')
+  ;[...document.querySelectorAll('.swarm__tab')].find((node) => node.textContent?.startsWith('Workers'))?.click()
+  const workerNames = await until(() => {
+    const names = [...document.querySelectorAll('.swarm__worker-name')].map((node) => node.textContent?.trim())
+    return names.length === 3 ? names : null
+  }, 'The Swarm worker list did not render')
+  check(workerNames.includes('know-safety') && workerNames.includes('math-reason'), 'The worker list lost a worker')
+  const failedFilter = [...document.querySelectorAll('.swarm__filter')].find((node) => node.textContent?.startsWith('Failed'))
+  failedFilter?.click()
+  await until(() => document.querySelectorAll('.swarm__worker').length === 1, 'The worker filter did not narrow the list')
+  document.querySelector('.swarm__worker-toggle')?.click()
+  await until(() => document.querySelector('.swarm__worker-error'), 'The failed worker did not show its error')
+  ;[...document.querySelectorAll('.swarm__tab')].find((node) => node.textContent?.startsWith('Dispatches'))?.click()
+  const dispatch = await until(() => document.querySelector('.swarm__dispatch'), 'The dispatch list is empty')
+  check(dispatch.textContent?.includes('math-reason'), 'A dispatch lost its worker')
+  dispatch.click()
+  await until(() => document.querySelector('.subagent-conversation'), 'The dispatch did not open its conversation')
+  document.querySelector('.subagent-conversation__back')?.click()
+  await until(() => !document.querySelector('.subagent-conversation') && document.querySelector('.swarm__dispatch'),
+    'Leaving the dispatch conversation did not return to the list')
+  passed.push('the Swarm page shows the roster, the orchestration lanes and opens a dispatch')
+  store.setState({ uiStatuses: [], items: [] })
   // A Chinese interface must not keep English inside it. The map translates
   // both the app's own labels and the plain-text messages the main process
   // sends, and the toast is where a reader meets the latter. Switch, look, and
@@ -2382,7 +2435,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 42 : 40)
+  assert.equal(passed.length, process.platform === 'win32' ? 43 : 41)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

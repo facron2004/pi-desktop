@@ -1,4 +1,182 @@
 import type { ThreadItem } from './thread'
+import { subagentCallOf, type SubagentTreeTask } from './subagents'
+
+export type SwarmDisplayStatus = SwarmWorkerStatus | 'queued' | 'history'
+
+/**
+ * What the page should show for one worker.
+ *
+ * The same worker data means different things live and after the turn: a
+ * running worker in a replayed conversation did finish, and an idle worker with
+ * a queue has work waiting even though its status says idle.
+ */
+export function displayStatusOf(worker: SwarmWorkerState, live: boolean): SwarmDisplayStatus {
+  const active = isSwarmWorking(worker)
+  if (!live && active) return 'history'
+  if (live && worker.status === 'idle' && (worker.queued ?? 0) > 0) return 'queued'
+  return worker.status
+}
+
+/** One task the lead handed to a worker, projected from its tool call. */
+export interface SwarmAssignment {
+  id: string
+  worker: string
+  task: string
+  status: SubagentTreeTask['status']
+  at?: number
+  tokens?: number
+  model?: string
+  result: SubagentTreeTask
+}
+
+/** Every swarm_task / swarm_message in invocation order, newest first. */
+export function swarmAssignments(items: readonly ThreadItem[]): SwarmAssignment[] {
+  const assignments: SwarmAssignment[] = []
+  for (const item of items) {
+    if (item.kind !== 'tool' || (item.toolName !== 'swarm_task' && item.toolName !== 'swarm_message')) continue
+    for (const task of subagentCallOf(item).tasks) {
+      assignments.push({
+        id: task.id,
+        worker: (task.label ?? '').trim(),
+        task: task.task,
+        status: task.status,
+        at: task.finishedAt ?? task.startedAt,
+        tokens: task.tokens,
+        model: task.model,
+        result: task
+      })
+    }
+  }
+  return assignments.reverse()
+}
+
+export function assignmentsByWorker(assignments: readonly SwarmAssignment[]): Map<string, SwarmAssignment[]> {
+  const lanes = new Map<string, SwarmAssignment[]>()
+  // Iterate oldest first so a lane reads left to right like the work happened.
+  for (const assignment of [...assignments].reverse()) {
+    const key = assignment.worker || '—'
+    const lane = lanes.get(key)
+    if (lane) lane.push(assignment)
+    else lanes.set(key, [assignment])
+  }
+  return lanes
+}
+
+export interface SwarmAssignmentCounts {
+  total: number
+  active: number
+  queued: number
+  completed: number
+  failed: number
+}
+
+export function countAssignments(assignments: readonly SwarmAssignment[]): SwarmAssignmentCounts {
+  const counts: SwarmAssignmentCounts = { total: assignments.length, active: 0, queued: 0, completed: 0, failed: 0 }
+  for (const assignment of assignments) {
+    if (assignment.status === 'running') counts.active += 1
+    else if (assignment.status === 'queued' || assignment.status === 'dispatched') counts.queued += 1
+    else if (assignment.status === 'failed' || assignment.status === 'timed_out') counts.failed += 1
+    else if (assignment.status === 'completed') counts.completed += 1
+  }
+  return counts
+}
+
+export type SwarmWorkerFilter = 'all' | 'active' | 'idle' | 'failed'
+
+export function filterWorkers(
+  workers: readonly SwarmWorkerState[],
+  live: boolean,
+  filter: SwarmWorkerFilter
+): SwarmWorkerState[] {
+  if (filter === 'all') return [...workers]
+  return workers.filter((worker) => {
+    const status = displayStatusOf(worker, live)
+    if (filter === 'active') return status === 'starting' || status === 'working' || status === 'queued'
+    if (filter === 'failed') return status === 'failed'
+    return status === 'idle' || status === 'stopped' || status === 'history'
+  })
+}
+
+export type SwarmAssignmentFilter = 'all' | 'active' | 'done' | 'failed'
+
+export function filterAssignments(
+  assignments: readonly SwarmAssignment[],
+  filter: SwarmAssignmentFilter
+): SwarmAssignment[] {
+  if (filter === 'all') return [...assignments]
+  return assignments.filter((assignment) => {
+    if (filter === 'active') return assignment.status === 'running' || assignment.status === 'queued' || assignment.status === 'dispatched'
+    if (filter === 'failed') return assignment.status === 'failed' || assignment.status === 'timed_out'
+    return assignment.status === 'completed'
+  })
+}
+
+/** One line of the orchestration feed: what a worker is doing, or what was handed over. */
+export interface SwarmFeedEvent {
+  id: string
+  kind: 'worker' | 'assignment'
+  at?: number
+  name: string
+  task?: string
+  activity?: string
+  status: SwarmDisplayStatus | SubagentTreeTask['status']
+  assignment?: SwarmAssignment
+}
+
+/**
+ * The orchestration feed: live workers first (that is what is happening now),
+ * then the newest hand-offs. Capped so a long session stays readable.
+ */
+export function swarmFeed(
+  workers: readonly SwarmWorkerState[],
+  assignments: readonly SwarmAssignment[],
+  live: boolean,
+  limit = 8
+): SwarmFeedEvent[] {
+  const events: SwarmFeedEvent[] = []
+  if (live) {
+    for (const worker of workers) {
+      if (!isSwarmWorking(worker)) continue
+      events.push({
+        id: `worker:${worker.name}`,
+        kind: 'worker',
+        at: worker.startedAt,
+        name: worker.name,
+        task: worker.task,
+        activity: swarmPreview(worker),
+        status: displayStatusOf(worker, true)
+      })
+    }
+  }
+  for (const assignment of assignments) {
+    events.push({
+      id: `assignment:${assignment.id}`,
+      kind: 'assignment',
+      at: assignment.at,
+      name: assignment.worker,
+      task: assignment.task,
+      status: assignment.status,
+      assignment
+    })
+  }
+  return events
+    .sort((left, right) => (left.kind === right.kind
+      ? (right.at ?? 0) - (left.at ?? 0)
+      : left.kind === 'worker' ? -1 : 1))
+    .slice(0, Math.max(0, limit))
+}
+
+/** Earliest start across workers, for the overview's "elapsed" reading. */
+export function swarmStartedAt(workers: readonly SwarmWorkerState[]): number | undefined {
+  let earliest: number | undefined
+  for (const worker of workers) {
+    if (worker.startedAt === undefined) continue
+    if (earliest === undefined || worker.startedAt < earliest) earliest = worker.startedAt
+  }
+  return earliest
+}
+
+
 
 /**
  * The projection the Swarm panel reads.

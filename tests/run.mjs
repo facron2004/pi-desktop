@@ -53,6 +53,7 @@ const suites = [
   'computer-use.test.ts',
   'subagent.test.ts',
   'swarm.test.ts',
+  'swarm-view.test.ts',
   'subagent-tree.test.ts',
   'subagents.test.ts',
   'file-status.test.ts',
