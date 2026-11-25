@@ -1224,6 +1224,61 @@ test('a completion persistence failure does not interrupt supervisor event deliv
   }
 })
 
+test('normal shutdown saves a settled result after the task file lock clears', async (t) => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-quit-result-'))
+  const file = path.join(userData, 'scheduled-tasks.json')
+  const supervisor = new FakeSupervisor()
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const open = (owner: FakeSupervisor) => new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: owner as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  const service = open(supervisor)
+  t.after(() => {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  })
+
+  const [task] = service.create({
+    title: 'Finish while shutting down',
+    prompt: 'Do the work',
+    workspaceId: 'project',
+    schedule: { kind: 'once', at: Date.now() + 3_600_000 }
+  })
+  await service.runNow(task.id)
+  const sessionFile = path.join(userData, 'finished.jsonl')
+  supervisor.emit('rekey', { from: supervisor.ownerId, to: sessionFile })
+  service.stopScheduling()
+  const peer = open(new FakeSupervisor())
+  peer.stopScheduling()
+  t.after(() => peer.dispose())
+  const release = properLockfile.lockSync(file, { realpath: false })
+  t.mock.method(console, 'error', () => {})
+  let shuttingDown: Promise<void> | undefined
+  try {
+    supervisor.emit('event', { ownerId: sessionFile, event: { type: 'agent_settled', aborted: false } })
+    assert.equal(service.list()[0]?.lastStatus, 'completed')
+    assert.equal(peer.list()[0]?.lastStatus, 'running')
+    shuttingDown = service.finishShutdown()
+    await new Promise((resolve) => setImmediate(resolve))
+  } finally {
+    release()
+  }
+  await shuttingDown
+  const reopened = open(new FakeSupervisor())
+  try {
+    const [saved] = reopened.list()
+    assert.equal(saved?.lastStatus, 'completed')
+    assert.equal(saved?.lastSessionFile, sessionFile)
+  } finally {
+    reopened.dispose()
+  }
+})
+
 test('a completion blocked by another writer persists without losing a concurrent edit', async (t) => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-retry-result-'))
   const file = path.join(userData, 'scheduled-tasks.json')
@@ -1734,6 +1789,90 @@ class StoppableRunSupervisor extends FakeSupervisor {
     return { cwd: '', externalContext: false, running: this.running }
   }
 }
+
+test('a peer cannot delete a scheduled task while its owner is running it', async (t) => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-peer-delete-'))
+  const owner = new StoppableRunSupervisor()
+  const settings = {
+    get: () => ({ workspaces: [{ id: 'project', path: userData }] })
+  } as unknown as SettingsStore
+  const open = (supervisor: FakeSupervisor) => new ScheduledTaskService({
+    userData,
+    settings,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  const service = open(owner)
+  const peer = open(new StoppableRunSupervisor())
+  t.after(async () => {
+    try {
+      if (owner.ownerId) await owner.stop(owner.ownerId)
+    } finally {
+      service.dispose()
+      peer.dispose()
+      rmSync(userData, { recursive: true, force: true })
+    }
+  })
+
+  const [task] = service.create({
+    title: 'Shared task', prompt: 'Do the work', workspaceId: 'project',
+    schedule: { kind: 'once', at: Date.now() + 3_600_000 }
+  })
+  assert.equal(peer.list()[0]?.lastStatus, undefined)
+  await service.runNow(task.id)
+
+  await assert.rejects(async () => peer.remove(task.id), /still running/i)
+  assert.equal(peer.list()[0]?.lastStatus, 'running')
+  assert.equal(owner.running, true)
+  assert.deepEqual(owner.stopCalls, [])
+
+  await service.stopRun(task.id)
+  assert.equal(peer.list()[0]?.lastStatus, 'aborted')
+  assert.deepEqual(await peer.remove(task.id), [])
+  assert.deepEqual(service.list(), [])
+})
+
+test('deleting a local task waits until its run stops and preserves it if stopping fails', async (t) => {
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-local-delete-'))
+  const file = path.join(userData, 'scheduled-tasks.json')
+  const supervisor = new StoppableRunSupervisor()
+  const service = new ScheduledTaskService({
+    userData,
+    settings: { get: () => ({ workspaces: [{ id: 'project', path: userData }] }) } as unknown as SettingsStore,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  const stop = supervisor.stop.bind(supervisor)
+  t.after(async () => {
+    if (supervisor.ownerId) await stop(supervisor.ownerId)
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  })
+  const [task] = service.create({
+    title: 'Local task', prompt: 'Do the work', workspaceId: 'project',
+    schedule: { kind: 'once', at: Date.now() + 3_600_000 }
+  })
+  await service.runNow(task.id)
+  supervisor.stop = async () => { throw new Error('Could not stop Pi') }
+  await assert.rejects(async () => service.remove(task.id), /Could not stop Pi/)
+  assert.equal(service.list()[0]?.lastStatus, 'running')
+
+  const finishStop = Promise.withResolvers<void>()
+  supervisor.stop = async (key) => {
+    await finishStop.promise
+    await stop(key)
+  }
+  const removing = service.remove(task.id)
+  try {
+    assert.equal(JSON.parse(readFileSync(file, 'utf8'))[0]?.lastStatus, 'running')
+    assert.equal(supervisor.running, true)
+  } finally {
+    finishStop.resolve()
+    await removing
+  }
+  assert.equal(supervisor.running, false)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), [])
+})
 
 test('a running task can be stopped without touching its schedule', async () => {
   const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-stop-run-'))

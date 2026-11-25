@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, ListChecks, Network, Paperclip, Plus, Sparkles, WandSparkles, Workflow, Wrench } from 'lucide-react'
 import type { AgentMode, PiCommand } from '@shared/types'
 import { commandIcon } from '../lib/command-source'
+import { useConversationScope } from '../lib/conversation-scope'
 import { useT } from '../lib/i18n'
 import type { mermaidTemplateList } from '../lib/mermaid-templates'
 import { useAppStore } from '../store/useAppStore'
@@ -35,8 +36,17 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
   onEnterImageMode: () => void
 }) {
   const t = useT()
+  const scope = useConversationScope()
   const language = useAppStore((state) => state.settings.language ?? 'en')
   const insertIntoComposer = useAppStore((state) => state.insertIntoComposer)
+  const targetSessionKey = scope.surface === 'main' ? scope.sessionKey : (scope.sessionKey ?? '')
+  const insertTemplate = useCallback(
+    (prompt: string) => {
+      if (scope.surface === 'side' && !targetSessionKey) return
+      insertIntoComposer(prompt, 'append', targetSessionKey)
+    },
+    [insertIntoComposer, scope.surface, targetSessionKey]
+  )
   const [diagramTemplates, setDiagramTemplates] = useState<DiagramTemplateItem[]>([])
   const [page, setPage] = useState<AddMenuPage>('actions')
   const returnPage = useRef<AddMenuPage>('actions')
@@ -177,7 +187,7 @@ export const AddMenu = memo(function AddMenu({ ready, busy, imageMode, skillComm
                       className="popover__item composer__add-command composer__add-template"
                       role="menuitem"
                       data-template={template.id}
-                      onClick={() => { close(); insertIntoComposer(template.prompt) }}
+                      onClick={() => { close(); insertTemplate(template.prompt) }}
                     >
                       <span className="composer__add-command-name">{template.name}</span>
                       <span className="composer__add-command-description" title={template.description}>{template.description}</span>

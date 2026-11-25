@@ -2369,18 +2369,31 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => !document.querySelector('.model-picker-container'), 'Picking a model left the picker open')
   passed.push('picking a model closes the picker without waiting on Pi')
 
-  // Side chat is a panel of its own: a header with the read-only promise, the
-  // main-chat sync pill and a composer, opened without touching the main chat.
+  // Side chat is a parallel conversation, not a second chat UI: its header is
+  // its own, and its transcript and composer are the main chat's components
+  // rendered in the side scope.
   await openToolPage('side-chat', 'Side chat')
   await until(() => document.querySelector('.side-chat'), 'The Side chat panel did not render')
   check(Boolean(document.querySelector('.side-chat__head')), 'The Side chat panel has no header')
-  check(Boolean(document.querySelector('.side-chat__readonly')), 'Side chat does not say it is read-only')
-  passed.push('side chat opens as its own read-only panel')
+  check(
+    Boolean(document.querySelector('.side-chat .composer-wrap')),
+    'Side chat does not render the main conversation composer'
+  )
+  check(
+    Boolean(document.querySelector('.side-chat .thread-frame')) ||
+      Boolean(document.querySelector('.side-chat .side-empty')),
+    'Side chat renders neither the main transcript nor its empty state'
+  )
+  check(
+    !document.querySelector('.side-chat__readonly'),
+    'Side chat must not be presented as read-only'
+  )
+  passed.push('side chat opens as its own working panel, built from the main chat')
   await store.getState().updateSettings({ model: 'fixture/sidebar-test', provider: 'fixture' })
   store.setState({ models: [], catalogModels: [] })
-  // The Swarm page: a live roster, one lane per worker, a filter, and a
-  // dispatch that opens the child conversation. Injected through the store
-  // because the fake provider does not run a real team.
+  // The Swarm page: one situation line, a two-line roster, a filter, and the
+  // selected worker's turn, which opens the child conversation. Injected
+  // through the store because the fake provider does not run a real team.
   const swarmNow = Date.now()
   const swarmItem = {
     id: 'swarm-assign-1', kind: 'tool', toolCallId: 'swarm-assign-1', toolName: 'swarm_task',
@@ -2400,17 +2413,8 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     ]) }]
   }))
   await openToolPage('swarm', 'Swarm')
-  const swarmTabs = await until(() => {
-    const tabs = [...document.querySelectorAll('.swarm__tab')].map((node) => node.textContent?.trim() ?? '')
-    return tabs.length === 3 ? tabs : null
-  }, 'The Swarm page did not show its views')
-  check(swarmTabs.some((label) => label.startsWith('Overview')) && swarmTabs.some((label) => label.startsWith('Workers')) && swarmTabs.some((label) => label.startsWith('Dispatches')),
-    'The Swarm page views are not Overview / Workers / Dispatches')
-  const laneNames = [...document.querySelectorAll('.swarm__lane-name')].map((node) => node.textContent?.trim())
-  check(laneNames.includes('math-reason') && laneNames.includes('code'),
-    `The orchestration lanes lost a worker (${JSON.stringify(laneNames)})`)
-  check(document.querySelectorAll('.swarm__lane-task').length === 1, 'The lane did not show the dispatched task')
-  ;[...document.querySelectorAll('.swarm__tab')].find((node) => node.textContent?.startsWith('Workers'))?.click()
+  const situation = await until(() => document.querySelector('.swarm__situation'), 'The Swarm page has no situation line')
+  check(/\b2\b/.test(situation.textContent ?? ''), 'The situation line did not count the workers that are working')
   const workerNames = await until(() => {
     const names = [...document.querySelectorAll('.swarm__worker-name')].map((node) => node.textContent?.trim())
     return names.length === 3 ? names : null
@@ -2421,15 +2425,19 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => document.querySelectorAll('.swarm__worker').length === 1, 'The worker filter did not narrow the list')
   document.querySelector('.swarm__worker-toggle')?.click()
   await until(() => document.querySelector('.swarm__worker-error'), 'The failed worker did not show its error')
-  ;[...document.querySelectorAll('.swarm__tab')].find((node) => node.textContent?.startsWith('Dispatches'))?.click()
-  const dispatch = await until(() => document.querySelector('.swarm__dispatch'), 'The dispatch list is empty')
-  check(dispatch.textContent?.includes('math-reason'), 'A dispatch lost its worker')
-  dispatch.click()
-  await until(() => document.querySelector('.subagent-conversation'), 'The dispatch did not open its conversation')
+  ;[...document.querySelectorAll('.swarm__filter')].find((node) => node.textContent?.startsWith('All'))?.click()
+  await until(() => document.querySelectorAll('.swarm__worker').length === 3, 'Clearing the worker filter did not restore the roster')
+  ;[...document.querySelectorAll('.swarm__worker-toggle')].find((node) => node.textContent?.includes('math-reason'))?.click()
+  const turn = await until(
+    () => [...document.querySelectorAll('.swarm__turn')].find((node) => node.textContent?.includes('expand the math direction')) ?? null,
+    'The selected worker did not list its turn'
+  )
+  turn.click()
+  await until(() => document.querySelector('.subagent-conversation'), 'The turn did not open its conversation')
   document.querySelector('.subagent-conversation__back')?.click()
-  await until(() => !document.querySelector('.subagent-conversation') && document.querySelector('.swarm__dispatch'),
-    'Leaving the dispatch conversation did not return to the list')
-  passed.push('the Swarm page shows the roster, the orchestration lanes and opens a dispatch')
+  await until(() => !document.querySelector('.subagent-conversation') && document.querySelector('.swarm__turn'),
+    'Leaving the turn did not return to that worker')
+  passed.push('the Swarm page shows the roster, the selected worker and opens a turn')
   store.setState({ uiStatuses: [], items: [] })
   // A Chinese interface must not keep English inside it. The map translates
   // both the app's own labels and the plain-text messages the main process

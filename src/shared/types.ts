@@ -1582,7 +1582,7 @@ export interface PiDesktopBridge {
     /** Both sides of one working-tree file, for the review tab. */
     fileDiff(file: string, expectedRoot?: string): Promise<GitFileDiff>
     /** Unified patch of the whole working tree, or of one file. */
-    patch(file?: string): Promise<GitPatch>
+    patch(file?: string, expectedRoot?: string): Promise<GitPatch>
     /** Metadata, file list and patch of one commit. */
     commitDetail(hash: string): Promise<GitCommitDetail | null>
     /** Both sides of one file as they were in one commit. */
@@ -1747,7 +1747,7 @@ export interface RuntimeStartOptions {
   cwd: string
   /** Resume a specific session file instead of starting a new one. */
   sessionFile?: string
-  /** Process role (`'main'` default; `'side'` starts the read-only companion loadout). */
+  /** Process role (`'main'` default; `'side'` starts a parallel Side Chat with main-context inspection tools). */
   role?: SessionRuntimeRole
   /** Bound parent Main conversation key (`draft:…` or `.jsonl`) when `role === 'side'`. */
   parentSessionKey?: string

@@ -274,8 +274,8 @@ export function buildPresetPrompt(
         : 'Break down the ongoing items and active goal in the main conversation into concrete, ordered sub-steps, identifying blockers and relevant files, and emit ready-to-send instructions in ```prompt fenced blocks.'
     case 'review-session':
       return zh
-        ? '请独立审查主对话在本次会话中修改的文件（使用只读工具检查改动与上下文），按严重程度指出潜在 Bug、回归风险或遗漏测试，标注具体 `文件路径:行号`，并用 ```prompt 代码块附上可直接发回主对话的修复指令。'
-        : 'Perform an independent code review of the files changed in this conversation (using read-only tools to inspect diffs and context). Flag bugs, regressions, or missing tests by severity with exact `path:line` references, and include a ```prompt block with actionable fix instructions for the main chat.'
+        ? '请独立审查主对话在本次会话中修改的文件（直接检查改动与上下文），按严重程度指出潜在 Bug、回归风险或遗漏测试，标注具体 `文件路径:行号`，并用 ```prompt 代码块附上可直接发回主对话的修复指令。'
+        : 'Perform an independent code review of the files changed in this conversation (inspecting diffs and context directly). Flag bugs, regressions, or missing tests by severity with exact `path:line` references, and include a ```prompt block with actionable fix instructions for the main chat.'
     case 'review-worktree':
       return zh
         ? '请独立审查当前工作区尚未提交的 Git 变更，按严重程度指出潜在 Bug、边界情况或遗漏测试，标注具体 `文件路径:行号`，并用 ```prompt 代码块附上可直接发回主对话的修复指令。'

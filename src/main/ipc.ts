@@ -121,6 +121,7 @@ import {
   readPatch,
   readStatus,
   removeWorktree,
+  resolveGitWorktreeRoot,
   revertFile,
   stageAll,
   stageFile,
@@ -448,14 +449,26 @@ function gitWorkspaceRoot(context: IpcContext, expectedRoot?: unknown): string {
   return root
 }
 
+async function gitWorktreeRoot(context: IpcContext, expectedRoot?: unknown): Promise<string> {
+  const workspace = gitWorkspaceRoot(context, expectedRoot)
+  const root = await resolveGitWorktreeRoot(workspace)
+  if (!root) throw new Error('The active project is not inside a Git worktree.')
+  gitWorkspaceRoot(context, workspace)
+  return root
+}
+
 async function gitWrite<T extends GitCommitResult>(
   context: IpcContext,
   action: (root: string) => Promise<T>,
   expectedRoot: unknown
 ): Promise<T | GitCommitResult> {
   try {
-    const root = gitWorkspaceRoot(context, expectedRoot ?? '')
-    return await context.supervisor.withCwdLock(root, () => action(root))
+    const workspace = expectedRoot ?? ''
+    const root = await gitWorktreeRoot(context, workspace)
+    return await context.supervisor.withCwdLock(root, () => {
+      gitWorkspaceRoot(context, workspace)
+      return action(root)
+    })
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
@@ -1109,6 +1122,16 @@ function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
   return value === 'light' || value === 'dark' || value === 'system' ? value : undefined
 }
 
+async function exportDestinationVersion(target: string): Promise<string | undefined> {
+  try {
+    const { dev, ino, size, mtimeNs, ctimeNs } = await lstat(target, { bigint: true })
+    return `${dev}:${ino}:${size}:${mtimeNs}:${ctimeNs}`
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
 export function registerIpc(context: IpcContext): void {
   const { supervisor, settings, getWindow, terminals } = context
   const openFile = async (target: string): Promise<string> => {
@@ -1120,6 +1143,7 @@ export function registerIpc(context: IpcContext): void {
     return shell.openPath(target)
   }
   const workspaceMutations = new Map<string, Promise<unknown>>()
+  const exportingPaths = new Set<string>()
   let piCliUpgradeInFlight: Promise<UpgradeResult> | null = null
   let appUpdateInFlight: Promise<UpgradeResult> | null = null
   // One download at a time, remembered with its version so an install request
@@ -1799,20 +1823,31 @@ export function registerIpc(context: IpcContext): void {
     if (selection.canceled || !selection.filePath) return { cancelled: true }
     const target = selection.filePath
     if (!/\.html?$/i.test(target)) throw new Error('Choose an HTML file for the export.')
+    const targetKey = workspacePathKey(target)
+    if (exportingPaths.has(targetKey)) throw new Error('An export to this file is already in progress.')
 
     // Pi writes directly to its output path. Stage beside the chosen file so
     // only a completed export replaces it, including on a different volume.
-    const directory = await mkdtemp(path.join(path.dirname(target), '.pi-export-'))
-    const outputPath = path.join(directory, 'session.html')
+    exportingPaths.add(targetKey)
     try {
-      await supervisor.request(sessionKey, 'export_html', { outputPath }, undefined, {
-        sourceAction: 'session-export', uiSessionId: sessionKey
-      })
-      if (!(await lstat(outputPath)).isFile()) throw new Error('Pi did not report an export file')
-      await rename(outputPath, target)
+      const originalVersion = await exportDestinationVersion(target)
+      const directory = await mkdtemp(path.join(path.dirname(target), '.pi-export-'))
+      const outputPath = path.join(directory, 'session.html')
+      try {
+        await supervisor.request(sessionKey, 'export_html', { outputPath }, undefined, {
+          sourceAction: 'session-export', uiSessionId: sessionKey
+        })
+        if (!(await lstat(outputPath)).isFile()) throw new Error('Pi did not report an export file')
+        if (await exportDestinationVersion(target) !== originalVersion) {
+          throw new Error('The export destination changed while Pi was exporting. Choose the destination again.')
+        }
+        await rename(outputPath, target)
+      } finally {
+        await unlink(outputPath).catch(() => {})
+        await rmdir(directory).catch(() => {})
+      }
     } finally {
-      await unlink(outputPath).catch(() => {})
-      await rmdir(directory).catch(() => {})
+      exportingPaths.delete(targetKey)
     }
     const openError = await openFile(target).catch(error =>
       error instanceof Error ? error.message : String(error)
@@ -1957,12 +1992,12 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('git:unstageAll', (_event, expectedRoot: unknown) => gitWrite(context, unstageAll, expectedRoot))
 
-  ipcMain.handle('git:fileDiff', (_event, file: string, expectedRoot?: unknown) =>
-    readFileDiff(gitWorkspaceRoot(context, expectedRoot), file)
+  ipcMain.handle('git:fileDiff', async (_event, file: string, expectedRoot?: unknown) =>
+    readFileDiff(await gitWorktreeRoot(context, expectedRoot), file)
   )
 
-  ipcMain.handle('git:patch', (_event, file?: string) =>
-    readPatch(workspaceRoot(context), file)
+  ipcMain.handle('git:patch', async (_event, file?: string, expectedRoot?: unknown) =>
+    readPatch(await gitWorktreeRoot(context, expectedRoot), file)
   )
 
   ipcMain.handle('git:commitDetail', (_event, hash: string) =>
@@ -1973,8 +2008,8 @@ export function registerIpc(context: IpcContext): void {
     readCommitFileDiff(workspaceRoot(context), hash, file)
   )
 
-  ipcMain.handle('git:commitWorktreeDiff', (_event, hash: string, file: string) =>
-    readCommitWorktreeDiff(workspaceRoot(context), hash, file)
+  ipcMain.handle('git:commitWorktreeDiff', async (_event, hash: string, file: string) =>
+    readCommitWorktreeDiff(await gitWorktreeRoot(context), hash, file)
   )
 
   ipcMain.handle('git:applyPatch', (_event, patch: string, reverse: boolean, expectedRoot: unknown) =>

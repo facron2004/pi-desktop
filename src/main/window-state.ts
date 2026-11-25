@@ -15,6 +15,8 @@ const MIN_WIDTH = 880
 const MIN_HEIGHT = 572
 const DEFAULT_WIDTH = 1480
 const DEFAULT_HEIGHT = 940
+const MIN_VISIBLE_TITLE_WIDTH = 80
+const MIN_VISIBLE_TITLE_HEIGHT = 40
 
 function stateFile(): string {
   return path.join(app.getPath('userData'), 'window-state.json')
@@ -79,15 +81,19 @@ export function initialBounds(): { width: number; height: number; x?: number; y?
 
   const width = Math.max(MIN_WIDTH, Math.round(state.width))
   const height = Math.max(MIN_HEIGHT, Math.round(state.height))
-  if (state.x === undefined || state.y === undefined) return { width, height }
+  const { x, y } = state
+  if (typeof x !== 'number' || typeof y !== 'number' || !Number.isInteger(x) || !Number.isInteger(y)) {
+    return { width, height }
+  }
 
-  const area = screen.getDisplayMatching({ x: state.x, y: state.y, width, height }).workArea
-  const onScreen =
-    state.x + 80 > area.x &&
-    state.y + 40 > area.y &&
-    state.x < area.x + area.width &&
-    state.y < area.y + area.height
-  return onScreen ? { width, height, x: state.x, y: state.y } : { width, height }
+  // Even when the window body overlaps a display, the title bar must be reachable.
+  const onScreen = screen.getAllDisplays().some(({ workArea }) =>
+    x + MIN_VISIBLE_TITLE_WIDTH > workArea.x &&
+    x + MIN_VISIBLE_TITLE_WIDTH <= workArea.x + workArea.width &&
+    y >= workArea.y &&
+    y + MIN_VISIBLE_TITLE_HEIGHT <= workArea.y + workArea.height
+  )
+  return onScreen ? { width, height, x, y } : { width, height }
 }
 
 /** True when the window was left maximised. */

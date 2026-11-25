@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -12,7 +13,7 @@ import { registerIpc } from '../src/main/ipc'
 import type { IpcContext } from '../src/main/ipc'
 import { piVersion } from '../src/main/pi/cli'
 import { SettingsStore } from '../src/main/settings'
-import type { PiCliUpgradeProgress, RuntimeEnsureOptions } from '../src/shared/types'
+import type { GitFileDiff, GitPatch, GitStatus, PiCliUpgradeProgress, RuntimeEnsureOptions } from '../src/shared/types'
 
 test('saving Automatic reasoning clears the Pi startup override before returning', async (t) => {
   const directory = mkdtempSync(path.join(tmpdir(), 'pi-automatic-reasoning-'))
@@ -66,6 +67,7 @@ test('session export preserves an existing destination until Pi finishes', async
   })
   let requests = 0
   let exportFails = true
+  let afterWrite: (() => void | Promise<void>) | undefined
   registerIpc({
     supervisor: {
       has: (key: string) => key === sessionKey,
@@ -77,6 +79,7 @@ test('session export preserves an existing destination until Pi finishes', async
         assert.notEqual(payload.outputPath, target)
         writeFileSync(payload.outputPath, exportFails ? 'partial export' : 'complete export', 'utf8')
         if (exportFails) throw new Error('Export interrupted')
+        await afterWrite?.()
         return { path: payload.outputPath }
       }
     },
@@ -100,7 +103,31 @@ test('session export preserves an existing destination until Pi finishes', async
   assert.deepEqual(readdirSync(directory), [path.basename(target)])
 
   exportFails = false
-  assert.deepEqual(await exportHtml({}, sessionKey), {
+  const replacement = 'new content saved by a different writer'
+  afterWrite = () => writeFileSync(target, replacement, 'utf8')
+  for (const existing of [true, false]) {
+    if (!existing) rmSync(target)
+    await assert.rejects(async () => exportHtml({}, sessionKey), /export destination changed/i)
+    assert.equal(readFileSync(target, 'utf8'), replacement)
+    assert.deepEqual(opened, [])
+    assert.deepEqual(readdirSync(directory), [path.basename(target)])
+  }
+  const exportWritten = Promise.withResolvers<void>()
+  const finishExport = Promise.withResolvers<void>()
+  afterWrite = () => {
+    exportWritten.resolve()
+    return finishExport.promise
+  }
+  const exporting = exportHtml({}, sessionKey)
+  await exportWritten.promise
+  try {
+    await assert.rejects(async () => exportHtml({}, sessionKey), /export to this file is already in progress/i)
+    assert.equal(readFileSync(target, 'utf8'), replacement)
+  } finally {
+    finishExport.resolve()
+    await exporting
+  }
+  assert.deepEqual(await exporting, {
     cancelled: false, path: target, openError: 'No associated HTML viewer'
   })
   assert.equal(readFileSync(target, 'utf8'), 'complete export')
@@ -183,6 +210,7 @@ test('Git writes reject a stale project and registration does not select a folde
     const branches = handlers.get('git:branches')!
     const create = handlers.get('git:addWorktree')!
     assert.throws(() => branches({}, source), /active project changed/)
+    await assert.rejects(async () => handlers.get('git:patch')!({}, 'notes.md', source), /active project changed/)
     assert.deepEqual(await create({}, '', 'main-wt', true, source), {
       ok: false, error: 'The active project changed before Git could start.'
     })
@@ -211,6 +239,8 @@ test('Git writes reject a stale project and registration does not select a folde
     assert.equal(settings.get().activeWorkspaceId, 'other')
     assert.ok(settings.get().workspaces.some((workspace) => workspace.path === target))
 
+    mkdirSync(source)
+    execFileSync('git', ['-C', source, 'init', '-q'])
     settings.patch({ activeWorkspaceId: 'source' })
     assert.deepEqual(await create({}, '', 'main-wt', true, source), { ok: true })
     assert.deepEqual(claimed, [source])
@@ -220,6 +250,65 @@ test('Git writes reject a stale project and registration does not select a folde
     rmSync(path.join(app.getPath('userData'), fileName), { force: true })
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('Git review targets the selected repository-relative file from a nested workspace', async (t) => {
+  const root = mkdtempSync(path.join(realpathSync(tmpdir()), 'pi-nested-git-review-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const workspace = path.join(root, 'sub')
+  const selectedPath = 'sub/notes.txt'
+  const selected = path.join(root, selectedPath)
+  const shadowPath = 'sub/sub/notes.txt'
+  const shadow = path.join(root, shadowPath)
+  mkdirSync(path.dirname(shadow), { recursive: true })
+  const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
+  })
+  git('init', '-q')
+  git('config', 'user.name', 'Pi Desktop test')
+  git('config', 'user.email', 'pi-desktop-test@example.invalid')
+  git('config', 'core.autocrlf', 'false')
+  writeFileSync(selected, 'Selected baseline\n')
+  writeFileSync(shadow, 'Shadow baseline\n')
+  git('add', '--', selectedPath, shadowPath)
+  git('commit', '-qm', 'baseline')
+  writeFileSync(selected, 'Selected workspace edit\n')
+  writeFileSync(shadow, 'Shadow file edit\n')
+  writeFileSync(path.join(workspace, 'new.txt'), 'one\ntwo\n')
+
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  t.mock.method(ipcMain, 'handle', (channel, handler) => handlers.set(channel, handler))
+  const locked: string[] = []
+  registerIpc({
+    settings: { get: () => ({ activeWorkspaceId: 'sub', workspaces: [{ id: 'sub', path: workspace }] }) },
+    supervisor: { withCwdLock: async (cwd: string, action: () => Promise<unknown>) => {
+      locked.push(cwd)
+      return action()
+    } },
+    getWindow: () => null,
+    terminals: {},
+    memory: {}
+  } as unknown as IpcContext)
+
+  const status = await handlers.get('git:status')!({}, workspace) as GitStatus
+  assert.ok(status.files.some(({ path }) => path === selectedPath))
+  assert.deepEqual(await handlers.get('git:stageFile')!({}, selectedPath, workspace), { ok: true })
+  assert.equal(git('diff', '--cached', '--name-only').trim(), selectedPath)
+  assert.deepEqual(await handlers.get('git:unstageFile')!({}, selectedPath, workspace), { ok: true })
+  assert.equal(git('diff', '--cached', '--name-only'), '')
+
+  assert.equal(status.files.find(({ path }) => path === 'sub/new.txt')?.added, 2)
+  const diff = await handlers.get('git:fileDiff')!({}, selectedPath, workspace) as GitFileDiff
+  assert.equal(diff.oldText, 'Selected baseline\n')
+  assert.equal(diff.newText, 'Selected workspace edit\n')
+  const patch = await handlers.get('git:patch')!({}, selectedPath, workspace) as GitPatch
+  assert.match(patch.text, /\+Selected workspace edit/)
+  assert.doesNotMatch(patch.text, /Shadow file edit/)
+
+  assert.deepEqual(await handlers.get('git:revertFile')!({}, selectedPath, workspace), { ok: true })
+  assert.equal(readFileSync(selected, 'utf8'), 'Selected baseline\n')
+  assert.equal(readFileSync(shadow, 'utf8'), 'Shadow file edit\n')
+  assert.deepEqual(locked.map(cwd => path.resolve(cwd)), [root, root, root])
 })
 
 test('runtime ensure reuses a live draft before Pi has flushed its session file', async () => {

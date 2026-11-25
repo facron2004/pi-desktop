@@ -218,6 +218,38 @@ test('a malformed draft store is ignored and a promoted draft loses its new-chat
   assert.deepEqual(snapshot.lastDraftKeys, { two: 'draft:two' })
 })
 
+test('a draft too large to save does not block updates or removals in other conversations', () => {
+  const storage = memoryStorage()
+  const setItem = storage.setItem
+  storage.setItem = (key, value) => {
+    if (value.length > 1000) throw new Error('quota exceeded')
+    setItem(key, value)
+  }
+  const image = { id: 'kept', type: 'image' as const, name: 'kept.png', bytes: 3, data: 'YWJj', mimeType: 'image/png' }
+  const previous = { text: 'Earlier version of the long draft', images: [image] }
+  const other = { text: 'Older work in the other conversation', images: [{ ...image, id: 'other' }] }
+  const lastDraftKeys = { other: 'draft:other', long: 'draft:long' }
+  assert.equal(saveComposerDrafts({
+    drafts: {
+      'draft:long': previous,
+      'draft:other': other,
+      'draft:sent': { text: 'Already sent', images: [] }
+    },
+    lastDraftKeys
+  }, storage), 'saved')
+
+  const updated = { ...other, text: 'This edit should survive a restart' }
+  const result = saveComposerDrafts({
+    drafts: { 'draft:long': { ...previous, text: 'L'.repeat(2000) }, 'draft:other': updated },
+    lastDraftKeys
+  }, storage)
+  assert.equal(result, 'partial-drafts')
+  assert.deepEqual(loadComposerDrafts(storage), {
+    drafts: { 'draft:long': previous, 'draft:other': updated },
+    lastDraftKeys
+  })
+})
+
 test('pruneComposerDrafts caps sent-history-only sessions while preserving all unsent drafts', () => {
   const drafts: Record<string, ReturnType<typeof composerDraftAfterSend>> = {}
   for (let index = 0; index < MAX_HISTORY_ONLY_DRAFTS + 15; index += 1) {

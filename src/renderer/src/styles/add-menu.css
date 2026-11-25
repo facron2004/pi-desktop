@@ -145,3 +145,20 @@
   border-left: 1px solid var(--border-subtle);
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
 }
+
+.composer__swarm-roster[data-tone='run'] {
+  color: var(--text);
+}
+
+.composer__swarm-roster[data-tone='danger'] {
+  color: var(--status-danger);
+}
+
+.composer__swarm-roster[data-tone]::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+}

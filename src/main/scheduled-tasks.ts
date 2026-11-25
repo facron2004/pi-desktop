@@ -55,6 +55,7 @@ interface RunSlotLease {
 
 const TIMER_SLICE_MS = 60_000
 const CROSS_PROCESS_POLL_MS = 2_000
+const SHUTDOWN_RESULT_FLUSH_MS = 2_000
 /**
  * How long a task waits after an automatic launch failed before it is attempted
  * again. A launch that fails before its schedule was advanced leaves the task
@@ -383,14 +384,17 @@ export class ScheduledTaskService extends EventEmitter {
     return this.list()
   }
 
-  remove(id: string): ScheduledTask[] {
+  async remove(id: string): Promise<ScheduledTask[]> {
+    if (this.activeTasks.has(id)) await this.stopRun(id)
     this.mutateTasks((tasks) => {
-      this.requireTask(id, tasks)
+      const task = this.requireTask(id, tasks)
+      // Recheck under the same data lock a launcher uses to mark a run as
+      // started. A different instance can own the run after the UI was read.
+      if (this.activeTasks.has(id) || (task.lastStatus === 'running' && this.hasTaskRunLock(id))) {
+        throw new Error('This task is still running or saving its result. Wait for it to finish before deleting it.')
+      }
       return tasks.filter((task) => task.id !== id)
     })
-    // A deleted task must not leave its agent running unseen: the run's Pi
-    // process is only reachable through this service.
-    void this.stopRun(id).catch(() => {})
     return this.list()
   }
 
@@ -406,7 +410,7 @@ export class ScheduledTaskService extends EventEmitter {
   async stopRun(id: string): Promise<boolean> {
     const active = this.activeTasks.get(id)
     if (!active) return false
-    await this.supervisor.stop(active.sessionFile ?? active.draftKey).catch(() => {})
+    await this.supervisor.stop(active.sessionFile ?? active.draftKey)
     // The settle event normally finishes the task; this covers the case where
     // there is nothing left to settle.
     if (this.activeTasks.get(id) === active && !this.supervisor.sessionInfo(active.sessionFile ?? active.draftKey)?.running) {
@@ -430,6 +434,19 @@ export class ScheduledTaskService extends EventEmitter {
     if (this.refreshTimer) clearTimeout(this.refreshTimer)
     this.timer = undefined
     this.refreshTimer = undefined
+  }
+
+  /** Give a peer's current write time to finish before dropping pending outcomes. */
+  async finishShutdown(): Promise<void> {
+    this.stopScheduling()
+    const deadline = performance.now() + SHUTDOWN_RESULT_FLUSH_MS
+    while (!this.disposed && this.pendingRunResults.size > 0) {
+      this.flushPendingRunResults(false)
+      const remaining = deadline - performance.now()
+      if (this.pendingRunResults.size === 0 || remaining <= 0) break
+      await new Promise((resolve) => setTimeout(resolve, Math.min(50, remaining)))
+    }
+    this.dispose()
   }
 
   dispose(): void {
@@ -566,7 +583,7 @@ export class ScheduledTaskService extends EventEmitter {
     this.pendingRunResults.clear()
   }
 
-  private flushPendingRunResults(): boolean {
+  private flushPendingRunResults(logFailure = true): boolean {
     if (!this.pendingRunResults.size) return false
     try {
       return this.withDataLock(() => {
@@ -579,7 +596,7 @@ export class ScheduledTaskService extends EventEmitter {
         return changed
       })
     } catch (error) {
-      console.error('[pi-desktop] could not persist scheduled task status:', error)
+      if (logFailure) console.error('[pi-desktop] could not persist scheduled task status:', error)
       return false
     }
   }

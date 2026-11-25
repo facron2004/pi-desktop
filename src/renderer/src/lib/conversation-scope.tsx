@@ -2,6 +2,7 @@ import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import {
   isSideSessionKey,
+  type AgentMode,
   type ContextBreakdown,
   type ExtensionUiRequest,
   type ForkTarget,
@@ -116,7 +117,10 @@ export function ConversationScopeProvider({
     () => ({
       surface,
       sessionKey,
-      readOnly: readOnly ?? surface === 'side'
+      // A side conversation is a working conversation like the main one, so
+      // nothing is read-only by virtue of being "side". A caller that really
+      // needs a viewer pass `readOnly`.
+      readOnly: readOnly ?? false
     }),
     [surface, sessionKey, readOnly]
   )
@@ -154,6 +158,7 @@ export interface SessionViewSlice {
   queue: { steering: string[]; followUp: string[] }
   commands: PiCommand[]
   uiStatuses: UiStatusEntry[]
+  agentMode: AgentMode
   historyLoaded: boolean
   historyTruncated: boolean
 }
@@ -177,7 +182,7 @@ export function readSessionViewSlice(
     isSideSessionKey(canonicalKey) ||
     Boolean(canonicalKey && state.sideParentByKey && canonicalKey in state.sideParentByKey)
   const surface: ConversationSurface = isSide ? 'side' : 'main'
-  const readOnly = scope.surface === 'side' ? scope.readOnly : isSide
+  const readOnly = Boolean(scope.readOnly)
 
   // Main surface targeting the active Main conversation reads projected top-level store fields.
   if (!isSide && (!canonicalKey || canonicalKey === mainCanonical)) {
@@ -208,6 +213,7 @@ export function readSessionViewSlice(
       queue: state.queue,
       commands: state.commands,
       uiStatuses: state.uiStatuses,
+      agentMode: state.agentMode,
       historyLoaded: Boolean(state.historyLoaded),
       historyTruncated: Boolean(state.historyTruncated)
     }
@@ -239,6 +245,7 @@ export function readSessionViewSlice(
     queue: thread.queue ?? EMPTY_QUEUE,
     commands: thread.commands ?? EMPTY_COMMANDS,
     uiStatuses: thread.uiStatuses ?? EMPTY_UI_STATUSES,
+    agentMode: thread.agentMode ?? 'default',
     historyLoaded: Boolean(thread.historyLoaded),
     historyTruncated: Boolean(thread.historyTruncated)
   }

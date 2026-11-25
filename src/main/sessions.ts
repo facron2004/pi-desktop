@@ -28,7 +28,8 @@ import type {
   SessionSearchHit,
   SessionTaskMode,
   SideChatReference,
-  TokenUsageMetrics
+  TokenUsageMetrics,
+  Usage
 } from '@shared/types'
 import { canonicalSessionFile } from './pi/session-file'
 import {
@@ -152,13 +153,17 @@ const sessionMessagesCache = new Map<
 >()
 let sessionMessagesCacheBytes = 0
 
+type RecordedUsage = Partial<Omit<Usage, 'cost'>> & { cost?: number | { total?: number } }
+
 interface CachedFileUsage {
   identity: string
   mtime: number
   size: number
   sessionId: string
+  parentSessionKey?: string
   timestamps: number[]
   metrics: Array<{
+    entryKey?: string
     ts: number
     model: string
     input: number
@@ -167,6 +172,7 @@ interface CachedFileUsage {
     cacheWrite: number
     total: number
     cost: number
+    messageCount: 0 | 1
   }>
 }
 
@@ -231,10 +237,12 @@ interface SearchIndexSnapshot {
   mtime: number
   /** User/assistant messages counted so far, including ones with no text. */
   messageIndex: number
+  /** Sidecar version on disk, which can lag behind this in-memory snapshot. */
+  lastPersisted?: { at: number; sourceSize: number }
   entries: SearchIndexEntry[]
 }
 
-type SearchIndexHeader = Omit<SearchIndexSnapshot, 'entries' | 'messageIndex'> & {
+type SearchIndexHeader = Omit<SearchIndexSnapshot, 'entries' | 'messageIndex' | 'lastPersisted'> & {
   messageIndex?: number
 }
 
@@ -266,11 +274,9 @@ const activeSearchIndexTemps = new Set<string>()
 /** An extension rewrites the whole sidecar, so it is persisted in batches. */
 const SEARCH_INDEX_PERSIST_MIN_BYTES = 1 * 1024 * 1024
 const SEARCH_INDEX_PERSIST_MIN_MS = 30_000
-const searchIndexPersistState = new Map<string, { at: number; bytes: number }>()
 
 function removeCachedSearchIndex(indexPath: string): void {
   searchIndexCache.delete(indexPath)
-  searchIndexPersistState.delete(indexPath)
   const weight = searchIndexCacheWeights.get(indexPath)
   if (weight !== undefined) searchIndexCacheBytes = Math.max(0, searchIndexCacheBytes - weight)
   searchIndexCacheWeights.delete(indexPath)
@@ -279,7 +285,6 @@ function removeCachedSearchIndex(indexPath: string): void {
 function clearSearchIndexCache(): void {
   searchIndexCache.clear()
   searchIndexCacheWeights.clear()
-  searchIndexPersistState.clear()
   searchIndexCacheBytes = 0
   autoPruneWritesSinceLastPrune = 0
 }
@@ -1701,7 +1706,8 @@ export async function readSessionHeadMessages(file: string, handle?: FileHandle)
 export async function appendSessionName(
   file: string,
   name: string,
-  handle?: FileHandle
+  handle?: FileHandle,
+  onlyIfUnnamed = false
 ): Promise<boolean> {
   const sanitized = name.replace(/[\r\n]+/g, ' ').trim()
   if (!sanitized) return false
@@ -1710,6 +1716,10 @@ export async function appendSessionName(
   try {
     const fileStats = await writer.stat().catch(() => null)
     if (!fileStats?.isFile() || fileStats.size === 0) return false
+    if (onlyIfUnnamed) {
+      const meta = await getSessionMetaFromHandle(file, writer, fileStats)
+      if (!meta || meta.name) return false
+    }
     const size = fileStats.size
     const byte = Buffer.allocUnsafe(1)
     const maxBytes = Math.min(size, MAX_SESSION_BYTES)
@@ -2822,6 +2832,7 @@ async function readSearchIndexFile(
       snapshot: {
         ...header,
         messageIndex: header.messageIndex ?? lastIndex,
+        lastPersisted: { at: stats.mtimeMs, sourceSize: header.sourceSize },
         entries
       },
       indexBytesRead,
@@ -2840,11 +2851,11 @@ async function writeSearchIndexFile(
   indexPath: string,
   snapshot: SearchIndexSnapshot,
   isCurrent: () => boolean
-): Promise<void> {
-  if (!isCurrent()) return
+): Promise<boolean> {
+  if (!isCurrent()) return false
   if (estimateSearchIndexMemory(snapshot) > MAX_SEARCH_INDEX_FILE_BYTES) {
     if (isCurrent()) await unlink(indexPath).catch(() => {})
-    return
+    return false
   }
   const temp = `${indexPath}.${randomBytes(4).toString('hex')}.tmp`
   activeSearchIndexTemps.add(temp)
@@ -2886,7 +2897,7 @@ async function writeSearchIndexFile(
       if (batchBytes >= CHUNK_SIZE) await flush()
     }
 
-    const { entries, ...header } = snapshot
+    const { entries, lastPersisted: _lastPersisted, ...header } = snapshot
     await queueLine(SEARCH_INDEX_FILE_MAGIC)
     await queueLine(`${JSON.stringify(header)}\n`)
     for (const entry of entries) {
@@ -2902,13 +2913,15 @@ async function writeSearchIndexFile(
     if (autoPruneWritesSinceLastPrune >= 16 || now - lastAutoPruneAt >= 15_000) {
       autoPruneWritesSinceLastPrune = 0
       lastAutoPruneAt = now
-      await pruneSessionSearchIndexFiles()
+      await pruneSessionSearchIndexFiles().catch(() => {})
     }
+    return true
   } catch (error) {
     if (handle) await handle.close().catch(() => {})
     // An index is an optimization: a read-only or full folder must not fail a search.
     await unlink(temp).catch(() => {})
     if (error instanceof SearchIndexTooLargeError && isCurrent()) await unlink(indexPath).catch(() => {})
+    return false
   } finally {
     activeSearchIndexTemps.delete(temp)
   }
@@ -2943,6 +2956,7 @@ async function updateSearchIndex(
   let readBytes: number
   let indexedFrom: number
   let indexedSize = 0
+  let lastPersisted: SearchIndexSnapshot['lastPersisted']
   if (
     base &&
     base.file === canonical &&
@@ -2960,6 +2974,7 @@ async function updateSearchIndex(
     }
     indexedFrom = base.indexedFrom
     indexedSize = base.indexedSize
+    lastPersisted = base.lastPersisted
     const knownIds = new Set<string>()
     for (const entry of base.entries) if (entry.id) knownIds.add(entry.id)
     for await (const record of readJsonlRecords(
@@ -3003,18 +3018,24 @@ async function updateSearchIndex(
       scanIndexRecord(record.line, state, record.startOffset, record.endOffset)
       indexedSize = record.endOffset
     }
-    // The search window can start after Pi's header and opening prompt. Read
-    // the same bounded metadata windows as the sidebar so cold indexes retain
-    // the conversation's real project, name and preview.
-    const metadata = await parseLargeSessionMeta(file, size, mtime, handle)
-    if (metadata) {
-      state.sessionId = metadata.id || state.sessionId
-      state.cwd = metadata.cwd || state.cwd
-      state.name = state.name ?? metadata.name
-      state.preview = metadata.preview || state.preview
+    // The scan already sees the metadata unless its window starts past the
+    // header. Search covers all branches, so no extra branch walk is needed.
+    const headBytes = searchIndexHeadReadBytes(size)
+    if (headBytes > 0) {
+      const head: SearchIndexScan = {
+        sessionId: state.sessionId, cwd: '', preview: '', messageIndex: 0, entries: []
+      }
+      for await (const record of readJsonlRecords(file, headBytes, 0, false, handle)) {
+        if (!record.terminated) break
+        scanIndexRecord(record.line, head, record.startOffset, record.endOffset)
+      }
+      state.sessionId = head.sessionId
+      state.cwd = head.cwd || state.cwd
+      state.name ??= head.name
+      state.preview = head.preview || state.preview
     }
     if (indexedSize === 0) indexedFrom = 0
-    readBytes = size - windowStart + searchIndexMetadataReadBytes(size)
+    readBytes = size - windowStart + headBytes
   }
 
   const snapshot: SearchIndexSnapshot = {
@@ -3025,22 +3046,21 @@ async function updateSearchIndex(
     indexedSize,
     sourceSize: size,
     indexedFrom,
-    mtime
+    mtime,
+    lastPersisted
   }
   // A session still being written changes on every keystroke. Rewriting the
   // whole sidecar for a few appended records put megabytes of JSON on the main
   // thread per keypress, and the read side is budgeted while this write was not.
   // The in-memory snapshot stays authoritative; a cold load extends the older
   // sidecar by the delta it is missing.
-  const persisted = searchIndexPersistState.get(indexPath)
+  const persisted = snapshot.lastPersisted
   const now = Date.now()
-  const worthPersisting = base === null ||
-    !persisted ||
-    size - persisted.bytes >= SEARCH_INDEX_PERSIST_MIN_BYTES ||
+  const worthPersisting = !persisted ||
+    size - persisted.sourceSize >= SEARCH_INDEX_PERSIST_MIN_BYTES ||
     now - persisted.at >= SEARCH_INDEX_PERSIST_MIN_MS
-  if (worthPersisting) {
-    await writeSearchIndexFile(indexPath, snapshot, isCurrent)
-    searchIndexPersistState.set(indexPath, { at: now, bytes: size })
+  if (worthPersisting && await writeSearchIndexFile(indexPath, snapshot, isCurrent)) {
+    snapshot.lastPersisted = { at: Date.now(), sourceSize: size }
   }
   return { snapshot, sourceBytesRead: readBytes, indexBytesRead }
 }
@@ -3148,14 +3168,12 @@ function estimatedSearchIndexSourceReadBytes(
   ) {
     return size - base.indexedSize
   }
-  return Math.min(size, MAX_INDEX_FILE_BYTES) + searchIndexMetadataReadBytes(size)
+  return Math.min(size, MAX_INDEX_FILE_BYTES) + searchIndexHeadReadBytes(size)
 }
 
-/** Source bytes read for the bounded header and tail metadata pass. */
-function searchIndexMetadataReadBytes(size: number): number {
-  const headBytes = Math.min(size, MAX_META_HEAD_BYTES)
-  const tailStart = Math.max(0, size - MAX_META_TAIL_BYTES)
-  return headBytes + (tailStart > MAX_META_HEAD_BYTES ? MAX_META_TAIL_BYTES : 0)
+/** Extra source bytes for metadata when the index cannot start at the header. */
+function searchIndexHeadReadBytes(size: number): number {
+  return size > MAX_INDEX_FILE_BYTES ? MAX_META_HEAD_BYTES : 0
 }
 
 /** Search a large session through its index; the first call builds it. */
@@ -3360,7 +3378,8 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
     if (ts >= startOfMonth) activeInMonth.add(sessionId)
   }
 
-  const recordMetric = (sessionId: string, m: CachedFileUsage['metrics'][number]) => {
+  type UsageMetric = CachedFileUsage['metrics'][number]
+  const recordMetric = (sessionId: string, m: UsageMetric, includeUsage = true) => {
     const addMetrics = (target: PeriodUsage) => {
       target.tokens.input += m.input
       target.tokens.output += m.output
@@ -3368,29 +3387,31 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
       target.tokens.cacheWrite += m.cacheWrite
       target.tokens.totalTokens += m.total
       target.tokens.cost += m.cost
-      target.messageCount += 1
+      target.messageCount += m.messageCount
     }
 
-    addMetrics(allTime)
-    if (m.ts >= startOfMonth) addMetrics(month)
-    if (m.ts >= startOfWeek) addMetrics(week)
-    if (m.ts >= startOfToday) addMetrics(today)
+    if (includeUsage) {
+      addMetrics(allTime)
+      if (m.ts >= startOfMonth) addMetrics(month)
+      if (m.ts >= startOfWeek) addMetrics(week)
+      if (m.ts >= startOfToday) addMetrics(today)
 
-    const modelName = m.model
-    const existingModel = modelStats.get(modelName) || {
-      model: modelName,
-      totalTokens: 0,
-      input: 0,
-      output: 0,
-      messageCount: 0,
-      cost: 0
+      const modelName = m.model
+      const existingModel = modelStats.get(modelName) || {
+        model: modelName,
+        totalTokens: 0,
+        input: 0,
+        output: 0,
+        messageCount: 0,
+        cost: 0
+      }
+      existingModel.totalTokens += m.total
+      existingModel.input += m.input
+      existingModel.output += m.output
+      existingModel.messageCount += m.messageCount
+      existingModel.cost += m.cost
+      modelStats.set(modelName, existingModel)
     }
-    existingModel.totalTokens += m.total
-    existingModel.input += m.input
-    existingModel.output += m.output
-    existingModel.messageCount += 1
-    existingModel.cost += m.cost
-    modelStats.set(modelName, existingModel)
 
     if (m.ts > 0) {
       const d = new Date(m.ts)
@@ -3398,27 +3419,49 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
       for (const days of [recentDaysMap, heatmapDaysMap]) {
         const dayBucket = days.get(dateKey)
         if (dayBucket) {
+          dayBucket.conversations.add(sessionId)
+          if (!includeUsage) continue
           dayBucket.totalTokens += m.total
           dayBucket.input += m.input
           dayBucket.output += m.output
           dayBucket.cacheRead += m.cacheRead
           dayBucket.cacheWrite += m.cacheWrite
           dayBucket.cost += m.cost
-          dayBucket.messageCount += 1
-          dayBucket.conversations.add(sessionId)
+          dayBucket.messageCount += m.messageCount
         }
       }
     }
   }
 
-  const applyUsageData = (data: CachedFileUsage) => {
+  // Forks and files copied between session roots can share billing entries.
+  // Defer collisions until the session IDs and fork links are known so an
+  // unrelated session with the same record still counts its own usage.
+  const usageParents = new Map<string, string>()
+  const usageSessionIds = new Map<string, string>()
+  const firstUsageSource = new Map<string, string>()
+  const repeatedUsage: Array<{ entryKey: string; fileKey: string; sessionId: string; metric: UsageMetric }> = []
+  const collectMetric = (fileKey: string, sessionId: string, metric: UsageMetric) => {
+    const { entryKey } = metric
+    if (entryKey) {
+      if (firstUsageSource.has(entryKey)) {
+        repeatedUsage.push({ entryKey, fileKey, sessionId, metric })
+        return
+      }
+      firstUsageSource.set(entryKey, fileKey)
+    }
+    recordMetric(sessionId, metric)
+  }
+
+  const applyUsageData = (fileKey: string, data: CachedFileUsage) => {
+    if (data.parentSessionKey) usageParents.set(fileKey, data.parentSessionKey)
+    usageSessionIds.set(fileKey, data.sessionId)
     activeInAllTime.add(data.sessionId)
     for (const ts of data.timestamps) recordActivity(data.sessionId, ts)
-    for (const metric of data.metrics) recordMetric(data.sessionId, metric)
+    for (const metric of data.metrics) collectMetric(fileKey, data.sessionId, metric)
   }
 
   const seenUsageFiles = new Set<string>()
-  const usageTasks: Array<{ fullPath: string; root: string; realRoot: string; dirVerified: boolean; sessionId: string; key: string }> = []
+  const usageTasks: Array<{ fullPath: string; root: string; realRoot: string; dirVerified: boolean; key: string }> = []
 
   for (const root of resolveSessionRoots(customRoot)) {
     let realRoot: string
@@ -3454,7 +3497,6 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
         root,
         realRoot,
         dirVerified,
-        sessionId: file.replace(/\.jsonl$/, ''),
         key
       })
     }
@@ -3530,7 +3572,7 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
   const usageWorker = async () => {
     while (nextTask < usageTasks.length) {
       const task = usageTasks[nextTask++]!
-      const { fullPath, root, realRoot, dirVerified, sessionId, key } = task
+      const { fullPath, root, realRoot, dirVerified, key } = task
 
       const cached = usageCache.get(key)
       if (cached) {
@@ -3544,7 +3586,7 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
         ) {
           usageCache.delete(key)
           usageCache.set(key, cached)
-          applyUsageData(cached)
+          applyUsageData(key, cached)
           continue
         }
       }
@@ -3552,6 +3594,7 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
       const opened = await openSessionFile(fullPath, root, false, realRoot)
       if (!opened) continue
       const targetKey = canonicalSessionFile(opened.target)
+      if (targetKey !== key) usageParents.set(key, targetKey)
       if (targetKey !== key && seenUsageFiles.has(targetKey)) {
         await opened.handle.close().catch(() => {})
         continue
@@ -3582,11 +3625,15 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
           const timestamps: number[] | undefined = cacheable ? [] : undefined
           const metrics: CachedFileUsage['metrics'] | undefined = cacheable ? [] : undefined
           let scannedLines = 0
+          let parentSessionKey: string | undefined
+          let sessionId = `file:${targetKey}`
 
           for await (const raw of readJsonlLines(opened.target, s.size, 0, false, opened.handle)) {
             if (++scannedLines % 256 === 0) await yieldToEventLoop()
-            if (!raw.includes('"message"')) continue
-            if (raw.length > 2048 && !raw.includes('"usage"')) {
+            const mayBeSessionHeader = scannedLines === 1 && raw.length <= MAX_META_HEAD_BYTES
+            const mayBeMessage = raw.includes('"message"')
+            if (!mayBeSessionHeader && !mayBeMessage && !raw.includes('"usage"')) continue
+            if (!mayBeSessionHeader && mayBeMessage && raw.length > 2048 && !raw.includes('"usage"')) {
               const fastTs = tryExtractMessageTimestampFast(raw)
               if (fastTs !== undefined) {
                 if (timestamps) timestamps.push(fastTs)
@@ -3595,31 +3642,48 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
               }
             }
             try {
-              const record = JSON.parse(raw) as {
+              const record = JSON.parse(mayBeSessionHeader ? raw.trim() : raw) as {
                 type?: string
+                id?: string
+                parentSession?: string
                 timestamp?: string
+                usage?: RecordedUsage
+                model?: string
                 message?: {
                   role?: string
                   timestamp?: string | number
                   model?: string
-                  usage?: {
-                    input?: number
-                    output?: number
-                    cacheRead?: number
-                    cacheWrite?: number
-                    totalTokens?: number
-                    cost?: number | { total?: number }
-                  }
+                  responseModel?: string
+                  usage?: RecordedUsage
                 }
               }
 
-              if (record.type !== 'message' || !record.message) continue
-              const msg = record.message
+              if (mayBeSessionHeader && record.type === 'session') {
+                if (typeof record.id === 'string' && record.id) sessionId = `session:${record.id}`
+                const parent = record.parentSession
+                if (typeof parent === 'string' && path.isAbsolute(parent) && path.extname(parent).toLowerCase() === '.jsonl') {
+                  // A parent path is only a comparison key, even if it is no
+                  // longer present in the configured session folders.
+                  parentSessionKey = canonicalSessionFile(parent)
+                  usageParents.set(targetKey, parentSessionKey)
+                }
+                continue
+              }
+
+              // Pi also reports usage for tools and summaries, and can write
+              // standalone records for background work such as cache warming.
+              const msg = record.type === 'message' ? record.message : undefined
+              const isAssistant = msg?.role === 'assistant'
+              const isSummary = record.type === 'compaction' || record.type === 'branch_summary'
+              const u = record.type === 'usage' || isSummary
+                ? record.usage
+                : isAssistant || msg?.role === 'toolResult' ? msg?.usage : undefined
+              if (!msg && !u) continue
               const ts =
                 Date.parse(record.timestamp ?? '') ||
-                (typeof msg.timestamp === 'number'
+                (typeof msg?.timestamp === 'number'
                   ? msg.timestamp
-                  : Date.parse(String(msg.timestamp ?? ''))) ||
+                  : Date.parse(String(msg?.timestamp ?? ''))) ||
                 0
 
               if (ts > 0) {
@@ -3627,8 +3691,7 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
                 else recordActivity(sessionId, ts)
               }
 
-              if (msg.role === 'assistant' && msg.usage) {
-                const u = msg.usage
+              if (u && typeof u === 'object' && !Array.isArray(u)) {
                 // A truncated or hand-edited record can carry a negative, a
                 // fraction or Infinity; one such value used to poison every
                 // total on the Usage page (and stays cached per file).
@@ -3643,20 +3706,29 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
                 const cost =
                   typeof u.cost === 'number'
                     ? amount(u.cost)
-                    : amount((u.cost as { total?: unknown } | undefined)?.total)
+                    : amount(u.cost?.total)
+                const recordedModel = isAssistant
+                  ? msg.responseModel ?? msg.model
+                  : record.type === 'usage' ? record.model : 'Tools/summaries'
+                const model = typeof recordedModel === 'string' && recordedModel ? recordedModel : 'Unknown'
+                const entryKey = typeof record.id === 'string' && record.id && ts > 0
+                  ? JSON.stringify([record.id, ts, record.type, msg?.role, model, input, output, cacheRead, cacheWrite, total, cost])
+                  : undefined
 
-                const metric = {
+                const metric: UsageMetric = {
+                  entryKey,
                   ts,
-                  model: msg.model || 'Unknown',
+                  model,
                   input,
                   output,
                   cacheRead,
                   cacheWrite,
                   total,
-                  cost
+                  cost,
+                  messageCount: isAssistant ? 1 : 0
                 }
                 if (metrics) metrics.push(metric)
-                else recordMetric(sessionId, metric)
+                else collectMetric(targetKey, sessionId, metric)
               }
             } catch {
               // ignore malformed line
@@ -3669,11 +3741,13 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
               mtime: s.mtimeMs,
               size: s.size,
               sessionId,
+              parentSessionKey,
               timestamps: timestamps!,
               metrics: metrics!
             }
             cacheUsage(targetKey, usageData)
           } else {
+            usageSessionIds.set(targetKey, sessionId)
             activeInAllTime.add(sessionId)
           }
         }
@@ -3683,11 +3757,43 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
         await opened.handle.close().catch(() => {})
       }
 
-      if (usageData) applyUsageData(usageData)
+      if (usageData) applyUsageData(targetKey, usageData)
     }
   }
   const usageWorkers = Math.min(MAX_CONCURRENT_SESSION_META_READS, usageTasks.length)
   await Promise.all(Array.from({ length: usageWorkers }, () => usageWorker()))
+
+  if (repeatedUsage.length) {
+    const representatives = new Map<string, string>()
+    const familyOf = (key: string): string => {
+      let parent = representatives.get(key)
+      while (parent) {
+        const ancestor = representatives.get(parent)
+        if (ancestor) representatives.set(key, ancestor)
+        key = parent
+        parent = ancestor
+      }
+      return key
+    }
+    const joinFamilies = (file: string, parent: string) => {
+      const fileFamily = familyOf(file)
+      const parentFamily = familyOf(parent)
+      if (fileFamily !== parentFamily) representatives.set(fileFamily, parentFamily)
+    }
+    for (const [file, parent] of usageParents) joinFamilies(file, parent)
+    for (const [file, id] of usageSessionIds) joinFamilies(file, id)
+    const countedFamilies = new Map<string, Set<string>>()
+    for (const { entryKey, fileKey, sessionId, metric } of repeatedUsage) {
+      let counted = countedFamilies.get(entryKey)
+      if (!counted) {
+        counted = new Set([familyOf(firstUsageSource.get(entryKey)!)])
+        countedFamilies.set(entryKey, counted)
+      }
+      const family = familyOf(fileKey)
+      recordMetric(sessionId, metric, !counted.has(family))
+      counted.add(family)
+    }
+  }
 
   today.conversationsCount = activeInToday.size
   week.conversationsCount = activeInWeek.size

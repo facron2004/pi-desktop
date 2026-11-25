@@ -112,7 +112,7 @@ import {
   pruneComposerDrafts,
   saveComposerDrafts
 } from '../lib/composer-drafts'
-import type { ComposerDraft, ComposerImageOptions } from '../lib/composer-drafts'
+import type { ComposerDraft, ComposerImageOptions, DraftSaveResult } from '../lib/composer-drafts'
 import { FONT_STACK_PROPERTIES, uiFontStack } from '../lib/ui-font'
 
 export { listPendingUiSessions, type PendingUiSession }
@@ -376,6 +376,8 @@ export interface SendSidePromptOptions {
   preset?: SideChatPresetKind
   stepText?: string
   images?: { data: string; mimeType: string }[]
+  kind?: QueueKind
+  image?: ComposerImageOptions
 }
 
 export interface SendSidePromptObjectInput extends SendSidePromptOptions {
@@ -601,7 +603,7 @@ function restoreCancelledPrompts(
   if (prompts.length) state.insertIntoComposer(prompts.join('\n'), 'append', key)
 }
 
-let draftPersistenceWarning: 'partial' | 'failed' | undefined
+let draftPersistenceWarning: Exclude<DraftSaveResult, 'saved'> | undefined
 const DRAFT_SAVE_DEBOUNCE_MS = 350
 const cachedLastDraftKeysByStorage = new WeakMap<Storage, Record<string, string>>()
 let draftSaveTimer: ReturnType<typeof setTimeout> | null = null
@@ -654,9 +656,13 @@ function writeDraftSnapshot(
     ? zh
       ? '草稿存储空间不足。文字和文件引用已保存，部分图片或已发送提示词的历史可能无法恢复。'
       : 'Draft storage is full. Text and file references were saved. Some images or sent prompt history may not be restored.'
-    : zh
-      ? '草稿无法保存，重启后可能无法恢复。'
-      : 'This draft could not be saved for restart recovery.'
+    : result === 'partial-drafts'
+      ? zh
+        ? '草稿存储空间不足。部分会话的最新改动未保存，重启后可能只恢复上一次保存的版本。'
+        : 'Draft storage is full. Some changes were not saved, and some drafts may reopen at an earlier version.'
+      : zh
+        ? '草稿无法保存，重启后可能无法恢复。'
+        : 'This draft could not be saved for restart recovery.'
   // Some callers are inside a Zustand updater; publish the notice after that
   // state transition rather than nesting another store write in it.
   queueMicrotask(() => state.showToast(message, 'warning'))
@@ -737,9 +743,9 @@ export interface AppStore {
   status: RuntimeStatus
   agentMode: AgentMode
   hasLiveTaskMode?: boolean
-  setAgentMode: (mode: AgentMode) => Promise<void>
+  setAgentMode: (mode: AgentMode, sessionKey?: string) => Promise<void>
   /** Run a task-mode extension command through the live Pi process. */
-  runTaskCommand: (command: string) => Promise<string | undefined>
+  runTaskCommand: (command: string, sessionKey?: string) => Promise<string | undefined>
   /**
    * Stop one running or queued subagent task. The id is the `toolCallId:index`
    * the subagent tree shows; a session that is not on screen is targeted by key.
@@ -1006,7 +1012,7 @@ export interface AppStore {
     image?: ComposerImageOptions
   ) => Promise<boolean>
   /** Execute a shell command inline in the thread via Pi's `bash` RPC. */
-  runInlineBash: (command: string, excludeFromContext?: boolean) => Promise<boolean>
+  runInlineBash: (command: string, excludeFromContext?: boolean, sessionKey?: string) => Promise<boolean>
   stop: () => Promise<void>
   /** Abort one conversation by its id. Does not abort any other, and does not change the view. */
   stopSession: (sessionKey: string) => Promise<void>
@@ -1027,7 +1033,7 @@ export interface AppStore {
   /** Move to the next reasoning effort, or to the previous one. */
   cycleThinkingLevel: (direction?: 1 | -1, sessionKey?: string) => Promise<void>
   /** Compact the context, optionally with instructions for the summary. */
-  compact: (instructions?: string) => Promise<boolean>
+  compact: (instructions?: string, sessionKey?: string) => Promise<boolean>
   setAutoCompaction: (enabled: boolean) => Promise<void>
   setAutoRetry: (enabled: boolean) => Promise<void>
   /** How steering messages are delivered: one at a time or all at once. */
@@ -2143,18 +2149,19 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     set({ projectDialog: null })
   },
 
-  async setAgentMode(mode) {
-    if (get().isStreaming) {
-      get().showToast('Stop the current run before changing modes', 'warning')
-      return
-    }
-    const key = viewKeyOf(get())
+  async setAgentMode(mode, sessionKey) {
+    const key = sessionKey !== undefined ? sessionKey : viewKeyOf(get())
     if (!key) {
       get().showToast('Start a conversation first', 'warning')
       return
     }
+    const own = bindGet(get, key)
+    if (own().isStreaming) {
+      get().showToast('Stop the current run before changing modes', 'warning')
+      return
+    }
     const update = bindSet(set, get, key)
-    const previous = get().agentMode
+    const previous = own().agentMode
     // The runtime boot can take a few seconds on a cold chat. Show the chosen
     // mode immediately so a click never looks like it did nothing; Pi's own
     // status event confirms it when the extension is ready.
@@ -2201,8 +2208,8 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }
   },
 
-  async runTaskCommand(command) {
-    const key = viewKeyOf(get())
+  async runTaskCommand(command, sessionKey) {
+    const key = sessionKey !== undefined ? sessionKey : viewKeyOf(get())
     if (!key) return
     try {
       // These go to Pi's extension command path, not the transcript: no
@@ -3494,38 +3501,29 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   },
 
   async clearActiveSideChat() {
-    const mainRaw = viewKeyOf(get())
-    if (!mainRaw) return undefined
-    const mainKey = threadKey(mainRaw)
-    const prevRaw = get().sideSessionKey ?? get().sideByMainKey[mainKey]
-    const prevKey = prevRaw ? threadKey(prevRaw) : undefined
-    cancelScheduledSidePrewarm()
-    if (prevKey) {
-      stopPrewarmOnlyRuntime(prevKey)
-      if (typeof window.pi.runtime.stop === 'function') {
-        await window.pi.runtime.stop(prevKey).catch(() => {})
-      }
-    }
     const beforeClear = get()
+    const mainRaw = viewKeyOf(beforeClear)
+    if (!mainRaw) return undefined
+    const requestedMainKey = threadKey(mainRaw)
+    const prevRaw = beforeClear.sideByMainKey[requestedMainKey] ?? beforeClear.sideSessionKey
     const clearCwd =
-      beforeClear.threads[mainKey]?.status.cwd ??
-      beforeClear.sessions.find((entry) => entry.file === mainKey)?.cwd ??
+      beforeClear.threads[requestedMainKey]?.status.cwd ??
+      beforeClear.sessions.find((entry) => entry.file === requestedMainKey)?.cwd ??
       beforeClear.workspace?.path ??
       ''
-    let nextRaw: string | undefined
-    if (typeof window.pi?.sideChat?.clear === 'function') {
-      try {
-        const snapshot = await window.pi.sideChat.clear(mainKey, clearCwd)
-        nextRaw = snapshot?.activeSideKey
-      } catch {
-        // Fallback to a fresh local draft key if backend clear is unavailable.
-      }
+    cancelScheduledSidePrewarm()
+    let nextKey: string
+    try {
+      const snapshot = await window.pi.sideChat.clear(requestedMainKey, clearCwd)
+      nextKey = threadKey(snapshot.activeSideKey)
+    } catch (error) {
+      get().showToast(messageOf(error), 'error')
+      return undefined
     }
-    const nextKey = threadKey(nextRaw || mintSideDraftKey())
+    const mainKey = threadKey(requestedMainKey)
+    const prevKey = prevRaw ? threadKey(prevRaw) : undefined
     const state = get()
-    const mainThread = state.threads[mainKey]
-    const cwd = mainThread?.status.cwd ?? state.workspace?.path
-    const freshThread = emptyThread(cwd, 'default', nextKey.startsWith('draft:'))
+    const freshThread = emptyThread(clearCwd || undefined, 'default', nextKey.startsWith('draft:'))
 
     const threads = { ...state.threads }
     const drafts = { ...state.drafts }
@@ -3565,7 +3563,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     set({
       threads,
       drafts,
-      sideSessionKey: nextKey,
+      ...(threadKey(viewKeyOf(state)) === mainKey ? { sideSessionKey: nextKey } : {}),
       sideByMainKey,
       sideParentByKey,
       sideQuotes,
@@ -3757,18 +3755,70 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         : '')
     if (!trimmed && !images.length) return false
 
-    // Side Chat is strictly read-only and never runs shell or Main-only commands.
+    // Inline shell commands (`!cmd` / `!!cmd`) run in Side Chat's own thread.
     if (!images.length && trimmed.startsWith('!')) {
-      get().showToast('This command is only available in the main conversation', 'warning')
-      return false
+      const excludeFromContext = trimmed.startsWith('!!')
+      const command = (excludeFromContext ? trimmed.slice(2) : trimmed.slice(1)).trim()
+      if (!command) {
+        get().showToast(
+          excludeFromContext ? 'Type a shell command after !!' : 'Type a shell command after !',
+          'warning'
+        )
+        return false
+      }
+      return get().runInlineBash(command, excludeFromContext, sideKey)
     }
+
+    // `/image [prompt]` toggles image generation on the Side Chat composer.
+    const imageCommand = /^\/image(?:\s+([\s\S]*))?$/i.exec(trimmed)
+    if (imageCommand) {
+      const arg = (imageCommand[1] ?? '').trim()
+      window.dispatchEvent(
+        new CustomEvent<{ prompt: string; off?: boolean; target?: 'main' | 'side' }>('pi:enter-image-mode', {
+          detail:
+            arg.toLowerCase() === 'off'
+              ? { prompt: '', off: true, target: 'side' }
+              : { prompt: arg, target: 'side' }
+        })
+      )
+      return true
+    }
+
+    // `/compact [instructions]` compacts Side Chat's own session context.
+    const compactCommand = /^\/compact(?:\s+([\s\S]*))?$/i.exec(trimmed)
+    if (!images.length && compactCommand) {
+      return get().compact((compactCommand[1] ?? '').trim() || undefined, sideKey)
+    }
+
+    // Main-only session-tree / sidebar-list management commands stay scoped to Main.
     if (
       !images.length &&
-      /^\/(?:image|swarm|plugin|branch|duplicate|plan|goal|commit|new|side)(?:\s|$)/i.test(trimmed)
+      /^\/(?:branch|duplicate|new|side|tree|name|copy|export)(?:\s|$)/i.test(trimmed)
     ) {
       get().showToast('This command is only available in the main conversation', 'warning')
       return false
     }
+
+    if (!images.length) {
+      const sideUiCommand = APP_COMMANDS.find(
+        (command) =>
+          command.source === 'app' &&
+          !command.takesArgument &&
+          trimmed === `/${command.name}` &&
+          ['changes', 'files', 'terminal', 'mcp', 'commit'].includes(command.name)
+      )
+      if (sideUiCommand) {
+        await get().runAppCommand(sideUiCommand.name)
+        return true
+      }
+    }
+
+    const image = options?.image
+    const sendKind = options?.kind ?? 'followUp'
+    const isImagePrompt = Boolean(image && (trimmed || images.length > 0) && !trimmed.startsWith('/'))
+    const promptMessage = isImagePrompt
+      ? trimmed || 'Create a refined variation based on the attached reference image.'
+      : trimmed
 
     const sentRefIds = new Set(attachedQuotes.map((ref) => ref.id))
     const stateSnapshot = get()
@@ -3781,14 +3831,14 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
 
     const update = bindSet(set, get, sideKey)
     const ownGet = bindGet(get, sideKey)
-    const payload: Record<string, unknown> = { message: trimmed, streamingBehavior: 'followUp' }
+    const payload: Record<string, unknown> = { message: promptMessage, streamingBehavior: sendKind }
     if (images.length) payload.images = images
     pinScrollToBottom(sideKey)
 
     const pendingPrompt: UserItem = {
       id: nextId('user'),
       kind: 'user',
-      text: trimmed,
+      text: promptMessage,
       images: images ?? [],
       timestamp: Date.now(),
       order: nextOrder(),
@@ -3836,7 +3886,43 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         })
       }
       if (attachedQuotes.length > 0) {
-        stageSideTurnRefs(liveSideKey, attachedQuotes, trimmed)
+        stageSideTurnRefs(liveSideKey, attachedQuotes, promptMessage)
+      }
+      if (isImagePrompt && image) {
+        const setup = await tracedRpc<{ cancelled?: boolean }>(
+          liveSideKey,
+          'prompt',
+          {
+            message: `/desktop-image ${JSON.stringify({
+              id: pendingPrompt.id,
+              prompt: promptMessage,
+              model: image.model,
+              size: image.size,
+              quality: image.quality,
+              n: image.count,
+              references: images.length
+            })}`
+          },
+          30_000,
+          'image-params'
+        )
+        if (settleIfCancelledBeforeSend(setup?.cancelled)) {
+          if (!setup?.cancelled) {
+            await tracedRpc(
+              liveSideKey,
+              'prompt',
+              { message: `/desktop-image ${JSON.stringify({ cancel: pendingPrompt.id })}` },
+              5_000,
+              'image-params-cancel'
+            ).catch(() => {})
+          }
+          return false
+        }
+        void get().updateSettings({
+          imageModel: image.model,
+          imageSize: image.size,
+          imageQuality: image.quality
+        })
       }
       const result = await tracedRpc<{ disposition?: string; cancelled?: boolean }>(
         liveSideKey,
@@ -3855,6 +3941,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       })
       if (result?.disposition === 'handled') {
         forgetQueuedPrompt(liveSideKey, pendingPrompt.id)
+        const isModeCommand = /^\/(?:plan|goal|swarm|plugin)(?:\s|$)/.test(trimmed)
         update((state) => {
           const shouldSettle =
             canSettlePreRun(state.run) || (result.cancelled && state.run.phase === 'aborting')
@@ -3863,7 +3950,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
             cwdWait: undefined,
             isStreaming: shouldSettle ? false : state.isStreaming,
             run: shouldSettle ? settlePreRun(state.run) : state.run,
-            items: result.cancelled
+            items: result.cancelled || isModeCommand
               ? items
               : applyEvent(items, {
                   type: 'client_notice',
@@ -4005,7 +4092,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     try {
       const images = draft.images.map(({ data, mimeType }) => ({ data, mimeType }))
       const accepted = isActiveSide
-        ? await get().sendSidePrompt(text, images, { sideSessionKey: key })
+        ? await get().sendSidePrompt(text, images, { sideSessionKey: key, kind, image: sendImage })
         : await get().send(text, images, kind, sendImage)
       if (accepted && key && get().drafts[threadKey(key)] === draft) {
         get().updateDraft(key, () => composerDraftAfterSend(draft, text, imageOptions))
@@ -4319,13 +4406,13 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     }
   },
 
-  async runInlineBash(command, excludeFromContext = false) {
+  async runInlineBash(command, excludeFromContext = false, sessionKey) {
     const trimmed = command.trim()
     if (!trimmed) return false
     const id = `inline-bash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
     // Events that were still waiting for a frame belong to the conversation
     // before this command; they must not land after it.
-    let owner = viewKeyOf(get())
+    let owner = sessionKey !== undefined ? sessionKey : viewKeyOf(get())
     if (!owner) {
       const draftId = mintDraft()
       const thread = emptyThread(get().workspace?.path, draftMode(get().settings), true)
@@ -4920,12 +5007,14 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     get().showToast(`Reasoning effort: ${next}`)
   },
 
-  async compact(instructions) {
-    const owner = viewKeyOf(get())
+  async compact(instructions, sessionKey) {
+    const owner = sessionKey !== undefined ? sessionKey : viewKeyOf(get())
+    if (!owner) return false
+    const ownGet = bindGet(get, owner)
     // A second `compact` while one is running makes Pi abort the first one,
     // which rejects it with "Compaction cancelled". Answer the second click
     // instead of turning a double click into a failure banner.
-    if (get().run.compaction || compactionInFlight.has(owner)) {
+    if (ownGet().run.compaction || compactionInFlight.has(owner)) {
       get().showToast('Context compaction is already running', 'warning')
       return false
     }
@@ -7950,10 +8039,9 @@ function handleEvent(
         // already out of date while the run is still going. Waiting for
         // `agent_settled` made the panel show the previous batch of files for
         // the rest of the run. `refreshGit` reads the *active* project, so a
-        // run in another conversation of the same project is worth reading too
-        // — only a run in a different project (or read-only Side Chat) is not.
+        // run in another conversation (including Side Chat) of the same project
+        // is worth reading too — only a run in a different project is not.
         if (
-          !isSideKeyInState(owner || viewKeyOf(get()), realGet ? realGet() : get()) &&
           touchesWorkingTree(event.toolName) &&
           gitBelongsToView(get, realGet, owner)
         ) {

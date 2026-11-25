@@ -301,7 +301,7 @@ const bridge: PiDesktopBridge = {
     commit: (message: string, includeUnstaged: boolean, expectedRoot: string): Promise<GitCommitResult> =>
       ipcRenderer.invoke('git:commit', message, includeUnstaged, expectedRoot),
     fileDiff: (file: string, expectedRoot?: string): Promise<GitFileDiff> => ipcRenderer.invoke('git:fileDiff', file, expectedRoot),
-    patch: (file?: string): Promise<GitPatch> => ipcRenderer.invoke('git:patch', file),
+    patch: (file?: string, expectedRoot?: string): Promise<GitPatch> => ipcRenderer.invoke('git:patch', file, expectedRoot),
     commitDetail: (hash: string): Promise<GitCommitDetail | null> =>
       ipcRenderer.invoke('git:commitDetail', hash),
     commitFileDiff: (hash: string, file: string): Promise<GitCommitFileDiff | null> =>

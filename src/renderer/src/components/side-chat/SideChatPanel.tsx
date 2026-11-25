@@ -7,8 +7,10 @@ import type {
   SideChatReferenceInput
 } from '../../lib/side-chat-context'
 import { SideChatHeader } from './SideChatHeader'
-import { SideChatTranscript } from './SideChatTranscript'
-import { SideChatComposer } from './SideChatComposer'
+import { SideChatEmptyState } from './SideChatEmptyState'
+import { SideChatRefChip } from './SideChatRefChip'
+import { Thread } from '../Thread'
+import { Composer } from '../Composer'
 import '../../styles/side-chat.css'
 
 export interface SideChatPanelProps {
@@ -16,6 +18,9 @@ export interface SideChatPanelProps {
   request: SideChatOpenRequest | null
   onClose?: () => void
 }
+
+/** One frozen list for the common "no reference attached" case. */
+const EMPTY_REFERENCES: never[] = []
 
 function focusSideComposer(): void {
   requestAnimationFrame(() => {
@@ -25,11 +30,25 @@ function focusSideComposer(): void {
   })
 }
 
+/** A side chat has no swarm: the chip that would open it is not drawn there. */
+const ignore = (): void => undefined
+
 export const SideChatPanel = memo(function SideChatPanel({
   active,
   request
 }: SideChatPanelProps) {
   const sideSessionKey = useAppStore((state) => state.sideSessionKey)
+  const hasItems = useAppStore((state) => {
+    const key = state.sideSessionKey
+    if (!key) return false
+    const thread = state.threads[key]
+    return Boolean(thread && thread.items.length > 0)
+  })
+  const references = useAppStore((state) => {
+    const key = state.sideSessionKey
+    return (key ? state.sideQuotes[key] : undefined) ?? EMPTY_REFERENCES
+  })
+  const removeSideReference = useAppStore((state) => state.removeSideReference)
   const ensureSideChatForActiveMain = useAppStore(
     (state) => state.ensureSideChatForActiveMain
   )
@@ -126,17 +145,31 @@ export const SideChatPanel = memo(function SideChatPanel({
       className="side-chat"
       data-active={active || undefined}
     >
-      <ConversationScopeProvider surface="side" sessionKey={sideSessionKey} readOnly>
+      {/* The side chat is a parallel conversation, not a second kind of chat:
+          it reads with the main conversation's own transcript and writes with
+          its own composer, so the two panes cannot drift apart again. The
+          scope is what makes those components render the side session — the
+          header above them stays because Clear and the review presets have no
+          equivalent in the main chat. */}
+      <ConversationScopeProvider surface="side" sessionKey={sideSessionKey}>
         <SideChatHeader
           sideSessionKey={sideSessionKey}
           onRunPreset={handleRunPreset}
           onClear={handleClear}
         />
-        <SideChatTranscript
-          sideSessionKey={sideSessionKey}
-          onRunPreset={handleRunPreset}
-        />
-        <SideChatComposer sideSessionKey={sideSessionKey} />
+        {hasItems ? <Thread /> : <SideChatEmptyState onSelectPreset={handleRunPreset} />}
+        {references.length > 0 ? (
+          <div className="side-chat__refs side-chat__refs-tray">
+            {references.map((reference) => (
+              <SideChatRefChip
+                key={reference.id}
+                reference={reference}
+                onRemove={(id) => removeSideReference(id, sideSessionKey ?? undefined)}
+              />
+            ))}
+          </div>
+        ) : null}
+        <Composer onOpenSwarm={ignore} />
       </ConversationScopeProvider>
     </div>
   )

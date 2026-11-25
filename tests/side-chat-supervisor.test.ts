@@ -31,7 +31,7 @@ import { SessionSupervisor, MAX_IDLE_RUNTIMES, type ManagedSessionRuntime } from
 import { isPreSendRpcError } from '../src/main/pi/rpc-client'
 import { buildRpcArgs } from '../src/main/pi/rpc-args'
 import { canAutoApprove, permissionExtension } from '../src/main/pi/permissions'
-import { SIDE_CHAT_ALLOWED_TOOLS, SIDE_CHAT_EXCLUDED_TOOLS, sideChatExtension } from '../src/main/pi/side-chat'
+import { sideChatExtension } from '../src/main/pi/side-chat'
 import { SideChatBindingService } from '../src/main/side-chats'
 import { AutoTitleService } from '../src/main/auto-title'
 import { MemoryService } from '../src/main/memory/service'
@@ -219,54 +219,51 @@ test('Main and Side run prompts concurrently in the same cwd while exclusive Git
   await supervisor.stop()
 })
 
-test('Layer 1-4 read-only enforcement blocks mutating commands, flags, tools, and squatted extensions', async () => {
-  // Layer 1: Supervisor RPC command gate
+test('a side conversation is a working conversation: no tool or command clamp', async () => {
+  // A side chat is a second working conversation, not a read-only viewer. The
+  // clamp that used to make it weaker is gone at every layer, and this test is
+  // what keeps it gone: a mutating command reaches Pi, the runtime is started
+  // with no tool policy, and the extension installs none either.
   const rSide = new FakeRuntime()
   const supervisor = makeSupervisor([rSide])
   const sideKey = mintSideDraftKey()
   await supervisor.ensure({ sessionKey: sideKey, cwd: 'C:/proj', role: 'side', parentSessionKey: 'draft:main' })
 
-  for (const blocked of ['bash', 'fork', 'clone', 'new_session', 'switch_session']) {
-    await assert.rejects(
-      () => supervisor.request(sideKey, blocked, {}),
-      (error: unknown) => isPreSendRpcError(error) && /disabled in read-only Side Chat/i.test(String(error))
-    )
-  }
-  assert.equal(rSide.requests.length, 0, 'blocked commands must never reach Pi stdin')
-  assert.equal(supervisor.sessionInfo(sideKey)?.running, false)
+  await supervisor.request(sideKey, 'bash', { command: 'echo hi' })
+  assert.equal(
+    rSide.requests.some((request) => request.command === 'bash'),
+    true,
+    'a side chat must be able to run a shell command'
+  )
   await supervisor.stop()
 
-  // Layer 2: buildRpcArgs read-only flags
+  // The side runtime is launched with the full extension loadout alongside the
+  // side-chat digest extension, with no tool or MCP restrictions.
   const args = buildRpcArgs(
     { cwd: 'C:/proj', role: 'side', parentSessionKey: 'draft:main' },
     false,
     undefined,
     'perm.mjs',
-    undefined,
+    'task-modes.mjs',
     'provider.mjs',
-    undefined,
-    undefined,
+    'subagent.mjs',
+    'computer.mjs',
     'ctx.mjs',
     'timing.mjs',
     'mermaid.mjs',
-    undefined,
-    undefined,
-    {
-      sideChatFile: 'side-chat.mjs',
-      noMcp: true,
-      tools: SIDE_CHAT_ALLOWED_TOOLS,
-      excludeTools: SIDE_CHAT_EXCLUDED_TOOLS
-    }
+    'image.mjs',
+    'swarm.mjs',
+    { sideChatFile: 'side-chat.mjs' }
   )
-  assert.equal(args.includes('--no-mcp'), true)
-  assert.equal(args[args.indexOf('--tools') + 1], 'read,grep,find,ls,inspect_main_conversation,inspect_main_changes')
-  const excluded = args[args.indexOf('--exclude-tools') + 1] ?? ''
-  for (const forbidden of ['write', 'edit', 'bash', 'powershell', 'codemode', 'tool_search', 'subagent', 'computer', 'generate_image']) {
-    assert.equal(excluded.split(',').includes(forbidden), true, `${forbidden} must be in --exclude-tools`)
+  assert.equal(args.includes('--no-mcp'), false, 'MCP servers must be available to a side chat')
+  assert.equal(args.includes('--tools'), false, 'a side chat must not be given a read-only allow-list')
+  assert.equal(args.includes('--exclude-tools'), false, 'a side chat must not be given an exclusion list')
+  for (const ext of ['task-modes.mjs', 'subagent.mjs', 'computer.mjs', 'image.mjs', 'swarm.mjs', 'side-chat.mjs']) {
+    assert.equal(args.includes(ext), true, `side runtime must load ${ext}`)
   }
-  assert.equal(args.includes('side-chat.mjs'), true)
 
-  // Layer 3: sideChatExtension active-tool clamp, tool_call block, user_bash block, readiness status
+  // The extension adds the digest and the inspect tools; it must not touch the
+  // active tool set, block a tool call, or answer shell commands itself.
   const sideExtPath = path.resolve('pi-desktop-side-chat-test.mjs')
   const source = sideChatExtension({
     bridgeUrl: 'http://127.0.0.1:9999',
@@ -280,9 +277,6 @@ test('Layer 1-4 read-only enforcement blocks mutating commands, flags, tools, an
   const handlers = new Map<string, (...a: unknown[]) => unknown>()
   const registeredTools: Array<{ name: string; sourceInfo?: { source?: string; path?: string } }> = [
     { name: 'read', sourceInfo: { source: 'builtin' } },
-    { name: 'grep', sourceInfo: { source: 'builtin' } },
-    { name: 'find', sourceInfo: { source: 'builtin' } },
-    { name: 'ls', sourceInfo: { source: 'builtin' } },
     { name: 'write', sourceInfo: { source: 'builtin' } },
     { name: 'edit', sourceInfo: { source: 'builtin' } },
     { name: 'bash', sourceInfo: { source: 'builtin' } },
@@ -307,25 +301,17 @@ test('Layer 1-4 read-only enforcement blocks mutating commands, flags, tools, an
     ui: { setStatus: (k: string, v: string) => statuses.set(k, v) }
   })
 
-  assert.equal(statuses.get(SIDE_CHAT_STATUS_KEY), 'ready', 'Bug #1 fix: side-chat extension emits ready status')
-  assert.deepEqual(
-    activeTools.sort(),
-    ['find', 'grep', 'inspect_main_changes', 'inspect_main_conversation', 'ls', 'read']
-  )
+  assert.equal(statuses.get(SIDE_CHAT_STATUS_KEY), 'ready')
+  assert.deepEqual(activeTools, [], 'the extension must leave the tool loadout alone')
   assert.equal(appendedEntries.length, 1)
   assert.equal(appendedEntries[0]?.type, 'pi-desktop-side-chat')
+  assert.equal(
+    handlers.get('tool_call')!({ toolName: 'write', input: { path: 'a.txt' } }),
+    undefined,
+    'a write call must pass through'
+  )
+  assert.equal(handlers.has('user_bash'), false, 'shell commands are Pi\'s own, not the extension\'s')
 
-  // tool_call hard block on mutating tools
-  const blockedWrite = handlers.get('tool_call')!({ toolName: 'write', input: { path: 'a.txt' } }) as { block?: boolean; terminate?: boolean }
-  assert.equal(blockedWrite?.block, true)
-  assert.equal(blockedWrite?.terminate, true)
-  const allowedRead = handlers.get('tool_call')!({ toolName: 'read', input: { path: 'a.txt' } })
-  assert.equal(allowedRead, undefined)
-
-  // user_bash hard block
-  const bashResult = handlers.get('user_bash')!({}) as { result: { exitCode: number; cancelled: boolean } }
-  assert.equal(bashResult.result.exitCode, 1)
-  assert.equal(bashResult.result.cancelled, true)
 
   // Layer 4: permissions.ts — canAutoApprove for grep/find/ls AND source-verified inspect tools
   const temp = mkdtempSync(path.join(tmpdir(), 'pi-side-perms-'))
@@ -351,8 +337,10 @@ test('Layer 1-4 read-only enforcement blocks mutating commands, flags, tools, an
     assert.equal(canAutoApprove({ toolName: 'grep', toolSource: 'builtin', input: { glob: '../outside/*.txt', pattern: 'secret' } }, cwd), false)
     assert.equal(canAutoApprove({ toolName: 'grep', toolSource: 'extension', input: { pattern: 'x' } }, cwd), false)
 
-    // permissionExtension source-path verification for inspect_main_conversation / inspect_main_changes
-    const permSrc = permissionExtension('side-perm-title', true, undefined, undefined, undefined, undefined, sideExtPath)
+    // permissionExtension source-path verification for desktop tools + inspect_main_*
+    const modeExtPath = path.resolve('pi-desktop-task-modes-test.mjs')
+    const imageExtPath = path.resolve('pi-desktop-image-test.mjs')
+    const permSrc = permissionExtension('side-perm-title', true, modeExtPath, undefined, undefined, imageExtPath, sideExtPath)
     const { default: loadPerm } = await import(`data:text/javascript,${encodeURIComponent(permSrc)}`)
     let permTools: Array<{ name: string; sourceInfo?: { source?: string; path?: string } }> = []
     let onToolCall!: (event: { toolName: string; input: Record<string, unknown> }, ctx: unknown) => Promise<unknown>
@@ -368,9 +356,13 @@ test('Layer 1-4 read-only enforcement blocks mutating commands, flags, tools, an
       ui: { confirm: async () => { confirmCalls += 1; return false } }
     }
     permTools = [
+      { name: 'desktop_goal_finish', sourceInfo: { source: 'local', path: modeExtPath } },
+      { name: 'generate_image', sourceInfo: { source: 'local', path: imageExtPath } },
       { name: 'inspect_main_conversation', sourceInfo: { source: 'local', path: sideExtPath } },
       { name: 'inspect_main_changes', sourceInfo: { source: 'local', path: sideExtPath } }
     ]
+    assert.equal(await onToolCall({ toolName: 'desktop_goal_finish', input: {} }, permCtx), undefined)
+    assert.equal(await onToolCall({ toolName: 'generate_image', input: { prompt: 'diagram' } }, permCtx), undefined)
     assert.equal(await onToolCall({ toolName: 'inspect_main_conversation', input: {} }, permCtx), undefined)
     assert.equal(await onToolCall({ toolName: 'inspect_main_changes', input: {} }, permCtx), undefined)
     assert.equal(confirmCalls, 0)
@@ -464,6 +456,82 @@ test('SideChatBindingService handles draft rekey matrix, startup replace, fork/c
     reloaded.dispose()
     await supervisor.stop()
   } finally {
+    rmSync(temp, { recursive: true, force: true })
+  }
+})
+
+test('clearing a side chat keeps its saved binding until the file is removed', async () => {
+  const temp = mkdtempSync(path.join(tmpdir(), 'pi-side-clear-'))
+  const sessionRoot = path.join(temp, 'sessions')
+  const userData = path.join(temp, 'userData')
+  const mainFile = path.join(sessionRoot, 'main.jsonl')
+  const sideFile = path.join(sessionRoot, SIDE_CHAT_DIR_NAME, 'side.jsonl')
+  mkdirSync(path.dirname(sideFile), { recursive: true })
+  writeFileSync(sideFile, '{"type":"session","id":"side"}\n')
+  const options = { userData, getSessionRoots: () => [sessionRoot] }
+  const bindings = new SideChatBindingService(options)
+  const cwd = 'C:/proj'
+
+  try {
+    const draft = await bindings.resolve(mainFile, cwd)
+    bindings.handleRekey({ from: draft.activeSideKey, to: sideFile })
+    const saved = bindings.getPersistedBindings()
+
+    await assert.rejects(bindings.clear(mainFile, cwd, async () => false), /could not clear/i)
+    assert.deepEqual(bindings.getPersistedBindings(), saved)
+    assert.deepEqual(bindings.parentOfSide(sideFile), { parentSessionKey: mainFile, cwd })
+    assert.equal(existsSync(sideFile), true)
+    const reloaded = new SideChatBindingService(options)
+    assert.equal((await reloaded.resolve(mainFile, cwd)).activeSideKey, sideFile)
+    reloaded.dispose()
+
+    const cleared = await bindings.clear(mainFile, cwd, async (file) => {
+      assert.equal(file, sideFile)
+      rmSync(file)
+      return true
+    })
+    assert.equal(cleared.activeSideKey.startsWith(SIDE_DRAFT_PREFIX), true)
+    assert.equal(cleared.hasPersistedHistory, false)
+    assert.deepEqual(bindings.getPersistedBindings(), {})
+    assert.equal(bindings.parentOfSide(sideFile), undefined)
+    assert.equal(existsSync(sideFile), false)
+  } finally {
+    bindings.dispose()
+    rmSync(temp, { recursive: true, force: true })
+  }
+})
+
+test('clearing a side chat removes the file saved while its runtime stops', async () => {
+  const temp = mkdtempSync(path.join(tmpdir(), 'pi-side-clear-rekey-'))
+  const supervisor = makeSupervisor([])
+  const bindings = new SideChatBindingService({
+    userData: path.join(temp, 'userData'),
+    supervisor,
+    getSessionRoots: () => [temp]
+  })
+  const mainFile = path.join(temp, 'main.jsonl')
+  const sideFile = path.join(temp, SIDE_CHAT_DIR_NAME, 'side.jsonl')
+  const cwd = 'C:/proj'
+
+  try {
+    const draft = await bindings.resolve(mainFile, cwd)
+    supervisor.stop = async (key) => {
+      assert.equal(key, draft.activeSideKey)
+      mkdirSync(path.dirname(sideFile), { recursive: true })
+      writeFileSync(sideFile, '{"type":"session","id":"side"}\n')
+      supervisor.emit('rekey', { from: key, to: sideFile })
+    }
+    const removed: string[] = []
+    await bindings.clear(mainFile, cwd, async (file) => {
+      removed.push(file)
+      rmSync(file)
+      return true
+    })
+    assert.deepEqual(removed, [sideFile])
+    assert.deepEqual(bindings.getPersistedBindings(), {})
+    assert.equal(existsSync(sideFile), false)
+  } finally {
+    bindings.dispose()
     rmSync(temp, { recursive: true, force: true })
   }
 })

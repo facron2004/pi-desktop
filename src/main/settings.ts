@@ -266,14 +266,21 @@ function mergeProjectOrder(baseline: string[], proposed: string[], current: stri
       return mergeStringSet(baseline, proposed, current)
     }
     const currentKeys = new Set(current.map(workspaceKey))
-    const reordered = proposed.filter((item) => {
+    const reordered = normalizeProjectOrder(proposed.filter((item) => {
       const key = workspaceKey(item)
       return !baselineKeys.has(key) || currentKeys.has(key)
-    })
-    const addedSinceRead = current.filter((item) =>
-      !baselineKeys.has(workspaceKey(item)) && !proposedKeys.has(workspaceKey(item))
-    )
-    return normalizeProjectOrder([...reordered, ...addedSinceRead])
+    }))
+    const reorderedKeys = new Set(reordered.map(workspaceKey))
+    const result: string[] = []
+    let next = 0
+    // Refill only the slots that take part in this reorder. A project that
+    // appeared after the editor took its snapshot keeps its on-disk slot.
+    for (const item of current) {
+      const key = workspaceKey(item)
+      if (reorderedKeys.has(key)) result.push(reordered[next++]!)
+      else if (!baselineKeys.has(key)) result.push(item)
+    }
+    return [...result, ...reordered.slice(next)]
   })()
   // A patch that leads with a path the baseline never had is announcing a
   // folder the reader has just added: it belongs on the first row, which is
@@ -828,6 +835,7 @@ export class SettingsStore {
 
   patch(patch: Partial<AppSettings>, baseline?: SettingsPatchBaseline): AppSettings {
     assertSafeSettingsPatch(patch)
+    const patchBaseline = { ...this.data, ...baseline }
     const updated = this.update((current) => {
       const { externalChatFolderHistory: _ignoredHistory, ...requested } = patch
       if (!Object.prototype.hasOwnProperty.call(patch, 'externalChatFolder')) return requested
@@ -844,7 +852,7 @@ export class SettingsStore {
         ...requested,
         externalChatFolderHistory: normalizeExternalChatFolderHistory(history, nextFolder)
       }
-    }, { baseline })
+    }, { baseline: patchBaseline })
     // Pi reads its own startup model from the agent directory, not from this
     // file. Sync asynchronously on a serialized chain so IPC never stalls the
     // main thread on `Atomics.wait` while still landing updates in patch order.
@@ -1003,14 +1011,15 @@ export class SettingsStore {
 
   private update(
     patchFor: (current: AppSettings) => Partial<AppSettings>,
-    options: { baseline?: SettingsPatchBaseline; removedWorkspaceId?: string } = {}
+    options: { baseline?: AppSettings; removedWorkspaceId?: string } = {}
   ): AppSettings {
     this.withSettingsLock(() => {
       // Another app process can update settings while this instance is open.
       // Merge under the lock so independent changes do not overwrite each other.
-      const baseline = { ...this.data, ...options.baseline }
       const preserveInvalidFile = this.refreshFromDisk(true)
       const current = this.data
+      // Workspace commands derive their patch from the settings read under the lock.
+      const baseline = options.baseline ?? current
       const patch = patchFor(current)
       const shortcutPatch = normalizeShortcutBindings(patch.shortcutBindings)
       const resetShortcuts = patch.shortcutBindings !== null &&

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { app, type BrowserWindow } from 'electron'
+import { app, screen, type BrowserWindow } from 'electron'
 import { initialBounds, wasMaximized, watchWindowState, type WindowState } from '../src/main/window-state'
 
 /**
@@ -88,6 +88,35 @@ test('a position that is not on any display is dropped, not clamped', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+for (const position of [{ x: 1279, y: 80 }, { x: 100, y: 719 }, { x: 100, y: -39 }]) {
+  test(`a restored position leaves enough of the title bar visible at ${position.x}, ${position.y}`, (t) => {
+    const dir = userData()
+    t.after(() => rmSync(dir, { recursive: true, force: true }))
+    save(dir, { width: 1000, height: 700, ...position })
+    assert.deepEqual(initialBounds(), { width: 1000, height: 700 })
+  })
+}
+
+test('malformed saved coordinates do not prevent the window size from being restored', (t) => {
+  const dir = userData()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  writeFileSync(path.join(dir, 'window-state.json'), '{"width":1000,"height":700,"x":"100","y":80}', 'utf8')
+  assert.deepEqual(initialBounds(), { width: 1000, height: 700 })
+})
+
+test('a saved position with a visible title bar on a secondary display is restored', (t) => {
+  const dir = userData()
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const [primary] = screen.getAllDisplays()
+  t.mock.method(screen, 'getAllDisplays', () => [
+    primary,
+    { ...primary, id: 2, workArea: { x: -1280, y: 0, width: 1280, height: 720 } }
+  ])
+  const state = { width: 1000, height: 700, x: -1250, y: 20 }
+  save(dir, state)
+  assert.deepEqual(initialBounds(), state)
 })
 
 test('a state that a killed process left half-written is ignored', () => {

@@ -365,6 +365,70 @@ afterEach(() => {
   resetTestState()
 })
 
+test('a failed side chat clear keeps the visible binding and draft and reports the error', async () => {
+  resetTestState()
+  const mainKey = '/sessions/main-clear-error.jsonl'
+  const sideKey = '/sessions/_side-chats/side-clear-error.jsonl'
+  const draft = { text: 'Keep my unsent reply', images: [] }
+  useAppStore.setState({
+    activeSessionFile: mainKey,
+    sideChatOpen: true,
+    sideSessionKey: sideKey,
+    sideByMainKey: { [mainKey]: sideKey },
+    sideParentByKey: { [sideKey]: mainKey },
+    drafts: { [sideKey]: draft }
+  })
+  sideClearImpl = async () => { throw new Error('Disk refused removal') }
+
+  assert.equal(await useAppStore.getState().clearActiveSideChat(), undefined)
+  const state = useAppStore.getState()
+  assert.equal(state.sideSessionKey, sideKey)
+  assert.equal(state.sideByMainKey[mainKey], sideKey)
+  assert.equal(state.sideParentByKey[sideKey], mainKey)
+  assert.deepEqual(state.drafts[sideKey], draft)
+  assert.deepEqual(state.toast, { text: 'Disk refused removal', level: 'error' })
+})
+
+test('clear updates its own side chat after the active main conversation switches', async () => {
+  resetTestState()
+  const mainA = '/sessions/main-clear-a.jsonl'
+  const mainB = '/sessions/main-clear-b.jsonl'
+  const sideA = '/sessions/_side-chats/side-clear-a.jsonl'
+  const sideB = '/sessions/_side-chats/side-clear-b.jsonl'
+  const freshA = 'draft:side:cleared-a'
+  useAppStore.setState({
+    activeSessionFile: mainA,
+    sideChatOpen: true,
+    sideSessionKey: sideA,
+    sideByMainKey: { [mainA]: sideA, [mainB]: sideB },
+    sideParentByKey: { [sideA]: mainA, [sideB]: mainB }
+  })
+  const requested = Promise.withResolvers<void>()
+  const response = Promise.withResolvers<SideChatStateSnapshot>()
+  sideClearImpl = () => {
+    requested.resolve()
+    return response.promise
+  }
+
+  const clearing = useAppStore.getState().clearActiveSideChat()
+  await requested.promise
+  useAppStore.setState({ activeSessionFile: mainB, sideSessionKey: sideB })
+  response.resolve({
+    parentSessionKey: mainA,
+    activeSideKey: freshA,
+    hasPersistedHistory: false,
+    parentRunning: false,
+    parentTurnCount: 0,
+    sessionChangedFiles: []
+  })
+  await clearing
+  const state = useAppStore.getState()
+  assert.deepEqual(clearCalls, [{ parentSessionKey: mainA, cwd: '/repo/demo' }])
+  assert.equal(state.sideSessionKey, sideB)
+  assert.deepEqual(state.sideByMainKey, { [mainA]: freshA, [mainB]: sideB })
+  assert.deepEqual(state.sideParentByKey, { [freshA]: mainA, [sideB]: mainB })
+})
+
 test('dual-stream 60fps rAF coalescing isolates Main and Side deltas with zero cross-talk', () => {
   resetTestState()
   const rafQueue: { id: number; cb: FrameRequestCallback }[] = []
@@ -726,7 +790,7 @@ test('handoffSideToMain strictly never steers Main (draft insert = 0 RPCs, queue
   assert.equal(promptCall.payload?.streamingBehavior, 'followUp', 'MUST use followUp, never steer')
 })
 
-test('reference chip lifecycle, failed-send preservation, live/hydrated sideRefs, and read-only command guard', async () => {
+test('reference chip lifecycle, failed-send preservation, live/hydrated sideRefs, and parallel side commands', async () => {
   resetTestState()
   const mainKey = '/sessions/main-refs.jsonl'
   const sideKey = 'draft:side:refs-1'
@@ -779,15 +843,70 @@ test('reference chip lifecycle, failed-send preservation, live/hydrated sideRefs
   useAppStore.getState().clearSideReferences(sideKey)
   assert.equal(useAppStore.getState().sideQuotes[sideKey], undefined)
 
-  // Re-attach 1 ref and verify Side Chat blocks shell & Main-only commands
+  // Re-attach 1 ref: Main-only commands stay blocked on Side Chat, while !bash, /image, /compact, kind, and scoped mode work
   const ref = useAppStore.getState().attachSideReference(
     { kind: 'tool', toolCallId: 'tc-1', toolName: 'edit', summary: 'Edited auth.ts', status: 'ok' },
     sideKey
   )!
-  assert.equal(await useAppStore.getState().sendSidePrompt('!rm -rf /'), false)
   assert.equal(await useAppStore.getState().sendSidePrompt('/branch'), false)
+  assert.equal(await useAppStore.getState().sendSidePrompt('/duplicate'), false)
+  assert.equal(await useAppStore.getState().sendSidePrompt('/new'), false)
+  assert.equal(await useAppStore.getState().sendSidePrompt('/side'), false)
   assert.equal(rpcCalls.length, 0)
   assert.equal(useAppStore.getState().sideQuotes[sideKey]?.length, 1)
+
+  // `/image` targets Side Composer without switching Main Composer
+  const imageEvents: CustomEvent[] = []
+  const onImageMode = (event: Event) => imageEvents.push(event as CustomEvent)
+  window.addEventListener('pi:enter-image-mode', onImageMode)
+  try {
+    assert.equal(await useAppStore.getState().sendSidePrompt('/image draw architecture'), true)
+    assert.equal(imageEvents.length, 1)
+    assert.deepEqual(imageEvents[0]?.detail, { prompt: 'draw architecture', target: 'side' })
+  } finally {
+    window.removeEventListener('pi:enter-image-mode', onImageMode)
+  }
+
+  // Inline bash (`!` and `!!`) runs on Side Chat via Pi's bash RPC and leaves Main untouched
+  rpcImpl = async (command) => {
+    if (command === 'bash') return { output: 'ok', exitCode: 0 }
+    if (command === 'prompt') throw new Error('Network error')
+    return {}
+  }
+  assert.equal(await useAppStore.getState().sendSidePrompt('!echo hello'), true)
+  assert.equal(await useAppStore.getState().sendSidePrompt('!!pwd'), true)
+  const bashCalls = rpcCalls.filter((c) => c.command === 'bash')
+  assert.equal(bashCalls.length, 2)
+  assert.equal(bashCalls[0]?.key, sideKey)
+  assert.equal(bashCalls[0]?.payload?.command, 'echo hello')
+  assert.equal(bashCalls[0]?.payload?.excludeFromContext, false)
+  assert.equal(bashCalls[1]?.key, sideKey)
+  assert.equal(bashCalls[1]?.payload?.command, 'pwd')
+  assert.equal(bashCalls[1]?.payload?.excludeFromContext, true)
+
+  // `/compact` compacts Side Chat's own context
+  rpcCalls.length = 0
+  rpcImpl = async (command) => {
+    if (command === 'get_commands') return { commands: [] }
+    if (command === 'compact') return {}
+    if (command === 'prompt') throw new Error('Network error')
+    return {}
+  }
+  assert.equal(await useAppStore.getState().sendSidePrompt('/compact focus diffs'), true)
+  const compactRpc = rpcCalls.find((c) => c.command === 'compact' && c.key === sideKey)
+  assert.equal(compactRpc?.payload?.customInstructions, 'focus diffs')
+
+  // Scoped setAgentMode switches only Side Chat's mode without mutating Main
+  rpcCalls.length = 0
+  rpcImpl = async () => ({})
+  await useAppStore.getState().setAgentMode('plan', sideKey)
+  assert.equal(useAppStore.getState().threads[sideKey]?.agentMode, 'plan')
+  assert.equal(useAppStore.getState().agentMode, 'default')
+  assert.equal(
+    rpcCalls.some((c) => c.command === 'prompt' && c.key === sideKey && c.payload?.message === '/desktop-mode plan'),
+    true
+  )
+  rpcCalls.length = 0
 
   // Failed send MUST preserve sideQuotes!
   rpcImpl = async (command) => {
@@ -835,6 +954,24 @@ test('reference chip lifecycle, failed-send preservation, live/hydrated sideRefs
   const liveUser = useAppStore.getState().threads[sideKey]?.items.find((i): i is UserItem => i.kind === 'user')
   assert.equal(liveUser?.sideRefs?.length, 1)
   assert.equal(liveUser?.sideRefs?.[0].id, ref.id)
+
+  // submitComposerDraft forwards kind ('steer') and image options (/desktop-image) to Side Chat
+  rpcCalls.length = 0
+  const imageSent = await useAppStore.getState().submitComposerDraft(sideKey, {
+    draft: { text: 'Draw module graph', images: [] },
+    text: 'Draw module graph',
+    kind: 'steer',
+    sendImage: { model: 'gpt-image-1.5', size: '1024x1024', quality: 'medium', count: 2 }
+  })
+  assert.equal(imageSent, true)
+  const sideImageSetup = rpcCalls.find(
+    (c) => c.command === 'prompt' && c.key === sideKey && String(c.payload?.message ?? '').startsWith('/desktop-image ')
+  )
+  assert.ok(sideImageSetup, 'submitComposerDraft must forward image options to Side Chat')
+  const sideSteerPrompt = rpcCalls.find(
+    (c) => c.command === 'prompt' && c.key === sideKey && c.payload?.message === 'Draw module graph'
+  )
+  assert.equal(sideSteerPrompt?.payload?.streamingBehavior, 'steer', 'submitComposerDraft must preserve queue kind on Side Chat')
 
   // Live entry_appended `pi-desktop-side-turn-meta` also attaches sideRefs retroactively
   const secondRef = { ...ref, id: 'sref-retro' }

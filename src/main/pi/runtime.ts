@@ -27,11 +27,7 @@ import { PiRpcClient } from './rpc-client'
 import { buildRpcArgs } from './rpc-args'
 import { canAutoApprove, parseToolApproval, permissionExtension } from './permissions'
 import { prepareLaunchAgentSettings } from './retry-policy'
-import {
-  SIDE_CHAT_ALLOWED_TOOLS,
-  SIDE_CHAT_EXCLUDED_TOOLS,
-  sideChatExtension
-} from './side-chat'
+import { sideChatExtension } from './side-chat'
 import { taskModesExtension } from './task-modes'
 import { subagentExtension } from './subagent'
 import { swarmExtension } from './swarm'
@@ -206,84 +202,70 @@ export class PiRuntime extends EventEmitter {
         ensureStaticExtensionFiles(userData),
         (async () => {
           const writes: [string, string][] = []
+          // `sessionFile` is undefined when Pi has nothing to resume; only the
+          // main conversation inherits the "start new chats in Plan Mode" seed.
+          const defaultMode =
+            !isSide && !sessionFile && this.options.getDefaultPlanMode?.() === true ? 'plan' : 'default'
           if (isSide) {
             const sideOwnerId = trace?.uiSessionId || sessionFile || `draft:side:${scratchId}`
             const bridge = this.options.registerSideChatBridge
               ? await this.options.registerSideChatBridge(sideOwnerId, options.parentSessionKey, options.cwd)
               : { bridgeUrl: 'http://127.0.0.1:0', bridgeToken: '', revoke: () => {} }
             revokeSideBridge = bridge.revoke
-            files.push(permissionFile, sideChatFile)
-            writes.push(
-              [
-                permissionFile,
-                permissionExtension(
-                  permissionTitle,
-                  true,
-                  undefined,
-                  undefined,
-                  undefined,
-                  undefined,
-                  sideChatFile
-                )
-              ],
-              [
-                sideChatFile,
-                sideChatExtension({
-                  bridgeUrl: bridge.bridgeUrl,
-                  bridgeToken: bridge.bridgeToken,
-                  extensionPath: sideChatFile,
-                  parentSessionKey: options.parentSessionKey
-                })
-              ]
-            )
-          } else {
-            files.push(permissionFile, subagentPermissionFile, subagentToolsFile, modeFile, subagentFile, swarmFile)
-            // `sessionFile` is undefined exactly when Pi has nothing to resume, so this
-            // is the one moment "a brand-new conversation starts in Plan Mode" is true.
-            const defaultMode =
-              !sessionFile && this.options.getDefaultPlanMode?.() === true ? 'plan' : 'default'
-            writes.push(
-              [
-                permissionFile,
-                permissionExtension(
-                  permissionTitle,
-                  true,
-                  modeFile,
-                  swarmFile,
-                  expectedStaticFiles.computer,
-                  expectedStaticFiles.image
-                )
-              ],
-              [subagentPermissionFile, permissionExtension(permissionTitle, false)],
-              [subagentToolsFile, workspaceToolsExtension()],
-              [modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile)],
-              [
-                subagentFile,
-                subagentExtension(
-                  this.options.getSubagentModel?.() ?? {},
-                  subagentPermissionFile,
-                  permissionTitle,
-                  trustProject,
-                  { command: launch.command, prefixArgs: launch.prefixArgs },
-                  // Named agent presets are project data, not Settings, but they cross
-                  // the same boundary: read here once per process, verified and bounded
-                  // by the loader, so the generated extension never re-opens a file.
-                  this.options.getAgentPresets?.(options.cwd) ?? [],
-                  subagentToolsFile
-                )
-              ],
-              [
-                swarmFile,
-                swarmExtension({
-                  permissionExtensionPath: subagentPermissionFile,
-                  permissionTitle,
-                  trustProject,
-                  fallbackInvocation: { command: launch.command, prefixArgs: launch.prefixArgs },
-                  workspaceToolsExtensionPath: subagentToolsFile
-                })
-              ]
-            )
+            files.push(sideChatFile)
+            writes.push([
+              sideChatFile,
+              sideChatExtension({
+                bridgeUrl: bridge.bridgeUrl,
+                bridgeToken: bridge.bridgeToken,
+                extensionPath: sideChatFile,
+                parentSessionKey: options.parentSessionKey
+              })
+            ])
           }
+          files.push(permissionFile, subagentPermissionFile, subagentToolsFile, modeFile, subagentFile, swarmFile)
+          writes.push(
+            [
+              permissionFile,
+              permissionExtension(
+                permissionTitle,
+                true,
+                modeFile,
+                swarmFile,
+                expectedStaticFiles.computer,
+                expectedStaticFiles.image,
+                isSide ? sideChatFile : undefined
+              )
+            ],
+            [subagentPermissionFile, permissionExtension(permissionTitle, false)],
+            [subagentToolsFile, workspaceToolsExtension()],
+            [modeFile, taskModesExtension(this.options.getComputerUse?.() === true, defaultMode, modeFile)],
+            [
+              subagentFile,
+              subagentExtension(
+                this.options.getSubagentModel?.() ?? {},
+                subagentPermissionFile,
+                permissionTitle,
+                trustProject,
+                { command: launch.command, prefixArgs: launch.prefixArgs },
+                // Named agent presets are project data, not Settings, but they cross
+                // the same boundary: read here once per process, verified and bounded
+                // by the loader, so the generated extension never re-opens a file.
+                this.options.getAgentPresets?.(options.cwd) ?? [],
+                subagentToolsFile
+              )
+            ],
+            [
+              swarmFile,
+              swarmExtension({
+                permissionExtensionPath: subagentPermissionFile,
+                permissionTitle,
+                trustProject,
+                fallbackInvocation: { command: launch.command, prefixArgs: launch.prefixArgs },
+                workspaceToolsExtensionPath: subagentToolsFile
+              })
+            ]
+          )
           if (options.customInstructions?.trim()) {
             files.push(customInstructionsFile)
             writes.push([customInstructionsFile, options.customInstructions.trim()])
@@ -314,23 +296,20 @@ export class PiRuntime extends EventEmitter {
         trustProject,
         options.customInstructions?.trim() ? customInstructionsFile : undefined,
         permissionFile,
-        isSide ? undefined : modeFile,
+        modeFile,
         staticFiles.provider,
-        isSide ? undefined : subagentFile,
-        isSide ? undefined : staticFiles.computer,
+        subagentFile,
+        staticFiles.computer,
         staticFiles.contextBreakdown,
         staticFiles.generationTiming,
         staticFiles.mermaid,
-        isSide ? undefined : staticFiles.image,
-        isSide ? undefined : swarmFile,
-        isSide
-          ? {
-              sideChatFile,
-              noMcp: true,
-              tools: SIDE_CHAT_ALLOWED_TOOLS,
-              excludeTools: SIDE_CHAT_EXCLUDED_TOOLS
-            }
-          : undefined
+        staticFiles.image,
+        swarmFile,
+        // A side conversation is a normal working conversation: the extension
+        // adds the main-conversation digest and its inspect tools, and nothing
+        // else. Restricting the loadout here used to make it a second, weaker
+        // agent — the pane now reads and writes like the conversation beside it.
+        isSide ? { sideChatFile } : undefined
       )
     ]
     const configuredSessionDir = this.options.getSessionDir?.(options.cwd, { role: options.role })?.trim()
@@ -548,10 +527,9 @@ export class PiRuntime extends EventEmitter {
       // A newer start may have replaced this client while it was coming up.
       if (generation !== this.generation || this.client !== client) return { ok: false }
       if (!permissionsReady) throw new Error('Pi did not load its tool approval controls. Restart the runtime to try again.')
-      if (isSide) {
-        if (!sideChatReady) throw new Error('Pi did not load its Side Chat read-only controls. Restart the runtime to try again.')
-      } else {
-        if (!modesReady) throw new Error('Pi did not load its task mode controls. Restart the runtime to try again.')
+      if (!modesReady) throw new Error('Pi did not load its task mode controls. Restart the runtime to try again.')
+      if (isSide && !sideChatReady) {
+        throw new Error('Pi did not load its Side Chat controls. Restart the runtime to try again.')
       }
       if (generation !== this.generation || this.client !== client) return { ok: false }
       this.setStatus({

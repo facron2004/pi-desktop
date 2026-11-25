@@ -650,50 +650,55 @@ export class SideChatBindingService {
     sessionRoots: readonly string[] = this.getSessionRoots()
   ): Promise<{ parentSessionKey: string; activeSideKey: string; hasPersistedHistory: boolean }> {
     const pKey = parentLookupKey(parentSessionKey)
-    const pending = this.pendingDraftBindings.get(pKey)
-    const store = !parentSessionKey.startsWith('draft:') ? this.refreshFromDisk() : undefined
-    const persisted = store?.bindings[pKey]
-
-    const filesToDelete = deduplicateFiles([
-      ...(pending?.activeSideFile ? [pending.activeSideFile] : []),
-      ...(persisted?.activeSideFile ? [persisted.activeSideFile] : [])
-    ])
+    const persistedParent = !parentSessionKey.startsWith('draft:')
+    const pendingBeforeStop = this.pendingDraftBindings.get(pKey)
+    const savedBeforeStop = persistedParent ? this.refreshFromDisk().bindings[pKey]?.activeSideFile : undefined
     const runtimeKeys = new Set<string>([
       ...(this.supervisor?.sideKeysForParent(parentSessionKey) ?? []),
-      ...(pending ? [pending.activeSideKey] : []),
-      ...filesToDelete
+      ...(pendingBeforeStop ? [pendingBeforeStop.activeSideKey] : []),
+      ...(savedBeforeStop ? [savedBeforeStop] : [])
     ])
 
-    if (this.supervisor) {
-      await Promise.all([...runtimeKeys].map((key) => this.supervisor!.stop(key).catch(() => {})))
+    const supervisor = this.supervisor
+    if (supervisor) await Promise.all([...runtimeKeys].map((key) => supervisor.stop(key)))
+
+    // A draft can acquire its session file while the runtime is stopping.
+    const pending = this.pendingDraftBindings.get(pKey)
+    let activeSideFile = savedBeforeStop
+    if (pendingBeforeStop) {
+      activeSideFile = pending
+        ? pending.activeSideFile
+        : persistedParent
+          ? this.refreshFromDisk().bindings[pKey]?.activeSideFile
+          : undefined
+    }
+    if (activeSideFile && !(await remover(activeSideFile, sessionRoots))) {
+      throw new Error('Could not clear the side chat.')
     }
 
-    for (const sideFile of filesToDelete) {
-      this.parentBySide.delete(sideLookupKey(sideFile))
-      await remover(sideFile, sessionRoots).catch(() => false)
-    }
-    if (pending) {
-      this.parentBySide.delete(sideLookupKey(pending.activeSideKey))
-    }
-
-    if (!parentSessionKey.startsWith('draft:') && persisted) {
-      const deletedSet = new Set(filesToDelete.map(canonicalSessionFile))
+    if (persistedParent && activeSideFile) {
+      const deletedFile = canonicalSessionFile(activeSideFile)
       this.mutateStore((draft) => {
         const current = draft.bindings[pKey]
         if (!current) return
-        const remaining = current.sideFiles.filter((f) => !deletedSet.has(canonicalSessionFile(f)))
+        const remaining = current.sideFiles.filter((file) => canonicalSessionFile(file) !== deletedFile)
         if (remaining.length === 0) {
           delete draft.bindings[pKey]
         } else {
           draft.bindings[pKey] = {
             ...current,
-            activeSideFile: undefined,
+            activeSideFile:
+              current.activeSideFile && canonicalSessionFile(current.activeSideFile) !== deletedFile
+                ? current.activeSideFile
+                : undefined,
             sideFiles: remaining,
             updatedAt: Date.now()
           }
         }
       })
     }
+    if (activeSideFile) this.parentBySide.delete(sideLookupKey(activeSideFile))
+    if (pending) this.parentBySide.delete(sideLookupKey(pending.activeSideKey))
 
     const freshDraftKey = mintSideDraftKey()
     this.pendingDraftBindings.set(pKey, {

@@ -97,7 +97,7 @@ export function pruneComposerDrafts(
   return pruned
 }
 
-export type DraftSaveResult = 'saved' | 'partial' | 'failed'
+export type DraftSaveResult = 'saved' | 'partial' | 'partial-drafts' | 'failed'
 
 export const COMPOSER_DRAFTS_STORAGE_KEY = 'pi-desktop.composer-drafts.v1'
 
@@ -286,18 +286,20 @@ export function saveComposerDrafts(
   }
   if (writeWithoutHistory(drafts)) return 'partial'
 
+  const savedDrafts = loadComposerDrafts(storage).drafts
   const savedImages = new Map<string, ComposerDraftImage>()
-  for (const draft of Object.values(loadComposerDrafts(storage).drafts)) {
+  for (const draft of Object.values(savedDrafts)) {
     for (const image of draft.images) savedImages.set(image.id, image)
   }
+  const keepSavedImages = (images: ComposerDraftImage[]) => images.filter(image => {
+    const saved = savedImages.get(image.id)
+    return saved?.data === image.data && saved?.mimeType === image.mimeType
+  })
   if (savedImages.size > 0) {
     let kept = 0
     let removed = 0
     const partial = Object.fromEntries(Object.entries(drafts).map(([key, draft]) => {
-      const images = draft.images.filter(image => {
-        const saved = savedImages.get(image.id)
-        return saved?.data === image.data && saved?.mimeType === image.mimeType
-      })
+      const images = keepSavedImages(draft.images)
       kept += images.length
       removed += draft.images.length - images.length
       return [key, { ...draft, images }]
@@ -309,7 +311,34 @@ export function saveComposerDrafts(
     key, { ...draft, images: [] }
   ]))
   if (write(textOnly) || writeWithoutHistory(textOnly)) return 'partial'
-  return 'failed'
+
+  // Even without images, a large draft can put the whole snapshot over quota.
+  // Preserve the last saved versions and commit only the updates that fit.
+  let recoverable = Object.fromEntries(
+    Object.entries(savedDrafts).filter(([key]) => Object.hasOwn(drafts, key))
+  )
+  let savedUpdate = false
+  for (const [key, draft] of Object.entries(drafts)) {
+    const previous = recoverable[key]
+    if (previous?.text === draft.text && JSON.stringify(previous) === JSON.stringify(draft)) continue
+
+    const { history, ...withoutHistory } = draft
+    const candidates = [draft]
+    if (history !== undefined) candidates.push(withoutHistory)
+    const savedAttachments = keepSavedImages(draft.images)
+    if (savedAttachments.length > 0 && savedAttachments.length < draft.images.length) {
+      candidates.push({ ...withoutHistory, images: savedAttachments })
+    }
+    if (draft.images.length > 0) candidates.push({ ...withoutHistory, images: [] })
+    for (const candidate of candidates) {
+      const next = { ...recoverable, [key]: candidate }
+      if (!write(next)) continue
+      recoverable = next
+      savedUpdate = true
+      break
+    }
+  }
+  return savedUpdate || write(recoverable) ? 'partial-drafts' : 'failed'
 }
 
 export function forgetLastDraftKey(

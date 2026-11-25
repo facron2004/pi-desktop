@@ -831,13 +831,11 @@ app.on('before-quit', (event) => {
     for (const result of results) {
       if (result.status === 'rejected') console.error('[pi-desktop] shutdown failed:', result.reason)
     }
-  }).finally(() => {
-    void cleanupStaticExtensionCache().finally(() => {
-      clearTimeout(watchdog)
-      shutdownComplete = true
-      scheduledTaskService?.dispose()
-      app.quit()
-    })
+  }).finally(async () => {
+    await Promise.allSettled([cleanupStaticExtensionCache(), scheduledTaskService?.finishShutdown()])
+    clearTimeout(watchdog)
+    shutdownComplete = true
+    app.quit()
   })
 })
 

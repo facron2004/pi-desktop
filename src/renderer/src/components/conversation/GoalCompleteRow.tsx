@@ -2,6 +2,7 @@ import { CheckCircle2, Trash2 } from 'lucide-react'
 import { GOAL_STATUS_KEY } from '@shared/types'
 import { readGoalStatus } from '@shared/task-mode-state'
 import { useAppStore } from '../../store/useAppStore'
+import { useConversationScope, useSessionViewSlice } from '../../lib/conversation-scope'
 import { useT } from '../../lib/i18n'
 
 /**
@@ -18,7 +19,9 @@ import { useT } from '../../lib/i18n'
  * the extension's own command, so the extension stays the single owner.
  */
 export function GoalCompleteRow() {
-  const raw = useAppStore((state) => state.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text)
+  const scope = useConversationScope()
+  const view = useSessionViewSlice()
+  const raw = view.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text
   const t = useT()
   const goal = readGoalStatus(raw)
   if (!goal || goal.status !== 'complete') return null
@@ -37,7 +40,14 @@ export function GoalCompleteRow() {
             className="goal-done__clear"
             title={t('Clear goal')}
             aria-label={t('Clear goal')}
-            onClick={() => void useAppStore.getState().runTaskCommand('/desktop-goal clear')}
+            onClick={() =>
+              void useAppStore
+                .getState()
+                .runTaskCommand(
+                  '/desktop-goal clear',
+                  scope.surface === 'main' ? scope.sessionKey : (scope.sessionKey ?? '')
+                )
+            }
           >
             <Trash2 size={12} aria-hidden="true" />
           </button>

@@ -319,6 +319,93 @@ export function summarizeSwarm(workers: readonly SwarmWorkerState[]): SwarmSumma
   return { total: workers.length, working, idle, failed, stopped, tokens }
 }
 
+/**
+ * The one sentence at the top of the Swarm page.
+ *
+ * A live team says who is working. Failures only become the sentence when
+ * nobody is. A closed mode with people still running says they are finishing.
+ * Without a live roster the page is a snapshot, not a team that is idle.
+ */
+export function swarmSituation(
+  summary: SwarmSummary,
+  live: boolean,
+  swarmMode: boolean
+): { key: string; count?: number } {
+  if (!live) return { key: 'No live connection. This is the last team snapshot.' }
+  if (!swarmMode && summary.working > 0) {
+    return { key: 'Swarm Mode is off. {count} workers are still finishing.', count: summary.working }
+  }
+  if (summary.working > 0) return { key: '{count} workers are working', count: summary.working }
+  if (summary.failed > 0) return { key: '{count} failed, the team is waiting', count: summary.failed }
+  return { key: 'The team is idle. More work can be assigned.' }
+}
+
+/** The second line of a roster row: what that worker is doing right now. */
+export type SwarmRosterLine =
+  | { kind: 'tool'; tool: string }
+  | { kind: 'activity'; text: string }
+  | { kind: 'error'; text: string }
+  | { kind: 'last'; text: string }
+  | { kind: 'none' }
+
+function flat(value: string | undefined): string {
+  return (value ?? '').replace(/\s+/g, ' ').trim()
+}
+
+export function swarmRosterLine(worker: SwarmWorkerState, live: boolean): SwarmRosterLine {
+  if (live && (worker.status === 'working' || worker.status === 'starting')) {
+    const tool = flat(worker.toolName)
+    if (tool) return { kind: 'tool', tool }
+    const activity = flat(worker.activity)
+    if (activity && activity !== 'Starting' && activity !== 'Working') return { kind: 'activity', text: activity }
+    const preview = swarmPreview(worker)
+    if (preview) return { kind: 'activity', text: preview }
+    if (worker.status === 'starting') return { kind: 'activity', text: 'Starting' }
+    return { kind: 'none' }
+  }
+  const error = flat(worker.errorMessage)
+  if (worker.status === 'failed' && error) return { kind: 'error', text: error }
+  const task = flat(worker.task)
+  if (task) return { kind: 'last', text: task }
+  return { kind: 'none' }
+}
+
+/**
+ * The roster the page lists.
+ *
+ * A live status entry wins. A saved roster wins after the process is gone.
+ * When a session only kept the hand-overs, one idle row per worker still
+ * opens those turns — the names stay in the order the work first appeared.
+ */
+export function rosterForPage(
+  liveWorkers: readonly SwarmWorkerState[],
+  historyWorkers: readonly SwarmWorkerState[],
+  assignments: readonly SwarmAssignment[],
+  live: boolean
+): SwarmWorkerState[] {
+  if (live) return [...liveWorkers]
+  if (historyWorkers.length) return [...historyWorkers]
+  const seen = new Set<string>()
+  const synthesized: SwarmWorkerState[] = []
+  for (const assignment of [...assignments].reverse()) {
+    const name = assignment.worker.trim()
+    const key = name.toLowerCase()
+    if (!name || seen.has(key)) continue
+    seen.add(key)
+    synthesized.push({ name, status: 'idle', task: assignment.task })
+  }
+  return synthesized
+}
+
+/** True while the lead's spawn call has not settled and the roster may still be empty. */
+export function swarmSpawnPending(items: readonly ThreadItem[]): boolean {
+  return items.some((item) =>
+    item.kind === 'tool'
+    && item.toolName === 'swarm_spawn'
+    && (item.status === 'proposed' || item.status === 'running')
+  )
+}
+
 /** A one-line preview: a live tail while working, the report once idle. */
 export function swarmPreview(worker: SwarmWorkerState): string {
   if (worker.status === 'starting') return ''

@@ -48,7 +48,7 @@ over its RPC protocol. It does **not** reimplement the agent — it is a protoco
 | `src/main/pi/` | Pi integration: CLI discovery, RPC client, runtime, one-shot CLI |
 | `src/main/window-state.ts` | remembers the size and place of the window |
 | `src/main/side-chats.ts` | side-chat bindings: one side session per main conversation |
-| `src/renderer/src/components/side-chat/` | the side chat panel: header, sync pill, transcript, composer |
+| `src/renderer/src/components/side-chat/` | the side chat panel: its header, empty state and reference chips (its transcript and composer are the main chat's own) |
 | `src/preload/` | `contextBridge` surface — the only renderer↔main channel |
 | `src/renderer/` | React UI |
 | `src/renderer/src/components/Launcher.tsx` | the palette over the app (`Ctrl+Shift+P`) |
@@ -720,20 +720,32 @@ popover behind it, which reads Pi's `get_session_stats`.
 
 ## The side chat
 
-A side chat is a **read-only companion conversation** beside the chat on screen.
-It runs its own Pi process in the same project, and it is steered on its own —
-asking it something never touches the run the lead is doing. Every main
-conversation keeps one side slot, and that binding is what the panel follows.
+A side chat is a **second working conversation** beside the chat on screen. It
+runs its own Pi process in the same project with the same tools, and it is
+steered on its own — asking it something never touches the run the lead is
+doing. Every main conversation keeps one side slot, and that binding is what
+the panel follows.
 
-### What it cannot do
+### It is not a weaker agent
 
-`src/main/pi/side-chat.ts` installs the side process's tool loadout: `read`,
-`grep`, `find`, `ls`, `inspect_main_conversation` and `inspect_main_changes`
-only. `write`, `edit`, `bash`, `powershell`, `codemode`, `tool_search`,
-`subagent`, `computer`, `generate_image` and every `mcp__*` tool are absent,
-and the static system-prompt section (kept byte-identical so providers keep
-their KV-cache prefix) says so in the first line. A side chat that claims it
-edited a file is wrong: keep the tool exclusion list and that prompt together.
+`src/main/pi/side-chat.ts` adds two things to a normal Pi process: the
+`inspect_main_conversation` / `inspect_main_changes` tools, and an ephemeral
+`<main_conversation_digest>` before each user message. It installs **no tool
+policy** — `write`, `edit`, `bash`, `powershell`, MCP servers and the rest are
+available, exactly as in the main conversation, because a reader who cannot act
+on what they found has not been helped. The static system-prompt section (kept
+byte-identical so providers keep their KV-cache prefix) says the same thing and
+warns that the main conversation may be editing the same files.
+
+The clamp that used to live here (an `--tools` allow-list, an
+`--exclude-tools` list, `--no-mcp`, an extension-side `setActiveTools`, a
+`tool_call` block and a `user_bash` answer, plus a supervisor guard on
+mutating RPC commands) was a design mistake, not a safety feature: it made the
+pane a viewer of a conversation it appears to be equal to. Do not reintroduce it;
+`tests/side-chat-supervisor.test.ts` now asserts a `bash` request reaches Pi and
+that the extension leaves the loadout alone. The only real constraint left is
+concurrency: both conversations work in one working tree, so a side chat must
+re-read a file before writing it rather than assume it owns the workspace.
 
 ### The mirror is a projection, never a second transcript
 
@@ -759,28 +771,40 @@ without deleting the old file. The live snapshot is published on
 
 ### The panel
 
-`SideChatPanel` is lazy-mounted as its own tool-panel page (`view: 'side-chat'`)
-and renders under `ConversationScopeProvider surface="side"`, so it reads the
-side thread's slice while the main stream and composer keep theirs. The parts:
+`SideChatPanel` is lazy-mounted as its own tool-panel page (`view: 'side-chat'`).
+It is **not a second chat implementation**: the pane renders the main
+conversation's own `Thread` and `Composer` under
+`ConversationScopeProvider surface="side"`, so the two panes cannot
+drift apart — same bubbles, same tool rows, same folding, same scroll memory
+(per session key), same composer with only main-session chrome (project and
+branch menus, and the edit rewind undo strip) omitted while keeping full task
+modes (GoalBar, mode/swarm chips), the full add menu (skills, plugins,
+diagrams, image generation), permissions, inline `!` bash, and per-conversation
+model/thinking controls. `readOnly` is a real, optional property of the scope (a future viewer), not a side-chat default. `Thread` and
+`Composer` are scope-aware through `lib/conversation-scope.tsx`
+(`useConversationScope` + `useSessionViewSlice`); with no provider they read the
+top-level store exactly as before, which is what keeps the main surface
+unchanged. Do not reintroduce a bespoke transcript or composer for this pane:
+`SideChatTranscript`, `SideChatComposer` and `SideChatSyncPill` were exactly
+that and they were deleted.
 
-- **Header** (`SideChatHeader`): the read-only marker, the review/preset menu
-  (`explain-live`, `summarize-main`, `diagnose-error`, `breakdown-plan`,
-  `review-session`, `review-worktree`), and Clear with confirmation.
-- **Sync pill** (`SideChatSyncPill`): what the main chat is doing right now —
-  run phase, goal, todo progress, changed files — built by
-  `lib/side-chat-context.ts`.
-- **Transcript and turn actions**: a ```prompt fence becomes a one-click
-  hand-off to the main composer; a tool call or reference quotes back into the
-  side composer.
-- **Composer**: reference chips (`MAX_SIDE_CHAT_REFERENCES`,
-  `MAX_SIDE_CHAT_SNIPPET_CHARS`) attached from the selection bar, a turn, a tool,
-  an error or a file diff; `ThreadSelectionBar` is the "ask about this" row on
-  the main transcript.
+What the pane adds on top of those two components:
+
+- **Header** (`SideChatHeader`): the review/preset menu (`explain-live`,
+  `summarize-main`, `diagnose-error`, `breakdown-plan`, `review-session`,
+  `review-worktree`) and Clear with confirmation. It carries no read-only badge:
+  the side chat works with the same tools as the conversation beside it.
+- **Empty state** (`SideChatEmptyState`): the preset cards, drawn only while the
+  side thread has no items — `Thread` renders nothing for an empty
+  conversation.
+- **Reference chips**: `sideQuotes` rendered above the composer through
+  `SideChatRefChip`, so a quoted turn stays visible and removable now that the
+  chips do not live inside a bespoke composer.
 
 ### Doors
 
 `Ctrl+Shift+L` (`toggle-side-chat`), `/side [question]` (open, or follow with a
-question), the titlebar side-chat button and its unread dot, the Progress
+question), the tool panel's own **Side chat** card and tab, the Progress
 section's breakdown action, the context menus on the main transcript, and the
 tray card. `lib/side-chat-context.ts` owns `OPEN_SIDE_CHAT_EVENT` and the
 request shape; `App.tsx` stamps every request with a new `seq` so repeating

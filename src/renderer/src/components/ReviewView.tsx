@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import type { GitFileDiff, GitFileStatus, GitStatus } from '@shared/types'
 import { buildWorkingTreeDiff, CONTEXT_LINES, type DiffBlock, type DiffRow } from '../lib/diff-fold'
+import { relativePath, resolveAgainst } from '../lib/path'
 import { useAppStore } from '../store/useAppStore'
 import { useT } from '../lib/i18n'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -221,6 +222,7 @@ export function ReviewView({
 
   const selectedFile =
     visible.find((file) => file.path === selectedPath) ?? visible[0] ?? null
+  const selectedLocation = selectedFile ? resolveAgainst(git?.root, selectedFile.path) : ''
   const cachedDiff = selectedFile ? diffs[selectedFile.path] : undefined
   const selectedDiff = cachedDiff?.snapshot?.root === git?.root ? cachedDiff : undefined
 
@@ -314,7 +316,7 @@ export function ReviewView({
   const copyPatch = useCallback(
     async (file?: string) => {
       try {
-        const patch = await window.pi.git.patch(file)
+        const patch = await window.pi.git.patch(file, expectedRoot)
         if (!patch.text.trim()) {
           showToast(t('There is no patch to copy yet'), 'warning')
           return
@@ -325,11 +327,11 @@ export function ReviewView({
             ? t('The patch was copied, but it is too large to be complete')
             : t('The patch was copied')
         )
-      } catch {
-        showToast(t('The clipboard is not available'), 'error')
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : t('The clipboard is not available'), 'error')
       }
     },
-    [showToast, t]
+    [expectedRoot, showToast, t]
   )
 
   const revert = useCallback(async () => {
@@ -465,13 +467,14 @@ export function ReviewView({
             {selectedFile ? (
               <ReviewFileDetail
                 file={selectedFile}
+                mentionPath={relativePath(expectedRoot, selectedLocation)}
                 state={selectedDiff}
                 expectedRoot={expectedRoot}
                 split={diffSplit}
                 expandAll={expandAll}
                 onExpandAllChange={setExpandAll}
-                onOpen={() => onOpenFile({ path: selectedFile.path })}
-                onReveal={() => void window.pi.fs.reveal(selectedFile.path)}
+                onOpen={() => onOpenFile({ path: selectedLocation })}
+                onReveal={() => void window.pi.fs.reveal(selectedLocation)}
                 onToggleStage={() => void toggleStage(selectedFile)}
                 onCopyPatch={() => void copyPatch(selectedFile.path)}
                 onRevert={() => setRevertTarget({ file: selectedFile.path, root: expectedRoot })}
@@ -617,6 +620,7 @@ function splitHunks(rows: DiffRow[], context = CONTEXT_LINES): DiffBlock[] {
 
 function ReviewFileDetail({
   file,
+  mentionPath,
   state,
   expectedRoot,
   split,
@@ -630,6 +634,7 @@ function ReviewFileDetail({
   onHunkReverted
 }: {
   file: GitFileStatus
+  mentionPath: string
   state: DiffState | undefined
   expectedRoot: string
   split: boolean
@@ -691,7 +696,7 @@ function ReviewFileDetail({
                 {file.staged ? <Minus size={13} /> : <Plus size={13} />}
                 {file.staged ? t('Unstage this file') : t('Stage this file')}
               </button>
-              <button className="popover__item" role="menuitem" onClick={() => { close(); insertIntoComposer(t('Review the uncommitted changes in @{file} and check for potential issues.').replace('{file}', file.path.replace(/\\/g, '/'))) }}>
+              <button className="popover__item" role="menuitem" onClick={() => { close(); insertIntoComposer(t('Review the uncommitted changes in @{file} and check for potential issues.').replace('{file}', mentionPath.replace(/\\/g, '/'))) }}>
                 <MessageSquarePlus size={13} /> {t('Ask Pi to review this file')}
               </button>
               <button className="popover__item" role="menuitem" onClick={() => { close(); onCopyPatch() }}>

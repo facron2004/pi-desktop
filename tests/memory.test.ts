@@ -483,6 +483,45 @@ test('removing one memory rewrites its shared session note without the deleted t
   assert.ok(!readFileSync(store.summaryFile, 'utf8').includes(removedText))
 })
 
+test('removing a merged memory cleans earlier notes for its project', async (t) => {
+  const dir = tempDir(t, 'remove-merged-notes')
+  const store = new MemoryStore(dir)
+  const removedText = 'The release package is staged on the old build server.'
+  const repeatedText = 'The release package is currently staged on the old build server.'
+  const keptText = 'Unit tests use the Node test runner.'
+  const learn = async (name: string, cwd: string, texts: string[], raw: string) => {
+    const source = path.join(dir, `${name}.jsonl`)
+    const candidates: MemoryCandidate[] = texts.map(text => ({
+      scope: 'project', kind: 'knowledge', projectPath: cwd, source, text
+    }))
+    await store.commitExtraction(source, { cwd, candidates, raw }, store.generation())
+    return path.join(store.rolloutDir, `${name}.md`)
+  }
+  const first = await learn('first', alphaCwd, [removedText, keptText], removedText)
+  const second = await learn('second', alphaCwd, [repeatedText], '')
+  const latest = await learn('latest', alphaCwd, [removedText], removedText)
+  const rawOnly = await learn('raw-only', alphaCwd, [], removedText)
+  const otherProject = await learn('other-project', betaCwd, [removedText], removedText)
+  const otherNote = readFileSync(otherProject, 'utf8')
+  const removed = store.readEntries().find(entry => entry.text === removedText && entry.projectPath === alphaCwd)
+  assert.ok(removed)
+  assert.equal(removed.source, path.join(dir, 'latest.jsonl'))
+  assert.ok(readFileSync(first, 'utf8').includes(removedText))
+  assert.ok(readFileSync(second, 'utf8').includes(repeatedText))
+
+  await store.remove(removed.id)
+
+  const firstNote = readFileSync(first, 'utf8')
+  assert.ok(firstNote.includes(keptText))
+  assert.ok(!firstNote.includes(removedText))
+  assert.ok(!firstNote.includes('## Model output'))
+  assert.equal(existsSync(second), false)
+  assert.equal(existsSync(latest), false)
+  assert.equal(existsSync(rawOnly), false)
+  assert.equal(readFileSync(otherProject, 'utf8'), otherNote)
+  assert.ok(!store.summaryFor(alphaCwd).includes(removedText))
+})
+
 test('a blocked summary write leaves the memory and its note available for a deletion retry', async (t) => {
   const dir = tempDir(t, 'remove-blocked-summary')
   const store = new MemoryStore(dir)

@@ -6,7 +6,8 @@ import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from '
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import type { ExtensionUiResponse, PiEvent, RuntimeQueueEvent, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
+import type { AppSettings, ExtensionUiResponse, PiEvent, RuntimeQueueEvent, RuntimeStartOptions, RuntimeStatus } from '@shared/types'
+import { AutoTitleService } from '../src/main/auto-title'
 import { SessionSupervisor, MAX_IDLE_RUNTIMES, type ManagedSessionRuntime } from '../src/main/pi/supervisor'
 import { PiRpcClient, PiRpcCommandError } from '../src/main/pi/rpc-client'
 import { InterprocessCwdGate } from '../src/main/pi/cwd-gate'
@@ -284,6 +285,104 @@ test('a cold rename appends the sample and does not touch the hot runtime', asyn
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+for (const hot of [true, false]) {
+  test(`auto-title preserves a manual rename after reading stale metadata (${hot ? 'hot' : 'cold'})`, async (t) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'pi-auto-title-manual-'))
+    const file = path.join(dir, 'chat.jsonl')
+    copyFileSync(path.join(process.cwd(), 'tests', 'fixtures', 'sessions', 'branch.jsonl'), file)
+    const runtime = new FakeRuntime()
+    const supervisor = supervisorOf([runtime])
+    let sessionName: string | undefined
+    const request = runtime.request.bind(runtime)
+    runtime.request = async <T>(command: string, payload: Record<string, unknown> = {}) => {
+      if (command === 'set_session_name') sessionName = String(payload.name)
+      if (command === 'get_state') return { sessionFile: file, sessionName } as T
+      return request<T>(command, payload)
+    }
+    const checkedTitle = Promise.withResolvers<void>()
+    const returnStaleMeta = Promise.withResolvers<void>()
+    const named = Promise.withResolvers<void>()
+    const rename = supervisor.rename.bind(supervisor)
+    t.mock.method(supervisor, 'rename', async (...args: Parameters<typeof rename>) => {
+      try {
+        return await rename(...args)
+      } finally {
+        if (args[1] === 'Automatic title') named.resolve()
+      }
+    })
+    let reads = 0
+    const now = Date.now()
+    const service = new AutoTitleService(() => ({ autoTitle: true }) as AppSettings, {
+      userDataDir: dir,
+      settleDelayMs: 1,
+      log: () => {},
+      getMeta: async () => {
+        if (++reads === 2) {
+          checkedTitle.resolve()
+          await returnStaleMeta.promise
+        }
+        return { id: 'chat', file, cwd: dir, preview: 'A question', updatedAt: now, messageCount: 2 }
+      },
+      readMessages: async () => [
+        { role: 'user', content: 'How do I fix this build failure?', timestamp: now },
+        { role: 'assistant', content: 'The lockfile needs to be refreshed.', timestamp: now + 1 }
+      ],
+      run: async () => ({ code: 0, stdout: 'Automatic title', stderr: '' })
+    })
+    t.after(async () => {
+      service.dispose()
+      await supervisor.stop()
+      rmSync(dir, { recursive: true, force: true })
+    })
+    if (hot) assert.equal((await supervisor.ensure({ sessionKey: file, sessionFile: file, cwd: dir })).ok, true)
+    service.attach(supervisor)
+    supervisor.emit('event', { ownerId: file, event: { type: 'agent_settled' } })
+    await checkedTitle.promise
+    try {
+      assert.equal(await supervisor.rename(file, 'My manual title'), true)
+    } finally {
+      returnStaleMeta.resolve()
+    }
+    await named.promise
+
+    const savedName = hot
+      ? sessionName
+      : JSON.parse(readFileSync(file, 'utf8').trimEnd().split('\n').at(-1)!).name
+    assert.equal(savedName, 'My manual title')
+  })
+}
+
+test('auto-title ignores a live state reply that predates a manual name write', async (t) => {
+  const file = 'rename-during-title-check.jsonl'
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime])
+  t.after(() => supervisor.stop())
+  await supervisor.ensure({ sessionKey: file, sessionFile: file, cwd: 'C:/demo' })
+  const stateRead = Promise.withResolvers<void>()
+  const returnState = Promise.withResolvers<void>()
+  const request = runtime.request.bind(runtime)
+  runtime.request = async <T>(command: string, payload: Record<string, unknown> = {}) => {
+    if (command === 'get_state') {
+      stateRead.resolve()
+      await returnState.promise
+      return { sessionFile: file } as T
+    }
+    return request<T>(command, payload)
+  }
+
+  const automatic = supervisor.renameIfUnnamed(file, 'Automatic title')
+  await stateRead.promise
+  try {
+    await supervisor.request(file, 'set_session_name', { name: 'Manual title' })
+  } finally {
+    returnState.resolve()
+  }
+  assert.equal(await automatic, false)
+  assert.deepEqual(runtime.commands.filter(({ command }) => command === 'set_session_name'), [
+    { command: 'set_session_name', payload: { name: 'Manual title' } }
+  ])
 })
 
 test('multiple sessions in the same and nested working directories run prompt and bash concurrently', async () => {
@@ -908,6 +1007,143 @@ test('a new write cannot overtake the directory queue when its registry lock is 
     ['first', 'second']
   )
 })
+
+test('fork cannot move a prompt waiting for the working folder onto its new branch', async () => {
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime])
+  const original = 'queued-original.jsonl'
+  const cwd = 'C:/demo'
+  await supervisor.ensure({ sessionKey: original, sessionFile: original, cwd })
+  const unlock = Promise.withResolvers<void>()
+  const lock = supervisor.withCwdLock(cwd, () => unlock.promise)
+  const queued = supervisor.request(original, 'prompt', { message: 'for the original conversation' })
+  try {
+    runtime.boundFile = 'queued-fork.jsonl'
+    await assert.rejects(
+      supervisor.request(original, 'fork', { entryId: 'user-1' }),
+      /wait for.*work to finish/i
+    )
+    runtime.boundFile = undefined
+  } finally {
+    unlock.resolve()
+    await lock
+    await queued
+    await supervisor.stop()
+  }
+  assert.equal(runtime.commands.some(({ command }) => command === 'fork'), false)
+  assert.deepEqual(runtime.commands.filter(({ command }) => command === 'prompt'), [
+    { command: 'prompt', payload: { message: 'for the original conversation' } }
+  ])
+})
+
+test('a prompt submitted during clone is rejected before it can reach the cloned session', async () => {
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime])
+  const original = 'clone-original.jsonl'
+  const copy = 'clone-copy.jsonl'
+  await supervisor.ensure({ sessionKey: original, sessionFile: original, cwd: 'C:/demo' })
+  const cloneStarted = Promise.withResolvers<void>()
+  const finishClone = Promise.withResolvers<void>()
+  const request = runtime.request.bind(runtime)
+  runtime.request = async <T>(command: string, payload: Record<string, unknown> = {}) => {
+    if (command === 'clone') {
+      runtime.boundFile = copy
+      cloneStarted.resolve()
+      await finishClone.promise
+    }
+    return request<T>(command, payload)
+  }
+
+  const cloning = supervisor.request<{ sessionFile: string }>(original, 'clone')
+  await cloneStarted.promise
+  try {
+    await assert.rejects(
+      supervisor.request(original, 'prompt', { message: 'for the original conversation' }),
+      /conversation is changing sessions/i
+    )
+  } finally {
+    finishClone.resolve()
+    await cloning
+    await supervisor.stop()
+  }
+  assert.equal((await cloning).sessionFile, copy)
+  assert.equal(runtime.commands.some(({ command }) => command === 'prompt'), false)
+})
+
+test('renaming the original during clone cannot rename the copy', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-supervisor-rename-during-clone-'))
+  const original = path.join(dir, 'original.jsonl')
+  const copy = path.join(dir, 'copy.jsonl')
+  const fixture = path.join(process.cwd(), 'tests', 'fixtures', 'sessions', 'branch.jsonl')
+  copyFileSync(fixture, original)
+  copyFileSync(fixture, copy)
+  const runtime = new FakeRuntime()
+  const supervisor = supervisorOf([runtime])
+  t.after(async () => {
+    await supervisor.stop()
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const renamed: unknown[] = []
+  supervisor.on('rename', change => renamed.push(change))
+  await supervisor.ensure({ sessionKey: original, sessionFile: original, cwd: dir })
+  const cloneStarted = Promise.withResolvers<void>()
+  const finishClone = Promise.withResolvers<void>()
+  const request = runtime.request.bind(runtime)
+  runtime.request = async <T>(command: string, payload: Record<string, unknown> = {}) => {
+    if (command === 'clone') {
+      runtime.boundFile = copy
+      cloneStarted.resolve()
+      await finishClone.promise
+    }
+    return request<T>(command, payload)
+  }
+
+  const cloning = supervisor.request<{ sessionFile: string }>(original, 'clone')
+  await cloneStarted.promise
+  try {
+    await assert.rejects(supervisor.rename(original, 'Original title'), /conversation is changing sessions/i)
+    await assert.rejects(
+      supervisor.request(original, 'set_session_name', { name: 'Original title' }),
+      /conversation is changing sessions/i
+    )
+    assert.deepEqual(renamed, [])
+    assert.equal(runtime.commands.some(({ command }) => command === 'set_session_name'), false)
+  } finally {
+    finishClone.resolve()
+    await cloning
+  }
+
+  assert.equal((await cloning).sessionFile, copy)
+  assert.equal(await supervisor.rename(original, 'Original title'), true)
+  const title = JSON.parse(readFileSync(original, 'utf8').trimEnd().split('\n').at(-1)!)
+  assert.equal(title.name, 'Original title')
+  assert.deepEqual(readFileSync(copy), readFileSync(fixture))
+  assert.deepEqual(renamed, [{ file: original, name: 'Original title' }])
+})
+
+for (const draft of [true, false]) {
+  test(`a queued prompt ${draft ? 'follows its draft onto disk' : 'stays off a different session reported by Pi'}`, async (t) => {
+    const runtime = new FakeRuntime()
+    const supervisor = supervisorOf([runtime])
+    t.after(() => supervisor.stop())
+    const original = draft ? 'draft:queued' : 'queued-before-rebind.jsonl'
+    const rebound = 'queued-after-rebind.jsonl'
+    const cwd = 'C:/demo'
+    await supervisor.ensure({ sessionKey: original, sessionFile: draft ? undefined : original, cwd })
+    const unlock = Promise.withResolvers<void>()
+    const lock = supervisor.withCwdLock(cwd, () => unlock.promise)
+    const queued = supervisor.request(original, 'prompt', { message: 'waiting' })
+    try {
+      runtime.boundFile = rebound
+      await supervisor.request(original, 'get_state')
+    } finally {
+      unlock.resolve()
+      await lock
+    }
+    assert.deepEqual(await queued, draft ? { disposition: 'started' } : { disposition: 'handled', cancelled: true })
+    assert.equal(runtime.commands.some(({ command }) => command === 'prompt'), draft)
+  })
+}
 
 test('forking leaves the original file available to an independent runtime', async () => {
   const a = new FakeRuntime()

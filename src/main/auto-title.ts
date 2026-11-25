@@ -81,7 +81,7 @@ export interface AutoTitleHost {
   on(channel: 'rekey', listener: (payload: RuntimeRekey) => void): unknown
   off(channel: 'rekey', listener: (payload: RuntimeRekey) => void): unknown
   sessionInfo?(key: string): { running: boolean; role?: SessionRuntimeRole } | undefined
-  rename?(file: string, name: string): Promise<boolean>
+  renameIfUnnamed?(file: string, name: string): Promise<boolean>
 }
 
 /**
@@ -663,11 +663,11 @@ export class AutoTitleService {
     }
   }
 
-  /** The rename door: `supervisor.rename` decides hot (RPC) versus cold (append). */
+  /** The supervisor checks the current title where it writes it. */
   private async rename(file: string, title: string): Promise<boolean> {
     // Never write the JSONL from here: without the supervisor's door this
     // conversation has no single writer, so titling is simply not offered.
-    const rename = this.deps.rename ?? this.host?.rename?.bind(this.host)
+    const rename = this.deps.rename ?? this.host?.renameIfUnnamed?.bind(this.host)
     if (!rename) return false
     return await rename(file, title)
   }

@@ -1,6 +1,7 @@
 import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ChevronUp, Database, Ellipsis, List, MessagesSquare, Search, X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
+import { useConversationScope, useSessionViewSlice } from '../lib/conversation-scope'
 import type { AssistantItem, ToolItem, UserItem } from '../lib/thread'
 import type { Turn } from '../lib/turns'
 import { buildTurns, changedTurnsFrom, roundMetadataForTurns, usageForTurn, userMetadataForTurns } from '../lib/turns'
@@ -169,6 +170,19 @@ function normalizeSearchText(text: string): string {
   return text.replace(/\s+/g, ' ').trim().toLowerCase()
 }
 
+/**
+ * Whether the keyboard focus sits in the side chat panel.
+ *
+ * Every thread listens for the same window shortcuts, so each one has to decide
+ * whether a key belongs to it: the main transcript must ignore keys typed in the
+ * side panel, and the side transcript must only answer while its own panel owns
+ * the focus — otherwise `Ctrl+F` would open both search bars.
+ */
+function focusIsInSideSurface(): boolean {
+  const active = document.activeElement
+  return Boolean(active instanceof Element && active.closest('[data-conversation-surface="side"]'))
+}
+
 function useCopy() {
   const [copied, setCopied] = useState<string | null>(null)
 
@@ -186,12 +200,21 @@ function useCopy() {
 }
 
 export const Thread = memo(function Thread() {
-  const items = useAppStore((state) => state.items)
-  const isStreaming = useAppStore((state) => state.isStreaming)
-  const run = useAppStore((state) => state.run)
-  const transport = useAppStore((state) => state.transport)
-  const retry = useAppStore((state) => state.retry)
-  const stop = useAppStore((state) => state.stop)
+  /**
+   * The conversation this transcript shows.
+   *
+   * Without a provider the default scope is the main chat and the slice resolves
+   * to exactly the top-level store fields this component has always read. A side
+   * chat panel mounts the same component under its own scope, so one transcript
+   * renders both conversations without either one reading the other's state.
+   */
+  const { surface } = useConversationScope()
+  // A side chat is a working conversation like the main one; what it must not
+  // borrow are the Main conversation's doors (fork/edit/jump/goal).
+  const isMainSurface = surface === 'main'
+  const isSideSurface = surface === 'side'
+  const slice = useSessionViewSlice()
+  const { items, isStreaming, run, transport, retry, cwdWait, models, error, submitSeq, clientKey } = slice
   /**
    * Whether runtime work is open, as opposed to whether Pi has started streaming.
    *
@@ -204,23 +227,15 @@ export const Thread = memo(function Thread() {
   const isStreamingRef = useRef(isStreaming || runOpen)
   isStreamingRef.current = isStreaming || runOpen
   const workspacePath = useAppStore((state) => state.workspace?.path)
+  // Editing a prompt rewinds the Main session tree, so the pencil belongs to the
+  // Main transcript and only to a conversation Pi has already written to disk.
   const activeSessionFile = useAppStore((state) => state.activeSessionFile)
-  const historyLoading = useAppStore(
-    (state) => Boolean(state.activeSessionFile && state.hydratingSessionFile === state.activeSessionFile)
-  )
-  const draftId = useAppStore((state) => state.draftId)
-  const clientKey = useAppStore((state) => {
-    const key = state.activeSessionFile || state.draftId
-    return (key && state.threads[key]?.clientKey) || key || state.clientKey || 'draft'
-  })
-  const cwdWait = useAppStore((state) => state.cwdWait)
-  const models = useAppStore((state) => state.models)
+  const historyLoading = slice.hydrating
   const editMessageFrom = useAppStore((state) => state.editMessageFrom)
   const t = useT()
   const forking = useAppStore((state) => state.forking)
-  const error = useAppStore((state) => state.error)
-  const dismissError = useAppStore((state) => state.dismissError)
-  const submitSeq = useAppStore((state) => state.submitSeq ?? 0)
+  const stopSession = useAppStore((state) => state.stopSession)
+  const dismissSessionError = useAppStore((state) => state.dismissSessionError)
   const shortcutBindings = useAppStore((state) => state.settings.shortcutBindings)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
@@ -231,14 +246,36 @@ export const Thread = memo(function Thread() {
   const previousErrorRef = useRef(error)
   // A conversation keeps its own reading position even before Pi has written
   // its first file: draft ids are unique, and a draft becomes a file path
-  // when the runtime rekeys it.
-  const sessionKey = scrollKeyOf(activeSessionFile ?? draftId)
+  // when the runtime rekeys it. The scope key is already canonical, so the
+  // fallback only covers a thread that has no conversation yet — and the two
+  // scopes get different fallbacks so a blank side chat cannot inherit the
+  // Main transcript's scroll memory.
+  const scopeKey = slice.sessionKey
+  const sessionKey = scrollKeyOf(scopeKey || undefined, isSideSurface ? 'draft:side' : 'draft')
   const sessionKeyRef = useRef(sessionKey)
   sessionKeyRef.current = sessionKey
   const settledDurationKey = run.settled ? run.durationMs : undefined
   const runDurationsMs = useMemo(
     () => readSessionTiming(sessionKey).runDurationsMs,
     [sessionKey, run.settled, settledDurationKey, items]
+  )
+  /**
+   * Stop the run of the conversation this transcript shows.
+   *
+   * The keyed action is what keeps the two scopes apart: `stop()` ends whichever
+   * conversation is on Main, so pressing the side chat's stop button would abort
+   * the run the reader is watching. A thread with no conversation yet has
+   * nothing to stop, which is what `stop()` did on an empty view key too.
+   */
+  const stop = useCallback(() => {
+    if (scopeKey) void stopSession(scopeKey)
+  }, [stopSession, scopeKey])
+  // The banner belongs to the conversation in the same way, so its dismiss is
+  // keyed too: `dismissError` would clear the Main chat's banner from a side
+  // thread.
+  const dismissThreadError = useCallback(
+    () => dismissSessionError(scopeKey || undefined),
+    [dismissSessionError, scopeKey]
   )
   const previousClientKeyRef = useRef(clientKey)
   /** A conversation switch that still has to place the viewport. */
@@ -666,7 +703,7 @@ export const Thread = memo(function Thread() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.querySelector('[aria-modal="true"]')) return
-      if (document.activeElement?.closest('[data-conversation-surface="side"]')) return
+      if (focusIsInSideSurface() !== isSideSurface) return
       if (matchesAnyShortcut(event, 'search-conversation', shortcutBindings)) {
         event.preventDefault()
         setSearchOpen(true)
@@ -680,7 +717,7 @@ export const Thread = memo(function Thread() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [searchOpen, closeSearch, shortcutBindings])
+  }, [isSideSurface, searchOpen, closeSearch, shortcutBindings])
 
   useEffect(() => {
     const jumpHitIndex = jumpHitIndexRef.current
@@ -823,7 +860,7 @@ export const Thread = memo(function Thread() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (document.querySelector('[aria-modal="true"]')) return
-      if (document.activeElement?.closest('[data-conversation-surface="side"]')) return
+      if (focusIsInSideSurface() !== isSideSurface) return
       if (matchesAnyShortcut(event, 'previous-turn', shortcutBindings)) {
         event.preventDefault()
         jumpTurn(-1)
@@ -836,10 +873,13 @@ export const Thread = memo(function Thread() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [jumpTurn, shortcutBindings])
+  }, [isSideSurface, jumpTurn, shortcutBindings])
 
-  // Side Chat reference chips jump back to the exact Main turn they quote.
+  // Side Chat reference chips jump back to the exact Main turn they quote, so
+  // only the Main transcript answers them: the turn they name does not exist in
+  // the side conversation.
   useEffect(() => {
+    if (!isMainSurface) return
     const onJumpMainTurn = (event: Event) => {
       const turnId = readJumpMainTurnId(event)
       if (!turnId) return
@@ -847,7 +887,7 @@ export const Thread = memo(function Thread() {
     }
     window.addEventListener(JUMP_MAIN_TURN_EVENT, onJumpMainTurn)
     return () => window.removeEventListener(JUMP_MAIN_TURN_EVENT, onJumpMainTurn)
-  }, [jumpToTurn])
+  }, [jumpToTurn, isMainSurface])
 
   const scrollToBottom = () => {
     const node = scrollRef.current
@@ -876,18 +916,22 @@ export const Thread = memo(function Thread() {
   // A query belongs to the conversation it was typed in. Clearing it here
   // keeps a jump highlight from following the reader into the next one; the
   // jump effect below sets it again when the hit lands.
-  const previousSession = useRef(activeSessionFile)
+  const previousSession = useRef(sessionKey)
   useEffect(() => {
-    if (previousSession.current === activeSessionFile) return
-    previousSession.current = activeSessionFile
+    if (previousSession.current === sessionKey) return
+    previousSession.current = sessionKey
     setQuery('')
     setSearchResultsOpen(false)
     pendingTurnJumpRef.current = null
     pendingJumpTargetRef.current = null
-  }, [activeSessionFile])
+  }, [sessionKey])
 
+  // A jump request is raised by the Main conversation list, so only the Main
+  // transcript consumes it — a side thread that took it would clear a request
+  // the reader aimed at the conversation next to it.
   useEffect(() => {
-    if (!pendingJump || pendingJump.file !== activeSessionFile) return
+    if (!isMainSurface) return
+    if (!pendingJump || pendingJump.file !== sessionKey) return
     if (items.length === 0) return
 
     const conversation = items.filter(
@@ -954,7 +998,7 @@ export const Thread = memo(function Thread() {
       expandHistory()
     }
     consumeJump()
-  }, [pendingJump, activeSessionFile, expandHistory, items, turns, firstVisibleTurn, workspacePath, query, consumeJump, showToast])
+  }, [pendingJump, isMainSurface, expandHistory, items, turns, firstVisibleTurn, sessionKey, workspacePath, query, consumeJump, showToast])
 
   useEffect(() => {
     const target = pendingJumpTargetRef.current
@@ -1130,7 +1174,7 @@ export const Thread = memo(function Thread() {
             </button>
           </div>
         ) : null}
-        <ThreadEnvStoreProvider threadKey={sessionKey} workspacePath={workspacePath} surface="main">
+        <ThreadEnvStoreProvider threadKey={sessionKey} workspacePath={workspacePath} surface={surface}>
         <SearchContext.Provider value={deferredSearchQuery}>
           {visibleTurns.map((turn, index) => {
             const turnIndex = firstVisibleTurn + index
@@ -1148,7 +1192,7 @@ export const Thread = memo(function Thread() {
                   t={t}
                   onCopy={copy}
                   userCopied={copied === userId}
-                  onEdit={activeSessionFile ? editMessageFrom : undefined}
+                  onEdit={isMainSurface && activeSessionFile ? editMessageFrom : undefined}
                   editing={forking}
                   run={run}
                   runDurationMs={
@@ -1204,27 +1248,33 @@ export const Thread = memo(function Thread() {
           />
         ) : null}
 
-        {/* A finished goal closes the conversation it belonged to. It renders
-            nothing unless the extension reports `complete`. */}
+        {/* A finished goal closes the conversation it belonged to. */}
         <GoalCompleteRow />
 
         {error ? (
           <ThreadErrorBanner
             message={error}
-            onDismiss={dismissError}
-            onAskSideChat={() =>
-              dispatchOpenSideChat({
-                mode: 'open',
-                focus: true,
-                reference: { kind: 'error', message: error }
-              })
+            onDismiss={dismissThreadError}
+            // "Diagnose in Side Chat" is a Main-conversation door: a side chat
+            // already is the side chat, so it has nothing to open.
+            onAskSideChat={
+              isMainSurface
+                ? () =>
+                    dispatchOpenSideChat({
+                      mode: 'open',
+                      focus: true,
+                      reference: { kind: 'error', message: error }
+                    })
+                : undefined
             }
           />
         ) : null}
       </div>
 
     </div>
-      <ThreadSelectionBar containerRef={scrollRef} />
+      {/* "Ask Side Chat about the selection" belongs to the Main transcript: the
+          side chat's composer takes its own references through its chips. */}
+      {isMainSurface ? <ThreadSelectionBar containerRef={scrollRef} /> : null}
       {jumpTarget ? (
         <div className="scroll-jumps">
           <button
@@ -1407,7 +1457,7 @@ const ThreadTurnView = memo(function ThreadTurnView({
           : undefined
   const replySettled = lastAssistant && !lastAssistant.streaming && (!isLastTurn || run.settled)
   const liveTail = isLastTurn && !run.settled
-  const { autoFoldProcess, askSideChat } = useThreadEnv()
+  const { autoFoldProcess, askSideChat, surface } = useThreadEnv()
   const processId = `turn-${turn.id}`
   const [manualProcessOpen, setManualProcessOpen] = useState(() => readProcessOpen(threadKey, processId))
   useEffect(() => {
@@ -1596,13 +1646,19 @@ const ThreadTurnView = memo(function ThreadTurnView({
                     })
                   )
                 }
-                onReviewInSideChat={() =>
-                  dispatchOpenSideChat({
-                    mode: 'open',
-                    focus: true,
-                    preset: 'review-session',
-                    autoSubmit: true
-                  })
+                // "Review in side chat" opens the panel beside a Main
+                // conversation; inside the side chat itself it would only point
+                // back at the surface the reader is already reading.
+                onReviewInSideChat={
+                  surface === 'main'
+                    ? () =>
+                        dispatchOpenSideChat({
+                          mode: 'open',
+                          focus: true,
+                          preset: 'review-session',
+                          autoSubmit: true
+                        })
+                    : undefined
                 }
               />
             ) : null}

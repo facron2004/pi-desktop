@@ -74,6 +74,14 @@ async function git(root: string, args: string[], timeoutMs = STATUS_TIMEOUT_MS):
   }
 }
 
+/** Porcelain paths are relative to this directory, even when Git ran below it. */
+export async function resolveGitWorktreeRoot(directory: string): Promise<string | undefined> {
+  if (!directory) return undefined
+  const top = await git(directory, ['rev-parse', '--show-toplevel'])
+  const root = top.stdout.replace(/\r?\n$/, '')
+  return top.code === 0 && path.isAbsolute(root) ? path.normalize(root) : undefined
+}
+
 /** Run a file-scoped command without interpreting a filename as Git pathspec magic. */
 function gitLiteralPathspecs(
   root: string,
@@ -106,9 +114,12 @@ function repoCacheKey(root: string): string {
 function invalidateGitReadCache(root: string): void {
   if (!root) return
   const key = repoCacheKey(root)
-  gitWriteGenerations.set(key, (gitWriteGenerations.get(key) ?? 0) + 1)
-  inFlightStatus.delete(key)
-  inFlightBranches.delete(key)
+  for (const readKey of new Set([key, ...inFlightStatus.keys(), ...inFlightBranches.keys()])) {
+    if (!pathContains(key, readKey)) continue
+    gitWriteGenerations.set(readKey, (gitWriteGenerations.get(readKey) ?? 0) + 1)
+    inFlightStatus.delete(readKey)
+    inFlightBranches.delete(readKey)
+  }
 }
 
 async function withGitMutation<T>(root: string, action: () => Promise<T>): Promise<T> {
@@ -225,9 +236,9 @@ export async function readStatus(root: string): Promise<GitStatus> {
 
   const startGeneration = gitWriteGenerations.get(key) ?? 0
   const task = (async (): Promise<GitStatus> => {
-    const [porcelain, topLevel, diffHead] = await Promise.all([
+    const [porcelain, worktreeRoot, diffHead] = await Promise.all([
       git(root, ['status', '--porcelain=v2', '--branch', '--untracked-files=all', '-z']),
-      git(root, ['rev-parse', '--show-toplevel']),
+      resolveGitWorktreeRoot(root),
       git(root, ['diff', '--numstat', '-z', '-M', 'HEAD', '--'])
     ])
     if (porcelain.code !== 0) return { ...NO_REPOSITORY }
@@ -260,11 +271,11 @@ export async function readStatus(root: string): Promise<GitStatus> {
         file.removed = known.removed
       }
     }
-    await countUntracked(root, files)
+    if (worktreeRoot) await countUntracked(worktreeRoot, files)
 
     return {
       isRepo: true,
-      root: topLevel.code === 0 ? topLevel.stdout.trim() || root : root,
+      root: worktreeRoot ?? root,
       branch: parsed.branch,
       head: parsed.head,
       detached: !parsed.branch,

@@ -5,40 +5,24 @@ import {
 } from '@shared/types'
 import { WORKSPACE_TOOL_HOOKS } from './workspace-tools'
 
-export const SIDE_CHAT_ALLOWED_TOOLS = [
-  'read',
-  'grep',
-  'find',
-  'ls',
-  'inspect_main_conversation',
-  'inspect_main_changes'
-] as const
-
-export const SIDE_CHAT_EXCLUDED_TOOLS = [
-  'write',
-  'edit',
-  'bash',
-  'powershell',
-  'codemode',
-  'tool_search',
-  'subagent',
-  'computer',
-  'generate_image',
-  'mcp__*'
-] as const
-
 /**
  * Constant system-prompt section injected via `sections['pi-desktop-side-chat']`.
  * Kept byte-identical across every turn so providers retain full KV-cache prefix hits.
+ *
+ * A side chat is a **second, equal conversation**: it works in the same
+ * workspace with the same tools as the main one. It is not a read-only
+ * observer — the only thing that makes it "side" is that it runs beside the
+ * conversation the reader is steering, and that it can read that conversation
+ * through the two inspect tools instead of sharing its transcript.
  */
 export const SIDE_CHAT_STATIC_SECTION = [
-  'You are Pi Desktop Side Chat — a strictly read-only companion running alongside the user\'s Main Conversation in the same workspace.',
+  'You are Pi Desktop Side Chat — a second working conversation running alongside the user\'s Main Conversation in the same workspace.',
   'Capabilities & guardrails:',
-  '- You CANNOT modify files, run shell commands, invoke MCP servers, or spawn subagents. Never claim you edited files or executed commands.',
+  '- You have the same tools as the Main Conversation: you can read, edit and create files and run commands in this workspace.',
+  '- The Main Conversation may be editing the same files at the same time. Before you change a file it is also working on, re-read it; never overwrite work you did not do.',
   '- Before each turn, a fresh `<main_conversation_digest>` snapshot is placed right before the user message. It is ephemeral and reflects the live state of the Main Conversation.',
   '- Use `inspect_main_conversation` to fetch full turn transcripts, search earlier turns, inspect a tool call output by `toolCallId`, or inspect the full goal/todo plan.',
   '- Use `inspect_main_changes` to inspect files edited by the Main Conversation (`scope: "session"`), uncommitted git changes (`scope: "worktree"`), or both (`scope: "all"`), and pass `file` for unified diffs.',
-  '- Use built-in `read`, `grep`, `find`, and `ls` to verify workspace code directly.',
   '- When suggesting concrete prompts or next steps the user can hand off to the Main Conversation, wrap each ready-to-send prompt in a fenced ```prompt block so the UI renders one-click handoff buttons.',
   '- Cite code locations as `path/to/file.ts:line` so the user can jump straight to them in the workspace.'
 ].join('\n')
@@ -52,9 +36,13 @@ export interface SideChatExtensionConfig {
 }
 
 /**
- * Generates the per-process Pi extension that enforces Layer-3 read-only
- * tool clamping, registers `inspect_main_conversation` / `inspect_main_changes`,
- * and injects ephemeral KV-cache-safe Main Conversation digests via `pi.on('context')`.
+ * Generates the per-process Pi extension that registers
+ * `inspect_main_conversation` / `inspect_main_changes` and injects ephemeral
+ * KV-cache-safe Main Conversation digests via `pi.on('context')`.
+ *
+ * It deliberately installs **no tool policy**: the side conversation is a
+ * normal working conversation, so leaving the loadout alone is what keeps it
+ * equal to the main one instead of a second, weaker agent.
  */
 export function sideChatExtension(config: SideChatExtensionConfig): string {
   return `import { Type } from 'typebox';
@@ -69,32 +57,11 @@ export default function (pi) {
   const metaEntryType = ${JSON.stringify(SIDE_CHAT_META_ENTRY_TYPE)};
   const turnMetaEntryType = ${JSON.stringify(SIDE_CHAT_TURN_META_ENTRY_TYPE)};
   const staticSection = ${JSON.stringify(SIDE_CHAT_STATIC_SECTION)};
-  const builtinReadTools = new Set(['read', 'grep', 'find', 'ls']);
-  const sideInspectTools = new Set(['inspect_main_conversation', 'inspect_main_changes']);
 
   let currentRunDigest;
   let currentRunStartedAt = 0;
 
   ${WORKSPACE_TOOL_HOOKS}
-
-  function isAllowedSideTool(name) {
-    const tool = pi.getAllTools().find(t => t.name === name);
-    if (!tool) return false;
-    if (builtinReadTools.has(name)) return tool.sourceInfo?.source === 'builtin';
-    if (sideInspectTools.has(name)) return tool.sourceInfo?.path === sideChatExtensionPath;
-    return false;
-  }
-
-  function clampSideTools() {
-    const allowed = pi.getAllTools()
-      .filter(t =>
-        (builtinReadTools.has(t.name) && t.sourceInfo?.source === 'builtin') ||
-        (sideInspectTools.has(t.name) && t.sourceInfo?.path === sideChatExtensionPath)
-      )
-      .map(t => t.name);
-    pi.setActiveTools(allowed);
-    return allowed;
-  }
 
   async function callBridge(endpoint, body, signal) {
     const controller = new AbortController();
@@ -176,7 +143,6 @@ export default function (pi) {
   });
 
   pi.on('session_start', (_event, ctx) => {
-    clampSideTools();
     ctx.ui.setStatus(statusKey, 'ready');
     const branch = typeof ctx.sessionManager?.getBranch === 'function' ? ctx.sessionManager.getBranch() : [];
     const hasMeta = Array.isArray(branch) && branch.some(
@@ -193,15 +159,11 @@ export default function (pi) {
   });
 
   pi.on('before_agent_start', async (event, ctx) => {
-    const allowed = clampSideTools();
     if (event.systemPromptOptions) {
       if (!event.systemPromptOptions.sections || typeof event.systemPromptOptions.sections !== 'object') {
         event.systemPromptOptions.sections = {};
       }
       event.systemPromptOptions.sections[statusKey] = staticSection;
-      if (Array.isArray(event.systemPromptOptions.selectedTools)) {
-        event.systemPromptOptions.selectedTools.splice(0, event.systemPromptOptions.selectedTools.length, ...allowed);
-      }
     }
     guideWorkspaceTools(event);
 
@@ -252,23 +214,7 @@ export default function (pi) {
 
   pi.on('tool_call', (event) => {
     normalizeWorkspaceSearch(event);
-    if (!isAllowedSideTool(event.toolName)) {
-      return {
-        block: true,
-        reason: 'Side Chat is strictly read-only and cannot modify files or execute commands.',
-        terminate: true
-      };
-    }
   });
-
-  pi.on('user_bash', () => ({
-    result: {
-      output: 'Side Chat is read-only; shell execution is disabled.',
-      exitCode: 1,
-      cancelled: true,
-      truncated: false
-    }
-  }));
 }
 `
 }

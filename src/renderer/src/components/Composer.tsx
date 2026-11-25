@@ -12,6 +12,7 @@ import {
   Wrench,
   X
 } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import {
   draftKeyOf,
   useAppStore,
@@ -22,6 +23,7 @@ import {
   type ComposerImageOptions,
   type QueueKind
 } from '../store/useAppStore'
+import { readSessionViewSlice, useConversationScope } from '../lib/conversation-scope'
 import {
   DEFAULT_IMAGE_QUALITY,
   DEFAULT_IMAGE_SIZE,
@@ -36,6 +38,7 @@ import type { AgentMode, AppLanguage, FileEntry, PiCommand } from '@shared/types
 import { readGoalStatus } from '@shared/task-mode-state'
 import { goalBarVisible } from '@shared/goal-display'
 import { appCommandName } from '../lib/app-commands'
+import { parseSwarmSnapshots, summarizeSwarm, SWARM_STATUS_KEY } from '../lib/swarm'
 import { commandIcon } from '../lib/command-source'
 import { composerDraftAfterSend } from '../lib/composer-drafts'
 import {
@@ -108,6 +111,7 @@ interface EnterImageModeDetail {
     name?: string
   }
   off?: boolean
+  target?: 'main' | 'side'
 }
 
 function makeDraftImage(
@@ -179,25 +183,79 @@ function detectMention(text: string, cursor: number): MentionMatch | null {
 }
 
 export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: () => void }) {
+  // The composer follows the conversation scope it is rendered in. Without a
+  // provider that scope is the main conversation, and its slice reads exactly
+  // the fields this component used to read from the top-level store; the side
+  // panel renders the same component under `surface="side"`, so one input box
+  // serves both conversations instead of a second hand-written one.
+  const scope = useConversationScope()
+  const isMainSurface = scope.surface === 'main'
+  const slice = useAppStore(
+    useShallow((state) => {
+      const view = readSessionViewSlice(state, scope)
+      return {
+        sessionKey: view.sessionKey,
+        isStreaming: view.isStreaming,
+        aborting: view.run.phase === 'aborting',
+        queue: view.queue,
+        status: view.status,
+        cwdWait: view.cwdWait,
+        commands: view.commands,
+        clientKey: view.clientKey,
+        // The transcript changes on every streamed batch; the box only asks
+        // whether there is a conversation yet, so it must not repaint the
+        // composer once per frame to answer that.
+        hasDialogue: view.items.length > 0,
+        // Both main and side conversations own an independent mode, swarm, and goal.
+        swarmRosterText: view.uiStatuses.find((entry) => entry.key === SWARM_STATUS_KEY)?.text,
+        goalStatusText: view.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text,
+        agentMode: view.agentMode
+      }
+    })
+  )
+  // The draft belongs to the scoped conversation, never to whichever one the app
+  // happens to display. A side surface that has not resolved its session yet
+  // keeps the local fallback draft instead of borrowing the main one.
+  const viewDraftKey = useAppStore((state) => draftKeyOf(state))
+  const draftKey = isMainSurface
+    ? (scope.sessionKey ?? viewDraftKey)
+    : (scope.sessionKey ?? slice.sessionKey)
+  // `insertIntoComposer` and `set_editor_text` write a per-key record. A scoped
+  // surface reads that key's record; the main surface keeps reading the
+  // projected field, which the store fills for the conversation on screen.
+  const insertKey = scope.sessionKey ?? (isMainSurface ? undefined : draftKey || undefined)
+  // Store actions that default to "the conversation on screen" must not do that
+  // from a scoped surface: an empty key makes them no-ops until this box has a
+  // session of its own, instead of reaching into whichever chat is displayed.
+  const draftKeyOrNothing = draftKey || (isMainSurface ? undefined : '')
   const submitComposerDraft = useAppStore((state) => state.submitComposerDraft)
   const stop = useAppStore((state) => state.stop)
-  const isStreaming = useAppStore((state) => state.isStreaming)
-  const aborting = useAppStore((state) => state.run.phase === 'aborting')
-  const queue = useAppStore((state) => state.queue)
-  const status = useAppStore((state) => state.status)
-  const cwdWait = useAppStore((state) => state.cwdWait)
+  const stopSession = useAppStore((state) => state.stopSession)
+  const isStreaming = slice.isStreaming
+  const aborting = slice.aborting
+  const queue = slice.queue
+  const status = slice.status
+  const cwdWait = slice.cwdWait
   const prewarmRuntime = useAppStore((state) => state.prewarmRuntime)
   const workspace = useAppStore((state) => state.workspace)
-  const agentMode = useAppStore((state) => state.agentMode)
+  const agentMode = slice.agentMode
+  const swarmPulse = useMemo(
+    () => summarizeSwarm(parseSwarmSnapshots(slice.swarmRosterText)),
+    [slice.swarmRosterText]
+  )
+  const goalOnScreen = useMemo(
+    () => goalBarVisible(readGoalStatus(slice.goalStatusText)?.status),
+    [slice.goalStatusText]
+  )
   const setAgentMode = useAppStore((state) => state.setAgentMode)
-  const commands = useAppStore((state) => state.commands)
+  const setScopedAgentMode = useCallback(
+    (mode: AgentMode) => setAgentMode(mode, draftKeyOrNothing),
+    [setAgentMode, draftKeyOrNothing]
+  )
+  const commands = slice.commands
   const refreshSkillCommands = useAppStore((state) => state.refreshSkillCommands)
   const language = useAppStore((state) => state.settings.language ?? 'en')
-  const draftKey = useAppStore((state) => draftKeyOf(state))
-  const clientKey = useAppStore((state) => {
-    const key = state.activeSessionFile || state.draftId
-    return (key && state.threads[key]?.clientKey) || key || state.clientKey || '__fallback__'
-  })
+  const clientKey = slice.clientKey
   const submitting = useAppStore((state) => Boolean(state.submittingDrafts[clientKey]))
   // A message edit can be taken back until something is sent from here.
   const undoEdit = useAppStore((state) => state.rewindUndo === true)
@@ -206,15 +264,38 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     useCallback((state) => (draftKey ? state.drafts[draftKey] : undefined), [draftKey])
   )
   const updateDraft = useAppStore((state) => state.updateDraft)
-  const composerText = useAppStore((state) => state.composerText)
   const clearComposerText = useAppStore((state) => state.clearComposerText)
-  const composerInsert = useAppStore((state) => state.composerInsert)
+  // A scoped surface reads only its own conversation's record; until it has a key
+  // there is nothing to read, because the projected field belongs to the main
+  // conversation and must not leak into the side box.
+  const composerText = useAppStore(
+    useCallback(
+      (state) =>
+        insertKey
+          ? state.composerTexts[insertKey]
+          : isMainSurface
+            ? state.composerText
+            : undefined,
+      [insertKey, isMainSurface]
+    )
+  )
+  const composerInsert = useAppStore(
+    useCallback(
+      (state) =>
+        insertKey
+          ? state.composerInserts[insertKey]
+          : isMainSurface
+            ? state.composerInsert
+            : undefined,
+      [insertKey, isMainSurface]
+    )
+  )
   const fontScale = useAppStore((state) => state.settings.fontScale ?? 1)
   const sendShortcut = useAppStore((state) => state.settings.sendShortcut ?? 'enter')
   const defaultFollowUpMode = useAppStore((state) => state.settings.followUpMode ?? 'steer')
   const plainTextEditor = useAppStore((state) => state.settings.plainTextEditor === true)
   const pasteMentions = useAppStore((state) => state.settings.pasteMentions === true)
-  const hasDialogue = useAppStore((state) => state.items.length > 0)
+  const hasDialogue = slice.hasDialogue
   const t = useT()
 
   // Used only on initial mount before bootstrap assigns a draftId or session file.
@@ -251,6 +332,23 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     if (targetKey) return useAppStore.getState().drafts[targetKey] ?? { text: '', images: EMPTY_IMAGES }
     return fallbackDraftRef.current
   }, [])
+
+  /**
+   * Stop the conversation this box belongs to.
+   *
+   * A scoped surface names its own session; only the default surface keeps using
+   * the store's `stop()`, which aborts whatever the app displays. A side box
+   * that has not resolved its session stops nothing — never the main chat.
+   */
+  const stopCurrent = useCallback(() => {
+    if (isMainSurface) {
+      if (scope.sessionKey) void stopSession(scope.sessionKey)
+      else void stop()
+      return
+    }
+    const target = scope.sessionKey ?? draftKey
+    if (target) void stopSession(target)
+  }, [scope.sessionKey, isMainSurface, draftKey, stopSession, stop])
 
   const focusComposer = useCallback(() => {
     requestAnimationFrame(() => {
@@ -484,11 +582,11 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   // controls that pause, edit or clear it — so the chip that only repeats "Goal
   // Mode" is redundant there. It comes back the moment the goal is cleared, and
   // it stays for every other task mode.
-  const goalIsOnScreen = useAppStore((state) =>
-    goalBarVisible(readGoalStatus(state.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text)?.status)
-  )
+  // Task modes belong to the scoped conversation (`view.agentMode`), so each
+  // parallel chat shows its own mode chip and prompt. A Goal Bar already names
+  // Goal Mode above the box, so its redundant chip hides while the bar shows.
   const modeChip = agentMode === 'default' ? null : MODE_CHIPS[agentMode]
-  const showModeChip = modeChip && !(agentMode === 'goal' && goalIsOnScreen)
+  const showModeChip = modeChip && !(agentMode === 'goal' && goalOnScreen)
   const modePrompt = MODE_COMPOSER_PROMPTS[agentMode]
   const inputPrompt = command
     ? t('Add command arguments…')
@@ -519,7 +617,10 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   useEffect(() => {
     const focus = (event: Event) => {
       const detail = (event as CustomEvent<{ target?: string } | undefined>).detail
-      if (detail?.target === 'side') return
+      // Every surface has one composer, and each answers only its own request:
+      // the side panel dispatches `target: 'side'` and the main view owns every
+      // other request. Without this split one box would move the other's caret.
+      if (isMainSurface ? detail?.target === 'side' : detail?.target !== 'side') return
       const node = textareaRef.current
       if (!node) return
       node.focus()
@@ -528,23 +629,26 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     }
     window.addEventListener('pi:focus-composer', focus)
     return () => window.removeEventListener('pi:focus-composer', focus)
-  }, [])
+  }, [isMainSurface])
 
   // `/image` and the Add menu's Image action both land here: the generator's
-  // controls belong to the composer, so they load in place instead of a panel.
+  // controls belong to the scoped composer, so they load in place instead of a
+  // panel. `target` keeps a `/image` command on Main out of Side Chat and back.
   useEffect(() => {
     const onEnter = (event: Event) => {
       const detail = (event as CustomEvent<EnterImageModeDetail>).detail
+      if (isMainSurface ? detail?.target === 'side' : detail?.target === 'main') return
       setImageSelected(false)
       enterImageMode(detail)
     }
     window.addEventListener('pi:enter-image-mode', onEnter)
     return () => window.removeEventListener('pi:enter-image-mode', onEnter)
-  }, [enterImageMode])
+  }, [enterImageMode, isMainSurface])
 
   // Development aid: prefill the composer so screenshots can show the
   // command palette. Set by the main process via PI_DESKTOP_PREFILL.
   useEffect(() => {
+    if (!isMainSurface) return
     const prefill = (window as unknown as { __piDesktopDev?: { prefill?: string } })
       .__piDesktopDev?.prefill
     if (!prefill) return
@@ -558,7 +662,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
       setSlash(detectSlash(prefill, cursor))
       setMention(detectMention(prefill, cursor))
     })
-  }, [setText])
+  }, [setText, isMainSurface])
 
   // An extension can prefill the editor through `set_editor_text`.
   useEffect(() => {
@@ -569,7 +673,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     } else if (useAppStore.getState().drafts[key]?.text !== composerText) {
       updateDraft(key, { text: composerText })
     }
-    clearComposerText()
+    clearComposerText(insertKey)
     requestAnimationFrame(() => {
       const node = textareaRef.current
       if (!node) return
@@ -580,7 +684,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
       setSlash(detectSlash(composerText, cursor))
       setMention(detectMention(composerText, cursor))
     })
-  }, [composerText, clearComposerText, updateDraft])
+  }, [composerText, clearComposerText, updateDraft, insertKey])
 
   // A tool card can hand a command or a path back to the composer, and a
   // branch puts the original prompt back so it can be tweaked and sent again.
@@ -627,13 +731,16 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     }
     let active = true
     setLoadingSkillCommands(true)
-    void refreshSkillCommands().finally(() => {
+    // Skill commands land on the scoped conversation's own command list, so a
+    // side chat refreshes its thread and the main view refreshes the one on
+    // screen (its default when no key is passed).
+    void refreshSkillCommands(draftKeyOrNothing).finally(() => {
       if (active) setLoadingSkillCommands(false)
     })
     return () => {
       active = false
     }
-  }, [slashOpen, skillCommands.length, workspace?.path, refreshSkillCommands])
+  }, [slashOpen, skillCommands.length, workspace?.path, refreshSkillCommands, draftKeyOrNothing])
 
   const textareaSizeRef = useRef<{
     height: number
@@ -762,17 +869,22 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return
       if (document.querySelector('[aria-modal="true"]')) return
-      if (document.activeElement?.closest('[data-conversation-surface="side"]')) return
+      // Escape stops the chat whose input box holds the caret. The main view
+      // leaves a side chat's run alone, and the side box only stops its own.
+      const inSidePanel = Boolean(
+        document.activeElement?.closest('[data-conversation-surface="side"]')
+      )
+      if (isMainSurface === inSidePanel) return
       if (event.key !== 'Escape' || !isStreaming) return
       // The palette uses Escape to close itself and handles the key before
       // it reaches the window, so the run is left alone.
       if (event.defaultPrevented) return
       event.preventDefault()
-      void stop()
+      stopCurrent()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [isStreaming, stop])
+  }, [isStreaming, stopCurrent, isMainSurface])
 
   // Keep the highlighted command in view when the list changes.
   useEffect(() => {
@@ -797,28 +909,38 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     setMentionIndex(0)
     let cancelled = false
     let requestStarted = false
+    const onResult = (result: { entries: FileEntry[] }) => {
+      if (cancelled) return
+      setMentionFiles(result.entries)
+      setMentionIndex(0)
+    }
+    const onFailure = () => {
+      if (!cancelled) setMentionFiles([])
+    }
     const timer = window.setTimeout(() => {
       requestStarted = true
-      void window.pi.fs
-        .search(mention.query, 12, 'composer-mention')
-        .then((result) => {
-          if (cancelled) return
-          setMentionFiles(result.entries)
-          setMentionIndex(0)
-        })
-        .catch(() => {
-          if (!cancelled) setMentionFiles([])
-        })
+      // The main process scopes a file search by name and cancels the previous
+      // one in the same scope, so the two composers searching at once must not
+      // share it — otherwise one box's `@` wipes the other's list.
+      if (isMainSurface) {
+        void window.pi.fs.search(mention.query, 12, 'composer-mention').then(onResult).catch(onFailure)
+      } else {
+        void window.pi.fs.search(mention.query, 12, 'side-composer-mention').then(onResult).catch(onFailure)
+      }
     }, 110)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
-      if (requestStarted) void window.pi.fs.search('', 0, 'composer-mention').catch(() => undefined)
+      if (isMainSurface) {
+        if (requestStarted) void window.pi.fs.search('', 0, 'composer-mention').catch(() => undefined)
+        return
+      }
+      if (requestStarted) void window.pi.fs.search('', 0, 'side-composer-mention').catch(() => undefined)
     }
     // The caret moving inside the same token produces a new match object; the
     // search must follow the query, not the object, or a click would wipe the
     // list and reset the highlighted row.
-  }, [mention?.query, workspace?.path])
+  }, [mention?.query, workspace?.path, isMainSurface])
 
   const closePalette = useCallback(() => setSlash(null), [])
 
@@ -925,6 +1047,9 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
 
   const submit = useCallback(() => {
     const targetKey = draftKeyRef.current
+    // A scoped box cannot send before its own session exists: an empty key is
+    // the main conversation's, so the prompt would land in the wrong chat.
+    if (!isMainSurface && !targetKey) return
     if (submitting) return
     if ((pendingAddsByKeyRef.current.get(targetKey) ?? 0) > 0) return
     const currentDraft = readTargetDraft(targetKey)
@@ -1003,7 +1128,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     setImageSelected(false)
     closePalette()
     setMention(null)
-  }, [kind, submitting, submitComposerDraft, commands, language, t, closePalette, patchDraft, readTargetDraft, setHistoryIndex, defaultImageOptions, focusComposer])
+  }, [isMainSurface, kind, submitting, submitComposerDraft, commands, language, t, closePalette, patchDraft, readTargetDraft, setHistoryIndex, defaultImageOptions, focusComposer])
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
@@ -1229,7 +1354,10 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   const addFiles = async (files: FileList | null): Promise<void> => {
     if (!files) return
     const state = useAppStore.getState()
-    const targetKey = draftKeyRef.current || draftKeyOf(state)
+    // The default surface still falls back to the conversation the app displays;
+    // a scoped one without a key must keep the attachment local instead of
+    // dropping it into the main conversation's draft.
+    const targetKey = draftKeyRef.current || (isMainSurface ? draftKeyOf(state) : '')
     const cwd = state.threads[targetKey]?.status.cwd ?? state.workspace?.path ?? ''
     bumpPendingAdds(targetKey, 1)
     try {
@@ -1422,7 +1550,10 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
           />
         ) : null}
 
-        {!hasDialogue ? (
+        {/* Picking a project or a branch changes the whole app's workspace and,
+            with it, the main conversation. A side chat runs beside that
+            conversation in the same project, so it hides both controls. */}
+        {isMainSurface && !hasDialogue ? (
           <div className="composer__top-selectors">
             <ProjectSelector placement="top" align="left" />
             {workspace ? (
@@ -1435,9 +1566,11 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
           </div>
         ) : null}
 
-        <GoalBar key={clientKey} />
+        {/* Each conversation owns its own Goal Mode state and goal bar. */}
+        <GoalBar key={draftKey || clientKey} />
 
-        {undoEdit ? (
+        {/* An edit rewind is a main-conversation move on its own session tree. */}
+        {isMainSurface && undoEdit ? (
           <div className="composer__rewind" role="status">
             <span className="composer__rewind-text">
               {t('Editing hid the messages after it')}
@@ -1616,7 +1749,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
             aria-activedescendant={activeOptionId}
             aria-label={inputPrompt}
             placeholder={inputPrompt}
-            onFocus={() => prewarmRuntime()}
+            onFocus={() => prewarmRuntime(draftKeyOrNothing)}
             onChange={(event) => {
               const value = event.target.value
               const cursor = event.target.selectionStart ?? value.length
@@ -1715,7 +1848,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
               imageMode={Boolean(image)}
               skillCommands={skillCommands}
               pluginCommands={pluginCommands}
-              onModeChange={setAgentMode}
+              onModeChange={setScopedAgentMode}
               onPickFiles={pickFiles}
               onInsertCommand={insertMenuCommand}
               onEnterImageMode={toggleImageMode}
@@ -1726,17 +1859,28 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
                 pushed 完全访问 sideways the moment a mode was picked. The
                 permission control keeps one position; the chip grows to its
                 right. */}
-            {showModeChip && agentMode === 'swarm' ? (
+            {showModeChip && agentMode === 'swarm' && isMainSurface ? (
               <div className="composer__swarm-mode">
                 <button
                   type="button"
                   className="composer__swarm-roster"
-                  aria-label={t('Open Swarm team')}
+                  data-tone={swarmPulse.working > 0 ? 'run' : swarmPulse.failed > 0 ? 'danger' : undefined}
+                  aria-label={
+                    swarmPulse.working > 0
+                      ? t('Open Swarm team, {count} working').replace('{count}', String(swarmPulse.working))
+                      : swarmPulse.failed > 0
+                        ? t('Open Swarm team, {count} failed').replace('{count}', String(swarmPulse.failed))
+                        : t('Open Swarm team')
+                  }
                   title={t('Open Swarm team')}
                   onClick={onOpenSwarm}
                 >
                   <Network size={13} aria-hidden="true" />
-                  <span>{t('Swarm Mode')}</span>
+                  <span>
+                    {swarmPulse.working > 0
+                      ? t('Swarm {count}').replace('{count}', String(swarmPulse.working))
+                      : t('Swarm Mode')}
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -1744,7 +1888,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
                   title={isStreaming ? t('Stop the current run before changing modes') : t('Leave Swarm Mode')}
                   aria-label={t('Leave Swarm Mode')}
                   disabled={isStreaming || !canCompose}
-                  onClick={() => void setAgentMode('default')}
+                  onClick={() => void setScopedAgentMode('default')}
                 >
                   <X size={12} aria-hidden="true" />
                 </button>
@@ -1756,12 +1900,14 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
                 title={isStreaming ? t('Stop the current run before changing modes') : t(modeChip.leave)}
                 aria-label={t(modeChip.leave)}
                 disabled={isStreaming || !canCompose}
-                onClick={() => void setAgentMode('default')}
+                onClick={() => void setScopedAgentMode('default')}
               >
                 {agentMode === 'goal' ? (
                   <GoalTargetIcon />
                 ) : agentMode === 'plan' ? (
                   <ListChecks size={13} />
+                ) : agentMode === 'swarm' ? (
+                  <Network size={13} />
                 ) : (
                   <Wrench size={13} />
                 )}
@@ -1780,7 +1926,15 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
 
             {/* Kept mounted when Pi is cold or restarting. Unmounting it on
                 anything but `ready` is what made the model control vanish. */}
-            <ModelPicker />
+            {/* A scoped composer picks the model and the reasoning effort of its
+                own conversation, and never writes the app default: a side chat
+                keeps its own override (`rememberDefaults: false`). The default
+                surface passes no key, so it keeps reading the conversation on
+                screen exactly as before. */}
+            <ModelPicker
+              sessionKey={isMainSurface ? undefined : draftKey || undefined}
+              rememberDefaults={isMainSurface ? undefined : false}
+            />
 
             {isStreaming && (!hasContent || submitting) ? (
               <button
@@ -1788,7 +1942,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
                 className="btn composer__send composer__send--stop"
                 data-aborting={aborting || undefined}
                 disabled={aborting}
-                onClick={() => void stop()}
+                onClick={stopCurrent}
                 aria-label={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
                 title={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
               >
@@ -1799,7 +1953,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
                 type="button"
                 className="btn btn--primary composer__send"
                 onClick={submit}
-                disabled={!canCompose || addingFiles || submitting || !hasContent}
+                disabled={!canCompose || addingFiles || submitting || !hasContent || (!isMainSurface && !draftKey)}
                 aria-busy={addingFiles || submitting || undefined}
                 aria-label={t('Send message')}
                 title={t('Send message')}
@@ -1816,7 +1970,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
               className="session-bar__stop"
               data-aborting={aborting || undefined}
               disabled={aborting}
-              onClick={() => void stop()}
+              onClick={stopCurrent}
               aria-label={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
               title={aborting ? t('Stopping…') : t('Stop the current run (Esc)')}
             >

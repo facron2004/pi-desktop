@@ -41,8 +41,7 @@ const MAX_QUEUED_JOBS_TOTAL = 256
 const MAX_QUEUED_PAYLOAD_BYTES_TOTAL = 32 * 1024 * 1024
 
 const WRITE_COMMANDS = new Set(['prompt', 'bash'])
-const BIND_COMMANDS = new Set(['prompt', 'fork', 'clone', 'new_session'])
-const SIDE_BLOCKED_COMMANDS = new Set(['bash', 'fork', 'clone', 'new_session', 'switch_session'])
+const SESSION_CHANGE_COMMANDS = new Set(['fork', 'clone', 'new_session'])
 
 function sameWorkingDirectory(left: string, right: string): boolean {
   if (!left || !right) return left === right
@@ -134,6 +133,7 @@ interface RuntimeActivity {
   writes: number
   running: boolean
   settlements: number
+  nameWrites: number
   /** The conversation used MCP, computer use, subagents or another outside tool. */
   externalContext: boolean
   /** True while this runtime has only been speculatively prewarmed for viewing. */
@@ -141,6 +141,7 @@ interface RuntimeActivity {
   binding?: Promise<void>
   finalizing?: boolean
   stopping?: Promise<void>
+  changingSession?: boolean
   lastAccessed: number
 }
 
@@ -500,11 +501,13 @@ export class SessionSupervisor extends EventEmitter {
     if (!runtime?.isRunning || !activity || activity.stopping) {
       throw new Error('Pi is not running for this conversation.')
     }
-    if (activity.role === 'side' && SIDE_BLOCKED_COMMANDS.has(command)) {
-      throw new PiRpcPreSendError(
-        `Command "${command}" is disabled in read-only Side Chat.`,
-        'closed'
-      )
+    const writing = WRITE_COMMANDS.has(command)
+    const changesSession = SESSION_CHANGE_COMMANDS.has(command)
+    if (activity.changingSession && (writing || changesSession || command === 'set_session_name')) {
+      throw new PiRpcPreSendError('This conversation is changing sessions. Try again when it finishes.', 'closed')
+    }
+    if (changesSession && (activity.running || activity.writes > 0 || this.hasQueuedJobs(id))) {
+      throw new PiRpcPreSendError('Wait for the active run or queued work to finish before changing sessions.', 'closed')
     }
     this.touchRuntime(activity)
     activity.prewarmOnly = false
@@ -514,7 +517,6 @@ export class SessionSupervisor extends EventEmitter {
     }
     if (command === 'abort_bash') this.dropQueued(id, 'bash')
     const removed = command === 'clear_queue' ? this.dropQueued(id, 'prompt') : []
-    const writing = WRITE_COMMANDS.has(command)
     const writeCwd = writing ? this.cwdOf(id) : undefined
     if (writing) {
       this.clearWarm(id)
@@ -523,22 +525,15 @@ export class SessionSupervisor extends EventEmitter {
       if (writeCwd && !fromQueue && (this.queued.has(CwdGate.key(writeCwd)) || !this.claimCwd(writeCwd, id))) {
         return this.enqueue<T>({ key: id, cwd: writeCwd, command, payload, timeoutMs, trace, preflight })
       }
-      if (command === 'prompt') {
-        const sessionFile = runtime.currentStatus.sessionFile
-        if (sessionFile) {
-          try {
-            await this.acquireSessionFileLock(sessionFile, id)
-          } catch (error) {
-            await this.release(id, writeCwd)
-            throw error
-          }
-        }
-      }
       activity.writes += 1
     }
+    if (changesSession) activity.changingSession = true
     try {
+      const sessionFile = command === 'prompt' ? runtime.currentStatus.sessionFile : undefined
+      if (sessionFile) await this.acquireSessionFileLock(sessionFile, id)
       preflight?.()
     } catch (error) {
+      if (changesSession) activity.changingSession = false
       if (writing) {
         activity.writes -= 1
         await this.release(this.ownerOf(runtime) ?? id, writeCwd)
@@ -546,6 +541,7 @@ export class SessionSupervisor extends EventEmitter {
       throw error
     }
     const settlements = activity.settlements
+    if (command === 'set_session_name') activity.nameWrites += 1
     try {
       const result = await this.invoke<T>(id, command, payload, timeoutMs, trace)
       if (command === 'get_state' && this.ownerOf(runtime) === id) {
@@ -577,7 +573,7 @@ export class SessionSupervisor extends EventEmitter {
           followUp: [...(queue?.followUp ?? []), ...prompts.filter(job => job.payload.streamingBehavior === 'followUp').map(job => String(job.payload.message ?? ''))]
         } as T
       }
-      if (BIND_COMMANDS.has(command)) {
+      if (command === 'prompt' || changesSession) {
         const file = await this.rebindFromState(this.ownerOf(runtime) ?? id)
         if (file && command !== 'prompt') return { ...result, sessionFile: file } as T
       }
@@ -599,6 +595,7 @@ export class SessionSupervisor extends EventEmitter {
       }
       throw error
     } finally {
+      if (changesSession) activity.changingSession = false
       if (writing) {
         activity.writes -= 1
         await this.release(this.ownerOf(runtime) ?? id, writeCwd)
@@ -647,7 +644,11 @@ export class SessionSupervisor extends EventEmitter {
     return false
   }
 
-  async rename(file: string, name: string, handle?: FileHandle): Promise<boolean> {
+  renameIfUnnamed(file: string, name: string): Promise<boolean> {
+    return this.rename(file, name, undefined, true)
+  }
+
+  async rename(file: string, name: string, handle?: FileHandle, onlyIfUnnamed = false): Promise<boolean> {
     const resolveTargetId = (): string => {
       const fileOwner = this.fileOwners.get(canonicalSessionFile(file))
       return fileOwner ? this.canonical(fileOwner) : this.canonical(file)
@@ -674,13 +675,26 @@ export class SessionSupervisor extends EventEmitter {
     const activity = runtime && this.activity.get(runtime)
     let renamed = false
     if (runtime?.isRunning && activity && !activity.stopping) {
-      activity.prewarmOnly = false
-      this.touchRuntime(activity)
-      await runtime.request('set_session_name', { name }, 30_000, { sourceAction: 'session-rename' })
+      if (onlyIfUnnamed) {
+        if (activity.running || activity.writes > 0 || activity.changingSession) return false
+        const nameWrites = activity.nameWrites
+        const state = await runtime.request<PiState>('get_state', {}, 10_000, { sourceAction: 'auto-title' })
+        // Pi can answer with a snapshot taken just before a manual rename.
+        // Recheck locally before sending, with no await between check and send.
+        if (
+          !state?.sessionFile || canonicalSessionFile(state.sessionFile) !== canonicalSessionFile(file) ||
+          state.sessionName || state.isStreaming || state.isCompacting ||
+          this.ownerOf(runtime) !== id || activity.stopping || activity.changingSession ||
+          activity.running || activity.writes > 0 || activity.nameWrites !== nameWrites
+        ) return false
+      }
+      // Pi can already be writing the new session before the supervisor
+      // updates its file owners. Use the same transition guard as other RPCs.
+      await this.request(id, 'set_session_name', { name }, 30_000, { sourceAction: 'session-rename' })
       renamed = true
     } else {
       try {
-        renamed = await this.withSessionFileMutation(file, () => appendSessionName(file, name, handle))
+        renamed = await this.withSessionFileMutation(file, () => appendSessionName(file, name, handle, onlyIfUnnamed))
       } catch (error) {
         if (error instanceof SessionFileLockError) return false
         throw error
@@ -876,6 +890,7 @@ export class SessionSupervisor extends EventEmitter {
         writes: 0,
         running: false,
         settlements: 0,
+        nameWrites: 0,
         externalContext: false,
         prewarmOnly: options.prewarm === true,
         lastAccessed: 0
@@ -1457,10 +1472,15 @@ export class SessionSupervisor extends EventEmitter {
     }
     this.clearWarm(from)
     this.scheduleWarm(file)
-    for (const jobs of this.queued.values()) {
-      for (const job of jobs) {
-        if (job.key === from) job.key = file
+    if (migrateIdentity) {
+      for (const jobs of this.queued.values()) {
+        for (const job of jobs) {
+          if (job.key === from) job.key = file
+        }
       }
+    } else {
+      // The original conversation still owns these requests after a branch.
+      this.dropQueued(from)
     }
     for (const [locked, owner] of this.fileOwners) {
       if (owner === from) this.fileOwners.delete(locked)
@@ -1597,7 +1617,7 @@ export class SessionSupervisor extends EventEmitter {
       this.warmTimers.delete(key)
       if (this.gate.holds(id) || this.approvals.has(id) || [...this.queued.values()].some(jobs => jobs.some(job => this.canonical(job.key) === id))) return
       const runtime = this.runtimes.get(id)
-      if (!runtime?.isRunning) return
+      if (!runtime?.isRunning || this.activity.get(runtime)?.changingSession) return
       void this.stop(id).catch((error) => {
         console.error('[pi-desktop] could not retire an idle Pi process:', error)
       })
@@ -1627,7 +1647,10 @@ export class SessionSupervisor extends EventEmitter {
     if (!runtime.isRunning) return false
     const activity = this.activity.get(runtime)
     if (!activity) return false
-    if (activity.running || activity.writes > 0 || activity.stopping || activity.finalizing || activity.binding) return false
+    if (
+      activity.running || activity.writes > 0 || activity.stopping ||
+      activity.finalizing || activity.binding || activity.changingSession
+    ) return false
     const canon = this.canonical(id)
     const owner = this.canonical(activity.ownerId)
     if (this.gate.holds(canon) || this.gate.holds(owner)) return false

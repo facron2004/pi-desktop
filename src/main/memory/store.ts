@@ -542,14 +542,50 @@ export class MemoryStore {
       if (!removed) return
       const ledger = this.readLedger(true)
       const remaining = enforceCaps(entries.filter((entry) => entry.id !== id))
+      const rolloutSources = this.rolloutSourcesForRemoval(removed)
       // Update the projections first so a blocked file leaves the entry
-      // available to retry and the source note can still be found.
+      // available to retry.
       writeTextAtomic(this.summaryFile, renderMemorySummary(remaining))
-      if (removed.source) this.updateRolloutAfterRemoval(removed.source, remaining)
+      for (const source of rolloutSources) this.updateRolloutAfterRemoval(source, remaining)
       ledger.generation = (ledger.generation ?? 0) + 1
       this.writeLedger(ledger)
       this.writeEntries(remaining)
     })
+  }
+
+  private rolloutSourcesForRemoval(removed: MemoryEntry): string[] {
+    const sources = removed.source ? [removed.source] : []
+    const latestNote = removed.source && canonicalSessionFile(this.rolloutSummaryPath(removed.source))
+    const project = memoryPathKey(removed.projectPath)
+    const entryPrefix = `- [${removed.scope}/${removed.kind}] `
+    const removedText = normalizeText(removed.text)
+
+    // A merge moves the source to the newest session. Older notes can still
+    // carry the same entry or quote its text in the recorded model output.
+    for (const note of readdirSync(this.rolloutDir, { withFileTypes: true })) {
+      if (!note.isFile() || !note.name.endsWith('.md')) continue
+      const file = path.join(this.rolloutDir, note.name)
+      const fileKey = canonicalSessionFile(file)
+      if (fileKey === latestNote) continue
+      const content = readFileSync(file, 'utf8')
+      const header = /^# Session memory\n\n- session: ([^\n]+)\n- cwd: ([^\n]*)\n- learned_at: [^\n]+\n\n/.exec(content)
+      if (!header) continue
+      const [, source, cwd] = header
+      if (!source || canonicalSessionFile(this.rolloutSummaryPath(source)) !== fileKey) continue
+      if (removed.scope === 'project' && memoryPathKey(cwd) !== project) continue
+
+      const body = content.slice(header[0].length)
+      const output = /\n## Model output\n([\s\S]*)$/.exec(body)
+      const entries = body.slice(0, output?.index)
+      const hasEntry = entries.split('\n').some(line =>
+        line.startsWith(entryPrefix) && similarText(line.slice(entryPrefix.length), removed.text)
+      )
+      const raw = output?.[1]
+      if (hasEntry || (raw && removedText && ` ${normalizeText(raw)} `.includes(` ${removedText} `))) {
+        sources.push(source)
+      }
+    }
+    return sources
   }
 
   private updateRolloutAfterRemoval(sessionFile: string, remaining: MemoryEntry[]): void {

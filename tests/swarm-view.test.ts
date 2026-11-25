@@ -10,6 +10,10 @@ import {
   swarmAssignments,
   swarmFeed,
   swarmPreview,
+  swarmRosterLine,
+  swarmSituation,
+  swarmSpawnPending,
+  rosterForPage,
   swarmStartedAt,
   type SwarmWorkerState
 } from '../src/renderer/src/lib/swarm'
@@ -110,6 +114,52 @@ test('the elapsed reading starts at the earliest worker or hand-over', () => {
   assert.equal(swarmStartedAt([worker({})]), undefined)
   const assignments = swarmAssignments(items)
   assert.equal(assignments[0]?.at, 600)
+})
+
+test('the situation sentence prefers live work, then failures, then a snapshot', () => {
+  const summary = { total: 3, working: 2, idle: 0, failed: 1, stopped: 0, tokens: 10 }
+  assert.deepEqual(swarmSituation(summary, true, true), { key: '{count} workers are working', count: 2 })
+  assert.deepEqual(swarmSituation(summary, true, false), {
+    key: 'Swarm Mode is off. {count} workers are still finishing.',
+    count: 2
+  })
+  assert.deepEqual(swarmSituation({ ...summary, working: 0 }, true, true), {
+    key: '{count} failed, the team is waiting',
+    count: 1
+  })
+  assert.deepEqual(swarmSituation({ ...summary, working: 0, failed: 0 }, true, true), {
+    key: 'The team is idle. More work can be assigned.'
+  })
+  assert.equal(swarmSituation(summary, false, true).key, 'No live connection. This is the last team snapshot.')
+})
+
+test('a roster line shows the live tool, the failure, or the previous task', () => {
+  assert.deepEqual(swarmRosterLine(worker({ status: 'working', toolName: 'edit', task: 'retry login' }), true), {
+    kind: 'tool',
+    tool: 'edit'
+  })
+  assert.deepEqual(swarmRosterLine(worker({ status: 'failed', errorMessage: 'exit 1', task: 'review' }), true), {
+    kind: 'error',
+    text: 'exit 1'
+  })
+  assert.deepEqual(swarmRosterLine(worker({ status: 'idle', task: 'check the lock' }), true), {
+    kind: 'last',
+    text: 'check the lock'
+  })
+  assert.equal(swarmRosterLine(worker({ status: 'working', task: 'still going' }), false).kind, 'last')
+})
+
+test('hand-overs still name a roster when the saved team is empty', () => {
+  const named = rosterForPage([], [], swarmAssignments(items), false)
+  assert.deepEqual(named.map((entry) => entry.name), ['math-reason', 'code'])
+  assert.deepEqual(rosterForPage([worker({ name: 'live' })], [], [], true).map((entry) => entry.name), ['live'])
+  assert.deepEqual(rosterForPage([], [worker({ name: 'saved' })], swarmAssignments(items), false).map((entry) => entry.name), ['saved'])
+})
+
+test('an in-flight swarm_spawn is pending until it settles', () => {
+  const pending = swarmTool('spawn', 'swarm_task', { name: 'a', task: 't' }, { toolName: 'swarm_spawn', status: 'running' })
+  assert.equal(swarmSpawnPending([pending]), true)
+  assert.equal(swarmSpawnPending([{ ...pending, status: 'ok' }]), false)
 })
 
 test('a preview prefers live activity while working and the report once idle', () => {

@@ -238,7 +238,8 @@ export const Notification = class { show() {} };
 export const nativeTheme = { shouldUseDarkColors: false };
 const fakeImage = { isEmpty: () => false, resize: () => fakeImage, setTemplateImage: () => {} };
 export const nativeImage = { createFromPath: () => fakeImage, createFromBuffer: () => fakeImage };
-export const screen = { getDisplayMatching: () => ({ id: 1, workArea: { x: 0, y: 0, width: 1280, height: 720 } }) };
+const display = { id: 1, workArea: { x: 0, y: 0, width: 1280, height: 720 } };
+export const screen = { getDisplayMatching: () => display, getAllDisplays: () => [display] };
 `
 )
 

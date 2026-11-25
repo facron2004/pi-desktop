@@ -8,7 +8,6 @@ import { useSessionViewSlice } from '../../lib/conversation-scope'
 import { useT } from '../../lib/i18n'
 import { ConfirmDialog } from '../ConfirmDialog'
 import { Popover } from '../Popover'
-import { SideChatSyncPill } from './SideChatSyncPill'
 
 export interface SideChatHeaderProps {
   sideSessionKey?: string
@@ -76,8 +75,10 @@ export const SideChatHeader = memo(function SideChatHeader({
 
   return (
     <header className="side-chat__head">
-      <SideChatSyncPill />
-
+      {/* No sync line and no read-only badge: the side chat is a working
+          conversation like the one beside it. What stays here are the three
+          things the main chat has no equivalent for — review, break down and
+          clearing the side slot. */}
       <div className="side-chat__head-actions">
         {hasBothReviewScopes ? (
           <Popover

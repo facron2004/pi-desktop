@@ -13,7 +13,6 @@ import {
   FolderTree,
   GitBranch,
   ListTodo,
-  MessagesSquare,
   PanelRight,
   PanelRightClose,
   PanelRightOpen,
@@ -127,9 +126,6 @@ export default function App() {
   )
   const setSideChatOpen = useAppStore((state) => state.setSideChatOpen)
   const ensureSideChatForActiveMain = useAppStore((state) => state.ensureSideChatForActiveMain)
-  const sideNotice = useAppStore((state) =>
-    state.sideSessionKey ? state.sideNotices[state.sideSessionKey] : undefined
-  )
   const hasActiveUiRequest = useAppStore((state) =>
     Boolean(
       state.uiRequest ||
@@ -1102,26 +1098,10 @@ export default function App() {
                 header keeps the conversation's name and the app's actions. */}
           </div>
           <div className="titlebar__actions no-drag">
-            {!deskPage ? (
-              <button
-                type="button"
-                className="icon-btn titlebar__side-btn"
-                aria-label={sideChatActive ? t('Hide side chat') : t('Show side chat')}
-                title={sideChatActive ? t('Hide side chat') : t('Show side chat')}
-                aria-pressed={sideChatActive}
-                data-active={sideChatActive || undefined}
-                onClick={toggleSideChat}
-              >
-                <MessagesSquare size={16} strokeWidth={1.6} aria-hidden="true" />
-                {sideNotice && !sideChatActive ? (
-                  <span
-                    className="titlebar__side-dot"
-                    data-kind={sideNotice}
-                    aria-hidden="true"
-                  />
-                ) : null}
-              </button>
-            ) : null}
+            {/* The side chat is a page of the tool panel, so the toolbar owns
+                its door. A second button up here was a control for a panel
+                whose own strip already lists it — and it put a chat action in
+                the row that only carries the window's own controls. */}
             {!deskPage && hasItems ? (
               <button
                 type="button"

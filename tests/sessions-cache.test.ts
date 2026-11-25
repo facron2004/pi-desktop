@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
-import { open, writeFile } from 'node:fs/promises'
+import fsPromises, { open, writeFile } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
@@ -1299,6 +1300,7 @@ test('searchSessions: a long session is searchable through its index', async () 
       assert.equal(indexFiles.length, 1)
       const indexPath = path.join(indexDir, indexFiles[0]!)
       const builtAt = statSync(indexPath).mtimeMs
+      const originalSidecar = readFileSync(indexPath, 'utf8')
 
       // A repeated query reuses the snapshot instead of rebuilding the index.
       await searchSessions('zebra', 10)
@@ -1313,13 +1315,34 @@ test('searchSessions: a long session is searchable through its index', async () 
       assert.equal(second.length, 1)
       assert.equal(second[0]?.messageIndex, 3)
       assert.equal(second[0]?.snippet.includes('giraffe'), true)
+      assert.equal(readFileSync(indexPath, 'utf8'), originalSidecar, 'a small append stays in memory')
+
+      const smallPadding = 'y'.repeat(560 * 1024)
+      writeFileSync(file, [
+        message('padding-1', 'u2', 'toolResult', smallPadding, 4),
+        message('u3', 'padding-1', 'user', 'an oryx follow-up', 4)
+      ].join('\n') + '\n', { flag: 'a', encoding: 'utf8' })
+      assert.equal((await searchSessions('oryx', 10)).length, 1)
+      assert.equal(readFileSync(indexPath, 'utf8'), originalSidecar, 'another small append is still batched')
+
+      clearSessionCache()
+      assert.equal((await searchSessions('oryx', 10)).length, 1, 'a cold query reads the unpersisted tail')
+      assert.equal(readFileSync(indexPath, 'utf8'), originalSidecar, 'a cold query keeps the batch open')
+
+      writeFileSync(file, message('padding-2', 'u3', 'toolResult', smallPadding, 4) + '\n', {
+        flag: 'a',
+        encoding: 'utf8'
+      })
+      assert.equal((await searchSessions('oryx', 10)).length, 1)
+      const persistedHeader = JSON.parse(readFileSync(indexPath, 'utf8').split('\n', 2)[1]!)
+      assert.equal(persistedHeader.sourceSize, statSync(file).size, 'the cumulative growth is persisted')
 
       // Extending the session must roll the index forward instead of keeping
       // every message ever seen. This delta stays within one incremental read.
       const growth = await open(file, 'a')
       try {
         const chunk = 'x'.repeat(1024 * 1024)
-        let parentId = 'u2'
+        let parentId = 'padding-2'
         for (let index = 0; index < 4; index += 1) {
           const id = `growth-tool-${index}`
           await growth.writeFile(`${message(id, parentId, 'toolResult', chunk, 5)}\n`)
@@ -1650,6 +1673,58 @@ test('searchSessions: oversized sidecars stay out of the per-query work budget',
   }
 })
 
+test('searchSessions: a rewound session builds its index without rereading history for metadata', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-search-rewound-budget-'))
+  const file = path.join(root, 'rewound.jsonl')
+  configureSessionSearchIndex(path.join(root, 'index'))
+  t.after(() => {
+    configureSessionSearchIndex(null)
+    clearSessionCache()
+    rmSync(root, { recursive: true, force: true })
+  })
+  const mib = 1024 * 1024
+  const lines = [
+    { type: 'session', id: 'rewound', cwd: root },
+    { type: 'session_info', id: 'name', parentId: null, name: 'Rewound conversation' },
+    { type: 'message', id: 'message', parentId: 'name', message: { role: 'user', content: 'rewindmarker' } },
+    ...Array.from({ length: 9 }, (_, index) => ({
+      type: 'custom', id: `padding-${index}`, parentId: 'message', data: 'x'.repeat(mib)
+    })),
+    { type: 'custom', id: 'rewind', parentId: 'missing-parent', customType: 'pi-desktop-rewind' }
+  ]
+  writeFileSync(file, lines.map(line => JSON.stringify(line)).join('\n') + '\n')
+
+  let sourceBytesRead = 0
+  const sourceFile = realpathSync(file)
+  const originalOpen = fsPromises.open
+  const trackOpen = t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+    const handle = await originalOpen(...args)
+    if (args[0] === sourceFile) {
+      const read = handle.read.bind(handle)
+      t.mock.method(handle, 'read', async (buffer: Buffer, offset: number, length: number, position: number) => {
+        const result = await read(buffer, offset, length, position)
+        sourceBytesRead += result.bytesRead
+        return result
+      })
+    }
+    return handle
+  })
+  syncBuiltinESMExports()
+  const size = statSync(file).size
+  try {
+    const [hit] = await searchSessions('rewindmarker', 1, {
+      sessionRoots: [root],
+      budgetBytes: size + 3 * mib + 1024
+    })
+    assert.equal(hit?.cwd, root)
+    assert.equal(hit?.name, 'Rewound conversation')
+    assert.equal(sourceBytesRead, size, 'the index scan already read the session metadata')
+  } finally {
+    trackOpen.mock.restore()
+    syncBuiltinESMExports()
+  }
+})
+
 test('searchSessions: the index respects the work budget before build and during cached scans', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'pi-search-index-budget-'))
   const indexDir = path.join(root, 'index')
@@ -1680,11 +1755,11 @@ test('searchSessions: the index respects the work budget before build and during
     assert.deepEqual(coldBudget, [])
     assert.equal(existsSync(indexDir), false, 'a small budget must not trigger a full index build')
 
-    const nearBudget = await searchSessions('lateword', 10, {
-      budgetBytes: statSync(file).size + 1024
+    const sourceBudget = await searchSessions('lateword', 10, {
+      budgetBytes: statSync(file).size
     })
-    assert.deepEqual(nearBudget, [], 'the cold build must include its bounded metadata reads in the budget')
-    assert.equal(existsSync(indexDir), false, 'the estimated head and tail reads can make a build exceed budget')
+    assert.deepEqual(sourceBudget, [], 'the cold build needs work budget for both reading and matching')
+    assert.equal(existsSync(indexDir), false, 'the source read alone would spend the whole budget')
 
     const built = await searchSessions('needle-start', 10)
     assert.equal(built.length, 1)
@@ -2144,6 +2219,151 @@ test('a search hit carries the name Pi writes as the last record', async (t) => 
   // The scan breaks before the last record, so the hit used to show the first
   // prompt while the sidebar row showed this title.
   assert.equal(hits[0].name, 'Zebra 讨论')
+})
+
+test('aggregate usage includes Pi tool, summary and standalone charges without counting extra turns', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'pi-billed-session-usage-'))
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  t.after(() => {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    clearSessionCache()
+    rmSync(root, { recursive: true, force: true })
+  })
+  const file = path.join(root, 'billed-session.jsonl')
+  const timestamp = new Date().toISOString()
+  const lines = (...records: object[]) => records.map(record => JSON.stringify({ timestamp, ...record })).join('\n') + '\n'
+  writeFileSync(file, lines(
+    { type: 'session', id: 'billed-session', cwd: 'C:/proj' },
+    { type: 'message', message: {
+      role: 'assistant', model: 'test/assistant', usage: { input: 8, output: 2, cost: { total: 0.25 } }
+    } }
+  ))
+  assert.equal((await getAggregatedUsage(root)).allTime.tokens.totalTokens, 10)
+  writeFileSync(file, lines(
+    { type: 'message', message: { role: 'toolResult', usage: { input: 2, output: 3, cost: { total: 0.125 } } } },
+    { type: 'compaction', summary: 'summary', usage: { input: 5, output: 1, cost: { total: 0.5 } } },
+    { type: 'branch_summary', summary: 'branch', usage: { input: 6, output: 1, cost: { total: 0.25 } } },
+    { type: 'usage', kind: 'cache_warm', model: 'test/cache', usage: { cacheRead: 8, cost: { total: 0.125 } } },
+    { type: 'custom', customType: 'unrelated', usage: { input: 999, cost: { total: 99 } } }
+  ), { flag: 'a' })
+
+  const expectedTokens = { input: 21, output: 7, cacheRead: 8, cacheWrite: 0, totalTokens: 36, cost: 1.25 }
+  for (const cache of ['warm', 'cold'] as const) {
+    if (cache === 'cold') clearSessionCache()
+    const usage = await getAggregatedUsage(root)
+    assert.deepEqual(usage.allTime.tokens, expectedTokens)
+    assert.deepEqual(usage.today.tokens, expectedTokens)
+    assert.equal(usage.allTime.messageCount, 1)
+    assert.equal(usage.recentDays.at(-1)?.messageCount, 1)
+    assert.equal(usage.recentDays.at(-1)?.totalTokens, 36)
+    assert.deepEqual(usage.byModel.map(({ model, totalTokens, messageCount }) => [model, totalTokens, messageCount]), [
+      ['Tools/summaries', 18, 0],
+      ['test/assistant', 10, 1],
+      ['test/cache', 8, 0]
+    ])
+  }
+})
+
+test('aggregate usage counts copied records once per fork lineage across session roots', async (t) => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-fork-usage-'))
+  const root = path.join(parent, 'sessions')
+  const otherRoot = path.join(parent, 'external')
+  mkdirSync(root)
+  mkdirSync(otherRoot)
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  t.after(() => {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    clearSessionCache()
+    rmSync(parent, { recursive: true, force: true })
+  })
+  const timestamp = new Date().toISOString()
+  const original = path.join(root, 'original.jsonl')
+  const branch = path.join(otherRoot, 'branch.jsonl')
+  const nested = path.join(root, 'nested-fork.jsonl')
+  const sibling = path.join(otherRoot, 'sibling.jsonl')
+  const assistant = (id: string, input: number, cost: number) => ({
+    id, type: 'message', timestamp, message: { role: 'assistant', model: 'test/model', usage: { input, cost } }
+  })
+  const common = assistant('common', 10, 0.25)
+  const summary = { type: 'branch_summary', id: 'branch-summary', timestamp, usage: { input: 7, cost: 0.5 } }
+  const write = (file: string, parentSession: string | undefined, ...entries: object[]) => {
+    const header = { type: 'session', id: path.basename(file, '.jsonl'), timestamp, cwd: 'C:/proj', parentSession }
+    writeFileSync(file, [header, ...entries].map(entry => JSON.stringify(entry)).join('\n') + '\n')
+  }
+  write(original, undefined, common, assistant('original-only', 3, 0.125))
+  write(branch, original, { ...common, parentId: 'rewritten-parent' }, summary)
+  write(nested, branch, common, summary)
+  write(sibling, original, common, assistant('sibling-only', 2, 0.125))
+  write(path.join(root, 'unrelated.jsonl'), undefined, common)
+
+  const assertTotals = async (tokens: number, cost: number, messages: number) => {
+    const usage = await getAggregatedUsage(otherRoot)
+    assert.equal(usage.allTime.tokens.totalTokens, tokens)
+    assert.equal(usage.allTime.tokens.cost, cost)
+    assert.equal(usage.allTime.messageCount, messages)
+    assert.equal(usage.today.tokens.totalTokens, tokens)
+    assert.equal(usage.recentDays.at(-1)?.totalTokens, tokens)
+    assert.equal(usage.recentDays.at(-1)?.conversationsCount, usage.allTime.conversationsCount)
+    assert.equal(usage.byModel.reduce((total, model) => total + model.totalTokens, 0), tokens)
+  }
+  await assertTotals(32, 1.25, 4)
+  rmSync(original)
+  await assertTotals(29, 1.125, 3)
+  writeFileSync(nested, JSON.stringify(assistant('nested-only', 4, 0.125)) + '\n', { flag: 'a' })
+  clearSessionCache()
+  await assertTotals(33, 1.25, 4)
+})
+
+test('aggregate usage counts shared records in copies of the same session only once', async (t) => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-usage-copied-root-'))
+  const root = path.join(parent, 'sessions')
+  const otherRoot = path.join(parent, 'relocated')
+  mkdirSync(root)
+  mkdirSync(otherRoot)
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  t.after(() => {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    clearSessionCache()
+    rmSync(parent, { recursive: true, force: true })
+  })
+  const timestamp = new Date().toISOString()
+  const assistant = (id: string, input: number, cost: number) => ({
+    id, type: 'message', timestamp, message: { role: 'assistant', model: 'test/model', usage: { input, cost } }
+  })
+  const write = (file: string, id: string, ...entries: object[]) => {
+    const header = { type: 'session', version: 3, id, timestamp, cwd: parent }
+    writeFileSync(file, [header, ...entries].map(entry => JSON.stringify(entry)).join('\n') + '\n')
+  }
+  const original = path.join(root, 'original.jsonl')
+  const shared = assistant('shared', 10, 0.25)
+  write(original, 'same-session', shared, assistant('original-only', 2, 0.125))
+  write(path.join(otherRoot, 'original.jsonl'), 'unrelated-session', shared)
+
+  const assertTotals = async (tokens: number, cost: number, messages: number) => {
+    const usage = await getAggregatedUsage(otherRoot)
+    assert.equal(usage.allTime.tokens.totalTokens, tokens)
+    assert.equal(usage.allTime.tokens.cost, cost)
+    assert.equal(usage.allTime.messageCount, messages)
+    assert.equal(usage.today.tokens.totalTokens, tokens)
+    assert.equal(usage.today.conversationsCount, 2)
+    assert.equal(usage.allTime.conversationsCount, 2)
+    assert.equal(usage.recentDays.at(-1)?.totalTokens, tokens)
+    assert.equal(usage.recentDays.at(-1)?.conversationsCount, 2)
+    assert.equal(usage.byModel[0]?.totalTokens, tokens)
+  }
+  await assertTotals(22, 0.625, 3)
+  write(path.join(otherRoot, 'renamed-copy.jsonl'), 'same-session', shared, assistant('copy-only', 3, 0.125))
+  await assertTotals(25, 0.75, 4)
+  clearSessionCache()
+  await assertTotals(25, 0.75, 4)
+  rmSync(original)
+  await assertTotals(23, 0.625, 3)
 })
 
 test('malformed usage numbers cannot poison the totals', async (t) => {

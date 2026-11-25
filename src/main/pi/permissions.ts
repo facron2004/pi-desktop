@@ -124,7 +124,7 @@ export function permissionExtension(
     // by extension source path so third-party extensions cannot squat the names.
     if (computerExtensionPath) ownedTools.computer = computerExtensionPath
     if (imageExtensionPath) ownedTools.generate_image = imageExtensionPath
-    // Side Chat read-only inspection tools call back over localhost with a
+    // Side Chat main-context inspection tools call back over localhost with a
     // per-process capability token. Verified strictly by extension source path.
     if (sideChatExtensionPath) {
       for (const name of ['inspect_main_conversation', 'inspect_main_changes']) {

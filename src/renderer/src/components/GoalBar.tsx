@@ -4,6 +4,7 @@ import { GOAL_STATUS_KEY, type AppLanguage } from '@shared/types'
 import { readGoalStatus } from '@shared/task-mode-state'
 import { goalBadge, goalBarVisible, goalCanToggleRun } from '@shared/goal-display'
 import { useAppStore } from '../store/useAppStore'
+import { useConversationScope, useSessionViewSlice } from '../lib/conversation-scope'
 import { dispatchOpenSideChat } from '../lib/side-chat-context'
 import { useT } from '../lib/i18n'
 import { formatElapsed } from './conversation/RunSummary'
@@ -12,9 +13,10 @@ import { GoalTargetIcon } from './GoalTargetIcon'
 import '../styles/goal.css'
 
 function GoalRunDuration() {
-  const startedAt = useAppStore((state) => state.run.startedAt)
-  const settled = useAppStore((state) => state.run.settled)
-  const durationMs = useAppStore((state) => state.run.durationMs)
+  const view = useSessionViewSlice()
+  const startedAt = view.run.startedAt
+  const settled = view.run.settled
+  const durationMs = view.run.durationMs
   const language = useAppStore((state) => state.settings.language ?? 'en') as AppLanguage
   const t = useT()
   const [now, setNow] = useState(() => Date.now())
@@ -47,9 +49,11 @@ function GoalRunDuration() {
  * through `runTaskCommand`, so the extension stays the single owner.
  */
 export function GoalBar() {
-  const rawGoal = useAppStore((state) => state.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text)
-  const isStreaming = useAppStore((state) => state.isStreaming)
-  const agentMode = useAppStore((state) => state.agentMode)
+  const scope = useConversationScope()
+  const view = useSessionViewSlice()
+  const rawGoal = view.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text
+  const isStreaming = view.isStreaming
+  const agentMode = view.agentMode
   const t = useT()
   const detailsId = useId()
   const focusDetails = useCallback((panel: HTMLDivElement | null) => {
@@ -101,11 +105,12 @@ export function GoalBar() {
     setDraft('')
   }
 
+  const goalActionKey = scope.surface === 'main' ? scope.sessionKey : (scope.sessionKey ?? '')
   const runGoalAction = async (action: string) => {
     if (pending) return
     setPending(true)
     try {
-      return await useAppStore.getState().runTaskCommand('/desktop-goal ' + action)
+      return await useAppStore.getState().runTaskCommand('/desktop-goal ' + action, goalActionKey)
     } finally {
       setPending(false)
     }
@@ -139,22 +144,24 @@ export function GoalBar() {
                 {goal.text}
               </span>
               <div className="goal-bar__actions">
-                <button
-                  type="button"
-                  className="goal-bar__action goal-bar__action--icon"
-                  title={t('Break down goal in Side Chat')}
-                  aria-label={t('Break down goal in Side Chat')}
-                  onClick={(event) =>
-                    dispatchOpenSideChat({
-                      mode: 'open',
-                      focus: true,
-                      preset: 'breakdown-plan',
-                      autoSubmit: !event.shiftKey
-                    })
-                  }
-                >
-                  <MessagesSquare size={14} aria-hidden="true" />
-                </button>
+                {scope.surface === 'main' ? (
+                  <button
+                    type="button"
+                    className="goal-bar__action goal-bar__action--icon"
+                    title={t('Break down goal in Side Chat')}
+                    aria-label={t('Break down goal in Side Chat')}
+                    onClick={(event) =>
+                      dispatchOpenSideChat({
+                        mode: 'open',
+                        focus: true,
+                        preset: 'breakdown-plan',
+                        autoSubmit: !event.shiftKey
+                      })
+                    }
+                  >
+                    <MessagesSquare size={14} aria-hidden="true" />
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="goal-bar__action goal-bar__action--icon"

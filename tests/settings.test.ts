@@ -598,6 +598,76 @@ test('workspace removal is atomic with hiding and keeps another process addition
   }
 })
 
+test('an explicit project hide takes effect after another store makes the project visible', (t) => {
+  const fileName = `settings-hide-after-restore-${process.pid}.json`
+  const file = settingsFile(fileName)
+  t.after(() => rmSync(file, { force: true }))
+  const project = 'C:/project'
+  const peer = new SettingsStore(fileName)
+  peer.patch({ hiddenProjects: [project] })
+  const local = new SettingsStore(fileName)
+
+  peer.patch({ hiddenProjects: ['C:/another'] })
+  local.removeWorkspace(undefined, project)
+
+  assert.deepEqual(new SettingsStore(fileName).get().hiddenProjects, ['C:/another', project])
+})
+
+test('registering a project moves it to the first row after another store changes the order', (t) => {
+  const fileName = `settings-register-after-reorder-${process.pid}.json`
+  const file = settingsFile(fileName)
+  t.after(() => rmSync(file, { force: true }))
+  const project = 'C:/project'
+  const other = 'C:/another'
+  const peer = new SettingsStore(fileName)
+  peer.patch({ projectOrder: [project, other] })
+  const local = new SettingsStore(fileName)
+
+  peer.patch({ projectOrder: [other, project] })
+  assert.deepEqual(peer.get().projectOrder, [other, project])
+  local.addWorkspace(workspace('project', project, 100))
+
+  const saved = new SettingsStore(fileName).get()
+  assert.deepEqual(saved.workspaces.map(({ id }) => id), ['project'])
+  assert.deepEqual(saved.projectOrder, [project, other])
+})
+
+test('a reorder from an older view keeps a concurrently registered project in its slot', (t) => {
+  const fileName = `settings-reorder-after-register-${process.pid}.json`
+  t.after(() => rmSync(settingsFile(fileName), { force: true }))
+  const local = new SettingsStore(fileName)
+  const alpha = 'C:/alpha'
+  const beta = 'C:/beta'
+  const gamma = 'C:/gamma'
+  local.addWorkspace(workspace('alpha', alpha, 100))
+  const seen = local.addWorkspace(workspace('beta', beta, 200))
+
+  const peer = new SettingsStore(fileName)
+  assert.deepEqual(peer.addWorkspace(workspace('gamma', gamma, 300)).projectOrder, [gamma, beta, alpha])
+  local.patch({ projectOrder: [alpha, beta] }, { projectOrder: seen.projectOrder })
+
+  const saved = new SettingsStore(fileName).get()
+  assert.deepEqual(saved.projectOrder, [gamma, alpha, beta])
+  assert.deepEqual(saved.workspaces.map(({ id }) => id), ['alpha', 'beta', 'gamma'])
+})
+
+test('a stale reorder keeps the intermediate position of a project added by a peer', (t) => {
+  const fileName = `settings-reorder-with-peer-slot-${process.pid}.json`
+  t.after(() => rmSync(settingsFile(fileName), { force: true }))
+  const local = new SettingsStore(fileName)
+  const alpha = 'C:/alpha'
+  const beta = 'C:/beta'
+  const gamma = 'C:/gamma'
+  const seen = local.patch({ projectOrder: [alpha, beta] })
+
+  const peer = new SettingsStore(fileName)
+  peer.addWorkspace(workspace('gamma', gamma, 100))
+  peer.patch({ projectOrder: [alpha, gamma, beta] })
+  local.patch({ projectOrder: [beta, alpha] }, { projectOrder: seen.projectOrder })
+
+  assert.deepEqual(new SettingsStore(fileName).get().projectOrder, [beta, gamma, alpha])
+})
+
 test('projectOrder keeps the display order and drops duplicate paths', () => {
   const fileName = `project-order-${process.pid}.json`
   const store = new SettingsStore(fileName)
