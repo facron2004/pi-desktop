@@ -1172,6 +1172,50 @@ test('a subagent never receives its task if the permission extension does not be
   assert.deepEqual(readRecords(promptFile), [])
 })
 
+test('cancellation discards a late approval-ready event before dispatching a task', async () => {
+  const fixtureFile = path.join(dir, 'late-ready-child.mjs')
+  writeFileSync(fixtureFile, `import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+export const input = [];
+let spawned;
+export const ready = new Promise(resolve => { spawned = resolve; });
+export function spawn() {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  stdin.on('data', chunk => input.push(chunk.toString()));
+  let stopped = false;
+  const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, kill() {
+    if (stopped) return true;
+    stopped = true;
+    stdout.write(JSON.stringify({
+      type: 'extension_ui_request', method: 'setStatus', statusKey: ${JSON.stringify(permissionTitle)}, statusText: 'ready'
+    }) + '\\n');
+    setImmediate(() => child.emit('close', 1));
+    return true;
+  } });
+  spawned();
+  return child;
+}
+`)
+  const generated = path.join(dir, 'late-ready-subagent.mjs')
+  writeFileSync(generated, readFileSync(approvalExtensionFile, 'utf8').replace(
+    "import { execFile, spawn } from 'node:child_process';",
+    "import { execFile } from 'node:child_process'; import { spawn } from './late-ready-child.mjs';"
+  ))
+  const child = await import(pathToFileURL(fixtureFile).href) as { ready: Promise<void>; input: string[] }
+  const { tool } = createApi(await loadFactory(generated))
+  const controller = new AbortController()
+  const running = withFakePi({}, () => tool.execute(
+    'cancel-before-approval-ready', { task: 'Do not dispatch this task' }, controller.signal, undefined, { cwd: process.cwd() }
+  ))
+  await Promise.race([child.ready, running])
+  controller.abort()
+  const result = await running
+  assert.equal(result.details?.results[0].status, 'aborted')
+  assert.deepEqual(child.input, [])
+})
+
 test('parallel progress distinguishes queued tasks from running tasks', async () => {
   const { tool, updates } = createApi(await loadFactory())
   const result = await withFakePi({}, () =>
@@ -1255,14 +1299,15 @@ test('aborting a subagent also terminates its child processes', async () => {
   rmSync(childStartedFile, { force: true })
   const { tool } = createApi(await loadFactory())
   const controller = new AbortController()
+  const run = withFakePi({ mode: 'spawn-child' }, () =>
+    tool.execute('call-child-process', { task: 'Spawn a child process' }, controller.signal, undefined, { cwd: process.cwd() })
+  )
   let pid: number | undefined
+  let descendantExited = false
   try {
-    const run = withFakePi({ mode: 'spawn-child' }, () =>
-      tool.execute('call-child-process', { task: 'Spawn a child process' }, controller.signal, undefined, { cwd: process.cwd() })
-    )
-    const startupDeadline = Date.now() + 3000
-    while (!existsSync(childStartedFile) && Date.now() < startupDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, 20))
+    const startupDeadline = Date.now() + 10_000
+    while ((!existsSync(childStartedFile) || !existsSync(childPidFile)) && Date.now() < startupDeadline) {
+      await delay(20)
     }
     assert.equal(existsSync(childStartedFile), true, 'the nested process must start before cancellation')
     pid = Number(readFileSync(childPidFile, 'utf8'))
@@ -1282,10 +1327,14 @@ test('aborting a subagent also terminates its child processes', async () => {
       }
       if (alive) await new Promise((resolve) => setTimeout(resolve, 20))
     }
+    descendantExited = !alive
     assert.equal(alive, false, 'the nested process must be gone when cancellation completes')
   } finally {
-    if (pid) {
-      try { process.kill(pid, 'SIGKILL') } catch {}
+    controller.abort()
+    await run.catch(() => {})
+    const fixturePid = pid ?? (existsSync(childPidFile) ? Number(readFileSync(childPidFile, 'utf8')) : 0)
+    if (!descendantExited && Number.isInteger(fixturePid) && fixturePid > 0) {
+      try { process.kill(fixturePid, 'SIGKILL') } catch {}
     }
     rmSync(childPidFile, { force: true })
     rmSync(childStartedFile, { force: true })

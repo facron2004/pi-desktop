@@ -1463,7 +1463,8 @@ function runSubagentOnce(defaultCwd, params, task, cwd, signal, onUpdate, ctx) {
       }
     };
     const sendPrompt = () => {
-      if (promptSent || settled || permissionFailed || !permissionReady) return;
+      // Readiness can arrive while the process tree is still shutting down.
+      if (promptSent || settled || wasAborted || timedOut || protocolFailed || permissionFailed || !permissionReady) return;
       promptSent = true;
       writeRecord({ type: 'prompt', id: 'subagent-prompt', message: 'Task: ' + task });
     };

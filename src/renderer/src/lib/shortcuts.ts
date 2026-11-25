@@ -18,6 +18,7 @@ export type ShortcutId =
   | 'open-settings'
   | 'new-chat'
   | 'toggle-sidebar'
+  | 'toggle-side-chat'
   | 'toggle-terminal'
   | 'focus-composer'
   | 'search-conversation'
@@ -55,6 +56,7 @@ export const SHORTCUTS: ShortcutEntry[] = [
   { id: 'open-settings', keys: ['Ctrl', ','], label: 'Open settings', group: 'Workspace' },
   { id: 'new-chat', keys: ['Ctrl', 'N'], label: 'Start a new conversation', group: 'Workspace' },
   { id: 'toggle-sidebar', keys: ['Ctrl', 'B'], label: 'Show or hide the sidebar', group: 'Workspace' },
+  { id: 'toggle-side-chat', keys: ['Ctrl', 'Shift', 'L'], label: 'Open or close side chat', group: 'Workspace' },
   { id: 'toggle-terminal', keys: ['Ctrl', '`'], label: 'Open or close the terminal', group: 'Workspace' },
   { id: 'focus-composer', keys: ['Ctrl', 'K'], label: 'Focus the composer', group: 'Workspace' },
   {

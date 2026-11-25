@@ -1,12 +1,13 @@
 import { EventEmitter } from 'node:events'
 import { statSync } from 'node:fs'
-import type {
-  AppSettings,
-  MemoryGenerateOptions,
-  MemoryGenerateResult,
-  MemoryState,
-  RuntimeEvent,
-  SessionMeta
+import {
+  isSideSessionKey,
+  type AppSettings,
+  type MemoryGenerateOptions,
+  type MemoryGenerateResult,
+  type MemoryState,
+  type RuntimeEvent,
+  type SessionMeta
 } from '@shared/types'
 import type { SessionSupervisor } from '../pi/supervisor'
 import { canonicalSessionFile } from '../pi/session-file'
@@ -107,6 +108,7 @@ export class MemoryService extends EventEmitter {
   private handleRuntimeEvent = (payload: RuntimeEvent): void => {
     if (this.disposed) return
     const { ownerId, event } = payload
+    if (isSideSessionKey(ownerId) || this.supervisor?.sessionInfo?.(ownerId)?.role === 'side') return
     // A new turn means the settled transcript is no longer final. Cancel the
     // idle timer; the next settle schedules a fresh pass.
     if (event.type === 'agent_start') {
@@ -197,8 +199,7 @@ export class MemoryService extends EventEmitter {
       this.emitChanged()
       return { ok: true, added: 0, skipped: 'Memory generation is off' }
     }
-    const stats = statSafe(file)
-    if (!stats) {
+    if (!statSafe(file)) {
       this.pending.delete(key)
       this.emitChanged()
       return { ok: false, added: 0, skipped: 'Conversation file is gone' }
@@ -216,12 +217,6 @@ export class MemoryService extends EventEmitter {
       this.emitChanged()
       return { ok: true, added: 0, skipped: 'External-context conversation' }
     }
-    if (!manual && this.store.wasProcessed(file, stats)) {
-      this.pending.delete(key)
-      this.emitChanged()
-      return { ok: true, added: 0, skipped: 'Already learned' }
-    }
-
     const attempt: MemoryAttempt = {
       cancelled: false,
       automatic: !manual,
@@ -263,6 +258,17 @@ export class MemoryService extends EventEmitter {
         if (!sourceStats) {
           this.emitChanged()
           return { ok: false, added: 0, skipped: 'Conversation file is gone' }
+        }
+        if (!manual) {
+          // A queued extraction may follow another run for the same revision.
+          const record = this.store.sessionRecord(file)
+          if (ledgerRecordSkipsLearning(record, {
+            processed: this.store.wasProcessed(file, sourceStats, record ?? null),
+            skipExternalContext: this.getSettings().memorySkipExternalContext !== false
+          })) {
+            this.emitChanged()
+            return { ok: true, added: 0, skipped: 'Already learned' }
+          }
         }
         const storeGeneration = this.store.generation()
         const shouldCommit = (): boolean => {

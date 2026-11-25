@@ -13,6 +13,7 @@ import {
   FolderTree,
   GitBranch,
   ListTodo,
+  MessagesSquare,
   PanelRight,
   PanelRightClose,
   PanelRightOpen,
@@ -49,11 +50,14 @@ import {
 } from './lib/app-update'
 import { matchesAnyShortcut, type ShortcutId } from './lib/shortcuts'
 import { activeConversationTitle } from './lib/live-sessions'
+import { OPEN_SIDE_CHAT_EVENT, type SideChatOpenRequest } from './lib/side-chat-context'
 import { useT } from './lib/i18n'
 import { dismissStartupScreen } from './lib/startup-screen'
+import './styles/side-chat.css'
 
 const InspectorPanel = lazy(() => import('./components/InspectorPanel').then((m) => ({ default: m.InspectorPanel })))
 const TerminalPanel = lazy(() => import('./components/TerminalPanel').then((m) => ({ default: m.TerminalPanel })))
+const SideChatPanel = lazy(() => import('./components/side-chat/SideChatPanel').then((m) => ({ default: m.SideChatPanel })))
 const ScheduledTasksDialog = lazy(() => import('./components/ScheduledTasksDialog').then((m) => ({ default: m.ScheduledTasksDialog })))
 const Marketplace = lazy(() => import('./components/Marketplace').then((m) => ({ default: m.Marketplace })))
 const SettingsDialog = lazy(() => import('./components/SettingsDialog').then((m) => ({ default: m.SettingsDialog })))
@@ -121,7 +125,19 @@ export default function App() {
     () => hasAnyStreamingThread(useAppStore.getState().threads),
     [threadsMetaVersion]
   )
-  const hasActiveUiRequest = useAppStore((state) => Boolean(state.uiRequest))
+  const setSideChatOpen = useAppStore((state) => state.setSideChatOpen)
+  const ensureSideChatForActiveMain = useAppStore((state) => state.ensureSideChatForActiveMain)
+  const sideNotice = useAppStore((state) =>
+    state.sideSessionKey ? state.sideNotices[state.sideSessionKey] : undefined
+  )
+  const hasActiveUiRequest = useAppStore((state) =>
+    Boolean(
+      state.uiRequest ||
+        (state.sideChatOpen &&
+          state.sideSessionKey &&
+          state.threads[state.sideSessionKey]?.uiRequest)
+    )
+  )
   const t = useT()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -154,6 +170,9 @@ export default function App() {
   // same picture twice select it again even if the reader moved away.
   const [imageRequest, setImageRequest] = useState<{ path: string; seq: number } | null>(null)
   const imageSeqRef = useRef(0)
+  // A contextual open request for Side Chat (`Ask Side Chat`, `/side`, presets).
+  const [sideChatRequest, setSideChatRequest] = useState<SideChatOpenRequest | null>(null)
+  const sideChatSeqRef = useRef(0)
   /** Last automatic update check; the effect below re-runs when a run settles. */
   const lastAutomaticUpdateCheck = useRef(0)
   /** The bundled CLI has its own clock: the app release switch must not gate it. */
@@ -164,6 +183,10 @@ export default function App() {
   const [panelToggleHoverMuted, setPanelToggleHoverMuted] = useState(false)
   // Independent of Tools: a status card column beside the conversation.
   const [taskRailOpen, setTaskRailOpen] = useState(true)
+  // When the docked ToolPanel narrows the main stage below 760px, auto-fold
+  // the task rail to protect the main reading column unless the user re-opens
+  // it as a floating card during that narrow state.
+  const [narrowTaskOverride, setNarrowTaskOverride] = useState<boolean | null>(null)
   const [taskPanelMounted, setTaskPanelMounted] = useState(true)
   const taskPanelCloseTimer = useRef<number | null>(null)
   // The Files page's tree aside. The panel header owns its toggle, so the
@@ -181,10 +204,11 @@ export default function App() {
   // not a mode that follows the conversation around.
   const [panelView, setPanelView] = useState<ToolPanelView>('start')
   /**
-   * The panel's tools are tabs. The terminal and the browser are live pages:
-   * once opened they stay mounted while another tab is in front, and collapsing
-   * the panel does not throw them away either.
+   * The panel's tools are tabs. Side chat, the terminal and the browser are
+   * live pages: once opened they stay mounted while another tab is in front,
+   * and collapsing the panel does not throw them away either.
    */
+  const [sideChatMounted, setSideChatMounted] = useState(false)
   const [terminalMounted, setTerminalMounted] = useState(false)
   const [browserMounted, setBrowserMounted] = useState(false)
   const inspectorTab: 'changes' | 'files' =
@@ -369,14 +393,45 @@ export default function App() {
   }, [deskPage])
 
   // Mount a live page on its first visit and keep it afterwards. A tab switch
-  // or folding the panel must not reload the browser or kill the shells.
+  // or folding the panel must not reload the browser, kill the shells, or reset
+  // Side Chat state.
   useEffect(() => {
+    if (panelView === 'side-chat') setSideChatMounted(true)
     if (panelView === 'terminal') setTerminalMounted(true)
     if (panelView === 'browser') setBrowserMounted(true)
   }, [panelView])
 
+  const sideChatActive = Boolean(!deskPage && changesOpen && !panelConcealed && panelView === 'side-chat')
+
   useEffect(() => {
-    if (taskRailOpen) {
+    setSideChatOpen(sideChatActive)
+  }, [sideChatActive, setSideChatOpen])
+
+  useEffect(() => {
+    if (!sideChatActive) return
+    void ensureSideChatForActiveMain()
+  }, [sideChatActive, activeSessionFile, draftId, ensureSideChatForActiveMain])
+
+  // The panel is a column of the grid; it only floats over the conversation
+  // when the window is too narrow to give it a column of its own.
+  const neededWidth = (sidebarOpen ? sidebarWidth : 0) + drawerWidth + 480
+  const inspectorOverlay = windowWidth < neededWidth
+  // When the docked right ToolPanel narrows the main stage below 760px,
+  // auto-fold `.task-rail` so the main conversation keeps a readable column;
+  // restore the user's preference when space returns or the panel closes.
+  const mainAvailableWidth =
+    windowWidth - (sidebarOpen ? sidebarWidth : 0) - (changesOpen && !inspectorOverlay ? drawerWidth : 0)
+  const narrowMainStage = Boolean(
+    !deskPage && changesOpen && !inspectorOverlay && mainAvailableWidth < 760
+  )
+  const effectiveTaskRailOpen = narrowMainStage ? (narrowTaskOverride ?? false) : taskRailOpen
+
+  useEffect(() => {
+    if (!narrowMainStage) setNarrowTaskOverride(null)
+  }, [narrowMainStage])
+
+  useEffect(() => {
+    if (effectiveTaskRailOpen) {
       if (taskPanelCloseTimer.current !== null) {
         window.clearTimeout(taskPanelCloseTimer.current)
         taskPanelCloseTimer.current = null
@@ -394,20 +449,20 @@ export default function App() {
         taskPanelCloseTimer.current = null
       }
     }
-  }, [taskRailOpen])
+  }, [effectiveTaskRailOpen])
 
   useEffect(() => {
     if (hasActiveUiRequest) setExtensionDialogMounted(true)
   }, [hasActiveUiRequest])
 
-
-  // The panel is a column of the grid; it only floats over the conversation
-  // when the window is too narrow to give it a column of its own.
-  const neededWidth = (sidebarOpen ? sidebarWidth : 0) + drawerWidth + 480
-  const inspectorOverlay = windowWidth < neededWidth
-
   const toggleSidebar = useCallback(() => setSidebarOpen((value) => !value), [])
-  const toggleTaskPanel = useCallback(() => setTaskRailOpen((value) => !value), [])
+  const toggleTaskPanel = useCallback(() => {
+    if (narrowMainStage) {
+      setNarrowTaskOverride((value) => !(value ?? false))
+      return
+    }
+    setTaskRailOpen((value) => !value)
+  }, [narrowMainStage])
   const handleNewChat = useCallback(() => void newChat(), [newChat])
   const handleNewProject = useCallback(
     () => openProjectDialog({ mode: 'create' }),
@@ -448,6 +503,30 @@ export default function App() {
   const openFiles = useCallback(() => openInspector('files'), [openInspector])
   const openBrowser = useCallback(() => openInspector('browser'), [openInspector])
   const openSwarm = useCallback(() => openInspector('swarm'), [openInspector])
+  const openSideChat = useCallback(
+    (request?: Omit<SideChatOpenRequest, 'seq'> & { seq?: number }) => {
+      setDeskPage(null)
+      setSideChatMounted(true)
+      setPanelView('side-chat')
+      setChangesOpen(true)
+      if (request) {
+        sideChatSeqRef.current += 1
+        setSideChatRequest({
+          ...request,
+          seq: sideChatSeqRef.current
+        })
+      }
+    },
+    [setDeskPage]
+  )
+  const toggleSideChat = useCallback(() => {
+    setDeskPage(null)
+    if (changesOpen && !panelConcealed && panelView === 'side-chat') {
+      setChangesOpen(false)
+      return
+    }
+    openSideChat({ mode: 'open', focus: true })
+  }, [changesOpen, openSideChat, panelConcealed, panelView, setDeskPage])
   /**
    * One child's transcript, opened on the Subagents page of the side panel.
    * The title badge and the task rail share this door, so neither keeps a
@@ -643,9 +722,11 @@ export default function App() {
           session?: string
           settings?: boolean
           openTerminal?: boolean
+          openSideChat?: boolean
         }
       }
     ).__piDesktopDev
+    if (dev?.openSideChat) openSideChat({ mode: 'open' })
     if (dev?.openTerminal) openInspector('terminal')
     if (dev?.settings) {
       setSettingsOpen(true)
@@ -665,7 +746,7 @@ export default function App() {
       setPanelView('changes')
       setChangesOpen(true)
     }
-  }, [openInspector])
+  }, [openInspector, openSideChat])
 
   useEffect(() => {
     const dev = (window as unknown as { __piDesktopDev?: { commit?: boolean } }).__piDesktopDev
@@ -726,6 +807,12 @@ export default function App() {
         openSettings()
         return
       }
+      // `Ctrl+Shift+L` toggles Side Chat alongside the conversation.
+      if (matches('toggle-side-chat')) {
+        event.preventDefault()
+        toggleSideChat()
+        return
+      }
       // `Ctrl+\`` is the terminal, in every editor that has one: the side
       // panel opens on it, or closes when it is already showing.
       if (matches('toggle-terminal')) {
@@ -752,15 +839,21 @@ export default function App() {
         return
       }
       // `Ctrl+P` and `Ctrl+T` walk through the models and the reasoning
-      // levels, the way they do in Pi's own terminal.
+      // levels, scoped to Side Chat when focus is inside the side surface.
       if (matches('next-model')) {
         event.preventDefault()
-        void cycleModel(1)
+        const inSide = Boolean(
+          document.activeElement?.closest('[data-conversation-surface="side"]')
+        )
+        void cycleModel(1, inSide ? useAppStore.getState().sideSessionKey : undefined)
         return
       }
       if (matches('next-thinking')) {
         event.preventDefault()
-        void cycleThinkingLevel(1)
+        const inSide = Boolean(
+          document.activeElement?.closest('[data-conversation-surface="side"]')
+        )
+        void cycleThinkingLevel(1, inSide ? useAppStore.getState().sideSessionKey : undefined)
         return
       }
       // `Ctrl+1` … `Ctrl+9` jump to the n-th project of the sidebar.
@@ -792,6 +885,10 @@ export default function App() {
       // A desk page owns the content row; opening a conversation tool has to
       // leave it first, or the panel would be drawn over an unrelated page.
       setDeskPage(null)
+      if (request?.tab === 'side-chat') {
+        openSideChat({ mode: 'open', focus: true })
+        return
+      }
       if (request?.tab === 'browser') {
         // A link the reader chose to open inside the app: switch the panel to
         // its Browser page and hand that page the URL to load.
@@ -820,6 +917,16 @@ export default function App() {
       setChangesOpen(true)
     }
     window.addEventListener('pi:open-inspector', onOpenInspector)
+    // Contextual doors, slash command `/side`, and the launcher can open Side Chat.
+    const onOpenSideChat = (event: Event) => {
+      const detail = (event as CustomEvent<SideChatOpenRequest | undefined>).detail
+      if (detail?.mode === 'toggle' && !detail.reference && !detail.preset && !detail.prompt) {
+        toggleSideChat()
+        return
+      }
+      openSideChat(detail ?? { mode: 'open', focus: true })
+    }
+    window.addEventListener(OPEN_SIDE_CHAT_EVENT, onOpenSideChat)
     // The command palette and the shortcuts dialog can open the drawer too.
     // The command palette and the shortcuts dialog can open the terminal too.
     const onToggleTerminal = () => toggleTerminal()
@@ -856,6 +963,7 @@ export default function App() {
       window.removeEventListener('pi:show-shortcuts', onShowShortcuts)
       window.removeEventListener('pi:rename-session', onRenameSession)
       window.removeEventListener('pi:open-inspector', onOpenInspector)
+      window.removeEventListener(OPEN_SIDE_CHAT_EVENT, onOpenSideChat)
       window.removeEventListener('pi:toggle-terminal', onToggleTerminal)
       window.removeEventListener('pi:terminal-run', onTerminalRun)
       window.removeEventListener('pi:open-session-tree', onOpenSessionTree)
@@ -874,6 +982,8 @@ export default function App() {
     cycleThinkingLevel,
     startRename,
     toggleTerminal,
+    openSideChat,
+    toggleSideChat,
     setDeskPage
   ])
 
@@ -909,7 +1019,7 @@ export default function App() {
     >
       <AppMenuBar
         sidebarOpen={sidebarOpen}
-        taskRailOpen={taskRailOpen}
+        taskRailOpen={effectiveTaskRailOpen}
         hasItems={hasItems}
         canCompact={hasItems && status.phase === 'ready' && !isCompacting}
         onToggleSidebar={toggleSidebar}
@@ -921,6 +1031,7 @@ export default function App() {
         onOpenFiles={openFiles}
         onOpenBrowser={openBrowser}
         onOpenSubagents={openSubagentPanel}
+        onToggleSideChat={toggleSideChat}
         onToggleTerminal={toggleTerminal}
         onOpenSessionTree={handleOpenSessionTree}
         onSearchConversation={searchConversation}
@@ -991,16 +1102,36 @@ export default function App() {
                 header keeps the conversation's name and the app's actions. */}
           </div>
           <div className="titlebar__actions no-drag">
+            {!deskPage ? (
+              <button
+                type="button"
+                className="icon-btn titlebar__side-btn"
+                aria-label={sideChatActive ? t('Hide side chat') : t('Show side chat')}
+                title={sideChatActive ? t('Hide side chat') : t('Show side chat')}
+                aria-pressed={sideChatActive}
+                data-active={sideChatActive || undefined}
+                onClick={toggleSideChat}
+              >
+                <MessagesSquare size={16} strokeWidth={1.6} aria-hidden="true" />
+                {sideNotice && !sideChatActive ? (
+                  <span
+                    className="titlebar__side-dot"
+                    data-kind={sideNotice}
+                    aria-hidden="true"
+                  />
+                ) : null}
+              </button>
+            ) : null}
             {!deskPage && hasItems ? (
               <button
                 type="button"
                 className="icon-btn"
-                aria-label={taskRailOpen ? t('Hide task status') : t('Show task status')}
-                title={taskRailOpen ? t('Hide task status') : t('Show task status')}
-                aria-pressed={taskRailOpen}
-                onClick={() => setTaskRailOpen((open) => !open)}
+                aria-label={effectiveTaskRailOpen ? t('Hide task status') : t('Show task status')}
+                title={effectiveTaskRailOpen ? t('Hide task status') : t('Show task status')}
+                aria-pressed={effectiveTaskRailOpen}
+                onClick={toggleTaskPanel}
               >
-                <ListTodo size={16} strokeWidth={1.6} />
+                <ListTodo size={16} strokeWidth={1.6} aria-hidden="true" />
               </button>
             ) : null}
             {!deskPage && hasItems ? (
@@ -1115,9 +1246,9 @@ export default function App() {
           {!deskPage && hasItems ? (
             <aside
               className="task-rail"
-              data-open={taskRailOpen || undefined}
-              aria-hidden={!taskRailOpen || undefined}
-              inert={!taskRailOpen || undefined}
+              data-open={effectiveTaskRailOpen || undefined}
+              aria-hidden={!effectiveTaskRailOpen || undefined}
+              inert={!effectiveTaskRailOpen || undefined}
               aria-label={t('Task status')}
             >
               <div className="task-rail__body">
@@ -1148,6 +1279,7 @@ export default function App() {
             view={panelView}
             onViewChange={handlePanelViewChange}
             onViewClosed={(closed) => {
+              if (closed === 'side-chat') setSideChatMounted(false)
               if (closed === 'browser') setBrowserMounted(false)
               if (closed === 'terminal') setTerminalMounted(false)
             }}
@@ -1163,7 +1295,7 @@ export default function App() {
             actions={panelView === 'files' ? filesPanelAction : null}
           >
             <Suspense fallback={<FeatureLoading />}>
-              {panelView === 'terminal' || panelView === 'browser' ? null : panelView === 'images' ? (
+              {panelView === 'side-chat' || panelView === 'terminal' || panelView === 'browser' ? null : panelView === 'images' ? (
                 <ImageViewer request={imageRequest} />
               ) : panelView === 'subagents' ? (
                 <SubagentPanel selected={subagentSelection} onSelectTask={setSubagentSelection} />
@@ -1181,6 +1313,20 @@ export default function App() {
                 />
               ) : null}
             </Suspense>
+            {sideChatMounted ? (
+              <div
+                className="tool-panel__side-chat"
+                data-active={panelView === 'side-chat' || undefined}
+              >
+                <Suspense fallback={<FeatureLoading />}>
+                  <SideChatPanel
+                    active={sideChatActive}
+                    request={sideChatRequest}
+                    onClose={closeChanges}
+                  />
+                </Suspense>
+              </div>
+            ) : null}
             {browserMounted ? (
               <div
                 className="tool-panel__browser"

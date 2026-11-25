@@ -850,7 +850,7 @@ export class SettingsStore {
     // main thread on `Atomics.wait` while still landing updates in patch order.
     const hasModel = 'model' in patch
     const nextModel = updated.model
-    const hasThinking = 'thinkingLevel' in patch && Boolean(updated.thinkingLevel)
+    const hasThinking = 'thinkingLevel' in patch
     const nextThinking = updated.thinkingLevel
     if (hasModel || hasThinking) {
       const sync = async (): Promise<void> => {
@@ -858,7 +858,7 @@ export class SettingsStore {
           if (nextModel) await rememberDefaultModelAsync(nextModel)
           else await forgetDefaultModelAsync()
         }
-        if (hasThinking && nextThinking) {
+        if (hasThinking) {
           await rememberDefaultThinkingLevelAsync(nextThinking)
         }
       }
@@ -869,6 +869,10 @@ export class SettingsStore {
         })
     }
     return updated
+  }
+
+  waitForPiDefaults(): Promise<void> {
+    return this.piDefaultSync
   }
 
   addWorkspace(workspace: Workspace, activate = true): AppSettings {

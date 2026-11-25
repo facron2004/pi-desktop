@@ -545,10 +545,11 @@ and `session-bar__stop` remains available under the box. Both stop controls call
 Acceptance clears the draft that was submitted if it still matches the editor,
 so an edit made while waiting survives.
 
-If a draft snapshot exceeds browser storage quota, retry with still-attached
-images from the last saved snapshot before falling back to text and file
-references. An oversized new attachment should leave older saved drafts
-recoverable.
+If a draft snapshot exceeds browser storage quota, drop sent-prompt history
+before removing any unsent images. If the images still exceed the quota,
+retry with still-attached images from the last saved snapshot before falling
+back to text and file references. An oversized new attachment should leave
+older saved drafts recoverable.
 
 **A model or reasoning pick never waits with its menu open.** The switch can
 talk to a busy, wedged or gone Pi process, and `runtime:has` / `ensure` /
@@ -808,6 +809,37 @@ room for a second line.
   development build has no installer of its own, so the same icon keeps offering
   the download page — `data-state` stays `idle` even when a record is found in
   the data folder.
+
+**The installer copies, verifies, then swaps — and must read `app.asar` as a
+file.** `src/main/setup/install.ts` copies the payload into a `.Pi Desktop-install-…`
+folder with **robocopy** (a separate process, which is what makes the archive
+copyable), then `verifyPayload` checks every file's length before the swap. That
+check ran on Electron's patched `fs`, where any path ending in `.asar` is opened
+as an archive: a staged `resources/app.asar` answered "Invalid package" instead
+of a size, so the one file that had copied correctly was reported missing and
+**every silent update died on it** — the setup relaunched the old app, the icon
+offered the same install again, and the reader saw only a restart loop. The
+lessons live in `src/main/setup/payload.ts`:
+
+- `statPayloadFile` reads a payload file with `process.noAsar = true`. Use it for
+  anything in a copied tree; a plain `statSync` there is the bug above.
+- `removeTree` deletes a copied tree the same way. Electron refuses to unlink a
+  file it is trying to parse as an archive, so `rm(…, { recursive: true })` used
+  to delete everything *except* the 187 MB `app.asar` and then abort, leaving a
+  near-complete copy beside the install after each failed attempt (four of them
+  held 779 MB on the machine this was found on).
+- An archive's length is known (`listSource`) and is compared exactly like any
+  other file, so a truncated copy is caught; a size of 0 means the payload side
+  could not be read and a present, non-empty file is then the whole contract.
+- `tests/setup-payload.test.ts` pins all three. The bug cannot reproduce in
+  plain Node (no asar patch), which is why it shipped: the tests state the
+  contract, and the Electron behaviour that broke it was measured separately
+  (`statSync` throws `Invalid package`; `noAsar` answers `isFile: true`).
+- Setup holds a per-target lock through recovery and installation. If an
+  interrupted swap left the target missing, the next attempt restores the
+  previous installation from its backup before checking the new payload.
+  `tests/setup-install.test.ts` checks the old executable, archive, and marker.
+
 
 Two harnesses read the real button: `scripts/verify-update-persistence.mjs`
 drives two launches (online, then offline with the GitHub check blocked) and
@@ -1294,6 +1326,8 @@ On Windows, closing a terminal ends its process tree before releasing the PTY.
 Closing the console alone can leave a background descendant running. Shutdown
 waits for the same in-flight cleanup, and a failed close keeps the PTY handle
 for a later disposal pass.
+Reloading the main renderer ends its old PTYs and drains native cleanup before
+the new document can open a shell. Same-document navigation keeps its PTYs.
 
 Pi strips ANSI escape sequences from the bash tool output before it reaches the
 client, but the PTY streams raw escape sequences — that is exactly what xterm

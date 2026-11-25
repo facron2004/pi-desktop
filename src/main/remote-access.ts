@@ -14,7 +14,7 @@ import type {
   RemoteSession,
   RemoteWorkspace
 } from '@shared/types'
-import { MAX_REMOTE_MESSAGE_CHARS } from '@shared/types'
+import { isSideSessionKey, MAX_REMOTE_MESSAGE_CHARS } from '@shared/types'
 import { listSessions, openSessionFile, readSessionConversation } from './sessions'
 import type { SessionSupervisor } from './pi/supervisor'
 import type { SettingsStore } from './settings'
@@ -879,6 +879,9 @@ export class RemoteAccessService {
   }
 
   private readonly onRuntimeEvent = (payload: { ownerId: string; event: PiEvent }): void => {
+    if (isSideSessionKey(payload.ownerId) || this.options.supervisor.sessionInfo?.(payload.ownerId)?.role === 'side') {
+      return
+    }
     const fileKey = pathKey(payload.ownerId)
     // Track blocking dialogs even when no phone stream is currently open, so a
     // phone opening or reconnecting to `/api/session` can still render & answer it.

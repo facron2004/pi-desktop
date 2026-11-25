@@ -61,6 +61,7 @@ export type PreSendRpcErrorCode =
   | 'invalid-id'
   | 'duplicate-id'
   | 'pending-limit'
+  | 'queue-timeout'
   | 'full'
   | 'too-large'
   | 'serialize'
@@ -206,6 +207,7 @@ function killProcessTree(child: ChildProcessWithoutNullStreams): Promise<void> {
  *  - stdout carries protocol records only, stderr carries diagnostics
  */
 const STDOUT_RECORDS_PER_TICK = 64
+const RPC_EXIT_DRAIN_MS = 1_000
 
 export class PiRpcClient extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | null = null
@@ -246,17 +248,18 @@ export class PiRpcClient extends EventEmitter {
   start(): void {
     if (this.child) return
     const { command, args, cwd, env } = this.options
-    this.child = spawn(command, args, {
+    const child = spawn(command, args, {
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
       windowsHide: true
     })
+    this.child = child
     this.closed = false
     this.options.onBoot?.({
       at: Date.now(),
-      pid: this.child.pid,
+      pid: child.pid,
       executablePath: command,
       argv: args,
       cwd
@@ -271,21 +274,19 @@ export class PiRpcClient extends EventEmitter {
         resumeScheduled = false
         this.stdoutPauseTimer = undefined
         recordsThisTurn = 0
-        if (!this.closed && this.child?.stdout && !this.child.stdout.destroyed) {
-          this.child.stdout.resume()
-        }
+        if (!child.stdout.destroyed) child.stdout.resume()
       })
     }
 
-    this.child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout.on('data', (chunk: Buffer) => {
       recordsThisTurn += this.consume(chunk)
       // Yield briefly after heavy bursts so IPC coalescing timers and UI stay responsive.
-      if (recordsThisTurn >= STDOUT_RECORDS_PER_TICK && this.child?.stdout && !this.child.stdout.destroyed) {
-        this.child.stdout.pause()
+      if (recordsThisTurn >= STDOUT_RECORDS_PER_TICK && !child.stdout.destroyed) {
+        child.stdout.pause()
         scheduleResume()
       }
     })
-    this.child.stderr.on('data', (chunk: Buffer) => {
+    child.stderr.on('data', (chunk: Buffer) => {
       const text = this.decoder.write(chunk)
       for (const line of text.split(/\r?\n/)) {
         if (!line.trim()) continue
@@ -304,7 +305,7 @@ export class PiRpcClient extends EventEmitter {
       }
     })
 
-    this.child.stdin.on('error', (error: Error) => {
+    child.stdin.on('error', (error: Error) => {
       if (this.closed) return
       this.closed = true
       this.clearWriteQueue()
@@ -312,16 +313,26 @@ export class PiRpcClient extends EventEmitter {
       if (this.listenerCount('error')) this.emit('error', error)
     })
 
-    this.child.on('error', (error) => {
+    child.on('error', (error) => {
       this.closed = true
       this.clearWriteQueue()
       this.failAll(new Error(`Failed to start pi: ${error.message}`))
       if (this.listenerCount('error')) this.emit('error', error)
     })
 
-    // close follows the final stdout bytes; exit can precede their delivery.
-    this.child.on('close', (code, signal) => {
-      const pid = this.child?.pid
+    let exitDrainTimer: NodeJS.Timeout | undefined
+    child.once('exit', () => {
+      this.closed = true
+      this.clearWriteQueue()
+      // The close event follows the last output, but a descendant can keep
+      // the inherited pipes open long after Pi itself has gone.
+      exitDrainTimer = setTimeout(() => {
+        child.stdout.destroy()
+        child.stderr.destroy()
+      }, RPC_EXIT_DRAIN_MS)
+    })
+    child.once('close', (code, signal) => {
+      if (exitDrainTimer) clearTimeout(exitDrainTimer)
       if (this.stdoutPauseTimer) {
         clearImmediate(this.stdoutPauseTimer)
         this.stdoutPauseTimer = undefined
@@ -330,7 +341,7 @@ export class PiRpcClient extends EventEmitter {
       this.child = null
       this.clearWriteQueue()
       this.failAll(new Error(`pi exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`))
-      this.emit('exit', { code, signal, pid })
+      this.emit('exit', { code, signal, pid: child.pid })
     })
   }
 
@@ -346,10 +357,7 @@ export class PiRpcClient extends EventEmitter {
     }
     this.clearWriteQueue()
     this.failAll(new Error('pi stopped'))
-    if (child.exitCode !== null || child.signalCode !== null || !child.pid) {
-      this.child = null
-      return
-    }
+    if (child.exitCode !== null || child.signalCode !== null || !child.pid) return
     this.stopPromise = (async () => {
       const exited = new Promise<void>((resolve) => {
         let forcedKill: Promise<void> | undefined
@@ -404,8 +412,10 @@ export class PiRpcClient extends EventEmitter {
       const entry: Pending = { resolve: resolve as (v: unknown) => void, reject }
       if (timeoutMs > 0) {
         entry.timer = setTimeout(() => {
-          if (this.pending.delete(id)) {
-            this.removeQueuedWrite(id)
+          if (!this.pending.delete(id)) return
+          if (this.removeQueuedWrite(id)) {
+            reject(new PiRpcPreSendError(`Timed out before sending "${request.type}" to Pi`, 'queue-timeout'))
+          } else {
             reject(new Error(`Timed out waiting for "${request.type}" response`))
           }
         }, timeoutMs)
@@ -515,7 +525,7 @@ export class PiRpcClient extends EventEmitter {
 
   private pump(): void {
     const child = this.child
-    if (!child || this.draining) return
+    if (!child || this.closed || this.draining) return
     while (this.writeQueue.length > 0) {
       const queued = this.writeQueue.shift()!
       this.writeQueueBytes -= queued.bytes
@@ -531,11 +541,12 @@ export class PiRpcClient extends EventEmitter {
     }
   }
 
-  private removeQueuedWrite(requestId: string): void {
+  private removeQueuedWrite(requestId: string): boolean {
     const index = this.writeQueue.findIndex((write) => write.requestId === requestId)
-    if (index === -1) return
+    if (index === -1) return false
     const [removed] = this.writeQueue.splice(index, 1)
-    if (removed) this.writeQueueBytes -= removed.bytes
+    this.writeQueueBytes -= removed.bytes
+    return true
   }
 
   private clearWriteQueue(): void {

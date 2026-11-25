@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
 import path from 'node:path'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -9,6 +10,7 @@ import {
   MAX_RPC_STDERR_TAIL_BYTES,
   PiRpcClient,
   PiRpcCommandError,
+  isPreSendRpcError,
   isRpcCommandError
 } from '../src/main/pi/rpc-client'
 
@@ -161,6 +163,53 @@ test('stopping rejects commands with no deadline and closes the transport', asyn
   await assert.rejects(client.request({ type: 'echo' }), /not running/)
 })
 
+test('Pi exit drains final records and rejects pending requests when a descendant holds the pipes', async () => {
+  const fixture = String.raw`
+    const { spawn } = require('node:child_process');
+    const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 15000)'], {
+      stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true
+    });
+    descendant.unref();
+    let buffer = '';
+    process.stdin.on('data', chunk => {
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf('\n')) !== -1) {
+        const request = JSON.parse(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        if (request.type === 'wait') continue;
+        const response = { type: 'response', id: request.id, success: true, data: descendant.pid };
+        if (request.type === 'quit') {
+          const events = Array.from({ length: 250 }, (_, index) => ({ type: 'fixture', index, text: 'x'.repeat(1024) }));
+          const final = [...events, response].map(record => JSON.stringify(record) + '\n').join('');
+          process.stdout.write(final, () => process.exit(7));
+        } else {
+          process.stdout.write(JSON.stringify(response) + '\n');
+        }
+      }
+    });`
+  const client = clientFor(fixture)
+  let descendantPid: number | undefined
+  try {
+    descendantPid = await client.request<number>({ type: 'get_state' }, 3000)
+    assert.ok(descendantPid)
+    const exit = once(client, 'exit', { signal: AbortSignal.timeout(5000) })
+    const waiting = assert.rejects(client.request({ type: 'wait' }, 0), /pi exited \(code 7/)
+    let finalIndex = -1
+    client.on('event', (event) => { finalIndex = event.index })
+    const [descendant, [{ code }]] = await Promise.all([client.request({ type: 'quit' }), exit, waiting])
+    assert.equal(descendant, descendantPid)
+    assert.equal(finalIndex, 249)
+    assert.equal(code, 7)
+    assert.equal(client.running, false)
+  } finally {
+    if (descendantPid) {
+      try { process.kill(descendantPid, 'SIGKILL') } catch { /* fixture process already exited */ }
+    }
+    await client.stop()
+  }
+})
+
 test('a request that cannot be serialized releases its pending slot', async () => {
   const client = clientFor()
   try {
@@ -276,7 +325,7 @@ process.stdin.on('data', chunk => {
     )
     await assert.rejects(
       () => client.request({ type: 'hang_me' }, 50),
-      (error: unknown) => error instanceof Error && !isRpcCommandError(error)
+      (error: unknown) => error instanceof Error && !isRpcCommandError(error) && !isPreSendRpcError(error)
     )
   } finally {
     await client.stop()

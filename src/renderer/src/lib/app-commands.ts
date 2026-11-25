@@ -18,6 +18,7 @@ export const APP_COMMAND_ZH_NAMES: Record<string, string> = {
   changes: '查看更改',
   commit: '提交更改',
   terminal: '终端',
+  side: '侧边对话',
   files: '项目文件',
   new: '新建对话'
 }
@@ -130,6 +131,12 @@ export const APP_COMMANDS: PiCommand[] = [
     name: 'terminal',
     description: 'Open or close the terminal',
     source: 'app'
+  },
+  {
+    name: 'side',
+    description: 'Ask in side chat — open side chat or follow with a question',
+    source: 'app',
+    takesArgument: true
   },
   {
     name: 'files',

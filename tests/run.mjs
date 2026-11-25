@@ -160,6 +160,9 @@ const suites = [
   'pm-pricing.test.ts',
   'image-generation.test.ts',
   'image-tool.test.ts',
+  'side-chat-store.test.ts',
+  'side-chat-supervisor.test.ts',
+  'side-chat-sync.test.ts',
   'multi-rpc-stress.test.ts',
   // Adversarial and stress suites that used to live behind their own runners.
   // A suite nothing invokes is worse than no suite: it reads as coverage and

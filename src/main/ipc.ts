@@ -1,13 +1,20 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { languageForFilePath } from '@shared/file-languages'
 import { archiveSessionKey } from '@shared/session-archive'
-import { MAX_COMPOSER_IMAGE_BYTES, MAX_IMAGE_DATA_BYTES, MAX_SEARCH_QUERY_LENGTH } from '@shared/types'
+import {
+  MAX_COMPOSER_IMAGE_BYTES,
+  MAX_IMAGE_DATA_BYTES,
+  MAX_SEARCH_QUERY_LENGTH,
+  isSideSessionKey,
+  mintSideDraftKey
+} from '@shared/types'
 import { decodeBoundedTextBuffer } from './text-decode'
 import { randomUUID } from 'node:crypto'
 import { constants, mkdirSync, type Dirent } from 'node:fs'
-import { lstat, open, opendir, realpath, stat, unlink, writeFile, type FileHandle } from 'node:fs/promises'
+import { lstat, mkdtemp, open, opendir, realpath, rename, rmdir, stat, unlink, writeFile, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import type {
+  SessionExportResult,
   SessionHydrationResult,
   AppInfo,
   AppUpdateProgress,
@@ -38,7 +45,10 @@ import type {
   RuntimeStatus,
   ScheduledTask,
   ScheduledTaskInput,
+  SessionRuntimeRole,
   SettingsPatchBaseline,
+  SideChatStagePromptInput,
+  SideChatStateSnapshot,
   TerminalCreateOptions,
   TextSearchHit,
   TextSearchResult,
@@ -144,6 +154,9 @@ import { launchEditor } from './editor-launch'
 import { registerProviderIpc } from './providers/ipc'
 import { TerminalManager } from './terminal'
 import type { ScheduledTaskService } from './scheduled-tasks'
+import type { SideChatBindingService } from './side-chats'
+import type { MainConversationMirror } from './pi/main-mirror'
+import type { SideChatBridgeServer } from './pi/side-chat-bridge'
 import { canonicalSessionFile } from './pi/session-file'
 
 export interface IpcContext {
@@ -156,6 +169,9 @@ export interface IpcContext {
   remoteReady: Promise<void>
   scheduledTasks: ScheduledTaskService
   imChannels?: ImChannelService
+  sideChatBindings?: SideChatBindingService
+  mainMirror?: MainConversationMirror
+  sideChatBridge?: SideChatBridgeServer
   /** Rebuild the tray after a setting that changes it. Optional for tests. */
   syncTray?: () => void
 }
@@ -337,7 +353,7 @@ interface InflightHydration {
   aborted: boolean
 }
 let sessionHydrationSequence = 0
-const latestHydrations = new WeakMap<object, number>()
+const latestHydrations = new WeakMap<object, Map<'main' | 'side', number>>()
 const inflightHydrations = new Map<string, InflightHydration>()
 /** The newest project path search per window and UI surface; a later query supersedes it. */
 let fileSearchSequence = 0
@@ -1095,6 +1111,14 @@ function forcedTheme(): 'light' | 'dark' | 'system' | undefined {
 
 export function registerIpc(context: IpcContext): void {
   const { supervisor, settings, getWindow, terminals } = context
+  const openFile = async (target: string): Promise<string> => {
+    const opener = settings.get().defaultFileOpener
+    if (
+      (opener === 'vscode' || opener === 'cursor' || opener === 'windsurf') &&
+      (await launchEditor(opener, target))
+    ) return ''
+    return shell.openPath(target)
+  }
   const workspaceMutations = new Map<string, Promise<unknown>>()
   let piCliUpgradeInFlight: Promise<UpgradeResult> | null = null
   let appUpdateInFlight: Promise<UpgradeResult> | null = null
@@ -1147,7 +1171,8 @@ export function registerIpc(context: IpcContext): void {
 
   // A terminal is a real PTY, not a conversation: its output goes straight to
   // the drawer and never into Pi's message stream.
-  ipcMain.handle('terminal:create', (_event, options: TerminalCreateOptions) => {
+  ipcMain.handle('terminal:create', async (_event, options: TerminalCreateOptions) => {
+    await terminals.waitForDisposal()
     if (isQuitting()) throw new Error('The app is shutting down')
     return terminals.create({
       ...options,
@@ -1597,6 +1622,8 @@ export function registerIpc(context: IpcContext): void {
     // `SettingsStore.waitForLock`).
     await waitForSettingsLock()
     const next = settings.patch(patch, baseline)
+    // A new conversation can start immediately after the preference is saved.
+    if ('thinkingLevel' in patch) await settings.waitForPiDefaults()
     if (patch.memoryGeneration === false) context.memory.cancelAutomaticGeneration()
     // The extension reads the switch when its process starts. A conversation
     // that is already running has to be told, or the toggle would wait for
@@ -1753,16 +1780,65 @@ export function registerIpc(context: IpcContext): void {
     (await listSessions(cwd, settings.get().externalChatFolder)).map(withoutProjectFolder)
   )
 
+  ipcMain.handle('sessions:exportHtml', async (_event, sessionKey: unknown): Promise<SessionExportResult> => {
+    if (typeof sessionKey !== 'string' || !sessionKey || !supervisor.has(sessionKey)) {
+      throw new Error('Pi is not running for this conversation.')
+    }
+    const options: Electron.SaveDialogOptions = {
+      title: 'Export conversation',
+      defaultPath: sessionKey.startsWith('draft:')
+        ? 'pi-session.html'
+        : `pi-session-${path.basename(sessionKey, '.jsonl')}.html`,
+      filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
+      properties: ['showOverwriteConfirmation']
+    }
+    const window = getWindow()
+    const selection = window && !window.isDestroyed()
+      ? await dialog.showSaveDialog(window, options)
+      : await dialog.showSaveDialog(options)
+    if (selection.canceled || !selection.filePath) return { cancelled: true }
+    const target = selection.filePath
+    if (!/\.html?$/i.test(target)) throw new Error('Choose an HTML file for the export.')
+
+    // Pi writes directly to its output path. Stage beside the chosen file so
+    // only a completed export replaces it, including on a different volume.
+    const directory = await mkdtemp(path.join(path.dirname(target), '.pi-export-'))
+    const outputPath = path.join(directory, 'session.html')
+    try {
+      await supervisor.request(sessionKey, 'export_html', { outputPath }, undefined, {
+        sourceAction: 'session-export', uiSessionId: sessionKey
+      })
+      if (!(await lstat(outputPath)).isFile()) throw new Error('Pi did not report an export file')
+      await rename(outputPath, target)
+    } finally {
+      await unlink(outputPath).catch(() => {})
+      await rmdir(directory).catch(() => {})
+    }
+    const openError = await openFile(target).catch(error =>
+      error instanceof Error ? error.message : String(error)
+    )
+    return { cancelled: false, path: target, ...(openError ? { openError } : {}) }
+  })
+
   ipcMain.handle('sessions:hydrate', async (event, file: string, scope?: unknown): Promise<SessionHydrationResult> => {
     const empty = (): SessionHydrationResult => ({ messages: [], historyTruncated: false })
     const sender = (event as { sender?: object } | undefined)?.sender
     // A branch operation reads its transcript independently of navigation.
+    // Side chat hydration tracks its own lane so switching Main never cancels Side hydration and vice versa.
+    const lane: 'main' | 'side' = scope === 'side' ? 'side' : 'main'
     const token = sender && scope !== 'branch' ? (sessionHydrationSequence += 1) : undefined
-    if (sender && token !== undefined) latestHydrations.set(sender, token)
+    if (sender && token !== undefined) {
+      let senderTokens = latestHydrations.get(sender)
+      if (!senderTokens) {
+        senderTokens = new Map()
+        latestHydrations.set(sender, senderTokens)
+      }
+      senderTokens.set(lane, token)
+    }
     const isSuperseded = (): boolean => {
       if (!sender) return false
       const destroyed = (sender as { isDestroyed?: () => boolean }).isDestroyed?.() === true
-      return destroyed || (token !== undefined && latestHydrations.get(sender) !== token)
+      return destroyed || (token !== undefined && latestHydrations.get(sender)?.get(lane) !== token)
     }
 
     const opened = await openSessionFile(file, resolveSessionRoots(settings.get().externalChatFolder))
@@ -2041,7 +2117,10 @@ export function registerIpc(context: IpcContext): void {
   ): Promise<FileSearchResult> => {
     // A component only supersedes its own walks; the composer and file tree can
     // search at the same time in the same renderer window.
-    const searchScope = scope === 'composer-mention' || scope === 'file-tree' ? scope : 'default'
+    const searchScope =
+      scope === 'composer-mention' || scope === 'side-composer-mention' || scope === 'file-tree'
+        ? scope
+        : 'default'
     const token = (fileSearchSequence += 1)
     let senderSearches = latestFileSearches.get(event.sender)
     if (!senderSearches) {
@@ -2295,7 +2374,23 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('sessions:remove', async (_event, file: string): Promise<boolean> => {
     try {
-      return await removeSessionFile(file, supervisor, resolveSessionRoots(settings.get().externalChatFolder))
+      const sessionRoots = resolveSessionRoots(settings.get().externalChatFolder)
+      const verifiedParent = await resolveSessionFilePath(file, sessionRoots)
+      const removed = await removeSessionFile(file, supervisor, sessionRoots)
+      if (removed && verifiedParent && context.sideChatBindings) {
+        const boundSide = context.sideChatBindings.takeSideFilesForParent(verifiedParent)
+        if (boundSide.runtimeKeys.length) {
+          await Promise.all(boundSide.runtimeKeys.map((key) => supervisor.stop(key).catch(() => {})))
+        }
+        if (boundSide.sideFiles.length) {
+          await Promise.all(
+            boundSide.sideFiles.map((sideFile) =>
+              removeSessionFile(sideFile, supervisor, sessionRoots).catch(() => false)
+            )
+          )
+        }
+      }
+      return removed
     } catch (error) {
       console.error('[pi-desktop] could not delete the session file:', error)
       return false
@@ -2402,6 +2497,98 @@ export function registerIpc(context: IpcContext): void {
     }
   )
 
+  const resolveValidatedParentKey = async (
+    rawParentKey: unknown,
+    cwd: string,
+    sessionRoots: readonly string[]
+  ): Promise<string | null> => {
+    if (typeof rawParentKey !== 'string' || !rawParentKey.trim() || isSideSessionKey(rawParentKey)) {
+      return null
+    }
+    if (rawParentKey.startsWith('draft:')) return rawParentKey
+    const verified = await resolveSessionFilePath(rawParentKey, sessionRoots)
+    if (verified) return verified
+    // Allow an active live parent session whose JSONL has not flushed its first byte yet.
+    const liveInfo = supervisor.has(rawParentKey) ? supervisor.sessionInfo?.(rawParentKey) : undefined
+    if (liveInfo && liveInfo.role !== 'side' && (await runtimeCwdsMatch(liveInfo.cwd, cwd))) {
+      return rawParentKey
+    }
+    return null
+  }
+
+  ipcMain.handle(
+    'sideChat:resolve',
+    async (_event, parentSessionKey: unknown, rawCwd: unknown): Promise<SideChatStateSnapshot> => {
+      const resolvedCwd = await resolveRuntimeCwd(context, rawCwd)
+      if (!resolvedCwd) throw new Error('Working folder is not an available workspace.')
+      const sessionRoots = resolveSessionRoots(context.settings.get().externalChatFolder)
+      const parentKey = await resolveValidatedParentKey(parentSessionKey, resolvedCwd.cwd, sessionRoots)
+      if (!parentKey) throw new Error("Conversation file is not in Pi's session store.")
+      const resolved = context.sideChatBindings
+        ? await context.sideChatBindings.resolve(parentKey, resolvedCwd.cwd, sessionRoots)
+        : { parentSessionKey: parentKey, activeSideKey: mintSideDraftKey(), hasPersistedHistory: false }
+      const meta = context.mainMirror
+        ? await context.mainMirror.getSnapshotMeta(parentKey, sessionRoots)
+        : { parentRunning: Boolean(supervisor.sessionInfo(parentKey)?.running), parentTurnCount: 0, sessionChangedFiles: [] }
+      return {
+        parentSessionKey: resolved.parentSessionKey,
+        activeSideKey: resolved.activeSideKey,
+        hasPersistedHistory: resolved.hasPersistedHistory,
+        parentRunning: meta.parentRunning,
+        parentTurnCount: meta.parentTurnCount,
+        sessionChangedFiles: meta.sessionChangedFiles
+      }
+    }
+  )
+
+  ipcMain.handle('sideChat:stagePrompt', async (_event, input: unknown): Promise<void> => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return
+    const payload = input as SideChatStagePromptInput
+    if (typeof payload.sideSessionKey !== 'string' || !payload.sideSessionKey) return
+    if (typeof payload.parentSessionKey !== 'string' || !payload.parentSessionKey) return
+    if (isSideSessionKey(payload.parentSessionKey)) return
+    context.sideChatBridge?.stagePrompt(payload)
+  })
+
+  ipcMain.handle(
+    'sideChat:clear',
+    async (_event, parentSessionKey: unknown, rawCwd: unknown): Promise<SideChatStateSnapshot> => {
+      const resolvedCwd = await resolveRuntimeCwd(context, rawCwd)
+      if (!resolvedCwd) throw new Error('Working folder is not an available workspace.')
+      const sessionRoots = resolveSessionRoots(context.settings.get().externalChatFolder)
+      const parentKey = await resolveValidatedParentKey(parentSessionKey, resolvedCwd.cwd, sessionRoots)
+      if (!parentKey) throw new Error("Conversation file is not in Pi's session store.")
+      const cleared = context.sideChatBindings
+        ? await context.sideChatBindings.clear(
+            parentKey,
+            resolvedCwd.cwd,
+            (file, roots) => removeSessionFile(file, supervisor, roots),
+            sessionRoots
+          )
+        : { parentSessionKey: parentKey, activeSideKey: mintSideDraftKey(), hasPersistedHistory: false }
+      const meta = context.mainMirror
+        ? await context.mainMirror.getSnapshotMeta(parentKey, sessionRoots)
+        : { parentRunning: Boolean(supervisor.sessionInfo(parentKey)?.running), parentTurnCount: 0, sessionChangedFiles: [] }
+      return {
+        parentSessionKey: cleared.parentSessionKey,
+        activeSideKey: cleared.activeSideKey,
+        hasPersistedHistory: cleared.hasPersistedHistory,
+        parentRunning: meta.parentRunning,
+        parentTurnCount: meta.parentTurnCount,
+        sessionChangedFiles: meta.sessionChangedFiles
+      }
+    }
+  )
+
+  ipcMain.handle('sideChat:stopForParent', async (_event, parentSessionKey: unknown): Promise<void> => {
+    if (typeof parentSessionKey !== 'string' || !parentSessionKey.trim()) return
+    if (context.sideChatBindings) {
+      await context.sideChatBindings.stopForParent(parentSessionKey)
+    } else {
+      await supervisor.stopSideForParent(parentSessionKey)
+    }
+  })
+
   ipcMain.handle('runtime:start', async (_event, options: RuntimeStartOptions) => {
     if (!options || typeof options !== 'object') return { ok: false, error: 'Invalid runtime options.' }
     const resolvedCwd = await resolveRuntimeCwd(context, options.cwd)
@@ -2415,9 +2602,23 @@ export function registerIpc(context: IpcContext): void {
     if (!runtimeCwdStillRegistered(context, resolvedCwd)) {
       return { ok: false, error: 'Working folder is no longer an available workspace.' }
     }
-    const sessionKey = validated.sessionFile || `draft:${randomUUID()}`
+    const role: SessionRuntimeRole =
+      options.role === 'side' || isSideSessionKey(validated.sessionFile) ? 'side' : 'main'
+    let parentSessionKey: string | undefined
+    if (role === 'side' && options.parentSessionKey !== undefined) {
+      const validParent = await resolveValidatedParentKey(options.parentSessionKey, cwd, sessionRoots)
+      if (!validParent) return { ok: false, error: "Parent conversation file is not in Pi's session store." }
+      parentSessionKey = validParent
+    }
+    const sessionKey = validated.sessionFile || (role === 'side' ? mintSideDraftKey() : `draft:${randomUUID()}`)
+    if (role === 'side' && parentSessionKey) {
+      context.sideChatBindings?.noteSideAssociation(sessionKey, parentSessionKey, cwd)
+    }
     return supervisor.ensure({
       ...options,
+      role,
+      ...(parentSessionKey ? { parentSessionKey } : {}),
+      rememberDefaults: role === 'side' ? false : options.rememberDefaults,
       sessionFile: validated.sessionFile,
       sessionKey,
       cwd,
@@ -2433,24 +2634,41 @@ export function registerIpc(context: IpcContext): void {
     if (typeof options.sessionKey !== 'string' || !options.sessionKey) {
       return { ok: false, error: 'Missing conversation id' }
     }
+    const role: SessionRuntimeRole =
+      options.role === 'side' || isSideSessionKey(options.sessionKey) || isSideSessionKey(options.sessionFile)
+        ? 'side'
+        : 'main'
+    const sessionRoots = resolveSessionRoots(context.settings.get().externalChatFolder)
+    let parentSessionKey: string | undefined
+    if (role === 'side' && options.parentSessionKey !== undefined) {
+      const validParent = await resolveValidatedParentKey(options.parentSessionKey, cwd, sessionRoots)
+      if (!validParent) return { ok: false, error: "Parent conversation file is not in Pi's session store." }
+      parentSessionKey = validParent
+    }
     if (
       (options.sessionFile === undefined ||
         (typeof options.sessionFile === 'string' && options.sessionFile.length > 0)) &&
       supervisor.isReadyMatch?.({
         sessionKey: options.sessionKey,
         cwd,
-        sessionFile: options.sessionFile
+        sessionFile: options.sessionFile,
+        role
       })
     ) {
       if (!runtimeCwdStillRegistered(context, resolvedCwd)) {
         return { ok: false, error: 'Working folder is no longer an available workspace.' }
       }
+      if (role === 'side' && parentSessionKey) {
+        context.sideChatBindings?.noteSideAssociation(options.sessionKey, parentSessionKey, cwd)
+      }
       return supervisor.ensure({
         ...options,
+        role,
+        ...(parentSessionKey ? { parentSessionKey } : {}),
+        rememberDefaults: role === 'side' ? false : options.rememberDefaults,
         cwd
       })
     }
-    const sessionRoots = resolveSessionRoots(context.settings.get().externalChatFolder)
     const validated = await validateRuntimeSessionFile(options.sessionFile, cwd, sessionRoots)
     // Pi can report a newly assigned session path before it has flushed the
     // JSONL. A hot runtime already owns that key, so reuse it without treating
@@ -2479,8 +2697,14 @@ export function registerIpc(context: IpcContext): void {
     if (!runtimeCwdStillRegistered(context, resolvedCwd)) {
       return { ok: false, error: 'Working folder is no longer an available workspace.' }
     }
+    if (role === 'side' && parentSessionKey) {
+      context.sideChatBindings?.noteSideAssociation(options.sessionKey, parentSessionKey, cwd)
+    }
     return supervisor.ensure({
       ...options,
+      role,
+      ...(parentSessionKey ? { parentSessionKey } : {}),
+      rememberDefaults: role === 'side' ? false : options.rememberDefaults,
       sessionFile: validated.ok ? validated.sessionFile : undefined,
       cwd,
       customInstructions: runtimeInstructions(context, cwd)
@@ -2522,6 +2746,9 @@ export function registerIpc(context: IpcContext): void {
     ) => {
       if (command === 'switch_session') {
         throw new Error('Session switching must go through runtime:start/ensure')
+      }
+      if (command === 'export_html') {
+        throw new Error('Conversation export must go through sessions:exportHtml')
       }
       const hint = readTraceHint(trace)
       const key = typeof sessionKey === 'string' && sessionKey ? sessionKey : hint?.uiSessionId
@@ -2646,15 +2873,10 @@ export function registerIpc(context: IpcContext): void {
   ipcMain.handle('shell:nativeIcons', () => nativeAppIcons())
 
   ipcMain.handle('shell:openPath', async (_event, target: string) => {
-    const opener = settings.get().defaultFileOpener
     if (typeof target !== 'string' || !target) return 'Invalid path.'
     const resolved = await resolveWorkspacePath(workspaceRoot(context), target)
     if (!resolved) return 'Path is not available inside the open project.'
-    if (
-      (opener === 'vscode' || opener === 'cursor' || opener === 'windsurf') &&
-      (await launchEditor(opener, resolved))
-    ) return ''
-    return await shell.openPath(resolved)
+    return openFile(resolved)
   })
 
   ipcMain.handle('shell:openInExplorer', async (_event, target: unknown) => {
@@ -3027,6 +3249,9 @@ export function bridgeRuntime(context: IpcContext): void {
     sendToWindow(window, 'runtime:event', payload)
 
     const sessionKey = payload.ownerId
+    if (isSideSessionKey(sessionKey) || supervisor.sessionInfo?.(sessionKey)?.role === 'side') {
+      return
+    }
     if (event.type === 'agent_start') runCompletions.delete(sessionKey)
     if (event.type === 'agent_end') runCompletions.set(sessionKey, describeRunCompletion(event.messages))
 

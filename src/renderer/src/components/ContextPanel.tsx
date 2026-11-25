@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { resolveSavedModel } from '@shared/provider-models'
+import { isSideSessionKey } from '@shared/side-chat'
 import { useAppStore } from '../store/useAppStore'
+import { useSessionViewSlice } from '../lib/conversation-scope'
 import { useT } from '../lib/i18n'
 import { contextReading, alignBreakdown } from '../lib/context-reading'
 
@@ -28,13 +30,25 @@ function formatBreakdownTokens(value: number | null | undefined): string {
   return `~${value}`
 }
 
-export function ContextPanel() {
-  const stats = useAppStore((state) => state.stats)
-  const contextBreakdown = useAppStore((state) => state.contextBreakdown)
-  const items = useAppStore((state) => state.items)
-  const piState = useAppStore((state) => state.piState)
-  const models = useAppStore((state) => state.models)
+export function ContextPanel({
+  sessionKey: explicitSessionKey
+}: {
+  sessionKey?: string
+} = {}) {
+  const slice = useSessionViewSlice(explicitSessionKey)
+  const resolvedKey = explicitSessionKey ?? slice.sessionKey
+  const isSide = Boolean(resolvedKey && isSideSessionKey(resolvedKey))
+  const stats = slice.stats
+  const contextBreakdown = slice.contextBreakdown
+  const items = slice.items
+  const piState = slice.piState
+  const mainModels = useAppStore((state) => state.models)
+  const models = slice.models.length > 0 ? slice.models : mainModels
   const catalogModels = useAppStore((state) => state.catalogModels)
+  const sideOverride = useAppStore((state) =>
+    resolvedKey ? state.sideModelOverrides?.[resolvedKey] : undefined
+  )
+  const mainLiveModel = useAppStore((state) => state.piState?.model)
   const savedModel = useAppStore((state) => state.settings.model)
   const savedProvider = useAppStore((state) => state.settings.provider)
   const readSessionStats = useAppStore((state) => state.readSessionStats)
@@ -49,10 +63,17 @@ export function ContextPanel() {
   // A conversation with no process has no `piState.model`, so the saved model
   // supplies the window. The live model list wins when Pi has published one;
   // the catalog is what a cold chat has.
-  const fallbackModel = useMemo(
-    () => resolveSavedModel(savedModel, savedProvider, models.length ? models : catalogModels),
-    [savedModel, savedProvider, models, catalogModels]
-  )
+  const fallbackModel = useMemo(() => {
+    const pool = models.length ? models : catalogModels
+    if (isSide) {
+      if (sideOverride) {
+        const resolved = resolveSavedModel(sideOverride.spec, sideOverride.provider, pool)
+        if (resolved) return resolved
+      }
+      if (mainLiveModel?.id && mainLiveModel.provider) return mainLiveModel
+    }
+    return resolveSavedModel(savedModel, savedProvider, pool)
+  }, [isSide, sideOverride, mainLiveModel, savedModel, savedProvider, models, catalogModels])
 
   const current = useMemo(
     () => contextReading({ stats, items, model: piState?.model, fallbackModel }),
@@ -66,12 +87,12 @@ export function ContextPanel() {
     try {
       // Never starts a process; `undefined` simply leaves the transcript
       // reading in place.
-      await readSessionStats()
+      await readSessionStats(resolvedKey)
     } finally {
       inFlight.current = false
       setReading(false)
     }
-  }, [readSessionStats])
+  }, [readSessionStats, resolvedKey])
 
   useEffect(() => {
     if (asked.current) return

@@ -1,4 +1,4 @@
-import type { ExtensionUiRequest, SessionMeta } from '@shared/types'
+import { isSideSessionKey, type ExtensionUiRequest, type SessionMeta } from '@shared/types'
 import type { SessionThread } from '../store/useAppStore'
 import { normalisePathKey } from './path'
 import { changedThreadItemsFrom, type ThreadItem } from './thread'
@@ -163,6 +163,7 @@ export function liveConversationRows(
   const activeKeys = new Set<string>()
 
   for (const [key, thread] of Object.entries(threads)) {
+    if (isSideSessionKey(key)) continue
     if (onDisk.has(normalisePathKey(key))) continue
     if (!hasWork(thread)) continue
     activeKeys.add(key)
@@ -228,7 +229,9 @@ export function conversationRows(
   workspacePath: string | undefined
 ): ConversationRow[] {
   const live = liveConversationRows(sessions, threads, workspacePath)
-  const disk = sessions.map((session) => ({ ...session, onDisk: true }))
+  const disk = sessions
+    .filter((session) => !isSideSessionKey(session.file))
+    .map((session) => ({ ...session, onDisk: true }))
   return [...live, ...disk]
 }
 
@@ -242,6 +245,7 @@ export function streamingProjectPaths(
   const byPath = sessionsByPath(sessions)
   const seen = new Set<string>()
   for (const [file, thread] of Object.entries(threads)) {
+    if (isSideSessionKey(file)) continue
     if (!thread.isStreaming) continue
     const cwd =
       thread.status.cwd ||

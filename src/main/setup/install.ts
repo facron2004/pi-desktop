@@ -6,8 +6,9 @@ import { copyFile, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promise
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { SetupProgress } from '@shared/setup'
+import { properLockfile } from '../proper-lockfile'
 import { cleanAppEnv } from './args'
-import { verifyPayload, type SourceEntry } from './payload'
+import { removeTree, statPayloadFile, verifyPayload, type SourceEntry } from './payload'
 
 const execFileAsync = promisify(execFile)
 
@@ -145,8 +146,9 @@ export async function listSource(root: string): Promise<{ entries: SourceEntry[]
       const absolute = path.join(directory, item.name)
       const relative = path.relative(root, absolute)
       if (ASAR_ARCHIVE.test(item.name)) {
-        // One opaque file, whatever `isDirectory()` claims.
-        entries.push({ relative, size: 0 })
+        // One opaque file: the directory entry may be the archive's virtual
+        // contents, so its name decides, and its length is read as a file.
+        entries.push({ relative, size: statPayloadFile(absolute) ?? 0 })
         continue
       }
       if (item.isDirectory()) {
@@ -293,14 +295,6 @@ async function retryRename(from: string, to: string): Promise<void> {
 }
 
 /**
- * Put the verified staging copy in place of `target`.
- *
- * Nothing is written into the installed folder before the copy is complete and
- * checked, so a failed copy leaves the previous install exactly as it was. The
- * old copy is moved aside first and moved back if the swap fails, so a failure
- * here cannot cost the reader their installation either.
- */
-/**
  * Remove staging folders a killed install left beside the target.
  *
  * Each attempt copies into its own `.Pi Desktop-install-<uuid>` folder; a
@@ -321,13 +315,35 @@ async function clearStaleStaging(target: string): Promise<void> {
       } catch {
         continue
       }
-      await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+      // `removeTree`, not `rm`: Electron refuses to unlink the `app.asar` in
+      // this folder, which is what left a half-deleted copy behind each time.
+      removeTree(directory)
     }
   } catch {
     /* A parent we cannot list simply keeps its stale folders. */
   }
 }
 
+/** Recover a swap interrupted after moving the previous installation aside. */
+async function restorePreviousInstall(target: string): Promise<void> {
+  if (existsSync(target)) return
+  const parent = path.dirname(target)
+  const prefix = `${path.basename(target)}.old-`.toLowerCase()
+  const uuid = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i
+  let previous: { directory: string; installedAt: number } | undefined
+  for (const item of await readdir(parent, { withFileTypes: true })) {
+    if (!item.isDirectory() || !item.name.toLowerCase().startsWith(prefix) || !uuid.test(item.name.slice(prefix.length))) continue
+    const directory = path.join(parent, item.name)
+    const marker = readMarker(directory)
+    if (marker && !isSamePath(marker.installDir, target)) continue
+    if (!statPayloadFile(path.join(directory, APP_EXE)) || !statPayloadFile(path.join(directory, 'resources', 'app.asar'))) continue
+    const installedAt = marker?.installedAt || statSync(directory, { throwIfNoEntry: false })?.mtimeMs || 0
+    if (!previous || installedAt > previous.installedAt) previous = { directory, installedAt }
+  }
+  if (previous) await retryRename(previous.directory, target)
+}
+
+/** Put the verified staging copy in place, restoring the old version on failure. */
 async function swapIntoPlace(staging: string, target: string): Promise<void> {
   if (!existsSync(target)) {
     await retryRename(staging, target)
@@ -338,19 +354,41 @@ async function swapIntoPlace(staging: string, target: string): Promise<void> {
   try {
     await retryRename(staging, target)
   } catch (error) {
-    await retryRename(backup, target).catch(() => undefined)
+    try {
+      await retryRename(backup, target)
+    } catch (restoreError) {
+      throw new AggregateError([error, restoreError], `无法恢复旧版本，备份保存在 ${backup}。`)
+    }
     throw error
   }
-  // A folder another process still holds is removed by the next install.
-  await rm(backup, { recursive: true, force: true }).catch(() => undefined)
+  removeTree(backup)
 }
 
 export async function installApp(options: InstallOptions): Promise<void> {
-  const report = (progress: SetupProgress) => options.onProgress?.(progress)
   const target = path.resolve(options.targetDir)
   const source = path.resolve(sourceRoot())
   const problem = validateTarget(target)
   if (problem) throw new Error(problem)
+  await mkdir(path.dirname(target), { recursive: true })
+  // Recovery must distinguish an abandoned backup from another installer's
+  // in-progress swap. Wait long enough for a killed installer's lease to expire.
+  const release = await properLockfile.lock(target, {
+    realpath: false,
+    stale: 10_000,
+    retries: { retries: 12, minTimeout: 1000, maxTimeout: 1000 }
+  })
+  try {
+    const currentProblem = validateTarget(target)
+    if (currentProblem) throw new Error(currentProblem)
+    await restorePreviousInstall(target)
+    await installPayload(options, source, target)
+  } finally {
+    await release()
+  }
+}
+
+async function installPayload(options: InstallOptions, source: string, target: string): Promise<void> {
+  const report = (progress: SetupProgress) => options.onProgress?.(progress)
   if (!existsSync(path.join(source, APP_EXE))) {
     throw new Error('找不到要安装的应用程序文件，请重新下载安装程序。')
   }
@@ -367,7 +405,7 @@ export async function installApp(options: InstallOptions): Promise<void> {
   await clearStaleStaging(target)
   const staging = path.join(path.dirname(target), `.${path.basename(target)}-install-${randomUUID()}`)
   try {
-    await rm(staging, { recursive: true, force: true })
+    removeTree(staging)
     await copyPayload({
       source,
       target: staging,
@@ -389,7 +427,7 @@ export async function installApp(options: InstallOptions): Promise<void> {
     }
     await swapIntoPlace(staging, target)
   } finally {
-    await rm(staging, { recursive: true, force: true }).catch(() => undefined)
+    removeTree(staging)
   }
 
   report({ phase: 'shortcuts', percent: 99, detail: '正在创建快捷方式…' })

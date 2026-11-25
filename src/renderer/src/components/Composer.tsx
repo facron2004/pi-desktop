@@ -14,7 +14,6 @@ import {
 } from 'lucide-react'
 import {
   draftKeyOf,
-  rewindUndoFor,
   useAppStore,
   type ComposerDraft,
   type ComposerDraftCommand,
@@ -201,9 +200,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   })
   const submitting = useAppStore((state) => Boolean(state.submittingDrafts[clientKey]))
   // A message edit can be taken back until something is sent from here.
-  // `rewindUndo` is the record itself, and it only belongs to the conversation
-  // on screen; `rewindUndoFor` does that scoping (an edit is not a boolean).
-  const undoEdit = useAppStore((state) => rewindUndoFor(state) !== undefined)
+  const undoEdit = useAppStore((state) => state.rewindUndo === true)
   const undoRewind = useAppStore((state) => state.undoRewind)
   const draftEntry = useAppStore(
     useCallback((state) => (draftKey ? state.drafts[draftKey] : undefined), [draftKey])
@@ -520,7 +517,9 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   }, [draftKey])
 
   useEffect(() => {
-    const focus = () => {
+    const focus = (event: Event) => {
+      const detail = (event as CustomEvent<{ target?: string } | undefined>).detail
+      if (detail?.target === 'side') return
       const node = textareaRef.current
       if (!node) return
       node.focus()
@@ -763,6 +762,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return
       if (document.querySelector('[aria-modal="true"]')) return
+      if (document.activeElement?.closest('[data-conversation-surface="side"]')) return
       if (event.key !== 'Escape' || !isStreaming) return
       // The palette uses Escape to close itself and handles the key before
       // it reaches the window, so the run is left alone.
@@ -1229,7 +1229,7 @@ export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: (
   const addFiles = async (files: FileList | null): Promise<void> => {
     if (!files) return
     const state = useAppStore.getState()
-    const targetKey = draftKeyOf(state)
+    const targetKey = draftKeyRef.current || draftKeyOf(state)
     const cwd = state.threads[targetKey]?.status.cwd ?? state.workspace?.path ?? ''
     bumpPendingAdds(targetKey, 1)
     try {

@@ -1,8 +1,10 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ModelInfo } from '@shared/types'
+import { isSideSessionKey } from '@shared/side-chat'
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Loader2, Search, X } from 'lucide-react'
 import { selectableModels, resolveSavedModel } from '@shared/provider-models'
 import { useAppStore } from '../store/useAppStore'
+import { useSessionViewSlice } from '../lib/conversation-scope'
 import { EffortSlider } from './EffortSlider'
 import { Popover } from './Popover'
 import { useT } from '../lib/i18n'
@@ -75,16 +77,32 @@ function acceptsImages(model: ModelInfo): boolean {
 }
 
 /** The model and its reasoning effort share one composer control. */
-export const ModelPicker = memo(function ModelPicker() {
+export const ModelPicker = memo(function ModelPicker({
+  sessionKey,
+  rememberDefaults
+}: {
+  sessionKey?: string
+  rememberDefaults?: boolean
+} = {}) {
   const pickerA11yId = useId().replace(/[^a-zA-Z0-9_-]/g, '')
   const modelListId = `${pickerA11yId}-model-list`
-  const threadModels = useAppStore((state) => state.models)
+  const slice = useSessionViewSlice(sessionKey)
+  const isSide = Boolean(sessionKey && isSideSessionKey(sessionKey))
+  const mainModels = useAppStore((state) => state.models)
+  const threadModels = slice.models.length > 0 ? slice.models : mainModels
   const catalogModels = useAppStore((state) => state.catalogModels)
   const disabledModelSpecs = useAppStore((state) => state.disabledModelSpecs)
-  const piState = useAppStore((state) => state.piState)
+  const piState = slice.piState
   const liveLevel = piState?.thinkingLevel
+  const sideThinkingOverride = useAppStore((state) =>
+    sessionKey ? state.sideThinkingOverrides?.[sessionKey] : undefined
+  )
+  const mainLiveLevel = useAppStore((state) => state.piState?.thinkingLevel)
   const savedLevel = useAppStore((state) => state.settings.thinkingLevel)
-  const thinkingLevels = useAppStore((state) => state.thinkingLevels)
+  const fallbackLevel = isSide
+    ? (sideThinkingOverride ?? mainLiveLevel ?? savedLevel)
+    : savedLevel
+  const thinkingLevels = slice.thinkingLevels
 
   const [configuredThinkingLevels, setConfiguredThinkingLevels] = useState<string[]>([])
   const [configuredLevelsLoading, setConfiguredLevelsLoading] = useState(false)
@@ -93,9 +111,7 @@ export const ModelPicker = memo(function ModelPicker() {
   // carry them — a card owned by this picker is the only place they show.
   const modelTip = useHoverTip<{ title: string; rows: SidebarTipRow[] }>()
   const setModel = useAppStore((state) => state.setModel)
-  const starting = useAppStore(
-    (state) => state.status.phase === 'starting' && !state.cwdWait
-  )
+  const starting = slice.status.phase === 'starting' && !slice.cwdWait
   const models = useMemo(
     () => selectableModels(threadModels, catalogModels, disabledModelSpecs),
     [threadModels, catalogModels, disabledModelSpecs]
@@ -105,17 +121,48 @@ export const ModelPicker = memo(function ModelPicker() {
   // other conversations keep moving. Subscribe to stable values and resolve
   // in a memo — a selector returning the fallback literal would repaint the
   // picker on every store notification.
-  const liveModel = useAppStore((state) => state.piState?.model)
+  const liveModel = piState?.model
+  const sideModelOverride = useAppStore((state) =>
+    sessionKey ? state.sideModelOverrides?.[sessionKey] : undefined
+  )
+  const mainLiveModel = useAppStore((state) => state.piState?.model)
   const sessionModelSpec = useAppStore((state) => {
-    const key = state.activeSessionFile
+    const key = sessionKey ?? state.activeSessionFile
     return key ? state.sessions.find((entry) => entry.file === key)?.model : undefined
   })
+  const mainSessionModelSpec = useAppStore((state) =>
+    state.activeSessionFile
+      ? state.sessions.find((entry) => entry.file === state.activeSessionFile)?.model
+      : undefined
+  )
   const savedModel = useAppStore((state) => state.settings.model)
   const savedProvider = useAppStore((state) => state.settings.provider)
   const currentModel = useMemo(() => {
     if (liveModel?.id && liveModel.provider) return liveModel
+    if (isSide) {
+      if (sideModelOverride) {
+        const resolved = resolveSavedModel(sideModelOverride.spec, sideModelOverride.provider, models)
+        if (resolved) return resolved
+      }
+      if (sessionModelSpec) {
+        const resolved = resolveSavedModel(sessionModelSpec, savedProvider, models)
+        if (resolved) return resolved
+      }
+      if (mainLiveModel?.id && mainLiveModel.provider) return mainLiveModel
+      return resolveSavedModel(mainSessionModelSpec ?? savedModel, savedProvider, models)
+    }
     return resolveSavedModel(sessionModelSpec ?? savedModel, savedProvider, models)
-  }, [liveModel, sessionModelSpec, savedModel, savedProvider, models])
+  }, [
+    liveModel,
+    isSide,
+    sideModelOverride,
+    sessionModelSpec,
+    mainLiveModel,
+    mainSessionModelSpec,
+    savedModel,
+    savedProvider,
+    models
+  ])
   useEffect(() => {
     let cancelled = false
     setConfiguredThinkingLevels([])
@@ -160,9 +207,9 @@ export const ModelPicker = memo(function ModelPicker() {
   // Before a runtime exists, use the exact level list resolved from Pi's model
   // catalog. A live session's RPC result takes precedence once it is available.
   const currentLevel =
-    liveLevel || savedLevel
-      ? resolveThinkingLevel(availableThinkingLevels, liveLevel, savedLevel) ??
-        (!piState ? liveLevel || savedLevel : liveLevel)
+    liveLevel || fallbackLevel
+      ? resolveThinkingLevel(availableThinkingLevels, liveLevel, fallbackLevel) ??
+        (!piState ? liveLevel || fallbackLevel : liveLevel)
       : undefined
   const [modelQuery, setModelQuery] = useState('')
   const [showModels, setShowModels] = useState(false)
@@ -295,7 +342,10 @@ export const ModelPicker = memo(function ModelPicker() {
     if (selected) return
     setModelUpdating(true)
     try {
-      if (await setModel(model)) setRecency(readModelRecency())
+      if (await setModel(model, sessionKey ? { sessionKey, rememberDefaults } : undefined)) {
+        setRecency(readModelRecency())
+        setShowModels(false)
+      }
     } finally {
       setModelUpdating(false)
     }
@@ -539,6 +589,8 @@ export const ModelPicker = memo(function ModelPicker() {
               modelLabel={modelLabel}
               availableLevels={availableThinkingLevels}
               levelsLoading={configuredLevelsLoading && thinkingLevels.length === 0}
+              sessionKey={sessionKey}
+              rememberDefaults={rememberDefaults}
               onOpenModelList={() => {
                 if (updating) return
                 setModelQuery('')

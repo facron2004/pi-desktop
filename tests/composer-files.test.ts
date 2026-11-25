@@ -166,6 +166,46 @@ test('an oversized attachment preserves already saved images in other drafts', (
   })
 })
 
+test('quota pressure drops sent-prompt history before unsent draft images', () => {
+  const storage = memoryStorage()
+  const setItem = storage.setItem
+  storage.setItem = (key, value) => {
+    if (value.length > 1_000) throw new Error('quota exceeded')
+    setItem(key, value)
+  }
+  const image = { id: 'saved', type: 'image' as const, name: 'saved.png', bytes: 3, data: 'YWJj', mimeType: 'image/png' }
+  const other = { text: 'Earlier unsent draft', images: [image] }
+  const lastDraftKeys = { other: 'draft:other', current: 'draft:current' }
+  assert.equal(saveComposerDrafts({ drafts: { 'draft:other': other }, lastDraftKeys }, storage), 'saved')
+
+  const current = { text: 'New unsent draft', images: [{ ...image, id: 'new' }] }
+  const file = { id: 'file', path: 'C:/project/example.txt', name: 'example.txt' }
+  const withoutHistory = { ...current, files: [file] }
+  const save = (newImageData?: string) => saveComposerDrafts({
+    drafts: {
+      'draft:other': other,
+      'draft:current': {
+        ...withoutHistory,
+        images: newImageData
+          ? [{ ...image, id: 'oversized', bytes: newImageData.length * 3 / 4, data: newImageData }]
+          : current.images,
+        history: ['H'.repeat(1200)]
+      }
+    },
+    lastDraftKeys
+  }, storage)
+
+  assert.equal(save(), 'partial')
+  assert.deepEqual(loadComposerDrafts(storage), {
+    drafts: { 'draft:other': other, 'draft:current': withoutHistory }, lastDraftKeys
+  })
+
+  assert.equal(save('A'.repeat(2000)), 'partial')
+  assert.deepEqual(loadComposerDrafts(storage), {
+    drafts: { 'draft:other': other, 'draft:current': { ...withoutHistory, images: [] } }, lastDraftKeys
+  })
+})
+
 test('a malformed draft store is ignored and a promoted draft loses its new-chat pointer', () => {
   const storage = memoryStorage()
   storage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, '{"version":1,"drafts":"bad"}')
@@ -200,7 +240,7 @@ test('pruneComposerDrafts caps sent-history-only sessions while preserving all u
   assert.equal(Object.keys(pruned).length, MAX_HISTORY_ONLY_DRAFTS + 1)
 })
 
-test('saveComposerDrafts skips redundant setItem writes and drops history as a last resort on quota pressure', () => {
+test('saveComposerDrafts skips redundant setItem writes and drops history on quota pressure', () => {
   const storage = memoryStorage()
   let setCount = 0
   const rawSet = storage.setItem

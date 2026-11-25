@@ -1,4 +1,4 @@
-import type { SessionMeta, TrayConversation } from '@shared/types'
+import { isSideSessionKey, type SessionMeta, type TrayConversation } from '@shared/types'
 import type { SessionThread } from '../store/useAppStore'
 import { conversationRows, type ConversationRow } from './live-sessions'
 import { normalisePathKey } from './path'
@@ -41,6 +41,7 @@ export function trayConversationGroups(
   const seen = new Set<string>()
 
   for (const row of rows) {
+    if (isSideSessionKey(row.file)) continue
     const key = normalisePathKey(row.file)
     if (seen.has(key)) continue
     seen.add(key)

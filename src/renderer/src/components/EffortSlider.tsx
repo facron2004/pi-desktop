@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
+import { isSideSessionKey } from '@shared/side-chat'
 import { useAppStore } from '../store/useAppStore'
+import { useSessionViewSlice } from '../lib/conversation-scope'
 import { useT } from '../lib/i18n'
 import { resolveThinkingLevel } from '../lib/thinking'
 
@@ -49,7 +51,9 @@ export function EffortSlider({
   availableLevels,
   levelsLoading = false,
   onOpenModelList,
-  onBusyChange
+  onBusyChange,
+  sessionKey,
+  rememberDefaults
 }: {
   disabled?: boolean
   modelLabel?: string
@@ -57,16 +61,30 @@ export function EffortSlider({
   levelsLoading?: boolean
   onOpenModelList?: () => void
   onBusyChange: (busy: boolean) => void
+  sessionKey?: string
+  rememberDefaults?: boolean
 }) {
-  const liveLevel = useAppStore((state) => state.piState?.thinkingLevel)
+  const slice = useSessionViewSlice(sessionKey)
+  const isSide = Boolean(sessionKey && isSideSessionKey(sessionKey))
+  const piState = slice.piState
+  const liveLevel = piState?.thinkingLevel
+  const sideOverrideLevel = useAppStore((state) =>
+    sessionKey ? state.sideThinkingOverrides?.[sessionKey] : undefined
+  )
+  const mainLiveLevel = useAppStore((state) => state.piState?.thinkingLevel)
   const savedLevel = useAppStore((state) => state.settings.thinkingLevel)
-  const piState = useAppStore((state) => state.piState)
+  const fallbackLevel = isSide
+    ? (sideOverrideLevel ?? mainLiveLevel ?? savedLevel)
+    : savedLevel
   const levels = availableLevels
   // A saved level can belong to another model. Never position the slider on a
   // level this model does not offer; fall back to the closest supported one.
-  const current = liveLevel || savedLevel ? resolveThinkingLevel(levels, liveLevel, savedLevel) : undefined
+  const current =
+    liveLevel || fallbackLevel
+      ? resolveThinkingLevel(levels, liveLevel, fallbackLevel)
+      : undefined
   const setThinkingLevel = useAppStore((state) => state.setThinkingLevel)
-  const ready = useAppStore((state) => state.status.phase === 'ready')
+  const ready = slice.status.phase === 'ready' || isSide
   const t = useT()
 
   const trackRef = useRef<HTMLDivElement>(null)
@@ -83,7 +101,7 @@ export function EffortSlider({
   const onlyApplied = Boolean(
     onlyLevel &&
       ((liveLevel && liveLevel.toLowerCase() === onlyLevel.toLowerCase()) ||
-        (!piState && savedLevel && savedLevel.toLowerCase() === onlyLevel.toLowerCase()))
+        (!piState && fallbackLevel && fallbackLevel.toLowerCase() === onlyLevel.toLowerCase()))
   )
   const applyOnly = useCallback(async () => {
     if (!onlyLevel || onlyApplied || busyRef.current || !ready || disabled) return
@@ -91,13 +109,16 @@ export function EffortSlider({
     setBusy(true)
     onBusyChange(true)
     try {
-      await setThinkingLevel(onlyLevel)
+      await setThinkingLevel(
+        onlyLevel,
+        sessionKey ? { sessionKey, rememberDefaults } : undefined
+      )
     } finally {
       busyRef.current = false
       setBusy(false)
       onBusyChange(false)
     }
-  }, [disabled, onlyApplied, onlyLevel, onBusyChange, ready, setThinkingLevel])
+  }, [disabled, onlyApplied, onlyLevel, onBusyChange, ready, rememberDefaults, sessionKey, setThinkingLevel])
   const hasSelection = current !== undefined || previewIndex !== null
   const currentIndex = current
     ? Math.max(0, levels.findIndex((level) => level === current))
@@ -126,7 +147,10 @@ export function EffortSlider({
       setBusy(true)
       onBusyChange(true)
       try {
-        await setThinkingLevel(level)
+        await setThinkingLevel(
+          level,
+          sessionKey ? { sessionKey, rememberDefaults } : undefined
+        )
       } finally {
         busyRef.current = false
         setBusy(false)
@@ -135,7 +159,7 @@ export function EffortSlider({
         onBusyChange(false)
       }
     },
-    [current, enabled, last, levels, onBusyChange, setThinkingLevel]
+    [current, enabled, last, levels, onBusyChange, rememberDefaults, sessionKey, setThinkingLevel]
   )
 
   const fromPointer = (clientX: number): { ratio: number; index: number } => {
@@ -224,11 +248,11 @@ export function EffortSlider({
   if (levels.length === 0) {
     // A cold chat has not queried the model yet. A live model with no levels
     // has reported that it cannot reason, so distinguish the two states.
-    const coldTitle = savedLevel ? t(levelLabel(savedLevel)) : t('Automatic (Pi default)')
+    const coldTitle = fallbackLevel ? t(levelLabel(fallbackLevel)) : t('Automatic (Pi default)')
     return (
       <div className="effort-card">
         <div className="effort-card__header">
-          <div className="effort-card__title" data-off={piState || !savedLevel ? 'true' : undefined}>
+          <div className="effort-card__title" data-off={piState || !fallbackLevel ? 'true' : undefined}>
             {piState ? t('No reasoning') : coldTitle}
           </div>
           <button

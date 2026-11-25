@@ -15,6 +15,8 @@ import { looksLikeUrl } from '../lib/url-link'
 import { openResolvedUrl } from '../lib/open-link'
 import { ImageButton } from './Lightbox'
 import { ErrorBoundary } from './ErrorBoundary'
+import { useThreadEnv } from './conversation/ThreadEnvContext'
+import { SideChatActionCard } from './side-chat/SideChatTurnActions'
 
 const MermaidDiagram = lazy(() =>
   import('./MermaidDiagram').then((m) => ({ default: m.MermaidDiagram }))
@@ -181,6 +183,7 @@ function flattenNodeText(node: ReactNode): string {
 
 function PreBlock({ children: content }: { children?: ReactNode }) {
   const streaming = useContext(StreamingContext)
+  const { surface } = useThreadEnv()
   const child = Array.isArray(content) ? content[0] : content
   if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
     // `pre` always wraps the `code` element in Markdown. Use the element's
@@ -199,6 +202,9 @@ function PreBlock({ children: content }: { children?: ReactNode }) {
           </Suspense>
         </ErrorBoundary>
       )
+    }
+    if (surface === 'side' && match?.[1]?.toLowerCase() === 'prompt' && text.trim()) {
+      return <SideChatActionCard code={text} />
     }
     return <CodeBlock code={text} language={match?.[1]} />
   }
@@ -236,12 +242,12 @@ const markdownComponents: Components = {
           <button
             type="button"
             className="md-file-link"
-            onClick={() => {
+            onClick={(event) => {
               const root = useAppStore.getState().workspace?.path
               const resolved = resolveAgainst(root, ref.path)
               window.dispatchEvent(
                 new CustomEvent<InspectorRequest>('pi:open-inspector', {
-                  detail: { tab: 'files', file: resolved, line: ref.line }
+                  detail: { tab: event.altKey ? 'changes' : 'files', file: resolved, line: ref.line }
                 })
               )
             }}

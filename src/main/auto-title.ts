@@ -1,12 +1,14 @@
 import { app } from 'electron'
 import path from 'node:path'
-import type {
-  AgentMessage,
-  AppSettings,
-  ContentBlock,
-  RuntimeEvent,
-  RuntimeRekey,
-  SessionMeta
+import {
+  isSideSessionKey,
+  type AgentMessage,
+  type AppSettings,
+  type ContentBlock,
+  type RuntimeEvent,
+  type RuntimeRekey,
+  type SessionMeta,
+  type SessionRuntimeRole
 } from '@shared/types'
 import { runPiCli } from './pi/cli'
 import { getSessionMeta, readSessionHeadMessages } from './sessions'
@@ -78,7 +80,7 @@ export interface AutoTitleHost {
   off(channel: 'event', listener: (payload: RuntimeEvent) => void): unknown
   on(channel: 'rekey', listener: (payload: RuntimeRekey) => void): unknown
   off(channel: 'rekey', listener: (payload: RuntimeRekey) => void): unknown
-  sessionInfo?(key: string): { running: boolean } | undefined
+  sessionInfo?(key: string): { running: boolean; role?: SessionRuntimeRole } | undefined
   rename?(file: string, name: string): Promise<boolean>
 }
 
@@ -380,6 +382,7 @@ export class AutoTitleService {
     const ownerId = payload?.ownerId
     const event = payload?.event
     if (typeof ownerId !== 'string' || !ownerId || !event || typeof event.type !== 'string') return
+    if (isSideSessionKey(ownerId) || this.host?.sessionInfo?.(ownerId)?.role === 'side') return
 
     // A new turn means the transcript is not finished and the process owns the
     // file; abort any in-flight title run so it cannot race rename or stall the queue.
@@ -409,6 +412,7 @@ export class AutoTitleService {
     const from = payload?.from
     const to = payload?.to
     if (typeof from !== 'string' || typeof to !== 'string' || !to || from === to) return
+    if (isSideSessionKey(from) || isSideSessionKey(to) || this.host?.sessionInfo?.(to)?.role === 'side') return
     const wasWaiting = this.waiting.has(from)
     const isNewDraft = from.startsWith('draft:') || this.newDrafts.has(from)
     const retries = this.readRetries.get(from)

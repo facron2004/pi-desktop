@@ -88,6 +88,7 @@ export const AppMenuBar = memo(function AppMenuBar({
   onOpenFiles,
   onOpenBrowser,
   onOpenSubagents,
+  onToggleSideChat,
   onToggleTerminal,
   onOpenSessionTree,
   onSearchConversation,
@@ -110,6 +111,7 @@ export const AppMenuBar = memo(function AppMenuBar({
   onOpenFiles: () => void
   onOpenBrowser: () => void
   onOpenSubagents: () => void
+  onToggleSideChat: () => void
   onToggleTerminal: () => void
   onOpenSessionTree: () => void
   onSearchConversation: () => void
@@ -228,6 +230,11 @@ export const AppMenuBar = memo(function AppMenuBar({
               onSelect: () => onToggleTaskPanel()
             },
             { separator: true },
+            {
+              label: t('Side chat'),
+              onSelect: onToggleSideChat,
+              shortcut: chord('toggle-side-chat')
+            },
             { label: t('Review changes'), onSelect: onOpenChanges },
             { label: t('Project files'), onSelect: onOpenFiles },
             { label: t('Browser'), onSelect: onOpenBrowser },

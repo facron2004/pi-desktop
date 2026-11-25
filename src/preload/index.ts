@@ -12,6 +12,7 @@ import type {
 } from '@shared/marketplace'
 import type {
   AggregatedUsageStats,
+  SessionExportResult,
   SessionHydrationResult,
   SettingsPatchBaseline,
   AppInfo,
@@ -59,6 +60,8 @@ import type {
   ScheduledTaskInput,
   SessionMeta,
   SessionNameChange,
+  SideChatStagePromptInput,
+  SideChatStateSnapshot,
   TerminalCreateOptions,
   TerminalDataPayload,
   TerminalExitPayload,
@@ -195,8 +198,10 @@ const bridge: PiDesktopBridge = {
   },
   sessions: {
     list: (cwd?: string): Promise<SessionMeta[]> => ipcRenderer.invoke('sessions:list', cwd),
+    exportHtml: (sessionKey: string): Promise<SessionExportResult> =>
+      ipcRenderer.invoke('sessions:exportHtml', sessionKey),
     remove: (file: string): Promise<boolean> => ipcRenderer.invoke('sessions:remove', file),
-    hydrate: (file: string, scope?: 'branch'): Promise<SessionHydrationResult> =>
+    hydrate: (file: string, scope?: 'branch' | 'side'): Promise<SessionHydrationResult> =>
       ipcRenderer.invoke('sessions:hydrate', file, scope),
     rename: (file: string, name: string): Promise<boolean> =>
       ipcRenderer.invoke('sessions:rename', file, name),
@@ -366,6 +371,16 @@ const bridge: PiDesktopBridge = {
   images: {
     generate: (request: ImageGenerationRequest): Promise<GeneratedImage[]> =>
       ipcRenderer.invoke('image:generate', request)
+  },
+  sideChat: {
+    resolve: (parentSessionKey: string, cwd: string): Promise<SideChatStateSnapshot> =>
+      ipcRenderer.invoke('sideChat:resolve', parentSessionKey, cwd),
+    stagePrompt: (input: SideChatStagePromptInput): Promise<void> =>
+      ipcRenderer.invoke('sideChat:stagePrompt', input),
+    clear: (parentSessionKey: string, cwd: string): Promise<SideChatStateSnapshot> =>
+      ipcRenderer.invoke('sideChat:clear', parentSessionKey, cwd),
+    stopForParent: (parentSessionKey: string): Promise<void> =>
+      ipcRenderer.invoke('sideChat:stopForParent', parentSessionKey)
   }
 }
 

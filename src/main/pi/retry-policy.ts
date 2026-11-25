@@ -267,14 +267,15 @@ export async function rememberDefaultThinkingLevelAsync(
   file = agentSettingsPath()
 ): Promise<void> {
   const value = level?.trim().toLowerCase()
-  if (!value || !THINKING_LEVELS.has(value)) return
+  if (level !== undefined && (!value || !THINKING_LEVELS.has(value))) return
   const initial = await readSettingsAsync(file)
   if (!initial || initial.defaultThinkingLevel === value) return
   await withSettingsLockAsync(file, async () => {
     const current = await readSettingsAsync(file)
     if (!current) return
     if (current.defaultThinkingLevel === value) return
-    current.defaultThinkingLevel = value
+    if (value === undefined) delete current.defaultThinkingLevel
+    else current.defaultThinkingLevel = value
     await writeSettingsAsync(file, current)
   })
 }

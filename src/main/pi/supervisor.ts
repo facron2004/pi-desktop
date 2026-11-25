@@ -4,20 +4,22 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import type { FileHandle } from 'node:fs/promises'
-import type {
-  ExtensionUiResponse,
-  PiEvent,
-  PiState,
-  RpcTraceHint,
-  RuntimeEnsureOptions,
-  RuntimeQueueEvent,
-  RuntimeStartOptions,
-  RuntimeStatus
+import {
+  isSideSessionKey,
+  type ExtensionUiResponse,
+  type PiEvent,
+  type PiState,
+  type RpcTraceHint,
+  type RuntimeEnsureOptions,
+  type RuntimeQueueEvent,
+  type RuntimeStartOptions,
+  type RuntimeStatus,
+  type SessionRuntimeRole
 } from '@shared/types'
 import { appendSessionName } from '../sessions'
 import { isExternalToolName } from '../memory/policy'
 import { CwdGate, InterprocessCwdGate, type CwdClaimMode } from './cwd-gate'
-import { isPreSendRpcError, isRpcCommandError } from './rpc-client'
+import { PiRpcPreSendError, isPreSendRpcError, isRpcCommandError } from './rpc-client'
 import { canonicalSessionFile } from './session-file'
 import { properLockfile } from '../proper-lockfile'
 
@@ -40,6 +42,7 @@ const MAX_QUEUED_PAYLOAD_BYTES_TOTAL = 32 * 1024 * 1024
 
 const WRITE_COMMANDS = new Set(['prompt', 'bash'])
 const BIND_COMMANDS = new Set(['prompt', 'fork', 'clone', 'new_session'])
+const SIDE_BLOCKED_COMMANDS = new Set(['bash', 'fork', 'clone', 'new_session', 'switch_session'])
 
 function sameWorkingDirectory(left: string, right: string): boolean {
   if (!left || !right) return left === right
@@ -125,6 +128,9 @@ interface QueuedJob {
 interface RuntimeActivity {
   ownerId: string
   cwd: string
+  role: SessionRuntimeRole
+  /** Canonical key (`draft:…` or `.jsonl`) of bound Main session when `role === 'side'`. */
+  parentKey?: string
   writes: number
   running: boolean
   settlements: number
@@ -171,12 +177,67 @@ export class SessionSupervisor extends EventEmitter {
   private readonly releasingOwners = new Map<string, number>()
   private readonly cwdReleaseRetries = new Map<string, { ownerId: string }>()
   private readonly activity = new WeakMap<ManagedSessionRuntime, RuntimeActivity>()
+  private readonly sideByParent = new Map<string, Set<string>>()
   private shuttingDown = false
   private cliUpgradeInProgress = false
   private accessClock = 0
 
   private touchRuntime(activity: RuntimeActivity): void {
-    activity.lastAccessed = Date.now() * 1000 + (++this.accessClock % 1000)
+    const stamp = Date.now() * 1000 + (++this.accessClock % 1000)
+    activity.lastAccessed = stamp
+    if (activity.prewarmOnly) return
+    for (const peerKey of this.pairedKeysOf(activity.ownerId)) {
+      const peerRuntime = this.runtimes.get(peerKey)
+      const peerActivity = peerRuntime && this.activity.get(peerRuntime)
+      if (!peerRuntime?.isRunning || !peerActivity || peerActivity.stopping || peerActivity.prewarmOnly) {
+        continue
+      }
+      peerActivity.lastAccessed = stamp
+      if (this.warmTimers.has(peerKey)) {
+        this.scheduleWarm(peerKey)
+      }
+    }
+  }
+
+  private linkSideToParent(sideKey: string, parentKey: string | undefined): void {
+    const canonSide = this.canonical(sideKey)
+    this.unlinkSide(canonSide)
+    if (!parentKey) return
+    const canonParent = this.canonical(parentKey)
+    let set = this.sideByParent.get(canonParent)
+    if (!set) {
+      set = new Set<string>()
+      this.sideByParent.set(canonParent, set)
+    }
+    set.add(canonSide)
+    const runtime = this.runtimes.get(canonSide)
+    const activity = runtime && this.activity.get(runtime)
+    if (activity) activity.parentKey = canonParent
+  }
+
+  private unlinkSide(sideKey: string): void {
+    const canonSide = this.canonical(sideKey)
+    for (const [parentKey, set] of this.sideByParent) {
+      set.delete(sideKey)
+      set.delete(canonSide)
+      if (set.size === 0) this.sideByParent.delete(parentKey)
+    }
+  }
+
+  private pairedKeysOf(key: string): string[] {
+    const id = this.canonical(key)
+    const runtime = this.runtimes.get(id)
+    const activity = runtime && this.activity.get(runtime)
+    const paired = new Set<string>()
+    if (activity?.role === 'side' && activity.parentKey) {
+      paired.add(this.canonical(activity.parentKey))
+    }
+    const sides = this.sideByParent.get(id)
+    if (sides) {
+      for (const sideKey of sides) paired.add(this.canonical(sideKey))
+    }
+    paired.delete(id)
+    return [...paired]
   }
 
   constructor(private readonly factory: SessionRuntimeFactory, cwdLockDirectory?: string) {
@@ -189,7 +250,7 @@ export class SessionSupervisor extends EventEmitter {
   }
 
   /** Fast check for whether a ready runtime already owns `(sessionKey, cwd, sessionFile)`. */
-  isReadyMatch(options: Pick<RuntimeEnsureOptions, 'sessionKey' | 'cwd' | 'sessionFile'>): boolean {
+  isReadyMatch(options: Pick<RuntimeEnsureOptions, 'sessionKey' | 'cwd' | 'sessionFile' | 'role'>): boolean {
     if (this.cliUpgradeInProgress || this.shuttingDown) return false
     const requestedId = this.canonical(options.sessionKey)
     const fileOwner = options.sessionFile
@@ -201,6 +262,11 @@ export class SessionSupervisor extends EventEmitter {
     if (!runtime?.isRunning || runtime.currentStatus.phase !== 'ready' || !activity || activity.stopping) {
       return false
     }
+    const expectedRole: SessionRuntimeRole =
+      options.role === 'side' || isSideSessionKey(options.sessionKey) || isSideSessionKey(options.sessionFile)
+        ? 'side'
+        : 'main'
+    if (activity.role !== expectedRole) return false
     if (!sameWorkingDirectory(activity.cwd, options.cwd)) return false
     if (options.sessionFile) {
       const activeFile = runtime.currentStatus.sessionFile
@@ -251,6 +317,8 @@ export class SessionSupervisor extends EventEmitter {
    */
   sessionInfo(key: string): {
     cwd: string
+    role: SessionRuntimeRole
+    parentKey?: string
     externalContext: boolean
     running: boolean
     waitingForInput: boolean
@@ -263,11 +331,33 @@ export class SessionSupervisor extends EventEmitter {
     if (!activity) return undefined
     return {
       cwd: activity.cwd,
+      role: activity.role,
+      ...(activity.parentKey ? { parentKey: this.canonical(activity.parentKey) } : {}),
       externalContext: activity.externalContext,
       running: activity.running || activity.writes > 0,
       waitingForInput: this.approvals.has(id),
       pid: runtime.pid
     }
+  }
+
+  parentOf(key: string): string | undefined {
+    const id = this.canonical(key)
+    const runtime = this.runtimes.get(id)
+    const activity = runtime && this.activity.get(runtime)
+    return activity?.parentKey ? this.canonical(activity.parentKey) : undefined
+  }
+
+  sideKeysForParent(parentKey: string): string[] {
+    const canonParent = this.canonical(parentKey)
+    const set = this.sideByParent.get(canonParent)
+    if (!set) return []
+    return [...set].map((sideKey) => this.canonical(sideKey))
+  }
+
+  async stopSideForParent(parentKey: string): Promise<void> {
+    const keys = this.sideKeysForParent(parentKey)
+    if (keys.length === 0) return
+    await Promise.all(keys.map((sideKey) => this.stop(sideKey)))
   }
 
   /** Desktop Git writes take an exclusive directory lock over agent runs. */
@@ -333,6 +423,9 @@ export class SessionSupervisor extends EventEmitter {
     if (existing?.isRunning && existing.currentStatus.phase === 'ready') {
       const activity = this.activity.get(existing)
       if (activity) {
+        if (activity.role === 'side' && options.parentSessionKey) {
+          this.linkSideToParent(id, options.parentSessionKey)
+        }
         if (!options.prewarm) {
           activity.prewarmOnly = false
           this.touchRuntime(activity)
@@ -351,9 +444,13 @@ export class SessionSupervisor extends EventEmitter {
         if (startingActivity) startingActivity.prewarmOnly = false
       }
       const res = await pending
+      const settledId = this.canonical(id)
+      const settledRuntime = this.runtimes.get(settledId)
+      const settledActivity = settledRuntime && this.activity.get(settledRuntime)
+      if (settledActivity?.role === 'side' && options.parentSessionKey) {
+        this.linkSideToParent(settledId, options.parentSessionKey)
+      }
       if (!options.prewarm) {
-        const settledRuntime = this.runtimes.get(this.canonical(id))
-        const settledActivity = settledRuntime && this.activity.get(settledRuntime)
         if (settledActivity) {
           settledActivity.prewarmOnly = false
           this.touchRuntime(settledActivity)
@@ -402,6 +499,12 @@ export class SessionSupervisor extends EventEmitter {
     const activity = runtime && this.activity.get(runtime)
     if (!runtime?.isRunning || !activity || activity.stopping) {
       throw new Error('Pi is not running for this conversation.')
+    }
+    if (activity.role === 'side' && SIDE_BLOCKED_COMMANDS.has(command)) {
+      throw new PiRpcPreSendError(
+        `Command "${command}" is disabled in read-only Side Chat.`,
+        'closed'
+      )
     }
     this.touchRuntime(activity)
     activity.prewarmOnly = false
@@ -467,7 +570,8 @@ export class SessionSupervisor extends EventEmitter {
       if (command === 'clear_queue') {
         const queue = result as { steering?: string[]; followUp?: string[] } | undefined
         // Only user prompts belong in the composer when the directory queue is cleared.
-        const prompts = removed.filter(job => job.trace?.sourceAction !== 'image-params' && job.trace?.sourceAction !== 'image-params-cancel')
+        const internalActions = ['image-params', 'image-params-cancel', 'message-edit', 'message-undo']
+        const prompts = removed.filter(job => !internalActions.includes(job.trace?.sourceAction ?? ''))
         return {
           steering: [...(queue?.steering ?? []), ...prompts.filter(job => job.payload.streamingBehavior !== 'followUp').map(job => String(job.payload.message ?? ''))],
           followUp: [...(queue?.followUp ?? []), ...prompts.filter(job => job.payload.streamingBehavior === 'followUp').map(job => String(job.payload.message ?? ''))]
@@ -591,6 +695,8 @@ export class SessionSupervisor extends EventEmitter {
 
   async stop(key?: string): Promise<void> {
     if (!key) {
+      // Stopping every session is the app's shutdown path. The window can
+      // still send IPC while other cleanup completes, so keep admission closed.
       this.shuttingDown = true
       if (this.queueDrainTimer) {
         clearTimeout(this.queueDrainTimer)
@@ -614,10 +720,10 @@ export class SessionSupervisor extends EventEmitter {
         this.aliases.clear()
         this.aliasesByTarget.clear()
         this.fileOwners.clear()
+        this.sideByParent.clear()
         for (const [file, lock] of this.sessionFileLocks) {
           await this.releaseSessionFileLock(file, lock.ownerId)
         }
-        this.shuttingDown = false
       }
       return
     }
@@ -680,6 +786,8 @@ export class SessionSupervisor extends EventEmitter {
         // is released. Use its current owner because an in-flight state read
         // may have rebound it while shutdown was waiting for Pi to exit.
         await this.releaseFile(owner)
+        this.unlinkSide(id)
+        this.unlinkSide(owner)
         if (this.runtimes.get(owner) === runtime) this.runtimes.delete(owner)
         activity.stopping = undefined
         await this.release(owner, activity.cwd)
@@ -750,6 +858,12 @@ export class SessionSupervisor extends EventEmitter {
       return { ok: false }
     }
 
+    const role: SessionRuntimeRole =
+      options.role === 'side' || isSideSessionKey(id) || isSideSessionKey(options.sessionFile)
+        ? 'side'
+        : 'main'
+    const parentKey =
+      role === 'side' && options.parentSessionKey ? this.canonical(options.parentSessionKey) : undefined
     let runtime = this.runtimes.get(id)
     if (!runtime) {
       runtime = this.factory()
@@ -757,6 +871,8 @@ export class SessionSupervisor extends EventEmitter {
       const activity: RuntimeActivity = {
         ownerId: id,
         cwd: options.cwd,
+        role,
+        parentKey,
         writes: 0,
         running: false,
         settlements: 0,
@@ -765,16 +881,24 @@ export class SessionSupervisor extends EventEmitter {
         lastAccessed: 0
       }
       this.activity.set(runtime, activity)
+      if (role === 'side' && parentKey) this.linkSideToParent(id, parentKey)
       this.attach(runtime)
+    } else {
+      const activity = this.activity.get(runtime)
+      if (activity && role === 'side' && parentKey) {
+        this.linkSideToParent(id, parentKey)
+      }
     }
     let started: { ok: boolean; error?: string }
     try {
       started = await runtime.start({
         cwd: options.cwd,
         sessionFile: options.sessionFile,
+        role,
+        parentSessionKey: parentKey,
         model: options.model,
         thinkingLevel: options.thinkingLevel,
-        rememberDefaults: options.rememberDefaults,
+        rememberDefaults: role === 'side' ? false : options.rememberDefaults,
         customInstructions: options.customInstructions,
         trace: { ...options.trace, sourceAction: options.trace?.sourceAction ?? 'ensure', uiSessionId: id }
       })
@@ -785,6 +909,7 @@ export class SessionSupervisor extends EventEmitter {
     if (!started.ok) {
       await runtime.stop()
       this.runtimes.delete(id)
+      this.unlinkSide(id)
       await this.release(id)
       await this.releaseFile(id)
       return started
@@ -796,6 +921,7 @@ export class SessionSupervisor extends EventEmitter {
     } catch (error) {
       await runtime.stop()
       if (this.runtimes.get(id) === runtime) this.runtimes.delete(id)
+      this.unlinkSide(id)
       await this.release(id)
       await this.releaseFile(id)
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -1283,8 +1409,31 @@ export class SessionSupervisor extends EventEmitter {
     // Only drafts and alternate spellings of the same file are aliases.
     for (const alias of [...(this.aliasesByTarget.get(from) ?? [])]) this.setAlias(alias, file)
     const replace = startup && !from.startsWith('draft:') && canonicalSessionFile(from) !== canonicalSessionFile(file)
-    if (replace || from.startsWith('draft:') || canonicalSessionFile(from) === canonicalSessionFile(file)) {
+    const migrateIdentity = replace || from.startsWith('draft:') || canonicalSessionFile(from) === canonicalSessionFile(file)
+    if (migrateIdentity) {
       this.setAlias(from, file)
+    }
+    if (activity.role === 'side') {
+      for (const [, set] of this.sideByParent) {
+        if (set.delete(from)) set.add(file)
+      }
+      if (activity.parentKey) {
+        activity.parentKey = this.canonical(activity.parentKey)
+      }
+    } else if (migrateIdentity) {
+      const boundSides = this.sideByParent.get(from)
+      if (boundSides) {
+        this.sideByParent.delete(from)
+        const nextSet = this.sideByParent.get(file) ?? new Set<string>()
+        for (const sideKey of boundSides) {
+          const canonSide = this.canonical(sideKey)
+          nextSet.add(canonSide)
+          const sideRuntime = this.runtimes.get(canonSide)
+          const sideActivity = sideRuntime && this.activity.get(sideRuntime)
+          if (sideActivity) sideActivity.parentKey = file
+        }
+        if (nextSet.size > 0) this.sideByParent.set(file, nextSet)
+      }
     }
     this.gate.retarget(from, file)
     this.interprocessGate?.retargetOwner(from, file)
@@ -1491,6 +1640,14 @@ export class SessionSupervisor extends EventEmitter {
     if (this.shuttingDown || this.cliUpgradeInProgress) return
     const idle: { id: string; lastAccessed: number; prewarmOnly: boolean }[] = []
     const seenRuntimes = new Set<ManagedSessionRuntime>()
+    const protectedIds = new Set<string>()
+    if (excludeId) {
+      protectedIds.add(excludeId)
+      protectedIds.add(this.canonical(excludeId))
+      for (const peerKey of this.pairedKeysOf(excludeId)) {
+        protectedIds.add(peerKey)
+      }
+    }
 
     for (const [id, runtime] of this.runtimes) {
       if (seenRuntimes.has(runtime)) continue
@@ -1502,6 +1659,10 @@ export class SessionSupervisor extends EventEmitter {
           lastAccessed: activity?.lastAccessed ?? 0,
           prewarmOnly: Boolean(activity?.prewarmOnly)
         })
+      } else {
+        for (const peerKey of this.pairedKeysOf(id)) {
+          protectedIds.add(peerKey)
+        }
       }
     }
 
@@ -1517,10 +1678,10 @@ export class SessionSupervisor extends EventEmitter {
     let evicted = 0
     for (const candidate of idle) {
       if (evicted >= excess) break
-      if (excludeId && (candidate.id === excludeId || this.canonical(candidate.id) === this.canonical(excludeId))) {
+      const canon = this.canonical(candidate.id)
+      if (protectedIds.has(candidate.id) || protectedIds.has(canon)) {
         continue
       }
-      const canon = this.canonical(candidate.id)
       if (this.starting.has(canon) || this.starting.has(candidate.id)) continue
       evicted++
       void this.stop(candidate.id).catch((error) => {

@@ -2,14 +2,15 @@ import { EventEmitter } from 'node:events'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import type {
-  FeishuChannelConfig,
-  ImChannelConfig,
-  ImChannelStatus,
-  ImChannelTestResult,
-  PiEvent,
-  RuntimeRekey,
-  WechatChannelConfig
+import {
+  isSideSessionKey,
+  type FeishuChannelConfig,
+  type ImChannelConfig,
+  type ImChannelStatus,
+  type ImChannelTestResult,
+  type PiEvent,
+  type RuntimeRekey,
+  type WechatChannelConfig
 } from '@shared/types'
 import type { SessionSupervisor } from '../pi/supervisor'
 import type { SettingsStore } from '../settings'
@@ -873,6 +874,7 @@ export class ImChannelService extends EventEmitter {
    * ---------------------------------------------------------------- */
 
   private readonly onRuntimeRekey = (change: RuntimeRekey): void => {
+    if (isSideSessionKey(change.from) || isSideSessionKey(change.to)) return
     const fromKey = this.pathKey(change.from)
     const toKey = this.pathKey(change.to)
     if (fromKey === toKey) return
@@ -886,6 +888,9 @@ export class ImChannelService extends EventEmitter {
   /** Final answers and needs-confirmation notices, per bound session file. */
   private readonly onRuntimeEvent = (payload: { ownerId: string; event: PiEvent }): void => {
     if (this.disposed) return
+    if (isSideSessionKey(payload.ownerId) || this.options.supervisor.sessionInfo?.(payload.ownerId)?.role === 'side') {
+      return
+    }
     const ownerKey = this.pathKey(payload.ownerId)
     const event = payload.event
     if (event.type === 'agent_start') {

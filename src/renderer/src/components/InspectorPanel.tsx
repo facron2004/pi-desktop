@@ -15,11 +15,13 @@ import {
   Globe,
   Images,
   MessageSquare,
+  MessagesSquare,
   Rows3,
   Search,
   X
 } from 'lucide-react'
 import { collectChanges, countChangedFiles, type FileChange } from '../lib/changes'
+import { dispatchOpenSideChat } from '../lib/side-chat-context'
 import { formatChanges } from '../lib/diff-text'
 import { basename, relativePath, resolveAgainst } from '../lib/path'
 import { languageOf } from '../lib/files'
@@ -520,6 +522,23 @@ export function InspectorPanel({
                   {totals.removed ? <span data-kind="del">−{totals.removed}</span> : null}
                 </span>
                 <div className="review__actions">
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    disabled={changes.length === 0}
+                    onClick={(event) =>
+                      dispatchOpenSideChat({
+                        mode: 'open',
+                        focus: true,
+                        preset: 'review-session',
+                        autoSubmit: !event.shiftKey
+                      })
+                    }
+                    title={t('Review in Side Chat')}
+                    aria-label={t('Review in Side Chat')}
+                  >
+                    <MessagesSquare size={14} aria-hidden="true" />
+                  </button>
                   <button className="icon-btn" onClick={() => { if (fileFilterOpen) setFileFilter(''); setFileFilterOpen((value) => !value) }} title={t('Filter the changed files')} aria-label={t('Filter the changed files')} aria-pressed={fileFilterOpen} data-active={fileFilterOpen}>
                     <Search size={14} />
                   </button>
@@ -540,6 +559,9 @@ export function InspectorPanel({
                   >
                     {(close) => (
                       <div role="menu" aria-label={t('More actions')}>
+                        <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); dispatchOpenSideChat({ mode: 'open', focus: true, preset: 'review-session', autoSubmit: true }) }}>
+                          <MessagesSquare size={13} aria-hidden="true" /> {t('Review in Side Chat')}
+                        </button>
                         <button className="popover__item" role="menuitem" disabled={changes.length === 0} onClick={() => { close(); void copyDiff() }}>
                           <FileDiff size={13} /> {t('Copy the diff')}
                         </button>

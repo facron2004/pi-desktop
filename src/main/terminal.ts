@@ -27,7 +27,6 @@ interface Session {
   pendingOutputBytes: number
   outputPaused: boolean
   closing: boolean
-  stopTask?: Promise<void>
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -54,6 +53,9 @@ function stopWindowsTerminalTree(pid: number): Promise<boolean> {
  */
 export class TerminalManager {
   private readonly sessions = new Map<string, Session>()
+  // Shell exit removes the session before native cleanup can finish.
+  private readonly pendingStops = new Map<string, Promise<void>>()
+  private disposal?: Promise<void>
 
   constructor(
     private readonly send: (channel: string, payload: unknown) => void,
@@ -178,11 +180,12 @@ export class TerminalManager {
   }
 
   kill(id: string): Promise<void> {
+    const pendingStop = this.pendingStops.get(id)
+    if (pendingStop) return pendingStop
     const session = this.sessions.get(id)
     if (!session) return Promise.resolve()
-    if (session.stopTask) return session.stopTask
     session.closing = true
-    session.stopTask = Promise.resolve().then(async () => {
+    const stopTask = Promise.resolve().then(async () => {
       const pid = session.process.pid
       // Close the tree while its shell still exists. ConPTY's own cleanup
       // only sees processes attached to the same console.
@@ -207,13 +210,22 @@ export class TerminalManager {
       }
       this.sessions.delete(id)
     }).finally(() => {
-      session.stopTask = undefined
+      this.pendingStops.delete(id)
     })
-    return session.stopTask
+    this.pendingStops.set(id, stopTask)
+    return stopTask
   }
 
-  async disposeAll(): Promise<void> {
-    await Promise.all([...this.sessions.keys()].map(id => this.kill(id)))
+  async waitForDisposal(): Promise<void> {
+    const disposal = this.disposal
+    await disposal
+    if (disposal !== this.disposal) throw new Error('The terminal view was replaced before the shell could open.')
+  }
+
+  disposeAll(): Promise<void> {
+    const ids = new Set([...this.sessions.keys(), ...this.pendingStops.keys()])
+    this.disposal = Promise.all([...ids].map(id => this.kill(id))).then(() => undefined)
+    return this.disposal
   }
 }
 

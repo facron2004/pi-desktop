@@ -1,4 +1,4 @@
-import type { ImageContent, PiCommand } from '@shared/types'
+import { isSideSessionKey, SIDE_DRAFT_PREFIX, type ImageContent, type PiCommand } from '@shared/types'
 import type { ComposerDraftFile } from './composer-files'
 
 export interface ComposerDraftImage extends ImageContent {
@@ -207,7 +207,10 @@ export function loadComposerDrafts(storage = browserStorage()): ComposerDraftSna
     const lastSource = record(parsed.lastDraftKeys) ?? {}
     const lastDraftKeys = Object.fromEntries(
       Object.entries(lastSource).filter((entry): entry is [string, string] =>
-        typeof entry[1] === 'string' && entry[1].startsWith('draft:')
+        typeof entry[1] === 'string' &&
+        entry[1].startsWith('draft:') &&
+        !entry[1].startsWith(SIDE_DRAFT_PREFIX) &&
+        !isSideSessionKey(entry[1])
       )
     )
     const snapshot = { drafts, lastDraftKeys }
@@ -222,9 +225,8 @@ export function loadComposerDrafts(storage = browserStorage()): ComposerDraftSna
 }
 
 /**
- * Save the whole draft map and each project's new-chat pointer. If image data
- * exceeds the quota, keep already saved attachments that are still present
- * before falling back to text and file references.
+ * Save the whole draft map and each project's new-chat pointer. Under quota
+ * pressure, try dropping sent history before removing unsent attachments.
  */
 export function saveComposerDrafts(
   snapshot: ComposerDraftSnapshot,
@@ -238,11 +240,20 @@ export function saveComposerDrafts(
       images: draft.images.map(({ previewUrl: _previewUrl, ...image }) => image)
     }])
   )
+  const sanitizedLastDraftKeys = Object.fromEntries(
+    Object.entries(snapshot.lastDraftKeys).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === 'string' &&
+        entry[1].startsWith('draft:') &&
+        !entry[1].startsWith(SIDE_DRAFT_PREFIX) &&
+        !isSideSessionKey(entry[1])
+    )
+  )
   const write = (nextDrafts: Record<string, ComposerDraft>): boolean => {
     const serialized = JSON.stringify({
       version: 1,
       drafts: nextDrafts,
-      lastDraftKeys: snapshot.lastDraftKeys
+      lastDraftKeys: sanitizedLastDraftKeys
     })
     const cached = snapshotCache.get(storage)
     if (cached && cached.raw === serialized) return true
@@ -250,7 +261,7 @@ export function saveComposerDrafts(
       storage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, serialized)
       snapshotCache.set(storage, {
         raw: serialized,
-        snapshot: { drafts: nextDrafts, lastDraftKeys: { ...snapshot.lastDraftKeys } }
+        snapshot: { drafts: nextDrafts, lastDraftKeys: { ...sanitizedLastDraftKeys } }
       })
       return true
     } catch {
@@ -258,6 +269,22 @@ export function saveComposerDrafts(
     }
   }
   if (write(drafts)) return 'saved'
+
+  const writeWithoutHistory = (nextDrafts: Record<string, ComposerDraft>): boolean => {
+    const active: Record<string, ComposerDraft> = {}
+    let trimmed = false
+    for (const [key, draft] of Object.entries(nextDrafts)) {
+      if (isHistoryOnlyDraft(draft)) {
+        trimmed = true
+        continue
+      }
+      const { history, ...withoutHistory } = draft
+      trimmed ||= history !== undefined
+      active[key] = withoutHistory
+    }
+    return trimmed && write(active)
+  }
+  if (writeWithoutHistory(drafts)) return 'partial'
 
   const savedImages = new Map<string, ComposerDraftImage>()
   for (const draft of Object.values(loadComposerDrafts(storage).drafts)) {
@@ -275,23 +302,13 @@ export function saveComposerDrafts(
       removed += draft.images.length - images.length
       return [key, { ...draft, images }]
     }))
-    if (kept && removed && write(partial)) return 'partial'
+    if (kept && removed && (write(partial) || writeWithoutHistory(partial))) return 'partial'
   }
 
   const textOnly = Object.fromEntries(Object.entries(drafts).map(([key, draft]) => [
     key, { ...draft, images: [] }
   ]))
-  if (write(textOnly)) return 'partial'
-
-  // Last resort under severe quota pressure: drop sent-prompt histories so
-  // unsent text and file references still survive restart.
-  const activeTextOnly: Record<string, ComposerDraft> = {}
-  for (const [key, draft] of Object.entries(textOnly)) {
-    if (isHistoryOnlyDraft(draft)) continue
-    const { history: _history, ...withoutHistory } = draft
-    activeTextOnly[key] = withoutHistory
-  }
-  if (write(activeTextOnly)) return 'partial'
+  if (write(textOnly) || writeWithoutHistory(textOnly)) return 'partial'
   return 'failed'
 }
 

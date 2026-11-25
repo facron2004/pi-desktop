@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, u
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import type { ScheduledTaskSchedule } from '@shared/types'
 import { ScheduledTaskService } from '../src/main/scheduled-tasks'
 import { properLockfile } from '../src/main/proper-lockfile'
 import type { SettingsStore } from '../src/main/settings'
@@ -1455,6 +1456,87 @@ test('a task without its own choice follows the app defaults', async () => {
       ownerId: supervisor.ownerId,
       event: { type: 'agent_settled', aborted: false }
     })
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('recurring schedules keep their local hour across a daylight-saving transition', (t) => {
+  const previousZone = process.env.TZ
+  process.env.TZ = 'America/New_York'
+  t.after(() => {
+    if (previousZone === undefined) delete process.env.TZ
+    else process.env.TZ = previousZone
+  })
+  const start = Date.parse('2026-03-08T01:00:00-05:00')
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: start })
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-dst-'))
+  const service = new ScheduledTaskService({
+    userData,
+    settings: { get: () => ({ workspaces: [{ id: 'project', path: userData }] }) } as unknown as SettingsStore,
+    supervisor: new FakeSupervisor() as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  try {
+    const daily = { kind: 'daily', time: '02:30' } as const
+    const sunday = { kind: 'weekly', weekday: 0, time: '02:30' } as const
+    const wednesday = { ...sunday, weekday: 3 }
+    const add = (title: string, schedule: ScheduledTaskSchedule) =>
+      service.create({ title, schedule, prompt: 'Run a report', workspaceId: 'project' }).at(-1)?.nextRunAt
+
+    assert.equal(add('On the spring transition', daily), Date.parse('2026-03-08T03:30:00-04:00'))
+    assert.equal(add('Later this week', wednesday), Date.parse('2026-03-11T02:30:00-04:00'))
+    t.mock.timers.setTime(Date.parse('2026-03-08T04:00:00-04:00'))
+    assert.equal(add('The day after the transition', daily), Date.parse('2026-03-09T02:30:00-04:00'))
+    assert.equal(add('The week after the transition', sunday), Date.parse('2026-03-15T02:30:00-04:00'))
+
+    t.mock.timers.setTime(Date.parse('2026-11-01T01:45:00-04:00'))
+    assert.equal(
+      add('The repeated hour is counted once', { ...daily, time: '01:30' }),
+      Date.parse('2026-11-02T01:30:00-05:00')
+    )
+  } finally {
+    service.dispose()
+    rmSync(userData, { recursive: true, force: true })
+  }
+})
+
+test('editing a due recurring task keeps its occurrence and uses the new model', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const userData = mkdtempSync(path.join(tmpdir(), 'pi-scheduled-task-edit-due-'))
+  const supervisor = new CompletingSupervisor()
+  const id = 'due-weekly'
+  const now = Date.now()
+  const dueAt = now - 1000
+  const schedule = { kind: 'weekly', weekday: new Date(dueAt).getDay(), time: '00:00' } as const
+  const input = { title: 'Run the task', prompt: 'Process the report', workspaceId: 'project', schedule }
+  writeFileSync(path.join(userData, 'scheduled-tasks.json'), JSON.stringify([{
+    ...input, id, enabled: true, createdAt: now - 60_000, nextRunAt: dueAt
+  }]))
+  const service = new ScheduledTaskService({
+    userData,
+    settings: { get: () => ({ workspaces: [{ id: 'project', path: userData }] }) } as unknown as SettingsStore,
+    supervisor: supervisor as unknown as SessionSupervisor,
+    customInstructions: () => undefined
+  })
+  try {
+    const [edited] = service.update(id, { ...input, title: 'Updated title', model: 'provider/new-model' })
+    assert.equal(edited.nextRunAt, dueAt)
+    t.mock.timers.tick(250)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(supervisor.ensureCalls, 1)
+    assert.equal(supervisor.lastEnsure?.model, 'provider/new-model')
+    const [completed] = service.list()
+    assert.equal(completed.lastStatus, 'completed')
+    assert.ok((completed.nextRunAt ?? 0) > now)
+
+    const [rescheduled] = service.update(id, {
+      ...input,
+      schedule: { ...schedule, weekday: (schedule.weekday + 1) % 7 }
+    })
+    assert.notEqual(rescheduled.nextRunAt, completed.nextRunAt)
+    assert.equal(new Date(rescheduled.nextRunAt!).getDay(), (schedule.weekday + 1) % 7)
   } finally {
     service.dispose()
     rmSync(userData, { recursive: true, force: true })
