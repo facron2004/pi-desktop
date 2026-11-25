@@ -2058,3 +2058,105 @@ test('getAggregatedUsage fast-paths large non-usage lines while preserving activ
   assert.equal(usage.allTime.tokens.cost, 0.05)
   assert.equal(usage.byModel[0]?.model, 'test/fast-model')
 })
+
+test('a rename far from the end of a long session is still read', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-session-deep-name-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, 'deep.jsonl')
+  const header = JSON.stringify({ type: 'session', version: 3, id: 'deep', cwd: dir, timestamp: new Date(1700000000000).toISOString() })
+  // Pi appends a rename as the last record; this one sits about 2 MB before
+  // EOF, outside the fixed 1 MB tail window the metadata reader used to read.
+  writeFileSync(file, Buffer.concat([
+    Buffer.from(header + '\n'),
+    Buffer.from((' '.repeat(1024 * 1024) + '\n').repeat(22), 'utf8'),
+    Buffer.from(JSON.stringify({ type: 'session_info', name: '深埋的标题' }) + '\n'),
+    Buffer.from((' '.repeat(1024 * 1024) + '\n').repeat(2), 'utf8')
+  ]))
+  const stats = statSync(file)
+  assert.ok(stats.size > 24 * 1024 * 1024, 'the fixture must take the large-session path')
+  const meta = await parseLargeSessionMeta(file, stats.size, stats.mtimeMs)
+  assert.equal(meta?.name, '深埋的标题')
+})
+
+test('a search hit carries the name Pi writes as the last record', async (t) => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-search-last-name-'))
+  const root = path.join(parent, 'sessions')
+  const project = path.join(parent, 'project')
+  const workspace = path.join(root, encodeWorkspaceDir(project))
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  mkdirSync(project, { recursive: true })
+  mkdirSync(workspace, { recursive: true })
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  clearSessionCache()
+  t.after(() => {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    clearSessionCache()
+    rmSync(parent, { recursive: true, force: true })
+  })
+  writeFileSync(path.join(workspace, 'named.jsonl'), [
+    JSON.stringify({ type: 'session', version: 3, id: 'named', cwd: project }),
+    JSON.stringify({ type: 'message', id: 'u1', parentId: null, message: { role: 'user', content: 'find the zebra marker', timestamp: Date.now() } }),
+    JSON.stringify({ type: 'message', id: 'a1', parentId: 'u1', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'test/model', usage: { input: 1, totalTokens: 1 } } }),
+    JSON.stringify({ type: 'session_info', name: 'Zebra 讨论' })
+  ].join('\n') + '\n')
+  const hits = await searchSessions('zebra')
+  assert.equal(hits.length, 1)
+  // The scan breaks before the last record, so the hit used to show the first
+  // prompt while the sidebar row showed this title.
+  assert.equal(hits[0].name, 'Zebra 讨论')
+})
+
+test('malformed usage numbers cannot poison the totals', async (t) => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-usage-malformed-'))
+  const root = path.join(parent, 'sessions')
+  const project = path.join(parent, 'project')
+  const workspace = path.join(root, encodeWorkspaceDir(project))
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  mkdirSync(project, { recursive: true })
+  mkdirSync(workspace, { recursive: true })
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  clearSessionCache()
+  t.after(() => {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    clearSessionCache()
+    rmSync(parent, { recursive: true, force: true })
+  })
+  // A negative input, a negative reported total and a negative cost used to
+  // flow straight into every total and percentage on the Usage page.
+  writeFileSync(path.join(workspace, 'bad.jsonl'), [
+    JSON.stringify({ type: 'session', version: 3, id: 'bad', cwd: project }),
+    '{"type":"message","id":"a1","timestamp":' + JSON.stringify(new Date().toISOString()) + ',"message":{"role":"assistant","model":"test/model","usage":{"input":-8e12,"output":1,"totalTokens":-1,"cost":-3}}}'
+  ].join('\n') + '\n')
+  const usage = await getAggregatedUsage(root)
+  assert.equal(usage.allTime.tokens.totalTokens, 1)
+  assert.equal(usage.allTime.tokens.cost, 0)
+  assert.ok(usage.allTime.tokens.input >= 0)
+})
+
+test('a long session without an index is searched from its newest window', async (t) => {
+  const parent = mkdtempSync(path.join(tmpdir(), 'pi-search-tail-window-'))
+  const root = path.join(parent, 'sessions')
+  const project = path.join(parent, 'project')
+  const workspace = path.join(root, encodeWorkspaceDir(project))
+  const previousRoot = process.env.PI_CODING_AGENT_SESSION_DIR
+  mkdirSync(project, { recursive: true })
+  mkdirSync(workspace, { recursive: true })
+  process.env.PI_CODING_AGENT_SESSION_DIR = root
+  clearSessionCache()
+  t.after(() => {
+    if (previousRoot === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+    else process.env.PI_CODING_AGENT_SESSION_DIR = previousRoot
+    clearSessionCache()
+    rmSync(parent, { recursive: true, force: true })
+  })
+  writeFileSync(path.join(workspace, 'long.jsonl'), Buffer.concat([
+    Buffer.from(JSON.stringify({ type: 'session', version: 3, id: 'long', cwd: project }) + '\n'),
+    Buffer.from((' '.repeat(1024 * 1024) + '\n').repeat(9), 'utf8'),
+    Buffer.from(JSON.stringify({ type: 'message', id: 'u1', parentId: null, message: { role: 'user', content: 'the tailword is only here', timestamp: Date.now() } }) + '\n')
+  ]))
+  const hits = await searchSessions('tailword')
+  assert.equal(hits.length, 1, 'the newest window of a long session was not searched')
+  assert.match(hits[0].snippet ?? '', /tailword/)
+})

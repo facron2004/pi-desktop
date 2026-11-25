@@ -43,6 +43,8 @@ const MAX_OVERSIZED_RECORD_SCAN_BYTES = 64 * 1024 * 1024
 const MAX_META_HEAD_BYTES = 2 * 1024 * 1024
 /** Its newest name, model and timestamps come from its tail. */
 const MAX_META_TAIL_BYTES = 1 * 1024 * 1024
+/** How far back metadata may be looked for when the tail window misses it. */
+const MAX_META_METADATA_SCAN_BYTES = 16 * 1024 * 1024
 /**
  * Bytes of one session a direct search reads.
  *
@@ -1611,6 +1613,30 @@ export async function parseLargeSessionMeta(
     if (typeof stamp === 'string') lastTimestamp = stamp
   }
 
+  // Only session_info and model_change records matter to this pass; scanning
+  // messages again would count them twice.
+  const scanMetadata = (raw: string): void => {
+    const line = raw.trim()
+    if (!line || (!line.includes('"session_info"') && !line.includes('"model_change"'))) return
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      return
+    }
+    if (!parsed || typeof parsed !== 'object') return
+    const record = parsed as BaseEntry
+    if (record.type === 'session_info') {
+      const value = (record as unknown as { name?: string }).name
+      if (value) name = value
+      return
+    }
+    if (record.type === 'model_change') {
+      const change = record as unknown as { provider?: string; modelId?: string }
+      if (change.modelId) model = change.provider ? `${change.provider}/${change.modelId}` : change.modelId
+    }
+  }
+
   for await (const line of readJsonlLines(file, MAX_META_HEAD_BYTES, 0, false, handle)) scan(line)
   // `scan` assigns through a closure, so the flow analysis cannot see that the
   // header may be set; read it back through a cast instead of a null check it
@@ -1622,6 +1648,20 @@ export async function parseLargeSessionMeta(
   const tailStart = Math.max(0, size - MAX_META_TAIL_BYTES)
   if (tailStart > MAX_META_HEAD_BYTES) {
     for await (const line of readJsonlLines(file, MAX_META_TAIL_BYTES, tailStart, true, handle)) scan(line)
+  }
+  // Pi appends a rename as the *last* record, and a model switch can land
+  // anywhere: a fixed 1 MB tail misses both in a long conversation (a real
+  // 29.6 MB session has its only session_info 21.5 MB before EOF). Read
+  // backwards in growing windows, metadata records only, until both are found
+  // or the head window is reached.
+  let scannedFrom = tailStart > MAX_META_HEAD_BYTES ? tailStart : MAX_META_HEAD_BYTES
+  let window = MAX_META_TAIL_BYTES
+  while ((!name || !model) && window < MAX_META_METADATA_SCAN_BYTES && scannedFrom > MAX_META_HEAD_BYTES) {
+    window *= 2
+    const start = Math.max(MAX_META_HEAD_BYTES, size - window)
+    if (start >= scannedFrom) break
+    for await (const line of readJsonlLines(file, scannedFrom - start, start, true, handle)) scanMetadata(line)
+    scannedFrom = start
   }
 
   return {
@@ -2163,6 +2203,10 @@ export async function searchSessions(
         if (directRemaining <= 0) break
         const readLimit = Math.min(stats.size, MAX_SEARCH_FILE_BYTES, directRemaining)
         bytesRead += readLimit
+        // When the budget does not cover the whole file, search what the reader
+        // said most recently: reading the first few percent of a 40 MB session
+        // can never find yesterday's words.
+        const startOffset = stats.size > readLimit ? stats.size - readLimit : 0
         fileHits = await searchSessionFile(
           candidate.file,
           stats.mtimeMs,
@@ -2171,7 +2215,8 @@ export async function searchSessions(
           ceiling - hitCount,
           readLimit,
           opened.handle,
-          shouldStop
+          shouldStop,
+          startOffset
         )
         if (shouldStop()) return []
       }
@@ -2209,7 +2254,8 @@ async function searchSessionFile(
   remaining: number,
   maxBytes: number = MAX_SEARCH_FILE_BYTES,
   handle?: FileHandle,
-  shouldStop: () => boolean = () => false
+  shouldStop: () => boolean = () => false,
+  startOffset = 0
 ): Promise<SessionSearchHit[]> {
   let sessionId = path.basename(file, '.jsonl')
   let cwd = ''
@@ -2223,7 +2269,7 @@ async function searchSessionFile(
   const seenSnippets = new Set<string>()
   let messageIndex = 0
 
-  for await (const raw of readJsonlLines(file, maxBytes, 0, false, handle)) {
+  for await (const raw of readJsonlLines(file, maxBytes, startOffset, startOffset > 0, handle)) {
     if (shouldStop()) break
     const line = raw.trim()
     if (!line) continue
@@ -2283,7 +2329,17 @@ async function searchSessionFile(
     // Two rows from one conversation say enough about why it matched.
     if (hits.length >= Math.min(remaining, 2)) break
   }
-  return hits
+  // The loop usually breaks before the file's last record, and Pi writes a
+  // rename as that last record, so a hit captured a name that had not been read
+  // yet: the search list showed the first prompt while the sidebar showed the
+  // title. Session-wide fields come from the finished scan.
+  return hits.map((hit) => ({
+    ...hit,
+    sessionId,
+    name: name ?? hit.name,
+    preview: hit.preview || preview,
+    cwd: cwd || hit.cwd
+  }))
 }
 
 interface SearchIndexScan {
@@ -2683,7 +2739,10 @@ async function updateSearchIndex(
     }
     for await (const record of readJsonlRecords(
       file,
-      MAX_INDEX_FILE_BYTES,
+      // Bound the read by the size this snapshot is recorded against: a file
+      // still being written would otherwise index past it, and the sidecar is
+      // rejected by its own reader (sourceSize < indexedSize) forever.
+      size - windowStart,
       windowStart,
       windowStart > 0,
       handle
@@ -3286,20 +3345,21 @@ export async function getAggregatedUsage(customRoot?: string): Promise<Aggregate
 
               if (msg.role === 'assistant' && msg.usage) {
                 const u = msg.usage
-                const input = typeof u.input === 'number' ? u.input : 0
-                const output = typeof u.output === 'number' ? u.output : 0
-                const cacheRead = typeof u.cacheRead === 'number' ? u.cacheRead : 0
-                const cacheWrite = typeof u.cacheWrite === 'number' ? u.cacheWrite : 0
-                const total =
-                  typeof u.totalTokens === 'number' && u.totalTokens > 0
-                    ? u.totalTokens
-                    : input + output + cacheRead + cacheWrite
+                // A truncated or hand-edited record can carry a negative, a
+                // fraction or Infinity; one such value used to poison every
+                // total on the Usage page (and stays cached per file).
+                const amount = (value: unknown): number =>
+                  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+                const input = amount(u.input)
+                const output = amount(u.output)
+                const cacheRead = amount(u.cacheRead)
+                const cacheWrite = amount(u.cacheWrite)
+                const reportedTotal = amount(u.totalTokens)
+                const total = reportedTotal > 0 ? reportedTotal : input + output + cacheRead + cacheWrite
                 const cost =
                   typeof u.cost === 'number'
-                    ? u.cost
-                    : typeof u.cost?.total === 'number'
-                      ? u.cost.total
-                      : 0
+                    ? amount(u.cost)
+                    : amount((u.cost as { total?: unknown } | undefined)?.total)
 
                 const metric = {
                   ts,
