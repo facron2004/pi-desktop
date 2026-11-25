@@ -114,7 +114,8 @@
   color: var(--text);
 }
 
-.composer__mode {
+.composer__mode,
+.composer__swarm-roster {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
@@ -126,7 +127,21 @@
   white-space: nowrap;
 }
 
-.composer__mode:hover {
+.composer__mode:hover:not(:disabled),
+.composer__swarm-roster:hover {
   background: var(--bg-hover);
   color: var(--text);
+}
+
+.composer__swarm-mode {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+}
+
+.composer__swarm-mode > .composer__mode {
+  border-left: 1px solid var(--border-subtle);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
 }

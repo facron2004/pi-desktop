@@ -6,6 +6,23 @@ const MARKS: Partial<Record<FileTone, string>> = {
   js: 'JS',
   json: '{}',
   style: '#',
+  html: '<>',
+  xml: 'X',
+  vue: 'V',
+  svelte: 'S',
+  python: 'PY',
+  rust: 'RS',
+  go: 'GO',
+  c: 'C',
+  cpp: 'C++',
+  csharp: 'C#',
+  java: 'JV',
+  kotlin: 'KT',
+  swift: 'SW',
+  ruby: 'RB',
+  php: 'PHP',
+  sql: 'DB',
+  code: '</>',
   markdown: 'MD',
   shell: '>_'
 }
@@ -54,7 +71,7 @@ export function FileIcon({
               x="8"
               y="10.6"
               textAnchor="middle"
-              fontSize={mark.length > 1 ? 7 : 8.4}
+              fontSize={mark.length === 1 ? 8.4 : mark.length === 2 ? 7 : 6}
               letterSpacing="-0.35"
               fill="currentColor"
               className="file-icon__mark"

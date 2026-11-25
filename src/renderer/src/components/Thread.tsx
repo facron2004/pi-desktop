@@ -25,6 +25,7 @@ import { RunStatusRow } from './RunStatusRow'
 import { AssistantMessage } from './conversation/AssistantMessage'
 import { isLiveRunSummary, RunSummary } from './conversation/RunSummary'
 import { ErrorNotice, ThreadErrorBanner } from './conversation/ErrorNotice'
+import { GoalCompleteRow } from './conversation/GoalCompleteRow'
 import { ThreadEnvStoreProvider, useThreadEnv } from './conversation/ThreadEnvContext'
 import { SessionRail } from './SessionRail'
 import { Popover } from './Popover'
@@ -1186,6 +1187,10 @@ export const Thread = memo(function Thread() {
             hideRoutineStatus={liveRunSummaryAtTop}
           />
         ) : null}
+
+        {/* A finished goal closes the conversation it belonged to. It renders
+            nothing unless the extension reports `complete`. */}
+        <GoalCompleteRow />
 
         {error ? <ThreadErrorBanner message={error} onDismiss={dismissError} /> : null}
       </div>

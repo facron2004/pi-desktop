@@ -49,6 +49,35 @@ test('file tone and language detection cover PowerShell modules, scripts, and do
   assert.equal(languageOf('src/Makefile'), 'makefile')
 })
 
+test('file icons cover source aliases, build scripts, and the code fallback', () => {
+  const tones = {
+    'web/index.HTM': 'html',
+    'index.xhtml': 'html',
+    'C:\\src\\main.PYI': 'python',
+    'main.rs': 'rust',
+    'build.cjs': 'js',
+    'component.jsx': 'js',
+    'component.vue': 'vue',
+    'styles.less': 'style',
+    'main.go': 'go',
+    'module.cppm': 'cpp',
+    'Gemfile': 'ruby',
+    'Dockerfile.prod': 'shell',
+    '.env.local': 'shell',
+    'package.jsonl': 'json',
+    'types.pyx': 'code',
+    'shader.wgsl': 'code',
+    'rules.bzl': 'code',
+    'queries.gql': 'code',
+    'icon.svg': 'image',
+    'notes.txt': 'plain',
+    'unknown.custom': 'plain'
+  }
+  for (const [file, tone] of Object.entries(tones)) {
+    assert.equal(fileTone(file), tone, file)
+  }
+})
+
 function mockTool(toolName: string, status: ToolItem['status'], path?: string, edits?: { oldText?: string; newText?: string }[]): ToolItem {
   return {
     id: `tool-${Math.random()}`,

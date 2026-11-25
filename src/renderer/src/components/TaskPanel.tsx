@@ -1,7 +1,8 @@
 import { lazy, memo, Suspense, useCallback, useDeferredValue, useEffect, useId, useMemo, useState, type ReactNode } from 'react'
-import { Bot, ChevronRight, FileDiff, GitBranch, GitCommitHorizontal } from 'lucide-react'
+import { ChevronRight, FileDiff, GitBranch, GitCommitHorizontal } from 'lucide-react'
 import type { InspectorRequest } from '@shared/types'
 import { FileIcon } from './FileIcon'
+import { SubagentAvatar } from './SubagentAvatar'
 import { useAppStore } from '../store/useAppStore'
 import { changedFilePaths } from '../lib/changes'
 import { relativePath, resolveAgainst } from '../lib/path'
@@ -127,6 +128,7 @@ const SUBAGENT_STATUS_LABEL: Record<SubagentTreeTask['status'], string> = {
   proposed: 'Not run',
   queued: 'Queued',
   running: 'Running',
+  dispatched: 'Dispatched',
   completed: 'Completed',
   failed: 'Failed',
   aborted: 'Stopped',
@@ -149,12 +151,8 @@ const SubagentTaskRow = memo(function SubagentTaskRow({ task, onOpenTask }: {
         aria-label={description}
         onClick={() => onOpenTask(task.id)}
       >
-        {/* A child agent wears the same 20px tile a produced file does, tinted
-            by its own state: the row is a thing, not a line of text. The tile
-            is the only mark it needs — the status is in the tile's colour and
-            in the label. */}
-        <span className="task-panel__tile task-panel__tile--bot" aria-hidden="true">
-          <Bot size={12} />
+        <span className="task-panel__tile task-panel__tile--subagent" aria-hidden="true">
+          <SubagentAvatar task={task} />
         </span>
         <span className="task-panel__task-label">{label}</span>
       </button>
@@ -199,6 +197,7 @@ const TaskProgressSection = memo(function TaskProgressSection() {
   // without checkbox tokens, so subscribing to the derived plan skips renders
   // on streaming text deltas that do not change progress.
   const rawPlan = useAppStore((state) => extractPlan(state.items))
+  const running = useAppStore((state) => state.isStreaming)
   const plan = useDeferredValue(rawPlan)
 
   return (
@@ -208,6 +207,9 @@ const TaskProgressSection = memo(function TaskProgressSection() {
         plan ? <span className="task-panel__count">{plan.done}/{plan.total}</span> : undefined
       }
     >
+      {!running && plan?.source === 'todo' && plan.done < plan.total ? (
+        <p className="task-panel__empty">{t('Some steps are still unconfirmed')}</p>
+      ) : null}
       {plan ? (
         <ul className="task-panel__list">
           {plan.entries.map((entry, index) => (
@@ -215,7 +217,7 @@ const TaskProgressSection = memo(function TaskProgressSection() {
               key={`${index}-${entry.text}`}
               className="task-panel__check"
               data-done={entry.done || undefined}
-              data-active={entry.active || undefined}
+              data-active={(running && entry.active) || undefined}
             >
               <span className="task-panel__check-mark" aria-hidden="true">
                 {index + 1}

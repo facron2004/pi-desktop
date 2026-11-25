@@ -7,9 +7,6 @@ import type {
   VersionItemStatus
 } from '@shared/types'
 
-export const APP_UPDATE_NOTICE = 'pi:app-update-notice'
-export type AppUpdateNotice = { result: VersionCheckResult } | { error: string }
-
 /** A newer app release found by a check. The sidebar button reads this. */
 export interface AvailableAppUpdate {
   current: string
@@ -43,9 +40,25 @@ type CheckListener = (result: VersionCheckResult | null) => void
 type InstallListener = (install: AppUpdateInstall | null) => void
 type PiCliListener = (status: VersionItemStatus | null) => void
 
+/**
+ * The manual check's answer when there is nothing to install.
+ *
+ * A release with an update belongs on the sidebar button — that is where it can
+ * be downloaded and installed — but "you are already current" and "the check
+ * failed" have no button to live on, so they are said once, in a notice the
+ * reader dismisses. `null` means no notice is showing.
+ */
+export type AppUpdateResultNotice =
+  | { kind: 'current'; current: string }
+  | { kind: 'error'; error: string }
+
+type ResultNoticeListener = (notice: AppUpdateResultNotice | null) => void
+
 let checking: Promise<VersionCheckResult> | undefined
 let available: AvailableAppUpdate | null = null
 const listeners = new Set<AvailableListener>()
+let resultNotice: AppUpdateResultNotice | null = null
+const resultNoticeListeners = new Set<ResultNoticeListener>()
 // The settings dialog unmounts when it closes, so its About page cannot own the
 // last check. Keep the full result here as well as the sidebar's summary: a
 // version the reader just looked up survives closing/reopening Settings and
@@ -254,6 +267,35 @@ export function startAppUpdateDownload(
 }
 
 /**
+ * How long the app may stay alive after the installer was launched.
+ *
+ * A successful install ends with the app quitting, so this only elapses when the
+ * restart did not happen — the usual cause is the setup asking for elevation
+ * (UAC) with nobody answering it, or a shutdown that cannot finish. The record
+ * goes back to `ready` when it does, because the button must never be a dead
+ * spinner: the installer is still verified on disk and a second click retries.
+ */
+const INSTALL_WATCHDOG_MS = 20_000
+let installWatchdog: ReturnType<typeof setTimeout> | undefined
+
+function armInstallWatchdog(version: string): void {
+  if (installWatchdog) clearTimeout(installWatchdog)
+  installWatchdog = setTimeout(() => {
+    installWatchdog = undefined
+    const current = install
+    if (!current || current.version !== version || current.stage !== 'installing') return
+    publishInstall({
+      version: current.version,
+      stage: 'ready',
+      percent: 100,
+      ...(current.transferredBytes !== undefined ? { transferredBytes: current.transferredBytes } : {}),
+      ...(current.totalBytes !== undefined ? { totalBytes: current.totalBytes } : {}),
+      error: 'The installer did not take over. Retry, or open the download page.'
+    })
+  }, INSTALL_WATCHDOG_MS)
+}
+
+/**
  * Restart into the downloaded installer. Only a verified download can do this;
  * a click while the file is still arriving is ignored.
  */
@@ -270,8 +312,12 @@ export async function applyAppUpdate(): Promise<UpgradeResult | null> {
   try {
     const result = await window.pi.app.installAppUpdate(current.version)
     if (!result.success) throw new Error(result.error || 'Update failed. Please try again.')
+    // The app is expected to quit now. If it does not, the button comes back.
+    armInstallWatchdog(current.version)
     return result
   } catch (error) {
+    if (installWatchdog) clearTimeout(installWatchdog)
+    installWatchdog = undefined
     // The installer is still on disk: staying ready lets the reader retry
     // after finishing whatever kept the app from restarting.
     publishInstall({
@@ -331,8 +377,7 @@ export function noteAppUpdateCheck(result: VersionCheckResult): void {
   publishAppUpdateCheck(result)
 }
 
-/** The app-release half on its own; a restore has no live CLI answer to publish. */
-function publishAppUpdateCheck(result: VersionCheckResult): void {
+/** The app-release half on its own; a restore has no live CLI answer to publish. */function publishAppUpdateCheck(result: VersionCheckResult): void {
   // A failed check must not replace the last good reading either — the About
   // page reads the same persisted result as the sidebar badge.
   if (!result.app.error) {
@@ -369,11 +414,6 @@ function publishAppUpdateCheck(result: VersionCheckResult): void {
   ) return
   available = next
   for (const listener of listeners) listener(available)
-}
-
-export function showAppUpdate(result: VersionCheckResult): void {
-  noteAppUpdateCheck(result)
-  window.dispatchEvent(new CustomEvent<AppUpdateNotice>(APP_UPDATE_NOTICE, { detail: { result } }))
 }
 
 /**
@@ -416,20 +456,46 @@ export async function restorePersistedAppUpdate(): Promise<void> {
   publishAppUpdateCheck(result)
 }
 
-/** Both manual entry points share one request and one result card. Background checks stay silent. */
+/**
+ * Check for a release and publish the reading.
+ *
+ * There is no update dialog: a release with an update lands on the sidebar's
+ * round button beside Settings, which already owns download, progress and
+ * "restart to install". A check that answered "you are current" — or that could
+ * not answer at all — has nowhere to show itself, so it raises one dismissible
+ * notice instead. A failed check keeps the last good reading either way.
+ */
 export function checkForAppUpdates(): Promise<VersionCheckResult> {
   if (checking) return checking
   checking = (async () => {
-    try {
-      const result = await window.pi.app.checkUpdate()
-      showAppUpdate(result)
-      return result
-    } catch (error) {
-      window.dispatchEvent(new CustomEvent<AppUpdateNotice>(APP_UPDATE_NOTICE, {
-        detail: { error: error instanceof Error ? error.message : String(error) }
-      }))
-      throw error
-    }
+    const result = await window.pi.app.checkUpdate()
+    noteAppUpdateCheck(result)
+    if (result.app.error) noteAppUpdateResult({ kind: 'error', error: result.app.error })
+    else if (!result.app.hasUpdate) noteAppUpdateResult({ kind: 'current', current: result.app.current })
+    else dismissAppUpdateResult()
+    return result
   })().finally(() => { checking = undefined })
   return checking
+}
+
+/** The notice currently showing, if any. */
+export function appUpdateResultNotice(): AppUpdateResultNotice | null {
+  return resultNotice
+}
+
+export function subscribeAppUpdateResult(listener: ResultNoticeListener): () => void {
+  resultNoticeListeners.add(listener)
+  return () => {
+    resultNoticeListeners.delete(listener)
+  }
+}
+
+export function noteAppUpdateResult(notice: AppUpdateResultNotice | null): void {
+  resultNotice = notice
+  for (const listener of resultNoticeListeners) listener(resultNotice)
+}
+
+export function dismissAppUpdateResult(): void {
+  if (!resultNotice) return
+  noteAppUpdateResult(null)
 }

@@ -1,7 +1,7 @@
 import { memo, useMemo } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { conversationRows } from '../lib/live-sessions'
-import { subagentCallOf } from '../lib/subagents'
+import { isDelegationTool, subagentCallOf } from '../lib/subagents'
 import { SubagentConversation } from './SubagentConversation'
 import { SubagentTree } from './SubagentTree'
 
@@ -10,10 +10,12 @@ export interface SubagentSelection {
   taskId: string
 }
 
-function SubagentOverview({
-  onSelectTask
+export function SubagentOverview({
+  onSelectTask,
+  sessionKey
 }: {
-  onSelectTask: (selection: SubagentSelection | null) => void
+  onSelectTask: (selection: SubagentSelection) => void
+  sessionKey?: string
 }) {
   const sessions = useAppStore((state) => state.sessions)
   const threadsMetaVersion = useAppStore((state) => state.threadsMetaVersion)
@@ -25,24 +27,24 @@ function SubagentOverview({
   // map so 60fps text deltas in any conversation do not rebuild the tree.
   const { threads, listed } = useMemo(() => {
     const currentThreads = useAppStore.getState().threads
+    const rows = conversationRows(sessions, currentThreads, workspacePath)
     return {
       threads: currentThreads,
-      listed: conversationRows(sessions, currentThreads, workspacePath)
+      listed: sessionKey === undefined ? rows : rows.filter((session) => session.file === sessionKey)
     }
-  }, [sessions, workspacePath, threadsMetaVersion, threadsToolsRevision])
+  }, [sessions, workspacePath, threadsMetaVersion, threadsToolsRevision, sessionKey])
 
-  return (
-    <div className="subagent-panel">
-      <SubagentTree
-        sessions={listed}
-        threads={threads}
-        onSelect={(session) => void selectSession(session)}
-        onOpenTask={(task, session) => onSelectTask({ sessionKey: session.file, taskId: task.id })}
-        onCancelTask={(taskId, session) => void cancelSubagentTask(taskId, session.file)}
-        showEmpty
-      />
-    </div>
+  const tree = (
+    <SubagentTree
+      sessions={listed}
+      threads={threads}
+      onSelect={(session) => void selectSession(session)}
+      onOpenTask={(task, session) => onSelectTask({ sessionKey: session.file, taskId: task.id })}
+      onCancelTask={(taskId, session) => void cancelSubagentTask(taskId, session.file)}
+      showEmpty={sessionKey === undefined}
+    />
   )
+  return sessionKey === undefined ? <div className="subagent-panel">{tree}</div> : tree
 }
 
 function SubagentDetail({
@@ -61,7 +63,7 @@ function SubagentDetail({
       : state.threads[selected.sessionKey]?.items
     if (!items) return undefined
     for (const item of items) {
-      if (item.kind !== 'tool' || item.toolName !== 'subagent') continue
+      if (item.kind !== 'tool' || !isDelegationTool(item.toolName)) continue
       const match = subagentCallOf(item).tasks.find((task) => task.id === selected.taskId)
       if (match) return match
     }

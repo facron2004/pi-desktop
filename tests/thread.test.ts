@@ -854,6 +854,55 @@ test('the plan projection follows the newest todo tool list', () => {
   assert.equal(plan?.entries[0]?.text, 'new step')
 })
 
+test('a matching final checklist fills in missing todo updates in live and replayed conversations', () => {
+  const user = { role: 'user' as const, content: 'Update the report', timestamp: 1 }
+  const args = { items: [
+    { text: 'Read the report', status: 'completed' },
+    { text: 'Update `report.py`', status: 'in_progress' },
+    { text: 'Run the tests', status: 'pending' }
+  ] }
+  const call = { type: 'toolCall', id: 'todo-final-checklist', name: 'desktop_todo', arguments: args }
+  const result = { content: [{ type: 'text', text: 'Todo (1/3)' }], details: args }
+  const recorded = [
+    user,
+    { role: 'assistant' as const, content: [call], timestamp: 2 },
+    { role: 'toolResult' as const, toolCallId: call.id, toolName: call.name, ...result, timestamp: 3 }
+  ]
+  const final = {
+    role: 'assistant' as const, stopReason: 'stop', timestamp: 4,
+    content: [{ type: 'text', text: '- [x] Read the report\n- [x] Update **report.py**\n- [ ] Run the tests' }]
+  }
+  const beforeFinal = applyEvents([], [
+    userEvent('Update the report'),
+    assistantStart(),
+    assistantEnd([call], { stopReason: 'toolUse' }),
+    { type: 'tool_execution_start', toolCallId: call.id, toolName: call.name, args },
+    { type: 'tool_execution_end', toolCallId: call.id, toolName: call.name, result, isError: false }
+  ])
+  assert.equal(extractPlan(beforeFinal)?.done, 1)
+  const live = applyEvents(beforeFinal, [
+    assistantStart(),
+    { type: 'message_end', message: final }
+  ])
+  for (const items of [live, itemsFromMessages([...recorded, final])]) {
+    const plan = extractPlan(items)
+    assert.equal(plan?.sourceId, tools(items)[0].id)
+    assert.equal(plan?.done, 2)
+    assert.deepEqual(plan?.entries.map((entry) => entry.done), [true, true, false])
+    assert.equal(plan?.entries[1].active, false)
+  }
+
+  for (const messages of [
+    [...recorded, { ...final, stopReason: 'aborted' }],
+    [...recorded, { ...final, stopReason: 'error' }],
+    [...recorded, { ...final, content: [{ type: 'text', text: 'The report is complete.' }] }],
+    [...recorded, { ...final, content: [{ type: 'text', text: final.content[0].text.replace('Run the tests', 'Send the report') }] }],
+    [...recorded, { ...user, content: 'Check another report' }, final]
+  ]) {
+    assert.equal(extractPlan(itemsFromMessages(messages))?.done, 1)
+  }
+})
+
 test('applyEventBatch detaches lookup indexes from the base array when growing', () => {
   let base: ThreadItem[] = applyEvent([], userEvent('start'))
   base = applyEvent(base, assistantStart())

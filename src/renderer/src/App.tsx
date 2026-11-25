@@ -25,12 +25,12 @@ import { Sidebar } from './components/Sidebar'
 import { Thread } from './components/Thread'
 import { Composer } from './components/Composer'
 import { AppToast } from './components/AppToast'
+import { UpdateResultDialog } from './components/UpdateResultDialog'
 import { HoverTip } from './components/HoverTip'
 import { Welcome } from './components/Welcome'
 import type { SettingsPage } from './components/SettingsDialog'
 import { AppMenuBar } from './components/AppMenuBar'
 import { TaskPanel } from './components/TaskPanel'
-import { TitleSubagents } from './components/TitleSubagents'
 import { ToolPanel, type ToolPanelView } from './components/ToolPanel'
 import type { LauncherShell } from './components/Launcher'
 import type { TerminalRunRequest } from './components/TerminalPanel'
@@ -38,7 +38,6 @@ import { FeatureLoading } from './components/FeatureLoading'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Popover } from './components/Popover'
 import {
-  APP_UPDATE_NOTICE,
   appUpdateInstall,
   availableAppUpdate,
   noteAppUpdateCheck,
@@ -46,8 +45,7 @@ import {
   restoreDownloadedAppUpdate,
   restorePersistedAppUpdate,
   startAppUpdateDownload,
-  subscribeAvailableAppUpdate,
-  type AppUpdateNotice
+  subscribeAvailableAppUpdate
 } from './lib/app-update'
 import { matchesAnyShortcut, type ShortcutId } from './lib/shortcuts'
 import { activeConversationTitle } from './lib/live-sessions'
@@ -59,7 +57,6 @@ const TerminalPanel = lazy(() => import('./components/TerminalPanel').then((m) =
 const ScheduledTasksDialog = lazy(() => import('./components/ScheduledTasksDialog').then((m) => ({ default: m.ScheduledTasksDialog })))
 const Marketplace = lazy(() => import('./components/Marketplace').then((m) => ({ default: m.Marketplace })))
 const SettingsDialog = lazy(() => import('./components/SettingsDialog').then((m) => ({ default: m.SettingsDialog })))
-const AppUpdateDialog = lazy(() => import('./components/AppUpdateDialog').then((m) => ({ default: m.AppUpdateDialog })))
 const BrowserView = lazy(() => import('./components/BrowserView').then((m) => ({ default: m.BrowserView })))
 const ImageViewer = lazy(() => import('./components/ImageViewer').then((m) => ({ default: m.ImageViewer })))
 const SubagentPanel = lazy(() => import('./components/SubagentPanel').then((m) => ({ default: m.SubagentPanel })))
@@ -140,7 +137,6 @@ export default function App() {
   const [sessionTreeOpen, setSessionTreeOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
   const [extensionDialogMounted, setExtensionDialogMounted] = useState(false)
-  const [pendingUpdateNotice, setPendingUpdateNotice] = useState<AppUpdateNotice | null>(null)
   // The sidebar icon and the automatic download both read this; the shared
   // module owns the reading, this is only the renderer's subscription to it.
   const [availableUpdate, setAvailableUpdate] = useState(() => availableAppUpdate())
@@ -404,13 +400,6 @@ export default function App() {
     if (hasActiveUiRequest) setExtensionDialogMounted(true)
   }, [hasActiveUiRequest])
 
-  useEffect(() => {
-    const onNotice = (event: Event) => {
-      setPendingUpdateNotice((event as CustomEvent<AppUpdateNotice>).detail)
-    }
-    window.addEventListener(APP_UPDATE_NOTICE, onNotice)
-    return () => window.removeEventListener(APP_UPDATE_NOTICE, onNotice)
-  }, [])
 
   // The panel is a column of the grid; it only floats over the conversation
   // when the window is too narrow to give it a column of its own.
@@ -458,6 +447,7 @@ export default function App() {
   const openChanges = useCallback(() => openInspector('changes'), [openInspector])
   const openFiles = useCallback(() => openInspector('files'), [openInspector])
   const openBrowser = useCallback(() => openInspector('browser'), [openInspector])
+  const openSwarm = useCallback(() => openInspector('swarm'), [openInspector])
   /**
    * One child's transcript, opened on the Subagents page of the side panel.
    * The title badge and the task rail share this door, so neither keeps a
@@ -994,12 +984,6 @@ export default function App() {
             ) : (
               <span className="titlebar__title" title={title}>{title}</span>
             )}
-            {/* A conversation that delegated work wears its subagents beside
-                the name. The badge is a projection of the active thread, so it
-                appears and disappears with the subagent calls themselves. */}
-            {!deskPage && hasItems ? (
-              <TitleSubagents onOpenTask={openSubagentTask} onOpenAll={openSubagentPanel} />
-            ) : null}
             {/* The project and the branch are not repeated here. SessionBar
                 already carries both — with a project menu that can switch and a
                 BranchMenu that can act — so a second copy in the header was two
@@ -1115,7 +1099,7 @@ export default function App() {
               ))}
 
               <ErrorBoundary scope="Composer" inline>
-                <Composer />
+                <Composer onOpenSwarm={openSwarm} />
               </ErrorBoundary>
 
               {widgetsBelow.map((widget) => (
@@ -1308,11 +1292,7 @@ export default function App() {
           <ExtensionDialog />
         </Suspense>
       ) : null}
-      {pendingUpdateNotice ? (
-        <Suspense fallback={null}>
-          <AppUpdateDialog initialNotice={pendingUpdateNotice} />
-        </Suspense>
-      ) : null}
+      <UpdateResultDialog />
       <HoverTip />
       <AppToast />
     </div>

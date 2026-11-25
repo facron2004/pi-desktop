@@ -259,6 +259,19 @@ The transcript keeps the saved history before the edited entry, including
 messages and tool results older than the model's most recent compaction.
 `forkFrom` stays for the session-tree fork action only.
 
+**An edit can be taken back.** The rewind first appends a
+`pi-desktop-rewind-source` marker to the branch it is about to leave and writes
+that marker's id into the `pi-desktop-rewind` entry, because the old tip may be
+a user message and navigation stops *before* one. `desktop-undo-rewind` moves
+the leaf back to that marker and appends a child of it, so reopening the JSONL
+follows the restored branch. Both markers are `display: false`: they are
+positions, not transcript rows. The undo is only offered while the conversation
+still ends on the rewind marker — sending a prompt from the rewound branch
+moves the branch on, and going back would silently drop that message — and the
+renderer keeps that window in `rewindUndo` (per conversation, cleared by
+`sendPrompt`), showing it as a row above the composer. A cancelled or refused
+navigation puts the leaf back where it found it before throwing.
+
 A hot conversation is renamed with `set_session_name` on its own process. A cold
 one gets a single `session_info` line appended to its JSONL, and only when no
 process is writing that file. Naming never switches the conversation on screen.
@@ -337,14 +350,18 @@ because the column above holds current work; in `Archived only` mode every row
 is archived, so the group headings speak for themselves. Tree grouping needs
 none of this: its project rows already say where a conversation came from.
 
-**The section head folds the list under it.**「对话」over the single list and
-「项目」over the grouped views is the fold control: a caret plus the name,
-`aria-expanded`, and the list hides under it while the head itself stays on
-screen — the caret is the only way back, so folding must never take the head
-with it. The state is a view preference (`lib/sidebar-fold.ts`, localStorage),
-keyed by the view rather than the label, so folding one list does not leave the
-other folded. A filter in the sidebar's field opens a folded section, because a
-match hidden inside it is the one thing a search must not do.
+**Only a conversation list folds, and its caret sits at the right.** The heads
+that label conversations —「对话」over the single list, and「对话」over the chats
+with no project — carry one caret at the right end of the head; the list hides
+under it while the head stays on screen, because the caret is the only way back.
+The「项目 / Projects」head does **not** fold: the project rows are the tree itself,
+and folding them away hides the list the reader opened the sidebar for. The
+label stays plain text, so a click on the name cannot fold anything; the
+hover-revealed view menu steps left of the caret instead of under it. Open points
+down, folded points right. The state is a view preference (`lib/sidebar-fold.ts`,
+localStorage) keyed per list (`chats`, `chats-without-project`), so folding one
+list never folds another. A filter in the sidebar's field opens a folded list,
+because a match hidden inside it is the one thing a search must not do.
 
 ### The name in the sidebar head
 
@@ -553,7 +570,7 @@ geometry. A message about the app is not part of writing a message.
 carries three readings plus the ring, in that order: turns/steps with TPS, token
 usage with cache hit rate, then `ContextRing` at the end of the line. The bar is
 a summary, not a report: **the first-token delay is not on it.** Speed and TTFT
-describe one answer rather than the conversation's running totals, so they share
+describe measured model responses, so they share
 a second popover behind the turns/steps and speed reading (`GenerationPanel`). It
 uses the compact session statistics layout: turns and steps, model time, tool
 execution time, average TTFT and output speed. Unavailable readings say
@@ -625,8 +642,13 @@ block of any kind — text, thinking or a tool call — summing the window into
 `generationMs` when the block ends (`text_end`, `thinking_end`,
 `toolcall_end`, `message_update:done` or `message_end`). A tool gap between
 answers is not model time. `session-timing.ts` stores per-conversation model
-time, TTFT, generation windows and fallback tool durations, while
-`session-metrics.ts` derives the displayed totals and newest-turn TPS.
+time, TTFT, generation windows and fallback tool durations.
+`session-metrics.ts` averages output speed by pairing completed assistant usage
+with the corresponding model duration. A locally recorded duration is used
+only when its assistant timestamp identifies one unambiguous sample. Older
+records can fall back to the matching turn's generation window. Session token
+totals can cover more history than the timed answers, so the speed calculation
+uses only output from the timed samples.
 
 ## The session bar
 
@@ -647,23 +669,18 @@ The title bar does not repeat any of it: it keeps the conversation's name and
 the app's actions. A project or branch chip in two places is two things to keep
 in sync, and the one in the header had no room to say what it was.
 
-**Subagents wear one badge beside that name.** `TitleSubagents` projects the
-active thread's `subagent` tool nodes through `lib/subagents.ts`
-(`subagentTasks`, `summarizeSubagents`, `subagentPreview`) — the same source the
-Subagents page reads. The pill appears only when the
-conversation actually delegated work and carries the number of child tasks, with
-a spinner while any are in flight. Its card lists each child's status, a capped
-one-line look at its live output or final answer, and duration/token/model
-metrics; the preview collapses whitespace so a long child answer cannot push the
-card open. Clicking a row uses `openSubagentTask` in `App.tsx`: it stores only a session key and a task id,
-then `SubagentPanel` reads the current thread to render `SubagentConversation`
-on the right panel — status and output keep updating while it is open. The
-card's footer opens the whole catalog instead. `tests/title-subagents.test.ts`
-guards the projection, `tests/ui-regressions.mjs` drives the two-click flow
-against real child processes, and `output/audit/titlebar-check.mjs` captures
-and measures the title bar's spacing. The badge is pulled into the title's own
-padding (one group, not two islands) and the dead air that used to sit between
-them is spent on the pill's interior instead.
+**The title bar wears the conversation's name and nothing else.** Subagents live
+in the task rail (the 子智能体 section) and in the Subagents page, not beside the
+title: a badge there counted children the rail already listed one line below, and
+it crowded the name of the conversation it belonged to. Both places read the same
+projection — `lib/subagents.ts` (`subagentTasks`, `summarizeSubagents`,
+`subagentPreview`) over the thread's `subagent` tool nodes. Clicking a row uses
+`openSubagentTask` in `App.tsx`: it stores only a session key and a task id, then
+`SubagentPanel` reads the current thread to render `SubagentConversation` on the
+right panel, with the Back control returning to the catalog. `tests/subagents.test.ts`
+guards the projection and `tests/ui-regressions.mjs` drives a catalog row into the
+child conversation against real child processes. Do not add a second summary of
+the same children to the header.
 
 **The title bar must wear the same row the sidebar highlights.** The sidebar
 lists disk sessions *plus* live threads (`lib/live-sessions.ts`), because a chat
@@ -722,11 +739,10 @@ filled with the accent colour, and the whole download lives behind it.
 installer's stage (`downloading` / `ready` / `installing` / `error`) — because
 the sidebar is a list that can be folded away, and a download owned by the
 component would lose its progress with it. **The glyph is always the download
-mark**; the ring drawn inside the fill is the only progress reading, and it
-closes when the installer is verified. A full ring *is* the "restart to install"
-affordance — the click is the same click, only its meaning changes — so do not
-swap the glyph for a restart arrow or repaint the button in a second colour. A
-failed download is the one state that recolours the fill (to the danger tone).
+mark**. The ring drawn inside the fill shows download progress and disappears
+as soon as the installer is verified. The same button then offers "restart and
+install" in its accessible label and shows the ready phase in the hover card.
+A failed download recolours the fill to the danger tone.
 The hover card carries the installer size and the phase, because the foot has no
 room for a second line.
 
@@ -784,8 +800,8 @@ Two harnesses read the real button: `scripts/verify-update-persistence.mjs`
 drives two launches (online, then offline with the GitHub check blocked) and
 `scripts/verify-update-icon.mjs` runs a copied `release/win-unpacked` twice —
 once with only a reading on disk (the ring must be empty) and once with a
-verified installer beside it (the ring must be closed). Both read `data-state`,
-the ring's `stroke-dashoffset` and the About page out of the live window.
+verified installer beside it (the ring must be absent). Both read `data-state`,
+the ring's `stroke-dashoffset` when present and the About page out of the live window.
 
 ## The tray and the taskbar icon
 
@@ -1479,6 +1495,18 @@ loadout. The extension persists mode and goal in custom session entries, changes
 the active tool loadout and publishes the mode on `pi-desktop-mode` and the goal
 on `pi-desktop-goal` (JSON `{text,status,summary}`). `GoalBar` only projects that
 status and sends `/desktop-goal pause|resume|clear|edit` back through the store.
+
+**A finished goal leaves the composer.** The bar is a header for work in
+progress, so once the extension reports `complete` it stops rendering
+(`goalBarVisible`) and the objective becomes the conversation's closing row:
+`conversation/GoalCompleteRow` draws the check, the objective and the completion
+summary at the end of the transcript, where the turn that finished it ends. Its
+`clear` action is the only way to retire the row, and `blocked` deliberately
+keeps its bar — a blocker is a question (resume it, clear it), not an outcome.
+`desktop_goal_finish` returns `terminate: true` for the same reason: the model has
+just stated the outcome, and a request after it produced a second message about
+work already declared done. Only an *outcome* terminates; the auto-continue path
+still asks the model to keep working.
 
 Swarm Mode is a team of persistent workers: the main chat leads, `swarm_spawn`
 starts a worker, `swarm_task` queues work on one, `swarm_message` talks to it,

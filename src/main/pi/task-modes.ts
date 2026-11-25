@@ -392,12 +392,59 @@ export default function (pi) {
       if (!ctx.sessionManager.getBranch().some(entry =>
         entry.id === targetId && entry.type === 'message' && entry.message?.role === 'user'
       )) throw new Error('This message is no longer on the active branch');
+      // Mark the branch we are about to leave before leaving it. Its tip may be
+      // a user message, and navigation treats a user message as "stop before
+      // it", which would make the undo lose that last entry.
+      pi.appendEntry('pi-desktop-rewind-source');
+      const sourceId = ctx.sessionManager.getLeafId();
       const result = await ctx.navigateTree(targetId, { summarize: false });
-      if (result.cancelled) throw new Error('Editing was cancelled');
-      if (ctx.sessionManager.getLeafId() === targetId) throw new Error('Could not move before this message');
+      if (result.cancelled) {
+        // Leave the session exactly where the caller found it.
+        if (sourceId) await ctx.navigateTree(sourceId, { summarize: false }).catch(() => {});
+        throw new Error('Editing was cancelled');
+      }
+      if (ctx.sessionManager.getLeafId() === targetId) {
+        if (sourceId) await ctx.navigateTree(sourceId, { summarize: false }).catch(() => {});
+        throw new Error('Could not move before this message');
+      }
       // Navigation only moves Pi's in-memory leaf. Persist a child of the
-      // selected leaf so reopening the JSONL follows the same branch.
-      pi.appendEntry('pi-desktop-rewind');
+      // selected leaf so reopening the JSONL follows the same branch, and keep
+      // the branch we left reachable for the undo command.
+      pi.appendEntry('pi-desktop-rewind', sourceId ? { previousLeafId: sourceId } : undefined);
+    }
+  });
+
+  pi.registerCommand('desktop-undo-rewind', {
+    description: 'Return to the branch a message edit left behind',
+    handler: async (_value, ctx) => {
+      if (!ctx.isIdle()) throw new Error('Wait for the current turn to finish before undoing the edit');
+      const branch = ctx.sessionManager.getBranch();
+      const leafId = ctx.sessionManager.getLeafId();
+      // Only the marker the branch now ends on can be taken back. A second
+      // edit leaves an older rewind marker further down the branch, and
+      // find() walks from the root, so answering the oldest one would
+      // always fail the leaf check below.
+      const isRewindMarker = (entry) =>
+        entry.type === 'custom' && entry.customType === 'pi-desktop-rewind';
+      const marker = branch.find(entry => entry.id === leafId && isRewindMarker(entry));
+      const anyRewindMarker = marker ? true : branch.some(isRewindMarker);
+      const previousLeafId = marker && marker.data && typeof marker.data.previousLeafId === 'string'
+        ? marker.data.previousLeafId
+        : undefined;
+      if (!marker || !previousLeafId) {
+        throw new Error(anyRewindMarker
+          ? 'The conversation has moved on since the edit'
+          : 'There is nothing to undo');
+      }
+      if (!ctx.sessionManager.getEntry(previousLeafId)) {
+        throw new Error('The earlier branch is gone');
+      }
+      await ctx.navigateTree(previousLeafId, { summarize: false });
+      if (ctx.sessionManager.getLeafId() !== previousLeafId) {
+        throw new Error('Could not return to the earlier branch');
+      }
+      // A child of the restored leaf, so reopening the JSONL lands here.
+      pi.appendEntry('pi-desktop-undo-rewind');
     }
   });
 
@@ -685,7 +732,11 @@ export default function (pi) {
         applyTools();
       }
       persist(ctx);
-      return { content: [{ type: 'text', text: input.summary }], details: { status: input.status } };
+      // An outcome ends the turn. The model has just said everything there is
+      // to say about it, so letting it continue produces a second message after
+      // "marked complete" — a chat that goes on about work that is already
+      // done. terminate closes the tool batch without another request.
+      return { content: [{ type: 'text', text: input.summary }], details: { status: input.status }, terminate: true };
     }
   });
 
@@ -695,6 +746,7 @@ export default function (pi) {
     promptSnippet: 'Keep the checklist of the current task',
     promptGuidelines: [
       'Use desktop_todo whenever a task takes more than two steps: send the whole list each time, keep at most one step in_progress, and mark a step completed only after it is verified. Update the list when the plan changes.',
+      'If you used desktop_todo, sync the final checklist before replying. Keep unfinished or blocked steps pending. If you cannot call the tool, include the same steps in the same order and with the same text as a Markdown checklist in your final reply, checking off only verified steps.',
       progressGuideline
     ],
     parameters: Type.Object({

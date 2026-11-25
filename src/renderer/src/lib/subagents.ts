@@ -8,7 +8,8 @@ import type { ThreadItem, ToolItem } from './thread'
 
 export interface SubagentTreeTask extends Omit<SubagentTaskProgress, 'status'> {
   id: string
-  status: SubagentTaskStatus | 'proposed'
+  status: SubagentTaskStatus | 'proposed' | 'dispatched'
+  source?: 'swarm'
   /** Token usage the child reported, for the compact row metrics. */
   tokens?: number
   cost?: number
@@ -63,14 +64,55 @@ function statusOf(tool: ToolItem, result: Record<string, unknown>): SubagentTree
 
 const subagentCallCache = new WeakMap<ToolItem, SubagentCall>()
 
+export function isDelegationTool(name: string): boolean {
+  return name === 'subagent' || name === 'swarm_task' || name === 'swarm_message'
+}
+
+/** Each Swarm assignment is a tool call. An asynchronous reply only confirms dispatch. */
+function swarmAssignment(item: ToolItem, id: string): SubagentCall {
+  const name = text(item.args.name)?.trim().toLowerCase()
+  const task = (text(item.args.task) || text(item.args.message))?.trim()
+  const snapshots = record(item.details).workers
+  const worker = name && task && Array.isArray(snapshots)
+    ? snapshots.map(record).find((entry) => entry.name === name && entry.task === task)
+    : undefined
+  let status = statusOf(item, {})
+  if (item.status === 'running' && worker?.status === 'working') status = 'running'
+  if (item.status === 'ok' && item.args.wait === false) status = 'dispatched'
+  return {
+    id,
+    tasks: [{
+      id: `${id}:0`,
+      source: 'swarm',
+      task: task || name || 'Swarm',
+      label: name,
+      cwd: '',
+      status,
+      model: text(worker?.model),
+      activity: status === 'running' ? text(worker?.activity) : undefined,
+      toolName: status === 'running' ? text(worker?.toolName) : undefined,
+      progressText: status === 'running' ? text(worker?.progressText) : undefined,
+      startedAt: item.startedAt,
+      finishedAt: item.finishedAt,
+      output: status === 'completed' || status === 'dispatched' ? item.result : undefined,
+      errorMessage: status === 'failed' ? item.result : undefined
+    }]
+  }
+}
+
 /** Parse one subagent tool item once; unchanged nodes reuse the cached object. */
 export function subagentCallOf(item: ToolItem): SubagentCall {
   const cached = subagentCallCache.get(item)
   if (cached) return cached
+  const id = item.toolCallId || item.id
+  if (item.toolName !== 'subagent') {
+    const call = swarmAssignment(item, id)
+    subagentCallCache.set(item, call)
+    return call
+  }
   const details = record(item.details)
   const results = Array.isArray(details.results) ? details.results.map(record) : []
   const requested = Array.isArray(item.args.tasks) ? item.args.tasks.map(record) : [item.args]
-  const id = item.toolCallId || item.id
   const count = Math.max(requested.length, results.length, 1)
   const call: SubagentCall = {
     id,
@@ -110,7 +152,7 @@ export function subagentCallOf(item: ToolItem): SubagentCall {
 export function subagentCalls(items: readonly ThreadItem[]): SubagentCall[] {
   const calls: SubagentCall[] = []
   for (const item of items) {
-    if (item.kind !== 'tool' || item.toolName !== 'subagent') continue
+    if (item.kind !== 'tool' || !isDelegationTool(item.toolName)) continue
     calls.push(subagentCallOf(item))
   }
   return calls

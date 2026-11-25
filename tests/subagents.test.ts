@@ -1,7 +1,5 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
 import { applyEvent, itemsFromMessages, type ToolItem } from '../src/renderer/src/lib/thread'
 import type { AgentMessage } from '../src/shared/types'
 import {
@@ -205,11 +203,4 @@ test('a finished task preview can come from its replayed messages rather than ra
   const preview = subagentPreview(finished)
   assert.equal(preview, 'The refactor is complete.')
   assert.equal(preview.includes('RAW HIDDEN THOUGHT'), false)
-})
-
-test('TitleSubagents is memoized and subscribes to activeToolsRevision instead of streaming items', () => {
-  const source = readFileSync(path.resolve(process.cwd(), 'src/renderer/src/components/TitleSubagents.tsx'), 'utf8')
-  assert.match(source, /memo\(function TitleSubagents/)
-  assert.match(source, /state\.activeToolsRevision/)
-  assert.equal(source.includes('useAppStore((state) => state.items)'), false)
 })

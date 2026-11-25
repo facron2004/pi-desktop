@@ -352,11 +352,14 @@ export const Sidebar = memo(function Sidebar({
   // or development build must not promise a restart it cannot perform.
   const updateReady = currentInstall?.stage === 'ready'
   const updateFailed = currentInstall?.stage === 'error'
-  const updateBusy =
-    currentInstall?.stage === 'downloading' || currentInstall?.stage === 'installing'
+  const updateDownloading = currentInstall?.stage === 'downloading'
+  const updateInstalling = currentInstall?.stage === 'installing'
+  const updateBusy = updateDownloading || updateInstalling
   const updatePercent = currentInstall
     ? Math.min(100, Math.max(0, Math.round(currentInstall.percent)))
     : 0
+  // The final progress event follows installer verification and can precede the IPC response.
+  const showUpdateRing = !currentInstall || (updateDownloading && updatePercent < 100)
   // Before the download starts the size comes from the release check; while it
   // runs the progress events carry the exact asset size.
   const updateInstallerBytes = currentInstall?.totalBytes ?? appUpdate?.bytes
@@ -392,22 +395,33 @@ export const Sidebar = memo(function Sidebar({
   }
 
   // What the ring cannot say: the installer size and the current phase.
-  // Nothing else belongs in this card.
+  // Nothing else belongs in this card — except the one thing a build without an
+  // installer of its own has to explain, because its click leaves the app.
   const getUpdateTip = () => {
     if (!appUpdate) return { title: '', rows: [] as SidebarTipRow[] }
+    const manual = !updateSupported
     const status = updateFailed
       ? t('Update failed')
       : updateReady
         ? t('Ready to restart')
-        : currentInstall?.stage === 'installing'
+        : updateInstalling
           ? t('Restarting to install the update…')
-          : updateBusy
+          : updateDownloading
             ? `${t('Downloading…')} ${updatePercent}%`
-            : t('Download update')
-    const rows: SidebarTipRow[] = [
-      { label: t('Installer size'), value: formatBytes(updateInstallerBytes) || '—' },
-      { label: t('Status'), value: status }
-    ]
+            : manual
+              ? t('Open download page')
+              : t('Download update')
+    const rows: SidebarTipRow[] = []
+    if (updateInstallerBytes) {
+      rows.push({ label: t('Installer size'), value: formatBytes(updateInstallerBytes) })
+    }
+    rows.push({ label: t('Status'), value: status })
+    if (manual && !updateBusy) {
+      rows.push({
+        label: t('Note'),
+        value: t('Development and portable builds install from the release page; the installed app updates itself.')
+      })
+    }
     return { title: `v${appUpdate.latest}`, rows }
   }
   const updateTipContent = updateTipAnchor && appUpdate ? getUpdateTip() : null
@@ -1099,10 +1113,15 @@ export const Sidebar = memo(function Sidebar({
     })
   }, [togglePin])
 
-  // The section head folds the list under it; the key follows the view so the
-  // two lists keep their own fold.
-  const sectionKey = sidebarGroupBy === 'flat' ? 'chats' : 'projects'
-  const sectionExpanded = sidebarSectionExpanded(collapsedSections, sectionKey, Boolean(needle))
+  // A section head folds only when it labels conversations — the single list,
+  // and the conversations with no project. The project rows are the tree itself
+  // and stay open. Each conversation head keeps its own fold.
+  const chatsListExpanded = sidebarSectionExpanded(collapsedSections, 'chats', Boolean(needle))
+  const chatsExpanded = sidebarSectionExpanded(
+    collapsedSections,
+    'chats-without-project',
+    Boolean(needle)
+  )
 
   const renderSessions = (items: ConversationRow[], showProject = false) =>
     items.map((session) => (
@@ -1306,19 +1325,29 @@ export const Sidebar = memo(function Sidebar({
 
         <div
           className="sidebar__section sidebar__projects"
-          data-collapsed={sectionExpanded ? undefined : 'true'}
+          data-collapsed={
+            sidebarGroupBy === 'flat' && !chatsListExpanded ? 'true' : undefined
+          }
         >
-          <div className="sidebar__section-head">
-            <button
-              type="button"
-              className="sidebar__section-toggle"
-              aria-expanded={sectionExpanded}
-              title={t(sectionExpanded ? 'Collapse' : 'Expand')}
-              onClick={() => toggleSidebarSection(sectionKey)}
-            >
-              <ChevronRight size={12} aria-hidden="true" className="sidebar__section-caret" />
-              <span>{t(sidebarGroupBy === 'flat' ? 'Chats' : 'Projects')}</span>
-            </button>
+          <div className="sidebar__section-head" data-fold={sidebarGroupBy === 'flat' ? 'true' : undefined}>
+            <span className="sidebar__section-title">
+              {t(sidebarGroupBy === 'flat' ? 'Chats' : 'Projects')}
+            </span>
+            {/* Only a head that labels conversations folds: the project rows are
+                the tree itself, and folding them away would hide the list the
+                reader came for. The caret sits at the right end of the head. */}
+            {sidebarGroupBy === 'flat' ? (
+              <button
+                type="button"
+                className="sidebar__section-toggle"
+                aria-expanded={chatsListExpanded}
+                aria-label={t(chatsListExpanded ? 'Collapse conversations' : 'Expand conversations')}
+                title={t(chatsListExpanded ? 'Collapse' : 'Expand')}
+                onClick={() => toggleSidebarSection('chats')}
+              >
+                <ChevronRight size={12} aria-hidden="true" className="sidebar__section-caret" />
+              </button>
+            ) : null}
             <div className="sidebar__section-actions no-drag">
               <Popover
                 placement="bottom"
@@ -1886,9 +1915,22 @@ export const Sidebar = memo(function Sidebar({
         </div>
 
         {sidebarGroupBy !== 'flat' && projectlessSessions.length > 0 ? (
-          <div className="sidebar__section">
-            <div className="sidebar__section-head">
-              <span>{t('Chats')}</span>
+          <div
+            className="sidebar__section sidebar__chats"
+            data-collapsed={chatsExpanded ? undefined : 'true'}
+          >
+            <div className="sidebar__section-head" data-fold="true">
+              <span className="sidebar__section-title">{t('Chats')}</span>
+              <button
+                type="button"
+                className="sidebar__section-toggle"
+                aria-expanded={chatsExpanded}
+                aria-label={t(chatsExpanded ? 'Collapse conversations' : 'Expand conversations')}
+                title={t(chatsExpanded ? 'Collapse' : 'Expand')}
+                onClick={() => toggleSidebarSection('chats-without-project')}
+              >
+                <ChevronRight size={12} aria-hidden="true" className="sidebar__section-caret" />
+              </button>
             </div>
             <div className="session-list">{renderSessions(projectlessSessions)}</div>
           </div>
@@ -1927,9 +1969,11 @@ export const Sidebar = memo(function Sidebar({
                   ? 'Restart and install'
                   : !updateSupported
                     ? 'Open download page'
-                    : updateBusy
-                      ? 'Downloading update…'
-                      : 'Download update'
+                    : updateInstalling
+                      ? 'Restarting to install the update…'
+                      : updateDownloading
+                        ? 'Downloading update…'
+                        : 'Download update'
               )}
               aria-describedby={updateTipAnchor ? SIDEBAR_TIP_ID : undefined}
               aria-disabled={updateBusy || undefined}
@@ -1940,20 +1984,19 @@ export const Sidebar = memo(function Sidebar({
               onClick={() => void startAppUpdate()}
             >
               <span className="sidebar__update-mark" aria-hidden="true">
-                <svg className="sidebar__update-ring" viewBox="0 0 24 24">
-                  <circle className="sidebar__update-ring-track" cx="12" cy="12" r="10" />
-                  <circle
-                    className="sidebar__update-ring-fill"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    strokeDasharray={UPDATE_RING_CIRCUMFERENCE}
-                    strokeDashoffset={UPDATE_RING_CIRCUMFERENCE * (1 - updatePercent / 100)}
-                  />
-                </svg>
-                {/* The glyph never changes: the button is the update, and the
-                    ring is the only thing that says how far it has come. A
-                    closed ring is a finished download. */}
+                {showUpdateRing ? (
+                  <svg className="sidebar__update-ring" viewBox="0 0 24 24">
+                    <circle className="sidebar__update-ring-track" cx="12" cy="12" r="10" />
+                    <circle
+                      className="sidebar__update-ring-fill"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      strokeDasharray={UPDATE_RING_CIRCUMFERENCE}
+                      strokeDashoffset={UPDATE_RING_CIRCUMFERENCE * (1 - updatePercent / 100)}
+                    />
+                  </svg>
+                ) : null}
                 <Download size={11} strokeWidth={2} />
               </span>
             </button>

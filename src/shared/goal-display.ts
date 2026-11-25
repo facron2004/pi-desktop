@@ -29,3 +29,16 @@ export function goalBadge(status: GoalState['status'], running: boolean): GoalBa
 export function goalCanToggleRun(badge: GoalBadge): boolean {
   return badge.status === 'active' || badge.status === 'paused'
 }
+
+/**
+ * Whether the objective still needs a bar above the composer.
+ *
+ * A finished goal does not: the work is over, and the closing row at the end of
+ * the transcript (`GoalCompleteRow`) is where its objective and summary belong.
+ * Everything that reacts to "a goal is on screen" reads this, so the composer
+ * cannot hide a control for a bar that is still drawn, or reserve room for one
+ * that is gone.
+ */
+export function goalBarVisible(status: GoalState['status'] | undefined): boolean {
+  return status !== undefined && status !== 'complete'
+}

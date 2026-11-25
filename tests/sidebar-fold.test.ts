@@ -29,8 +29,8 @@ test('a section starts open and remembers what was folded', () => {
   writeCollapsedSidebarSections(folded, store)
   const reloaded = readCollapsedSidebarSections(store)
   assert.equal(sidebarSectionExpanded(reloaded, 'chats', false), false)
-  // Folding one view does not fold the other.
-  assert.equal(sidebarSectionExpanded(reloaded, 'projects', false), true)
+  // Folding the single list does not fold the list of chats with no project.
+  assert.equal(sidebarSectionExpanded(reloaded, 'chats-without-project', false), true)
 
   const reopened = toggleCollapsedSidebarSection(reloaded, 'chats')
   assert.equal(sidebarSectionExpanded(reopened, 'chats', false), true)
@@ -43,6 +43,21 @@ test('a filter opens a folded section so a match cannot hide inside it', () => {
   const folded = readCollapsedSidebarSections(store)
   assert.equal(sidebarSectionExpanded(folded, 'chats', false), false)
   assert.equal(sidebarSectionExpanded(folded, 'chats', true), true)
+})
+
+test('the conversation lists keep their own fold', () => {
+  // Only a head that labels conversations folds: the single list and the
+  // conversations without a project. The project rows are the tree itself.
+  const lists = ['chats', 'chats-without-project']
+  let collapsed = new Set<string>()
+  for (const key of lists) collapsed = toggleCollapsedSidebarSection(collapsed, key)
+  assert.deepEqual([...collapsed].sort(), [...lists].sort())
+  for (const key of lists) {
+    assert.equal(sidebarSectionExpanded(collapsed, key, false), false, key)
+  }
+  const reopened = toggleCollapsedSidebarSection(collapsed, 'chats')
+  assert.equal(sidebarSectionExpanded(reopened, 'chats', false), true)
+  assert.equal(sidebarSectionExpanded(reopened, 'chats-without-project', false), false)
 })
 
 test('an unreadable or broken store means nothing is folded', () => {

@@ -183,16 +183,20 @@ export class TerminalManager {
     if (session.stopTask) return session.stopTask
     session.closing = true
     session.stopTask = Promise.resolve().then(async () => {
-      if (this.sessions.get(id) !== session) return
       const pid = session.process.pid
       // Close the tree while its shell still exists. ConPTY's own cleanup
       // only sees processes attached to the same console.
       const treeStopped = this.platform === 'win32' && Number.isSafeInteger(pid) && pid > 0
         ? await this.stopWindowsTree(pid).catch(() => false)
         : false
-      if (this.sessions.get(id) !== session) return
+      // Release the native PTY unconditionally. The exit event removes the
+      // session from the map the moment the shell dies — which is exactly
+      // what the taskkill above just did — and the native handle and its
+      // conout worker are only released through this call. Session ids are
+      // UUIDs, so an entry gone from the map means "already exited", never
+      // "replaced by a new session".
       try {
-        // Release the native PTY, also the fallback if taskkill failed.
+        // Also the fallback if taskkill failed.
         session.process.kill()
       } catch (error) {
         if (!treeStopped && this.sessions.get(id) === session) {

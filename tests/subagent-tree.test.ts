@@ -73,6 +73,43 @@ test('malformed details fall back to task arguments and unrelated tools stay out
   assert.deepEqual(calls[0].tasks.map((task) => task.task), ['Inspect', 'Verify'])
 })
 
+test('swarm assignments keep their identity from dispatch to report', () => {
+  const item = tool({
+    toolCallId: 'assign-1', toolName: 'swarm_task',
+    args: { name: 'reviewer', task: 'Check the examples' }, startedAt: 2
+  })
+  const [queued] = subagentCalls([item]).flatMap((call) => call.tasks)
+  const [running] = subagentCalls([{ ...item, details: { workers: [
+    { name: 'reviewer', task: 'Check the examples', status: 'working', progressText: 'Reading examples' }
+  ] } }]).flatMap((call) => call.tasks)
+  const [done] = subagentCalls([{ ...item, status: 'ok', result: 'Examples checked', finishedAt: 9 }]).flatMap((call) => call.tasks)
+  assert.equal(queued.id, 'assign-1:0')
+  assert.equal(running.id, queued.id)
+  assert.equal(done.id, queued.id)
+  assert.equal(queued.label, 'reviewer')
+  assert.equal(queued.task, 'Check the examples')
+  assert.deepEqual([queued.status, running.status, done.status], ['queued', 'running', 'completed'])
+  assert.equal(running.progressText, 'Reading examples')
+  assert.equal(done.output, 'Examples checked')
+})
+
+test('replay distinguishes a background swarm dispatch from a completed worker task', () => {
+  const items = itemsFromMessages([
+    { role: 'assistant', timestamp: 1, content: [
+      { type: 'toolCall', id: 'spawn', name: 'swarm_spawn', arguments: { name: 'reviewer' } },
+      { type: 'toolCall', id: 'message', name: 'swarm_message', arguments: { name: 'reviewer', message: 'Check again', wait: false } }
+    ] },
+    { role: 'toolResult', timestamp: 2, toolCallId: 'spawn', toolName: 'swarm_spawn', isError: false, content: [] },
+    { role: 'toolResult', timestamp: 3, toolCallId: 'message', toolName: 'swarm_message', isError: false,
+      content: [{ type: 'text', text: 'Message queued' }] }
+  ])
+  const calls = subagentCalls(items)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].tasks[0].id, 'message:0')
+  assert.equal(calls[0].tasks[0].task, 'Check again')
+  assert.equal(calls[0].tasks[0].status, 'dispatched')
+})
+
 test('a task label names the tree row while the briefing stays available', () => {
   const briefing = 'Read every file in src and summarise the architecture'
   const calls = subagentCalls([tool({

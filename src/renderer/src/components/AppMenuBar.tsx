@@ -272,7 +272,17 @@ export const AppMenuBar = memo(function AppMenuBar({
               shortcut: chord('command-palette')
             },
             { separator: true },
-            { label: `${t('Check for updates')}…`, onSelect: () => void checkForAppUpdates().catch(() => {}) },
+            {
+              // A new release appears on the round button beside Settings; a
+              // check that found nothing says so in its own notice.
+              label: `${t('Check for updates')}…`,
+              onSelect: () => {
+                void checkForAppUpdates().catch(() => {
+                  // The notice owns the message; a rejection here is already
+                  // reported by the check itself.
+                })
+              }
+            },
             {
               label: t('Report an issue'),
               onSelect: () => void window.pi.shell.openExternal(issuesUrl)

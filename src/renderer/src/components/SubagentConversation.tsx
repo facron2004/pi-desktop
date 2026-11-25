@@ -1,4 +1,4 @@
-import { ArrowLeft, Bot } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
 import { memo, useCallback, useMemo, useState } from 'react'
 import type { SubagentTreeTask } from '../lib/subagents'
 import { itemsFromMessages, type UserItem } from '../lib/thread'
@@ -7,6 +7,7 @@ import { formatDuration } from '../lib/format'
 import { useT } from '../lib/i18n'
 import { NoticeMessage, UserMessage } from './MessageItem'
 import { ProcessTrail } from './ProcessTrail'
+import { SubagentAvatar } from './SubagentAvatar'
 import { BashCard, ToolCard } from './ToolCard'
 import { AssistantMessage } from './conversation/AssistantMessage'
 import { LogOutput } from './conversation/LogOutput'
@@ -18,6 +19,7 @@ const STATUS_LABEL: Record<SubagentTreeTask['status'], string> = {
   proposed: 'Not run',
   queued: 'Queued',
   running: 'Running',
+  dispatched: 'Dispatched',
   completed: 'Completed',
   failed: 'Failed',
   aborted: 'Stopped',
@@ -175,7 +177,7 @@ export function SubagentConversation({
           {t('Back')}
         </button>
         <span className="subagent-conversation__identity">
-          <Bot size={14} aria-hidden="true" />
+          <SubagentAvatar task={task} size={22} />
           <strong title={task.task}>{task.label || task.task}</strong>
         </span>
         <span className="subagent-conversation__meta">

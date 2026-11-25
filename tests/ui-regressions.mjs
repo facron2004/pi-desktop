@@ -24,6 +24,11 @@ writeFileSync(path.join(workspace, 'new-only-result.txt'), 'new query result\n')
 const nestedWorkspace = path.join(workspace, 'nested-project')
 mkdirSync(nestedWorkspace)
 writeFileSync(path.join(nestedWorkspace, 'nested-only.txt'), 'nested workspace file\n')
+writeFileSync(path.join(nestedWorkspace, 'index.html'), '<!doctype html>\n')
+writeFileSync(path.join(nestedWorkspace, 'main.py'), 'print("hello")\n')
+writeFileSync(path.join(nestedWorkspace, 'main.rs'), 'fn main() {}\n')
+writeFileSync(path.join(nestedWorkspace, 'build.mjs'), 'export {}\n')
+writeFileSync(path.join(nestedWorkspace, 'types.gql'), 'query { name }\n')
 // A 1×1 PNG so the Images page has something real to list.
 writeFileSync(
   path.join(workspace, 'shot.png'),
@@ -505,15 +510,26 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     await until(() => !store.getState().isStreaming && document.querySelector('.goal-bar[data-status="paused"]'), 'Pausing did not settle the goal')
     await until(() => goalButton('Resume') && !goalButton('Resume').disabled, 'Resume stayed disabled after pause')
     goalButton('Resume').click()
-    await until(() => !store.getState().isStreaming && document.querySelector('.goal-bar[data-status="complete"]'), 'The resumed goal did not complete')
+    // A finished goal leaves the composer for the end of the transcript: the
+    // bar was a header for work that is over, so the closing row carries the
+    // objective and its summary instead.
+    const goalDone = await until(() => {
+      const row = document.querySelector('.goal-done')
+      return row && !store.getState().isStreaming ? row : null
+    }, 'The finished goal did not become a closing row')
+    check(!document.querySelector('.goal-bar'), 'A finished goal kept its bar above the composer')
+    check(goalDone.querySelector('.goal-done__objective')?.textContent === goalFixture.revised,
+      'The completed row lost the objective')
+    check(goalDone.querySelector('.goal-done__summary')?.textContent?.trim(), 'The completed row lost the completion summary')
+    const threadInner = document.querySelector('.thread__inner')
+    check(threadInner?.contains(goalDone), 'The completed row did not sit at the end of the conversation')
     await until(() => [...document.querySelectorAll('.run-outcome__label')].some((label) => label.textContent.includes('Resumed goal')), 'The manually resumed round did not have its own summary')
 
     const goalFile = store.getState().activeSessionFile
     const originalPrompt = await until(() => store.getState().forkTargets.find(({ text }) => text === goalFixture.original), 'Pi did not offer the original goal prompt for editing')
-    const completedObjective = await until(() => document.querySelector('.goal-bar__objective'), 'The completed goal could not be edited')
-    completedObjective.click()
-    const laterEditor = await until(() => document.querySelector('.goal-bar__input'), 'The later goal editor did not open')
-    setInputValue(laterEditor, 'Unsaved draft for the later objective')
+    // Editing a completed goal is not offered any more, so the rewind is made
+    // from the request that created it; the restored branch brings the live
+    // objective back, which is what the bar has to agree with.
     await store.getState().editMessageFrom(originalPrompt.entryId, goalFixture.original)
     await until(() => document.querySelector('.goal-bar__objective')?.textContent === goalFixture.original, 'Rewinding kept the goal or edit draft from the branch that was left')
     check(store.getState().activeSessionFile === goalFile && store.getState().agentMode === 'goal', 'Rewinding failed to restore Goal Mode in the same conversation')
@@ -618,31 +634,37 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     await openSubagentsPage()
     await store.getState().send('UI_TREE_PARENT delegate the two independent checks', [])
     await until(() => document.querySelectorAll('.subagent-tree__task').length === 2, 'Real child processes did not appear in the right panel', 45000)
-    // The same children also sit beside the conversation title: one badge
-    // counts them, its card shows each status, and a row opens that child's
-    // transcript in the panel that is already open here.
-    const titleBadge = await until(
-      () => document.querySelector('.title-subagents__trigger'),
-      'The title badge did not appear for a delegating conversation'
-    )
-    check(titleBadge.textContent?.includes('2'), 'The title badge did not count the child tasks')
-    titleBadge.click()
-    const badgeRows = await until(() => {
-      const nodes = document.querySelectorAll('.popover.title-subagents-popover .title-subagents__row')
-      return nodes.length === 2 ? nodes : null
-    }, 'The title badge did not list every child task')
+    // The children live in the catalog in the right panel. Its rows carry each
+    // child's status and avatar, and a row opens that child's transcript in the
+    // panel that is already open here. (The title bar carries no subagent badge:
+    // the rail and this panel are the two places a child is reachable.)
+    const avatarSources = (rows) => [...rows].map((row) => row.querySelector('img.subagent-avatar')?.src)
+    const catalogRows = () => document.querySelectorAll('.subagent-tree__task')
+    // `data-status` is the row's own contract (the styles and the completion
+    // check below read it); the visible summary line only exists once the child
+    // has reported something.
     check(
-      [...badgeRows].every((row) => row.querySelector('.title-subagents__state')?.textContent?.trim()),
-      'A title badge row did not show its status'
+      [...catalogRows()].every((row) => row.getAttribute('data-status')),
+      'A subagent catalog row did not carry its status'
     )
-    badgeRows[0].click()
-    await until(() => document.querySelector('.subagent-conversation'), 'A title badge row did not open the child conversation in the right panel')
+    const catalogAvatars = avatarSources(catalogRows())
+    check(catalogAvatars.every(Boolean) && new Set(catalogAvatars).size === 2, 'A batch of subagents did not have distinct avatars')
+    catalogRows()[0].querySelector('.subagent-tree__task-row').click()
+    await until(() => document.querySelector('.subagent-conversation'), 'A subagent catalog row did not open the child conversation in the right panel')
+    check(
+      document.querySelector('.subagent-conversation__identity .subagent-avatar')?.src === catalogAvatars[0],
+      'The child conversation header changed its avatar'
+    )
     document.querySelector('.subagent-conversation__back')?.click()
-    await until(() => document.querySelector('.subagent-tree'), 'The subagent catalog did not return after the title badge selection')
-    passed.push('the title badge counts subagents and opens a child conversation in the right panel')
+    await until(() => document.querySelector('.subagent-tree'), 'The subagent catalog did not return after the child conversation')
+    passed.push('a subagent catalog row opens a child conversation in the right panel')
     await store.getState().newChat()
     check(document.querySelectorAll('.subagent-tree__task').length === 2, 'Switching chats hid live child processes')
     await until(() => document.querySelectorAll('.subagent-tree__task[data-status="completed"]').length === 2, 'Real child completion did not reach the right panel', 45000)
+    check(
+      avatarSources(document.querySelectorAll('.subagent-tree__task')).join('|') === catalogAvatars.join('|'),
+      'Completing a subagent changed its avatar'
+    )
     check(childStates.some((states) => states.includes('running')), 'Pi did not publish child startup progress')
     await until(() => Object.values(store.getState().threads).every((thread) => !thread.isStreaming), 'Parent did not settle')
     passed.push('real Pi subagents stay visible in background in the right panel')
@@ -735,13 +757,22 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   })
   const resume = await until(() => document.querySelector('.goal-bar__actions button[title="Resume"]'), 'An idle active goal did not offer Resume')
   check(!resume.disabled, 'An idle active goal could not resume')
-  const edit = await until(() => document.querySelector('.goal-bar__objective'), 'Goal did not render')
-  edit.click()
+  await until(() => document.querySelector('.goal-bar__objective'), 'Goal did not render')
+  // The objective is a label; the pencil in the actions row is the editor.
+  const editPencil = await until(() => {
+    const button = document.querySelector('.goal-bar__actions button[title="Edit"]')
+    return button && !button.disabled ? button : null
+  }, 'An idle active goal had no edit pencil')
+  editPencil.click()
   await until(() => document.querySelector('.goal-bar__input'), 'Goal editor did not open')
   store.setState({ activeSessionFile: 'ui-goal-B', uiStatuses: goal('Goal B') })
   await pause(50)
   check(!document.querySelector('.goal-bar__input'), 'Goal editor retained a different conversation draft')
-  document.querySelector('.goal-bar__objective').click()
+  const secondPencil = await until(() => {
+    const button = document.querySelector('.goal-bar__actions button[title="Edit"]')
+    return button && !button.disabled ? button : null
+  }, 'Goal B had no edit pencil')
+  secondPencil.click()
   const input = await until(() => document.querySelector('.goal-bar__input'), 'Second goal editor did not open')
   check(input.value === 'Goal B', 'Second goal editor used the first conversation text')
   const updatedGoal = 'Goal B revised\n  Keep indentation'
@@ -802,7 +833,36 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   )
   check(document.querySelector('.shell__panel-toggle'), 'The tools-panel toggle did not come back with the conversation')
   check(!document.querySelector('.status-strip, .plan-strip'), 'A status or plan strip returned with the conversation')
-  passed.push('plan progress stays in the task rail and leaves desk pages clear')
+
+  const todo = {
+    id: 'ui-todo', kind: 'tool', toolCallId: 'ui-todo', toolName: 'desktop_todo', status: 'ok', timestamp: 2, order: 2,
+    args: { items: [
+      { text: 'Inspect the report', status: 'completed' },
+      { text: 'Run the tests', status: 'in_progress' }
+    ] }
+  }
+  const todoProgress = () => railSection('Progress')
+  const unconfirmed = () => todoProgress()?.querySelector('.task-panel__empty')?.textContent === 'Some steps are still unconfirmed'
+  store.setState({ items: [todo], isStreaming: true })
+  await until(() => todoProgress()?.querySelector('.task-panel__check[data-active]'), 'The running todo lost its active step')
+  check(!unconfirmed(), 'An active run showed the unconfirmed progress notice')
+
+  const finalReport = {
+    id: 'ui-todo-final', kind: 'assistant', streaming: false, stopReason: 'stop', timestamp: 3, order: 3,
+    blocks: [{ type: 'text', text: 'The report is ready.' }]
+  }
+  store.setState({ items: [todo, finalReport], isStreaming: false })
+  await until(unconfirmed, 'A settled run did not explain its remaining todo steps')
+  check(todoProgress()?.querySelector('.task-panel__count')?.textContent === '1/2', 'Plain final prose changed the todo count')
+  check(!todoProgress()?.querySelector('.task-panel__check[data-active]'), 'A settled todo still looked active')
+
+  store.setState({ items: [todo, {
+    ...finalReport,
+    blocks: [{ type: 'text', text: '- [x] Inspect the report\n- [x] Run the tests' }]
+  }] })
+  await until(() => todoProgress()?.querySelector('.task-panel__count')?.textContent === '2/2', 'The final checklist did not fill in progress')
+  check(!unconfirmed(), 'The complete todo still showed the unconfirmed progress notice')
+  passed.push('plan progress stays in the task rail, explains missing updates and recovers confirmed steps')
 
   await store.getState().newChat()
   await openSubagentsPage()
@@ -1475,7 +1535,7 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   // of the row — its state is the tile's colour, not a dot at the far edge.
   check(
     taskRows.every((row) => {
-      const tile = row.querySelector('.task-panel__tile--bot')
+      const tile = row.querySelector('.task-panel__tile--subagent')
       const label = row.querySelector('.task-panel__task-label')
       if (!tile || !label) return false
       const tileBox = tile.getBoundingClientRect()
@@ -1483,6 +1543,9 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
     }),
     'A subagent row did not lead with its 20px state tile'
   )
+  const railAvatars = taskRows.map((row) => row.querySelector('img.subagent-avatar'))
+  await until(() => railAvatars.every((avatar) => avatar?.complete && avatar.naturalWidth > 0), 'The task rail avatars did not load')
+  check(new Set(railAvatars.map((avatar) => avatar.src)).size === taskRows.length, 'The task rail repeated an avatar within a batch')
   check(document.querySelectorAll('.task-panel__check').length === 3, 'The plan checklist is missing a step')
   check(document.querySelectorAll('.task-panel__check[data-done]').length === 2, 'A finished step is not marked as done')
   check(document.querySelectorAll('.task-panel__folder').length === 0, 'The deliverables still draw folder rows')
@@ -1871,6 +1934,12 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
       .map((node) => Math.round(node.querySelector('.tree__name').getBoundingClientRect().left))
   )
   check(nameColumns.size === 1, `File names sit on ${nameColumns.size} columns: ${[...nameColumns].join(', ')}`)
+  for (const [name, mark] of [
+    ['index.html', '<>'], ['main.py', 'PY'], ['main.rs', 'RS'], ['build.mjs', 'JS'], ['types.gql', '</>']
+  ]) {
+    const row = treeRows.find((node) => node.querySelector('.tree__name')?.textContent === name)
+    check(row?.querySelector('.file-icon__mark')?.textContent === mark, `${name} did not show its code icon`)
+  }
   // The tree toggle lives in the panel header (a folder button), not in the
   // tree's own filter row: it stays in the same corner either way.
   const treeToggle = [...document.querySelectorAll('.tool-panel__action')].find(
@@ -1901,7 +1970,14 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await until(() => document.querySelector('.text-search'), 'Full-text search did not open in the preview pane')
   document.querySelector('.text-search .icon-btn[title]')?.click()
   await pause(120)
-  passed.push('the project tree wears type badges on evenly spaced rows, split by file index')
+  const pythonRow = [...document.querySelectorAll('.tree__item')]
+    .find((node) => node.querySelector('.tree__name')?.textContent === 'main.py')
+  pythonRow.click()
+  await until(
+    () => document.querySelector('.viewer__crumb-path .file-icon__mark')?.textContent === 'PY',
+    'The file preview did not show the same Python icon as the tree'
+  )
+  passed.push('the project tree and file preview share language icons, with evenly spaced tree rows')
 
   // The usage caption is one evenly spaced, vertically centred line: all three
   // controls share a height and a centre line, and the ring no longer towers

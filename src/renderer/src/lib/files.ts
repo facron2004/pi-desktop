@@ -1,45 +1,14 @@
-import { languageForFilePath } from '@shared/file-languages'
+import { fileBasenameLower, languageForFilePath } from '@shared/file-languages'
 
 /** Visual grouping for file names, used to tint the tree and search results. */
-export type FileTone = 'ts' | 'js' | 'json' | 'style' | 'markdown' | 'shell' | 'image' | 'plain'
+export type FileTone =
+  | 'ts' | 'js' | 'json' | 'style' | 'html' | 'xml' | 'vue' | 'svelte'
+  | 'python' | 'rust' | 'go' | 'c' | 'cpp' | 'csharp' | 'java' | 'kotlin'
+  | 'swift' | 'ruby' | 'php' | 'sql' | 'code' | 'markdown' | 'shell' | 'image' | 'plain'
 
+// These file types have a visual treatment independent of syntax highlighting.
 const BY_EXTENSION: Record<string, FileTone> = {
-  ts: 'ts',
-  tsx: 'ts',
-  mts: 'ts',
-  cts: 'ts',
-  js: 'js',
-  jsx: 'js',
-  mjs: 'js',
-  cjs: 'js',
-  json: 'json',
-  jsonc: 'json',
   tsbuildinfo: 'json',
-  css: 'style',
-  scss: 'style',
-  sass: 'style',
-  less: 'style',
-  html: 'style',
-  vue: 'style',
-  svelte: 'style',
-  md: 'markdown',
-  mdx: 'markdown',
-  markdown: 'markdown',
-  txt: 'plain',
-  sh: 'shell',
-  bash: 'shell',
-  zsh: 'shell',
-  fish: 'shell',
-  nu: 'shell',
-  awk: 'shell',
-  ps1: 'shell',
-  psm1: 'shell',
-  psd1: 'shell',
-  ps1xml: 'shell',
-  bat: 'shell',
-  cmd: 'shell',
-  btm: 'shell',
-  reg: 'shell',
   png: 'image',
   jpg: 'image',
   jpeg: 'image',
@@ -51,28 +20,60 @@ const BY_EXTENSION: Record<string, FileTone> = {
   avif: 'image'
 }
 
-const BY_NAME: Record<string, FileTone> = {
+const BY_LANGUAGE: Record<string, FileTone> = {
+  typescript: 'ts',
+  tsx: 'ts',
+  javascript: 'js',
+  jsx: 'js',
+  json: 'json',
+  jsonc: 'json',
+  yaml: 'json',
+  toml: 'json',
+  ini: 'json',
+  css: 'style',
+  scss: 'style',
+  sass: 'style',
+  less: 'style',
+  stylus: 'style',
+  html: 'html',
+  xml: 'xml',
+  vue: 'vue',
+  svelte: 'svelte',
+  python: 'python',
+  rust: 'rust',
+  go: 'go',
+  c: 'c',
+  cpp: 'cpp',
+  csharp: 'csharp',
+  java: 'java',
+  kotlin: 'kotlin',
+  swift: 'swift',
+  ruby: 'ruby',
+  php: 'php',
+  sql: 'sql',
+  markdown: 'markdown',
   dockerfile: 'shell',
-  containerfile: 'shell',
   makefile: 'shell',
-  gnumakefile: 'shell',
-  '.env': 'shell',
-  '.bashrc': 'shell',
-  '.bash_profile': 'shell',
-  '.profile': 'shell',
-  '.zshrc': 'shell',
-  '.zprofile': 'shell',
-  license: 'plain',
-  readme: 'markdown'
+  dotenv: 'shell',
+  bash: 'shell',
+  fish: 'shell',
+  nushell: 'shell',
+  awk: 'shell',
+  powershell: 'shell',
+  bat: 'shell',
+  reg: 'shell'
 }
 
 export function fileTone(name: string): FileTone {
-  const lower = name.toLowerCase()
-  if (Object.hasOwn(BY_NAME, lower)) return BY_NAME[lower]
+  const lower = fileBasenameLower(name)
+  if (lower === 'readme') return 'markdown'
   const dot = lower.lastIndexOf('.')
-  if (dot === -1) return 'plain'
-  const extension = lower.slice(dot + 1)
-  return Object.hasOwn(BY_EXTENSION, extension) ? BY_EXTENSION[extension] : 'plain'
+  const extension = dot === -1 ? '' : lower.slice(dot + 1)
+  if (Object.hasOwn(BY_EXTENSION, extension)) return BY_EXTENSION[extension]
+
+  const language = languageForFilePath(lower)
+  if (Object.hasOwn(BY_LANGUAGE, language)) return BY_LANGUAGE[language]
+  return language ? 'code' : 'plain'
 }
 
 /** The picture types the Images page can draw, aligned with `IMAGE_MIME` in main. */

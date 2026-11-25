@@ -248,7 +248,7 @@ test('tool time uses persisted client timings when Pi did not save a duration', 
   assert.equal(metrics.timedToolCalls, 1)
 })
 
-test('TPS is the newest turn\'s output over the generation window', () => {
+test('TPS is the conversation\'s average, not the newest turn\'s', () => {
   const items: ThreadItem[] = [
     user('u1'),
     assistant('a1', 1000),
@@ -263,7 +263,7 @@ test('TPS is the newest turn\'s output over the generation window', () => {
   assert.equal(sessionMetrics(items, undefined, { firstTokenAt: 10_000 }).tps, null)
 })
 
-test('TPS holds the last completed turn while a new prompt has no answer yet', () => {
+test('TPS averages every completed answer, so a later turn does not take over', () => {
   const items: ThreadItem[] = [
     { ...user('u1'), timestamp: 1_000 },
     { ...assistant('a1', 120), timestamp: 1_500, durationMs: 2_000 },
@@ -272,7 +272,7 @@ test('TPS holds the last completed turn while a new prompt has no answer yet', (
   assert.equal(
     sessionMetrics(items, undefined, {}).tps,
     60,
-    'sending a prompt must not erase the speed of the turn that just finished'
+    'sending a prompt must not erase the speed of the history so far'
   )
   const answered: ThreadItem[] = [
     ...items,
@@ -280,12 +280,12 @@ test('TPS holds the last completed turn while a new prompt has no answer yet', (
   ]
   assert.equal(
     sessionMetrics(answered, undefined, {}).tps,
-    150,
-    'the new turn takes over as soon as it has its own completed answer'
+    105,
+    '420 output tokens over the 4s the two answers took'
   )
 })
 
-test('TPS sums each answer\'s window, so a tool gap is not model time', () => {
+test('TPS sums every answer\'s window, so a tool gap is not model time', () => {
   const items: ThreadItem[] = [
     user('u1'),
     assistant('a1', 500),
@@ -300,7 +300,7 @@ test('TPS sums each answer\'s window, so a tool gap is not model time', () => {
   assert.equal(metrics.tps, 600)
 })
 
-test('TPS holds the completed answers\' speed throughout the next streamed answer', () => {
+test('TPS holds the completed average throughout the next streamed answer', () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance')
   let monotonic = 1_500
   Object.defineProperty(globalThis, 'performance', {
@@ -317,7 +317,7 @@ test('TPS holds the completed answers\' speed throughout the next streamed answe
     }
     for (monotonic of [1_500, 2_000, 10_000]) {
       assert.equal(sessionMetrics(items, undefined, run).tps, 60,
-        'an unfinished answer has no final token count to pair with its growing duration')
+        'an unfinished answer has no final token count, so it cannot move the average')
     }
     assert.equal(sessionMetrics(items, undefined, {
       ...run,
@@ -342,6 +342,73 @@ test('TPS waits for a complete sample even if the stream contains partial usage'
     messageGenerationBaseMs: 0,
     firstTokenAt: 1_000,
     lastTokenAt: 1_400
+  }).tps, null)
+})
+
+test('TPS uses the completed answer while live totals include a streaming answer', () => {
+  const items = [
+    user('u1'),
+    { ...assistant('a1', 120), durationMs: 2_000 },
+    { ...assistant('a2', 300), streaming: true, durationMs: 400 }
+  ]
+  const metrics = sessionMetrics(items, stats({
+    tokens: { input: 100, output: 420, cacheRead: 0, cacheWrite: 0, total: 520 }
+  }), {})
+  assert.equal(metrics.outputTokens, 420)
+  assert.equal(metrics.tps, 60)
+})
+
+test('TPS uses matching samples when session stats and the journal cover a larger history', () => {
+  const items = [
+    { ...user('visible'), timestamp: 4_000 },
+    { ...assistant('visible-answer', 120), timestamp: 4_500, durationMs: 2_000 }
+  ]
+  const metrics = sessionMetrics(items, stats({
+    userMessages: 2,
+    assistantMessages: 2,
+    tokens: { input: 100, output: 1120, cacheRead: 0, cacheWrite: 0, total: 1220 }
+  }), {}, {
+    modelDurationsMs: { 'assistant:1500:old': 10_000, 'assistant:4500:visible': 2_000 },
+    ttftDurationsMs: {},
+    toolDurationsMs: {},
+    runDurationsMs: {},
+    generationWindowMs: {}
+  }, { historyTruncated: true })
+  assert.equal(metrics.outputTokens, 1120)
+  assert.equal(metrics.modelTimeMs, 12_000)
+  assert.equal(metrics.tps, 60)
+})
+
+test('TPS ignores a model sample from a different assistant message', () => {
+  const items = [
+    { ...user('u1'), timestamp: 1_000 },
+    { ...assistant('a1', 120), timestamp: 1_500 }
+  ]
+  const metrics = sessionMetrics(items, undefined, {}, {
+    modelDurationsMs: { 'assistant:3500:another-branch': 2_000 },
+    ttftDurationsMs: {},
+    toolDurationsMs: {},
+    runDurationsMs: {},
+    generationWindowMs: {}
+  })
+  assert.equal(metrics.tps, null)
+})
+
+test('TPS leaves an ambiguous assistant timestamp unmeasured', () => {
+  const answer = { ...assistant('a1', 120), timestamp: 1_500 }
+  const items = [{ ...user('u1'), timestamp: 1_000 }, answer]
+  const timing = {
+    modelDurationsMs: { 'assistant:1500:recorded': 2_000 },
+    ttftDurationsMs: {},
+    toolDurationsMs: {},
+    runDurationsMs: {},
+    generationWindowMs: {}
+  }
+  assert.equal(sessionMetrics(items, undefined, {}, timing).tps, 60)
+  assert.equal(sessionMetrics([...items, { ...answer, id: 'a2' }], undefined, {}, timing).tps, null)
+  assert.equal(sessionMetrics(items, undefined, {}, {
+    ...timing,
+    modelDurationsMs: { ...timing.modelDurationsMs, 'assistant:1500:other-branch': 3_000 }
   }).tps, null)
 })
 
@@ -414,14 +481,15 @@ test('a zero generation window does not hide TPS from answer durations', () => {
   assert.equal(metrics.tps, 80, '400 output tokens over the 5s Pi recorded on the answer')
 })
 
-test('a later message without usage does not wipe the newest turn\'s TPS', () => {
+test('a later message without usage does not contribute its duration to TPS', () => {
   const bare: AssistantItem = {
     id: 'a-bare',
     kind: 'assistant',
     blocks: [{ type: 'text', text: 'done' }],
     streaming: false,
     timestamp: 3,
-    order: 3
+    order: 3,
+    durationMs: 3_000
   }
   const items: ThreadItem[] = [
     { ...user('u1'), timestamp: 1_000 },
@@ -431,12 +499,12 @@ test('a later message without usage does not wipe the newest turn\'s TPS', () =>
   assert.equal(sessionMetrics(items, undefined, { generationMs: 0 }).tps, 60)
 })
 
-test('TPS uses the newest turn\'s model samples when no generation window was closed', () => {
+test('TPS averages the model samples when no generation window was closed', () => {
   const items: ThreadItem[] = [
     { ...user('u1'), timestamp: 1_000 },
-    assistant('a1', 1000),
+    { ...assistant('a1', 1000), timestamp: 1_500 },
     { ...user('u2'), timestamp: 5_000 },
-    assistant('a2', 120)
+    { ...assistant('a2', 120), timestamp: 6_000 }
   ]
   const metrics = sessionMetrics(items, undefined, { generationMs: 0 }, {
     modelDurationsMs: {
@@ -450,7 +518,7 @@ test('TPS uses the newest turn\'s model samples when no generation window was cl
     runDurationsMs: {},
     generationWindowMs: {}
   })
-  assert.equal(metrics.tps, 60, '120 output tokens over the newest answer\'s 2s model sample')
+  assert.equal(metrics.tps, 101.8, '1120 output tokens over the 11s both answers took')
 })
 
 test('reopened conversations leave TPS unmeasured when assistant durations are missing', () => {

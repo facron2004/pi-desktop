@@ -67,30 +67,17 @@
   color: var(--text);
 }
 
-/* The objective runs on after the bold state word in quieter ink; one click
-   opens the editor. A long one ellipsises, never pushing the controls out. */
+/* The objective runs on after the bold state word in quieter ink, as a label:
+   the pencil in the actions row opens the editor. A long one ellipsises, never
+   pushing the controls out. */
 .goal-bar__objective {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  padding: 0;
-  border: 0;
-  background: none;
   color: var(--text-muted);
   font-size: var(--text-small);
-  text-align: left;
-  cursor: text;
-}
-
-.goal-bar__objective:hover {
-  color: var(--text);
-}
-
-.goal-bar__objective:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
 }
 
 .goal-details-popover.popover {
@@ -291,5 +278,97 @@
 @media (prefers-reduced-motion: reduce) {
   .goal-bar__action {
     transition: none;
+  }
+}
+
+/* A finished goal is the conversation's closing row, not a bar. */
+.goal-done {
+  display: flex;
+  gap: 10px;
+  margin: 18px 0 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--surface-raised, transparent);
+  color: var(--text-secondary);
+}
+
+.goal-done__mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--success, #3fb950);
+  background: color-mix(in srgb, var(--success, #3fb950) 14%, transparent);
+}
+
+.goal-done__body {
+  min-width: 0;
+  flex: 1;
+}
+
+.goal-done__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+}
+
+.goal-done__label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text-primary);
+}
+
+/* The only way to retire the row, so it is a real target on touch too. */
+.goal-done__clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary, var(--text-secondary));
+  opacity: 0;
+  cursor: pointer;
+}
+
+.goal-done:hover .goal-done__clear,
+.goal-done__clear:focus-visible {
+  opacity: 1;
+}
+
+.goal-done__clear:hover {
+  background: var(--hover-surface, color-mix(in srgb, currentColor 12%, transparent));
+  color: var(--text-primary);
+}
+
+.goal-done__objective {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.goal-done__summary {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (hover: none), (pointer: coarse), (any-pointer: coarse) {
+  .goal-done__clear {
+    opacity: 1;
   }
 }

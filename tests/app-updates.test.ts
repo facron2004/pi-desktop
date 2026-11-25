@@ -17,7 +17,6 @@ import {
   supportsAppUpdate
 } from '../src/main/app-update-installer'
 import {
-  APP_UPDATE_NOTICE,
   appUpdateInstall,
   applyAppUpdate,
   availableAppUpdate,
@@ -29,11 +28,13 @@ import {
   piCliUpdate,
   restoreDownloadedAppUpdate,
   restorePersistedAppUpdate,
-  showAppUpdate,
   startAppUpdateDownload,
   subscribeAppUpdateCheck,
   subscribeAvailableAppUpdate,
-  subscribePiCliUpdate
+  subscribePiCliUpdate,
+  appUpdateResultNotice,
+  dismissAppUpdateResult,
+  subscribeAppUpdateResult
 } from '../src/renderer/src/lib/app-update'
 import { clearUpdateState, readUpdateState, readUpdateStateForVersion, writeUpdateState } from '../src/main/update-state'
 import {
@@ -309,37 +310,70 @@ test('the startup cache restores a release and a late cache read preserves a new
   }
 })
 
-test('manual checks share one request and one card; failures remain retryable', async () => {
+test('a manual check says "you are current" once, and an update only lights the button', async () => {
+  const previousWindow = globalThis.window
+  const current = { app: { current: '0.11.13', hasUpdate: false }, piCli: { current: '1.6.0', hasUpdate: false } }
+  const newer = { app: { current: '0.11.13', latest: '0.11.14', hasUpdate: true }, piCli: { current: '1.6.0', hasUpdate: false } }
+  let next: unknown = current
+  const bridge = { app: { checkUpdate: async () => next } }
+  Object.assign(globalThis, { window: Object.assign(new EventTarget(), { pi: bridge }) })
+  const notices: unknown[] = []
+  const unsubscribe = subscribeAppUpdateResult((notice) => notices.push(notice))
+  try {
+    dismissAppUpdateResult()
+    await checkForAppUpdates()
+    assert.deepEqual(appUpdateResultNotice(), { kind: 'current', current: '0.11.13' })
+    assert.deepEqual(notices.at(-1), { kind: 'current', current: '0.11.13' })
+    dismissAppUpdateResult()
+    assert.equal(appUpdateResultNotice(), null)
+
+    // A release to install belongs on the sidebar button: no notice, and one
+    // that is already showing is dismissed.
+    next = newer
+    await checkForAppUpdates()
+    assert.equal(appUpdateResultNotice(), null)
+
+    // A check that could not answer says so instead of passing silently.
+    next = { app: { current: '0.11.13', hasUpdate: false, error: 'offline' }, piCli: { current: '1.6.0', hasUpdate: false } }
+    await checkForAppUpdates()
+    assert.deepEqual(appUpdateResultNotice(), { kind: 'error', error: 'offline' })
+  } finally {
+    unsubscribe()
+    dismissAppUpdateResult()
+    Object.assign(globalThis, { window: previousWindow })
+  }
+})
+
+test('a manual check shares one request, publishes the reading and stays retryable', async () => {
   const previousWindow = globalThis.window
   const target = new EventTarget()
-  const notices: unknown[] = []
+  const readings: unknown[] = []
   const result = { app: { current: '0.11.1', latest: '0.11.2', hasUpdate: true }, piCli: { current: '1.5.0', hasUpdate: false } }
   let calls = 0
   let resolve!: (value: typeof result) => void
   const pending = new Promise<typeof result>((done) => { resolve = done })
   const bridge = { app: { checkUpdate: () => { calls++; return pending } } }
   Object.assign(globalThis, { window: Object.assign(target, { pi: bridge }) })
-  target.addEventListener(APP_UPDATE_NOTICE, (event) => notices.push((event as CustomEvent).detail))
+  const unsubscribe = subscribeAvailableAppUpdate((next) => readings.push(next))
   try {
     const first = checkForAppUpdates()
     assert.equal(checkForAppUpdates(), first)
     resolve(result)
     await first
     assert.equal(calls, 1)
-    assert.deepEqual(notices, [{ result }])
+    // The answer goes to the sidebar button — no dialog event on the window.
+    assert.deepEqual(readings.at(-1), { current: '0.11.1', latest: '0.11.2' })
+    // A failed check keeps the last good reading rather than replacing it.
     bridge.app.checkUpdate = () => Promise.reject(new Error('offline'))
     await assert.rejects(checkForAppUpdates(), /offline/)
-    assert.deepEqual(notices.at(-1), { error: 'offline' })
+    assert.deepEqual(availableAppUpdate(), { current: '0.11.1', latest: '0.11.2' })
     bridge.app.checkUpdate = async () => result
     await checkForAppUpdates()
-    assert.deepEqual(notices.at(-1), { result })
-    const count = calls
-    showAppUpdate(result)
-    assert.equal(calls, count)
-    assert.deepEqual(availableAppUpdate(), { current: '0.11.1', latest: '0.11.2' })
+    assert.deepEqual(readings.at(-1), { current: '0.11.1', latest: '0.11.2' })
     // The manual result is kept in full, not just the sidebar's summary.
     assert.equal(lastAppUpdateCheck(), result)
   } finally {
+    unsubscribe()
     Object.assign(globalThis, { window: previousWindow })
   }
 })

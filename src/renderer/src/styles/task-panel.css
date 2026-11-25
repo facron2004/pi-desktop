@@ -286,24 +286,23 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
-/* A subagent row carries a mark instead of a dot: the same 20px tile a
-   deliverable file wears, tinted by the child's own state, so the rail reads
-   as rows rather than as a list of bare strings. */
-.task-panel__tile--bot {
+/* The tile shows the child's status around its full-color avatar. */
+.task-panel__tile--subagent {
   color: var(--text-muted);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 38%, transparent);
 }
 
-.task-panel__task:is([data-status='queued'], [data-status='running']) .task-panel__tile--bot {
+.task-panel__task:is([data-status='queued'], [data-status='running']) .task-panel__tile--subagent {
   color: var(--accent);
   background: var(--accent-soft);
 }
 
-.task-panel__task[data-status='completed'] .task-panel__tile--bot {
+.task-panel__task[data-status='completed'] .task-panel__tile--subagent {
   color: var(--status-success);
   background: var(--status-success-soft);
 }
 
-.task-panel__task:is([data-status='failed'], [data-status='timed_out']) .task-panel__tile--bot {
+.task-panel__task:is([data-status='failed'], [data-status='timed_out']) .task-panel__tile--subagent {
   color: var(--status-danger);
   background: var(--status-danger-soft);
 }

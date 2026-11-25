@@ -336,6 +336,22 @@ export function draftKeyOf(state: { activeSessionFile?: string; draftId?: string
   return state.activeSessionFile || state.draftId || ''
 }
 
+/**
+ * The edit-rewind the reader can still take back, for the conversation on
+ * screen. A rewind belongs to the conversation it happened in, so the notice
+ * must not follow the reader into another one.
+ */
+export function rewindUndoFor(state: {
+  activeSessionFile?: string
+  draftId?: string
+  rewindUndo?: { key: string; prompt: string }
+}): string | undefined {
+  const undo = state.rewindUndo
+  const key = draftKeyOf(state)
+  if (!undo || !key) return undefined
+  return threadKey(undo.key) === threadKey(key) ? undo.prompt : undefined
+}
+
 function viewKeyOf(state: { activeSessionFile?: string; draftId?: string }): string {
   return draftKeyOf(state)
 }
@@ -581,7 +597,7 @@ export interface AppStore {
    */
   cancelSubagentTask: (taskId: string, sessionKey?: string) => Promise<void>
   /**
-   * Stop one swarm worker in the visible conversation. The lead turn is
+   * Stop a named swarm worker or all active workers with `*`. The lead turn is
    * blocked inside a swarm tool call, so this travels as an extension command.
    */
   stopSwarmWorker: (name: string, sessionKey?: string) => Promise<void>
@@ -652,6 +668,17 @@ export interface AppStore {
   forkTargets: ForkTarget[]
   /** True while a fork or an edit rewind is in flight, so the button cannot be pressed twice. */
   forking: boolean
+  /**
+   * The edit-rewind the reader can still take back.
+   *
+   * Editing a message moves the branch behind it, so the messages that
+   * followed leave the transcript. The branch they came from still exists in
+   * the session file; this remembers that one rewind has not been followed by
+   * anything yet, which is the window in which undo is possible.
+   */
+  rewindUndo?: { key: string; prompt: string }
+  /** Take back the last message edit: restore the branch it moved away from. */
+  undoRewind: () => Promise<void>
   /**
    * The execution Pi is running, as far as the client can tell.
    *
@@ -1055,6 +1082,8 @@ export function getSessionAccessLru(): readonly string[] {
 
 const hydrationInFlight = new Map<string, Promise<void>>()
 let pendingRewind: { sessionKey: string; error?: string } | undefined
+/** The same watch, for the command that takes an edit back. */
+let pendingUndoRewind: { sessionKey: string; error?: string } | undefined
 const inlineBashCounts = new Map<string, number>()
 const respondingUiIds = new Set<string>()
 
@@ -1685,6 +1714,7 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
   },
   forkTargets: [],
   forking: false,
+  rewindUndo: undefined,
   commitRequest: 0,
   uiStatuses: [],
   uiWidgets: [],
@@ -1806,7 +1836,6 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       return
     }
     try {
-      await get().ensureRuntime(key, 'swarm-stop')
       await tracedRpc(threadKey(key), 'prompt', { message: `/desktop-swarm-stop ${name}` }, 30_000, 'swarm-stop')
     } catch (error) {
       get().showToast(messageOf(error), 'warning')
@@ -2804,6 +2833,10 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
     const update = bindSet(set, get, key)
     const ownGet = bindGet(get, key)
     const view = get()
+    // A prompt sent after an edit moves the branch on: the rewind can no
+    // longer be taken back without dropping this message.
+    const undo = get().rewindUndo
+    if (undo && threadKey(undo.key) === threadKey(key)) set({ rewindUndo: undefined })
     const cwd = threadKey(viewKeyOf(view)) === threadKey(key) ? view.workspace?.path : undefined
     const payload: Record<string, unknown> = { message: trimmed, streamingBehavior: kind }
     if (images.length) payload.images = images
@@ -2917,23 +2950,24 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       })
       if (result?.disposition === 'handled') {
         forgetQueuedPrompt(key, pendingPrompt.id)
+        const isModeCommand = /^\/(?:plan|goal|swarm|plugin)(?:\s|$)/.test(trimmed)
         update((state) => {
           const shouldSettle =
             canSettlePreRun(state.run) || (result.cancelled && state.run.phase === 'aborting')
+          const items = clearPendingPrompts(state.items, pendingPrompt.id)
           return {
             cwdWait: undefined,
             isStreaming: shouldSettle ? false : state.isStreaming,
             run: shouldSettle ? settlePreRun(state.run) : state.run,
-            // The handler consumed the command, so no model turn follows: the
-            // transcript still records it, or a late response lands on a thread
-            // whose transcript never shows what the reader asked for. A cancelled
-            // prompt never reached Pi, so its waiting bubble is removed instead.
-            items: result.cancelled
-              ? clearPendingPrompts(state.items, pendingPrompt.id)
-              : applyEvent(state.items, {
+            // Mode shortcuts publish their own status and can send the task as
+            // a separate user message. Its events can arrive on either side of
+            // the command response.
+            items: result.cancelled || isModeCommand
+              ? items
+              : applyEvent(items, {
                   type: 'client_notice',
                   level: 'info',
-                  text: `Pi handled ${trimmed} directly — no model turn was needed`
+                  text: translate('Pi accepted {input}', state.settings.language).replace('{input}', () => trimmed)
                 })
           }
         })
@@ -4370,6 +4404,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         })
       }
       if (prompt) get().insertIntoComposer(prompt, 'replace', key)
+      // The branch behind the edited message is still in the session file, so
+      // the edit can be taken back until something is sent from here.
+      set({ rewindUndo: { key, prompt: prompt.slice(0, 200) } })
       get().showToast('Message recalled for editing')
     } catch (error) {
       const message = messageOf(error)
@@ -4377,6 +4414,59 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       get().showToast(message, 'error')
     } finally {
       pendingRewind = undefined
+      set({ forking: false })
+    }
+  },
+
+  async undoRewind() {
+    const state = get()
+    const owner = viewKeyOf(state)
+    const undo = state.rewindUndo
+    if (!owner || !undo || threadKey(undo.key) !== threadKey(owner)) return
+    if (state.isStreaming || state.run.phase !== 'idle' || state.run.compaction) {
+      get().showToast('Wait for the current turn to finish before undoing the edit', 'warning')
+      return
+    }
+    set({ forking: true })
+    try {
+      const key = threadKey(owner)
+      await get().ensureRuntime(owner, 'message-undo')
+      // A Pi process keeps the extension set it started with; a build that
+      // added the undo command after this process booted has to restart it,
+      // or the command would be sent to the model as a chat prompt.
+      const commandList = await tracedRpc<{ commands?: PiCommand[] }>(
+        key,
+        'get_commands',
+        undefined,
+        undefined,
+        'message-undo'
+      )
+      if (
+        !(commandList?.commands ?? []).some((command) => command.name === 'desktop-undo-rewind') &&
+        typeof window.pi.runtime.stop === 'function'
+      ) {
+        await window.pi.runtime.stop(key)
+        await get().ensureRuntime(owner, 'message-undo-reload')
+      }
+      const undoWatch: typeof pendingUndoRewind = { sessionKey: key }
+      pendingUndoRewind = undoWatch
+      await tracedRpc(key, 'prompt', { message: '/desktop-undo-rewind' }, 60_000, 'message-undo')
+      if (undoWatch.error) throw new Error(undoWatch.error)
+      await get().refreshState(key)
+      // The restored branch is the saved one, not the runtime's compacted
+      // context: replay all of it so the messages the edit hid come back.
+      const history = await window.pi.sessions.hydrate(owner, 'branch').catch(() => undefined)
+      await get().reloadMessages(key, history
+        ? { messages: history.messages, historyTruncated: history.historyTruncated }
+        : undefined)
+      set({ rewindUndo: undefined })
+      get().showToast('The messages the edit had removed are back')
+    } catch (error) {
+      const message = messageOf(error)
+      bindSet(set, get, owner)({ error: message })
+      get().showToast(message, 'error')
+    } finally {
+      pendingUndoRewind = undefined
       set({ forking: false })
     }
   },
@@ -6136,6 +6226,10 @@ function handleEvent(
         if (pendingRewind && event.extensionPath === 'command:desktop-rewind' &&
           threadKey(pendingRewind.sessionKey) === threadKey(owner || viewKeyOf(get()))) {
           pendingRewind.error = typeof event.error === 'string' ? event.error : 'This message cannot be edited'
+        }
+        if (pendingUndoRewind && event.extensionPath === 'command:desktop-undo-rewind' &&
+          threadKey(pendingUndoRewind.sessionKey) === threadKey(owner || viewKeyOf(get()))) {
+          pendingUndoRewind.error = typeof event.error === 'string' ? event.error : 'The edit cannot be undone'
         }
         set((state) => ({
           run: state.run.settled ? state.run : { ...state.run, hadError: true }

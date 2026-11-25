@@ -1098,6 +1098,15 @@
   white-space: nowrap;
 }
 
+/* The update is installed from the sidebar button, so this row only points at
+   it: a second control here would be a second way to ask the same question. */
+.settings-about-hint {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  line-height: var(--leading-small);
+  white-space: nowrap;
+}
+
 .settings-version-actions {
   display: inline-flex;
   align-items: center;

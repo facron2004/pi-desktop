@@ -12,6 +12,7 @@ export interface Plan {
   done: number
   total: number
   sourceId: string
+  source: 'todo' | 'markdown'
 }
 
 /**
@@ -131,7 +132,7 @@ function planEntries(item: AssistantItem): PlanEntry[] {
 function samePlan(left: Plan | null, right: Plan | null): boolean {
   if (left === right) return true
   if (!left || !right) return false
-  if (left.sourceId !== right.sourceId || left.done !== right.done || left.total !== right.total) {
+  if (left.sourceId !== right.sourceId || left.source !== right.source || left.done !== right.done || left.total !== right.total) {
     return false
   }
   if (left.entries === right.entries) return true
@@ -174,13 +175,15 @@ function todoEntries(item: ToolItem): PlanEntry[] | null {
 /**
  * The newest checklist the agent maintained with the todo tool.
  *
- * A conversation whose agent writes no markdown checklist falls back to this;
- * the tool sends the whole list on every update, so the newest call is the
- * current plan.
+ * A final reply in the same turn can confirm steps the agent forgot to sync
+ * to the tool, provided it explicitly checks off items in the same list.
  */
 function todoPlan(items: ThreadItem[]): Plan | null {
+  let lastAssistant: AssistantItem | undefined
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]
+    if (item.kind === 'user') lastAssistant = undefined
+    if (item.kind === 'assistant') lastAssistant ??= item
     if (item.kind !== 'tool' || item.toolName !== 'desktop_todo') continue
     // A replayed `proposed` call never ran. Its arguments are only a request,
     // so using them here could show progress the tool never recorded.
@@ -193,11 +196,25 @@ function todoPlan(items: ThreadItem[]): Plan | null {
         entries,
         done: entries.filter((entry) => entry.done).length,
         total: entries.length,
-        sourceId: item.id
+        sourceId: item.id,
+        source: 'todo'
       }
       planObjectCache.set(item, plan)
     }
-    return plan
+    if (item.status !== 'ok' || plan.done === plan.total || lastAssistant?.stopReason !== 'stop' || lastAssistant.streaming) {
+      return plan
+    }
+    const final = planEntries(lastAssistant)
+    if (final.length !== entries.length || final.some((entry, i) => entry.text !== entries[i].text)) {
+      return plan
+    }
+    let done = plan.done
+    const confirmed = entries.map((entry, i) => {
+      if (entry.done || !final[i].done) return entry
+      done += 1
+      return { ...entry, done: true, active: false }
+    })
+    return done === plan.done ? plan : { ...plan, done, entries: confirmed }
   }
   return null
 }
@@ -227,7 +244,8 @@ export function extractPlan(items: ThreadItem[]): Plan | null {
         entries,
         done: entries.filter((entry) => entry.done).length,
         total: entries.length,
-        sourceId: item.id
+        sourceId: item.id,
+        source: 'markdown'
       }
       planObjectCache.set(item, nextPlan)
     }

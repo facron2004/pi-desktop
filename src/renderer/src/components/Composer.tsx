@@ -34,6 +34,7 @@ import {
 } from '@shared/types'
 import type { AgentMode, AppLanguage, FileEntry, PiCommand } from '@shared/types'
 import { readGoalStatus } from '@shared/task-mode-state'
+import { goalBarVisible } from '@shared/goal-display'
 import { appCommandName } from '../lib/app-commands'
 import { commandIcon } from '../lib/command-source'
 import { composerDraftAfterSend } from '../lib/composer-drafts'
@@ -177,7 +178,7 @@ function detectMention(text: string, cursor: number): MentionMatch | null {
   return { query, start: at, cursor }
 }
 
-export const Composer = memo(function Composer() {
+export const Composer = memo(function Composer({ onOpenSwarm }: { onOpenSwarm: () => void }) {
   const submitComposerDraft = useAppStore((state) => state.submitComposerDraft)
   const stop = useAppStore((state) => state.stop)
   const isStreaming = useAppStore((state) => state.isStreaming)
@@ -198,6 +199,9 @@ export const Composer = memo(function Composer() {
     return (key && state.threads[key]?.clientKey) || key || state.clientKey || '__fallback__'
   })
   const submitting = useAppStore((state) => Boolean(state.submittingDrafts[clientKey]))
+  // A message edit can be taken back until something is sent from here.
+  const undoEdit = useAppStore((state) => state.rewindUndo === true)
+  const undoRewind = useAppStore((state) => state.undoRewind)
   const draftEntry = useAppStore(
     useCallback((state) => (draftKey ? state.drafts[draftKey] : undefined), [draftKey])
   )
@@ -481,7 +485,7 @@ export const Composer = memo(function Composer() {
   // Mode" is redundant there. It comes back the moment the goal is cleared, and
   // it stays for every other task mode.
   const goalIsOnScreen = useAppStore((state) =>
-    Boolean(readGoalStatus(state.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text))
+    goalBarVisible(readGoalStatus(state.uiStatuses.find((entry) => entry.key === GOAL_STATUS_KEY)?.text)?.status)
   )
   const modeChip = agentMode === 'default' ? null : MODE_CHIPS[agentMode]
   const showModeChip = modeChip && !(agentMode === 'goal' && goalIsOnScreen)
@@ -1430,6 +1434,21 @@ export const Composer = memo(function Composer() {
 
         <GoalBar key={clientKey} />
 
+        {undoEdit ? (
+          <div className="composer__rewind" role="status">
+            <span className="composer__rewind-text">
+              {t('Editing hid the messages after it')}
+            </span>
+            <button
+              type="button"
+              className="composer__rewind-undo"
+              onClick={() => void undoRewind()}
+            >
+              {t('Undo edit')}
+            </button>
+          </div>
+        ) : null}
+
         <div
           className="composer"
           data-streaming={isStreaming}
@@ -1704,7 +1723,30 @@ export const Composer = memo(function Composer() {
                 pushed 完全访问 sideways the moment a mode was picked. The
                 permission control keeps one position; the chip grows to its
                 right. */}
-            {showModeChip ? (
+            {showModeChip && agentMode === 'swarm' ? (
+              <div className="composer__swarm-mode">
+                <button
+                  type="button"
+                  className="composer__swarm-roster"
+                  aria-label={t('Open Swarm team')}
+                  title={t('Open Swarm team')}
+                  onClick={onOpenSwarm}
+                >
+                  <Network size={13} aria-hidden="true" />
+                  <span>{t('Swarm Mode')}</span>
+                </button>
+                <button
+                  type="button"
+                  className="composer__mode"
+                  title={isStreaming ? t('Stop the current run before changing modes') : t('Leave Swarm Mode')}
+                  aria-label={t('Leave Swarm Mode')}
+                  disabled={isStreaming || !canCompose}
+                  onClick={() => void setAgentMode('default')}
+                >
+                  <X size={12} aria-hidden="true" />
+                </button>
+              </div>
+            ) : showModeChip ? (
               <button
                 type="button"
                 className="composer__mode"
@@ -1717,8 +1759,6 @@ export const Composer = memo(function Composer() {
                   <GoalTargetIcon />
                 ) : agentMode === 'plan' ? (
                   <ListChecks size={13} />
-                ) : agentMode === 'swarm' ? (
-                  <Network size={13} />
                 ) : (
                   <Wrench size={13} />
                 )}
