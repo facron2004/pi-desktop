@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Download, Sparkles } from 'lucide-react'
-import type { PiCliUpgradeProgress, VersionCheckResult } from '@shared/types'
+import type { PiCliUpgradeProgress } from '@shared/types'
 import { useT } from '../../lib/i18n'
 import { useAppStore } from '../../store/useAppStore'
 import { piCliUpdate, subscribePiCliUpdate } from '../../lib/app-update'
@@ -8,14 +8,12 @@ import { Switch } from '../Switch'
 import { SettingsGroup } from './SettingsShared'
 
 export function AboutSettings({
-  updateStatus,
   checking,
   upgradingCli,
   piCliProgress,
   onCheck,
   onUpgradeCli
 }: {
-  updateStatus: VersionCheckResult | null
   checking: boolean
   upgradingCli: boolean
   piCliProgress: PiCliUpgradeProgress | null
@@ -58,17 +56,6 @@ export function AboutSettings({
             </div>
             <div className="settings-version-actions">
               <span className="settings-about-value">{appCurrent}</span>
-              {updateStatus?.app.hasUpdate ? (
-                <>
-                  <span className="settings-badge" data-tone="amber">
-                    <Sparkles size={11} style={{ marginRight: 4 }} />
-                    {t('New version')} v{updateStatus.app.latest}
-                  </span>
-                  {/* The update lives on the sidebar button beside Settings: one
-                      affordance for check, download and restart, no dialog. */}
-                  <span className="settings-about-hint">{t('Update from the button beside Settings')}</span>
-                </>
-              ) : null}
             </div>
           </div>
           <div className="settings-item-row settings-about-row">

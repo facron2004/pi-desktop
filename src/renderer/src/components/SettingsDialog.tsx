@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import type { PiCliUpgradeProgress, VersionCheckResult } from '@shared/types'
+import type { PiCliUpgradeProgress } from '@shared/types'
 import {
   Archive,
   Bot,
@@ -21,9 +21,7 @@ import { useAppStore } from '../store/useAppStore'
 import { FeatureLoading } from './FeatureLoading'
 import {
   checkForAppUpdates,
-  lastAppUpdateCheck,
-  noteAppUpdateCheck,
-  subscribeAppUpdateCheck
+  noteAppUpdateCheck
 } from '../lib/app-update'
 import '../styles/appearance.css'
 
@@ -128,10 +126,8 @@ export function SettingsDialog({
 
   // The full update reading lives in the shared module, not in a component:
   // closing Settings, reopening it, or toggling a switch in between must not
-  // throw away the version the reader just checked for. Subscribing also picks
-  // up a check started from the menu bar or the sidebar while this dialog is up.
-  const [updateStatus, setUpdateStatus] = useState<VersionCheckResult | null>(lastAppUpdateCheck)
-  useEffect(() => subscribeAppUpdateCheck(setUpdateStatus), [])
+  // throw away the version the reader just checked for. This page only starts
+  // checks — the answer is read by the sidebar button and the notice.
   const [checkingUpdates, setCheckingUpdates] = useState(false)
   const [upgradingCli, setUpgradingCli] = useState(false)
   const [piCliProgress, setPiCliProgress] = useState<PiCliUpgradeProgress | null>(null)
@@ -152,7 +148,6 @@ export function SettingsDialog({
       // page must read that rather than the failure: a machine that is offline
       // right now has not stopped having the version it found yesterday.
       noteAppUpdateCheck(result)
-      setUpdateStatus(lastAppUpdateCheck())
     } catch {
       // The shared result card owns errors from a manual check.
     } finally {
@@ -170,7 +165,6 @@ export function SettingsDialog({
         await refreshInfo()
         const result = await window.pi.app.checkUpdate()
         noteAppUpdateCheck(result)
-        setUpdateStatus(result)
       } else {
         showToast(res.error ? `${t('Upgrade failed')}: ${res.error}` : t('Upgrade failed'), 'error')
       }
@@ -243,7 +237,6 @@ export function SettingsDialog({
               {page === 'archived' ? <ArchivedSessionsSettings /> : null}
               {page === 'about' ? (
                 <AboutSettings
-                  updateStatus={updateStatus}
                   checking={checkingUpdates}
                   upgradingCli={upgradingCli}
                   piCliProgress={piCliProgress}
