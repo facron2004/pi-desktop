@@ -24,6 +24,8 @@ export const MAX_IM_MESSAGE_CHARS = 4_000
 const MAX_INBOUND_CHARS = 8_000
 /** Ids remembered per channel to drop a platform's re-pushed event. */
 const MAX_INBOUND_DEDUPE = 256
+/** Where those ids survive a restart; a re-push can outlive the process. */
+const SEEN_FILE = 'im-inbound-seen.json'
 /** A reply that names the project and conversation needs both to be readable on a phone. */
 const NAME_LIMIT = 60
 /** How long `/new` waits for Pi to write the JSONL of the draft it started. */
@@ -119,6 +121,7 @@ function parsePort(value: unknown): number | undefined {
  */
 export class ImChannelService extends EventEmitter {
   private readonly stateFile: string
+  private readonly seenFile: string
   private channels: StoredChannel[] = []
   private readonly runtimes = new Map<string, ChannelRuntime>()
   private readonly channelOps = new Map<string, Promise<void>>()
@@ -131,6 +134,8 @@ export class ImChannelService extends EventEmitter {
   private readonly inboundChains = new Map<string, Promise<void>>()
   /** Platform event ids already handled, surviving an adapter rebuild. */
   private readonly seenInbound = new Map<string, Map<string, true>>()
+  /** Ids already on disk when this instance started. */
+  private seenLoaded = false
   private disposed = false
 
   constructor(
@@ -145,6 +150,7 @@ export class ImChannelService extends EventEmitter {
   ) {
     super()
     this.stateFile = path.join(options.userData, 'im-channels.json')
+    this.seenFile = path.join(options.userData, SEEN_FILE)
   }
 
   async initialize(): Promise<void> {
@@ -173,6 +179,7 @@ export class ImChannelService extends EventEmitter {
     this.replyTargets.clear()
     this.inboundChains.clear()
     this.seenInbound.clear()
+    this.seenLoaded = false
     await Promise.allSettled([...this.channelOps.values()])
     await this.stopAll()
   }
@@ -242,6 +249,7 @@ export class ImChannelService extends EventEmitter {
     this.pendingNewConversation.delete(id)
     this.replyTargets.delete(id)
     this.seenInbound.delete(id)
+    if (this.seenLoaded) this.persistSeenInbound()
     await this.reconcileChannel(id)
     this.emit('changed', this.status())
     return this.status()
@@ -544,6 +552,7 @@ export class ImChannelService extends EventEmitter {
    * re-run instruction can apply a deploy or a delete twice.
    */
   private rememberInbound(channelId: string, messageId: string): boolean {
+    this.loadSeenInbound()
     let seen = this.seenInbound.get(channelId)
     if (!seen) {
       seen = new Map()
@@ -555,7 +564,57 @@ export class ImChannelService extends EventEmitter {
       if (oldest !== undefined) seen.delete(oldest)
     }
     seen.set(messageId, true)
+    this.persistSeenInbound()
     return true
+  }
+
+  /**
+   * Load the ids a previous process handled.
+   *
+   * An unreadable file is set aside rather than left in place: it holds only
+   * ids, so losing it costs a possible duplicate once, while leaving it there
+   * would fail every later write. The read happens on the first inbound event,
+   * not in the constructor, so a channel nobody writes to pays nothing.
+   */
+  private loadSeenInbound(): void {
+    if (this.seenLoaded) return
+    this.seenLoaded = true
+    try {
+      if (!existsSync(this.seenFile)) return
+      const parsed = JSON.parse(readFileSync(this.seenFile, 'utf8')) as { channels?: Record<string, unknown> }
+      const channels = parsed?.channels
+      if (!channels || typeof channels !== 'object') return
+      for (const [channelId, ids] of Object.entries(channels)) {
+        if (!Array.isArray(ids)) continue
+        const seen = new Map<string, true>()
+        for (const id of ids.slice(-MAX_INBOUND_DEDUPE)) {
+          if (typeof id === 'string' && id) seen.set(id, true)
+        }
+        if (seen.size > 0) this.seenInbound.set(channelId, seen)
+      }
+    } catch (error) {
+      try {
+        const quarantine = `${this.seenFile}.corrupt-${Date.now()}`
+        renameSync(this.seenFile, quarantine)
+        console.error(`[pi-desktop] im channel event ids were unreadable and moved to ${path.basename(quarantine)}:`, error)
+      } catch {
+        console.error('[pi-desktop] im channel event ids could not be read:', error)
+      }
+    }
+  }
+
+  private persistSeenInbound(): void {
+    try {
+      const channels: Record<string, string[]> = {}
+      for (const [channelId, seen] of this.seenInbound) channels[channelId] = [...seen.keys()]
+      mkdirSync(path.dirname(this.seenFile), { recursive: true })
+      const tmp = `${this.seenFile}.${randomUUID()}.tmp`
+      writeFileSync(tmp, JSON.stringify({ version: 1, channels }, null, 2), 'utf8')
+      renameSync(tmp, this.seenFile)
+    } catch (error) {
+      // Losing the record only means a re-push may run twice after a restart.
+      console.error('[pi-desktop] im channel event ids could not be saved:', error)
+    }
   }
 
   /**

@@ -48,8 +48,8 @@ function fakeAdapter(): FakeAdapter {
   return adapter
 }
 
-function service(t: { after: (fn: () => void) => void }, adapter: FakeAdapter) {
-  const userData = mkdtempSync(path.join(tmpdir(), 'pi-im-channels-'))
+function service(t: { after: (fn: () => void) => void }, adapter: FakeAdapter, existingUserData?: string) {
+  const userData = existingUserData ?? mkdtempSync(path.join(tmpdir(), 'pi-im-channels-'))
   const supervisor = Object.assign(new EventEmitter(), {
     sessionInfo: () => ({ running: false, waitingForInput: false, cwd: 'C:/project', externalContext: false }),
     ensure: async (options: Record<string, unknown>) => { calls.ensures.push(options); return { ok: true } },
@@ -508,4 +508,24 @@ test('a re-pushed platform event is dropped even after the adapter is rebuilt', 
   assert.deepEqual(routed, ['deploy'], 'a re-pushed event ran the instruction again')
   await first.adapter.stop()
   await second.adapter.stop()
+})
+
+test('event ids survive a restart so a re-pushed instruction cannot run twice', async (t) => {
+  const adapter = fakeAdapter()
+  const first = service(t, adapter)
+  await first.instance.save(FEISHU)
+  await first.instance.initialize()
+  assert.equal(adapter.contexts[0].rememberInbound?.('om_restart'), true)
+  await first.instance.dispose()
+
+  const userData = (first.instance as unknown as { options: { userData: string } }).options.userData
+  const adapterAgain = fakeAdapter()
+  const second = service(t, adapterAgain, userData)
+  await second.instance.save(FEISHU)
+  await second.instance.initialize()
+  // The record on disk is what stops a platform re-push that arrives after a
+  // restart from running a deploy or a delete a second time.
+  assert.equal(adapterAgain.contexts[0].rememberInbound?.('om_restart'), false)
+  assert.equal(adapterAgain.contexts[0].rememberInbound?.('om_new'), true)
+  await second.instance.dispose()
 })
