@@ -550,6 +550,19 @@ images from the last saved snapshot before falling back to text and file
 references. An oversized new attachment should leave older saved drafts
 recoverable.
 
+**A model or reasoning pick never waits with its menu open.** The switch can
+talk to a busy, wedged or gone Pi process, and `runtime:has` / `ensure` /
+`set_model` used to be able to stack their 30 s timeouts — the picker stayed
+open (and the module-wide "already in progress" flag blocked every later
+attempt) while that happened, which reads as a frozen app. The picker now
+closes and dismisses `showModels` before it calls the store, the chip shows a
+spinner while the change is in flight, and every wait behind `setModel` /
+`setThinkingLevel` has a deadline (`lib/with-timeout.ts`: 5 s for
+`runtime:has`, 25 s for a cold start, 15 s for the command, 8 s for a settings
+write). A deadline only stops the UI waiting; the operation itself still owns
+its state guards, and a late snapshot refresh cannot turn an applied switch into
+a reported failure.
+
 The model is a per-conversation choice: picking a model in a session sends
 `set_model` to that process and never writes the app default — only a draft
 chooses the default for the conversation it is about to create. A cold session

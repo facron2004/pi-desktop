@@ -2332,6 +2332,29 @@ async function checkRenderer(markerFile, nestedWorkspace, workspace, goalFixture
   await pause(250)
   check(finalEnvironmentToggle?.getAttribute('aria-expanded') === 'false', 'The final environment screenshot is not folded')
 
+  // A model pick must leave the picker at once: the switch itself can wait on
+  // a busy Pi, and an open menu that stays put while it waits reads as a freeze.
+  store.setState({
+    models: [
+      { provider: 'fixture', id: 'sidebar-test', name: 'Fixture model', contextWindow: 32000 },
+      { provider: 'fixture', id: 'second-model', name: 'Second model', contextWindow: 32000 }
+    ],
+    catalogModels: [],
+    disabledModelSpecs: []
+  })
+  const modelChip = await until(() => document.querySelector('.model-chip'), 'The model chip is missing')
+  modelChip.click()
+  // The chip opens the effort card first; its model row turns the card into the list.
+  const modelListButton = await until(() => document.querySelector('.effort-card__model-btn'), 'The effort card has no way to the model list')
+  modelListButton.click()
+  await until(() => document.querySelectorAll('.model-picker__row').length >= 2, 'The model picker did not list both models')
+  const otherModel = [...document.querySelectorAll('.model-picker__row')].find((row) => !row.querySelector('.model-picker__check'))
+  check(otherModel, 'The second model is not selectable')
+  otherModel.click()
+  await until(() => !document.querySelector('.model-picker-container'), 'Picking a model left the picker open')
+  passed.push('picking a model closes the picker without waiting on Pi')
+  await store.getState().updateSettings({ model: 'fixture/sidebar-test', provider: 'fixture' })
+  store.setState({ models: [], catalogModels: [] })
   // The Swarm page: a live roster, one lane per worker, a filter, and a
   // dispatch that opens the child conversation. Injected through the store
   // because the fake provider does not run a real team.
@@ -2435,7 +2458,7 @@ try {
   const match = /\[pi-desktop\] eval result: (.+)/.exec(stdout)
   assert.ok(match, `Renderer regressions failed:\n${stdout}\n${stderr}\nRequests: ${JSON.stringify(requests)}`)
   const passed = JSON.parse(match[1])
-  assert.equal(passed.length, process.platform === 'win32' ? 43 : 41)
+  assert.equal(passed.length, process.platform === 'win32' ? 44 : 42)
   assert.deepEqual(questionRequests, { normal: 2, plan: 2, cancel: 1 })
   assert.equal(existsSync(path.join(workspace, questionFixture.prematureFile)), false, 'Pi wrote a file from the question batch')
   assert.deepEqual(planRequests, { original: 1, revision: 1, implementation: 2 })

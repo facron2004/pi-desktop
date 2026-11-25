@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ModelInfo } from '@shared/types'
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Search, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Loader2, Search, X } from 'lucide-react'
 import { selectableModels, resolveSavedModel } from '@shared/provider-models'
 import { useAppStore } from '../store/useAppStore'
 import { EffortSlider } from './EffortSlider'
@@ -283,26 +283,25 @@ export const ModelPicker = memo(function ModelPicker() {
     else if (rowRect.bottom > listRect.bottom) list.scrollTop += rowRect.bottom - listRect.bottom
   }, [highlighted, showModels, displayModels.length])
 
-  const pickModel = async (model: ModelInfo): Promise<void> => {
+  const pickModel = async (model: ModelInfo, close: () => void): Promise<void> => {
     modelTip.dismiss()
     if (updating) return
     const selected = currentModel?.id === model.id && currentModel.provider === model.provider
-    if (selected) {
-      setShowModels(false)
-      return
-    }
+    // Leave the picker before talking to Pi. The switch can wait on a busy or
+    // unresponsive process (bounded in the store), and a menu that stays open
+    // with no feedback while that happens is what felt like a frozen app.
+    setShowModels(false)
+    close()
+    if (selected) return
     setModelUpdating(true)
     try {
-      if (await setModel(model)) {
-        setRecency(readModelRecency())
-        setShowModels(false)
-      }
+      if (await setModel(model)) setRecency(readModelRecency())
     } finally {
       setModelUpdating(false)
     }
   }
 
-  const renderModelRow = (model: ModelInfo) => {
+  const renderModelRow = (model: ModelInfo, close: () => void) => {
     const modelContext = formatContextWindow(model.contextWindow)
     const price = modelPrice(model, t)
     const images = acceptsImages(model)
@@ -331,6 +330,7 @@ export const ModelPicker = memo(function ModelPicker() {
         data-highlighted={highlighted === modelIndex}
         aria-selected={highlighted === modelIndex}
         aria-disabled={updating}
+        data-updating={modelUpdating || undefined}
         onMouseEnter={(event) => {
           setHighlighted(modelIndex)
           enter(event)
@@ -338,7 +338,7 @@ export const ModelPicker = memo(function ModelPicker() {
         onMouseLeave={modelTip.leave}
         onFocus={enter}
         onBlur={modelTip.leave}
-        onClick={() => void pickModel(model)}
+        onClick={() => void pickModel(model, close)}
       >
         <span className="model-picker__row-body">
           <span className="model-picker__row-name">{model.name || model.id}</span>
@@ -388,8 +388,11 @@ export const ModelPicker = memo(function ModelPicker() {
             toggle(e)
           }}
           disabled={starting}
+          data-busy={updating || undefined}
+          aria-busy={updating || undefined}
           title={triggerTitle}
         >
+          {updating ? <Loader2 size={11} className="spin" aria-hidden="true" /> : null}
           <span className="model-chip__name">{modelLabel}</span>
           {currentLevel ? (
             <>
@@ -403,7 +406,7 @@ export const ModelPicker = memo(function ModelPicker() {
         </button>
       )}
     >
-      {() => (
+      {(close) => (
         <div
           className="model-picker-container"
           role="dialog"
@@ -462,7 +465,7 @@ export const ModelPicker = memo(function ModelPicker() {
                       if (event.key === 'Enter') {
                         event.preventDefault()
                         const model = displayModels[highlighted]
-                        if (model && !updating) void pickModel(model)
+                        if (model && !updating) void pickModel(model, close)
                       }
                     }}
                   />
@@ -498,7 +501,7 @@ export const ModelPicker = memo(function ModelPicker() {
                     <div className="popover__label model-picker__group-label" title={t('Recent models')}>
                       {t('Recent models')}
                     </div>
-                    {recentModels.map(renderModelRow)}
+                    {recentModels.map((model) => renderModelRow(model, close))}
                   </div>
                 ) : null}
                 {hasOtherModels ? (
@@ -517,7 +520,7 @@ export const ModelPicker = memo(function ModelPicker() {
                     <div className="popover__label model-picker__group-label" title={provider}>
                       {provider}
                     </div>
-                    {group.map(renderModelRow)}
+                    {group.map((model) => renderModelRow(model, close))}
                   </div>
                 ))}
               </div>

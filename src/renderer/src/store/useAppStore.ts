@@ -36,6 +36,7 @@ import type {
 import type { ProviderProfile, SaveProviderInput } from '@shared/providers'
 import { modelsFromProfiles, resolveSavedModel, selectableModels } from '@shared/provider-models'
 import type { SessionNotice } from '../lib/session-indicator'
+import { withTimeout } from '../lib/with-timeout'
 import { loadSessionNotices, saveSessionNotices } from '../lib/session-notices'
 import {
   applyEventBatch,
@@ -3313,8 +3314,9 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       // and let the next launch read it (draft) or `ensureRuntime` apply it
       // (a resumed session). Booting Pi here made every first switch after a
       // start feel like a cold start, because it was one.
-      const running =
-        owner && typeof window.pi.runtime.has === 'function' ? await window.pi.runtime.has(owner) : true
+      const running = owner && typeof window.pi.runtime.has === 'function'
+        ? await withTimeout(window.pi.runtime.has(owner), 5_000, 'Pi did not answer. Try switching the model again.')
+        : true
       // A process that is already booting will not read a settings change it
       // missed. Treat it as live so `ensureRuntime` waits for it and sends
       // `set_model` instead of leaving the first prompt on the old model.
@@ -3332,7 +3334,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
             const shouldWrite = get().settings.model !== spec ||
               get().settings.provider !== model.provider
             if (shouldWrite) {
-              const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
+              const settings = await withTimeout(
+                window.pi.settings.patch({ provider: model.provider, model: spec }),
+                8_000,
+                'Saving the model selection timed out. Try again.'
+              )
               if (modelPreferenceSequence === selection) {
                 set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
               }
@@ -3349,7 +3355,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         return true
       }
       pendingModelSelections.delete(key)
-      const ensuredKey = await get().ensureRuntime(owner, 'set-model')
+      const ensuredKey = await withTimeout(
+        get().ensureRuntime(owner, 'set-model'),
+        25_000,
+        'Pi did not start in time. Try switching the model again.'
+      )
       const liveKey = threadKey(ensuredKey)
       const state = bindGet(get, liveKey)()
       if (!state.models.some(item => item.provider === model.provider && item.id === model.id)) {
@@ -3359,14 +3369,18 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
         }
         await tracedRpc(liveKey, 'prompt', { message: '/desktop-refresh-models' }, undefined, 'refresh-models')
       }
-      await tracedRpc(
-        liveKey,
-        'set_model',
-        { provider: model.provider, modelId: model.id },
-        undefined,
-        'set-model'
+      await withTimeout(
+        tracedRpc(liveKey, 'set_model', { provider: model.provider, modelId: model.id }, undefined, 'set-model'),
+        15_000,
+        'Pi did not acknowledge the model change. Try again.'
       )
-      await get().refreshState(threadKey(owner))
+      // The model is applied even if the follow-up snapshot is slow; do not turn
+      // a stale read into a failed switch.
+      await withTimeout(
+        get().refreshState(threadKey(owner)),
+        10_000,
+        'Refreshing the conversation timed out.'
+      ).catch(() => undefined)
       const spec = `${model.provider}/${model.id}`
       if (selection === modelPreferenceSequence) {
         modelPreferenceValue = spec
@@ -3374,7 +3388,11 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
           const shouldWrite = get().settings.model !== spec ||
             get().settings.provider !== model.provider
           if (shouldWrite) {
-            const settings = await window.pi.settings.patch({ provider: model.provider, model: spec })
+            const settings = await withTimeout(
+              window.pi.settings.patch({ provider: model.provider, model: spec }),
+              8_000,
+              'Saving the model selection timed out. Try again.'
+            )
             if (modelPreferenceSequence === selection) {
               set({ settings: { ...get().settings, provider: settings.provider, model: settings.model } })
             }
@@ -3424,18 +3442,36 @@ export const useAppStore = create<AppStore>((rawSet, get) => {
       // A cold chat has no process yet. Starting one just to store the effort
       // is what the empty card was avoiding; the next launch already reads
       // the saved level. An existing process still hears the change now.
-      const running = owner ? await window.pi.runtime.has(owner) : false
+      const running = owner
+        ? await withTimeout(window.pi.runtime.has(owner), 5_000, 'Pi did not answer. Try again.')
+        : false
       if (running) {
-        const key = await get().ensureRuntime(owner, 'set-thinking')
-        await tracedRpc(key, 'set_thinking_level', { level }, undefined, 'set-thinking')
-        await get().refreshState(threadKey(owner))
+        const key = await withTimeout(
+          get().ensureRuntime(owner, 'set-thinking'),
+          20_000,
+          'Pi did not start in time. Try again.'
+        )
+        await withTimeout(
+          tracedRpc(key, 'set_thinking_level', { level }, undefined, 'set-thinking'),
+          12_000,
+          'Pi did not acknowledge the reasoning change. Try again.'
+        )
+        await withTimeout(
+          get().refreshState(threadKey(owner)),
+          10_000,
+          'Refreshing the conversation timed out.'
+        ).catch(() => undefined)
       }
       if (selection === thinkingPreferenceSequence) {
         const shouldWrite = get().settings.thinkingLevel !== level ||
           (thinkingPreferenceValue !== undefined && thinkingPreferenceValue !== level)
         thinkingPreferenceValue = level
         if (shouldWrite) {
-          const settings = await window.pi.settings.patch({ thinkingLevel: level })
+          const settings = await withTimeout(
+            window.pi.settings.patch({ thinkingLevel: level }),
+            8_000,
+            'Saving the reasoning selection timed out. Try again.'
+          )
           if (thinkingPreferenceSequence === selection) {
             set({ settings: { ...get().settings, thinkingLevel: settings.thinkingLevel } })
           }
