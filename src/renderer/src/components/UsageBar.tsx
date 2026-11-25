@@ -92,7 +92,7 @@ export const UsageBar = memo(function UsageBar() {
               {countLabel}
             </span>
             <span aria-hidden="true">·</span>
-            <span title={t('Average output tokens per second')}>
+            <span title={t('Output tokens per second')}>
               {displayMetrics.tps !== null ? (
                 <>
                   <strong>{displayMetrics.tps.toLocaleString()}</strong> {t('tok/s')}
