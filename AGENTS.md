@@ -570,7 +570,7 @@ geometry. A message about the app is not part of writing a message.
 carries three readings plus the ring, in that order: turns/steps with TPS, token
 usage with cache hit rate, then `ContextRing` at the end of the line. The bar is
 a summary, not a report: **the first-token delay is not on it.** Speed and TTFT
-describe one answer rather than the conversation's running totals, so they share
+describe measured model responses, so they share
 a second popover behind the turns/steps and speed reading (`GenerationPanel`). It
 uses the compact session statistics layout: turns and steps, model time, tool
 execution time, average TTFT and output speed. Unavailable readings say
@@ -642,8 +642,13 @@ block of any kind — text, thinking or a tool call — summing the window into
 `generationMs` when the block ends (`text_end`, `thinking_end`,
 `toolcall_end`, `message_update:done` or `message_end`). A tool gap between
 answers is not model time. `session-timing.ts` stores per-conversation model
-time, TTFT, generation windows and fallback tool durations, while
-`session-metrics.ts` derives the displayed totals and newest-turn TPS.
+time, TTFT, generation windows and fallback tool durations.
+`session-metrics.ts` averages output speed by pairing completed assistant usage
+with the corresponding model duration. A locally recorded duration is used
+only when its assistant timestamp identifies one unambiguous sample. Older
+records can fall back to the matching turn's generation window. Session token
+totals can cover more history than the timed answers, so the speed calculation
+uses only output from the timed samples.
 
 ## The session bar
 

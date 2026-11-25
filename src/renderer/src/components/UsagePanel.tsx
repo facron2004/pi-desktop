@@ -118,7 +118,7 @@ export function GenerationPanel({ metrics }: { metrics: SessionMetrics }) {
           </span>
         </div>
         <div className="usage-panel__row">
-          <span>{t('Output speed (TPS)')}</span>
+          <span>{t('Average output speed (TPS)')}</span>
           <span>
             {metrics.tps !== null ? `${metrics.tps.toLocaleString()} ${t('tok/s')}` : '—'}
           </span>

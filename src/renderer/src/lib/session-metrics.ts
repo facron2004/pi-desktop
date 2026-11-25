@@ -63,7 +63,7 @@ export interface SessionMetrics {
   contextTokens: number | null
   contextWindow: number | null
   contextPercent: number | null
-  /** Completed output tokens per second in the newest turn. */
+  /** Average output tokens per second over completed, timed responses. */
   tps: number | null
   /** Pi's run-start to first-text timing sample. */
   ttftMs: number | null
@@ -83,34 +83,6 @@ export interface SessionMetrics {
 function round(value: number, digits = 1): number {
   const factor = 10 ** digits
   return Math.round(value * factor) / factor
-}
-
-/**
- * Model-time samples for answers in the newest turn.
- *
- * Each sample is stored twice: once under the turn id, and once as
- * `assistant:<message time>:<turn id>`. Only the stamped copies are used
- * here, so the turn-id copy is not added again. Samples from earlier turns
- * are left out; they belong to a different output.
- */
-function newestTurnModelWindowMs(
-  durations: Record<string, number> | undefined,
-  lastUserTimestamp: number | undefined,
-  beforeTimestamp?: number
-): number {
-  if (!durations || lastUserTimestamp === undefined) return 0
-  let sum = 0
-  for (const [id, value] of Object.entries(durations)) {
-    const match = /^assistant:(\d+)(?::|$)/.exec(id)
-    if (!match) continue
-    const stamp = Number(match[1])
-    if (!Number.isFinite(stamp) || stamp < lastUserTimestamp) continue
-    // A held reading describes the turn that ended at this prompt; samples
-    // stamped with the newest prompt belong to the turn now starting.
-    if (beforeTimestamp !== undefined && stamp >= beforeTimestamp) continue
-    if (typeof value === 'number' && Number.isFinite(value) && value > 0) sum += value
-  }
-  return sum
 }
 
 function validNonNegative(value: unknown): number | undefined {
@@ -137,11 +109,13 @@ interface ItemsDigest {
   toolItemCount: number
   knownToolTimeMs: number
   timedToolCalls: number
-  lastTurnGenerationMs: number
-  previousTurnGenerationMs: number
   previousTurnOutput: number
   hasStreamingAssistant: boolean
   transcriptModelMs: number
+  timedOutput: number
+  timedOutputMs: number
+  /** Positive output without a duration, indexed only by unambiguous timestamps. */
+  untimedOutputByTimestamp: Map<number, number | null>
   completedAssistantCount: number
   completedAssistantDurationCount: number
   subagents: SubagentUsage
@@ -165,8 +139,7 @@ function summarizeItems(
   let cacheWrite = 0
   let total = 0
   let currentTurnCompletedOutput = 0
-  let currentTurnAllOutput = 0
-  let currentTurnGenerationMs = 0
+  let currentTurnMissingOutput = false
   let lastUserIndex = -1
   let lastUserTimestamp: number | undefined
   let lastUserOrdinal: number | undefined
@@ -178,10 +151,12 @@ function summarizeItems(
   let toolItemCount = 0
   let knownToolTimeMs = 0
   let timedToolCalls = 0
-  let previousTurnGenerationMs = 0
   let previousTurnOutput = 0
   let hasStreamingAssistant = false
   let transcriptModelMs = 0
+  let timedOutput = 0
+  let timedOutputMs = 0
+  const untimedOutputByTimestamp = new Map<number, number | null>()
   let completedAssistantCount = 0
   let completedAssistantDurationCount = 0
   const subagents: SubagentUsage = { tokens: 0, cost: undefined, tasks: 0, settled: 0 }
@@ -190,12 +165,10 @@ function summarizeItems(
     const item = items[index]
     if (item.kind === 'user') {
       if (lastUserIndex >= 0) {
-        previousTurnGenerationMs = currentTurnGenerationMs
-        previousTurnOutput = currentTurnAllOutput
+        previousTurnOutput = currentTurnMissingOutput ? 0 : currentTurnCompletedOutput
       }
-      currentTurnGenerationMs = 0
       currentTurnCompletedOutput = 0
-      currentTurnAllOutput = 0
+      currentTurnMissingOutput = false
       hasStreamingAssistant = false
       previousUserIndex = lastUserIndex
       previousUserTimestamp = lastUserTimestamp
@@ -221,16 +194,28 @@ function summarizeItems(
     } else if (item.kind === 'assistant') {
       const duration = validNonNegative(item.durationMs)
       if (!item.streaming) {
+        const produced = validNonNegative(item.usage?.output)
         completedAssistantCount += 1
+        currentTurnCompletedOutput += produced ?? 0
+        currentTurnMissingOutput ||= produced === undefined
         if (duration !== undefined) {
           completedAssistantDurationCount += 1
-          currentTurnGenerationMs += duration
+          // Only a completed answer has a final duration. A streaming message
+          // can carry a partial `durationMs`, and counting it here made model
+          // time (and the average speed built on it) move while nothing had
+          // been measured yet.
+          transcriptModelMs += duration
         }
+        if (duration && produced) {
+          timedOutput += produced
+          timedOutputMs += duration
+        }
+        untimedOutputByTimestamp.set(
+          item.timestamp,
+          !duration && produced && !untimedOutputByTimestamp.has(item.timestamp) ? produced : null
+        )
       } else {
         hasStreamingAssistant = true
-      }
-      if (duration !== undefined) {
-        transcriptModelMs += duration
       }
       if (item.usage) {
         input += item.usage.input
@@ -238,11 +223,6 @@ function summarizeItems(
         cacheRead += item.usage.cacheRead
         cacheWrite += item.usage.cacheWrite
         total += item.usage.totalTokens
-        const produced = item.usage.output
-        if (typeof produced === 'number' && Number.isFinite(produced) && produced > 0) {
-          currentTurnAllOutput += produced
-          if (!item.streaming) currentTurnCompletedOutput += produced
-        }
       }
     }
   }
@@ -255,7 +235,7 @@ function summarizeItems(
     cacheRead,
     cacheWrite,
     total,
-    lastTurnOutput: currentTurnCompletedOutput,
+    lastTurnOutput: currentTurnMissingOutput ? 0 : currentTurnCompletedOutput,
     lastUserIndex,
     lastUserTimestamp,
     lastUserOrdinal,
@@ -267,11 +247,12 @@ function summarizeItems(
     toolItemCount,
     knownToolTimeMs,
     timedToolCalls,
-    lastTurnGenerationMs: currentTurnGenerationMs,
-    previousTurnGenerationMs,
     previousTurnOutput,
     hasStreamingAssistant,
     transcriptModelMs,
+    timedOutput,
+    timedOutputMs,
+    untimedOutputByTimestamp,
     completedAssistantCount,
     completedAssistantDurationCount,
     subagents
@@ -304,11 +285,12 @@ export function sessionMetrics(
     toolItemCount,
     knownToolTimeMs,
     timedToolCalls,
-    lastTurnGenerationMs,
-    previousTurnGenerationMs,
     previousTurnOutput,
     hasStreamingAssistant,
     transcriptModelMs,
+    timedOutput,
+    timedOutputMs,
+    untimedOutputByTimestamp,
     completedAssistantCount,
     completedAssistantDurationCount,
     subagents
@@ -370,12 +352,18 @@ export function sessionMetrics(
   let turnModelSum = 0
   let hasTurnModelSamples = false
   let messageModelSum = 0
+  const journalSpeedDurations = new Map<number, number | null>()
   if (timing?.modelDurationsMs) {
     for (const id in timing.modelDurationsMs) {
       const value = timing.modelDurationsMs[id]
       if (!Number.isFinite(value) || value < 0) continue
       if (id.startsWith('assistant:')) {
         messageModelSum += value
+        const stamp = /^assistant:(\d+)(?::|$)/.exec(id)
+        const timestamp = stamp ? Number(stamp[1]) : undefined
+        if (timestamp !== undefined && untimedOutputByTimestamp.get(timestamp)) {
+          journalSpeedDurations.set(timestamp, journalSpeedDurations.has(timestamp) ? null : value)
+        }
       } else {
         turnModelSum += value
         hasTurnModelSamples = true
@@ -400,13 +388,24 @@ export function sessionMetrics(
   const modelTimeMs = baseModelMs > 0 || liveModelTime > 0
     ? baseModelMs + liveModelTime
     : null
+  // Pair every completed response with its own duration. Session totals can
+  // include other branches, a truncated prefix or newer live usage.
+  let speedOutput = timedOutput
+  let speedMs = timedOutputMs
+  for (const [timestamp, duration] of journalSpeedDurations) {
+    if (!duration) continue
+    speedOutput += untimedOutputByTimestamp.get(timestamp) ?? 0
+    speedMs += duration
+  }
+  const averageTps = speedMs > 0 ? round(speedOutput / (speedMs / 1000)) : null
+
   // Usage arrives when the message completes. Pair those tokens only with
   // completed messages' windows: a growing live denominator with a frozen
   // numerator makes the reading fall on every delta and jump on completion.
   // Closed thinking/text blocks still belong to the unfinished message.
-  const measuredWindowMs = hasStreamingAssistant
+  const measuredWindowMs = (hasStreamingAssistant
     ? run.messageGenerationBaseMs
-    : run.generationMs
+    : run.generationMs) ?? 0
   // Older runs, and tests, still report a single span; keep it as a fallback.
   const legacyWindowMs =
     !hasStreamingAssistant && run.lastTokenAt !== undefined && run.firstTokenAt !== undefined
@@ -420,63 +419,27 @@ export function sessionMetrics(
       lastUserOrdinal,
       userTimestampCounts.get(lastUserTimestamp) ?? 0
     )
-  // A transcript-only conversation has no client samples. Each assistant
-  // message carries the duration Pi spent generating it, so summing those is
-  // the same per-answer window the live path records — tool gaps excluded.
-  const transcriptWindowMs = lastTurnGenerationMs
-  // `generationMs: 0` is the value a run starts with, not a measurement. A
-  // window that never closed must not hide the durations Pi already wrote on
-  // the completed answers, or the usage line shows "—" after a real run.
-  const measuredWindow = measuredWindowMs !== undefined && measuredWindowMs > 0
+  const windowMs = measuredWindowMs > 0
     ? measuredWindowMs
-    : undefined
-  const windowMs = measuredWindow !== undefined
-    ? measuredWindow
     : legacyWindowMs > 0
       ? legacyWindowMs
-      : restoredWindowMs !== undefined && restoredWindowMs > 0
-        ? restoredWindowMs
-        : transcriptWindowMs
-  const turnOutput = lastTurnOutput > 0
-    ? lastTurnOutput
-    : !hasStreamingAssistant && turnCount <= 1 && hasStatsTokens && statsTokens!.output > 0
-      ? statsTokens!.output
-      : 0
-  // One turn: the model-time total is that turn's generation, even when the
-  // live window was left at 0 and only the timing journal still has it.
-  // A later turn is the same shape when Pi wrote no `durationMs` and the
-  // generation window was not closed: the journal still has one sample per
-  // answer, stamped with the assistant message time.
-  const sampledWindowMs = !hasStreamingAssistant && windowMs <= 0
-    ? newestTurnModelWindowMs(timing?.modelDurationsMs, lastUserTimestamp)
-    : 0
-  const speedWindowMs = windowMs > 0
-    ? windowMs
-    : sampledWindowMs > 0
-      ? sampledWindowMs
-      : !hasStreamingAssistant && turnCount <= 1 && (modelTimeMs ?? 0) > 0
-        ? modelTimeMs!
-        : 0
-  const tps =
-    speedWindowMs > 0 && turnOutput > 0 ? round(turnOutput / (speedWindowMs / 1000)) : null
+      : restoredWindowMs ?? 0
+  // Older transcripts can still pair the turn's usage with its generation window.
+  const turnTps =
+    windowMs > 0 && lastTurnOutput > 0 ? round(lastTurnOutput / (windowMs / 1000)) : null
   // A prompt does not produce tokens at the instant it is sent. Blanking the
   // reading there hid the speed of the turn that had just finished, so hold
   // that completed turn's value until this one has an answer of its own.
-  const previousRestoredWindowMs = previousUserIndex >= 0
+  const previousWindowMs = (previousUserIndex >= 0
     ? userTimingDuration(
       timing?.generationWindowMs ?? {},
       previousUserTimestamp,
       previousUserOrdinal,
       previousUserTimestamp === undefined ? 0 : userTimestampCounts.get(previousUserTimestamp) ?? 0
     )
-    : undefined
-  const previousWindowMs = previousRestoredWindowMs !== undefined && previousRestoredWindowMs > 0
-    ? previousRestoredWindowMs
-    : previousTurnGenerationMs > 0
-      ? previousTurnGenerationMs
-      : newestTurnModelWindowMs(timing?.modelDurationsMs, previousUserTimestamp, lastUserTimestamp)
+    : undefined) ?? 0
   const heldTps =
-    turnOutput === 0 && previousTurnOutput > 0 && previousWindowMs > 0
+    lastTurnOutput === 0 && previousTurnOutput > 0 && previousWindowMs > 0
       ? round(previousTurnOutput / (previousWindowMs / 1000))
       : null
 
@@ -496,7 +459,7 @@ export function sessionMetrics(
     contextTokens,
     contextWindow,
     contextPercent,
-    tps: tps ?? heldTps,
+    tps: averageTps ?? turnTps ?? heldTps,
     ttftMs,
     subagentTokens: subagents.tokens,
     subagentCost: subagents.cost ?? null,

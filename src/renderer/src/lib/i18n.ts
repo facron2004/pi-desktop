@@ -651,13 +651,13 @@ const zhCN: Record<string, string> = {
   TTFT: '首字延迟',
   'Tokens used in this conversation': '本对话已用 Token',
   'Context used': '上下文用量',
-  'Output tokens per second': '每秒输出 Token',
+  'Average output tokens per second': '每秒平均输出 Token',
   'Time to first token': '首个 Token 到达耗时',
   'Session statistics': '会话统计',
   'Model time': '模型用时',
   'Tool execution time': '工具调用用时',
   'Average TTFT': '首 token 平均（TTFT）',
-  'Output speed (TPS)': '输出速度（TPS）',
+  'Average output speed (TPS)': '平均输出速度（TPS）',
   'Not measured yet': '尚未统计',
   'tool calls timed': '个工具调用已计时',
   'Measured by this app; earlier history may be unavailable':
@@ -668,8 +668,8 @@ const zhCN: Record<string, string> = {
   'Generation speed and first-token delay': '生成速度与首字延迟',
   'Time to the first token of the newest answer, measured from the prompt.':
     '最新一轮回答从发出提示到收到首个 Token 的耗时。',
-  'Speed of the newest answer, from its first token to its last.':
-    '最新一轮回答从首个 Token 到最后一个 Token 的输出速度。',
+  'Average output speed of the whole conversation: its output tokens over the model time that produced them.':
+    '整段对话的平均输出速度：累计输出 Token ÷ 累计模型生成用时。',
   'From the live session': '来自运行中的会话',
   'Estimated from the transcript': '根据对话记录估算',
   'Pi has not reported statistics for this conversation yet.':
